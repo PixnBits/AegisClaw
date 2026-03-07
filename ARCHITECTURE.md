@@ -1,90 +1,133 @@
 # SeedClaw Architecture
 
-**Version:** 1.0-draft (2026-02-25)  
-**Status:** Early conceptual / bootstrap phase
+**Version:** 1.1 (2026-03-07)  
+**Status:** Bootstrap phase – minimal committed core for reliable initialization
 
-SeedClaw is a **self-hosting, local-first AI agent platform** designed from the ground up to be paranoid, minimal, and emergent. The core idea: ship almost nothing — just markdown prompts — and let the system build and extend itself using AI-generated, sandboxed code.
+SeedClaw is a self-hosting, local-first AI agent platform designed to be paranoid, minimal, and emergent.  
+The system ships a small set of trusted starter code so users can reach a working state quickly, while preserving the core philosophy: almost everything after the initial bootstrap is AI-generated, sandboxed, and dynamically registered.
 
-## Core Principles
+### Core Principles
 
-1. **Zero-code in the repo** (recipes only)  
-   - No committed `.go` files, no binaries, no dependencies lists.  
-   - Users generate the initial seed binary themselves (via coding agents like Grok, Claude, Copilot, Aider, etc.) or start with a tiny placeholder.  
-   - Everything after the seed is AI-generated and self-registered.
+1. Minimal committed core, zero-code for everything else  
+   - The repository contains only:  
+     - `seedclaw.go` (the host binary that runs on metal)  
+     - Four bootstrap-critical skills under `/src/skills/` (each with `SKILL.md`, `*.go`, `Dockerfile`)  
+     - `compose.yaml` (dynamically managed by the seed binary)  
+   - All other skills, tools, and capabilities are generated, compiled, tested and registered by the system itself.
 
-2. **Sandbox-first, not sandbox-later**  
-   - Every tool call, skill execution, and code compilation runs in strict isolation.  
-   - Default: fresh Docker container (alpine base) with:  
-     - Read-only mounts for seed binary  
+2. Sandbox-first, not sandbox-later  
+   - Every skill runs inside its own Docker container.  
+   - Default isolation profile for every container:  
+     - Fresh ephemeral container per major invocation  
+     - Read-only mounts for code/assets  
      - Ephemeral `/tmp` for writes  
-     - `--network=none` by default  
-     - Dropped capabilities, no root, seccomp strict profile  
-     - cgroup limits (CPU burst, memory cap)  
-     - 30s timeout kill  
+     - `--network=none` by default (explicit opt-in for network access)
+       - never `--network=host`
+     - Dropped capabilities, no root, strict seccomp profile  
+     - cgroup limits (CPU burst, memory cap at 512 MiB default)  
+     - 30-second timeout kill  
 
-3. **Self-bootstrapping loop**  
-   - Seed binary (tiny Go program) provides:  
-     - Chat input (stdin, WebSocket, or Telegram bot)  
-     - LLM call (local Ollama preferred; API fallback)  
-     - Docker client to spawn sandboxes  
-   - User pastes bootstrap prompt → seed asks LLM to generate "CodeSkill" (first coding agent)  
-   - CodeSkill then generates, compiles (in Docker), tests, and registers new skills  
-   - Repeat: "CodeSkill: add git tool", "add email skill", etc.
+3. Reliable self-bootstrapping loop  
+   - The seed binary (`seedclaw`) runs outside containers and:  
+     - Manages `compose.yaml` to add/remove/start/stop skill services  
+     - Creates a Unix socket and mounts it into the `message-hub` container  
+     - Communicates only with `message-hub` (never directly with other skills)  
+   - On first run, seedclaw starts the four committed core skills via Docker Compose.  
+   - All LLM calls, code generation, skill creation, etc. flow through the core skills.  
+   - New skills are generated → compiled/tested in temporary sandbox → added to compose.yaml → started.
 
-4. **Trust model**  
-   - Only the initial seed binary is trusted (user-compiled).  
-   - All LLM output, generated code, and skills = untrusted/hostile by default.  
-   - Static analysis (go vet, golangci-lint) + pattern blocks (no `os/exec`, `syscall`, `unsafe`) inside sandbox before compile.  
-   - Binary hashing / self-signing for integrity checks.
+4. Trust model  
+   - Only the following are trusted by default:  
+     - The user-compiled `seedclaw` binary  
+     - The four committed core skills (`message-hub`, `llm-caller`, `ollama`, `coder`)  
+   - All LLM output and generated code/skills = untrusted/hostile by default.  
+   - Before a new skill is added: static analysis (go vet, golangci-lint subset), pattern blocks (no `os/exec`, `syscall`, `unsafe`, etc.), compilation in sandbox.  
+   - Binary hashing and basic self-signing checks are performed on generated binaries.
 
-## Components
+### Components
 
-- **Seed Binary** (~10-50 KB static Go executable)  
+- **Seed Binary** (`src/seedclaw.go`)  
   Responsibilities:  
-  - Accept user prompts (chat interface)  
-  - Call LLM with structured prompt + context  
-  - Parse LLM response (JSON: {code, binary_name, hash})  
-  - Spawn Docker container → compile → test → register skill  
-  - Maintain in-memory skill registry (name → prompt template + binary path)
+  - Accept user input (stdin loop minimum; WebSocket / Telegram bot optional)  
+  - Create and manage a Unix socket for bi-directional communication with `message-hub`  
+  - Edit `compose.yaml` to register/start/stop skills  
+  - Maintain persistent skill registry (name → metadata, socket routing info)  
+  - Log all significant actions immutably (stdout + optional append-only audit file)
 
-- **Skills / Plugins**  
-  - Each skill = compiled Go binary + prompt template (markdown)  
-  - Registered dynamically via CodeSkill  
-  - Run in their own Docker sandbox per invocation  
-  - Communicate back to seed via stdout / structured output
+- **Message-Hub** (`/src/skills/core/message-hub/`)  
+  - Central message router (committed in repo)  
+  - Listens on Unix socket created & mounted by seedclaw  
+  - Routes structured JSON messages between seedclaw ↔ skills and skill ↔ skill  
+  - Enforces message format, routing rules, timeouts  
+  - Single point of controlled communication — no skill may talk directly to the host or to other skills except via hub
 
-- **Sandbox Options (evolution path)**  
-  | Level       | Isolation                  | Attack Surface                  | Overhead     | When to Use                          |
-  |-------------|----------------------------|----------------------------------|--------------|--------------------------------------|
-  | Docker      | Namespaces + cgroups + seccomp | Full host kernel                | Very low     | MVP, trusted local dev               |
-  | gVisor      | User-space kernel (Sentry) | Very small (Go reimpl + few host calls) | Low-medium   | Untrusted code, good perf balance    |
-  | Firecracker | Hardware microVM (KVM)     | Guest kernel + tiny hypervisor  | Medium       | Production, adversarial/multi-tenant |
-  | WASM (future) | TinyGo + wasmtime          | No syscalls to host             | Low          | Lightweight, no-container fallback   |
+- **Core Bootstrap Skills** (all committed in repo)  
+  - `message-hub` — message router (see above)  
+  - `llm-caller` — thin client that speaks to local Ollama or API fallback (Claude, Grok, OpenAI, …)  
+  - `ollama` — optional managed local model runner (can be disabled if user prefers external Ollama)  
+  - `coder` — first generative skill; reads `SKILL.md` prompts and produces new skill code + Dockerfile + registration metadata
 
-  Start with Docker (rootless if possible). Upgrade to gVisor (as Docker runtime `runsc`) or Firecracker (via custom runner or Kata) when executing truly untrusted AI-generated code.
+- **Generated Skills**  
+  - Each = directory with at minimum: `SKILL.md` (prompt template), main Go file, `Dockerfile`  
+  - Compiled/tested in temporary sandbox container before being added to compose.yaml  
+  - Registered dynamically by seedclaw editing compose.yaml and restarting compose
 
-## Threat Model (what we defend against)
+### Communication Architecture
 
-- Prompt injection → agent generates malicious Go → sandbox + static analysis blocks escape  
-- Container escape → seccomp + no caps + read-only mounts contain  
-- Network exfil → default network=none  
-- Self-modification of seed → binary read-only, no write access  
-- Resource exhaustion → cgroup limits + timeouts  
-- Dependency confusion / supply-chain → user builds seed themselves  
+```
+Host (metal)
+├── seedclaw binary
+│   ├── edits compose.yaml
+│   └── creates & mounts Unix socket → message-hub only
+│
+└── Docker Compose network
+    ├── message-hub (listens on mounted Unix socket)
+    ├── llm-caller
+    ├── ollama (optional)
+    ├── coder
+    └── any number of generated skills…
+          ↕ (all talk exclusively to message-hub)
+```
 
-## Non-Goals (for now)
+- Seedclaw ↔ message-hub: Unix socket (bi-directional, or peer pair if single-socket return path is restricted)  
+- Skill ↔ skill / skill ↔ seedclaw: all messages routed through message-hub  
+- No direct host-to-skill communication except the single socket mount into message-hub
+
+### Sandbox & Isolation Evolution Path
+
+| Level       | Isolation                  | Attack Surface                  | Overhead     | When to Use                          |
+|-------------|----------------------------|----------------------------------|--------------|--------------------------------------|
+| Docker      | Namespaces + cgroups + seccomp | Full host kernel                | Very low     | MVP, trusted local dev               |
+| gVisor      | User-space kernel (Sentry) | Very small (Go reimpl + few host calls) | Low-medium   | Untrusted code, good perf balance    |
+| Firecracker | Hardware microVM (KVM)     | Guest kernel + tiny hypervisor  | Medium       | Production, adversarial/multi-tenant |
+| WASM        | TinyGo + wasmtime          | No syscalls to host             | Low          | Lightweight, no-container fallback   |
+
+Start with rootless Docker where possible. Plan to add gVisor (`runsc`) and Firecracker runtimes later via a pluggable `sandbox-provider` abstraction.
+
+### Threat Model (what we defend against)
+
+- Prompt injection → generated malicious code → blocked by sandbox + static analysis  
+- Container escape → prevented by seccomp, no caps, read-only mounts  
+- Network exfil → default `--network=none`  
+- Self-modification of seed → seedclaw binary and socket are outside containers  
+- Resource exhaustion → cgroup limits + per-invocation timeouts  
+- Dependency confusion / supply-chain → user compiles seed themselves  
+- Rogue skill talking directly to host → only message-hub has socket access  
+- Compose.yaml tampering → edits performed only by trusted seedclaw binary
+
+### Non-Goals (for now)
 
 - Multi-user / authentication  
-- Persistent state beyond skill registry  
-- Fancy UI (chat-only)  
-- Cloud deployment (local-first)  
+- Persistent state beyond skill registry + audit log  
+- GUI (chat-only interface)  
+- Cloud / multi-tenant deployment  
 
-## Evolution / Roadmap Ideas
+### Roadmap Ideas
 
-- Add `sandbox-provider` abstraction (Docker → gVisor → Firecracker switchable)  
-- WASM skill support for even lighter isolation  
-- Audit log immutability (append-only file + hash chain)  
-- Skill signing / revocation mechanism  
-- Multi-agent coordination (swarms)
+- Pluggable sandbox-provider (Docker → gVisor → Firecracker → WASM)  
+- Skill revocation (compose down + registry purge + hash revocation list)  
+- Audit log immutability (append-only + hash chain)  
+- Multi-agent coordination / pub-sub patterns via message-hub  
+- Skill signing / version pinning mechanism  
 
-This document is living — update it as the implementation solidifies. PRs welcome for clarifications, diagrams (mermaid?), or tighter security arguments.
+This is a living document — update as implementation progresses.
