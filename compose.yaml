@@ -1,0 +1,6 @@
+services:
+ message-hub:
+   build: ./src/skills/core/message-hub
+   volumes:
+     - /tmp/seedclaw.sock:/run/seedclaw.sock
+   restart: unless-stopped
