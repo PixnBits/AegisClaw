@@ -12,44 +12,29 @@ import (
 )
 
 const (
-	listenSocket = "/run/seedclaw.sock" // must match what seedclaw mounts
+	socketPath = "/run/seedclaw.sock"
 )
 
 func main() {
-	// Remove old socket if exists (previous run)
-	if err := os.Remove(listenSocket); err != nil && !os.IsNotExist(err) {
-		log.Fatalf("cannot remove old socket: %v", err)
-	}
+	log.Printf("Message-Hub starting — will connect to %s", socketPath)
 
-	// Create unix socket
-	ln, err := net.Listen("unix", listenSocket)
-	if err != nil {
-		log.Fatalf("listen failed: %v", err)
-	}
-	defer ln.Close()
-
-	// Make socket world-readable/writable so host can connect
-	if err := os.Chmod(listenSocket, 0666); err != nil {
-		log.Fatalf("chmod failed: %v", err)
-	}
-
-	log.Printf("Message-Hub listening on unix socket: %s", listenSocket)
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("accept error: %v", err)
-			continue
+	// Wait/retry until host creates the socket
+	var conn net.Conn
+	var err error
+	for i := 0; i < 30; i++ { // ~15 seconds max
+		conn, err = net.Dial("unix", socketPath)
+		if err == nil {
+			break
 		}
-
-		log.Printf("New connection from seedclaw")
-
-		go handleConnection(conn)
+		log.Printf("Waiting for socket... (%d/30) %v", i+1, err)
+		time.Sleep(500 * time.Millisecond)
 	}
-}
-
-func handleConnection(conn net.Conn) {
+	if err != nil {
+		log.Fatalf("Cannot connect to host socket after retries: %v", err)
+	}
 	defer conn.Close()
+
+	log.Println("Connected to seedclaw!")
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -70,7 +55,6 @@ func handleConnection(conn net.Conn) {
 
 		log.Printf("[seedclaw → hub] %q", line)
 
-		// MVP: just echo back with prefix (later: real routing table)
 		reply := fmt.Sprintf("hub received: %s (at %s)", line, time.Now().Format(time.RFC3339))
 
 		_, err = writer.WriteString(reply + "\n")
