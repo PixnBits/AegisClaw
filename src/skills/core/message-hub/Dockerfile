@@ -16,10 +16,14 @@ RUN apk add --no-cache go \
     && rm -rf /go/pkg /go/src \
     && apk del go
 
-# Drop to non-root
+# Prepare socket directory and drop to non-root
+RUN mkdir -p /run/sockets/control \
+    && chown 10001:10001 /run/sockets/control \
+    && chmod 0750 /run/sockets/control
+
 USER 10001:10001
 
-# The socket will be mounted from host here
-VOLUME /run/sockets/control/seedclaw.sock
+# The socket will be mounted from host in this directory
+VOLUME /run/sockets/control/
 
 CMD ["/message-hub"]

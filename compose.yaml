@@ -3,6 +3,9 @@ services:
     build: src/skills/core/message-hub
     volumes:
       - ./shared/sockets/control:/run/sockets/control:rw
+    # Run as non-root numeric user to avoid granting root inside container
+    # Use host UID:GID (1000) so the bind-mounted socket directory is accessible
+    user: "1000:1000"
     # Security hardening (add more as we go)
     cap_drop:
       - ALL
