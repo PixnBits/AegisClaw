@@ -1,6 +1,18 @@
+version: '3.8'
+
 services:
- message-hub:
-   build: ./src/skills/core/message-hub
-   volumes:
-     - /tmp/seedclaw.sock:/run/seedclaw.sock
-   restart: unless-stopped
+  message-hub:
+    build:
+      context: .
+      dockerfile: src/skills/core/message-hub/Dockerfile
+    volumes:
+      - ./shared/sockets/control:/run/sockets/control:rw
+    # Security hardening (add more as we go)
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    restart: unless-stopped
