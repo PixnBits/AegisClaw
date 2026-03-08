@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -10,14 +9,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 )
 
 const (
-	socketPath       = "/tmp/seedclaw.sock" // will be mounted into message-hub
-	composeFile      = "compose.yaml"
-	defaultTimeout   = 15 * time.Second
+	socketPath     = "/tmp/seedclaw.sock" // will be mounted into message-hub
+	composeFile    = "compose.yaml"
+	defaultTimeout = 15 * time.Second
 )
 
 func main() {
