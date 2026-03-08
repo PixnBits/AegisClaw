@@ -20,6 +20,6 @@ RUN apk add --no-cache go \
 USER 10001:10001
 
 # The socket will be mounted from host here
-VOLUME /run/seedclaw.sock
+VOLUME /run/sockets/control/seedclaw.sock
 
 CMD ["/message-hub"]
