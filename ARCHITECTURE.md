@@ -46,15 +46,20 @@ The system ships a small trusted core so users reach a working state quickly. Ev
 Located at `./shared/` (created and managed automatically by the seed binary).  
 Only purpose-driven subdirectories are ever mounted:
 
-- `sockets/control/` — Bidirectional Unix socket(s) for host ↔ message-hub communication (and future host ↔ skill control channels)  
+- `sockets/control/` — Host↔skill control uses a small, explicit IPC proxy.
+  - Seedclaw will run a minimal, local-only control proxy (TCP on loopback or a short-lived protected unix socket) and accept connections from `message-hub` over the Docker network.
+  - Enables stronger transport protections (mTLS, short-lived tokens, loopback-only binding).
 - `sources/` — Read-only templates and AI-generated source code before compilation  
 - `builds/` — Temporary compilation workspaces and output binaries  
 - `outputs/` — Skill-produced artifacts (logs, data files, etc.)  
 - `logs/` — Centralized debug and operational logs  
 - `audit/` — Immutable append-only audit trail (future hash-chained files)
 
-**Mount strategy (security key point):**  
-- `message-hub` gets only `./shared/sockets/control:/run/sockets/control:rw`  
+- **Mount strategy (security key point):**
+- Prefer *no* host bind-mount for the control channel. Instead:
+  - `seedclaw` runs the IPC proxy bound to loopback and/or listens on an internal unix socket not shared by generic skills.
+  - `message-hub` connects to the proxy over the Docker network (or to a localhost-forwarded port) and does not receive a host `shared/` volume for control access.
+  - `message-hub` still receives only the precise `shared/` subdirectories it needs for other purposes (e.g., `sources`/`builds`), but not the control socket path.
 - `coder` skill gets `./shared/sources:ro` + `./shared/builds:rw`  
 - Future generated skills declare exactly which subdirectories they require in their registration metadata.  
 - The seed binary adds only those precise volume lines to `compose.yaml`.  

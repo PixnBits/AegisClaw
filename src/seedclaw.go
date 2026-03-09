@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 )
 
@@ -78,7 +80,30 @@ func startCoreServices() error {
 		log.Printf("socket stat failed: %v", err)
 	}
 
-	// 4. Start compose now that the socket file exists
+	// 4. Start a local TCP->Unix proxy so containers can connect to the
+	// host control socket without bind-mounting it. The proxy listens on
+	// loopback and containers reach the host via Docker's host-gateway.
+	var proxyWg sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		proxyWg.Wait()
+	}()
+
+	proxyWg.Add(1)
+	go func() {
+		defer proxyWg.Done()
+		// Bind to all interfaces so containers can reach the proxy via
+		// Docker's host-gateway mapping.
+		if err := runProxy(ctx, "0.0.0.0:50023", socketPath); err != nil {
+			log.Printf("control proxy stopped: %v", err)
+		}
+	}()
+
+	// Give proxy a moment to start
+	time.Sleep(200 * time.Millisecond)
+
+	// 5. Start compose now that the socket file exists and proxy is listening
 	if _, err := os.Stat(composeFile); os.IsNotExist(err) {
 		return fmt.Errorf("compose.yaml not found in current directory")
 	}
@@ -164,4 +189,66 @@ func runChat() error {
 
 	fmt.Println("Exiting chat.")
 	return nil
+}
+
+// runProxy forwards TCP connections on listenAddr to the unix domain socket
+// at targetSocket. It runs until the provided context is cancelled.
+func runProxy(ctx context.Context, listenAddr, targetSocket string) error {
+	l, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("proxy listen %s failed: %w", listenAddr, err)
+	}
+	defer l.Close()
+
+	var tempDelay time.Duration
+	for {
+		// Check context
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		l.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Second))
+		conn, err := l.Accept()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			return fmt.Errorf("proxy accept error: %w", err)
+		}
+
+		go func(c net.Conn) {
+			defer c.Close()
+			// Dial the unix socket on the host
+			uc, err := net.Dial("unix", targetSocket)
+			if err != nil {
+				log.Printf("proxy: dial unix %s failed: %v", targetSocket, err)
+				return
+			}
+			defer uc.Close()
+
+			// Bi-directional copy
+			done := make(chan struct{})
+			go func() {
+				io.Copy(uc, c)
+				uc.(*net.UnixConn).CloseWrite()
+				close(done)
+			}()
+			io.Copy(c, uc)
+			c.(*net.TCPConn).CloseWrite()
+			<-done
+		}(conn)
+
+		// backoff (not expected to trigger frequently)
+		if tempDelay == 0 {
+			tempDelay = 5 * time.Millisecond
+		} else {
+			tempDelay *= 2
+		}
+		if tempDelay > 1*time.Second {
+			tempDelay = 1 * time.Second
+		}
+		time.Sleep(tempDelay)
+	}
 }

@@ -1,14 +1,6 @@
 services:
   message-hub:
     build: src/skills/core/message-hub
-    volumes:
-      - ./shared/sockets/control:/run/sockets/control:rw
-    # Run as non-root numeric user to avoid granting root inside container
-    # Use host UID:GID (1000) so the bind-mounted socket directory is accessible
-    # Run as the message-hub user inside the image with a dedicated group (seedclaw:GID=1500)
-    # Entrypoint will chown the socket and drop privileges — do not force host uid/gid
-    # (running container initially as root so entrypoint can adjust socket ownership)
-    # user: "10001:1500"
     # Security hardening (add more as we go)
     cap_drop:
       - ALL
@@ -18,3 +10,7 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - CONTROL_ADDR=host.docker.internal:50023

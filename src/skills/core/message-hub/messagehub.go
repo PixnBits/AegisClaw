@@ -11,35 +11,38 @@ import (
 	"time"
 )
 
-const socketPath = "/run/sockets/control/seedclaw.sock"
+// CONTROL_ADDR may be set by compose to point at the host proxy. Default
+// uses Docker's host-gateway hostname and port 50023.
+var controlAddr = getenv("CONTROL_ADDR", "host.docker.internal:50023")
+
+func getenv(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}
 
 func main() {
-	log.Printf("Message-Hub starting — connecting to %s", socketPath)
+	log.Printf("Message-Hub starting — connecting to %s", controlAddr)
 
 	var conn net.Conn
 	var err error
 
-	// Retry until host creates the socket
+	// Retry until host proxy accepts
 	for i := 0; i < 60; i++ { // ~30 seconds max
-		conn, err = net.Dial("unix", socketPath)
+		conn, err = net.Dial("tcp", controlAddr)
 		if err == nil {
 			break
 		}
-		log.Printf("Waiting for control socket (%d/60): %v", i+1, err)
-		// log the permissions of the control socket for debugging
-		if stat, statErr := os.Stat(socketPath); statErr == nil {
-			log.Printf("Control socket permissions: %v", stat.Mode())
-		} else {
-			log.Printf("Could not stat control socket: %v", statErr)
-		}
+		log.Printf("Waiting for control proxy (%d/60): %v", i+1, err)
 		time.Sleep(500 * time.Millisecond)
 	}
 	if err != nil {
-		log.Fatalf("Failed to connect to host control socket after retries: %v", err)
+		log.Fatalf("Failed to connect to host control proxy after retries: %v", err)
 	}
 	defer conn.Close()
 
-	log.Println("Successfully connected to seedclaw control socket!")
+	log.Println("Successfully connected to seedclaw control proxy!")
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
