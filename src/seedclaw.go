@@ -34,11 +34,11 @@ func main() {
 	defer listener.Close()
 	log.Println("Seedclaw listening on :50023")
 
-	// Start message-hub via docker compose
-	log.Println("Starting message-hub...")
-	err = exec.Command("docker", "compose", "up", "message-hub").Start()
+	// Start core skills via docker compose
+	log.Println("Starting core skills...")
+	err = exec.Command("docker", "compose", "up").Start()
 	if err != nil {
-		log.Println("Failed to start message-hub:", err)
+		log.Println("Failed to start core skills:", err)
 	}
 
 	// Accept connection from message-hub
@@ -65,6 +65,11 @@ func main() {
 			data, _ := json.Marshal(response)
 			conn.Write(append(data, '\n'))
 			log.Printf("Sent: %+v\n", response)
+			// Send test message to llm-caller
+			testMsg := Message{From: "seedclaw", To: "llm-caller", Content: "Say hello"}
+			data2, _ := json.Marshal(testMsg)
+			conn.Write(append(data2, '\n'))
+			log.Printf("Sent test to llm-caller: %+v\n", testMsg)
 		}
 	}()
 

@@ -10,6 +10,23 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
     restart: unless-stopped
-    network_mode: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      - CONTROL_ADDR=127.0.0.1:50023
+      - CONTROL_ADDR=host.docker.internal:50023
+
+  llm-caller:
+    build: src/skills/core/llm-caller
+    depends_on:
+      - message-hub
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    restart: unless-stopped
+    environment:
+      - CONTROL_ADDR=message-hub:50024
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
