@@ -89,7 +89,7 @@ All communication flows exclusively through `message-hub`. No skill ever touches
 
 ### 4. Security & Isolation Requirements (MANIACAL FOCUS)
 
-#### 4.5 Networking Policy (NEW – Critical Requirement)
+#### 4.1 Networking Policy (NEW – Critical Requirement)
 **Design Goal:** Minimal surprises. Every network capability must be explicit, declared in metadata, enforced by seedclaw, and logged. No skill should ever have unexpected connectivity.
 
 **Hard Rules (enforced by seedclaw on every `compose.yaml` edit):**
@@ -106,7 +106,7 @@ All communication flows exclusively through `message-hub`. No skill ever touches
 
 This policy eliminates lateral movement, data exfiltration, and unexpected internet exposure while keeping every decision auditable in one log file.
 
-#### 4.6 Default Container Runtime Profile (updated & hardened)
+#### 4.2 Default Container Runtime Profile (updated & hardened)
 - `--network=seedclaw-net` (never `host`, never blank)
 - `--rm --read-only` + tmpfs `/tmp`
 - `--cap-drop=ALL --security-opt no-new-privileges`
@@ -129,12 +129,12 @@ restart: unless-stopped
 # extra_hosts: ["host.internal:host-gateway"]   # ONLY for message-hub
 ```
 
-#### 4.7 Code Vetting Pipeline (mandatory)
+#### 4.3 Code Vetting Pipeline (mandatory)
 - `go vet`, compile test, static analysis.
 - New checks: reject `network_mode: host`, undeclared outbound calls, or broad network flags.
 - Prompt-injection guard strengthened for network-related code.
 
-#### 4.8 User-Facing Safety
+#### 4.4 User-Facing Safety
 - Natural-language requests are threat-modeled by user-agent before execution. User retains final judgement via explicit confirmation. No auto-execution of risky actions.
 
 ---
