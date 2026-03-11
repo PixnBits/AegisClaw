@@ -1,23 +1,39 @@
-# LLM Caller Skill
+# LLM Caller Skill v2.1
 
-This skill provides a thin client interface for making calls to Large Language Models (LLMs). It supports multiple providers including local Ollama instances and remote APIs (OpenAI, Claude, Grok, etc.).
+Thin, secure client for LLM inference. Supports local Ollama and approved remote providers. All calls routed through message-hub.
 
 ## Capabilities
+- Calls to approved LLM endpoints
+- Handles auth via env vars (injected by seedclaw)
+- Structured prompt/response handling
 
-- Makes HTTP requests to LLM APIs
-- Handles authentication via environment variables
-- Supports structured prompts and responses
-- Routes requests through the message-hub for secure communication
+## Network Policy (v2.1 Mandatory)
+```json
+{
+  "name": "llm-caller",
+  "required_mounts": [],
+  "network_policy": {
+    "outbound": "allow_list",
+    "domains": ["api.openai.com", "api.anthropic.com", "grok.x.ai", "ollama.ai", "registry.ollama.ai"],
+    "ports": [443],
+    "network_mode": "seedclaw-net"
+  },
+  "network_needed": true
+}
+```
+Narrow allow-list ONLY for approved LLM providers. No other outbound.
 
-## Environment Variables
+## Required Mounts
+[] (none). No filesystem access beyond defaults.
 
-- `OPENAI_API_KEY`: API key for OpenAI services
-- `ANTHROPIC_API_KEY`: API key for Anthropic Claude
-- `OLLAMA_BASE_URL`: Base URL for local Ollama instance (default: http://localhost:11434)
+## Default Container Runtime Profile
+read_only: true, tmpfs: [/tmp], cap_drop: [ALL], security_opt: [no-new-privileges:true], mem_limit: 512m, network: seedclaw-net (NEVER host).
+
+## Communication
+**ALL** requests/responses route exclusively through message-hub. No direct HTTP from other skills or host sockets.
 
 ## Message Format
-
-### Incoming Messages
+**Incoming:**
 ```json
 {
   "from": "sender",
@@ -25,32 +41,16 @@ This skill provides a thin client interface for making calls to Large Language M
   "content": {
     "action": "call",
     "provider": "openai",
-    "model": "gpt-3.5-turbo",
-    "prompt": "Your prompt here",
-    "max_tokens": 100
-  }
+    "model": "...",
+    "prompt": "..."
+  },
+  "metadata": {"sender_validated": true}
 }
 ```
 
-### Outgoing Messages
-```json
-{
-  "from": "llm-caller",
-  "to": "sender",
-  "content": {
-    "response": "Generated response text",
-    "usage": {
-      "prompt_tokens": 10,
-      "completion_tokens": 20,
-      "total_tokens": 30
-    }
-  }
-}
-```
-
-## Supported Providers
-
-- `ollama`: Local Ollama instance (default)
-- `grok`: xAI Grok (future implementation)
-- `openai`: OpenAI GPT models (future implementation)
-- `anthropic`: Anthropic Claude models (future implementation)
+## Security & Auditing Invariants
+- Every outbound call logged with full network_policy in seedclaw.log.
+- Only uses declared domains/ports.
+- Trivial audit via grep on outbound and domains.
+- Coder skill must copy this exact policy style when generating similar skills.
+- Immutable, least-privilege, hub-only routing enforced.

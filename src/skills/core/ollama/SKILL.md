@@ -1,54 +1,53 @@
-# Ollama Skill
+# Ollama Skill v2.1
 
-This skill manages a local Ollama instance for running Large Language Models. It provides a containerized Ollama server that can be used by other skills for LLM inference.
+Manages local Ollama instance for model serving and pulls. Containerized with strict isolation.
 
 ## Capabilities
+- Serve models locally (http://ollama:11434)
+- Pull models on demand
+- List available models
 
-- Runs Ollama server in a secure container
-- Manages model downloads and serving
-- Provides REST API for model inference
-- Registers with message-hub for coordination
+## Network Policy (v2.1 Mandatory)
+```json
+{
+  "name": "ollama",
+  "required_mounts": ["ollama/models:rw"],
+  "network_policy": {
+    "outbound": "allow_list",
+    "domains": ["registry.ollama.ai", "ollama.com"],
+    "ports": [443],
+    "network_mode": "seedclaw-net"
+  },
+  "network_needed": true
+}
+```
+Outbound ONLY for model registry pulls. Blocked otherwise.
 
-## Environment Variables
+## Required Mounts
+["ollama/models:rw"] (for model storage; managed by seedclaw). No other shared/ access.
 
-- None required (uses default Ollama configuration)
+## Default Container Runtime Profile
+Compliant: read_only: true (except models tmpfs), cap_drop: [ALL], mem_limit: 512m, network: seedclaw-net.
+
+## Communication
+Exclusively via message-hub. Other skills call ollama only through hub. Internal serving on Docker network only.
 
 ## Message Format
-
-### Incoming Messages
+**Incoming:**
 ```json
 {
   "from": "sender",
   "to": "ollama",
   "content": {
     "action": "pull",
-    "model": "llama3.2:latest"
+    "model": "qwen2.5-coder:32b"
   }
 }
 ```
 
-Supported actions:
-- `pull`: Download and install a model
-- `serve`: Start serving (default on startup)
-- `list`: List available models
-
-### Outgoing Messages
-```json
-{
-  "from": "ollama",
-  "to": "sender",
-  "content": {
-    "status": "success",
-    "models": ["llama3.2:latest", "qwen2.5-coder:32b"]
-  }
-}
-```
-
-## API Endpoint
-
-The Ollama server is available at `http://ollama:11434` within the Docker network.
-
-## Models
-
-- `llama3.2:latest`: General purpose model for llm-caller
-- `qwen2.5-coder:32b`: Code generation model for coder skill
+## Security & Auditing Invariants
+- Pull actions audited with domains in seedclaw.log.
+- No inter-skill direct access.
+- Model storage isolated.
+- Trivial grep auditing for any network activity.
+- Enforces v2.1 policy in all interactions.
