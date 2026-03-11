@@ -1,159 +1,197 @@
 # SeedClaw Architecture
 
-**Version:** 1.2 (2026-03-07)  
-**Status:** Bootstrap phase – minimal committed core + explicit shared boundary
+**Version:** 2.1 (2026-03-11)  
+**Status:** Hardened bootstrap phase – TCP control plane + mandatory explicit networking policy  
+**Alignment:** 100% with PRD.md v2.1 (single source of truth for every line of code, every compose.yaml edit, every skill registration)
 
-SeedClaw is a self-hosting, local-first AI agent platform designed to be paranoid, minimal, and emergent.  
-The system ships a small trusted core so users reach a working state quickly. Everything beyond the core is AI-generated, sandboxed, and dynamically registered.
+SeedClaw is a self-hosting, local-first, zero-trust AI agent platform that is paranoid by design.  
+The Trusted Computing Base is deliberately microscopic: only `seedclaw.go` + four committed core skills. Everything else is generated, sandbox-compiled in a temporary container, statically vetted, and registered with **explicit least-privilege mounts + mandatory `network_policy`**.  
 
-## Core Principles
+No surprises. Ever.  
+Every network decision, every mount, every registration is logged immutably in `./shared/audit/seedclaw.log` (append-only JSON lines with SHA-256 hashes). Auditing any skill’s connectivity or filesystem access is a single `grep`.
 
-1. **Minimal committed core, zero-code for everything else**  
-   The repository contains only:  
-   - `seedclaw.go` (the host binary that runs on metal)  
-   - Four bootstrap-critical skills under `/src/skills/` (each with `SKILL.md`, `*.go`, `Dockerfile`)  
-   - `compose.yaml` (dynamically managed by the seed binary)  
-   All other skills, tools, and capabilities are generated, compiled, tested and registered by the system itself.
+## Core Principles (NON-NEGOTIABLE – enforced by seedclaw)
 
-2. **Sandbox-first, not sandbox-later**  
-   Every skill runs inside its own Docker container.  
-   Default isolation profile for every container:  
-   - Fresh ephemeral container per major invocation  
-   - Read-only mounts where possible  
-   - Ephemeral `/tmp` for writes  
-   - `--network=none` by default (explicit opt-in for network access)
-    - **never** `network=host`
-   - Dropped capabilities, no root, strict seccomp profile  
-   - cgroup limits (CPU burst, memory cap at 512 MiB default)  
-   - 30-second timeout kill  
+1. Minimal committed core, zero-code for everything else  
+2. Sandbox-first, not sandbox-later  
+3. Reliable self-bootstrapping loop  
+4. Explicit Host-Skill Boundary (least-privilege mounts ONLY)  
+5. Single communication gateway (`message-hub` only)  
+6. Immutable audit trail (every network decision included)  
+7. **Explicit & Minimal Network Surface** – networking is never implicit. Default = zero outbound, zero inter-skill direct comms, zero host-network exposure.
 
-3. **Reliable self-bootstrapping loop**  
-   - The seed binary (`seedclaw`) runs outside containers and:  
-     - Manages `compose.yaml` to add/remove/start/stop skill services  
-     - Creates purpose-specific Unix sockets and mounts only what each skill needs  
-     - Communicates only with `message-hub` (never directly with other skills)  
-   - On first run, seedclaw starts the four committed core skills via Docker Compose.  
-   - All LLM calls, code generation, skill creation, etc. flow through the core skills.  
-   - New skills are generated → compiled/tested in temporary sandbox → added to compose.yaml → started.
+## Shared Directory Structure ( `./shared/` – created & managed exclusively by seedclaw )
 
-4. **Explicit Host-Skill Boundary (least-privilege mounts)**  
-   All data exchange between the host and containers happens through a single top-level `./shared/` directory (sibling to `compose.yaml`).  
-   **No skill container ever receives a blanket mount of the entire shared directory.**  
-   Instead, each skill receives only the specific purpose-named subdirectories it actually needs, with the narrowest read/write permissions required.  
-   This design dramatically improves auditability, makes the attack surface explicit, and follows strict least-privilege principles.
+Only purpose-driven subdirectories are ever mounted. **Control channel is now pure TCP** (no filesystem socket mount).
 
-## Shared Directory Structure
+- `sources/` — read-only AI-generated source code & templates  
+- `builds/` — temporary compilation workspaces + binaries  
+- `outputs/` — skill-produced artifacts  
+- `logs/` — centralized operational logs  
+- `audit/` — immutable append-only trail (JSON + hash-chained)
 
-Located at `./shared/` (created and managed automatically by the seed binary).  
-Only purpose-driven subdirectories are ever mounted:
-
-- `sockets/control/` — Host↔skill control uses a small, explicit IPC proxy.
-  - Seedclaw will run a minimal, local-only control proxy (TCP on loopback or a short-lived protected unix socket) and accept connections from `message-hub` over the Docker network.
-  - Enables stronger transport protections (mTLS, short-lived tokens, loopback-only binding).
-- `sources/` — Read-only templates and AI-generated source code before compilation  
-- `builds/` — Temporary compilation workspaces and output binaries  
-- `outputs/` — Skill-produced artifacts (logs, data files, etc.)  
-- `logs/` — Centralized debug and operational logs  
-- `audit/` — Immutable append-only audit trail (future hash-chained files)
-
-- **Mount strategy (security key point):**
-- Prefer *no* host bind-mount for the control channel. Instead:
-  - `seedclaw` runs the IPC proxy bound to loopback and/or listens on an internal unix socket not shared by generic skills.
-  - `message-hub` connects to the proxy over the Docker network (or to a localhost-forwarded port) and does not receive a host `shared/` volume for control access.
-  - `message-hub` still receives only the precise `shared/` subdirectories it needs for other purposes (e.g., `sources`/`builds`), but not the control socket path.
-- `coder` skill gets `./shared/sources:ro` + `./shared/builds:rw`  
-- Future generated skills declare exactly which subdirectories they require in their registration metadata.  
-- The seed binary adds only those precise volume lines to `compose.yaml`.  
-- Most skills receive zero mounts unless they explicitly need them.
-
-This prevents any skill from seeing sockets or files belonging to other skills or the host at large.
+**Mount strategy (security invariant):**  
+- No skill ever receives the entire `shared/` directory.  
+- `coder` receives only `sources:ro` + `builds:rw`.  
+- Future skills declare exact required subdirs in registration metadata; seedclaw adds **only** those lines to `compose.yaml`.  
+- `message-hub` receives **no** control-related mounts (TCP only).
 
 ## Components
 
-- **Seed Binary** (`src/seedclaw.go`)  
-  Responsibilities:  
-  - Accept user input (stdin loop minimum; WebSocket / Telegram bot optional)  
-  - Create and manage `./shared/` subdirectories and purpose-specific sockets  
-  - Edit `compose.yaml` to register/start/stop skills with selective mounts only  
-  - Maintain persistent skill registry (name → metadata, required mounts, socket routing info)  
-  - Log all significant actions immutably (stdout + optional append-only audit file)
+### Seed Binary (`src/seedclaw.go` – the only binary that runs on metal)
+**Single static Go binary** (<20 MiB idle). Responsibilities (all actions audited):
 
-- **Message-Hub** (`/src/skills/core/message-hub/`)  
-  - Central message router (committed in repo)  
-  - Connects exclusively to `./shared/sockets/control/seedclaw.sock` (mounted as `/run/sockets/control/seedclaw.sock`)  
-  - Routes structured JSON messages between seedclaw ↔ skills and skill ↔ skill  
-  - Only skill allowed to communicate directly with the host
+- Verify Docker, create `./shared/`, manage dedicated `seedclaw-net` Docker network.  
+- **Control Channel**: listen **exclusively** on `127.0.0.1:7124` (configurable via `SEEDCLAW_CONTROL_PORT`). JSON-over-TCP (mTLS-capable in future).  
+- Maintain persistent skill registry (`shared/registry.json`) with full `network_policy`, mounts, and previous hash.  
+- Skill lifecycle (exact sequence):  
+  1. Receive generate request → route to `coder`.  
+  2. Receive bundle + metadata.  
+  3. Sandbox compile/test (`go vet`, static analysis, reject `network_mode: host`).  
+  4. **Validate** declared `required_mounts` + `network_policy`.  
+  5. Append to `compose.yaml` with **precise** network & mount config only.  
+  6. `docker compose up -d` → immutable audit entry.  
+- **Rejection rules** (logged + rejected): `network_mode: host`, missing `network_policy`, undeclared outbound, broad mounts.
 
-- **Core Bootstrap Skills** (all committed in repo)  
-  - `message-hub` — message router (see above)  
-  - `llm-caller` — thin client that speaks to local Ollama or API fallback (Claude, Grok, OpenAI, …)  
-  - `ollama` — optional managed local model runner  
-  - `coder` — first generative skill; reads `SKILL.md` prompts and produces new skill code + Dockerfile + registration metadata (including required shared subdirs)
+### Message-Hub (core skill – sole IPC router)
+- Connects **exclusively** to seedclaw’s TCP port via `extra_hosts: ["host.internal:host-gateway"]`.  
+- Enforces structured JSON, sender validation, and routes **everything** (skill↔skill, skill↔seedclaw).  
+- Logs every message to audit trail.
 
-- **Generated Skills**  
-  - Each = directory with at minimum: `SKILL.md` (prompt template), main Go file, `Dockerfile`  
-  - Compiled/tested in temporary sandbox container before being added to compose.yaml  
-  - During registration the skill declares its required shared subdirectories; seedclaw adds only those mounts
+### Core Bootstrap Skills (committed – updated SKILL.md forthcoming)
+- `message-hub` – TCP control only.  
+- `llm-caller` – explicit outbound allow-list (OpenAI, Anthropic, Grok, etc.).  
+- `ollama` – explicit outbound for model pulls.  
+- `coder` – generates skills **including** mandatory `network_policy`.
+
+### Generated Skills (all future skills)
+Must ship:
+- `SKILL.md` (prompt template)  
+- Go main + `Dockerfile`  
+- Registration metadata **containing** `network_policy` (enforced by coder prompt + seedclaw vetting)
+
+## Skill Registration Metadata Schema (mandatory – enforced at registration)
+
+```json
+{
+  "name": "web-search",
+  "required_mounts": ["sources:ro", "outputs:rw"],
+  "network_policy": {
+    "outbound": "allow_list" | "none",
+    "domains": ["*.brave.com", "api.openai.com"],
+    "ports": [443],
+    "network_mode": "seedclaw-net"   // never "host"
+  },
+  "network_needed": false,
+  "hash": "sha256:...",
+  "timestamp": "2026-03-11T13:00:00Z"
+}
+```
+
+Seedclaw **rejects** any registration missing or violating this schema. Coder skill prompts will be updated to always produce it.
+
+## Networking Architecture & Policy (NEW – Critical Section)
+
+All containers run exclusively on the dedicated `seedclaw-net` (created by seedclaw).
+
+**Hard Rules (enforced by seedclaw on every compose.yaml edit – non-overridable):**
+
+1. **Custom Network Only** – every service: `network: seedclaw-net`.  
+2. **Host Network Ban** – `network_mode: host` permanently forbidden. Any occurrence (Dockerfile, metadata, compose) → registration rejected + audit entry.  
+3. **Skill-to-Skill Isolation** – no direct TCP/UDP between skills. All communication **MUST** route through `message-hub` (enforced by coder generation prompts + runtime validation in message-hub).  
+4. **Outbound Internet Access**  
+   - Default: completely blocked (no gateway).  
+   - Only skills that explicitly declare an allow-list in `network_policy` may have outbound.  
+   - Core skills (`llm-caller`, `ollama`) receive narrow allow-lists by default. All generated skills start with `"outbound": "none"`.  
+   - Future v3.0: egress proxy skill will enforce at network level.  
+5. **Control Plane Access** – ONLY `message-hub` receives `host.internal` alias and can reach `127.0.0.1:7124`. Generic skills never see this address.
+
+**Default Container Runtime Profile (applied to every service):**
+```yaml
+network: seedclaw-net
+read_only: true
+tmpfs:
+  - /tmp
+cap_drop: [ALL]
+security_opt: [no-new-privileges:true]
+mem_limit: 512m
+cpu_shares: 512
+ulimits:
+  nproc: 64
+  nofile: 64
+restart: unless-stopped
+extra_hosts:
+  - "host.internal:host-gateway"   # only for message-hub
+```
 
 ## Communication Architecture
 
 ```
 Host (metal)
 ├── seedclaw binary
-│   ├── creates/manages ./shared/
-│   ├── creates ./shared/sockets/control/seedclaw.sock
-│   └── edits compose.yaml (with selective per-skill mounts only)
+│   ├── listens 127.0.0.1:7124 (loopback-only TCP)
+│   ├── manages seedclaw-net + compose.yaml (selective mounts + network_policy)
+│   └── immutable audit log
 │
-└── Docker Compose network
-    ├── message-hub (mounted only /sockets/control)
-    ├── llm-caller
-    ├── ollama (optional)
-    ├── coder (mounted only sources + builds)
-    └── any generated skill…
-          ↕ (all talk exclusively to message-hub)
+└── Docker network: seedclaw-net
+    ├── message-hub (only container with host.internal:7124 access)
+    ├── llm-caller (narrow outbound allow-list)
+    ├── ollama (narrow outbound allow-list)
+    ├── coder (sources:ro + builds:rw)
+    └── generated skills…
+          ↕ (ALL communication via message-hub only)
 ```
-
-- Seedclaw ↔ message-hub: single purpose-specific Unix socket in `./shared/sockets/control/`  
-- Skill ↔ skill / skill ↔ seedclaw: all messages routed through message-hub  
-- No skill can see another skill’s socket or files
 
 ## Sandbox & Isolation Evolution Path
 
 | Level       | Isolation                  | Attack Surface                  | Overhead     | When to Use                          |
 |-------------|----------------------------|----------------------------------|--------------|--------------------------------------|
-| Docker      | Namespaces + cgroups + seccomp | Full host kernel                | Very low     | MVP, trusted local dev               |
-| gVisor      | User-space kernel (Sentry) | Very small (Go reimpl + few host calls) | Low-medium   | Untrusted code, good perf balance    |
-| Firecracker | Hardware microVM (KVM)     | Guest kernel + tiny hypervisor  | Medium       | Production, adversarial/multi-tenant |
-| WASM        | TinyGo + wasmtime          | No syscalls to host             | Low          | Lightweight, no-container fallback   |
+| Docker      | Namespaces + cgroups + seccomp | Full host kernel                | Very low     | MVP (current)                        |
+| gVisor      | User-space kernel          | Very small                      | Low-medium   | Untrusted code                       |
+| Firecracker | MicroVM (KVM)              | Tiny hypervisor                 | Medium       | Production                           |
+| WASM        | wasmtime + TinyGo          | No syscalls                     | Low          | Lightweight fallback                 |
 
-Start with rootless Docker where possible. Future upgrades via pluggable `sandbox-provider` abstraction.
+## Threat Model & Defenses (maniacal focus)
 
-## Threat Model (what we defend against)
+- Prompt injection → malicious code → blocked by sandbox vetting + `network_policy` enforcement.  
+- Container escape → prevented by read-only, cap-drop, seccomp, cgroup limits.  
+- Network exfil / lateral movement → prevented by default no-outbound + message-hub-only routing.  
+- Rogue skill reaching internet → rejected at registration unless explicitly allowed and audited.  
+- Compose.yaml tampering → performed only by seedclaw binary.  
+- Broad host exposure → eliminated by selective mounts + TCP control.  
+- Audit tampering → append-only + SHA-256 chaining (future).
 
-- Prompt injection → generated malicious code → blocked by sandbox + static analysis  
-- Container escape → prevented by seccomp, no caps, read-only mounts  
-- Network exfil → default `--network=none`  
-- Self-modification of seed → seedclaw binary and shared/ are outside containers  
-- Resource exhaustion → cgroup limits + per-invocation timeouts  
-- Dependency confusion / supply-chain → user compiles seed themselves  
-- Rogue skill seeing other skills’ data → prevented by purpose-specific mounts only  
-- Broad host filesystem exposure → eliminated by never mounting entire shared/ or unrelated paths  
-- Compose.yaml tampering → edits performed only by trusted seedclaw binary
+**Trivial auditing guarantee:** `grep -E '"network_policy|outbound|domains"' shared/audit/seedclaw.log` shows exactly what connectivity exists on the entire swarm.
 
-## Non-Goals (for now)
+## Auditing & Observability
 
-- Multi-user / authentication  
-- Persistent state beyond skill registry + audit log  
-- GUI (chat-only interface)  
-- Cloud / multi-tenant deployment  
+Every significant action is a JSON line:
+```json
+{"ts":"2026-03-11T13:00:00Z","actor":"seedclaw","action":"register_skill","skill":"web-search","network_policy":{...},"mounts":[...],"hash":"sha256:...","status":"success"}
+```
 
-## Roadmap Ideas
+`compose.yaml` is backed up before every edit. Registry is versioned.
 
-- Skill-declared mount requirements parsed automatically during generation  
-- Read-only vs read-write enforcement enforced by seedclaw  
-- Audit directory with hash chaining and immutability  
-- tmpfs/ephemeral mounts for even stricter isolation  
-- Multi-agent coordination / pub-sub patterns via message-hub  
-- Pluggable sandbox-provider (Docker → gVisor → Firecracker → WASM)  
+## Non-Goals (MVP)
 
-This is a living document — update as implementation progresses.
+- Multi-user / auth / RBAC  
+- Persistent state beyond registry + audit  
+- GUI (chat-only)  
+- Cloud / multi-tenant  
+
+## Roadmap (aligned with PRD)
+
+- **v2.1 (current)**: TCP control + explicit networking policy + audit of every network decision.  
+- **v3.0**: Per-skill networks + automatic egress proxy.  
+- **v4.0**: Pluggable sandbox provider (Docker → gVisor → Firecracker).  
+
+## References (all prompts must reference this document)
+
+- PRD.md v2.1  
+- All core `SKILL.md` files (to be updated to enforce `network_policy`)  
+- bootstrap-prompt.md (will reference v2.1)
+
+**This ARCHITECTURE.md v2.1 replaces all previous versions.**  
+Any generated code, skill, or architectural change that violates any requirement above is invalid and must be rejected during sandbox vetting.
+
+— Lead Architect (2026-03-11)
