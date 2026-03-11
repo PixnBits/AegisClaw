@@ -137,17 +137,22 @@ extra_hosts:
 Host (metal)
 ├── seedclaw binary
 │   ├── listens 127.0.0.1:7124 (loopback-only TCP)
-│   ├── manages seedclaw-net + compose.yaml (selective mounts + network_policy)
-│   └── immutable audit log
+│   ├── thin STDIN→TCP bridge (user REPL)
+│   ├── manages seedclaw-net + compose.yaml
+│   └── immutable audit log (writes only)
 │
 └── Docker network: seedclaw-net
-    ├── message-hub (only container with host.internal:7124 access)
-    ├── llm-caller (narrow outbound allow-list)
-    ├── ollama (narrow outbound allow-list)
-    ├── coder (sources:ro + builds:rw)
+    ├── message-hub (sole router, TCP client to host.internal:7124)
+    ├── user-agent (new core skill – agent loop, tool calling)
+    ├── llm-caller
+    ├── ollama
+    ├── coder
     └── generated skills…
           ↕ (ALL communication via message-hub only)
 ```
+
+**User interaction (new):**  
+`./seedclaw` starts daemon + interactive REPL on STDIN/STDOUT. Every line is forwarded as JSON to `user-agent` skill. No LLM code lives in the binary.
 
 ## Sandbox & Isolation Evolution Path
 

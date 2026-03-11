@@ -78,6 +78,13 @@ All communication flows exclusively through `message-hub`. No skill ever touches
   - sets `"outbound": "allow_list"` with empty `domains` array  
   - declares mounts not explicitly allowed by the skill's declared `required_mounts`
 
+#### 3.5 User Interface
+- `./seedclaw` (no flags) starts daemon + thin STDIN/STDOUT REPL.
+- Natural-language input is forwarded via TCP to sandboxed `user-agent` skill.
+- `user-agent` skill performs LLM tool-calling using live skill registry.
+- All output printed back to terminal.
+- Zero new host binaries, zero new ports.
+
 ---
 
 ### 4. Security & Isolation Requirements (MANIACAL FOCUS)
@@ -155,6 +162,7 @@ restart: unless-stopped
 2. Bootstrap prompt succeeds.
 3. New skill registers with declared `network_policy`.
 4. Audit log shows every network decision.
+5. `./seedclaw` shows interactive prompt; user types “write hello world in Go”; coder skill runs; result appears on STDOUT.
 
 **Security smoke tests (must pass):**
 - Non-hub skills cannot reach internet or each other.
