@@ -1,27 +1,61 @@
-# SeedClaw v2.1.1 – Canonical Bootstrap Prompt (2026-03-11)
+# SeedClaw v2.1.2 – Canonical Bootstrap Prompt (2026-03-11)
 
-**You are the Lead Security Architect and Principal Go Engineer for SeedClaw v2.1.1.**
+You are the Lead Security Architect and Principal Go Engineer for SeedClaw v2.1.2.
 
-Your sole task is to generate `seedclaw` binary (plus helpers) that implements every invariant from ARCHITECTURE.md v2.1.1, PRD.md v2.1.1 and all core SKILL.md files.
+Your sole task is to generate the seedclaw binary and the five core skills exactly as described in:
 
-**New requirement (v2.1.1):** Add thin STDIN/STDOUT REPL bridge. On startup:
-- Start TCP listener on 127.0.0.1:7124.
-- Start goroutine reading os.Stdin line-by-line.
-- Wrap every non-empty line as JSON message `{"from":"user","to":"user-agent","content":{"action":"user_request","prompt":line}}` and send over the bidirectional TCP connection to message-hub.
-- Print any message received with `"from":"user-agent"` to os.Stdout.
+- ARCHITECTURE.md v2.1
+- PRD.md v2.1
+- src/seedclaw/SKILL.md
+- src/skills/core/*/SKILL.md  (coder, llm-caller, message-hub, ollama, user-agent)
 
-Also generate the new core skill `user-agent` (Go + Dockerfile + SKILL.md) during bootstrap that:
-- Maintains live skill registry.
-- Calls llm-caller with system prompt containing all skills as tools.
-- Performs ReAct/tool-calling loop.
-- Routes every skill call via message-hub.
-- Uses exact network_policy: {"outbound":"none", "network_mode":"seedclaw-net"}.
-- Enforce the exact paranoid safety system prompt and 2-phase ReAct loop from src/skills/core/user-agent/SKILL.md v2.1.2
+These documents are the **single source of truth**. Deviate = security violation.
 
-**Output format – ONLY fenced code blocks:**
-- go.mod
-- seedclaw.go (with comments referencing every invariant + STDIN bridge)
-- user-agent/ (full skill directory)
-- Any helpers
+**Critical invariants – enforce in code + comments:**
 
-Enforce ALL previous invariants + this new REPL bridge. Generate now.
+1. TCP control plane = 127.0.0.1:7124 only (or SEEDCLAW_CONTROL_PORT), JSON-over-TCP, no unix socket, no websocket, no HTTP.
+2. Only message-hub may connect (validate source IP / host.internal alias).
+3. Every container MUST use network: seedclaw-net. **Reject forever** network_mode: host / host-network / none.
+4. Apply this exact default runtime profile to EVERY service in compose.yaml:
+
+```yaml
+network: seedclaw-net
+read_only: true
+tmpfs: [ /tmp ]
+cap_drop: [ALL]
+security_opt: [no-new-privileges:true]
+mem_limit: 512m
+cpu_shares: 512
+ulimits:
+  nproc: 64
+  nofile: 64
+restart: unless-stopped
+```
+
+5. Audit writes → **exclusively** by seedclaw binary to shared/audit/seedclaw.log (append-only JSONL + previous_hash SHA-256 chaining). message-hub sends events via TCP — **never** mounts audit dir.
+6. Reject any registration missing network_policy, using wrong network_mode, or allow_list without domains.
+7. Atomic compose.yaml edits (backup before write).
+8. Panic + audit entry + clear error on any invariant violation.
+
+**New v2.1.1 / v2.1.2 requirements:**
+
+- Thin STDIN/STDOUT bridge: read lines from os.Stdin → send JSON to user-agent via message-hub → print replies from user-agent to os.Stdout.
+- Generate user-agent skill that enforces the **exact** 2-phase paranoid safety loop described in src/skills/core/user-agent/SKILL.md v2.1.2.
+
+**Input files you can reference:**
+
+- src/seedclaw/SKILL.md
+- src/skills/core/{coder,llm-caller,message-hub,ollama,user-agent}/SKILL.md
+
+**Output files – exact paths:**
+
+- src/seedclaw/
+  - go.mod
+  - seedclaw.go           (extensive invariant comments!)
+- src/skills/core/{coder,llm-caller,message-hub,ollama,user-agent}/
+  - Dockerfile
+  - {skill-name}.go
+
+Generate **only** the requested files.
+
+Begin generation now.
