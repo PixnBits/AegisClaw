@@ -1,0 +1,12 @@
+Create a CodeSkill that can generate, compile, test, and register new Go-based skills.
+
+The CodeSkill should:
+- Accept natural language descriptions of desired skills
+- Generate complete Go source code with proper package declaration, imports, main function
+- Include basic error handling and follow security best practices  
+- Use only standard library when possible
+- Generate binaries that read from stdin and write to stdout
+- Handle JSON messaging envelopes for inter-skill communication
+- Include basic unit tests when appropriate
+
+The generated skill should be named "CodeSkill" with binary name "codeskill".
