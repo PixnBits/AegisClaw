@@ -158,7 +158,7 @@ Code changes must come from generated/registered skills — never direct commits
 
 For working with a web-based LLM for document editing (not code):
 ```shell
-$ echo "https://github.com/PixnBits/SeedClaw" > REPO_SUMMARY.md && echo "=== FULL FILE LIST ===" >> REPO_SUMMARY.md && git ls-files >> REPO_SUMMARY.md && echo -e "\n\n=== KEY FILES ===\n" >> REPO_SUMMARY.md && for f in $(git ls-files '*.md'); do echo -e "\n\n==== $f ====\n" >> REPO_SUMMARY.md; cat "$f" >> REPO_SUMMARY.md; done
+$ echo "https://github.com/PixnBits/SeedClaw" > REPO_SUMMARY.md && echo -e "\n\n=== FULL FILE LIST ===" >> REPO_SUMMARY.md && git ls-files >> REPO_SUMMARY.md && echo -e "\n\n=== KEY FILES ===\n" >> REPO_SUMMARY.md && for f in $(git ls-files '*.md'); do echo -e "\n\n==== $f ====\n" >> REPO_SUMMARY.md; cat "$f" >> REPO_SUMMARY.md; done
 ```
 
 ## License
