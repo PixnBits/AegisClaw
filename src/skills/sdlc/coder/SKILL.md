@@ -1,5 +1,10 @@
 # Coder Skill v2.1.3
 
+**Status in v2.2:** Reference implementation only.  
+Not started automatically.  
+First on-demand skill most users generate after bootstrap.  
+Must still enforce full v2.1+ network_policy rules when producing new skills.
+
 Generates new skills compliant with SeedClaw ARCHITECTURE.md v2.1 and PRD.md v2.1. Uses nemotron-3-nano:30b-q4_K_M (NVIDIA) or equivalent strong coding / agentic model.
 
 ## Capabilities
