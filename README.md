@@ -60,8 +60,10 @@ The coding LLM should generate the source code needed to start.
 ### Step 3 – Build & run
 
 ```bash
+cd ./src/seedclaw/
 go mod tidy
-go build -o seedclaw ./seedclaw.go
+go build -o ../../seedclaw seedclaw.go
+cd ../../
 chmod +x ./seedclaw
 ```
 
