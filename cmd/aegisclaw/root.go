@@ -134,6 +134,7 @@ func init() {
 
 	auditCmd.AddCommand(auditVerifyCmd)
 
+	proposeCmd.AddCommand(proposeSkillCmd)
 	proposeCmd.AddCommand(proposeSubmitCmd)
 	proposeCmd.AddCommand(proposeListCmd)
 	proposeCmd.AddCommand(proposeShowCmd)
