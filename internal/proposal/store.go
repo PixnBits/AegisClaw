@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	proposalFile = "proposal.json"
+	proposalFile  = "proposal.json"
 	defaultBranch = "main"
 )
 

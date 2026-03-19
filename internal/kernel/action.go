@@ -12,14 +12,14 @@ import (
 type ActionType string
 
 const (
-	ActionKernelStart   ActionType = "kernel.start"
-	ActionKernelStop    ActionType = "kernel.stop"
-	ActionSandboxCreate ActionType = "sandbox.create"
-	ActionSandboxStart  ActionType = "sandbox.start"
-	ActionSandboxStop   ActionType = "sandbox.stop"
-	ActionSandboxDelete ActionType = "sandbox.delete"
-	ActionSkillRegister ActionType = "skill.register"
-	ActionSkillActivate ActionType = "skill.activate"
+	ActionKernelStart     ActionType = "kernel.start"
+	ActionKernelStop      ActionType = "kernel.stop"
+	ActionSandboxCreate   ActionType = "sandbox.create"
+	ActionSandboxStart    ActionType = "sandbox.start"
+	ActionSandboxStop     ActionType = "sandbox.stop"
+	ActionSandboxDelete   ActionType = "sandbox.delete"
+	ActionSkillRegister   ActionType = "skill.register"
+	ActionSkillActivate   ActionType = "skill.activate"
 	ActionMessageRoute    ActionType = "message.route"
 	ActionControlPlane    ActionType = "controlplane.message"
 	ActionProposalCreate  ActionType = "proposal.create"

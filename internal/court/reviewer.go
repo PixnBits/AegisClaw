@@ -155,9 +155,9 @@ func (fl *FirecrackerLauncher) StopReviewer(ctx context.Context, sandboxID strin
 
 // Reviewer manages the execution of a single persona review with cross-verification.
 type Reviewer struct {
-	launcher      SandboxLauncher
-	minModels     int
-	logger        *zap.Logger
+	launcher  SandboxLauncher
+	minModels int
+	logger    *zap.Logger
 }
 
 type modelResult struct {

@@ -39,38 +39,38 @@ func DefaultEngineConfig() EngineConfig {
 type SessionState string
 
 const (
-	SessionPending    SessionState = "pending"
-	SessionReviewing  SessionState = "reviewing"
-	SessionConsensus  SessionState = "consensus"
-	SessionApproved   SessionState = "approved"
-	SessionRejected   SessionState = "rejected"
-	SessionEscalated  SessionState = "escalated"
+	SessionPending   SessionState = "pending"
+	SessionReviewing SessionState = "reviewing"
+	SessionConsensus SessionState = "consensus"
+	SessionApproved  SessionState = "approved"
+	SessionRejected  SessionState = "rejected"
+	SessionEscalated SessionState = "escalated"
 )
 
 // Session tracks one full court review of a proposal.
 type Session struct {
-	ID            string            `json:"id"`
-	ProposalID    string            `json:"proposal_id"`
-	State         SessionState      `json:"state"`
-	Round         int               `json:"round"`
-	Personas      []string          `json:"personas"`
-	Results       []RoundResult     `json:"results"`
-	StartedAt     time.Time         `json:"started_at"`
-	EndedAt       *time.Time        `json:"ended_at,omitempty"`
-	Verdict       string            `json:"verdict,omitempty"`
-	RiskScore     float64           `json:"risk_score"`
+	ID            string             `json:"id"`
+	ProposalID    string             `json:"proposal_id"`
+	State         SessionState       `json:"state"`
+	Round         int                `json:"round"`
+	Personas      []string           `json:"personas"`
+	Results       []RoundResult      `json:"results"`
+	StartedAt     time.Time          `json:"started_at"`
+	EndedAt       *time.Time         `json:"ended_at,omitempty"`
+	Verdict       string             `json:"verdict,omitempty"`
+	RiskScore     float64            `json:"risk_score"`
 	PriorFeedback *IterationFeedback `json:"prior_feedback,omitempty"`
 }
 
 // RoundResult captures all reviews for a single round.
 type RoundResult struct {
-	Round     int                      `json:"round"`
-	Reviews   []proposal.Review        `json:"reviews"`
-	Heatmap   map[string]float64       `json:"heatmap"`
-	AvgRisk   float64                  `json:"avg_risk"`
-	Consensus bool                     `json:"consensus"`
-	Feedback  *IterationFeedback       `json:"feedback,omitempty"`
-	Timestamp time.Time                `json:"timestamp"`
+	Round     int                `json:"round"`
+	Reviews   []proposal.Review  `json:"reviews"`
+	Heatmap   map[string]float64 `json:"heatmap"`
+	AvgRisk   float64            `json:"avg_risk"`
+	Consensus bool               `json:"consensus"`
+	Feedback  *IterationFeedback `json:"feedback,omitempty"`
+	Timestamp time.Time          `json:"timestamp"`
 }
 
 // Engine orchestrates the court review process.

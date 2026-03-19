@@ -57,53 +57,7 @@ For each persona: launch Firecracker reviewer sandbox, inject proposal + persona
 Multi-round review until consensus or human vote required (Enterprise mode). Store reviews in proposal. Output: consensus logic + commit.
 
 **Task 2.6** – Court CLI & human override  
-`claw propose <description>`, `claw court review <id>`, `claw court vote <id> approve`. TUI summary table. Output: CLI + commit.
-
-### Epic 3: Skill Builder Pipeline + Git Integration (v0.3)
-
-**Task 3.1** – Builder sandbox + code-gen loop  
-Dedicated builder microVM that receives refined spec and generates/iterates code. Output: builder runtime + commit.  
-**Task 3.2** – Git workflow (commit + branch)  
-Use go-git to create PR-style branch, commit changes, generate diff. Output: git pipeline + commit.  
-**Task 3.3** – Code review iteration in Court  
-Feed diffs to reviewers (Coder + CISO) for approval loop. Output: review integration + commit.  
-**Task 3.4** – Build & test artifact  
-Inside builder sandbox: `go build`, static analysis, signature. Output: build step + commit.
-
-### Epic 4: Secret Proxy & Network Policy Enforcement (v0.4)
-
-**Task 4.1** – Secret Vault (age/SOPS)  
-Kernel-managed encrypted store. Output: vault + commit.  
-**Task 4.2** – vsock-based secret proxy  
-Inject credentials at runtime into skill VM via guest-agent (never in prompt or FS). Output: proxy + commit.  
-**Task 4.3** – Network policy enforcement  
-Tap device + kernel proxy; enforce skill metadata allow-list (default deny). Output: enforcement + commit.
-
-### Epic 5: Human Interfaces (CLI + TUI) & Proposal Wizard (v0.5)
-
-**Task 5.1** – Interactive proposal wizard  
-Step-by-step refinement questions + risk sliders. Output: wizard + commit.  
-**Task 5.2** – Bubbletea TUI dashboard  
-Live Court progress, skill map, audit grep, rollback. Output: TUI + commit.
-
-### Epic 6: Ollama Ensemble + Model Manager (v0.6)
-
-**Task 6.1** – Ollama router & ensemble  
-Local Ollama only; route by role (fast reviewer = Llama-3.2-3B, reasoning = Mistral-Nemo). Hash verification on model download. Output: router + commit.  
-**Task 6.2** – Cross-model verification  
-Run critical Court steps on 2+ models. Output: verification layer + commit.
-
-### Epic 7: Self-Improvement Loop (v1.0)
-
-**Task 7.1** – Self-mutation handler  
-Treat AegisClaw repo itself as a skill; apply approved Court patches via git pull + rebuild. Output: self-apply logic + commit.  
-**Task 7.2** – Reversible snapshot + rollback for kernel  
-Full state tar + git revert on failure. Output: snapshot system + commit.  
-**Task 7.3** – End-to-end self-improvement test  
-Propose a small kernel patch, run full Court, apply, verify. Output: test + commit.
-
-**Next Steps**  
-Feed Task 1.1 to your Ollama coder model right now — it will produce the first working `claw` binary with Firecracker support. Once Epic 1 is complete, the system can run its own Court on the remaining tasks.  
+`claw propose <description>`, `claw court review <id>`, `claw court vote <id> approve`. TUI summary table. Output: CLI + commit.  
 
 ### Epic 3: Skill Builder Pipeline + Git Integration (v0.3)
 
