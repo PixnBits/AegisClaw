@@ -7,6 +7,4 @@ Forked from SeedClaw and rebuilt with enterprise security posture from day one.
 
 **Current phase**: Epic 1 – Core Kernel & Firecracker Sandbox Orchestrator
 
-Legacy prompt files and old AegisCourt design docs are archived in `docs/legacy/`.
-
 See `adrs/` for architecture decisions.
