@@ -143,6 +143,7 @@ func init() {
 	courtCmd.AddCommand(courtReviewCmd)
 	courtCmd.AddCommand(courtVoteCmd)
 	courtCmd.AddCommand(courtSessionsCmd)
+	courtCmd.AddCommand(courtDashboardCmd)
 
 	secretCmd.AddCommand(secretAddCmd)
 	secretCmd.AddCommand(secretListCmd)
