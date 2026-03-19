@@ -34,6 +34,9 @@ type Config struct {
 	Proposal struct {
 		StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
 	} `yaml:"proposal" mapstructure:"proposal"`
+	Court struct {
+		PersonaDir string `yaml:"persona_dir" mapstructure:"persona_dir"`
+	} `yaml:"court" mapstructure:"court"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -83,6 +86,11 @@ func DefaultConfig() Config {
 		}{
 			StoreDir: filepath.Join(home, ".local", "share", "aegisclaw", "proposals"),
 		},
+		Court: struct {
+			PersonaDir string `yaml:"persona_dir" mapstructure:"persona_dir"`
+		}{
+			PersonaDir: filepath.Join(home, ".config", "aegisclaw", "personas"),
+		},
 	}
 }
 
@@ -118,6 +126,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("sandbox.kernel_image", defaults.Sandbox.KernelImage)
 	viper.SetDefault("sandbox.registry_path", defaults.Sandbox.RegistryPath)
 	viper.SetDefault("proposal.store_dir", defaults.Proposal.StoreDir)
+	viper.SetDefault("court.persona_dir", defaults.Court.PersonaDir)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -173,6 +182,7 @@ func validateConfig(config *Config) error {
 		"sandbox.kernel_image":  config.Sandbox.KernelImage,
 		"sandbox.registry_path": config.Sandbox.RegistryPath,
 		"proposal.store_dir":    config.Proposal.StoreDir,
+		"court.persona_dir":     config.Court.PersonaDir,
 	}
 
 	for name, path := range paths {
