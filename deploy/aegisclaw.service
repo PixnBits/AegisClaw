@@ -1,0 +1,31 @@
+[Unit]
+Description=AegisClaw - Firecracker-isolated agent platform
+Documentation=https://github.com/PixnBits/AegisClaw
+After=network.target
+Requires=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/aegisclaw start
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/home/%i/.local/share/aegisclaw /home/%i/.config/aegisclaw
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegisclaw
+
+[Install]
+WantedBy=multi-user.target

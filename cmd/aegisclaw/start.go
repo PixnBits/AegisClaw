@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
@@ -44,5 +48,32 @@ func runStart(cmd *cobra.Command, args []string) error {
 	fmt.Println("AegisClaw kernel started.")
 	fmt.Printf("  Message-Hub: %s\n", hub.State())
 	fmt.Printf("  IPC Routes: %v\n", hub.Router().RegisteredRoutes())
+
+	// Wait for shutdown signal
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Println("Press Ctrl+C to stop.")
+	<-ctx.Done()
+
+	fmt.Println("\nShutting down...")
+	env.Logger.Info("shutdown signal received, cleaning up")
+
+	// Clean up all running sandboxes
+	env.Runtime.Cleanup(context.Background())
+
+	// Stop message-hub
+	hub.Stop()
+
+	// Log kernel stop action
+	stopAction := kernel.NewAction(kernel.ActionKernelStop, "kernel", nil)
+	if _, err := env.Kernel.SignAndLog(stopAction); err != nil {
+		env.Logger.Error("failed to log kernel stop", zap.Error(err))
+	}
+
+	// Shutdown kernel (closes audit log, control plane)
+	env.Kernel.Shutdown()
+
+	fmt.Println("AegisClaw stopped.")
 	return nil
 }
