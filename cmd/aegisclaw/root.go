@@ -118,6 +118,8 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(auditCmd)
+	rootCmd.AddCommand(proposeCmd)
+	rootCmd.AddCommand(courtCmd)
 
 	sandboxCmd.AddCommand(lsCmd)
 	sandboxCmd.AddCommand(sandboxStartCmd)
@@ -129,4 +131,13 @@ func init() {
 	skillCmd.AddCommand(skillListCmd)
 
 	auditCmd.AddCommand(auditVerifyCmd)
+
+	proposeCmd.AddCommand(proposeSubmitCmd)
+	proposeCmd.AddCommand(proposeListCmd)
+	proposeCmd.AddCommand(proposeShowCmd)
+	proposeCmd.Flags().StringVar(&proposeCategory, "category", "new_skill", "Proposal category (new_skill, edit_skill, delete_skill, kernel_patch, config_change)")
+
+	courtCmd.AddCommand(courtReviewCmd)
+	courtCmd.AddCommand(courtVoteCmd)
+	courtCmd.AddCommand(courtSessionsCmd)
 }
