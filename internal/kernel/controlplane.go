@@ -143,6 +143,38 @@ func (cp *ControlPlane) ActiveListeners() int {
 	return len(cp.listeners)
 }
 
+// Send sends a control message to a VM via its vsock UDS and waits for a response.
+func (cp *ControlPlane) Send(vmID string, msg ControlMessage) (*ControlResponse, error) {
+	cp.mu.RLock()
+	listener, exists := cp.listeners[vmID]
+	cp.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("no listener for VM %s", vmID)
+	}
+
+	addr := listener.Addr()
+	conn, err := net.Dial(addr.Network(), addr.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to VM %s: %w", vmID, err)
+	}
+	defer conn.Close()
+
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(conn)
+
+	if err := encoder.Encode(msg); err != nil {
+		return nil, fmt.Errorf("failed to send message to VM %s: %w", vmID, err)
+	}
+
+	var resp ControlResponse
+	if err := decoder.Decode(&resp); err != nil {
+		return nil, fmt.Errorf("failed to read response from VM %s: %w", vmID, err)
+	}
+
+	return &resp, nil
+}
+
 // Shutdown closes all listeners and cancels the control plane context.
 func (cp *ControlPlane) Shutdown() {
 	cp.cancel()
