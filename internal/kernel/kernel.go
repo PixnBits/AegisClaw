@@ -3,6 +3,7 @@ package kernel
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,109 +12,207 @@ import (
 	"go.uber.org/zap"
 )
 
-// Kernel is the singleton core of AegisClaw, managing signing and global state.
-// Security: Singleton pattern prevents multiple instances that could compromise isolation.
-// Ed25519 keys are stored encrypted and loaded only in memory.
+// Kernel is the immutable core of AegisClaw.
+// All operations are routed through the kernel for signing and audit logging.
+// Security: Singleton pattern ensures a single point of authority per process.
+// Ed25519 keys provide cryptographic integrity for every action.
 type Kernel struct {
-	privateKey ed25519.PrivateKey
-	publicKey  ed25519.PublicKey
-	logger     *zap.Logger
+	privateKey   ed25519.PrivateKey
+	publicKey    ed25519.PublicKey
+	logger       *zap.Logger
+	controlPlane *ControlPlane
+	auditFile    *os.File
+	auditMu      sync.Mutex
 }
 
 var (
 	instance *Kernel
+	initErr  error
 	once     sync.Once
 )
 
-// GetInstance returns the singleton Kernel instance.
-// Security: Thread-safe initialization ensures only one kernel exists.
-// Keys are generated on first run and stored securely.
-func GetInstance(logger *zap.Logger) (*Kernel, error) {
-	var err error
+// GetInstance returns the singleton Kernel instance, initializing on first call.
+// The auditDir parameter specifies where the append-only audit JSONL is written.
+// Security: Thread-safe initialization via sync.Once prevents race conditions.
+func GetInstance(logger *zap.Logger, auditDir string) (*Kernel, error) {
 	once.Do(func() {
-		instance, err = newKernel(logger)
+		instance, initErr = newKernel(logger, auditDir)
 	})
-	if err != nil {
-		return nil, err
+	if initErr != nil {
+		return nil, initErr
 	}
 	return instance, nil
 }
 
-// newKernel creates a new Kernel instance with Ed25519 keypair.
-// Security: Keys stored in ~/.config/aegisclaw/kernel.key with 0600 permissions.
-// Key generation uses crypto/rand for entropy.
-func newKernel(logger *zap.Logger) (*Kernel, error) {
-	configDir, err := getConfigDir()
+// ResetInstance tears down the singleton for testing purposes only.
+func ResetInstance() {
+	if instance != nil {
+		instance.Shutdown()
+	}
+	instance = nil
+	initErr = nil
+	once = sync.Once{}
+}
+
+func newKernel(logger *zap.Logger, auditDir string) (*Kernel, error) {
+	keyDir, err := defaultKeyDir()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get config directory: %w", err)
+		return nil, fmt.Errorf("failed to determine key directory: %w", err)
 	}
 
-	keyPath := filepath.Join(configDir, "kernel.key")
-
-	var privateKey ed25519.PrivateKey
-	var publicKey ed25519.PublicKey
-	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-		// Generate new keypair
-		logger.Info("Kernel key not found, generating new Ed25519 keypair", zap.String("path", keyPath))
-		publicKey, privateKey, err = ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate Ed25519 key: %w", err)
-		}
-
-		// Store private key securely
-		// Security: File permissions 0600, contains only the private key bytes
-		if err := os.WriteFile(keyPath, privateKey, 0600); err != nil {
-			return nil, fmt.Errorf("failed to write kernel key: %w", err)
-		}
-		logger.Info("Kernel key generated and stored securely")
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to stat kernel key file: %w", err)
-	} else {
-		// Load existing key
-		keyData, err := os.ReadFile(keyPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read kernel key: %w", err)
-		}
-		if len(keyData) != ed25519.PrivateKeySize {
-			return nil, fmt.Errorf("invalid kernel key size: expected %d, got %d", ed25519.PrivateKeySize, len(keyData))
-		}
-		privateKey = ed25519.PrivateKey(keyData)
-		publicKey = privateKey.Public().(ed25519.PublicKey)
-		logger.Info("Kernel key loaded from storage")
+	if err := os.MkdirAll(keyDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create key directory %s: %w", keyDir, err)
 	}
 
-	return &Kernel{
+	privateKey, publicKey, err := loadOrGenerateKey(logger, keyDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(auditDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create audit directory %s: %w", auditDir, err)
+	}
+
+	auditPath := filepath.Join(auditDir, "kernel.jsonl")
+	auditFile, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open audit log %s: %w", auditPath, err)
+	}
+
+	k := &Kernel{
 		privateKey: privateKey,
 		publicKey:  publicKey,
 		logger:     logger,
-	}, nil
+		auditFile:  auditFile,
+	}
+
+	k.controlPlane = NewControlPlane(k, logger)
+
+	logger.Info("kernel initialized",
+		zap.String("public_key", fmt.Sprintf("%x", publicKey)),
+		zap.String("audit_log", auditPath),
+	)
+
+	return k, nil
 }
 
-// Sign signs the provided data with the kernel's Ed25519 private key.
-// Security: All kernel operations should be signed for tamper-evident logging.
-// Returns the signature as raw bytes.
+// loadOrGenerateKey loads an existing Ed25519 key or generates a new one.
+// Security: Key stored with 0600 permissions. Generated using crypto/rand.
+func loadOrGenerateKey(logger *zap.Logger, keyDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
+	keyPath := filepath.Join(keyDir, "kernel.key")
+
+	keyData, err := os.ReadFile(keyPath)
+	if os.IsNotExist(err) {
+		logger.Info("generating new Ed25519 kernel keypair", zap.String("path", keyPath))
+		pub, priv, genErr := ed25519.GenerateKey(rand.Reader)
+		if genErr != nil {
+			return nil, nil, fmt.Errorf("failed to generate Ed25519 key: %w", genErr)
+		}
+		if writeErr := os.WriteFile(keyPath, priv, 0600); writeErr != nil {
+			return nil, nil, fmt.Errorf("failed to write kernel key: %w", writeErr)
+		}
+		logger.Info("kernel keypair generated and stored")
+		return priv, pub, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read kernel key: %w", err)
+	}
+	if len(keyData) != ed25519.PrivateKeySize {
+		return nil, nil, fmt.Errorf("invalid kernel key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(keyData))
+	}
+
+	priv := ed25519.PrivateKey(keyData)
+	pub := priv.Public().(ed25519.PublicKey)
+	logger.Info("kernel keypair loaded from storage")
+	return priv, pub, nil
+}
+
+// SignAndLog signs an action with the kernel's Ed25519 key and appends it
+// to the append-only audit log. This is the mandatory entry point for all
+// kernel operations — nothing proceeds without a signed audit record.
+// Security: Every action is cryptographically signed and fsynced to disk
+// before the method returns, ensuring a complete tamper-evident audit trail.
+func (k *Kernel) SignAndLog(action Action) (*SignedAction, error) {
+	if err := action.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid action: %w", err)
+	}
+
+	data, err := action.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal action %s: %w", action.ID, err)
+	}
+
+	signature := ed25519.Sign(k.privateKey, data)
+
+	signed := &SignedAction{
+		Action:    action,
+		Signature: signature,
+	}
+
+	entry, err := json.Marshal(signed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal signed action %s: %w", action.ID, err)
+	}
+	entry = append(entry, '\n')
+
+	k.auditMu.Lock()
+	_, writeErr := k.auditFile.Write(entry)
+	syncErr := k.auditFile.Sync()
+	k.auditMu.Unlock()
+
+	if writeErr != nil {
+		return nil, fmt.Errorf("failed to write audit entry %s: %w", action.ID, writeErr)
+	}
+	if syncErr != nil {
+		return nil, fmt.Errorf("failed to sync audit log for %s: %w", action.ID, syncErr)
+	}
+
+	k.logger.Info("action signed and logged",
+		zap.String("action_id", action.ID),
+		zap.String("type", string(action.Type)),
+		zap.String("source", action.Source),
+	)
+
+	return signed, nil
+}
+
+// Sign signs arbitrary data with the kernel's Ed25519 private key.
 func (k *Kernel) Sign(data []byte) []byte {
-	// Security: Ed25519 signatures are deterministic and secure
 	return ed25519.Sign(k.privateKey, data)
 }
 
-// Verify verifies a signature against data using the kernel's public key.
-// Security: Used to verify integrity of signed data.
+// Verify checks an Ed25519 signature against data using the kernel's public key.
 func (k *Kernel) Verify(data []byte, signature []byte) bool {
 	return ed25519.Verify(k.publicKey, data, signature)
 }
 
-// PublicKey returns the kernel's public key for external verification.
-// Security: Public key can be shared, private key never leaves the kernel.
+// PublicKey returns the kernel's Ed25519 public key.
 func (k *Kernel) PublicKey() ed25519.PublicKey {
 	return k.publicKey
 }
 
-// getConfigDir returns the path to ~/.config/aegisclaw
-func getConfigDir() (string, error) {
+// ControlPlane returns the kernel's control plane for VM communication.
+func (k *Kernel) ControlPlane() *ControlPlane {
+	return k.controlPlane
+}
+
+// Shutdown gracefully shuts down the kernel, closing all resources.
+func (k *Kernel) Shutdown() {
+	if k.controlPlane != nil {
+		k.controlPlane.Shutdown()
+	}
+	if k.auditFile != nil {
+		k.auditMu.Lock()
+		k.auditFile.Close()
+		k.auditMu.Unlock()
+	}
+	k.logger.Info("kernel shut down")
+}
+
+func defaultKeyDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}
 	return filepath.Join(home, ".config", "aegisclaw"), nil
 }

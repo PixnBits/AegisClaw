@@ -3,6 +3,7 @@ module github.com/PixnBits/AegisClaw
 go 1.23.0
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.21.0
 	go.uber.org/zap v1.27.1
