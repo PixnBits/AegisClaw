@@ -42,6 +42,7 @@ type SkillNetworkPolicy struct {
 }
 
 var skillNameRegex = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,62}$`)
+var skillSecretRefRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]{0,127}$`)
 
 // Validate checks the SkillSpec has all required fields.
 func (ss *SkillSpec) Validate() error {
@@ -79,6 +80,11 @@ func (ss *SkillSpec) Validate() error {
 	}
 	if !ss.NetworkPolicy.DefaultDeny {
 		return fmt.Errorf("network policy default_deny must be true")
+	}
+	for i, ref := range ss.SecretsRefs {
+		if !skillSecretRefRegex.MatchString(ref) {
+			return fmt.Errorf("secrets_refs[%d] %q is not a valid secret name", i, ref)
+		}
 	}
 	return nil
 }

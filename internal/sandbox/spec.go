@@ -39,6 +39,7 @@ type SandboxSpec struct {
 	Name          string        `json:"name"`
 	Resources     Resources     `json:"resources"`
 	NetworkPolicy NetworkPolicy `json:"network_policy"`
+	SecretsRefs   []string      `json:"secrets_refs,omitempty"`
 	VsockCID      uint32        `json:"vsock_cid"`
 	RootfsPath    string        `json:"rootfs_path"`
 	KernelPath    string        `json:"kernel_path,omitempty"`
@@ -60,6 +61,7 @@ type SandboxInfo struct {
 }
 
 var nameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
+var secretRefRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]{0,127}$`)
 
 // Validate checks that the SandboxSpec has all required fields with safe values.
 func (s *SandboxSpec) Validate() error {
@@ -95,6 +97,11 @@ func (s *SandboxSpec) Validate() error {
 	}
 	if err := validateNetworkPolicy(&s.NetworkPolicy); err != nil {
 		return fmt.Errorf("invalid network policy: %w", err)
+	}
+	for i, ref := range s.SecretsRefs {
+		if !secretRefRegex.MatchString(ref) {
+			return fmt.Errorf("secrets_refs[%d] %q must match %s", i, ref, secretRefRegex.String())
+		}
 	}
 	return nil
 }

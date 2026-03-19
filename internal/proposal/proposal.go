@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -133,26 +134,38 @@ type StatusChange struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// ProposalNetworkPolicy defines network access rules for a proposed skill.
+type ProposalNetworkPolicy struct {
+	DefaultDeny      bool     `json:"default_deny"`
+	AllowedHosts     []string `json:"allowed_hosts,omitempty"`
+	AllowedPorts     []uint16 `json:"allowed_ports,omitempty"`
+	AllowedProtocols []string `json:"allowed_protocols,omitempty"`
+}
+
+var proposalSecretRefRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]{0,127}$`)
+
 // Proposal represents a governance proposal that must pass through the Court
 // before any change is applied to the AegisClaw system.
 type Proposal struct {
-	ID          string          `json:"id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Category    Category        `json:"category"`
-	Status      Status          `json:"status"`
-	Risk        RiskLevel       `json:"risk"`
-	Author      string          `json:"author"`
-	TargetSkill string          `json:"target_skill,omitempty"`
-	Spec        json.RawMessage `json:"spec,omitempty"`
-	Reviews     []Review        `json:"reviews,omitempty"`
-	History     []StatusChange  `json:"history"`
-	Round       int             `json:"round"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	MerkleHash  string          `json:"merkle_hash"`
-	PrevHash    string          `json:"prev_hash"`
-	Version     int             `json:"version"`
+	ID            string                 `json:"id"`
+	Title         string                 `json:"title"`
+	Description   string                 `json:"description"`
+	Category      Category               `json:"category"`
+	Status        Status                 `json:"status"`
+	Risk          RiskLevel              `json:"risk"`
+	Author        string                 `json:"author"`
+	TargetSkill   string                 `json:"target_skill,omitempty"`
+	Spec          json.RawMessage        `json:"spec,omitempty"`
+	SecretsRefs   []string               `json:"secrets_refs,omitempty"`
+	NetworkPolicy *ProposalNetworkPolicy `json:"network_policy,omitempty"`
+	Reviews       []Review               `json:"reviews,omitempty"`
+	History       []StatusChange         `json:"history"`
+	Round         int                    `json:"round"`
+	CreatedAt     time.Time              `json:"created_at"`
+	UpdatedAt     time.Time              `json:"updated_at"`
+	MerkleHash    string                 `json:"merkle_hash"`
+	PrevHash      string                 `json:"prev_hash"`
+	Version       int                    `json:"version"`
 }
 
 // NewProposal creates a new proposal in draft status.
@@ -234,6 +247,23 @@ func (p *Proposal) Validate() error {
 	}
 	if len(p.History) == 0 {
 		return fmt.Errorf("proposal must have at least one history entry")
+	}
+	for i, ref := range p.SecretsRefs {
+		if !proposalSecretRefRegex.MatchString(ref) {
+			return fmt.Errorf("secrets_refs[%d] %q is not a valid secret name", i, ref)
+		}
+	}
+	if p.NetworkPolicy != nil {
+		if !p.NetworkPolicy.DefaultDeny {
+			return fmt.Errorf("network_policy.default_deny must be true")
+		}
+		for _, proto := range p.NetworkPolicy.AllowedProtocols {
+			switch proto {
+			case "tcp", "udp", "icmp":
+			default:
+				return fmt.Errorf("unsupported network protocol %q", proto)
+			}
+		}
 	}
 	return nil
 }
