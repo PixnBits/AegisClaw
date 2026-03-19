@@ -20,22 +20,34 @@ const (
 	ActionSandboxDelete ActionType = "sandbox.delete"
 	ActionSkillRegister ActionType = "skill.register"
 	ActionSkillActivate ActionType = "skill.activate"
-	ActionMessageRoute  ActionType = "message.route"
-	ActionControlPlane  ActionType = "controlplane.message"
+	ActionMessageRoute    ActionType = "message.route"
+	ActionControlPlane    ActionType = "controlplane.message"
+	ActionProposalCreate  ActionType = "proposal.create"
+	ActionProposalSubmit  ActionType = "proposal.submit"
+	ActionProposalReview  ActionType = "proposal.review"
+	ActionProposalApprove ActionType = "proposal.approve"
+	ActionProposalReject  ActionType = "proposal.reject"
+	ActionProposalVote    ActionType = "proposal.vote"
 )
 
 // validActionTypes enumerates all recognized action types for validation.
 var validActionTypes = map[ActionType]bool{
-	ActionKernelStart:   true,
-	ActionKernelStop:    true,
-	ActionSandboxCreate: true,
-	ActionSandboxStart:  true,
-	ActionSandboxStop:   true,
-	ActionSandboxDelete: true,
-	ActionSkillRegister: true,
-	ActionSkillActivate: true,
-	ActionMessageRoute:  true,
-	ActionControlPlane:  true,
+	ActionKernelStart:     true,
+	ActionKernelStop:      true,
+	ActionSandboxCreate:   true,
+	ActionSandboxStart:    true,
+	ActionSandboxStop:     true,
+	ActionSandboxDelete:   true,
+	ActionSkillRegister:   true,
+	ActionSkillActivate:   true,
+	ActionMessageRoute:    true,
+	ActionControlPlane:    true,
+	ActionProposalCreate:  true,
+	ActionProposalSubmit:  true,
+	ActionProposalReview:  true,
+	ActionProposalApprove: true,
+	ActionProposalReject:  true,
+	ActionProposalVote:    true,
 }
 
 // Action represents any operation that passes through the kernel.

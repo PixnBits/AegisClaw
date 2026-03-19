@@ -6,6 +6,7 @@ import (
 
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"go.uber.org/zap"
 )
@@ -14,15 +15,17 @@ var (
 	runtimeOnce    sync.Once
 	runtimeInst    *sandbox.FirecrackerRuntime
 	registryInst   *sandbox.SkillRegistry
+	proposalInst   *proposal.Store
 	runtimeInitErr error
 )
 
 type runtimeEnv struct {
-	Logger   *zap.Logger
-	Config   *config.Config
-	Kernel   *kernel.Kernel
-	Runtime  *sandbox.FirecrackerRuntime
-	Registry *sandbox.SkillRegistry
+	Logger        *zap.Logger
+	Config        *config.Config
+	Kernel        *kernel.Kernel
+	Runtime       *sandbox.FirecrackerRuntime
+	Registry      *sandbox.SkillRegistry
+	ProposalStore *proposal.Store
 }
 
 func initRuntime() (*runtimeEnv, error) {
@@ -55,16 +58,21 @@ func initRuntime() (*runtimeEnv, error) {
 			return
 		}
 		registryInst, runtimeInitErr = sandbox.NewSkillRegistry(cfg.Sandbox.RegistryPath)
+		if runtimeInitErr != nil {
+			return
+		}
+		proposalInst, runtimeInitErr = proposal.NewStore(cfg.Proposal.StoreDir, logger)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
 	}
 
 	return &runtimeEnv{
-		Logger:   logger,
-		Config:   cfg,
-		Kernel:   kern,
-		Runtime:  runtimeInst,
-		Registry: registryInst,
+		Logger:        logger,
+		Config:        cfg,
+		Kernel:        kern,
+		Runtime:       runtimeInst,
+		Registry:      registryInst,
+		ProposalStore: proposalInst,
 	}, nil
 }

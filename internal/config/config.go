@@ -31,6 +31,9 @@ type Config struct {
 		KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
 		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
 	} `yaml:"sandbox" mapstructure:"sandbox"`
+	Proposal struct {
+		StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
+	} `yaml:"proposal" mapstructure:"proposal"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -75,6 +78,11 @@ func DefaultConfig() Config {
 			KernelImage:  "/var/lib/aegisclaw/vmlinux",
 			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "registry.json"),
 		},
+		Proposal: struct {
+			StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
+		}{
+			StoreDir: filepath.Join(home, ".local", "share", "aegisclaw", "proposals"),
+		},
 	}
 }
 
@@ -109,6 +117,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("sandbox.chroot_base", defaults.Sandbox.ChrootBase)
 	viper.SetDefault("sandbox.kernel_image", defaults.Sandbox.KernelImage)
 	viper.SetDefault("sandbox.registry_path", defaults.Sandbox.RegistryPath)
+	viper.SetDefault("proposal.store_dir", defaults.Proposal.StoreDir)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -163,6 +172,7 @@ func validateConfig(config *Config) error {
 		"sandbox.chroot_base":   config.Sandbox.ChrootBase,
 		"sandbox.kernel_image":  config.Sandbox.KernelImage,
 		"sandbox.registry_path": config.Sandbox.RegistryPath,
+		"proposal.store_dir":    config.Proposal.StoreDir,
 	}
 
 	for name, path := range paths {
