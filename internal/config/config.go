@@ -14,17 +14,23 @@ import (
 // Defaults are set to secure, isolated locations with no host filesystem access.
 type Config struct {
 	Firecracker struct {
-		Bin string `yaml:"bin"`
-	} `yaml:"firecracker"`
+		Bin string `yaml:"bin" mapstructure:"bin"`
+	} `yaml:"firecracker" mapstructure:"firecracker"`
 	Jailer struct {
-		Bin string `yaml:"bin"`
-	} `yaml:"jailer"`
+		Bin string `yaml:"bin" mapstructure:"bin"`
+	} `yaml:"jailer" mapstructure:"jailer"`
 	Rootfs struct {
-		Template string `yaml:"template"`
-	} `yaml:"rootfs"`
+		Template string `yaml:"template" mapstructure:"template"`
+	} `yaml:"rootfs" mapstructure:"rootfs"`
 	Audit struct {
-		Dir string `yaml:"dir"`
-	} `yaml:"audit"`
+		Dir string `yaml:"dir" mapstructure:"dir"`
+	} `yaml:"audit" mapstructure:"audit"`
+	Sandbox struct {
+		StateDir     string `yaml:"state_dir" mapstructure:"state_dir"`
+		ChrootBase   string `yaml:"chroot_base" mapstructure:"chroot_base"`
+		KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
+		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
+	} `yaml:"sandbox" mapstructure:"sandbox"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -39,24 +45,35 @@ func DefaultConfig() Config {
 
 	return Config{
 		Firecracker: struct {
-			Bin string `yaml:"bin"`
+			Bin string `yaml:"bin" mapstructure:"bin"`
 		}{
 			Bin: "/usr/local/bin/firecracker",
 		},
 		Jailer: struct {
-			Bin string `yaml:"bin"`
+			Bin string `yaml:"bin" mapstructure:"bin"`
 		}{
 			Bin: "/usr/local/bin/jailer",
 		},
 		Rootfs: struct {
-			Template string `yaml:"template"`
+			Template string `yaml:"template" mapstructure:"template"`
 		}{
 			Template: "/var/lib/aegisclaw/rootfs-templates/alpine.ext4",
 		},
 		Audit: struct {
-			Dir string `yaml:"dir"`
+			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "audit"),
+		},
+		Sandbox: struct {
+			StateDir     string `yaml:"state_dir" mapstructure:"state_dir"`
+			ChrootBase   string `yaml:"chroot_base" mapstructure:"chroot_base"`
+			KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
+			RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
+		}{
+			StateDir:     filepath.Join(home, ".local", "share", "aegisclaw", "sandboxes"),
+			ChrootBase:   filepath.Join(home, ".local", "share", "aegisclaw", "jailer"),
+			KernelImage:  "/var/lib/aegisclaw/vmlinux",
+			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "registry.json"),
 		},
 	}
 }
@@ -88,6 +105,10 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("jailer.bin", defaults.Jailer.Bin)
 	viper.SetDefault("rootfs.template", defaults.Rootfs.Template)
 	viper.SetDefault("audit.dir", defaults.Audit.Dir)
+	viper.SetDefault("sandbox.state_dir", defaults.Sandbox.StateDir)
+	viper.SetDefault("sandbox.chroot_base", defaults.Sandbox.ChrootBase)
+	viper.SetDefault("sandbox.kernel_image", defaults.Sandbox.KernelImage)
+	viper.SetDefault("sandbox.registry_path", defaults.Sandbox.RegistryPath)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -134,17 +155,20 @@ func getConfigDir() (string, error) {
 // Security: Prevents relative paths that could lead to directory traversal.
 func validateConfig(config *Config) error {
 	paths := map[string]string{
-		"firecracker.bin": config.Firecracker.Bin,
-		"jailer.bin":      config.Jailer.Bin,
-		"rootfs.template": config.Rootfs.Template,
-		"audit.dir":       config.Audit.Dir,
+		"firecracker.bin":       config.Firecracker.Bin,
+		"jailer.bin":            config.Jailer.Bin,
+		"rootfs.template":       config.Rootfs.Template,
+		"audit.dir":             config.Audit.Dir,
+		"sandbox.state_dir":     config.Sandbox.StateDir,
+		"sandbox.chroot_base":   config.Sandbox.ChrootBase,
+		"sandbox.kernel_image":  config.Sandbox.KernelImage,
+		"sandbox.registry_path": config.Sandbox.RegistryPath,
 	}
 
 	for name, path := range paths {
 		if !filepath.IsAbs(path) {
 			return fmt.Errorf("%s must be an absolute path: %s", name, path)
 		}
-		// Additional validation could check if files exist, but for now just absolute paths
 	}
 
 	return nil

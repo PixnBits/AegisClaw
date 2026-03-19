@@ -1,38 +1,52 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/PixnBits/AegisClaw/internal/config"
-	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 )
 
 func runStatus(cmd *cobra.Command, args []string) error {
-	logger, err := zap.NewProduction()
+	env, err := initRuntime()
 	if err != nil {
-		return fmt.Errorf("failed to create logger: %w", err)
+		return err
 	}
-	defer logger.Sync()
-
-	cfg, err := config.Load(logger)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	kern, err := kernel.GetInstance(logger, cfg.Audit.Dir)
-	if err != nil {
-		return fmt.Errorf("failed to get kernel instance: %w", err)
-	}
+	defer env.Logger.Sync()
 
 	fmt.Printf("AegisClaw Kernel Status:\n")
-	fmt.Printf("  Public Key: %x\n", kern.PublicKey())
-	fmt.Printf("  Firecracker Binary: %s\n", cfg.Firecracker.Bin)
-	fmt.Printf("  Jailer Binary: %s\n", cfg.Jailer.Bin)
-	fmt.Printf("  Rootfs Template: %s\n", cfg.Rootfs.Template)
-	fmt.Printf("  Audit Directory: %s\n", cfg.Audit.Dir)
-	fmt.Printf("  Control Plane Listeners: %d\n", kern.ControlPlane().ActiveListeners())
+	fmt.Printf("  Public Key: %x\n", env.Kernel.PublicKey())
+	fmt.Printf("  Firecracker Binary: %s\n", env.Config.Firecracker.Bin)
+	fmt.Printf("  Jailer Binary: %s\n", env.Config.Jailer.Bin)
+	fmt.Printf("  Rootfs Template: %s\n", env.Config.Rootfs.Template)
+	fmt.Printf("  Kernel Image: %s\n", env.Config.Sandbox.KernelImage)
+	fmt.Printf("  Audit Directory: %s\n", env.Config.Audit.Dir)
+	fmt.Printf("  Sandbox State: %s\n", env.Config.Sandbox.StateDir)
+	fmt.Printf("  Control Plane Listeners: %d\n", env.Kernel.ControlPlane().ActiveListeners())
+
+	sandboxes, err := env.Runtime.List(context.Background())
+	if err == nil {
+		running := 0
+		for _, sb := range sandboxes {
+			if sb.State == "running" {
+				running++
+			}
+		}
+		fmt.Printf("  Sandboxes: %d total, %d running\n", len(sandboxes), running)
+	}
+
+	skills := env.Registry.List()
+	active := 0
+	for _, sk := range skills {
+		if sk.State == "active" {
+			active++
+		}
+	}
+	fmt.Printf("  Skills: %d registered, %d active\n", len(skills), active)
+	rootHash := env.Registry.RootHash()
+	if rootHash != "" {
+		fmt.Printf("  Registry Root: %s\n", rootHash[:16])
+	}
 
 	return nil
 }

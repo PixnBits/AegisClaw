@@ -77,12 +77,17 @@ func NewFirecrackerRuntime(cfg RuntimeConfig, kern *kernel.Kernel, logger *zap.L
 
 // Create provisions a new sandbox from the spec without starting it.
 func (r *FirecrackerRuntime) Create(ctx context.Context, spec SandboxSpec) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Assign vsock CID before validation if not set
+	if spec.VsockCID < minVsockCID {
+		spec.VsockCID = r.allocateCID()
+	}
+
 	if err := spec.Validate(); err != nil {
 		return fmt.Errorf("invalid sandbox spec: %w", err)
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if _, exists := r.sandboxes[spec.ID]; exists {
 		return fmt.Errorf("sandbox %s already exists", spec.ID)
@@ -113,11 +118,6 @@ func (r *FirecrackerRuntime) Create(ctx context.Context, spec SandboxSpec) error
 	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
 	if err := createExt4Image(workspacePath, workspaceMB); err != nil {
 		return fmt.Errorf("failed to create workspace image: %w", err)
-	}
-
-	// Assign vsock CID
-	if spec.VsockCID < minVsockCID {
-		spec.VsockCID = r.allocateCID()
 	}
 
 	// Determine socket path for Firecracker API

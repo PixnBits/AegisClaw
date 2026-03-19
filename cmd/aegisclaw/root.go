@@ -98,9 +98,14 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(sandboxCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(skillCmd)
 
 	sandboxCmd.AddCommand(lsCmd)
 	sandboxCmd.AddCommand(sandboxStartCmd)
 	sandboxCmd.AddCommand(stopCmd)
 	sandboxCmd.AddCommand(deleteCmd)
+
+	skillCmd.AddCommand(skillActivateCmd)
+	skillCmd.AddCommand(skillDeactivateCmd)
+	skillCmd.AddCommand(skillListCmd)
 }
