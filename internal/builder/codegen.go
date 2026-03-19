@@ -13,23 +13,23 @@ import (
 
 // SkillSpec defines the full specification for a skill to be built.
 type SkillSpec struct {
-	Name                 string            `json:"name"`
-	Description          string            `json:"description"`
-	Tools                []ToolSpec        `json:"tools"`
-	NetworkPolicy        SkillNetworkPolicy `json:"network_policy"`
-	SecretsRefs          []string          `json:"secrets_refs,omitempty"`
-	PersonaRequirements  []string          `json:"persona_requirements,omitempty"`
-	Language             string            `json:"language"`
-	EntryPoint           string            `json:"entry_point"`
-	Dependencies         []string          `json:"dependencies,omitempty"`
-	TestRequirements     string            `json:"test_requirements,omitempty"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description"`
+	Tools               []ToolSpec         `json:"tools"`
+	NetworkPolicy       SkillNetworkPolicy `json:"network_policy"`
+	SecretsRefs         []string           `json:"secrets_refs,omitempty"`
+	PersonaRequirements []string           `json:"persona_requirements,omitempty"`
+	Language            string             `json:"language"`
+	EntryPoint          string             `json:"entry_point"`
+	Dependencies        []string           `json:"dependencies,omitempty"`
+	TestRequirements    string             `json:"test_requirements,omitempty"`
 }
 
 // ToolSpec describes a tool/function the skill provides.
 type ToolSpec struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	InputSchema string `json:"input_schema"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	InputSchema  string `json:"input_schema"`
 	OutputSchema string `json:"output_schema"`
 }
 
@@ -91,12 +91,12 @@ func (ss *SkillSpec) Validate() error {
 
 // CodeGenRequest is sent to the builder sandbox to generate code.
 type CodeGenRequest struct {
-	Spec          SkillSpec         `json:"spec"`
-	ExistingCode  map[string]string `json:"existing_code,omitempty"`
-	Feedback      []string          `json:"feedback,omitempty"`
-	Round         int               `json:"round"`
-	SystemPrompt  string            `json:"system_prompt"`
-	MaxTokens     int               `json:"max_tokens"`
+	Spec         SkillSpec         `json:"spec"`
+	ExistingCode map[string]string `json:"existing_code,omitempty"`
+	Feedback     []string          `json:"feedback,omitempty"`
+	Round        int               `json:"round"`
+	SystemPrompt string            `json:"system_prompt"`
+	MaxTokens    int               `json:"max_tokens"`
 }
 
 // CodeGenResponse contains the generated code files.

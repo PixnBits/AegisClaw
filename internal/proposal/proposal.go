@@ -46,10 +46,10 @@ var allowedTransitions = map[Status][]Status{
 type Category string
 
 const (
-	CategoryNewSkill    Category = "new_skill"
-	CategoryEditSkill   Category = "edit_skill"
-	CategoryDeleteSkill Category = "delete_skill"
-	CategoryKernelPatch Category = "kernel_patch"
+	CategoryNewSkill     Category = "new_skill"
+	CategoryEditSkill    Category = "edit_skill"
+	CategoryDeleteSkill  Category = "delete_skill"
+	CategoryKernelPatch  Category = "kernel_patch"
 	CategoryConfigChange Category = "config_change"
 )
 
