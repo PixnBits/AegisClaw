@@ -120,6 +120,7 @@ func init() {
 	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(proposeCmd)
 	rootCmd.AddCommand(courtCmd)
+	rootCmd.AddCommand(builderCmd)
 
 	sandboxCmd.AddCommand(lsCmd)
 	sandboxCmd.AddCommand(sandboxStartCmd)

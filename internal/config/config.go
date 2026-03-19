@@ -37,6 +37,12 @@ type Config struct {
 	Court struct {
 		PersonaDir string `yaml:"persona_dir" mapstructure:"persona_dir"`
 	} `yaml:"court" mapstructure:"court"`
+	Builder struct {
+		RootfsTemplate      string `yaml:"rootfs_template" mapstructure:"rootfs_template"`
+		WorkspaceBaseDir    string `yaml:"workspace_base_dir" mapstructure:"workspace_base_dir"`
+		MaxConcurrentBuilds int    `yaml:"max_concurrent_builds" mapstructure:"max_concurrent_builds"`
+		BuildTimeoutMinutes int    `yaml:"build_timeout_minutes" mapstructure:"build_timeout_minutes"`
+	} `yaml:"builder" mapstructure:"builder"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -91,6 +97,17 @@ func DefaultConfig() Config {
 		}{
 			PersonaDir: filepath.Join(home, ".config", "aegisclaw", "personas"),
 		},
+		Builder: struct {
+			RootfsTemplate      string `yaml:"rootfs_template" mapstructure:"rootfs_template"`
+			WorkspaceBaseDir    string `yaml:"workspace_base_dir" mapstructure:"workspace_base_dir"`
+			MaxConcurrentBuilds int    `yaml:"max_concurrent_builds" mapstructure:"max_concurrent_builds"`
+			BuildTimeoutMinutes int    `yaml:"build_timeout_minutes" mapstructure:"build_timeout_minutes"`
+		}{
+			RootfsTemplate:      "/var/lib/aegisclaw/rootfs-templates/builder.ext4",
+			WorkspaceBaseDir:    filepath.Join(home, ".local", "share", "aegisclaw", "workspaces"),
+			MaxConcurrentBuilds: 2,
+			BuildTimeoutMinutes: 10,
+		},
 	}
 }
 
@@ -127,6 +144,10 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("sandbox.registry_path", defaults.Sandbox.RegistryPath)
 	viper.SetDefault("proposal.store_dir", defaults.Proposal.StoreDir)
 	viper.SetDefault("court.persona_dir", defaults.Court.PersonaDir)
+	viper.SetDefault("builder.rootfs_template", defaults.Builder.RootfsTemplate)
+	viper.SetDefault("builder.workspace_base_dir", defaults.Builder.WorkspaceBaseDir)
+	viper.SetDefault("builder.max_concurrent_builds", defaults.Builder.MaxConcurrentBuilds)
+	viper.SetDefault("builder.build_timeout_minutes", defaults.Builder.BuildTimeoutMinutes)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -181,8 +202,10 @@ func validateConfig(config *Config) error {
 		"sandbox.chroot_base":   config.Sandbox.ChrootBase,
 		"sandbox.kernel_image":  config.Sandbox.KernelImage,
 		"sandbox.registry_path": config.Sandbox.RegistryPath,
-		"proposal.store_dir":    config.Proposal.StoreDir,
-		"court.persona_dir":     config.Court.PersonaDir,
+		"proposal.store_dir":          config.Proposal.StoreDir,
+		"court.persona_dir":           config.Court.PersonaDir,
+		"builder.rootfs_template":     config.Builder.RootfsTemplate,
+		"builder.workspace_base_dir":  config.Builder.WorkspaceBaseDir,
 	}
 
 	for name, path := range paths {

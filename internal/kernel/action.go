@@ -28,6 +28,10 @@ const (
 	ActionProposalApprove ActionType = "proposal.approve"
 	ActionProposalReject  ActionType = "proposal.reject"
 	ActionProposalVote    ActionType = "proposal.vote"
+	ActionBuilderCreate   ActionType = "builder.create"
+	ActionBuilderStart    ActionType = "builder.start"
+	ActionBuilderStop     ActionType = "builder.stop"
+	ActionBuilderBuild    ActionType = "builder.build"
 )
 
 // validActionTypes enumerates all recognized action types for validation.
@@ -48,6 +52,10 @@ var validActionTypes = map[ActionType]bool{
 	ActionProposalApprove: true,
 	ActionProposalReject:  true,
 	ActionProposalVote:    true,
+	ActionBuilderCreate:   true,
+	ActionBuilderStart:    true,
+	ActionBuilderStop:     true,
+	ActionBuilderBuild:    true,
 }
 
 // Action represents any operation that passes through the kernel.
