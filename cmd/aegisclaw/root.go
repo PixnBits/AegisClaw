@@ -145,6 +145,8 @@ func init() {
 	courtCmd.AddCommand(courtSessionsCmd)
 	courtCmd.AddCommand(courtDashboardCmd)
 
+	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")
+
 	secretCmd.AddCommand(secretAddCmd)
 	secretCmd.AddCommand(secretListCmd)
 	secretCmd.AddCommand(secretDeleteCmd)
