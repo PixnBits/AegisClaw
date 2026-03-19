@@ -178,6 +178,12 @@ func (k *Kernel) Verify(data []byte, signature []byte) bool {
 	return ed25519.Verify(k.publicKey, data, signature)
 }
 
+// PrivateKeyBytes returns the kernel's raw Ed25519 private key bytes.
+// Used by the vault to derive an age identity for secret encryption.
+func (k *Kernel) PrivateKeyBytes() ed25519.PrivateKey {
+	return k.privateKey
+}
+
 // PublicKey returns the kernel's Ed25519 public key.
 func (k *Kernel) PublicKey() ed25519.PublicKey {
 	return k.publicKey

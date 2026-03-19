@@ -43,6 +43,9 @@ type Config struct {
 		MaxConcurrentBuilds int    `yaml:"max_concurrent_builds" mapstructure:"max_concurrent_builds"`
 		BuildTimeoutMinutes int    `yaml:"build_timeout_minutes" mapstructure:"build_timeout_minutes"`
 	} `yaml:"builder" mapstructure:"builder"`
+	Vault struct {
+		Dir string `yaml:"dir" mapstructure:"dir"`
+	} `yaml:"vault" mapstructure:"vault"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -108,6 +111,11 @@ func DefaultConfig() Config {
 			MaxConcurrentBuilds: 2,
 			BuildTimeoutMinutes: 10,
 		},
+		Vault: struct {
+			Dir string `yaml:"dir" mapstructure:"dir"`
+		}{
+			Dir: filepath.Join(home, ".config", "aegisclaw", "secrets"),
+		},
 	}
 }
 
@@ -148,6 +156,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("builder.workspace_base_dir", defaults.Builder.WorkspaceBaseDir)
 	viper.SetDefault("builder.max_concurrent_builds", defaults.Builder.MaxConcurrentBuilds)
 	viper.SetDefault("builder.build_timeout_minutes", defaults.Builder.BuildTimeoutMinutes)
+	viper.SetDefault("vault.dir", defaults.Vault.Dir)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -206,6 +215,7 @@ func validateConfig(config *Config) error {
 		"court.persona_dir":          config.Court.PersonaDir,
 		"builder.rootfs_template":    config.Builder.RootfsTemplate,
 		"builder.workspace_base_dir": config.Builder.WorkspaceBaseDir,
+		"vault.dir":                  config.Vault.Dir,
 	}
 
 	for name, path := range paths {

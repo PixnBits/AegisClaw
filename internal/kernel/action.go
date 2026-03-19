@@ -32,6 +32,9 @@ const (
 	ActionBuilderStart    ActionType = "builder.start"
 	ActionBuilderStop     ActionType = "builder.stop"
 	ActionBuilderBuild    ActionType = "builder.build"
+	ActionSecretAdd       ActionType = "secret.add"
+	ActionSecretGet       ActionType = "secret.get"
+	ActionSecretDelete    ActionType = "secret.delete"
 )
 
 // validActionTypes enumerates all recognized action types for validation.
@@ -56,6 +59,9 @@ var validActionTypes = map[ActionType]bool{
 	ActionBuilderStart:    true,
 	ActionBuilderStop:     true,
 	ActionBuilderBuild:    true,
+	ActionSecretAdd:       true,
+	ActionSecretGet:       true,
+	ActionSecretDelete:    true,
 }
 
 // Action represents any operation that passes through the kernel.

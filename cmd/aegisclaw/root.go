@@ -121,6 +121,7 @@ func init() {
 	rootCmd.AddCommand(proposeCmd)
 	rootCmd.AddCommand(courtCmd)
 	rootCmd.AddCommand(builderCmd)
+	rootCmd.AddCommand(secretCmd)
 
 	sandboxCmd.AddCommand(lsCmd)
 	sandboxCmd.AddCommand(sandboxStartCmd)
@@ -141,4 +142,10 @@ func init() {
 	courtCmd.AddCommand(courtReviewCmd)
 	courtCmd.AddCommand(courtVoteCmd)
 	courtCmd.AddCommand(courtSessionsCmd)
+
+	secretCmd.AddCommand(secretAddCmd)
+	secretCmd.AddCommand(secretListCmd)
+	secretCmd.AddCommand(secretDeleteCmd)
+	secretAddCmd.Flags().StringVar(&secretSkillID, "skill", "", "Skill ID to associate with the secret")
+	secretAddCmd.MarkFlagRequired("skill")
 }
