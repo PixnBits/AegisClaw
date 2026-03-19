@@ -1,6 +1,6 @@
 module github.com/PixnBits/AegisClaw
 
-go 1.23.0
+go 1.25.0
 
 require (
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
@@ -53,7 +53,7 @@ require (
 	go.uber.org/multierr v1.10.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.0.0-20220127200216-cd36cc0744dd // indirect
-	golang.org/x/sys v0.29.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
