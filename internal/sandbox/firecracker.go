@@ -510,49 +510,45 @@ func (r *FirecrackerRuntime) setupNetwork(spec SandboxSpec) (tapName, hostIP, gu
 }
 
 // applyNetworkPolicy enforces nftables rules based on the sandbox's NetworkPolicy.
-// Default policy is DROP; allowed hosts/ports are selectively permitted.
+// Uses the PolicyEngine to generate proper per-sandbox rulesets with default DROP,
+// selective allow rules, DNS passthrough, and audit logging for dropped packets.
 func (r *FirecrackerRuntime) applyNetworkPolicy(sandboxID, tapName, guestIP string, policy *NetworkPolicy) error {
-	chainName := fmt.Sprintf("aegis_%s", sandboxID[:minInt(12, len(sandboxID))])
-
-	// Create per-sandbox nftables chain with default drop
-	if err := runCmd("nft", "add", "table", "ip", "aegisclaw"); err != nil {
-		r.logger.Warn("nft table may already exist", zap.Error(err))
+	pe := NewPolicyEngine()
+	ruleset, err := pe.GenerateRuleset(policy, sandboxID, tapName)
+	if err != nil {
+		return fmt.Errorf("failed to generate nftables ruleset: %w", err)
 	}
 
-	if err := runCmd("nft", "add", "chain", "ip", "aegisclaw", chainName,
-		"{ type filter hook forward priority 0; policy drop; }"); err != nil {
-		return fmt.Errorf("failed to create nftables chain %s: %w", chainName, err)
-	}
-
-	// Allow established/related connections
-	if err := runCmd("nft", "add", "rule", "ip", "aegisclaw", chainName,
-		"ct", "state", "established,related", "accept"); err != nil {
-		return fmt.Errorf("failed to add conntrack rule: %w", err)
-	}
-
-	// Allow specific hosts and ports
-	for _, host := range policy.AllowedHosts {
-		for _, port := range policy.AllowedPorts {
-			for _, proto := range effectiveProtocols(policy) {
-				if err := runCmd("nft", "add", "rule", "ip", "aegisclaw", chainName,
-					"ip", "saddr", guestIP,
-					"ip", "daddr", host,
-					proto, "dport", strconv.Itoa(int(port)),
-					"accept"); err != nil {
-					r.logger.Warn("failed to add allow rule",
-						zap.String("host", host),
-						zap.Uint16("port", port),
-						zap.String("proto", proto),
-						zap.Error(err),
-					)
-				}
-			}
+	for _, cmd := range ruleset.ToNftCommands() {
+		if runErr := runCmd("nft", cmd); runErr != nil {
+			r.logger.Warn("nft command may have partially failed",
+				zap.String("cmd", cmd),
+				zap.Error(runErr),
+			)
 		}
 	}
 
-	r.logger.Info("network policy applied",
+	// Audit log the policy enforcement
+	payload, _ := json.Marshal(map[string]interface{}{
+		"sandbox_id":        sandboxID,
+		"tap_device":        tapName,
+		"guest_ip":          guestIP,
+		"table":             ruleset.TableName,
+		"chain":             ruleset.ChainName,
+		"rules_count":       len(ruleset.Rules),
+		"allowed_hosts":     policy.AllowedHosts,
+		"allowed_ports":     policy.AllowedPorts,
+		"allowed_protocols": policy.AllowedProtocols,
+	})
+	action := kernel.NewAction(kernel.ActionSandboxStart, "kernel.netpolicy", payload)
+	if _, signErr := r.kern.SignAndLog(action); signErr != nil {
+		r.logger.Error("failed to audit log network policy", zap.Error(signErr))
+	}
+
+	r.logger.Info("network policy applied via PolicyEngine",
 		zap.String("sandbox_id", sandboxID),
-		zap.String("chain", chainName),
+		zap.String("table", ruleset.TableName),
+		zap.Int("rules", len(ruleset.Rules)),
 		zap.Int("allowed_hosts", len(policy.AllowedHosts)),
 		zap.Int("allowed_ports", len(policy.AllowedPorts)),
 	)
@@ -561,11 +557,11 @@ func (r *FirecrackerRuntime) applyNetworkPolicy(sandboxID, tapName, guestIP stri
 
 // teardownNetwork removes the tap device and nftables rules for a sandbox.
 func (r *FirecrackerRuntime) teardownNetwork(tapName, sandboxID string) {
-	chainName := fmt.Sprintf("aegis_%s", sandboxID[:minInt(12, len(sandboxID))])
-
-	if err := runCmd("nft", "delete", "chain", "ip", "aegisclaw", chainName); err != nil {
-		r.logger.Warn("failed to delete nftables chain",
-			zap.String("chain", chainName),
+	// Use PolicyEngine to get consistent table name for teardown
+	tableName := fmt.Sprintf("aegis_%s", sanitizeID(sandboxID))
+	if err := runCmd("nft", "delete", "table", "inet", tableName); err != nil {
+		r.logger.Warn("failed to delete nftables table",
+			zap.String("table", tableName),
 			zap.Error(err),
 		)
 	}
@@ -579,7 +575,7 @@ func (r *FirecrackerRuntime) teardownNetwork(tapName, sandboxID string) {
 
 	r.logger.Info("network torn down",
 		zap.String("tap", tapName),
-		zap.String("chain", chainName),
+		zap.String("table", tableName),
 	)
 }
 
@@ -681,13 +677,6 @@ func (r *FirecrackerRuntime) loadState() error {
 }
 
 // Helpers
-
-func effectiveProtocols(policy *NetworkPolicy) []string {
-	if len(policy.AllowedProtocols) > 0 {
-		return policy.AllowedProtocols
-	}
-	return []string{"tcp"}
-}
 
 func generateMAC(cid uint32) string {
 	return fmt.Sprintf("02:FC:00:00:%02X:%02X", (cid>>8)&0xFF, cid&0xFF)
