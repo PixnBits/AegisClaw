@@ -48,5 +48,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Registry Root: %s\n", rootHash[:16])
 	}
 
+	// Merkle audit chain info
+	auditLog := env.Kernel.AuditLog()
+	fmt.Printf("  Audit Entries: %d\n", auditLog.EntryCount())
+	if lastHash := auditLog.LastHash(); lastHash != "" {
+		fmt.Printf("  Audit Chain Head: %s\n", lastHash[:16])
+	}
+
 	return nil
 }

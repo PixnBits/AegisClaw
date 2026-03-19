@@ -86,6 +86,24 @@ var deleteCmd = &cobra.Command{
 	RunE:  runSandboxDelete,
 }
 
+// auditCmd represents the audit command group
+var auditCmd = &cobra.Command{
+	Use:   "audit",
+	Short: "Audit log operations",
+	Long:  `Commands for verifying the tamper-evident Merkle audit chain.`,
+}
+
+// auditVerifyCmd verifies the integrity of the Merkle audit chain
+var auditVerifyCmd = &cobra.Command{
+	Use:   "verify",
+	Short: "Verify the Merkle audit chain integrity",
+	Long: `Reads the entire audit log and verifies:
+  - Each entry's SHA-256 hash is correct for its contents
+  - Each entry's prev_hash links to the previous entry's hash
+  - Each entry's Ed25519 signature is valid`,
+	RunE: runAuditVerify,
+}
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
@@ -99,6 +117,7 @@ func init() {
 	rootCmd.AddCommand(sandboxCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(skillCmd)
+	rootCmd.AddCommand(auditCmd)
 
 	sandboxCmd.AddCommand(lsCmd)
 	sandboxCmd.AddCommand(sandboxStartCmd)
@@ -108,4 +127,6 @@ func init() {
 	skillCmd.AddCommand(skillActivateCmd)
 	skillCmd.AddCommand(skillDeactivateCmd)
 	skillCmd.AddCommand(skillListCmd)
+
+	auditCmd.AddCommand(auditVerifyCmd)
 }

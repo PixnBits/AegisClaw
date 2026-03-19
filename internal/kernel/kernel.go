@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/PixnBits/AegisClaw/internal/audit"
 	"go.uber.org/zap"
 )
 
@@ -21,8 +22,7 @@ type Kernel struct {
 	publicKey    ed25519.PublicKey
 	logger       *zap.Logger
 	controlPlane *ControlPlane
-	auditFile    *os.File
-	auditMu      sync.Mutex
+	auditLog     *audit.MerkleLog
 }
 
 var (
@@ -69,21 +69,17 @@ func newKernel(logger *zap.Logger, auditDir string) (*Kernel, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(auditDir, 0700); err != nil {
-		return nil, fmt.Errorf("failed to create audit directory %s: %w", auditDir, err)
-	}
-
-	auditPath := filepath.Join(auditDir, "kernel.jsonl")
-	auditFile, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	auditPath := filepath.Join(auditDir, "kernel.merkle.jsonl")
+	auditLog, err := audit.NewMerkleLog(auditPath, privateKey, publicKey, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open audit log %s: %w", auditPath, err)
+		return nil, fmt.Errorf("failed to open merkle audit log: %w", err)
 	}
 
 	k := &Kernel{
 		privateKey: privateKey,
 		publicKey:  publicKey,
 		logger:     logger,
-		auditFile:  auditFile,
+		auditLog:   auditLog,
 	}
 
 	k.controlPlane = NewControlPlane(k, logger)
@@ -149,28 +145,24 @@ func (k *Kernel) SignAndLog(action Action) (*SignedAction, error) {
 		Signature: signature,
 	}
 
-	entry, err := json.Marshal(signed)
+	// Append to Merkle chain — the action payload is embedded as JSON within
+	// the Merkle entry, chained to the previous entry's hash.
+	payload, err := json.Marshal(signed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal signed action %s: %w", action.ID, err)
 	}
-	entry = append(entry, '\n')
 
-	k.auditMu.Lock()
-	_, writeErr := k.auditFile.Write(entry)
-	syncErr := k.auditFile.Sync()
-	k.auditMu.Unlock()
-
-	if writeErr != nil {
-		return nil, fmt.Errorf("failed to write audit entry %s: %w", action.ID, writeErr)
-	}
-	if syncErr != nil {
-		return nil, fmt.Errorf("failed to sync audit log for %s: %w", action.ID, syncErr)
+	entryID, entryHash, err := k.auditLog.Append(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to append to merkle audit log for %s: %w", action.ID, err)
 	}
 
 	k.logger.Info("action signed and logged",
 		zap.String("action_id", action.ID),
 		zap.String("type", string(action.Type)),
 		zap.String("source", action.Source),
+		zap.String("merkle_entry", entryID),
+		zap.String("merkle_hash", entryHash),
 	)
 
 	return signed, nil
@@ -201,12 +193,15 @@ func (k *Kernel) Shutdown() {
 	if k.controlPlane != nil {
 		k.controlPlane.Shutdown()
 	}
-	if k.auditFile != nil {
-		k.auditMu.Lock()
-		k.auditFile.Close()
-		k.auditMu.Unlock()
+	if k.auditLog != nil {
+		k.auditLog.Close()
 	}
 	k.logger.Info("kernel shut down")
+}
+
+// AuditLog returns the kernel's Merkle audit log.
+func (k *Kernel) AuditLog() *audit.MerkleLog {
+	return k.auditLog
 }
 
 func defaultKeyDir() (string, error) {
