@@ -122,6 +122,7 @@ func init() {
 	rootCmd.AddCommand(courtCmd)
 	rootCmd.AddCommand(builderCmd)
 	rootCmd.AddCommand(secretCmd)
+	rootCmd.AddCommand(chatCmd)
 
 	sandboxCmd.AddCommand(lsCmd)
 	sandboxCmd.AddCommand(sandboxStartCmd)
