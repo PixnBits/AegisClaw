@@ -2,3 +2,4 @@
 /shared/ollama/models/*
 /REPO_SUMMARY.md
 /shared/ollama/id_ed25519*
+scripts/
