@@ -73,9 +73,9 @@ func runStatusTUI(env *runtimeEnv) error {
 	model.LoadStatus = func() (tui.StatusInfo, []tui.SandboxRow, []tui.SkillRow, error) {
 		info := tui.StatusInfo{
 			PublicKeyHex:   hex.EncodeToString(env.Kernel.PublicKey()),
-			AuditEntries:  env.Kernel.AuditLog().EntryCount(),
+			AuditEntries:   env.Kernel.AuditLog().EntryCount(),
 			AuditChainHead: env.Kernel.AuditLog().LastHash(),
-			RegistryRoot:  env.Registry.RootHash(),
+			RegistryRoot:   env.Registry.RootHash(),
 		}
 
 		sandboxes, err := env.Runtime.List(context.Background())

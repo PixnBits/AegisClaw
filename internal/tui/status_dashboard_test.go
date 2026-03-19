@@ -28,9 +28,9 @@ func sampleSkillRows() []SkillRow {
 func sampleStatusInfo() StatusInfo {
 	return StatusInfo{
 		PublicKeyHex:   "abcdef1234567890",
-		AuditEntries:  42,
+		AuditEntries:   42,
 		AuditChainHead: "deadbeef12345678",
-		RegistryRoot:  "cafebabe87654321",
+		RegistryRoot:   "cafebabe87654321",
 	}
 }
 

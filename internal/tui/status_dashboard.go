@@ -42,10 +42,10 @@ type SkillRow struct {
 
 // StatusInfo holds kernel-level status information.
 type StatusInfo struct {
-	PublicKeyHex  string
-	AuditEntries  uint64
+	PublicKeyHex   string
+	AuditEntries   uint64
 	AuditChainHead string
-	RegistryRoot  string
+	RegistryRoot   string
 }
 
 // StatusDashboardModel is the bubbletea Model for the skill status dashboard.
@@ -62,9 +62,9 @@ type StatusDashboardModel struct {
 	err          error
 
 	// Callbacks
-	LoadStatus    func() (StatusInfo, []SandboxRow, []SkillRow, error)
-	StopSandbox   func(id string) error
-	StartSandbox  func(id string) error
+	LoadStatus   func() (StatusInfo, []SandboxRow, []SkillRow, error)
+	StopSandbox  func(id string) error
+	StartSandbox func(id string) error
 }
 
 // StatusRefreshMsg triggers a data reload.

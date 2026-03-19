@@ -175,6 +175,42 @@ func (ml *MerkleLog) Close() error {
 	return ml.file.Close()
 }
 
+// Path returns the file path of the audit log.
+func (ml *MerkleLog) Path() string {
+	return ml.file.Name()
+}
+
+// ReadEntries reads all entries from the given audit log path.
+func ReadEntries(path string) ([]MerkleEntry, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open audit log: %w", err)
+	}
+	defer file.Close()
+
+	var entries []MerkleEntry
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry MerkleEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return entries, fmt.Errorf("failed to parse entry %d: %w", len(entries)+1, err)
+		}
+		entries = append(entries, entry)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return entries, fmt.Errorf("scanner error: %w", err)
+	}
+
+	return entries, nil
+}
+
 // VerifyChain reads the entire log and verifies:
 // 1. Each entry's hash is correct for its contents.
 // 2. Each entry's PrevHash matches the previous entry's Hash.
