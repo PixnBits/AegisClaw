@@ -27,35 +27,35 @@ const (
 
 // PipelineResult captures the outcome of a pipeline run.
 type PipelineResult struct {
-	ProposalID   string            `json:"proposal_id"`
-	State        PipelineState     `json:"state"`
-	BuilderID    string            `json:"builder_id"`
-	CommitHash   string            `json:"commit_hash"`
-	Branch       string            `json:"branch"`
-	Diff         string            `json:"diff"`
-	Files        map[string]string `json:"files"`
-	FileHashes   map[string]string `json:"file_hashes"`
-	Reasoning    string            `json:"reasoning"`
-	Analysis     *AnalysisResult   `json:"analysis,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	Round        int               `json:"round"`
-	StartedAt    time.Time         `json:"started_at"`
-	CompletedAt  time.Time         `json:"completed_at,omitempty"`
-	Duration     time.Duration     `json:"duration,omitempty"`
+	ProposalID  string            `json:"proposal_id"`
+	State       PipelineState     `json:"state"`
+	BuilderID   string            `json:"builder_id"`
+	CommitHash  string            `json:"commit_hash"`
+	Branch      string            `json:"branch"`
+	Diff        string            `json:"diff"`
+	Files       map[string]string `json:"files"`
+	FileHashes  map[string]string `json:"file_hashes"`
+	Reasoning   string            `json:"reasoning"`
+	Analysis    *AnalysisResult   `json:"analysis,omitempty"`
+	Error       string            `json:"error,omitempty"`
+	Round       int               `json:"round"`
+	StartedAt   time.Time         `json:"started_at"`
+	CompletedAt time.Time         `json:"completed_at,omitempty"`
+	Duration    time.Duration     `json:"duration,omitempty"`
 }
 
 // Pipeline orchestrates the end-to-end flow from approved proposal to code diff.
 // It coordinates BuilderRuntime, CodeGenerator, GitManager, and Analyzer.
 type Pipeline struct {
-	builderRT  *BuilderRuntime
-	codeGen    *CodeGenerator
-	gitMgr     *gitmanager.Manager
-	analyzer   *Analyzer
-	kern       *kernel.Kernel
-	store      *proposal.Store
-	logger     *zap.Logger
-	mu         sync.Mutex
-	runs       map[string]*PipelineResult
+	builderRT *BuilderRuntime
+	codeGen   *CodeGenerator
+	gitMgr    *gitmanager.Manager
+	analyzer  *Analyzer
+	kern      *kernel.Kernel
+	store     *proposal.Store
+	logger    *zap.Logger
+	mu        sync.Mutex
+	runs      map[string]*PipelineResult
 }
 
 // NewPipeline creates a Pipeline connecting all subsystems.

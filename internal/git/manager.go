@@ -9,18 +9,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"go.uber.org/zap"
 )
 
 const (
-	defaultBranch  = "main"
-	branchPrefix   = "proposal-"
-	authorName     = "AegisClaw Kernel"
-	authorEmail    = "kernel@aegisclaw.local"
+	defaultBranch = "main"
+	branchPrefix  = "proposal-"
+	authorName    = "AegisClaw Kernel"
+	authorEmail   = "kernel@aegisclaw.local"
 )
 
 // RepoKind distinguishes the two managed repositories.
@@ -177,9 +177,9 @@ func (m *Manager) CreateProposalBranch(kind RepoKind, proposalID string) error {
 
 	// Audit log
 	payload, _ := json.Marshal(map[string]string{
-		"repo":     string(kind),
-		"branch":   branchName,
-		"from":     mainRef.Hash().String(),
+		"repo":   string(kind),
+		"branch": branchName,
+		"from":   mainRef.Hash().String(),
 	})
 	action := kernel.NewAction(kernel.ActionBuilderCreate, "git-manager", payload)
 	if _, err := m.kern.SignAndLog(action); err != nil {

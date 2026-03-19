@@ -194,18 +194,18 @@ func getConfigDir() (string, error) {
 // Security: Prevents relative paths that could lead to directory traversal.
 func validateConfig(config *Config) error {
 	paths := map[string]string{
-		"firecracker.bin":       config.Firecracker.Bin,
-		"jailer.bin":            config.Jailer.Bin,
-		"rootfs.template":       config.Rootfs.Template,
-		"audit.dir":             config.Audit.Dir,
-		"sandbox.state_dir":     config.Sandbox.StateDir,
-		"sandbox.chroot_base":   config.Sandbox.ChrootBase,
-		"sandbox.kernel_image":  config.Sandbox.KernelImage,
-		"sandbox.registry_path": config.Sandbox.RegistryPath,
-		"proposal.store_dir":          config.Proposal.StoreDir,
-		"court.persona_dir":           config.Court.PersonaDir,
-		"builder.rootfs_template":     config.Builder.RootfsTemplate,
-		"builder.workspace_base_dir":  config.Builder.WorkspaceBaseDir,
+		"firecracker.bin":            config.Firecracker.Bin,
+		"jailer.bin":                 config.Jailer.Bin,
+		"rootfs.template":            config.Rootfs.Template,
+		"audit.dir":                  config.Audit.Dir,
+		"sandbox.state_dir":          config.Sandbox.StateDir,
+		"sandbox.chroot_base":        config.Sandbox.ChrootBase,
+		"sandbox.kernel_image":       config.Sandbox.KernelImage,
+		"sandbox.registry_path":      config.Sandbox.RegistryPath,
+		"proposal.store_dir":         config.Proposal.StoreDir,
+		"court.persona_dir":          config.Court.PersonaDir,
+		"builder.rootfs_template":    config.Builder.RootfsTemplate,
+		"builder.workspace_base_dir": config.Builder.WorkspaceBaseDir,
 	}
 
 	for name, path := range paths {
