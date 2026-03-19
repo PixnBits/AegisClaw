@@ -49,16 +49,17 @@ const (
 
 // Session tracks one full court review of a proposal.
 type Session struct {
-	ID         string         `json:"id"`
-	ProposalID string         `json:"proposal_id"`
-	State      SessionState   `json:"state"`
-	Round      int            `json:"round"`
-	Personas   []string       `json:"personas"`
-	Results    []RoundResult  `json:"results"`
-	StartedAt  time.Time      `json:"started_at"`
-	EndedAt    *time.Time     `json:"ended_at,omitempty"`
-	Verdict    string         `json:"verdict,omitempty"`
-	RiskScore  float64        `json:"risk_score"`
+	ID            string            `json:"id"`
+	ProposalID    string            `json:"proposal_id"`
+	State         SessionState      `json:"state"`
+	Round         int               `json:"round"`
+	Personas      []string          `json:"personas"`
+	Results       []RoundResult     `json:"results"`
+	StartedAt     time.Time         `json:"started_at"`
+	EndedAt       *time.Time        `json:"ended_at,omitempty"`
+	Verdict       string            `json:"verdict,omitempty"`
+	RiskScore     float64           `json:"risk_score"`
+	PriorFeedback *IterationFeedback `json:"prior_feedback,omitempty"`
 }
 
 // RoundResult captures all reviews for a single round.
@@ -68,6 +69,7 @@ type RoundResult struct {
 	Heatmap   map[string]float64       `json:"heatmap"`
 	AvgRisk   float64                  `json:"avg_risk"`
 	Consensus bool                     `json:"consensus"`
+	Feedback  *IterationFeedback       `json:"feedback,omitempty"`
 	Timestamp time.Time                `json:"timestamp"`
 }
 
@@ -149,7 +151,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 
 	session := e.getOrCreateSession(p)
 
-	// Run review rounds
+	// Run review rounds with iteration feedback
 	for session.Round < e.config.MaxRounds {
 		session.Round++
 		session.State = SessionReviewing
@@ -160,12 +162,22 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			zap.String("proposal_id", proposalID),
 			zap.Int("round", session.Round),
 			zap.Int("persona_count", len(e.personas)),
+			zap.Bool("has_prior_feedback", session.PriorFeedback != nil && session.PriorFeedback.HasQuestions),
 		)
 
 		result, err := e.runRound(ctx, p, session.Round)
 		if err != nil {
 			return session, fmt.Errorf("round %d failed: %w", session.Round, err)
 		}
+
+		// Use weighted consensus evaluation
+		consensus := EvaluateConsensus(result.Reviews, e.personas, e.config.ConsensusQuorum)
+		result.Consensus = consensus.Reached
+		result.Heatmap = consensus.Heatmap
+		result.AvgRisk = consensus.AvgRisk
+		consensus.Feedback.RoundNumber = session.Round
+		result.Feedback = &consensus.Feedback
+
 		session.Results = append(session.Results, *result)
 		session.RiskScore = result.AvgRisk
 
@@ -183,17 +195,21 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			if result.AvgRisk <= e.config.MaxRiskThreshold {
 				session.State = SessionApproved
 				session.Verdict = "approved"
-				return e.finalizeSession(session, p, proposal.StatusApproved, "consensus reached: approved")
+				return e.finalizeSession(session, p, proposal.StatusApproved, "weighted consensus reached: approved")
 			}
 			session.State = SessionRejected
 			session.Verdict = "rejected"
-			return e.finalizeSession(session, p, proposal.StatusRejected, fmt.Sprintf("consensus reached but risk too high: %.1f", result.AvgRisk))
+			return e.finalizeSession(session, p, proposal.StatusRejected, fmt.Sprintf("weighted consensus reached but risk too high: %.1f", result.AvgRisk))
 		}
 
+		// Store feedback for next round's iteration
+		session.PriorFeedback = result.Feedback
 		session.State = SessionConsensus
-		e.logger.Info("no consensus, continuing",
+		e.logger.Info("no consensus, iterating with feedback",
 			zap.Int("round", session.Round),
+			zap.Float64("approval_rate", consensus.ApprovalRate),
 			zap.Float64("avg_risk", result.AvgRisk),
+			zap.Int("questions", len(consensus.Feedback.Questions)),
 		)
 	}
 
@@ -256,26 +272,11 @@ func (e *Engine) runRound(ctx context.Context, p *proposal.Proposal, round int) 
 		return nil, fmt.Errorf("all %d reviewers failed: %v", len(e.personas), errors)
 	}
 
-	heatmap := make(map[string]float64)
-	var totalRisk float64
-	approvals := 0
-	for _, r := range reviews {
-		heatmap[r.Persona] = r.RiskScore
-		totalRisk += r.RiskScore
-		if r.Verdict == proposal.VerdictApprove {
-			approvals++
-		}
-	}
-	avgRisk := totalRisk / float64(len(reviews))
-	approvalRate := float64(approvals) / float64(len(e.personas))
-	consensus := approvalRate >= e.config.ConsensusQuorum
-
+	// Consensus evaluation is done in Review() via EvaluateConsensus.
+	// Here we just return the raw reviews; heatmap/consensus are populated by caller.
 	return &RoundResult{
 		Round:     round,
 		Reviews:   reviews,
-		Heatmap:   heatmap,
-		AvgRisk:   avgRisk,
-		Consensus: consensus,
 		Timestamp: time.Now().UTC(),
 	}, nil
 }
@@ -371,4 +372,79 @@ func (e *Engine) RiskHeatmap(sessionID string) (map[string]float64, error) {
 		return nil, fmt.Errorf("session has no results yet")
 	}
 	return s.Results[len(s.Results)-1].Heatmap, nil
+}
+
+// VoteOnProposal allows a human operator to cast a decisive vote on an escalated proposal.
+// This is the Enterprise-mode human override for proposals that cannot reach consensus.
+func (e *Engine) VoteOnProposal(ctx context.Context, proposalID string, voter string, approve bool, reason string) (*Session, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if voter == "" {
+		return nil, fmt.Errorf("voter identity is required")
+	}
+	if reason == "" {
+		return nil, fmt.Errorf("vote reason is required")
+	}
+
+	// Find the escalated session for this proposal
+	var session *Session
+	for _, s := range e.sessions {
+		if s.ProposalID == proposalID && s.State == SessionEscalated {
+			session = s
+			break
+		}
+	}
+	if session == nil {
+		return nil, fmt.Errorf("no escalated session found for proposal %s", proposalID)
+	}
+
+	p, err := e.store.Get(proposalID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load proposal: %w", err)
+	}
+
+	// Record the human vote as a review
+	verdict := proposal.VerdictApprove
+	targetStatus := proposal.StatusApproved
+	sessionVerdict := "approved"
+	sessionState := SessionApproved
+	if !approve {
+		verdict = proposal.VerdictReject
+		targetStatus = proposal.StatusRejected
+		sessionVerdict = "rejected"
+		sessionState = SessionRejected
+	}
+
+	humanReview := proposal.Review{
+		ID:        uuid.New().String(),
+		Persona:   "human:" + voter,
+		Model:     "human",
+		Round:     session.Round + 1,
+		Verdict:   verdict,
+		RiskScore: session.RiskScore,
+		Evidence:  []string{fmt.Sprintf("Human vote by %s: %s", voter, reason)},
+		Comments:  reason,
+		Timestamp: time.Now().UTC(),
+	}
+
+	if err := p.AddReview(humanReview); err != nil {
+		e.logger.Error("failed to add human vote to proposal", zap.Error(err))
+	}
+
+	// Log the vote action
+	payload, _ := json.Marshal(map[string]interface{}{
+		"proposal_id": proposalID,
+		"voter":       voter,
+		"approve":     approve,
+		"reason":      reason,
+	})
+	action := kernel.NewAction(kernel.ActionProposalVote, voter, payload)
+	if _, err := e.kernel.SignAndLog(action); err != nil {
+		e.logger.Error("failed to log human vote", zap.Error(err))
+	}
+
+	session.State = sessionState
+	session.Verdict = sessionVerdict
+	return e.finalizeSession(session, p, targetStatus, fmt.Sprintf("human vote by %s: %s", voter, reason))
 }
