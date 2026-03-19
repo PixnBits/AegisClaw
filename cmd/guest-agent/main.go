@@ -23,6 +23,7 @@ import (
 const (
 	vsockPort     = 1024
 	workspaceDir  = "/workspace"
+	secretsDir    = "/run/secrets"
 	maxPayloadLen = 10 * 1024 * 1024 // 10 MB max payload
 )
 
@@ -87,6 +88,17 @@ type StatusData struct {
 	Uptime    string `json:"uptime"`
 	Workspace bool   `json:"workspace_mounted"`
 	PID       int    `json:"pid"`
+}
+
+// SecretInjectPayload is the set of secrets to write to tmpfs.
+type SecretInjectPayload struct {
+	Secrets []SecretItem `json:"secrets"`
+}
+
+// SecretItem is a single named secret to inject.
+type SecretItem struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 func main() {
@@ -176,6 +188,8 @@ func dispatch(ctx context.Context, req *Request) *Response {
 		return handleFileList(req)
 	case "status":
 		return handleStatus(req)
+	case "secrets.inject":
+		return handleSecretsInject(req)
 	default:
 		return errorResponse(req.ID, fmt.Sprintf("unknown request type: %s", req.Type))
 	}
@@ -377,6 +391,47 @@ func handleStatus(req *Request) *Response {
 func isUnderWorkspace(absPath string) bool {
 	cleaned := filepath.Clean(absPath)
 	return cleaned == workspaceDir || strings.HasPrefix(cleaned, workspaceDir+"/")
+}
+
+func handleSecretsInject(req *Request) *Response {
+	var payload SecretInjectPayload
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("invalid secrets.inject payload: %v", err))
+	}
+
+	if len(payload.Secrets) == 0 {
+		return errorResponse(req.ID, "no secrets provided")
+	}
+
+	// Ensure secretsDir is a tmpfs mount (created during mountEssentialFS via /run)
+	if err := os.MkdirAll(secretsDir, 0700); err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("failed to create secrets dir: %v", err))
+	}
+
+	injected := 0
+	for _, s := range payload.Secrets {
+		if s.Name == "" {
+			return errorResponse(req.ID, "secret name must not be empty")
+		}
+		// Prevent path traversal
+		if strings.Contains(s.Name, "/") || strings.Contains(s.Name, "..") {
+			return errorResponse(req.ID, fmt.Sprintf("invalid secret name: %q", s.Name))
+		}
+		secretPath := filepath.Join(secretsDir, s.Name)
+		// Write with owner-read-only permissions; never log the value
+		if err := os.WriteFile(secretPath, []byte(s.Value), 0400); err != nil {
+			return errorResponse(req.ID, fmt.Sprintf("failed to write secret %q: %v", s.Name, err))
+		}
+		injected++
+	}
+
+	log.Printf("injected %d secrets to %s", injected, secretsDir)
+	data, _ := json.Marshal(map[string]int{"injected": injected})
+	return &Response{
+		ID:      req.ID,
+		Success: true,
+		Data:    data,
+	}
 }
 
 func errorResponse(id, msg string) *Response {
