@@ -22,7 +22,7 @@
     "outbound": "none",
     "domains": [],
     "ports": [],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": false
 }
@@ -32,14 +32,14 @@ Zero outbound connectivity forever. MemoryReflectionSkill **never** attempts any
 ## Required Mounts
 `["memory:rw"]`  
 - Purpose: dedicated subdirectory for persistent JSONL storage (e.g. `./shared/memory/persistent.jsonl`)  
-- Seedclaw creates `./shared/memory` if missing and mounts it **only** to this skill  
+- AegisClaw creates `./shared/memory` if missing and mounts it **only** to this skill  
 - No access to `sources/`, `builds/`, `outputs/`, `audit/`, `git-repo/`, or any other shared subdirectory  
 - Mount invariant preserves audit integrity: memory contents cannot tamper with audit log, source code, or git history
 
 ## Default Container Runtime Profile
 Every service definition generated for memory-reflection **MUST** inherit:
 ```yaml
-network: seedclaw-net
+network: aegisclaw-net
 read_only: true
 tmpfs:
   - /tmp
@@ -57,7 +57,7 @@ Exception: the `memory:rw` mount overrides read-only rootfs for that path only.
 
 ## Communication (Strict – hub-only)
 **ALL** input/output routed exclusively through `message-hub` using structured JSON protocol.  
-No direct filesystem access to host control plane, no direct TCP to seedclaw.
+No direct filesystem access to host control plane, no direct TCP to aegisclaw.
 
 **Supported incoming message types:**
 - `store`  
@@ -117,12 +117,12 @@ send structured event to hub:
 Intended for coordination with GitSkill, SelfModSkill, or future evolution components.
 
 ## Recommended Generation Prompt Excerpt (for coder skill)
-"You are generating MemoryReflectionSkill — short-term + persistent episodic memory + pre-git archive for generated skills. Zero outbound networking. Mount only memory:rw. Store/retrieve facts, archive skill bundles on 'store' events, support batch retrieval by category/time. Enforce all SeedClaw v2.1+ invariants: hub-only routing, least-privilege, append-only persistence."
+"You are generating MemoryReflectionSkill — short-term + persistent episodic memory + pre-git archive for generated skills. Zero outbound networking. Mount only memory:rw. Store/retrieve facts, archive skill bundles on 'store' events, support batch retrieval by category/time. Enforce all AegisClaw v2.1+ invariants: hub-only routing, least-privilege, append-only persistence."
 
 ## Trivial Audit Guarantee
 After registration:
 ```bash
-grep -E '"memory-reflection"|network_policy|outbound|mounts|memory:' shared/audit/seedclaw.log
+grep -E '"memory-reflection"|network_policy|outbound|mounts|memory:' shared/audit/aegisclaw.log
 ```
 shows exactly:
 - zero outbound ever granted
@@ -130,4 +130,4 @@ shows exactly:
 - no host network or broad shared/ exposure
 
 This SKILL.md is the binding contract for v2.2 compliance.  
-Any generated code that violates networking, mount, hub-only, or persistence invariants **must** be rejected during sandbox vetting by seedclaw.
+Any generated code that violates networking, mount, hub-only, or persistence invariants **must** be rejected during sandbox vetting by aegisclaw.

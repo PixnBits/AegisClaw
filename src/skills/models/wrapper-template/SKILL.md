@@ -28,7 +28,7 @@ Replace the following tokens with provider-specific values:
     "outbound": "allow_list",
     "domains": ["{{ALLOWED_DOMAINS}}"],
     "ports": [{{ALLOWED_PORTS}}],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": true
 }
@@ -45,7 +45,7 @@ No filesystem access required beyond `/tmp` tmpfs.
 
 ## Default Container Runtime Profile (must be inherited)
 ```yaml
-network: seedclaw-net
+network: aegisclaw-net
 read_only: true
 tmpfs:
   - /tmp
@@ -116,12 +116,12 @@ API key env var: {{ENV_KEY_NAME}}
 Default model: {{DEFAULT_MODEL}}  
 Allowed domains: exactly {{ALLOWED_DOMAINS}}  
 Zero broad mounts. Narrow outbound allow-list only.  
-Hub-only routing. Never log secrets. Enforce all SeedClaw v2.1+ invariants."
+Hub-only routing. Never log secrets. Enforce all AegisClaw v2.1+ invariants."
 
 ## Trivial Audit Guarantee (after a wrapper is generated & registered)
 
 ```bash
-grep -E '"{{SKILL_NAME_LOWER}}"|network_policy|outbound|domains|{{ENV_KEY_NAME}}' shared/audit/seedclaw.log
+grep -E '"{{SKILL_NAME_LOWER}}"|network_policy|outbound|domains|{{ENV_KEY_NAME}}' shared/audit/aegisclaw.log
 ```
 
 shows exactly:
@@ -130,4 +130,4 @@ shows exactly:
 - no host network ever appeared
 
 This template is the binding contract for all remote LLM wrapper generations in v2.2.  
-Any generated wrapper that violates narrow allow-list, secret handling, hub-only routing, or least-privilege invariants **must** be rejected during sandbox vetting by seedclaw.
+Any generated wrapper that violates narrow allow-list, secret handling, hub-only routing, or least-privilege invariants **must** be rejected during sandbox vetting by aegisclaw.

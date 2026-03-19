@@ -1,4 +1,4 @@
-# SeedClaw – Paranoid, Local-First, Self-Bootstrapping AI Agent Platform
+# AegisClaw – Paranoid, Local-First, Self-Bootstrapping AI Agent Platform
 
 **Zero-trust. Zero-cloud. Zero-binaries-from-strangers.**  
 Bootstrap your own auditable agent swarm from markdown prompts only.  
@@ -10,11 +10,11 @@ Audit trail is append-only and trivially greppable.
 
 ## Core Security Posture (non-negotiable)
 
-- Trusted Computing Base = only `seedclaw` binary + 5 core skills (message-hub, llm-caller, ollama, coder, user-agent)
+- Trusted Computing Base = only `aegisclaw` binary + 5 core skills (message-hub, llm-caller, ollama, coder, user-agent)
 - Every generated skill is sandbox-compiled, statically analyzed, and registered with **explicit** `network_policy` (default: no outbound internet)
 - All inter-skill communication routes exclusively through `message-hub` (no direct container ↔ container TCP)
 - User-agent skill **always** runs a threat-model phase before tool use → high-risk actions require explicit user “YES”
-- Audit log (`shared/audit/seedclaw.log`) shows every network decision, mount, and safety gate
+- Audit log (`shared/audit/aegisclaw.log`) shows every network decision, mount, and safety gate
 
 ## Prerequisites
 
@@ -36,8 +36,8 @@ Audit trail is append-only and trivially greppable.
 ### Step 1 – Clone & prepare
 
 ```bash
-git clone https://github.com/PixnBits/SeedClaw.git
-cd SeedClaw
+git clone https://github.com/PixnBits/AegisClaw.git
+cd AegisClaw
 ```
 
 Copy Ollama models (if you have them already):
@@ -47,7 +47,7 @@ Copy Ollama models (if you have them already):
 cp -r ~/.ollama/models ./shared/ollama/models
 ```
 
-### Step 2 – Generate the seedclaw binary
+### Step 2 – Generate the aegisclaw binary
 
 Use a strong coding LLM (Claude 3.5 Sonnet, o1, Gemini 1.5 Pro, Cursor, Aider, etc.) with the file `./bootstrap-prompt.md`.
 
@@ -60,21 +60,21 @@ The coding LLM should generate the source code needed to start.
 ### Step 3 – Build & run
 
 ```bash
-cd ./src/seedclaw/
+cd ./src/aegisclaw/
 go mod tidy
-go build -o ../../seedclaw seedclaw.go
+go build -o ../../aegisclaw aegisclaw.go
 cd ../../
 ```
 
-Start SeedClaw (first run will pull/build core containers):
+Start AegisClaw (first run will pull/build core containers):
 
 ```bash
-./seedclaw
+./aegisclaw
 ```
 
 You should see:
 
-- Docker network `seedclaw-net` created
+- Docker network `aegisclaw-net` created
 - Minimal core skills starting (`message-hub`, `llm-caller`, `ollama`, `user-agent`)
 - Prompt appears: `>`
 
@@ -83,7 +83,7 @@ You should see:
 **Enable code generation (most common first action)**
 
 ```
-> Please create a skill called "coder" that can generate new Go-based skills following the SeedClaw architecture rules in ARCHITECTURE.md and PRD.md.
+> Please create a skill called "coder" that can generate new Go-based skills following the AegisClaw architecture rules in ARCHITECTURE.md and PRD.md.
 ```
 
 → user-agent threat-models (MEDIUM risk: executable code generation) → shows concerns + "PROCEED? (YES/NO)"  
@@ -111,7 +111,7 @@ Expected flow:
 1. user-agent → threat model phase → usually LOW risk → proceeds automatically or asks for confirmation
 2. user-agent → llm-caller → coder skill
 3. coder → generates Go file + Dockerfile + SKILL.md + registration metadata
-4. seedclaw → vets, compiles in sandbox, registers skill
+4. aegisclaw → vets, compiles in sandbox, registers skill
 5. output appears in terminal (code + path to artifact)
 
 **Build a weather skill**
@@ -126,17 +126,17 @@ Expected:
 - shows concerns + “PROCEED? (YES/NO)”
 - type `YES`
 - coder generates skill with narrow `network_policy` → e.g. `domains: ["api.open-meteo.com"]`
-- seedclaw rejects anything using `network_mode: host` or undeclared outbound
+- aegisclaw rejects anything using `network_mode: host` or undeclared outbound
 - new skill appears in registry → you can now say “weather Phoenix, AZ”
 
 ## How to audit what’s really happening
 
 ```bash
 # See every network permission ever granted
-grep -E '"network_policy|outbound|domains|network_mode"' shared/audit/seedclaw.log
+grep -E '"network_policy|outbound|domains|network_mode"' shared/audit/aegisclaw.log
 
 # See safety gate decisions
-grep -E 'threat_model|risk|PROCEED|confirmation|injection|safety_violation' shared/audit/seedclaw.log
+grep -E 'threat_model|risk|PROCEED|confirmation|injection|safety_violation' shared/audit/aegisclaw.log
 
 # Current compose configuration
 cat compose.yaml
@@ -158,7 +158,7 @@ Code changes must come from generated/registered skills — never direct commits
 
 For working with a web-based LLM for document editing (not code):
 ```shell
-$ echo "https://github.com/PixnBits/SeedClaw" > REPO_SUMMARY.md && echo -e "\n\n=== FULL FILE LIST ===" >> REPO_SUMMARY.md && git ls-files >> REPO_SUMMARY.md && echo -e "\n\n=== KEY FILES ===\n" >> REPO_SUMMARY.md && for f in $(git ls-files '*.md'); do echo -e "\n\n==== $f ====\n" >> REPO_SUMMARY.md; cat "$f" >> REPO_SUMMARY.md; done
+$ echo "https://github.com/PixnBits/AegisClaw" > REPO_SUMMARY.md && echo -e "\n\n=== FULL FILE LIST ===" >> REPO_SUMMARY.md && git ls-files >> REPO_SUMMARY.md && echo -e "\n\n=== KEY FILES ===\n" >> REPO_SUMMARY.md && for f in $(git ls-files '*.md'); do echo -e "\n\n==== $f ====\n" >> REPO_SUMMARY.md; cat "$f" >> REPO_SUMMARY.md; done
 ```
 
 ## License

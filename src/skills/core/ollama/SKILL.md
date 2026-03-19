@@ -80,7 +80,7 @@ In particular:
 ## Trivial Audit Guarantee
 After successful registration and startup:
 ```bash
-grep -E '"ollama"|ENTRYPOINT|ollama serve|127.0.0.1:11434|PID 1|child process' shared/audit/seedclaw.log
+grep -E '"ollama"|ENTRYPOINT|ollama serve|127.0.0.1:11434|PID 1|child process' shared/audit/aegisclaw.log
 ```
 should reveal that the Go wrapper is correctly running as PID 1 and that Ollama is managed internally with no external port exposure.
 
@@ -101,7 +101,7 @@ should reveal that the Go wrapper is correctly running as PID 1 and that Ollama 
     "outbound": "allow_list",
     "domains": ["registry.ollama.ai", "ollama.com"],
     "ports": [443],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": true
 }
@@ -135,13 +135,13 @@ At the end of generation, output the filled compliance checklist from that file.
 - Go main() must launch `ollama serve` **before** entering the TCP scanner loop.
 - Use `http.Client` with base URL `http://127.0.0.1:11434` for all Ollama API interactions.
 - Include a healthcheck that verifies both the control-plane TCP connection and the local Ollama endpoint.
-- Every bridge action must be forwarded as an audit event (seedclaw writes the immutable log).
+- Every bridge action must be forwarded as an audit event (aegisclaw writes the immutable log).
 
 ## Trivial Audit Guarantee
 After registration:
 ```bash
-grep -E '"ollama"|ENTRYPOINT|ollama serve|127.0.0.1:11434|PID 1' shared/audit/seedclaw.log
+grep -E '"ollama"|ENTRYPOINT|ollama serve|127.0.0.1:11434|PID 1' shared/audit/aegisclaw.log
 ```
 shows exactly that the Go wrapper is running as the control plane and the port is internal-only.
 
-This SKILL.md is now the binding contract. Any generated Dockerfile or Go code that violates the “Go binary = PID 1 + internal child” rule **must** be rejected during sandbox vetting by seedclaw.
+This SKILL.md is now the binding contract. Any generated Dockerfile or Go code that violates the “Go binary = PID 1 + internal child” rule **must** be rejected during sandbox vetting by aegisclaw.

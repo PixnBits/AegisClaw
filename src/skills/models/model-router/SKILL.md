@@ -25,7 +25,7 @@
     "outbound": "none",
     "domains": [],
     "ports": [],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": false
 }
@@ -40,7 +40,7 @@ Zero outbound connectivity forever. ModelRouterSkill **never** initiates network
 ## Default Container Runtime Profile
 Every service definition generated for model-router **MUST** inherit:
 ```yaml
-network: seedclaw-net
+network: aegisclaw-net
 read_only: true
 tmpfs:
   - /tmp
@@ -58,7 +58,7 @@ No exceptions — purest read-only profile.
 
 ## Communication (Strict – hub-only)
 **ALL** input/output routed exclusively through `message-hub` using structured JSON protocol.  
-No direct filesystem access to host control plane, no direct TCP to seedclaw.
+No direct filesystem access to host control plane, no direct TCP to aegisclaw.
 
 **Supported incoming message types:**
 - `route_llm` (primary)  
@@ -113,12 +113,12 @@ No direct filesystem access to host control plane, no direct TCP to seedclaw.
 - Every routed request includes transparent `router_reasoning` (auditable)
 
 ## Recommended Generation Prompt Excerpt (for coder skill)
-"You are generating ModelRouterSkill — intelligent, auditable router that selects the best LLM wrapper skill for each task in SeedClaw. Zero outbound networking. No mounts. Use hard-coded heuristics to prefer coder models for code tasks, general models for reasoning, local/fast for simple. Forward unmodified requests with reasoning metadata. Never call LLMs directly. Enforce all SeedClaw v2.1+ invariants: hub-only routing, least-privilege, transparent decisions."
+"You are generating ModelRouterSkill — intelligent, auditable router that selects the best LLM wrapper skill for each task in AegisClaw. Zero outbound networking. No mounts. Use hard-coded heuristics to prefer coder models for code tasks, general models for reasoning, local/fast for simple. Forward unmodified requests with reasoning metadata. Never call LLMs directly. Enforce all AegisClaw v2.1+ invariants: hub-only routing, least-privilege, transparent decisions."
 
 ## Trivial Audit Guarantee
 After registration:
 ```bash
-grep -E '"model-router"|network_policy|outbound|mounts|route_llm' shared/audit/seedclaw.log
+grep -E '"model-router"|network_policy|outbound|mounts|route_llm' shared/audit/aegisclaw.log
 ```
 shows exactly:
 - zero outbound ever granted
@@ -126,4 +126,4 @@ shows exactly:
 - only routing events appear (with reasoning visible)
 
 This SKILL.md is the binding contract for v2.2 compliance.  
-Any generated code that violates networking, routing, or selection invariants **must** be rejected during sandbox vetting by seedclaw.
+Any generated code that violates networking, routing, or selection invariants **must** be rejected during sandbox vetting by aegisclaw.

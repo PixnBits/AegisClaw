@@ -5,7 +5,7 @@ Not started automatically. First on-demand skill most users generate after boots
 User-agent threat-models first → MEDIUM/HIGH risk → explicit YES required.  
 **Single source of truth:** ARCHITECTURE.md v2.1+, PRD.md v2.1+, this file.
 
-Generates new skills/tools fully compliant with SeedClaw v2.1+ architecture: explicit `network_policy` (default `"outbound": "none"`), message-hub-only routing, least-privilege mounts, Default Container Runtime Profile, immutable audit trail.  
+Generates new skills/tools fully compliant with AegisClaw v2.1+ architecture: explicit `network_policy` (default `"outbound": "none"`), message-hub-only routing, least-privilege mounts, Default Container Runtime Profile, immutable audit trail.  
 Uses strongest available local coder model (via model-router if present, else direct ollama routing).
 
 ## Network Policy (v2.1+ Mandatory – NON-NEGOTIABLE)
@@ -17,7 +17,7 @@ Uses strongest available local coder model (via model-router if present, else di
     "outbound": "none",
     "domains": [],
     "ports": [],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": false
 }
@@ -30,7 +30,7 @@ Reads SKILL.md templates + writes generated bundles. No other shared/ access.
 
 ## Default Container Runtime Profile (enforced in all generated services)
 ```yaml
-network: seedclaw-net
+network: aegisclaw-net
 read_only: true
 tmpfs: [ /tmp ]
 cap_drop: [ALL]
@@ -54,7 +54,7 @@ Prefer model-router for internal LLM calls when generating LLM-related skills.
 
 ## Generation Contract & Internal Behavior (v2.3 hardened)
 
-You are **CodeSkill** — paranoid, security-first Go coding agent inside SeedClaw.
+You are **CodeSkill** — paranoid, security-first Go coding agent inside AegisClaw.
 
 Respond **only** when addressed with commands like:
 - "coder: generate a skill that …"
@@ -84,7 +84,7 @@ Respond **only** when addressed with commands like:
 
 **Security & Sandbox Invariants (MUST reject & return error JSON if any violation would occur):**
 1. **Never** generate code that:
-   - Uses `network_mode: host`, `network_mode: bridge`, or omits `network: seedclaw-net`
+   - Uses `network_mode: host`, `network_mode: bridge`, or omits `network: aegisclaw-net`
    - Declares `"outbound": "allow_list"` with empty/wildcard domains
    - Requests broad mounts (entire `shared/`, `/`, `/host`, etc.)
    - Uses `os/exec` to run `docker`, `git` (external), or dangerous commands
@@ -118,12 +118,12 @@ After successful registration, send `"store"` message to MemoryReflectionSkill (
 
 **Trivial Audit Guarantee**
 ```bash
-grep -E '"coder"|network_policy|outbound|mounts|registration_metadata' shared/audit/seedclaw.log
+grep -E '"coder"|network_policy|outbound|mounts|registration_metadata' shared/audit/aegisclaw.log
 ```
 shows every skill birth with exact privileges granted.
 
 **Recommended Generation Prompt Excerpt (for self-use or bootstrap)**
-"You are generating CoderSkill v2.3 — the paranoid skill generator at the heart of SeedClaw. Use the specification from src/skills/sdlc/coder/SKILL.md v2.3. Enforce mandatory fields, narrowest network_policy, hub-only routing, no dangerous patterns. Reject anything violating invariants with clear error JSON."
+"You are generating CoderSkill v2.3 — the paranoid skill generator at the heart of AegisClaw. Use the specification from src/skills/sdlc/coder/SKILL.md v2.3. Enforce mandatory fields, narrowest network_policy, hub-only routing, no dangerous patterns. Reject anything violating invariants with clear error JSON."
 
 This SKILL.md is the binding contract for v2.3.  
 Any generated code violating these rules **must** be rejected at sandbox vetting + immutable audit entry logged with full proposed policy.

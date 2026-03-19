@@ -1,19 +1,19 @@
-# SeedClaw Bootstrap Prompt – v2.1 (2026-03-11)
+# AegisClaw Bootstrap Prompt – v2.1 (2026-03-11)
 
-**This is the canonical v2.1 bootstrap prompt.** Use it **exactly** as-is with a top-tier coding LLM (Claude 3.5 Sonnet or better, Cursor, Aider) to generate the initial `seedclaw.go` binary. 
+**This is the canonical v2.1 bootstrap prompt.** Use it **exactly** as-is with a top-tier coding LLM (Claude 3.5 Sonnet or better, Cursor, Aider) to generate the initial `aegisclaw.go` binary. 
 
 **You are the Lead Security Architect and Principal Go Engineer.** Your generated code is the microscopic Trusted Computing Base. It must be paranoid-by-design, minimal, auditable, and enforce every invariant in PRD.md v2.1 and ARCHITECTURE.md v2.1. 
 
-**Single Source of Truth:** PRD.md v2.1 and ARCHITECTURE.md v2.1 (2026-03-11). The generated `seedclaw.go` must implement 100% of the architecture described there. Deviations are forbidden and must cause explicit runtime rejection + audit entry.
+**Single Source of Truth:** PRD.md v2.1 and ARCHITECTURE.md v2.1 (2026-03-11). The generated `aegisclaw.go` must implement 100% of the architecture described there. Deviations are forbidden and must cause explicit runtime rejection + audit entry.
 
 **NON-NEGOTIABLE SECURITY INVARIANTS** (enforce these in code with comments and runtime checks):
 
-1. **Control Channel**: Listen *exclusively* on `127.0.0.1:7124` (or SEEDCLAW_CONTROL_PORT env). Pure JSON-over-TCP. No WebSockets, no Unix sockets (permanently banned), no HTTP for MVP. Only `message-hub` (via host.internal:host-gateway) may connect. Validate incoming connections strictly.
+1. **Control Channel**: Listen *exclusively* on `127.0.0.1:7124` (or AegisClaw_CONTROL_PORT env). Pure JSON-over-TCP. No WebSockets, no Unix sockets (permanently banned), no HTTP for MVP. Only `message-hub` (via host.internal:host-gateway) may connect. Validate incoming connections strictly.
 
-2. **Docker Network**: Create and use dedicated `seedclaw-net` for *all* containers. Never use `host` network_mode. Reject any skill attempting it.
+2. **Docker Network**: Create and use dedicated `aegisclaw-net` for *all* containers. Never use `host` network_mode. Reject any skill attempting it.
 
 3. **Default Container Runtime Profile** (apply to EVERY service in compose.yaml):
-   - network: seedclaw-net
+   - network: aegisclaw-net
    - read_only: true
    - tmpfs: /tmp
    - cap_drop: [ALL]
@@ -33,7 +33,7 @@
        "outbound": "none" | "allow_list",
        "domains": ["api.example.com", "*.example.org"],
        "ports": [443],
-       "network_mode": "seedclaw-net"
+       "network_mode": "aegisclaw-net"
      },
      "network_needed": false,
      "hash": "sha256:................................................",
@@ -41,7 +41,7 @@
      "previous_hash": "sha256:................................................"
    }
    ```
-   Coder skill (generated later) must always produce this. Seedclaw rejects anything missing or invalid.
+   Coder skill (generated later) must always produce this. AegisClaw rejects anything missing or invalid.
 
 5. **Registration Lifecycle** (exact order, all audited):
    1. Receive generate request via TCP.
@@ -59,9 +59,9 @@
    - Broad mounts (only explicitly declared)
    - Undeclared outbound attempts (scan code for net/http if possible in MVP)
 
-7. **Audit Trail**: `./shared/audit/seedclaw.log` is append-only JSONL. Every entry:
+7. **Audit Trail**: `./shared/audit/aegisclaw.log` is append-only JSONL. Every entry:
    - ts, actor, action, skill, network_policy (full object), mounts, hash, status, previous_hash (for chaining with SHA-256).
-   Trivial auditing: `grep -E '"network_policy|outbound|domains"' shared/audit/seedclaw.log` shows entire swarm connectivity. Implement hash chaining.
+   Trivial auditing: `grep -E '"network_policy|outbound|domains"' shared/audit/aegisclaw.log` shows entire swarm connectivity. Implement hash chaining.
 
 8. **Shared Dir & Mounts**: Only purpose-driven selective mounts. Never mount entire shared/ . message-hub gets no filesystem control mounts (TCP only).
 
@@ -70,14 +70,14 @@
 **Project Structure to Generate** (output as separate code blocks):
 
 - `go.mod`
-- `seedclaw.go` (complete main logic)
-- Initial `compose.yaml` template handling (seedclaw manages it)
+- `aegisclaw.go` (complete main logic)
+- Initial `compose.yaml` template handling (aegisclaw manages it)
 - Any helper structs for JSON protocol, registry, audit.
 
 **On Startup Sequence** (hardcoded):
 - Verify Docker.
 - mkdir -p ./shared/{sources,builds,outputs,logs,audit,ollama/models}
-- Create `seedclaw-net` if missing.
+- Create `aegisclaw-net` if missing.
 - Load or init registry.json and audit.log.
 - Generate/overwrite initial compose.yaml with the four core skills (message-hub, llm-caller, ollama, coder) from `./src/skills/core/*/Dockerfile` paths. Apply Default Profile + narrow outbound for llm-caller/ollama.
 - `docker compose up -d`
@@ -100,8 +100,8 @@
 **Output ONLY**:
 - Full file contents in fenced code blocks labeled with filenames.
 - No explanations outside the code blocks.
-- Add extensive comments in seedclaw.go referencing the invariants.
+- Add extensive comments in aegisclaw.go referencing the invariants.
 
-The resulting binary must make the first `./seedclaw` run create a fully isolated, auditable swarm ready for the next bootstrap step (generating additional skills via the control channel). Security and easy auditing above all.
+The resulting binary must make the first `./aegisclaw` run create a fully isolated, auditable swarm ready for the next bootstrap step (generating additional skills via the control channel). Security and easy auditing above all.
 
 Generate the code now.

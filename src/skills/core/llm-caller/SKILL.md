@@ -4,7 +4,7 @@ Thin, secure client for LLM inference. Supports local Ollama and approved remote
 
 ## Capabilities
 - Calls to approved LLM endpoints
-- Handles auth via env vars (injected by seedclaw)
+- Handles auth via env vars (injected by aegisclaw)
 - Structured prompt/response handling
 
 ## Network Policy (v2.1 Mandatory)
@@ -16,7 +16,7 @@ Thin, secure client for LLM inference. Supports local Ollama and approved remote
     "outbound": "allow_list",
     "domains": ["api.openai.com", "api.anthropic.com", "grok.x.ai", "ollama.ai", "registry.ollama.ai"],
     "ports": [443],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": true
 }
@@ -27,7 +27,7 @@ Narrow allow-list ONLY for approved LLM providers. No other outbound.
 [] (none). No filesystem access beyond defaults.
 
 ## Default Container Runtime Profile
-read_only: true, tmpfs: [/tmp], cap_drop: [ALL], security_opt: [no-new-privileges:true], mem_limit: 512m, network: seedclaw-net (NEVER host).
+read_only: true, tmpfs: [/tmp], cap_drop: [ALL], security_opt: [no-new-privileges:true], mem_limit: 512m, network: aegisclaw-net (NEVER host).
 
 ## Communication
 **ALL** requests/responses route exclusively through message-hub. No direct HTTP from other skills or host sockets.
@@ -49,7 +49,7 @@ read_only: true, tmpfs: [/tmp], cap_drop: [ALL], security_opt: [no-new-privilege
 ```
 
 ## Security & Auditing Invariants
-- Every outbound call logged with full network_policy in seedclaw.log.
+- Every outbound call logged with full network_policy in aegisclaw.log.
 - Only uses declared domains/ports.
 - Trivial audit via grep on outbound and domains.
 - Coder skill must copy this exact policy style when generating similar skills.

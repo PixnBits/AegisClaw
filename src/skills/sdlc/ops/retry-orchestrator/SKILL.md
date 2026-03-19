@@ -28,7 +28,7 @@
     "outbound": "none",
     "domains": [],
     "ports": [],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": false
 }
@@ -44,7 +44,7 @@ Zero outbound connectivity forever. RetryOrchestratorSkill **never** initiates n
 ## Default Container Runtime Profile
 Every service definition generated for retry-orchestrator **MUST** inherit:
 ```yaml
-network: seedclaw-net
+network: aegisclaw-net
 read_only: true
 tmpfs:
   - /tmp
@@ -62,7 +62,7 @@ No exceptions — purest read-only profile possible.
 
 ## Communication (Strict – hub-only)
 **ALL** input/output routed exclusively through `message-hub` using structured JSON protocol.  
-No direct filesystem access to host control plane, no direct TCP to seedclaw.
+No direct filesystem access to host control plane, no direct TCP to aegisclaw.
 
 **Passive listening (primary mode):**
 - Subscribes to all messages of type `error`, `failure`, `timeout`, `rejection`, `critique_result` (where recommendation = "revise"|"reject")
@@ -109,12 +109,12 @@ No direct filesystem access to host control plane, no direct TCP to seedclaw.
 - Every emitted recovery action → structured event logged via hub (auditable)
 
 ## Recommended Generation Prompt Excerpt (for coder skill)
-"You are generating RetryOrchestratorSkill — passive failure watcher and recovery coordinator for SeedClaw. Zero outbound networking. No mounts. Listen to hub for error/failure messages, track retry counts per task_id, emit retry/refine/swap/reflect/escalate/abort directives. Hard retry cap. Enforce all SeedClaw v2.1+ invariants: hub-only, least-privilege, no side-effects beyond messages."
+"You are generating RetryOrchestratorSkill — passive failure watcher and recovery coordinator for AegisClaw. Zero outbound networking. No mounts. Listen to hub for error/failure messages, track retry counts per task_id, emit retry/refine/swap/reflect/escalate/abort directives. Hard retry cap. Enforce all AegisClaw v2.1+ invariants: hub-only, least-privilege, no side-effects beyond messages."
 
 ## Trivial Audit Guarantee
 After registration:
 ```bash
-grep -E '"retry-orchestrator"|network_policy|outbound|mounts' shared/audit/seedclaw.log
+grep -E '"retry-orchestrator"|network_policy|outbound|mounts' shared/audit/aegisclaw.log
 ```
 shows exactly:
 - zero outbound ever granted
@@ -122,4 +122,4 @@ shows exactly:
 - purest possible container profile
 
 This SKILL.md is the binding contract for v2.2 compliance.  
-Any generated code that violates networking, mount, or orchestration invariants **must** be rejected during sandbox vetting by seedclaw.
+Any generated code that violates networking, mount, or orchestration invariants **must** be rejected during sandbox vetting by aegisclaw.

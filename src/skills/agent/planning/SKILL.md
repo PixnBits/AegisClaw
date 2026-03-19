@@ -22,7 +22,7 @@
     "outbound": "none",
     "domains": [],
     "ports": [],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": false
 }
@@ -33,14 +33,14 @@ Zero outbound connectivity forever. PlannerSkill **never** makes network calls.
 `["plans:rw"]` (optional – MVP can be `[]`)  
 - Purpose: append-only storage of generated plans for audit, replay, or long-term reflection (`./shared/plans/history.jsonl`)  
 - If persistence is not required initially, omit the mount entirely  
-- Seedclaw creates `./shared/plans` only if requested and mounts it **exclusively** to this skill  
+- AegisClaw creates `./shared/plans` only if requested and mounts it **exclusively** to this skill  
 - No access to `sources/`, `builds/`, `outputs/`, `audit/`, `memory/`, `git-repo/`, `critiques/`, or any other shared path  
 - Invariant: plans cannot tamper with code, git history, memory archive, or audit trail
 
 ## Default Container Runtime Profile
 Every service definition generated for planner **MUST** inherit:
 ```yaml
-network: seedclaw-net
+network: aegisclaw-net
 read_only: true
 tmpfs:
   - /tmp
@@ -58,7 +58,7 @@ Exception (if persistence enabled): the `plans:rw` mount overrides read-only roo
 
 ## Communication (Strict – hub-only)
 **ALL** input/output routed exclusively through `message-hub` using structured JSON protocol.  
-No direct filesystem access to host control plane, no direct TCP to seedclaw.
+No direct filesystem access to host control plane, no direct TCP to aegisclaw.
 
 **Supported incoming message types:**
 - `plan` (primary)  
@@ -105,7 +105,7 @@ No direct filesystem access to host control plane, no direct TCP to seedclaw.
 - **Planning logic:** deterministic decomposition + simple heuristics first (no external LLM call from Planner in MVP)  
   - Identify security-sensitive steps (code gen, network, file write) → mark `risk_level: HIGH`, `requires_confirmation: true`
   - Prefer routing high-risk steps through user-agent → critic loop
-  - Enforce SeedClaw invariants in plan: no direct skill-to-skill comms, hub-only routing, explicit mounts/network_policy in generated skills
+  - Enforce AegisClaw invariants in plan: no direct skill-to-skill comms, hub-only routing, explicit mounts/network_policy in generated skills
 - **Re-planning:** on receiving failure/reflection feedback, adjust dependencies, re-assign, or insert safety gates
 - **Persistence (optional via env var `PLANNER_PERSISTENCE=true`):**
   - Append full plan JSON to `/data/history.jsonl` (matches mount)
@@ -118,12 +118,12 @@ No direct filesystem access to host control plane, no direct TCP to seedclaw.
 - If plan includes HIGH-risk steps without clear mitigation → set `recommendation: "refine"` or `"escalate"`
 
 ## Recommended Generation Prompt Excerpt (for coder skill)
-"You are generating PlannerSkill — task decomposition into structured, auditable plans for SeedClaw swarm. Zero outbound networking. Optional plans:rw mount for append-only history. Produce DAG/linear plans with skill assignments, dependencies, failure contingencies, risk levels. Mark high-risk steps for user confirmation. Enforce all SeedClaw v2.1+ invariants: hub-only routing, least-privilege, security-first decomposition."
+"You are generating PlannerSkill — task decomposition into structured, auditable plans for AegisClaw swarm. Zero outbound networking. Optional plans:rw mount for append-only history. Produce DAG/linear plans with skill assignments, dependencies, failure contingencies, risk levels. Mark high-risk steps for user confirmation. Enforce all AegisClaw v2.1+ invariants: hub-only routing, least-privilege, security-first decomposition."
 
 ## Trivial Audit Guarantee
 After registration:
 ```bash
-grep -E '"planner"|network_policy|outbound|mounts|plans:' shared/audit/seedclaw.log
+grep -E '"planner"|network_policy|outbound|mounts|plans:' shared/audit/aegisclaw.log
 ```
 shows exactly:
 - zero outbound ever granted
@@ -131,4 +131,4 @@ shows exactly:
 - no host network or broad shared/ exposure
 
 This SKILL.md is the binding contract for v2.2 compliance.  
-Any generated code that violates networking, mount, hub-only, or planning invariants **must** be rejected during sandbox vetting by seedclaw.
+Any generated code that violates networking, mount, hub-only, or planning invariants **must** be rejected during sandbox vetting by aegisclaw.

@@ -22,7 +22,7 @@
     "outbound": "none",
     "domains": [],
     "ports": [],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": false
 }
@@ -38,7 +38,7 @@ Zero outbound connectivity forever. SelfModSkill **never** initiates network act
 ## Default Container Runtime Profile
 Every service definition generated for self-mod **MUST** inherit:
 ```yaml
-network: seedclaw-net
+network: aegisclaw-net
 read_only: true
 tmpfs:
   - /tmp
@@ -56,7 +56,7 @@ No exceptions — purest read-only profile.
 
 ## Communication (Strict – hub-only)
 **ALL** input/output routed exclusively through `message-hub` using structured JSON protocol.  
-No direct filesystem access to host control plane, no direct TCP to seedclaw.
+No direct filesystem access to host control plane, no direct TCP to aegisclaw.
 
 **Supported incoming message types:**
 - `analyze` (primary trigger)  
@@ -116,12 +116,12 @@ No direct filesystem access to host control plane, no direct TCP to seedclaw.
 - Every proposal → structured event sent via hub (auditable before user sees it)
 
 ## Recommended Generation Prompt Excerpt (for coder skill)
-"You are generating SelfModSkill — meta-proposal engine for safe evolution of SeedClaw. Zero outbound networking. No mounts. Analyze feedback from critic/memory/retry/user, propose refined prompts or new skills as structured messages only. Never self-modify. Hard reject any proposal weakening security invariants. Enforce all SeedClaw v2.1+ invariants: hub-only, least-privilege, proposal-only."
+"You are generating SelfModSkill — meta-proposal engine for safe evolution of AegisClaw. Zero outbound networking. No mounts. Analyze feedback from critic/memory/retry/user, propose refined prompts or new skills as structured messages only. Never self-modify. Hard reject any proposal weakening security invariants. Enforce all AegisClaw v2.1+ invariants: hub-only, least-privilege, proposal-only."
 
 ## Trivial Audit Guarantee
 After registration:
 ```bash
-grep -E '"self-mod"|network_policy|outbound|mounts|proposal' shared/audit/seedclaw.log
+grep -E '"self-mod"|network_policy|outbound|mounts|proposal' shared/audit/aegisclaw.log
 ```
 shows exactly:
 - zero outbound ever granted
@@ -129,4 +129,4 @@ shows exactly:
 - only proposal events appear (never execution)
 
 This SKILL.md is the binding contract for v2.2 compliance.  
-Any generated code that violates networking, mount, proposal-only, or evolution invariants **must** be rejected during sandbox vetting by seedclaw.
+Any generated code that violates networking, mount, proposal-only, or evolution invariants **must** be rejected during sandbox vetting by aegisclaw.

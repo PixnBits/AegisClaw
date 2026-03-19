@@ -21,7 +21,7 @@
     "outbound": "none",
     "domains": [],
     "ports": [],
-    "network_mode": "seedclaw-net"
+    "network_mode": "aegisclaw-net"
   },
   "network_needed": false
 }
@@ -31,14 +31,14 @@ Zero outbound connectivity. GitSkill **never** attempts remote operations (push,
 ## Required Mounts
 `["git-repo:rw"]`  
 - Purpose: dedicated subdirectory for the git working tree and `.git` directory  
-- Seedclaw creates `./shared/git-repo` if missing and mounts it **only** to this skill  
+- AegisClaw creates `./shared/git-repo` if missing and mounts it **only** to this skill  
 - No access to `sources/`, `builds/`, `outputs/`, `audit/`, or any other shared subdirectory  
 - Mount strategy preserves audit invariant: git history cannot tamper with audit log or source code directories
 
 ## Default Container Runtime Profile
 Every service definition generated for git **MUST** inherit:
 ```yaml
-network: seedclaw-net
+network: aegisclaw-net
 read_only: true
 tmpfs:
   - /tmp
@@ -56,7 +56,7 @@ Exception: the `git-repo:rw` mount overrides read-only rootfs for that path only
 
 ## Communication (Strict – hub-only)
 **ALL** input/output routed exclusively through `message-hub` using structured JSON protocol.  
-No direct filesystem access to host control plane, no direct TCP to seedclaw.
+No direct filesystem access to host control plane, no direct TCP to aegisclaw.
 
 **Supported message types (incoming):**
 - `commit` – single skill commit  
@@ -81,7 +81,7 @@ No direct filesystem access to host control plane, no direct TCP to seedclaw.
     - `skills/{skill_name}/metadata.json`
     - `skills/{skill_name}/Dockerfile` (if applicable)
   - Commit message format: `"Generated/Updated {skill_name} via {llm_model} – {short metadata summary}"`
-  - Author: `"SeedClaw Coder <coder@seedclaw.local>"`
+  - Author: `"AegisClaw Coder <coder@aegisclaw.local>"`
 - Never add, commit or track files outside the skill directories
 - No `.gitignore` overrides that could accidentally include sensitive paths
 - All operations wrapped in short `context.WithTimeout(30 * time.Second)`
@@ -107,12 +107,12 @@ After successful first bulk commit (or repo init), send structured event to hub:
 Intended for SelfModSkill or future evolution components.
 
 ## Recommended Generation Prompt Excerpt (for coder skill)
-"You are generating GitSkill — local-only git version control using go-git. Zero outbound networking. Mount only git-repo:rw. Commit generated skills from MemoryReflectionSkill archive. Support single & bulk commit, basic log/diff/rollback. Enforce all SeedClaw v2.1+ invariants."
+"You are generating GitSkill — local-only git version control using go-git. Zero outbound networking. Mount only git-repo:rw. Commit generated skills from MemoryReflectionSkill archive. Support single & bulk commit, basic log/diff/rollback. Enforce all AegisClaw v2.1+ invariants."
 
 ## Trivial Audit Guarantee
 After registration:
 ```bash
-grep -E '"git"|network_policy|outbound|mounts|git-repo' shared/audit/seedclaw.log
+grep -E '"git"|network_policy|outbound|mounts|git-repo' shared/audit/aegisclaw.log
 ```
 shows exactly:
 - that git has zero outbound
@@ -120,4 +120,4 @@ shows exactly:
 - no host network ever appeared
 
 This SKILL.md is the binding contract for v2.2 compliance.  
-Any generated code that violates networking, mount, or hub-only rules **must** be rejected during sandbox vetting by seedclaw.
+Any generated code that violates networking, mount, or hub-only rules **must** be rejected during sandbox vetting by aegisclaw.

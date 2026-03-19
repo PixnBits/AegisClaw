@@ -1,17 +1,17 @@
-# SeedClaw Core Implementation Patterns v2.1.3 (2026-03-12)
+# AegisClaw Core Implementation Patterns v2.1.3 (2026-03-12)
 **Mandatory low-level wiring & safety patterns for the bootstrap phase**
 
 This document is **NOT application logic**.  
 It is a fixed, non-negotiable set of control-plane and safety boilerplate patterns that **MUST** appear (possibly slightly adapted for naming/context) in every generated `.go` file that touches:
 
-- the TCP control channel (seedclaw listener or client connections)
+- the TCP control channel (aegisclaw listener or client connections)
 - audit log writing (host binary only)
 - startup sequencing & concurrency model
 - Docker compose.yaml generation
 - registration handshake
 
 These patterns exist to eliminate the exact classes of startup failures observed during real bootstrap iterations (March 2026).  
-Any generated code that deviates from these patterns without an extremely strong, auditable justification **MUST** be rejected during sandbox vetting by seedclaw.
+Any generated code that deviates from these patterns without an extremely strong, auditable justification **MUST** be rejected during sandbox vetting by aegisclaw.
 
 Every place one of these patterns is used, the generated code **MUST** retain at minimum a comment of the form:
 
@@ -22,7 +22,7 @@ Every place one of these patterns is used, the generated code **MUST** retain at
 
 Later auditing can simply `grep -r "CONTROL_PLANE_PATTERN_v2.1.3" **/*.go` to verify compliance.
 
-## 1. TCP Control Plane – Host Listener (seedclaw binary only)
+## 1. TCP Control Plane – Host Listener (aegisclaw binary only)
 
 **Pattern – Host-side bind (MUST listen only on loopback)**
 
@@ -35,7 +35,7 @@ import (
 )
 
 func main() {
-    port := os.Getenv("SEEDCLAW_CONTROL_PORT")
+    port := os.Getenv("AegisClaw_CONTROL_PORT")
     if port == "" {
         port = "7124"
     }
@@ -84,7 +84,7 @@ func connectWithRetry() net.Conn {
         time.Sleep(time.Duration(1<<uint(attempt)) * 500 * time.Millisecond)
     }
     if err != nil {
-        // log + fatal (audit write happens in seedclaw)
+        // log + fatal (audit write happens in aegisclaw)
         os.Exit(1)
     }
     return conn
@@ -132,7 +132,7 @@ func appendAudit(entry map[string]interface{}) error {
     base := filepath.Dir(execPath)
     shared := filepath.Join(base, "..", "shared")
     auditDir := filepath.Join(shared, "audit")
-    auditPath := filepath.Join(auditDir, "seedclaw.log")
+    auditPath := filepath.Join(auditDir, "aegisclaw.log")
 
     // CONTROL_PLANE_PATTERN_v2.1.3: Audit path – executable-relative + mkdir
     // SECURITY_INVARIANT: ARCHITECTURE.md § Auditing & Observability
@@ -166,7 +166,7 @@ func appendAudit(entry map[string]interface{}) error {
 services:
   message-hub:
     # ... image, build, etc.
-    network_mode: seedclaw-net
+    network_mode: aegisclaw-net
     extra_hosts:
       - "host.internal:host-gateway"
     healthcheck:
@@ -197,12 +197,12 @@ services:
 
 - [ ] message-hub is TCP client only + uses retry dial + active scanner loop
 - [ ] No skill listens on 127.0.0.1:7124 or any port
-- [ ] Audit path in seedclaw uses executable-relative + MkdirAll + 0600
+- [ ] Audit path in aegisclaw uses executable-relative + MkdirAll + 0600
 - [ ] compose.yaml contains all four core skills + healthcheck on message-hub
 - [ ] Every TCP/client file has active bufio.Scanner in main loop
 - [ ] All used patterns include CONTROL_PLANE_PATTERN_v2.1.3 comment
 
-Any generated file that fails this checklist or includes a forbidden anti-pattern **MUST** cause seedclaw registration rejection (future vetting rule).
+Any generated file that fails this checklist or includes a forbidden anti-pattern **MUST** cause aegisclaw registration rejection (future vetting rule).
 
 This document is the canonical reference for bootstrap reliability.  
 It complements — and does not replace — ARCHITECTURE.md and PRD.md.
