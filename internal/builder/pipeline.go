@@ -36,6 +36,7 @@ type PipelineResult struct {
 	Files        map[string]string `json:"files"`
 	FileHashes   map[string]string `json:"file_hashes"`
 	Reasoning    string            `json:"reasoning"`
+	Analysis     *AnalysisResult   `json:"analysis,omitempty"`
 	Error        string            `json:"error,omitempty"`
 	Round        int               `json:"round"`
 	StartedAt    time.Time         `json:"started_at"`
@@ -44,11 +45,12 @@ type PipelineResult struct {
 }
 
 // Pipeline orchestrates the end-to-end flow from approved proposal to code diff.
-// It coordinates BuilderRuntime, CodeGenerator, and GitManager.
+// It coordinates BuilderRuntime, CodeGenerator, GitManager, and Analyzer.
 type Pipeline struct {
 	builderRT  *BuilderRuntime
 	codeGen    *CodeGenerator
 	gitMgr     *gitmanager.Manager
+	analyzer   *Analyzer
 	kern       *kernel.Kernel
 	store      *proposal.Store
 	logger     *zap.Logger
@@ -61,6 +63,7 @@ func NewPipeline(
 	br *BuilderRuntime,
 	cg *CodeGenerator,
 	gm *gitmanager.Manager,
+	az *Analyzer,
 	kern *kernel.Kernel,
 	store *proposal.Store,
 	logger *zap.Logger,
@@ -85,6 +88,7 @@ func NewPipeline(
 		builderRT: br,
 		codeGen:   cg,
 		gitMgr:    gm,
+		analyzer:  az,
 		kern:      kern,
 		store:     store,
 		logger:    logger,
@@ -224,7 +228,45 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 	// Step 7: Compute file hashes for integrity
 	result.FileHashes = computeFileHashes(codeResp.Files)
 
-	// Step 8: Mark complete
+	// Step 8: Run static analysis and build inside builder sandbox
+	if p.analyzer != nil {
+		analysisReq := &AnalysisRequest{
+			ProposalID: prop.ID,
+			Files:      codeResp.Files,
+			Diff:       diff,
+			SkillName:  spec.Name,
+		}
+
+		analysisResult, analysisErr := p.analyzer.Analyze(builderInfo.ID, analysisReq)
+		if analysisErr != nil {
+			p.logger.Error("analysis failed", zap.Error(analysisErr))
+			result.State = PipelineStateFailed
+			result.Error = fmt.Sprintf("analysis failed: %v", analysisErr)
+			return result, fmt.Errorf("pipeline: %s", result.Error)
+		}
+
+		result.Analysis = analysisResult
+
+		// Fail pipeline on high-severity findings
+		if !analysisResult.Passed {
+			result.State = PipelineStateFailed
+			reason := "analysis did not pass"
+			if analysisResult.FailureReason != "" {
+				reason = analysisResult.FailureReason
+			}
+			result.Error = reason
+			result.CompletedAt = time.Now().UTC()
+			result.Duration = result.CompletedAt.Sub(result.StartedAt)
+			return result, fmt.Errorf("pipeline: %s", reason)
+		}
+
+		// Record binary hash if available
+		if analysisResult.BinaryHash != "" {
+			result.FileHashes["_binary"] = analysisResult.BinaryHash
+		}
+	}
+
+	// Step 9: Mark complete
 	result.State = PipelineStateComplete
 	result.CompletedAt = time.Now().UTC()
 	result.Duration = result.CompletedAt.Sub(result.StartedAt)
@@ -235,6 +277,7 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 		"commit":      commitHash,
 		"branch":      result.Branch,
 		"files":       len(codeResp.Files),
+		"analysis":    result.Analysis != nil,
 		"duration":    result.Duration.String(),
 	})
 	action := kernel.NewAction(kernel.ActionBuilderBuild, "pipeline", auditPayload)

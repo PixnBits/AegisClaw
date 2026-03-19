@@ -35,7 +35,7 @@ func TestNewPipelineValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewPipeline(nil, nil, nil, nil, nil, nil)
+			_, err := NewPipeline(nil, nil, nil, nil, nil, nil, nil)
 			if err == nil {
 				t.Errorf("expected error containing %q, got nil", tt.wantErr)
 			} else if !containsStr(err.Error(), tt.wantErr) {
