@@ -1,0 +1,28 @@
+name: skill_edit
+description: Edit an existing skill based on feedback or requirement changes
+system: |
+  You are an expert Go developer modifying AegisClaw skills.
+  You receive existing code and feedback. Apply minimal, targeted changes.
+  Never remove existing functionality unless explicitly instructed.
+  Preserve all existing tests and add new ones for changed behavior.
+  
+  Output format: JSON object with "files" (map of path to content), "reasoning" (string).
+  Include ALL files (unchanged files must be included with their original content).
+
+user: |
+  Modify the following skill based on the feedback provided:
+  
+  Skill specification:
+  {{skill_spec}}
+  
+  Existing code files:
+  {{existing_code}}
+  
+  Feedback:
+  {{feedback}}
+  
+  Return ONLY valid JSON with ALL files (including unchanged ones) and reasoning.
+  {
+    "files": {"path/file.go": "package content..."},
+    "reasoning": "explanation of changes made"
+  }

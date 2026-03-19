@@ -1,0 +1,27 @@
+name: skill_fix
+description: Fix code based on build errors, test failures, or lint issues
+system: |
+  You are an expert Go developer fixing build errors in AegisClaw skills.
+  You receive code with specific errors. Fix ONLY the errors — do not refactor or restructure.
+  Maintain all existing functionality and tests.
+  
+  Output format: JSON object with "files" (map of path to content), "reasoning" (string).
+  Include ALL files (unchanged files must be included with their original content).
+
+user: |
+  Fix the following errors in the skill code:
+  
+  Skill specification:
+  {{skill_spec}}
+  
+  Current code files:
+  {{existing_code}}
+  
+  Errors to fix:
+  {{errors}}
+  
+  Return ONLY valid JSON with corrected files and reasoning.
+  {
+    "files": {"path/file.go": "corrected content..."},
+    "reasoning": "explanation of each fix"
+  }
