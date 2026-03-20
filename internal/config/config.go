@@ -46,6 +46,12 @@ type Config struct {
 	Vault struct {
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"vault" mapstructure:"vault"`
+	Ollama struct {
+		Endpoint     string `yaml:"endpoint" mapstructure:"endpoint"`
+		TimeoutSecs  int    `yaml:"timeout_secs" mapstructure:"timeout_secs"`
+		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
+		ModelDir     string `yaml:"model_dir" mapstructure:"model_dir"`
+	} `yaml:"ollama" mapstructure:"ollama"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -116,6 +122,17 @@ func DefaultConfig() Config {
 		}{
 			Dir: filepath.Join(home, ".config", "aegisclaw", "secrets"),
 		},
+		Ollama: struct {
+			Endpoint     string `yaml:"endpoint" mapstructure:"endpoint"`
+			TimeoutSecs  int    `yaml:"timeout_secs" mapstructure:"timeout_secs"`
+			RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
+			ModelDir     string `yaml:"model_dir" mapstructure:"model_dir"`
+		}{
+			Endpoint:     "http://127.0.0.1:11434",
+			TimeoutSecs:  300,
+			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "model-registry.json"),
+			ModelDir:     filepath.Join(home, ".local", "share", "aegisclaw", "models"),
+		},
 	}
 }
 
@@ -157,6 +174,10 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("builder.max_concurrent_builds", defaults.Builder.MaxConcurrentBuilds)
 	viper.SetDefault("builder.build_timeout_minutes", defaults.Builder.BuildTimeoutMinutes)
 	viper.SetDefault("vault.dir", defaults.Vault.Dir)
+	viper.SetDefault("ollama.endpoint", defaults.Ollama.Endpoint)
+	viper.SetDefault("ollama.timeout_secs", defaults.Ollama.TimeoutSecs)
+	viper.SetDefault("ollama.registry_path", defaults.Ollama.RegistryPath)
+	viper.SetDefault("ollama.model_dir", defaults.Ollama.ModelDir)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -216,6 +237,8 @@ func validateConfig(config *Config) error {
 		"builder.rootfs_template":    config.Builder.RootfsTemplate,
 		"builder.workspace_base_dir": config.Builder.WorkspaceBaseDir,
 		"vault.dir":                  config.Vault.Dir,
+		"ollama.registry_path":       config.Ollama.RegistryPath,
+		"ollama.model_dir":           config.Ollama.ModelDir,
 	}
 
 	for name, path := range paths {
