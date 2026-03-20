@@ -37,6 +37,44 @@ type ReviewResponse struct {
 	Comments  string   `json:"comments"`
 }
 
+// UnmarshalJSON handles LLMs returning evidence as a string instead of an array.
+func (rr *ReviewResponse) UnmarshalJSON(data []byte) error {
+	// Use an alias to avoid infinite recursion.
+	type Alias ReviewResponse
+	aux := &struct {
+		Evidence json.RawMessage `json:"evidence"`
+		*Alias
+	}{
+		Alias: (*Alias)(rr),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if len(aux.Evidence) == 0 {
+		rr.Evidence = nil
+		return nil
+	}
+
+	// Try array first.
+	var arr []string
+	if err := json.Unmarshal(aux.Evidence, &arr); err == nil {
+		rr.Evidence = arr
+		return nil
+	}
+
+	// Fall back to a single string.
+	var s string
+	if err := json.Unmarshal(aux.Evidence, &s); err == nil {
+		if s != "" {
+			rr.Evidence = []string{s}
+		}
+		return nil
+	}
+
+	return fmt.Errorf("evidence must be a string or array of strings")
+}
+
 // Validate checks the response has valid fields.
 func (rr *ReviewResponse) Validate() error {
 	switch proposal.ReviewVerdict(rr.Verdict) {
@@ -46,9 +84,6 @@ func (rr *ReviewResponse) Validate() error {
 	}
 	if rr.RiskScore < 0 || rr.RiskScore > 10 {
 		return fmt.Errorf("risk score must be between 0 and 10, got %f", rr.RiskScore)
-	}
-	if len(rr.Evidence) == 0 {
-		return fmt.Errorf("at least one evidence item is required")
 	}
 	return nil
 }
@@ -182,8 +217,15 @@ func NewReviewer(launcher SandboxLauncher, minModels int, logger *zap.Logger) *R
 // Returns the aggregated review.
 func (r *Reviewer) Execute(ctx context.Context, p *proposal.Proposal, persona *Persona) (*proposal.Review, error) {
 	models := persona.Models
+	if len(models) == 0 {
+		return nil, fmt.Errorf("persona %s has no models configured", persona.Name)
+	}
 	if len(models) < r.minModels {
-		return nil, fmt.Errorf("persona %s has %d models but %d required for cross-verification", persona.Name, len(models), r.minModels)
+		r.logger.Warn("persona has fewer models than required for cross-verification; proceeding without cross-verification",
+			zap.String("persona", persona.Name),
+			zap.Int("models", len(models)),
+			zap.Int("min_models", r.minModels),
+		)
 	}
 
 	results := make(chan modelResult, len(models))

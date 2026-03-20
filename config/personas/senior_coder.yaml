@@ -14,8 +14,8 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Focus on practical code quality issues.
 models:
-  - mistral-nemo
-  - llama-3.2-3b
+  - qwen2.5:latest
+  - llama3.2:latest
 weight: 0.25
 output_schema: |
   {

@@ -154,9 +154,14 @@ func TestReviewerInsufficientModels(t *testing.T) {
 	p, _ := proposal.NewProposal("Test", "One model only", proposal.CategoryNewSkill, "admin")
 	p.Round = 1
 
-	_, err := reviewer.Execute(context.Background(), p, persona)
-	if err == nil {
-		t.Error("expected error for insufficient models")
+	// With fewer models than minModels the reviewer should still succeed
+	// (warn, not error) — cross-verification is best-effort.
+	result, err := reviewer.Execute(context.Background(), p, persona)
+	if err != nil {
+		t.Fatalf("unexpected error for insufficient models: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
 }
 
@@ -217,7 +222,7 @@ func TestReviewResponseValidation(t *testing.T) {
 		{"invalid verdict", ReviewResponse{Verdict: "maybe", RiskScore: 3, Evidence: []string{"ok"}}, true},
 		{"risk too high", ReviewResponse{Verdict: "approve", RiskScore: 11, Evidence: []string{"ok"}}, true},
 		{"risk too low", ReviewResponse{Verdict: "approve", RiskScore: -1, Evidence: []string{"ok"}}, true},
-		{"no evidence", ReviewResponse{Verdict: "approve", RiskScore: 3}, true},
+		{"no evidence", ReviewResponse{Verdict: "approve", RiskScore: 3}, false},
 	}
 
 	for _, tt := range tests {

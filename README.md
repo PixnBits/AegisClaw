@@ -51,17 +51,82 @@ go install ./cmd/guest-agent
 
 ## Quick Start / Usage
 
-Basic run (exact flags TBD — check TUI on launch):
+Quick start and common usage examples — copy/paste to try locally.
+
+Prerequisites
+- Linux host
+- Go 1.26+ to build from source
+- Ollama installed and running locally (default: http://127.0.0.1:11434)
+- Firecracker and required tooling available for sandboxed reviewer/builder execution
+
+Build
 
 ```bash
-# Start the host agent with TUI (ReAct/chat interface)
-./aegisclaw
+git clone https://github.com/PixnBits/AegisClaw.git
+cd AegisClaw
+go build -o aegisclaw ./cmd/aegisclaw
+go build -o guest-agent ./cmd/guest-agent
 ```
 
-The TUI should launch a chat-like interface for interacting with the agent.  
-Guest agent binary is for microVM payload — not run directly.
+Run (host)
 
-More examples coming as Epic 6+ land (multi-agent, skills execution, etc.).
+```bash
+# Start the host agent with the TUI (interactive ReAct/chat)
+./aegisclaw
+
+# Run non-interactive commands and capture logs
+Use specific subcommands for non-TUI operations (for example, `start` to run the kernel
+or `status --tui` to launch the TUI dashboard). To capture logs, redirect stdout/stderr:
+
+```bash
+# Start kernel and capture logs to a file
+./aegisclaw start > aegisclaw.log 2>&1 &
+
+# Launch the interactive status dashboard (TUI)
+./aegisclaw status --tui
+
+# Or run directly from source and capture logs
+go run ./cmd/aegisclaw start > aegisclaw.log 2>&1 &
+```
+```
+
+Notes
+- The TUI opens an interactive chat-like interface for controlling the agent and submitting proposals.
+- The `guest-agent` binary is intended to run inside Firecracker microVMs and is not invoked directly on the host.
+- Ollama must be running and reachable from the reviewer/builder sandboxes (default localhost:11434). The platform enforces sandbox isolation: host/kernel processes are not permitted to call Ollama directly.
+
+Note about commands: If you built a previous binary or pulled new code, the CLI may have changed. If you see "unknown command", rebuild the binary or run directly from source:
+
+```bash
+# Rebuild the binary to pick up new commands
+go build -o aegisclaw ./cmd/aegisclaw
+./aegisclaw model list
+
+# Or run without building the binary
+go run ./cmd/aegisclaw model list
+```
+
+Model management (local Ollama models)
+
+```bash
+# List registered models and their status
+./aegisclaw model list
+
+# Verify a specific model (checks digest/availability)
+./aegisclaw model verify <model-name>
+
+# Pull/update a model from the Ollama store
+./aegisclaw model update <model-name>
+```
+
+Developer / testing
+
+```bash
+# Run full unit test suite
+go test ./... -count=1
+```
+
+If you want me to expand this into a short "First Run" script or add distro-specific installation steps for Ollama/Firecracker, I can add that next.
 
 ## Project Structure Overview
 - `cmd/aegisclaw`       → Main host CLI + TUI entrypoint  

@@ -143,6 +143,20 @@ func init() {
 	proposeCmd.AddCommand(proposeShowCmd)
 	proposeCmd.Flags().StringVar(&proposeCategory, "category", "new_skill", "Proposal category (new_skill, edit_skill, delete_skill, kernel_patch, config_change)")
 
+	// Non-interactive flags for propose skill
+	proposeSkillCmd.Flags().StringVar(&skillName, "name", "", "Skill name (lowercase, letters/digits/hyphens)")
+	proposeSkillCmd.Flags().StringVar(&skillTitle, "title", "", "Proposal title (default: \"Add <goal> skill\")")
+	proposeSkillCmd.Flags().StringVar(&skillDescription, "description", "", "Skill description")
+	proposeSkillCmd.Flags().StringSliceVar(&skillTools, "tool", nil, "Tool definition as name:description (repeatable)")
+	proposeSkillCmd.Flags().IntVar(&dataSensitivity, "data-sensitivity", 1, "Data sensitivity 1-5")
+	proposeSkillCmd.Flags().IntVar(&networkExposure, "network-exposure", 1, "Network exposure 1-5")
+	proposeSkillCmd.Flags().IntVar(&privilegeLevel, "privilege-level", 1, "Privilege level 1-5")
+	proposeSkillCmd.Flags().StringSliceVar(&allowedHosts, "allowed-host", nil, "Allowed network host (repeatable)")
+	proposeSkillCmd.Flags().StringSliceVar(&allowedPortStrs, "allowed-port", nil, "Allowed network port (repeatable)")
+	proposeSkillCmd.Flags().StringSliceVar(&allowedProtocols, "allowed-protocol", nil, "Allowed protocol: tcp, udp, icmp (repeatable)")
+	proposeSkillCmd.Flags().StringSliceVar(&secretRefs, "secret", nil, "Secret reference name (repeatable)")
+	proposeSkillCmd.Flags().BoolVar(&autoSubmit, "submit", false, "Immediately submit for court review")
+
 	courtCmd.AddCommand(courtReviewCmd)
 	courtCmd.AddCommand(courtVoteCmd)
 	courtCmd.AddCommand(courtSessionsCmd)

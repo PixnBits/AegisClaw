@@ -14,7 +14,7 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Focus on what could go wrong and how it would be caught.
 models:
-  - llama-3.2-3b
+  - llama3.2:latest
 weight: 0.15
 output_schema: |
   {

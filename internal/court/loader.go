@@ -127,8 +127,8 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Be thorough but fair. Flag real risks, not theoretical ones.
 models:
-  - mistral-nemo
-  - llama-3.2-3b
+  - qwen2.5:latest
+  - llama3.2:latest
 weight: 0.25
 output_schema: |
   {
@@ -156,8 +156,8 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Focus on practical code quality issues.
 models:
-  - mistral-nemo
-  - llama-3.2-3b
+  - qwen2.5:latest
+  - llama3.2:latest
 weight: 0.25
 output_schema: |
   {
@@ -185,8 +185,8 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Consider how this change fits into the overall security architecture.
 models:
-  - mistral-nemo
-  - llama-3.2-3b
+  - qwen2.5:latest
+  - llama3.2:latest
 weight: 0.2
 output_schema: |
   {
@@ -214,7 +214,7 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Focus on what could go wrong and how it would be caught.
 models:
-  - llama-3.2-3b
+  - llama3.2:latest
 weight: 0.15
 output_schema: |
   {
@@ -242,7 +242,7 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Think about how this affects the humans who operate and maintain the system.
 models:
-  - llama-3.2-3b
+  - llama3.2:latest
 weight: 0.15
 output_schema: |
   {
