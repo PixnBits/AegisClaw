@@ -88,7 +88,7 @@ type VerificationResult struct {
 
 // Discrepancy records a field-level disagreement between models.
 type Discrepancy struct {
-	Field  string           `json:"field"`
+	Field  string            `json:"field"`
 	Values []DiscrepantValue `json:"values"`
 }
 
