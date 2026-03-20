@@ -148,7 +148,7 @@ func LoadRouterFromDir(dir string) (*Router, error) {
 
 		cfg.Routes = append(cfg.Routes, PersonaRoute{
 			Persona:      persona.Name,
-			Models:        persona.Models,
+			Models:       persona.Models,
 			Temperature:  0.7,
 			Mode:         RouteModeFallback,
 			OutputSchema: persona.OutputSchema,

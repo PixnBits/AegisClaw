@@ -15,15 +15,15 @@ const OllamaEndpoint = "http://127.0.0.1:11434"
 
 // GenerateRequest is the payload sent to the Ollama /api/generate endpoint.
 type GenerateRequest struct {
-	Model       string            `json:"model"`
-	Prompt      string            `json:"prompt"`
-	System      string            `json:"system,omitempty"`
-	Temperature float64           `json:"temperature,omitempty"`
-	Format      string            `json:"format,omitempty"`
-	Stream      bool              `json:"stream"`
-	Options     map[string]any    `json:"options,omitempty"`
-	Context     []int             `json:"context,omitempty"`
-	KeepAlive   string            `json:"keep_alive,omitempty"`
+	Model       string         `json:"model"`
+	Prompt      string         `json:"prompt"`
+	System      string         `json:"system,omitempty"`
+	Temperature float64        `json:"temperature,omitempty"`
+	Format      string         `json:"format,omitempty"`
+	Stream      bool           `json:"stream"`
+	Options     map[string]any `json:"options,omitempty"`
+	Context     []int          `json:"context,omitempty"`
+	KeepAlive   string         `json:"keep_alive,omitempty"`
 }
 
 // GenerateResponse is the response from the Ollama /api/generate endpoint.
@@ -47,13 +47,13 @@ type ChatMessage struct {
 
 // ChatRequest is the payload sent to the Ollama /api/chat endpoint.
 type ChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Temperature float64       `json:"temperature,omitempty"`
-	Format      string        `json:"format,omitempty"`
-	Stream      bool          `json:"stream"`
+	Model       string         `json:"model"`
+	Messages    []ChatMessage  `json:"messages"`
+	Temperature float64        `json:"temperature,omitempty"`
+	Format      string         `json:"format,omitempty"`
+	Stream      bool           `json:"stream"`
 	Options     map[string]any `json:"options,omitempty"`
-	KeepAlive   string        `json:"keep_alive,omitempty"`
+	KeepAlive   string         `json:"keep_alive,omitempty"`
 }
 
 // ChatResponse is the response from the Ollama /api/chat endpoint.
@@ -88,10 +88,10 @@ type ShowRequest struct {
 
 // ShowResponse is the detailed model info from /api/show.
 type ShowResponse struct {
-	ModelFile  string            `json:"modelfile"`
-	Parameters string           `json:"parameters"`
-	Template   string            `json:"template"`
-	Details    ModelDetails      `json:"details"`
+	ModelFile  string       `json:"modelfile"`
+	Parameters string       `json:"parameters"`
+	Template   string       `json:"template"`
+	Details    ModelDetails `json:"details"`
 }
 
 // ModelDetails contains model metadata from /api/show.
