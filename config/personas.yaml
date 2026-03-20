@@ -1,0 +1,84 @@
+default_temperature: 0.7
+default_mode: fallback
+default_max_tokens: 4096
+
+routes:
+  - persona: CISO
+    models:
+      - mistral-nemo
+      - llama3.2:3b
+    temperature: 0.3
+    mode: ensemble
+    max_tokens: 4096
+    output_schema: |
+      {
+        "verdict": "approve|reject|ask|abstain",
+        "risk_score": 0.0,
+        "evidence": ["string"],
+        "questions": ["string"],
+        "comments": "string"
+      }
+
+  - persona: SeniorCoder
+    models:
+      - mistral-nemo
+      - llama3.2:3b
+    temperature: 0.5
+    mode: fallback
+    max_tokens: 4096
+    output_schema: |
+      {
+        "verdict": "approve|reject|ask|abstain",
+        "risk_score": 0.0,
+        "evidence": ["string"],
+        "questions": ["string"],
+        "comments": "string"
+      }
+
+  - persona: SecurityArchitect
+    models:
+      - mistral-nemo
+      - llama3.2:3b
+    temperature: 0.4
+    mode: fallback
+    max_tokens: 4096
+    output_schema: |
+      {
+        "verdict": "approve|reject|ask|abstain",
+        "risk_score": 0.0,
+        "evidence": ["string"],
+        "questions": ["string"],
+        "comments": "string"
+      }
+
+  - persona: Tester
+    models:
+      - llama3.2:3b
+      - mistral-nemo
+    temperature: 0.6
+    mode: fallback
+    max_tokens: 4096
+    output_schema: |
+      {
+        "verdict": "approve|reject|ask|abstain",
+        "risk_score": 0.0,
+        "evidence": ["string"],
+        "questions": ["string"],
+        "comments": "string"
+      }
+
+  - persona: UserAdvocate
+    models:
+      - llama3.2:3b
+      - mistral-nemo
+    temperature: 0.7
+    mode: fallback
+    max_tokens: 4096
+    output_schema: |
+      {
+        "verdict": "approve|reject|ask|abstain",
+        "risk_score": 0.0,
+        "evidence": ["string"],
+        "questions": ["string"],
+        "comments": "string"
+      }
