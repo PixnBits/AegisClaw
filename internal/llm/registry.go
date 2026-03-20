@@ -103,6 +103,17 @@ func (r *ModelRegistry) Register(entry ModelEntry) error {
 	return r.save()
 }
 
+// registerSeed adds a model entry without requiring a SHA256 hash (for known-good seed entries).
+func (r *ModelRegistry) registerSeed(entry ModelEntry) error {
+	if entry.Name == "" {
+		return fmt.Errorf("model name is required")
+	}
+	r.mu.Lock()
+	r.entries[entry.Name] = entry
+	r.mu.Unlock()
+	return r.save()
+}
+
 // Remove deletes a model from the registry and persists.
 func (r *ModelRegistry) Remove(name string) error {
 	r.mu.Lock()

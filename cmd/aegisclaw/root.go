@@ -123,6 +123,7 @@ func init() {
 	rootCmd.AddCommand(builderCmd)
 	rootCmd.AddCommand(secretCmd)
 	rootCmd.AddCommand(chatCmd)
+	rootCmd.AddCommand(modelCmd)
 
 	sandboxCmd.AddCommand(lsCmd)
 	sandboxCmd.AddCommand(sandboxStartCmd)
@@ -154,4 +155,8 @@ func init() {
 	secretCmd.AddCommand(secretDeleteCmd)
 	secretAddCmd.Flags().StringVar(&secretSkillID, "skill", "", "Skill ID to associate with the secret")
 	secretAddCmd.MarkFlagRequired("skill")
+
+	modelCmd.AddCommand(modelListCmd)
+	modelCmd.AddCommand(modelVerifyCmd)
+	modelCmd.AddCommand(modelUpdateCmd)
 }
