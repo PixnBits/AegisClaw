@@ -436,6 +436,9 @@ Default values if not discussed: data_sensitivity=1, network_exposure=1, privile
 `
 
 	// Query daemon for active skills.
+	if daemonClient == nil {
+		return base
+	}
 	resp, err := daemonClient.Call(ctx, "skill.list", nil)
 	if err == nil && resp.Success && len(resp.Data) > 0 {
 		var skills []struct {
@@ -867,24 +870,26 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 	}
 
 	// Try to start court review via daemon.
-	pData, _ := p.Marshal()
-	resp, err := daemonClient.Call(ctx, "court.review", api.CourtReviewRequest{
-		ProposalID:   p.ID,
-		ProposalData: pData,
-	})
-	if err == nil && resp.Success {
-		// Parse court session result.
-		var session struct {
-			State   string  `json:"state"`
-			Verdict string  `json:"verdict"`
-			Risk    float64 `json:"risk"`
+	if daemonClient != nil {
+		pData, _ := p.Marshal()
+		resp, err := daemonClient.Call(ctx, "court.review", api.CourtReviewRequest{
+			ProposalID:   p.ID,
+			ProposalData: pData,
+		})
+		if err == nil && resp.Success {
+			// Parse court session result.
+			var session struct {
+				State   string  `json:"state"`
+				Verdict string  `json:"verdict"`
+				Risk    float64 `json:"risk"`
+			}
+			if json.Unmarshal(resp.Data, &session) == nil {
+				result += fmt.Sprintf("\n\nCourt review completed.\n  State: %s\n  Verdict: %s\n  Risk: %.1f",
+					session.State, session.Verdict, session.Risk)
+			}
+		} else if err != nil {
+			result += fmt.Sprintf("\n\nCourt review could not be started automatically: %v\nRun manually: aegisclaw court review %s", err, p.ID)
 		}
-		if json.Unmarshal(resp.Data, &session) == nil {
-			result += fmt.Sprintf("\n\nCourt review completed.\n  State: %s\n  Verdict: %s\n  Risk: %.1f",
-				session.State, session.Verdict, session.Risk)
-		}
-	} else if err != nil {
-		result += fmt.Sprintf("\n\nCourt review could not be started automatically: %v\nRun manually: aegisclaw court review %s", err, p.ID)
 	}
 
 	return result, nil
