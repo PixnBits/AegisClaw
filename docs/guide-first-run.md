@@ -106,8 +106,11 @@ In a **new terminal**, verify that the kernel is healthy:
 ## 3 — Propose the Skill
 
 AegisClaw treats every change as a *proposal* that flows through governance.
-You can create a proposal either through the interactive wizard or with CLI
-flags.
+You can create a proposal in three ways:
+
+- **Option A** — Non-interactive CLI flags (recommended for first run)
+- **Option B** — Interactive wizard TUI
+- **Option C** — Conversational via `aegisclaw chat`
 
 ### Option A — Non-interactive (recommended for first run)
 
@@ -258,6 +261,30 @@ Copy the proposal ID — you will need it for the next steps.
 > ```bash
 > ./aegisclaw propose ls
 > ```
+
+### Option C — Conversational (via chat)
+
+Open the chat TUI and describe what you want. The assistant will ask
+clarifying questions, build the proposal incrementally, and save a draft you
+can continue later.
+
+```bash
+./aegisclaw chat
+```
+
+```
+> /propose Hello World
+```
+
+Or simply describe what you need:
+
+```
+> I want to create a skill that returns a greeting message
+```
+
+The assistant will walk you through the required fields (skill name, tools,
+risk assessment, network/secrets) and present the complete proposal for your
+approval before submitting it to the court.
 
 ## 4 — Submit for Court Review
 
