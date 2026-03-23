@@ -116,10 +116,10 @@ func runSkillList(cmd *cobra.Command, args []string) error {
 	resp, err := client.Call(cmd.Context(), "skill.list", nil)
 	if err == nil && resp.Success {
 		var skills []struct {
-			Name      string `json:"name"`
-			SandboxID string `json:"sandbox_id"`
-			State     string `json:"state"`
-			Version   int    `json:"version"`
+			Name       string `json:"name"`
+			SandboxID  string `json:"sandbox_id"`
+			State      string `json:"state"`
+			Version    int    `json:"version"`
 			MerkleHash string `json:"merkle_hash"`
 		}
 		if json.Unmarshal(resp.Data, &skills) == nil {

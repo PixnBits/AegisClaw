@@ -239,10 +239,14 @@ Available slash commands (handled locally, not by you):
   /court  - List court sessions
   /propose - Start a proposal
 
-When the user asks you to invoke a skill tool, respond with a JSON tool-call block:
+When the user asks you to invoke a skill tool, you MUST respond with EXACTLY this format (use the tool-call language tag, NOT json):
 ` + "```tool-call" + `
 {"skill": "<skill-name>", "tool": "<tool-name>", "args": "<arguments>"}
 ` + "```" + `
+
+IMPORTANT: The "skill" field must be the skill name (e.g. "hello-world"), NOT the tool name.
+The "tool" field is the specific tool within that skill (e.g. "greet").
+Always use ` + "```tool-call" + ` not ` + "```json" + ` so the system can parse it.
 
 `
 
@@ -250,16 +254,18 @@ When the user asks you to invoke a skill tool, respond with a JSON tool-call blo
 	resp, err := daemonClient.Call(ctx, "skill.list", nil)
 	if err == nil && resp.Success && len(resp.Data) > 0 {
 		var skills []struct {
-			Name      string `json:"name"`
-			State     string `json:"state"`
-			SandboxID string `json:"sandbox_id"`
+			Name      string            `json:"name"`
+			State     string            `json:"state"`
+			SandboxID string            `json:"sandbox_id"`
 			Metadata  map[string]string `json:"metadata,omitempty"`
 		}
 		if json.Unmarshal(resp.Data, &skills) == nil && len(skills) > 0 {
 			base += "Currently registered skills:\n"
 			for _, s := range skills {
-				base += fmt.Sprintf("  - %s (state: %s, sandbox: %s)\n", s.Name, s.State, s.SandboxID[:8])
+				base += fmt.Sprintf("  - skill \"%s\" (state: %s) — has tool \"greet\"\n", s.Name, s.State)
 			}
+			base += "\nExample: to call the greet tool on hello-world, output:\n"
+			base += "```tool-call\n{\"skill\": \"hello-world\", \"tool\": \"greet\", \"args\": \"\"}\n```\n"
 		}
 	}
 
@@ -267,48 +273,55 @@ When the user asks you to invoke a skill tool, respond with a JSON tool-call blo
 }
 
 // parseToolCalls extracts tool-call JSON blocks from LLM output.
+// Accepts both ```tool-call and ```json fenced blocks.
 func parseToolCalls(content string) []tui.ToolCall {
 	var calls []tui.ToolCall
-	for {
-		start := strings.Index(content, "```tool-call")
-		if start < 0 {
-			break
+	// Try both fence markers — LLMs sometimes use ```json instead of ```tool-call.
+	for _, marker := range []string{"```tool-call", "```json"} {
+		search := content
+		for {
+			start := strings.Index(search, marker)
+			if start < 0 {
+				break
+			}
+			after := search[start+len(marker):]
+			end := strings.Index(after, "```")
+			if end < 0 {
+				break
+			}
+			block := strings.TrimSpace(after[:end])
+			var tc struct {
+				Skill string          `json:"skill"`
+				Tool  string          `json:"tool"`
+				Args  json.RawMessage `json:"args"`
+			}
+			if json.Unmarshal([]byte(block), &tc) == nil && tc.Skill != "" && tc.Tool != "" {
+				calls = append(calls, tui.ToolCall{
+					Name: tc.Skill + "." + tc.Tool,
+					Args: string(tc.Args),
+				})
+			}
+			search = after[end+3:]
 		}
-		after := content[start+len("```tool-call"):]
-		end := strings.Index(after, "```")
-		if end < 0 {
-			break
-		}
-		block := strings.TrimSpace(after[:end])
-		var tc struct {
-			Skill string `json:"skill"`
-			Tool  string `json:"tool"`
-			Args  string `json:"args"`
-		}
-		if json.Unmarshal([]byte(block), &tc) == nil && tc.Skill != "" && tc.Tool != "" {
-			calls = append(calls, tui.ToolCall{
-				Name: tc.Skill + "." + tc.Tool,
-				Args: tc.Args,
-			})
-		}
-		content = after[end+3:]
 	}
 	return calls
 }
 
-// cleanToolCallContent removes tool-call blocks from the displayed message.
+// cleanToolCallContent removes tool-call and json blocks containing skill invocations.
 func cleanToolCallContent(content string) string {
-	for {
-		start := strings.Index(content, "```tool-call")
-		if start < 0 {
-			break
+	for _, marker := range []string{"```tool-call", "```json"} {
+		for {
+			start := strings.Index(content, marker)
+			if start < 0 {
+				break
+			}
+			after := content[start+len(marker):]
+			end := strings.Index(after, "```")
+			if end < 0 {
+				break
+			}
+			content = content[:start] + after[end+3:]
 		}
-		after := content[start+len("```tool-call"):]
-		end := strings.Index(after, "```")
-		if end < 0 {
-			break
-		}
-		content = content[:start] + after[end+3:]
 	}
 	return strings.TrimSpace(content)
 }
