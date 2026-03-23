@@ -73,7 +73,7 @@ Checking Firecracker assets...
 AegisClaw kernel started.
   Message-Hub: running
   IPC Routes: [message-hub]
-  API Socket: /run/user/1000/aegisclaw.sock
+  API Socket: /run/aegisclaw.sock
 Press Ctrl+C to stop.
 ```
 
@@ -266,17 +266,15 @@ Start review: aegisclaw court review a1b2c3d4-...
 
 ## 5 — Run Court Review
 
-The court launches five AI personas — each in its own Firecracker sandbox — to
-independently review your proposal. Consensus requires ≥ 80 % approval **and**
-an average risk score ≤ 7.0.
+The court launches five AI personas to independently review your proposal.
+Consensus requires ≥ 80 % approval **and** an average risk score ≤ 7.0.
 
 ```bash
 ./aegisclaw court review <proposal-id>
 ```
 
 The CLI sends the review request to the running kernel daemon over its Unix
-socket. The kernel creates the Firecracker sandboxes with root privileges on
-your behalf.
+socket. Each persona's LLM call is cross-verified across multiple models.
 
 ```
 Starting court review for proposal a1b2c3d4-...
@@ -285,35 +283,48 @@ Court Session: e5f6a7b8-...
   Proposal: a1b2c3d4-...
   State:    approved
   Verdict:  approved
-  Risk:     0.2
+  Risk:     2.1
   Rounds:   1
 
 Round Results:
-  Round 1 (consensus=true, avg_risk=0.2):
+  Round 1 (consensus=true, avg_risk=2.1):
     PERSONA         VERDICT    RISK   COMMENTS
     ------------------------------------------------------------
-    CISO            approve    0.0    Low risk, no data exposure..
-    SeniorCoder     approve    0.0    Straightforward implement..
-    SecurityArch..  approve    0.0    No network, no secrets, mi..
-    Tester          approve    0.2    Testable, single tool, goo..
-    UserAdvocate    approve    0.0    Clear purpose, simple inte..
-    Risk Heatmap: CISO=0.0, SeniorCoder=0.0, ...
+    CISO            approve    2.0    Low risk, no data exposure..
+    SeniorCoder     approve    2.0    Straightforward implement..
+    SecurityArch..  approve    2.5    No network, no secrets, mi..
+    Tester          approve    2.0    Testable, single tool, goo..
+    UserAdvocate    approve    2.0    Clear purpose, simple inte..
+    Risk Heatmap: CISO=2.0, SeniorCoder=2.0, ...
 ```
 
-A Hello World skill should sail through with a low risk score. Small models
-may need more than one round to converge.
+With larger models, a Hello World skill typically sails through with a low
+risk score. Smaller models (e.g. `llama3.2:3b`) may take multiple rounds or
+escalate to human review.
 
-> **If the proposal is escalated** (unlikely for Hello World, but possible if
-> personas disagree), you can cast a human override:
+> **If the proposal is escalated** (common with small models), cast a human
+> override:
 >
 > ```bash
 > ./aegisclaw court vote <proposal-id> approve "Manual approval for hello-world demo"
 > ```
+>
+> ```
+> Vote recorded.
+>
+> Court Session: ...
+>   State:    approved
+>   Verdict:  approved
+> ```
 
 ## 6 — Build the Skill
 
-Once approved, the builder pipeline automatically generates Go source code,
-compiles it, runs tests (requiring > 80 % coverage), and commits the result.
+> **Status:** The builder pipeline (LLM-driven code generation, compile, test)
+> runs inside Firecracker sandboxes and is not yet triggered automatically
+> after approval. This section describes the planned flow.
+
+Once approved, the builder pipeline will automatically generate Go source code,
+compile it, run tests (requiring > 80 % coverage), and commit the result.
 
 You can check builder progress:
 
@@ -322,16 +333,14 @@ You can check builder progress:
 ```
 
 ```
-Builder Sandboxes: 1 total, 1 active
-
-ID                                    STATE         PROPOSAL                              STARTED
-------------------------------------  ------------  ------------------------------------  --------------------
-f9e8d7c6-...                          building      a1b2c3d4-...                          2026-03-19T10:15:00Z
+Builder Sandboxes: 0 total, 0 active
 ```
 
-When the build completes the state transitions to `done`.
-
 ## 7 — Activate the Skill
+
+> **Status:** Skill activation and invocation depend on the builder output
+> (Step 6). These steps are described here for completeness but require the
+> builder pipeline to be wired end-to-end.
 
 Activating a skill spins up a dedicated Firecracker microVM, registers the
 skill in the Merkle-hashed registry, and makes it available for invocation over
@@ -341,29 +350,9 @@ IPC.
 ./aegisclaw skill activate hello-world
 ```
 
-```
-Skill 'hello-world' activated.
-  Sandbox: d4c3b2a1-... (pid=12345)
-  Registry: v1 hash=9a8b7c6d5e4f3a2b
-  Root hash: 1122334455667788
-```
-
-Verify it shows up in the skill list:
-
-```bash
-./aegisclaw skill ls
-```
-
-```
-NAME                 SANDBOX                              STATE      VER  HASH
-hello-world          d4c3b2a1-...                         active     1    9a8b7c6d5e4f3a2b
-
-Registry: seq=1 root=1122334455667788
-```
-
 ## 8 — Invoke the Skill
 
-Open the interactive chat to invoke your new skill:
+Once a skill is active, open the interactive chat:
 
 ```bash
 ./aegisclaw chat
@@ -384,9 +373,8 @@ Hello, World!
 
 ## 9 — Verify the Audit Trail
 
-Every action — proposal creation, court review, build, activation, and
-invocation — was signed with Ed25519 and appended to a tamper-evident Merkle
-chain. Verify it:
+Every action — proposal creation, court review, and votes — is signed with
+Ed25519 and appended to a tamper-evident Merkle chain. Verify it:
 
 ```bash
 ./aegisclaw audit verify
@@ -394,8 +382,8 @@ chain. Verify it:
 
 ```
 Verifying Merkle audit chain: ...
-  OK: 12 entries verified
-  Chain head: 10c09a04...
+  OK: 149 entries verified
+  Chain head: b161e6c7...
 ```
 
 You can also explore the full audit log interactively:
@@ -406,40 +394,38 @@ You can also explore the full audit log interactively:
 
 ## 10 — Clean Up
 
-When you are done experimenting, deactivate the skill and stop the kernel:
+Stop the kernel daemon:
 
 ```bash
-# Deactivate the skill (stops its microVM)
-./aegisclaw skill deactivate hello-world
-
 # Stop the kernel (Ctrl+C in the kernel terminal, or kill the background process)
+sudo pkill -f "aegisclaw start"
 ```
 
 ## What Just Happened?
 
-Here is the full lifecycle you just walked through:
+Here is the lifecycle you just walked through (steps 1–5 are fully
+functional; steps 6–8 are planned):
 
 ```
-propose skill ──► submit ──► court review ──► build ──► activate ──► invoke
-     │                           │                │          │           │
-   wizard            5 AI personas          codegen +     microVM     vsock
-   (TUI)             in sandboxes           test loop     spun up      IPC
+propose skill ──► submit ──► court review ──► [build] ──► [activate] ──► [invoke]
+     │                           │                │            │             │
+   wizard            5 AI personas          codegen +       microVM       vsock
+   (TUI)             cross-verified         test loop       spun up        IPC
+                     via Ollama             (planned)       (planned)    (planned)
 ```
 
-1. **Propose** — The interactive wizard collected your skill definition and
-   created a governed proposal with a `SkillSpec`.
+1. **Propose** — The interactive wizard (or CLI flags) collected your skill
+   definition and created a governed proposal with a `SkillSpec`.
 2. **Submit** — Transitioned the proposal from `draft` to `submitted`.
 3. **Court Review** — Five LLM personas (CISO, Senior Coder, Security
-   Architect, Tester, User Advocate) each reviewed the proposal independently
-   in isolated sandboxes and voted.
-4. **Build** — The builder sandbox generated Go code from the `SkillSpec`, compiled
-   it, ran tests (>80 % coverage gate), linted, and committed the artifact.
-5. **Activate** — A Firecracker microVM was launched with the compiled skill
-   code mounted read-only. Network policy (default-deny) was enforced.
-6. **Invoke** — The chat TUI sent a request over vsock IPC to the skill's
-   microVM, which executed the `greet` tool and returned the result.
+   Architect, Tester, User Advocate) each reviewed the proposal independently,
+   cross-verified across multiple models, and voted.
+4. **Human Vote** — If the court escalated (common with small models), a
+   human operator cast the deciding vote.
+5. **Audit** — Every step was cryptographically signed and appended to the
+   Merkle audit chain, verifiable with `aegisclaw audit verify`.
 
-Every step was cryptographically signed and appended to the Merkle audit chain.
+Every action is cryptographically signed and appended to the Merkle audit chain.
 
 ## Next Steps
 

@@ -2,6 +2,7 @@
     "chat.tools.terminal.autoApprove": {
         "go": true,
         "mkdir": true,
-        "./aegisclaw": true
+        "./aegisclaw": true,
+        "git add": true
     }
 }

@@ -29,15 +29,24 @@ type Response struct {
 
 // CourtReviewRequest carries the payload for the "court.review" action.
 type CourtReviewRequest struct {
-	ProposalID string `json:"proposal_id"`
+	ProposalID   string          `json:"proposal_id"`
+	ProposalData json.RawMessage `json:"proposal_data,omitempty"`
+}
+
+// CourtVoteRequest carries the payload for the "court.vote" action.
+type CourtVoteRequest struct {
+	ProposalID   string          `json:"proposal_id"`
+	Voter        string          `json:"voter"`
+	Approve      bool            `json:"approve"`
+	Reason       string          `json:"reason"`
+	ProposalData json.RawMessage `json:"proposal_data,omitempty"`
 }
 
 // DefaultSocketPath returns the default daemon socket path.
+// Uses a fixed, well-known location so the root daemon and unprivileged CLI
+// always agree — similar to Docker's /var/run/docker.sock.
 func DefaultSocketPath() string {
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return dir + "/aegisclaw.sock"
-	}
-	return "/tmp/aegisclaw.sock"
+	return "/run/aegisclaw.sock"
 }
 
 // Server listens on a Unix socket and dispatches incoming requests to
@@ -76,8 +85,8 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	// Allow group access (like Docker's socket).
-	os.Chmod(s.socketPath, 0660)
+	// Allow any local user to connect (like Docker's default socket).
+	os.Chmod(s.socketPath, 0666)
 	s.listener = ln
 
 	mux := http.NewServeMux()

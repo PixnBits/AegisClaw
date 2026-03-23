@@ -318,6 +318,17 @@ func (s *Store) ListByStatus(status Status) ([]ProposalSummary, error) {
 	return result, nil
 }
 
+// Import upserts a proposal into the store. If the proposal already exists
+// on a branch, it is updated; otherwise a new branch is created.
+// This is used by the daemon to receive proposals from unprivileged CLI
+// clients that maintain their own local store.
+func (s *Store) Import(p *Proposal) error {
+	if _, err := s.Get(p.ID); err != nil {
+		return s.Create(p)
+	}
+	return s.Update(p)
+}
+
 func (s *Store) writeProposalFile(p *Proposal) error {
 	data, err := p.Marshal()
 	if err != nil {

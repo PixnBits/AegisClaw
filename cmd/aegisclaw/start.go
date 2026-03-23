@@ -9,8 +9,10 @@ import (
 	"syscall"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
+	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/provision"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -62,7 +64,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("ping", func(ctx context.Context, _ json.RawMessage) *api.Response {
 		return &api.Response{Success: true}
 	})
-	apiSrv.Handle("court.review", makeCourtReviewHandler(env))
+
+	// Create the court engine once and share it across handlers so session
+	// state persists between review and vote calls.
+	courtEngine, err := initCourtEngine(env)
+	if err != nil {
+		hub.Stop()
+		return fmt.Errorf("failed to init court engine: %w", err)
+	}
+	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
+	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
@@ -107,7 +118,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 // makeCourtReviewHandler returns an API handler that runs the full court review
 // inside the daemon process (which has root privileges for sandbox operations).
-func makeCourtReviewHandler(env *runtimeEnv) api.Handler {
+func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		var req api.CourtReviewRequest
 		if err := json.Unmarshal(data, &req); err != nil {
@@ -117,14 +128,58 @@ func makeCourtReviewHandler(env *runtimeEnv) api.Handler {
 			return &api.Response{Error: "proposal_id is required"}
 		}
 
-		engine, err := initCourtEngine(env)
-		if err != nil {
-			return &api.Response{Error: "failed to init court engine: " + err.Error()}
+		// Import the proposal from the CLI client into the daemon's store
+		// so the court engine can load it by ID.
+		if len(req.ProposalData) > 0 {
+			p, err := proposal.UnmarshalProposal(req.ProposalData)
+			if err != nil {
+				return &api.Response{Error: "invalid proposal data: " + err.Error()}
+			}
+			if err := env.ProposalStore.Import(p); err != nil {
+				return &api.Response{Error: "failed to import proposal: " + err.Error()}
+			}
 		}
 
 		session, err := engine.Review(ctx, req.ProposalID)
 		if err != nil {
 			return &api.Response{Error: "court review failed: " + err.Error()}
+		}
+
+		respData, _ := json.Marshal(session)
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// makeCourtVoteHandler returns an API handler for human override votes on
+// escalated proposals.
+func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req api.CourtVoteRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		if req.ProposalID == "" {
+			return &api.Response{Error: "proposal_id is required"}
+		}
+
+		// Import proposal data only if the daemon doesn't already have it.
+		// During vote, the daemon's copy may be in a later state (escalated)
+		// than the CLI's copy (submitted), so we must not overwrite.
+		if len(req.ProposalData) > 0 {
+			if _, getErr := env.ProposalStore.Get(req.ProposalID); getErr != nil {
+				p, err := proposal.UnmarshalProposal(req.ProposalData)
+				if err != nil {
+					return &api.Response{Error: "invalid proposal data: " + err.Error()}
+				}
+				if err := env.ProposalStore.Import(p); err != nil {
+					return &api.Response{Error: "failed to import proposal: " + err.Error()}
+				}
+			}
+		}
+
+		session, err := engine.VoteOnProposal(ctx, req.ProposalID, req.Voter, req.Approve, req.Reason)
+		if err != nil {
+			return &api.Response{Error: "vote failed: " + err.Error()}
 		}
 
 		respData, _ := json.Marshal(session)

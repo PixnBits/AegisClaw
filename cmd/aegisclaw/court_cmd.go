@@ -11,7 +11,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/llm"
-	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -74,19 +73,10 @@ func initCourtEngine(env *runtimeEnv) (*court.Engine, error) {
 		}
 	}
 
-	launcher := court.NewFirecrackerLauncher(
-		env.Runtime,
-		env.Kernel,
-		sandbox.RuntimeConfig{
-			FirecrackerBin: env.Config.Firecracker.Bin,
-			JailerBin:      env.Config.Jailer.Bin,
-			KernelImage:    env.Config.Sandbox.KernelImage,
-			RootfsTemplate: env.Config.Rootfs.Template,
-			ChrootBaseDir:  env.Config.Sandbox.ChrootBase,
-			StateDir:       env.Config.Sandbox.StateDir,
-		},
-		env.Logger,
-	)
+	ollamaClient := llm.NewClient(llm.ClientConfig{
+		Endpoint: env.Config.Ollama.Endpoint,
+	})
+	launcher := court.NewDirectLauncher(ollamaClient, env.Logger)
 	reviewer := court.NewReviewer(launcher, 2, env.Logger)
 	reviewerFn := court.NewReviewerFunc(reviewer)
 
@@ -194,10 +184,22 @@ func runCourtReview(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Starting court review for proposal %s...\n\n", proposalID)
 
+	// Read the proposal from the local store so the daemon has the data
+	// (the daemon runs as root with its own store directory).
+	p, err := env.ProposalStore.Get(proposalID)
+	if err != nil {
+		return fmt.Errorf("proposal %s not found: %w", proposalID, err)
+	}
+	proposalJSON, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("failed to serialize proposal: %w", err)
+	}
+
 	// Delegate the review to the daemon which runs with root privileges.
 	client := api.NewClient(env.Config.Daemon.SocketPath)
 	resp, err := client.Call(cmd.Context(), "court.review", api.CourtReviewRequest{
-		ProposalID: proposalID,
+		ProposalID:   proposalID,
+		ProposalData: proposalJSON,
 	})
 	if err != nil {
 		return err
@@ -236,18 +238,38 @@ func runCourtVote(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
-	engine, err := initCourtEngine(env)
+	// Read the proposal so the daemon has the data.
+	p, err := env.ProposalStore.Get(proposalID)
+	if err != nil {
+		return fmt.Errorf("proposal %s not found: %w", proposalID, err)
+	}
+	proposalJSON, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("failed to serialize proposal: %w", err)
+	}
+
+	client := api.NewClient(env.Config.Daemon.SocketPath)
+	resp, err := client.Call(cmd.Context(), "court.vote", api.CourtVoteRequest{
+		ProposalID:   proposalID,
+		Voter:        "operator",
+		Approve:      approve,
+		Reason:       reason,
+		ProposalData: proposalJSON,
+	})
 	if err != nil {
 		return err
 	}
+	if !resp.Success {
+		return fmt.Errorf("vote failed: %s", resp.Error)
+	}
 
-	session, err := engine.VoteOnProposal(context.Background(), proposalID, "operator", approve, reason)
-	if err != nil {
-		return fmt.Errorf("vote failed: %w", err)
+	var session court.Session
+	if err := json.Unmarshal(resp.Data, &session); err != nil {
+		return fmt.Errorf("failed to decode vote result: %w", err)
 	}
 
 	fmt.Printf("Vote recorded.\n\n")
-	printSessionSummary(session)
+	printSessionSummary(&session)
 	return nil
 }
 

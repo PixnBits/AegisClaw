@@ -139,12 +139,7 @@ func DefaultConfig() Config {
 		Daemon: struct {
 			SocketPath string `yaml:"socket_path" mapstructure:"socket_path"`
 		}{
-			SocketPath: func() string {
-				if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
-					return filepath.Join(rd, "aegisclaw.sock")
-				}
-				return "/tmp/aegisclaw.sock"
-			}(),
+			SocketPath: "/run/aegisclaw.sock",
 		},
 	}
 }
