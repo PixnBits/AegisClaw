@@ -57,6 +57,11 @@ type ChatModel struct {
 	thinking     bool
 	err          error
 
+	// Input history (most recent last).
+	inputHistory  []string
+	historyIndex  int  // -1 = not browsing; 0..len-1 = browsing
+	savedInput    string // stash current input when browsing
+
 	// Callbacks
 	SendMessage          func(input string, history []ChatMessage) (ChatMessage, []ToolCall, error)
 	ExecuteTool          func(call ToolCall) (string, error)
@@ -84,12 +89,13 @@ func NewChatModel() ChatModel {
 		messages: []ChatMessage{
 			{
 				Role:      ChatRoleSystem,
-				Content:   "AegisClaw ReAct Chat — Type a message to interact with the system. Use /propose, /status, /audit, /court as shortcuts.",
+				Content:   "AegisClaw ReAct Chat — Type a message or /help for commands. ↑/↓ to recall history.",
 				Timestamp: time.Now(),
 			},
 		},
-		keys: DefaultKeyMap(),
-		view: chatViewMain,
+		keys:         DefaultKeyMap(),
+		view:         chatViewMain,
+		historyIndex: -1,
 	}
 }
 
@@ -188,6 +194,12 @@ func (m ChatModel) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		input := m.input
 		m.input = ""
+		m.historyIndex = -1
+
+		// Record in history (deduplicate consecutive repeats).
+		if len(m.inputHistory) == 0 || m.inputHistory[len(m.inputHistory)-1] != input {
+			m.inputHistory = append(m.inputHistory, input)
+		}
 
 		// Check for quit commands
 		if input == "/quit" || input == "/exit" {
@@ -214,8 +226,37 @@ func (m ChatModel) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input += " "
 		return m, nil
 
+	case tea.KeyUp:
+		if len(m.inputHistory) == 0 {
+			return m, nil
+		}
+		if m.historyIndex == -1 {
+			// Start browsing: save current input, jump to most recent.
+			m.savedInput = m.input
+			m.historyIndex = len(m.inputHistory) - 1
+		} else if m.historyIndex > 0 {
+			m.historyIndex--
+		}
+		m.input = m.inputHistory[m.historyIndex]
+		return m, nil
+
+	case tea.KeyDown:
+		if m.historyIndex == -1 {
+			return m, nil
+		}
+		if m.historyIndex < len(m.inputHistory)-1 {
+			m.historyIndex++
+			m.input = m.inputHistory[m.historyIndex]
+		} else {
+			// Past the end: restore saved input.
+			m.historyIndex = -1
+			m.input = m.savedInput
+		}
+		return m, nil
+
 	case tea.KeyRunes:
 		m.input += string(msg.Runes)
+		m.historyIndex = -1
 		return m, nil
 
 	default:

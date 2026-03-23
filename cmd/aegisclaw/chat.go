@@ -243,6 +243,23 @@ func handleSlashCommand(env *runtimeEnv, input string) (tui.ChatMessage, []tui.T
 			Timestamp: time.Now(),
 		}, []tui.ToolCall{{Name: "list_proposals"}}, nil
 
+	case "/help":
+		content := `Available commands:
+  /help     — Show this help message
+  /status   — Show system status (sandboxes, skills, audit)
+  /audit    — Show audit chain info and verification
+  /court    — List court sessions / proposals
+  /propose  — Start a new skill proposal
+  /quit     — Exit chat
+
+You can also type natural language to chat with AegisClaw.
+Use ↑/↓ arrows to recall previous messages.`
+		return tui.ChatMessage{
+			Role:      tui.ChatRoleAssistant,
+			Content:   content,
+			Timestamp: time.Now(),
+		}, nil, nil
+
 	case "/propose":
 		goal := "new skill"
 		if len(parts) > 1 {
@@ -257,7 +274,7 @@ func handleSlashCommand(env *runtimeEnv, input string) (tui.ChatMessage, []tui.T
 	default:
 		return tui.ChatMessage{
 			Role:      tui.ChatRoleAssistant,
-			Content:   fmt.Sprintf("Unknown command: %s\nAvailable: /propose, /status, /audit, /court, /quit", cmd),
+			Content:   fmt.Sprintf("Unknown command: %s\nType /help for available commands.", cmd),
 			Timestamp: time.Now(),
 		}, nil, nil
 	}
