@@ -52,6 +52,9 @@ type Config struct {
 		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
 		ModelDir     string `yaml:"model_dir" mapstructure:"model_dir"`
 	} `yaml:"ollama" mapstructure:"ollama"`
+	Daemon struct {
+		SocketPath string `yaml:"socket_path" mapstructure:"socket_path"`
+	} `yaml:"daemon" mapstructure:"daemon"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -133,6 +136,16 @@ func DefaultConfig() Config {
 			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "model-registry.json"),
 			ModelDir:     filepath.Join(home, ".local", "share", "aegisclaw", "models"),
 		},
+		Daemon: struct {
+			SocketPath string `yaml:"socket_path" mapstructure:"socket_path"`
+		}{
+			SocketPath: func() string {
+				if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
+					return filepath.Join(rd, "aegisclaw.sock")
+				}
+				return "/tmp/aegisclaw.sock"
+			}(),
+		},
 	}
 }
 
@@ -178,6 +191,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("ollama.timeout_secs", defaults.Ollama.TimeoutSecs)
 	viper.SetDefault("ollama.registry_path", defaults.Ollama.RegistryPath)
 	viper.SetDefault("ollama.model_dir", defaults.Ollama.ModelDir)
+	viper.SetDefault("daemon.socket_path", defaults.Daemon.SocketPath)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {

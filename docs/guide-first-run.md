@@ -9,10 +9,11 @@ microVM.
 
 | Requirement | Why |
 |---|---|
-| Linux host | Firecracker only runs on Linux |
+| Linux host with KVM | Firecracker only runs on Linux with `/dev/kvm` |
 | Go 1.26+ | Build from source |
 | Ollama installed & running | LLM backend for court review and code generation |
-| Firecracker + jailer binaries | Sandbox isolation for skills, reviewers, and builders |
+| Firecracker + jailer binaries in `/usr/local/bin/` | Sandbox isolation ([install guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md)) |
+| `e2fsprogs` package | First-run rootfs build (`mkfs.ext4`) |
 
 Verify Ollama is reachable (default `http://127.0.0.1:11434`):
 
@@ -20,10 +21,13 @@ Verify Ollama is reachable (default `http://127.0.0.1:11434`):
 curl -s http://127.0.0.1:11434/api/tags | head -c 200
 ```
 
-> **Model names:** The default persona configs reference `qwen2.5:latest` and
-> `llama3.2:latest`. Make sure these models (or equivalents) are pulled in
-> Ollama. You can edit the persona files under
-> `~/.config/aegisclaw/personas/` to match what you have installed.
+> **Models:** The default persona configs use `mistral-nemo` and `llama3.2:3b`.
+> When you run `aegisclaw court review`, AegisClaw will check whether these
+> models are available in Ollama and offer to pull any that are missing.
+
+> **No manual rootfs or kernel setup required.** The daemon automatically
+> downloads a Firecracker-compatible vmlinux kernel and builds a minimal
+> Alpine rootfs on first start. See [Step 2](#2--start-the-kernel) below.
 
 ## 1 — Build
 
@@ -47,26 +51,38 @@ Confirm the build:
 
 ## 2 — Start the Kernel
 
-The kernel is the long-running process that manages sandboxes, the audit log,
-and IPC. Every other command requires it.
+The kernel is the long-running daemon that manages sandboxes, the audit log,
+and IPC. It needs root privileges for Firecracker (tap devices, jailer,
+nftables). Every other command communicates with it over a Unix socket and
+does **not** require root.
 
 ```bash
-./aegisclaw start
+sudo ./aegisclaw start
 ```
 
-You should see:
+On first run the daemon automatically provisions any missing assets:
 
 ```
+Checking Firecracker assets...
+  Downloading vmlinux kernel for x86_64...
+  vmlinux kernel ready.
+  Building rootfs template (Alpine + guest-agent)...
+    Downloading Alpine v3.21 minirootfs...
+    Installing guest-agent as init...
+  rootfs template ready.
 AegisClaw kernel started.
   Message-Hub: running
   IPC Routes: [message-hub]
+  API Socket: /run/user/1000/aegisclaw.sock
 Press Ctrl+C to stop.
 ```
+
+Subsequent starts skip the provisioning step and are near-instant.
 
 > **Tip:** To run the kernel in the background and capture logs:
 >
 > ```bash
-> ./aegisclaw start > aegisclaw.log 2>&1 &
+> sudo ./aegisclaw start > aegisclaw.log 2>&1 &
 > ```
 
 In a **new terminal**, verify that the kernel is healthy:
@@ -257,6 +273,10 @@ an average risk score ≤ 7.0.
 ```bash
 ./aegisclaw court review <proposal-id>
 ```
+
+The CLI sends the review request to the running kernel daemon over its Unix
+socket. The kernel creates the Firecracker sandboxes with root privileges on
+your behalf.
 
 ```
 Starting court review for proposal a1b2c3d4-...

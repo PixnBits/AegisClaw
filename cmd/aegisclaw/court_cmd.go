@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
+	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/court"
+	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 var courtCmd = &cobra.Command{
@@ -93,6 +99,73 @@ func initCourtEngine(env *runtimeEnv) (*court.Engine, error) {
 	return engine, nil
 }
 
+// ensureModels checks that all models required by the loaded personas are
+// available in Ollama.  If any are missing it lists them and offers to pull.
+func ensureModels(ctx context.Context, personas []*court.Persona, cfg *llm.ClientConfig, logger *zap.Logger) error {
+	// Collect unique model names from all personas.
+	needed := make(map[string]struct{})
+	for _, p := range personas {
+		for _, m := range p.Models {
+			needed[m] = struct{}{}
+		}
+	}
+
+	client := llm.NewClient(*cfg)
+
+	if !client.Healthy(ctx) {
+		return fmt.Errorf("Ollama is not reachable at %s – is it running?", cfg.Endpoint)
+	}
+
+	available, err := client.List(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list Ollama models: %w", err)
+	}
+
+	have := make(map[string]struct{}, len(available))
+	for _, m := range available {
+		have[m.Name] = struct{}{}
+		// Also index without the ":latest" tag so "mistral-nemo" matches
+		// "mistral-nemo:latest".
+		if idx := strings.LastIndex(m.Name, ":"); idx > 0 {
+			have[m.Name[:idx]] = struct{}{}
+		}
+	}
+
+	var missing []string
+	for name := range needed {
+		if _, ok := have[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	fmt.Printf("The following models are required by court personas but not yet available:\n")
+	for _, m := range missing {
+		fmt.Printf("  - %s\n", m)
+	}
+	fmt.Print("\nWould you like to pull them now? [Y/n] ")
+
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	if line != "" && line != "y" && line != "yes" {
+		return fmt.Errorf("required models are not available; pull them with `ollama pull <model>` and retry")
+	}
+
+	for _, m := range missing {
+		fmt.Printf("Pulling %s … ", m)
+		if _, err := client.Pull(ctx, m); err != nil {
+			return fmt.Errorf("failed to pull model %s: %w", m, err)
+		}
+		fmt.Println("done")
+	}
+
+	return nil
+}
+
 func runCourtReview(cmd *cobra.Command, args []string) error {
 	proposalID := args[0]
 
@@ -102,19 +175,43 @@ func runCourtReview(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
-	engine, err := initCourtEngine(env)
+	// Check model availability before starting the court engine.
+	personaDir := env.Config.Court.PersonaDir
+	if personaDir == "" {
+		personaDir, _ = court.DefaultPersonaDir()
+	}
+	personas, err := court.LoadPersonas(personaDir, env.Logger)
 	if err != nil {
+		court.EnsureDefaultPersonas(env.Logger)
+		personaDir, _ = court.DefaultPersonaDir()
+		personas, _ = court.LoadPersonas(personaDir, env.Logger)
+	}
+
+	ollamaCfg := &llm.ClientConfig{Endpoint: env.Config.Ollama.Endpoint}
+	if err := ensureModels(cmd.Context(), personas, ollamaCfg, env.Logger); err != nil {
 		return err
 	}
 
 	fmt.Printf("Starting court review for proposal %s...\n\n", proposalID)
 
-	session, err := engine.Review(context.Background(), proposalID)
+	// Delegate the review to the daemon which runs with root privileges.
+	client := api.NewClient(env.Config.Daemon.SocketPath)
+	resp, err := client.Call(cmd.Context(), "court.review", api.CourtReviewRequest{
+		ProposalID: proposalID,
+	})
 	if err != nil {
-		return fmt.Errorf("court review failed: %w", err)
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("court review failed: %s", resp.Error)
 	}
 
-	printSessionSummary(session)
+	var session court.Session
+	if err := json.Unmarshal(resp.Data, &session); err != nil {
+		return fmt.Errorf("failed to decode review result: %w", err)
+	}
+
+	printSessionSummary(&session)
 	return nil
 }
 

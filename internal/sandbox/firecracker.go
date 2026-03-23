@@ -155,6 +155,10 @@ func (r *FirecrackerRuntime) Start(ctx context.Context, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if os.Getuid() != 0 {
+		return fmt.Errorf("sandbox operations require root privileges; re-run with sudo")
+	}
+
 	ms, exists := r.sandboxes[id]
 	if !exists {
 		return fmt.Errorf("sandbox %s not found", id)
@@ -196,7 +200,31 @@ func (r *FirecrackerRuntime) Start(ctx context.Context, id string) error {
 	// Remove stale socket
 	os.Remove(socketPath)
 
-	fcCfg := r.buildFirecrackerConfig(spec, socketPath, rootfsPath, workspacePath, tapName)
+	// When using the jailer, the socket path must be a short relative path
+	// because the jailer creates a chroot and absolute paths become deeply
+	// nested. The SDK resolves it as <ChrootBase>/firecracker/<id>/root/<path>.
+	effectiveSocketPath := socketPath
+	useJailer := false
+	if _, err := os.Stat(r.cfg.JailerBin); err == nil {
+		effectiveSocketPath = "api.sock"
+		useJailer = true
+
+		// The jailer drops privileges to a sandbox-specific UID/GID.
+		// Drive files must be pre-chowned so Firecracker can access them
+		// after the privilege drop.
+		uid := int(10000 + spec.VsockCID)
+		gid := uid
+		for _, p := range []string{rootfsPath, workspacePath} {
+			if err := os.Chown(p, uid, gid); err != nil {
+				r.teardownNetwork(tapName, spec.ID)
+				ms.info.State = StateError
+				ms.info.Error = fmt.Sprintf("chown failed: %v", err)
+				return fmt.Errorf("failed to chown %s for sandbox %s: %w", p, id, err)
+			}
+		}
+	}
+
+	fcCfg := r.buildFirecrackerConfig(spec, effectiveSocketPath, rootfsPath, workspacePath, tapName)
 
 	// Configure jailer for UID/GID isolation
 	jailerCfg := r.buildJailerConfig(spec)
@@ -212,7 +240,7 @@ func (r *FirecrackerRuntime) Start(ctx context.Context, id string) error {
 	}
 
 	// Use jailer if binary exists and is executable
-	if _, err := os.Stat(r.cfg.JailerBin); err == nil {
+	if useJailer {
 		fcCfg.JailerCfg = &jailerCfg
 	}
 
@@ -471,6 +499,7 @@ func (r *FirecrackerRuntime) buildJailerConfig(spec SandboxSpec) firecracker.Jai
 		JailerBinary:   r.cfg.JailerBin,
 		ChrootBaseDir:  r.cfg.ChrootBaseDir,
 		ChrootStrategy: firecracker.NewNaiveChrootStrategy(kernelPath),
+		CgroupVersion:  detectCgroupVersion(),
 	}
 }
 
@@ -713,4 +742,12 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// detectCgroupVersion returns "2" for cgroups v2 and "1" for v1.
+func detectCgroupVersion() string {
+	if fi, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil && !fi.IsDir() {
+		return "2"
+	}
+	return "1"
 }

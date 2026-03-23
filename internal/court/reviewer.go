@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,9 +117,11 @@ func NewFirecrackerLauncher(runtime *sandbox.FirecrackerRuntime, kern *kernel.Ke
 // LaunchReviewer creates and starts a Firecracker reviewer sandbox.
 func (fl *FirecrackerLauncher) LaunchReviewer(ctx context.Context, persona *Persona, model string) (string, error) {
 	sandboxID := uuid.New().String()
+	// Sanitize model name for sandbox naming (colons are invalid in sandbox names).
+	safeName := strings.ReplaceAll(model, ":", "-")
 	spec := sandbox.SandboxSpec{
 		ID:   sandboxID,
-		Name: fmt.Sprintf("reviewer-%s-%s", persona.Name, model),
+		Name: fmt.Sprintf("reviewer-%s-%s", persona.Name, safeName),
 		Resources: sandbox.Resources{
 			VCPUs:    1,
 			MemoryMB: 512,

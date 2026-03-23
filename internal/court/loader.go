@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 )
 
 // LoadPersonas reads all YAML persona files from a directory.
@@ -105,11 +105,11 @@ func EnsureDefaultPersonas(logger *zap.Logger) (string, error) {
 }
 
 var defaultPersonas = map[string]string{
-	"ciso": cisoYAML,
-	"senior_coder": seniorCoderYAML,
+	"ciso":               cisoYAML,
+	"senior_coder":       seniorCoderYAML,
 	"security_architect": securityArchitectYAML,
-	"tester": testerYAML,
-	"user_advocate": userAdvocateYAML,
+	"tester":             testerYAML,
+	"user_advocate":      userAdvocateYAML,
 }
 
 const cisoYAML = `name: CISO
@@ -127,8 +127,8 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Be thorough but fair. Flag real risks, not theoretical ones.
 models:
-  - qwen2.5:latest
-  - llama3.2:latest
+  - mistral-nemo
+  - llama3.2:3b
 weight: 0.25
 output_schema: |
   {
@@ -156,8 +156,8 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Focus on practical code quality issues.
 models:
-  - qwen2.5:latest
-  - llama3.2:latest
+  - mistral-nemo
+  - llama3.2:3b
 weight: 0.25
 output_schema: |
   {
@@ -185,8 +185,8 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Consider how this change fits into the overall security architecture.
 models:
-  - qwen2.5:latest
-  - llama3.2:latest
+  - mistral-nemo
+  - llama3.2:3b
 weight: 0.2
 output_schema: |
   {
@@ -214,7 +214,7 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Focus on what could go wrong and how it would be caught.
 models:
-  - llama3.2:latest
+  - llama3.2:3b
 weight: 0.15
 output_schema: |
   {
@@ -242,7 +242,7 @@ system_prompt: |
   Evaluate the proposal and provide your assessment in the required JSON format.
   Think about how this affects the humans who operate and maintain the system.
 models:
-  - llama3.2:latest
+  - llama3.2:3b
 weight: 0.15
 output_schema: |
   {
