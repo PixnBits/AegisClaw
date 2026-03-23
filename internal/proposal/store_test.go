@@ -203,3 +203,46 @@ func TestStoreReopenExisting(t *testing.T) {
 		t.Error("proposal ID mismatch after reopen")
 	}
 }
+
+func TestStoreResolveID(t *testing.T) {
+	store, _ := newTestStore(t)
+
+	p1, _ := NewProposal("First Proposal", "First desc", CategoryNewSkill, "admin")
+	if err := store.Create(p1); err != nil {
+		t.Fatal(err)
+	}
+	p2, _ := NewProposal("Second Proposal", "Second desc", CategoryNewSkill, "admin")
+	if err := store.Create(p2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Full ID should resolve exactly.
+	got, err := store.ResolveID(p1.ID)
+	if err != nil {
+		t.Fatalf("ResolveID full ID failed: %v", err)
+	}
+	if got != p1.ID {
+		t.Errorf("expected %s, got %s", p1.ID, got)
+	}
+
+	// 8-char prefix should resolve (UUIDs are unique enough).
+	got, err = store.ResolveID(p1.ID[:8])
+	if err != nil {
+		t.Fatalf("ResolveID prefix failed: %v", err)
+	}
+	if got != p1.ID {
+		t.Errorf("expected %s, got %s", p1.ID, got)
+	}
+
+	// Empty ID should error.
+	_, err = store.ResolveID("")
+	if err == nil {
+		t.Error("expected error for empty ID")
+	}
+
+	// Nonexistent prefix should error.
+	_, err = store.ResolveID("zzzzzzzz")
+	if err == nil {
+		t.Error("expected error for nonexistent prefix")
+	}
+}

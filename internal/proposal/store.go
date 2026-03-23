@@ -450,3 +450,35 @@ func (s *Store) checkoutMain(w *git.Worktree) {
 		s.logger.Error("failed to checkout main after error", zap.Error(err))
 	}
 }
+
+// ResolveID expands a prefix (or full ID) to the full proposal ID.
+// Returns the full ID or an error if zero or multiple proposals match.
+func (s *Store) ResolveID(prefix string) (string, error) {
+	if prefix == "" {
+		return "", fmt.Errorf("proposal ID is required")
+	}
+
+	summaries, err := s.List()
+	if err != nil {
+		return "", err
+	}
+
+	var matches []string
+	for _, p := range summaries {
+		if p.ID == prefix {
+			return prefix, nil // exact match
+		}
+		if len(prefix) >= 4 && len(p.ID) > len(prefix) && p.ID[:len(prefix)] == prefix {
+			matches = append(matches, p.ID)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no proposal found matching %q", prefix)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous prefix %q matches %d proposals", prefix, len(matches))
+	}
+}

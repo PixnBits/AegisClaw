@@ -111,7 +111,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 			}
 			var lines []string
 			for _, s := range summaries {
-				lines = append(lines, fmt.Sprintf("  %s  %s  [%s]  %s", s.ID[:8], s.Title, s.Status, s.Risk))
+				lines = append(lines, fmt.Sprintf("  %s  %s  [%s]  %s", s.ID, s.Title, s.Status, s.Risk))
 			}
 			if len(lines) == 0 {
 				return "No proposals found.", nil
@@ -426,6 +426,10 @@ When a user wants to create a skill, act as a helpful requirements analyst:
 6. **Verify after submission.** After calling proposal.submit, always call proposal.list_drafts to confirm the proposal appears with its new status. Report the verified status to the user.
 7. **Show status after submission.** Once submitted, report the court review outcome. The system will notify the user automatically when the status changes.
 
+CRITICAL RULES:
+- Always use the FULL proposal ID (the complete UUID) when calling tools. Short prefixes may be ambiguous.
+- Always include the full proposal ID in your response to the user after creating, updating, or submitting a proposal. The user needs this ID to track their proposal.
+
 Required fields before submitting: title, description, skill_name, at least one tool.
 Default values if not discussed: data_sensitivity=1, network_exposure=1, privilege_level=1.
 
@@ -517,6 +521,11 @@ func parseSkillTool(name string) (string, string) {
 }
 
 // --- Proposal tool handlers ---
+
+// resolveProposalID expands a prefix (or full UUID) to the full proposal ID.
+func resolveProposalID(env *runtimeEnv, idOrPrefix string) (string, error) {
+	return env.ProposalStore.ResolveID(idOrPrefix)
+}
 
 // handleProposalCreateDraft creates a new draft proposal from LLM-collected fields.
 func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error) {
@@ -644,7 +653,12 @@ func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error)
 		return "", fmt.Errorf("id is required")
 	}
 
-	p, err := env.ProposalStore.Get(args.ID)
+	fullID, err := resolveProposalID(env, args.ID)
+	if err != nil {
+		return "", err
+	}
+
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("proposal not found: %w", err)
 	}
@@ -745,7 +759,12 @@ func handleProposalGetDraft(env *runtimeEnv, argsJSON string) (string, error) {
 		return "", fmt.Errorf("id is required")
 	}
 
-	p, err := env.ProposalStore.Get(args.ID)
+	fullID, err := resolveProposalID(env, args.ID)
+	if err != nil {
+		return "", err
+	}
+
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -796,7 +815,7 @@ func handleProposalListDrafts(env *runtimeEnv) (string, error) {
 	var lines []string
 	for _, s := range summaries {
 		lines = append(lines, fmt.Sprintf("  %s  %-28s  [%s]  risk=%s  round=%d",
-			s.ID[:8], truncate(s.Title, 28), s.Status, s.Risk, s.Round))
+			s.ID, truncate(s.Title, 28), s.Status, s.Risk, s.Round))
 	}
 	return "Proposals:\n" + strings.Join(lines, "\n"), nil
 }
@@ -813,7 +832,12 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 		return "", fmt.Errorf("id is required")
 	}
 
-	p, err := env.ProposalStore.Get(args.ID)
+	fullID, err := resolveProposalID(env, args.ID)
+	if err != nil {
+		return "", err
+	}
+
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -832,7 +856,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 	action := kernel.NewAction(kernel.ActionProposalSubmit, "chat", payload)
 	env.Kernel.SignAndLog(action)
 
-	result := fmt.Sprintf("Proposal submitted for court review.\n  ID: %s\n  Status: %s", p.ID, p.Status)
+	result := fmt.Sprintf("Proposal submitted for court review.\n  ID: %s\n  Title: %s\n  Status: %s\n\nIMPORTANT: Tell the user the proposal ID (%s) so they can track it.", p.ID, p.Title, p.Status, p.ID)
 
 	// Verify the submission was persisted.
 	verified, verifyErr := env.ProposalStore.Get(p.ID)
@@ -878,7 +902,12 @@ func handleProposalStatus(env *runtimeEnv, argsJSON string) (string, error) {
 		return "", fmt.Errorf("id is required")
 	}
 
-	p, err := env.ProposalStore.Get(args.ID)
+	fullID, err := resolveProposalID(env, args.ID)
+	if err != nil {
+		return "", err
+	}
+
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
