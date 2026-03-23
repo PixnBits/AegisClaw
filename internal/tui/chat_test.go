@@ -822,3 +822,146 @@ func TestChatSafeModeNilCallback(t *testing.T) {
 		t.Errorf("expected 'not configured' error, got %v", m.err)
 	}
 }
+
+func TestChatInputWrapping(t *testing.T) {
+	m := NewChatModel()
+	m.width = 40
+	m.height = 30
+	m.viewHeight = 24
+
+	// Type a long input that exceeds the width
+	longInput := "this is a very long input that should wrap around to the next line in the terminal"
+	for _, r := range longInput {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(ChatModel)
+	}
+
+	view := m.View()
+	// The input should be rendered with wrapping, so it should produce multiple lines
+	inputSection := m.renderInput()
+	lines := strings.Split(inputSection, "\n")
+	// With width=40 and a ~85-char input, we expect wrapping to produce multiple lines
+	if len(lines) < 2 {
+		t.Errorf("expected input to wrap into multiple lines, got %d lines", len(lines))
+	}
+	_ = view
+}
+
+func TestChatScrollIndicators(t *testing.T) {
+	m := NewChatModel()
+	m.width = 80
+	m.height = 20
+	m.viewHeight = 10
+
+	// Add enough messages to overflow the viewport
+	for i := 0; i < 30; i++ {
+		m.messages = append(m.messages, ChatMessage{
+			Role:      ChatRoleAssistant,
+			Content:   fmt.Sprintf("Message %d with some content", i),
+			Timestamp: time.Now(),
+		})
+	}
+	m.scrollToBottom()
+
+	rendered := m.renderMessages()
+	// At the bottom, there should be an "up" indicator but no "down" indicator
+	if !strings.Contains(rendered, "\u2191 more") {
+		t.Error("expected up-scroll indicator when scrolled to bottom")
+	}
+
+	// Scroll to the top
+	m.scrollOffset = 0
+	rendered = m.renderMessages()
+	// At the top, there should be a "down" indicator but no "up" indicator
+	if !strings.Contains(rendered, "\u2193 more") {
+		t.Error("expected down-scroll indicator when scrolled to top")
+	}
+	if strings.Contains(rendered, "\u2191 more") {
+		t.Error("should not show up-scroll indicator when at top")
+	}
+}
+
+func TestChatProposalStatusNotification(t *testing.T) {
+	m := NewChatModel()
+	m.width = 80
+	m.height = 30
+	m.viewHeight = 24
+
+	// Simulate receiving a proposal notification
+	updated, cmd := m.Update(ChatProposalNotifyMsg{
+		ProposalID: "abc12345-6789-0000-0000-000000000000",
+		Title:      "My Skill",
+		OldStatus:  "submitted",
+		NewStatus:  "approved",
+	})
+	m = updated.(ChatModel)
+
+	// Should have added a system message
+	found := false
+	for _, msg := range m.messages {
+		if msg.Role == ChatRoleSystem && strings.Contains(msg.Content, "approved") && strings.Contains(msg.Content, "My Skill") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected system message with status change notification")
+	}
+	// Terminal status should not schedule more polling
+	if cmd != nil {
+		t.Error("expected no further poll command for terminal status with no watched proposals")
+	}
+}
+
+func TestChatProposalWatchAfterSubmit(t *testing.T) {
+	m := NewChatModel()
+	m.width = 80
+	m.height = 30
+	m.viewHeight = 24
+
+	// Simulate a successful proposal.submit tool result
+	updated, cmd := m.Update(ChatToolResultMsg{
+		Call:   ToolCall{Name: "proposal.submit", Args: "{}"},
+		Result: "Proposal submitted.\n  ID: test-1234-5678\n  Status: submitted",
+	})
+	m = updated.(ChatModel)
+
+	// Should have started watching
+	if m.watchedProposals == nil || m.watchedProposals["test-1234-5678"] != "submitted" {
+		t.Errorf("expected proposal to be watched, got %v", m.watchedProposals)
+	}
+	// Should have a poll command (from tea.Tick batch or direct)
+	if cmd == nil {
+		t.Error("expected poll command after proposal submission")
+	}
+}
+
+func TestExtractProposalID(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"Proposal submitted.\n  ID: abc-123\n  Status: submitted", "abc-123"},
+		{"No id here", ""},
+		{"ID: simple-id", "simple-id"},
+	}
+	for _, tt := range tests {
+		got := extractProposalID(tt.input)
+		if got != tt.expected {
+			t.Errorf("extractProposalID(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestIsTerminalProposalStatus(t *testing.T) {
+	for _, s := range []string{"approved", "rejected", "withdrawn", "complete", "failed"} {
+		if !isTerminalProposalStatus(s) {
+			t.Errorf("expected %q to be terminal", s)
+		}
+	}
+	for _, s := range []string{"draft", "submitted", "in_review", "implementing"} {
+		if isTerminalProposalStatus(s) {
+			t.Errorf("expected %q to NOT be terminal", s)
+		}
+	}
+}

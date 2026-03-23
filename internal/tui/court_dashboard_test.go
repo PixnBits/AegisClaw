@@ -273,6 +273,7 @@ func TestCourtDashboardVoteCancel(t *testing.T) {
 	m.proposals = sampleProposals()
 	m.rebuildTable()
 	m.view = courtViewVoteConfirm
+	m.prevView = courtViewList
 	m.modal.Visible = true
 
 	// Press esc to cancel
@@ -286,12 +287,41 @@ func TestCourtDashboardVoteCancel(t *testing.T) {
 	}
 }
 
+func TestCourtDashboardVoteCancelFromDetail(t *testing.T) {
+	m := NewCourtDashboard()
+	m.proposals = sampleProposals()
+	m.rebuildTable()
+	m.view = courtViewDetail
+	m.selected = 1
+
+	// Reject from detail view
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = updated.(CourtDashboardModel)
+	if m.view != courtViewVoteConfirm {
+		t.Fatalf("expected vote confirm, got %d", m.view)
+	}
+	if m.prevView != courtViewDetail {
+		t.Errorf("expected prevView to be detail, got %d", m.prevView)
+	}
+	if m.voteProposalIdx != 1 {
+		t.Errorf("expected voteProposalIdx 1, got %d", m.voteProposalIdx)
+	}
+
+	// Cancel should return to detail view
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(CourtDashboardModel)
+	if m.view != courtViewDetail {
+		t.Errorf("expected detail view after cancel from detail, got %d", m.view)
+	}
+}
+
 func TestCourtDashboardVoteConfirmExecutes(t *testing.T) {
 	m := NewCourtDashboard()
 	m.proposals = sampleProposals()
 	m.rebuildTable()
 	m.view = courtViewVoteConfirm
 	m.voteAction = "approve"
+	m.voteProposalIdx = 0
 
 	var votedID string
 	var votedApprove bool
@@ -329,6 +359,7 @@ func TestCourtDashboardVoteError(t *testing.T) {
 	m.rebuildTable()
 	m.view = courtViewVoteConfirm
 	m.voteAction = "reject"
+	m.voteProposalIdx = 0
 	m.CastVote = func(id string, approve bool, reason string) error {
 		return fmt.Errorf("vote denied")
 	}

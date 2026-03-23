@@ -316,3 +316,97 @@ func TestEngineConfigValidation(t *testing.T) {
 		t.Error("expected error for MaxRiskThreshold=0")
 	}
 }
+
+func TestEngineVoteWithoutSession(t *testing.T) {
+	engine, store := setupTestEngine(t, allApproveReviewer())
+
+	// Create a proposal and transition to in_review (skip the full court review).
+	p, err := proposal.NewProposal("Vote Test", "Test direct vote", proposal.CategoryNewSkill, "admin")
+	if err != nil {
+		t.Fatalf("NewProposal failed: %v", err)
+	}
+	if err := store.Create(p); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+	if err := p.Transition(proposal.StatusSubmitted, "ready", "admin"); err != nil {
+		t.Fatalf("transition to submitted failed: %v", err)
+	}
+	if err := p.Transition(proposal.StatusInReview, "court started", "admin"); err != nil {
+		t.Fatalf("transition to in_review failed: %v", err)
+	}
+	if err := store.Update(p); err != nil {
+		t.Fatalf("store.Update failed: %v", err)
+	}
+
+	// Vote on it without any court session existing in memory.
+	session, err := engine.VoteOnProposal(context.Background(), p.ID, "operator", false, "rejected via dashboard")
+	if err != nil {
+		t.Fatalf("VoteOnProposal failed: %v", err)
+	}
+	if session.State != SessionRejected {
+		t.Errorf("expected rejected, got %q", session.State)
+	}
+
+	// Verify proposal persisted as rejected.
+	loaded, err := store.Get(p.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if loaded.Status != proposal.StatusRejected {
+		t.Errorf("expected proposal status %q, got %q", proposal.StatusRejected, loaded.Status)
+	}
+}
+
+func TestEngineVoteOnSubmittedProposal(t *testing.T) {
+	engine, store := setupTestEngine(t, allApproveReviewer())
+
+	// Create a proposal in submitted state (not yet in_review).
+	p, err := proposal.NewProposal("Submit Vote", "Approve directly", proposal.CategoryNewSkill, "admin")
+	if err != nil {
+		t.Fatalf("NewProposal failed: %v", err)
+	}
+	if err := store.Create(p); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+	if err := p.Transition(proposal.StatusSubmitted, "ready", "admin"); err != nil {
+		t.Fatalf("transition to submitted failed: %v", err)
+	}
+	if err := store.Update(p); err != nil {
+		t.Fatalf("store.Update failed: %v", err)
+	}
+
+	// Vote should auto-transition submitted → in_review → approved.
+	session, err := engine.VoteOnProposal(context.Background(), p.ID, "operator", true, "approved via dashboard")
+	if err != nil {
+		t.Fatalf("VoteOnProposal failed: %v", err)
+	}
+	if session.State != SessionApproved {
+		t.Errorf("expected approved, got %q", session.State)
+	}
+
+	loaded, err := store.Get(p.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if loaded.Status != proposal.StatusApproved {
+		t.Errorf("expected proposal status %q, got %q", proposal.StatusApproved, loaded.Status)
+	}
+}
+
+func TestEngineVoteOnDraftFails(t *testing.T) {
+	engine, store := setupTestEngine(t, allApproveReviewer())
+
+	// Create a proposal still in draft.
+	p, err := proposal.NewProposal("Draft Proposal", "Should fail", proposal.CategoryNewSkill, "admin")
+	if err != nil {
+		t.Fatalf("NewProposal failed: %v", err)
+	}
+	if err := store.Create(p); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+
+	_, err = engine.VoteOnProposal(context.Background(), p.ID, "operator", true, "try to approve draft")
+	if err == nil {
+		t.Error("expected error voting on draft proposal")
+	}
+}

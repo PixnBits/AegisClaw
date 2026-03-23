@@ -65,12 +65,16 @@ type ChatModel struct {
 	// Safe mode blocks all tool and skill execution.
 	SafeMode bool
 
+	// Watched proposals for status change notifications.
+	watchedProposals map[string]string // proposal ID → last known status
+
 	// Callbacks
 	SendMessage          func(input string, history []ChatMessage) (ChatMessage, []ToolCall, error)
 	ExecuteTool          func(call ToolCall) (string, error)
 	SummarizeToolResult  func(toolName, toolResult string, history []ChatMessage) (ChatMessage, error)
 	ToggleSafeMode       func(enable bool) error
 	RequestShutdown      func() error
+	CheckProposalStatus  func(id string) (status, title string, err error)
 }
 
 // ChatSafeModeMsg carries the result of a safe-mode toggle.
@@ -97,6 +101,20 @@ type ChatToolResultMsg struct {
 	Result    string
 	Err       error
 	Remaining []ToolCall
+}
+
+// chatPollTickMsg triggers a proposal status check after a delay.
+type chatPollTickMsg struct{}
+
+// chatPollNoChangeMsg re-arms the poll timer when no changes were found.
+type chatPollNoChangeMsg struct{}
+
+// ChatProposalNotifyMsg delivers a proposal status change notification.
+type ChatProposalNotifyMsg struct {
+	ProposalID string
+	Title      string
+	OldStatus  string
+	NewStatus  string
 }
 
 // NewChatModel creates a new chat model.
@@ -191,13 +209,67 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		m.scrollToBottom()
 
+		// Start watching proposal status after successful submission.
+		var watchCmd tea.Cmd
+		if msg.Call.Name == "proposal.submit" && msg.Err == nil {
+			if id := extractProposalID(msg.Result); id != "" {
+				if m.watchedProposals == nil {
+					m.watchedProposals = make(map[string]string)
+				}
+				m.watchedProposals[id] = "submitted"
+				watchCmd = m.pollProposals()
+			}
+		}
+
 		// Chain remaining tool calls, or summarize if all done.
 		if len(msg.Remaining) > 0 {
-			return m, m.executeTool(msg.Remaining[0], msg.Remaining[1:])
+			nextCmd := m.executeTool(msg.Remaining[0], msg.Remaining[1:])
+			if watchCmd != nil {
+				return m, tea.Batch(nextCmd, watchCmd)
+			}
+			return m, nextCmd
 		}
 		if m.SummarizeToolResult != nil {
 			m.thinking = true
-			return m, m.summarizeResult(msg.Call.Name, toolContent)
+			nextCmd := m.summarizeResult(msg.Call.Name, toolContent)
+			if watchCmd != nil {
+				return m, tea.Batch(nextCmd, watchCmd)
+			}
+			return m, nextCmd
+		}
+		if watchCmd != nil {
+			return m, watchCmd
+		}
+		return m, nil
+
+	case chatPollTickMsg:
+		if len(m.watchedProposals) > 0 {
+			return m, m.checkWatchedProposals()
+		}
+		return m, nil
+
+	case chatPollNoChangeMsg:
+		if len(m.watchedProposals) > 0 {
+			return m, m.pollProposals()
+		}
+		return m, nil
+
+	case ChatProposalNotifyMsg:
+		if m.watchedProposals == nil {
+			m.watchedProposals = make(map[string]string)
+		}
+		m.watchedProposals[msg.ProposalID] = msg.NewStatus
+		m.messages = append(m.messages, ChatMessage{
+			Role:      ChatRoleSystem,
+			Content:   fmt.Sprintf("Proposal %s (%s): status changed to %s", truncateID(msg.ProposalID, 8), msg.Title, msg.NewStatus),
+			Timestamp: time.Now(),
+		})
+		m.scrollToBottom()
+		if isTerminalProposalStatus(msg.NewStatus) {
+			delete(m.watchedProposals, msg.ProposalID)
+		}
+		if len(m.watchedProposals) > 0 {
+			return m, m.pollProposals()
 		}
 		return m, nil
 
@@ -410,7 +482,17 @@ func (m ChatModel) renderMessages() string {
 	}
 
 	visible := lines[start:end]
-	return strings.Join(visible, "\n") + "\n"
+	result := strings.Join(visible, "\n") + "\n"
+
+	// Show scroll indicators when content extends outside the viewport.
+	if start > 0 {
+		result = MutedStyle.Render("  \u2191 more (PgUp)") + "\n" + result
+	}
+	if end < len(lines) {
+		result += MutedStyle.Render("  \u2193 more (PgDn)") + "\n"
+	}
+
+	return result
 }
 
 func (m ChatModel) renderMessage(msg ChatMessage) string {
@@ -447,8 +529,14 @@ func (m ChatModel) renderMessage(msg ChatMessage) string {
 func (m ChatModel) renderInput() string {
 	prompt := lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("> ")
 	cursor := lipgloss.NewStyle().Foreground(ColorAccent).Render("_")
+
+	maxW := m.width - 2
+	if maxW < 20 {
+		maxW = 80
+	}
+
 	line := prompt + m.input + cursor
-	return "\n" + line
+	return "\n" + lipgloss.NewStyle().Width(maxW).Render(line)
 }
 
 func (m *ChatModel) scrollToBottom() {
@@ -532,4 +620,57 @@ func (m ChatModel) requestShutdown() tea.Cmd {
 		err := m.RequestShutdown()
 		return ChatShutdownMsg{Err: err}
 	}
+}
+
+func (m ChatModel) pollProposals() tea.Cmd {
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg {
+		return chatPollTickMsg{}
+	})
+}
+
+func (m ChatModel) checkWatchedProposals() tea.Cmd {
+	return func() tea.Msg {
+		if m.CheckProposalStatus == nil {
+			return chatPollNoChangeMsg{}
+		}
+		for id, lastStatus := range m.watchedProposals {
+			status, title, err := m.CheckProposalStatus(id)
+			if err != nil || status == lastStatus {
+				continue
+			}
+			return ChatProposalNotifyMsg{
+				ProposalID: id,
+				Title:      title,
+				OldStatus:  lastStatus,
+				NewStatus:  status,
+			}
+		}
+		return chatPollNoChangeMsg{}
+	}
+}
+
+// extractProposalID parses a proposal ID from a tool result string.
+func extractProposalID(result string) string {
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ID:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "ID:"))
+		}
+	}
+	return ""
+}
+
+func truncateID(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func isTerminalProposalStatus(status string) bool {
+	switch status {
+	case "approved", "rejected", "withdrawn", "complete", "failed":
+		return true
+	}
+	return false
 }

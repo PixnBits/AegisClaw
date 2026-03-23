@@ -374,8 +374,9 @@ func (e *Engine) RiskHeatmap(sessionID string) (map[string]float64, error) {
 	return s.Results[len(s.Results)-1].Heatmap, nil
 }
 
-// VoteOnProposal allows a human operator to cast a decisive vote on an escalated proposal.
-// This is the Enterprise-mode human override for proposals that cannot reach consensus.
+// VoteOnProposal allows a human operator to cast a decisive vote on a proposal.
+// Works on proposals in submitted, in_review, or escalated state. If no court
+// session exists in memory (e.g. dashboard launched independently) one is created.
 func (e *Engine) VoteOnProposal(ctx context.Context, proposalID string, voter string, approve bool, reason string) (*Session, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -387,21 +388,47 @@ func (e *Engine) VoteOnProposal(ctx context.Context, proposalID string, voter st
 		return nil, fmt.Errorf("vote reason is required")
 	}
 
-	// Find the escalated session for this proposal
+	p, err := e.store.Get(proposalID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load proposal: %w", err)
+	}
+
+	// Proposal must be in a votable state.
+	switch p.Status {
+	case proposal.StatusSubmitted, proposal.StatusInReview:
+		// ok
+	default:
+		return nil, fmt.Errorf("proposal must be submitted or in_review to vote, got %q", p.Status)
+	}
+
+	// Transition submitted → in_review if needed.
+	if p.Status == proposal.StatusSubmitted {
+		if err := p.Transition(proposal.StatusInReview, "operator vote", "court-engine"); err != nil {
+			return nil, fmt.Errorf("failed to transition to in_review: %w", err)
+		}
+		if err := e.store.Update(p); err != nil {
+			return nil, fmt.Errorf("failed to persist transition: %w", err)
+		}
+	}
+
+	// Find an existing open session, or create one for the human override.
 	var session *Session
 	for _, s := range e.sessions {
-		if s.ProposalID == proposalID && s.State == SessionEscalated {
+		if s.ProposalID == proposalID && s.EndedAt == nil {
 			session = s
 			break
 		}
 	}
 	if session == nil {
-		return nil, fmt.Errorf("no escalated session found for proposal %s", proposalID)
-	}
-
-	p, err := e.store.Get(proposalID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load proposal: %w", err)
+		session = &Session{
+			ID:         uuid.New().String(),
+			ProposalID: proposalID,
+			State:      SessionEscalated,
+			Round:      p.Round,
+			Personas:   []string{},
+			StartedAt:  time.Now().UTC(),
+		}
+		e.sessions[session.ID] = session
 	}
 
 	// Record the human vote as a review

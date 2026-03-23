@@ -238,6 +238,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	model.CheckProposalStatus = func(id string) (string, string, error) {
+		p, err := env.ProposalStore.Get(id)
+		if err != nil {
+			return "", "", err
+		}
+		return string(p.Status), p.Title, nil
+	}
+
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
@@ -415,7 +423,8 @@ When a user wants to create a skill, act as a helpful requirements analyst:
    - What privilege level does it need? (1=read-only, 5=full system access)
 4. **Build incrementally.** You can save a draft at any point so the user can continue later.
 5. **Present before submitting.** When all fields are collected, summarize the complete proposal and explicitly ask the user to confirm before calling proposal.submit.
-6. **Show status after submission.** Once submitted, report the court review outcome.
+6. **Verify after submission.** After calling proposal.submit, always call proposal.list_drafts to confirm the proposal appears with its new status. Report the verified status to the user.
+7. **Show status after submission.** Once submitted, report the court review outcome. The system will notify the user automatically when the status changes.
 
 Required fields before submitting: title, description, skill_name, at least one tool.
 Default values if not discussed: data_sensitivity=1, network_exposure=1, privilege_level=1.
@@ -823,7 +832,15 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 	action := kernel.NewAction(kernel.ActionProposalSubmit, "chat", payload)
 	env.Kernel.SignAndLog(action)
 
-	result := fmt.Sprintf("Proposal %s submitted for court review.\n  Status: %s", p.ID, p.Status)
+	result := fmt.Sprintf("Proposal submitted for court review.\n  ID: %s\n  Status: %s", p.ID, p.Status)
+
+	// Verify the submission was persisted.
+	verified, verifyErr := env.ProposalStore.Get(p.ID)
+	if verifyErr != nil {
+		result += fmt.Sprintf("\n\nWarning: could not verify submission: %v", verifyErr)
+	} else if verified.Status == proposal.StatusDraft {
+		result += "\n\nWarning: proposal is still in draft status — submission may have failed."
+	}
 
 	// Try to start court review via daemon.
 	pData, _ := p.Marshal()

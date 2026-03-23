@@ -63,11 +63,13 @@ type CourtDashboardModel struct {
 	modal      Modal
 	keys       KeyMap
 	view       courtView
-	selected   int
-	width      int
-	height     int
-	err        error
-	voteAction string
+	selected        int
+	width           int
+	height          int
+	err             error
+	voteAction      string
+	prevView        courtView
+	voteProposalIdx int
 
 	// Callbacks for data loading
 	LoadProposals func() ([]CourtProposal, error)
@@ -214,6 +216,8 @@ func (m CourtDashboardModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	case key.Matches(msg, m.keys.Approve):
 		if m.table.Cursor < len(m.proposals) {
 			m.voteAction = "approve"
+			m.prevView = courtViewList
+			m.voteProposalIdx = m.table.Cursor
 			p := m.proposals[m.table.Cursor]
 			m.modal.Show(fmt.Sprintf("Approve proposal %s?\n\n%s\n\nPress enter to confirm, esc to cancel.",
 				Truncate(p.ID, 8), p.Title))
@@ -224,6 +228,8 @@ func (m CourtDashboardModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	case key.Matches(msg, m.keys.Reject):
 		if m.table.Cursor < len(m.proposals) {
 			m.voteAction = "reject"
+			m.prevView = courtViewList
+			m.voteProposalIdx = m.table.Cursor
 			p := m.proposals[m.table.Cursor]
 			m.modal.Show(fmt.Sprintf("Reject proposal %s?\n\n%s\n\nPress enter to confirm, esc to cancel.",
 				Truncate(p.ID, 8), p.Title))
@@ -251,6 +257,8 @@ func (m CourtDashboardModel) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	case key.Matches(msg, m.keys.Approve):
 		if m.selected < len(m.proposals) {
 			m.voteAction = "approve"
+			m.prevView = courtViewDetail
+			m.voteProposalIdx = m.selected
 			p := m.proposals[m.selected]
 			m.modal.Show(fmt.Sprintf("Approve proposal %s?\n\n%s\n\nPress enter to confirm, esc to cancel.",
 				Truncate(p.ID, 8), p.Title))
@@ -261,6 +269,8 @@ func (m CourtDashboardModel) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	case key.Matches(msg, m.keys.Reject):
 		if m.selected < len(m.proposals) {
 			m.voteAction = "reject"
+			m.prevView = courtViewDetail
+			m.voteProposalIdx = m.selected
 			p := m.proposals[m.selected]
 			m.modal.Show(fmt.Sprintf("Reject proposal %s?\n\n%s\n\nPress enter to confirm, esc to cancel.",
 				Truncate(p.ID, 8), p.Title))
@@ -291,12 +301,11 @@ func (m CourtDashboardModel) handleVoteConfirmKey(msg tea.KeyMsg) (tea.Model, te
 	switch {
 	case key.Matches(msg, m.keys.Back):
 		m.modal.Hide()
-		m.view = courtViewList
+		m.view = m.prevView
 		return m, nil
 	case key.Matches(msg, m.keys.Enter):
-		idx := m.table.Cursor
-		if m.view == courtViewVoteConfirm && idx < len(m.proposals) {
-			return m, m.castVote(m.proposals[idx].ID, m.voteAction == "approve")
+		if m.view == courtViewVoteConfirm && m.voteProposalIdx < len(m.proposals) {
+			return m, m.castVote(m.proposals[m.voteProposalIdx].ID, m.voteAction == "approve")
 		}
 		return m, nil
 	}
