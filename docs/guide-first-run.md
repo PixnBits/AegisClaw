@@ -60,6 +60,18 @@ does **not** require root.
 sudo ./aegisclaw start
 ```
 
+> **Safe Mode:** If you are recovering from a problematic skill or runaway
+> tool invocation, start the daemon in safe mode to prevent any skills from
+> activating:
+>
+> ```bash
+> sudo ./aegisclaw start --safe-mode
+> ```
+>
+> In safe mode, `skill.activate` and `skill.invoke` requests are rejected.
+> Use `/safe-mode off` in the chat TUI (or restart without `--safe-mode`) to
+> re-enable normal operation.
+
 On first run the daemon automatically provisions any missing assets:
 
 ```
@@ -392,7 +404,51 @@ You can also explore the full audit log interactively:
 ./aegisclaw audit explorer
 ```
 
-## 10 — Clean Up
+## 10 — Emergency Controls
+
+If a skill misbehaves (e.g. an LLM loop that keeps invoking tools, or a tool
+that processes too much data), AegisClaw provides two immediate circuit
+breakers that do **not** depend on the LLM:
+
+### Safe Mode — stop all skills, stay in chat
+
+In the chat TUI:
+
+```
+> /safe-mode
+```
+
+This instantly deactivates every running skill and blocks new skill
+activation or invocation. The chat remains open so you can investigate.
+To resume normal operation:
+
+```
+> /safe-mode off
+```
+
+### Emergency Shutdown — stop everything and exit
+
+```
+> /shutdown
+```
+
+This deactivates all skills, sends a shutdown signal to the daemon, and exits
+the chat. Use this when you need a full stop.
+
+### Starting in safe mode
+
+If you killed the daemon and want to restart without the problematic skill
+reactivating:
+
+```bash
+sudo ./aegisclaw start --safe-mode
+```
+
+The daemon will start with safe mode pre-enabled. No skills will be
+activated until you explicitly run `/safe-mode off` from the chat TUI
+(or restart without `--safe-mode`).
+
+## 11 — Clean Up
 
 Stop the kernel daemon:
 

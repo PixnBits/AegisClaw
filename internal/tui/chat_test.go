@@ -675,3 +675,150 @@ func TestChatRenderMessagesNoHeight(t *testing.T) {
 		t.Error("expected system message in render when viewHeight is 0")
 	}
 }
+
+func TestChatSafeModeBlocksToolExecution(t *testing.T) {
+	m := NewChatModel()
+	m.SafeMode = true
+	m.SendMessage = func(input string, history []ChatMessage) (ChatMessage, []ToolCall, error) {
+		return ChatMessage{
+			Role:      ChatRoleAssistant,
+			Content:   "Let me check.",
+			Timestamp: time.Now(),
+		}, []ToolCall{{Name: "hello-world.greet"}}, nil
+	}
+	m.ExecuteTool = func(call ToolCall) (string, error) {
+		t.Fatal("ExecuteTool should not be called in safe mode")
+		return "", nil
+	}
+
+	for _, r := range "test" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(ChatModel)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	// Get LLM response with tool call
+	msg := cmd()
+	updated, cmd = m.Update(msg)
+	m = updated.(ChatModel)
+
+	// Should NOT produce a follow-up tool execution command
+	if cmd != nil {
+		t.Error("expected no command in safe mode — tool execution should be blocked")
+	}
+
+	// Should have a system message about safe mode blocking
+	last := m.messages[len(m.messages)-1]
+	if last.Role != ChatRoleSystem {
+		t.Errorf("expected system message about safe mode, got role=%s", last.Role)
+	}
+	if !strings.Contains(last.Content, "Safe mode") {
+		t.Errorf("expected safe mode message, got %q", last.Content)
+	}
+}
+
+func TestChatSafeModeToggle(t *testing.T) {
+	m := NewChatModel()
+	m.ToggleSafeMode = func(enable bool) error {
+		return nil
+	}
+
+	// Type /safe-mode
+	for _, r := range "/safe-mode" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(ChatModel)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected safe-mode command")
+	}
+
+	// Execute the async command
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(ChatModel)
+
+	if !m.SafeMode {
+		t.Error("expected SafeMode=true after /safe-mode")
+	}
+
+	// Now disable
+	for _, r := range "/safe-mode off" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(ChatModel)
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	msg = cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(ChatModel)
+
+	if m.SafeMode {
+		t.Error("expected SafeMode=false after /safe-mode off")
+	}
+}
+
+func TestChatShutdownCommand(t *testing.T) {
+	m := NewChatModel()
+	m.RequestShutdown = func() error {
+		return nil
+	}
+
+	for _, r := range "/shutdown" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(ChatModel)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected shutdown command")
+	}
+
+	// Execute the async command — should produce tea.Quit
+	msg := cmd()
+	_, quitCmd := m.Update(msg)
+	if quitCmd == nil {
+		t.Fatal("expected quit command after shutdown")
+	}
+	quitMsg := quitCmd()
+	if _, ok := quitMsg.(tea.QuitMsg); !ok {
+		t.Errorf("expected QuitMsg after shutdown, got %T", quitMsg)
+	}
+}
+
+func TestChatSafeModeNilCallback(t *testing.T) {
+	m := NewChatModel()
+	// ToggleSafeMode is nil
+
+	for _, r := range "/safe-mode" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(ChatModel)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected command")
+	}
+
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(ChatModel)
+
+	if m.err == nil {
+		t.Error("expected error for nil callback")
+	}
+	if !strings.Contains(m.err.Error(), "not configured") {
+		t.Errorf("expected 'not configured' error, got %v", m.err)
+	}
+}

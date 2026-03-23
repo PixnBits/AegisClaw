@@ -20,6 +20,8 @@ import (
 	"go.uber.org/zap"
 )
 
+var safeModeFlag bool
+
 func runStart(cmd *cobra.Command, args []string) error {
 	env, err := initRuntime()
 	if err != nil {
@@ -80,9 +82,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("skill.deactivate", makeSkillDeactivateHandler(env))
 	apiSrv.Handle("skill.invoke", makeSkillInvokeHandler(env))
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
+	apiSrv.Handle("safe-mode.enable", makeSafeModeEnableHandler(env))
+	apiSrv.Handle("safe-mode.disable", makeSafeModeDisableHandler(env))
+	apiSrv.Handle("safe-mode.status", makeSafeModeStatusHandler(env))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
+	}
+
+	// Apply --safe-mode flag: if set, enable safe mode and deactivate all
+	// active skills before accepting requests.
+	if safeModeFlag {
+		env.SafeMode.Store(true)
+		fmt.Println("  Safe mode: ENABLED (skill activate/invoke blocked)")
+		deactivateAllSkills(env)
 	}
 
 	fmt.Println("AegisClaw kernel started.")
@@ -93,6 +106,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Wait for shutdown signal
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Register the kernel.shutdown handler now that we have the cancel func.
+	apiSrv.Handle("kernel.shutdown", makeKernelShutdownHandler(stop))
 
 	fmt.Println("Press Ctrl+C to stop.")
 	<-ctx.Done()
@@ -197,6 +213,10 @@ func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 // spinning up a Firecracker microVM inside the daemon process.
 func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		if env.SafeMode.Load() {
+			return &api.Response{Error: "safe mode is active: skill activation is blocked"}
+		}
+
 		var req api.SkillActivateRequest
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
@@ -323,6 +343,10 @@ func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
 // makeSkillInvokeHandler sends a tool invocation request to a running skill VM.
 func makeSkillInvokeHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		if env.SafeMode.Load() {
+			return &api.Response{Error: "safe mode is active: skill invocation is blocked"}
+		}
+
 		var req api.SkillInvokeRequest
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
@@ -377,5 +401,68 @@ func makeSkillListHandler(env *runtimeEnv) api.Handler {
 		skills := env.Registry.List()
 		respData, _ := json.Marshal(skills)
 		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// deactivateAllSkills stops and removes all active skill sandboxes.
+func deactivateAllSkills(env *runtimeEnv) {
+	for _, entry := range env.Registry.List() {
+		if entry.State != sandbox.SkillStateActive {
+			continue
+		}
+		ctx := context.Background()
+		if err := env.Runtime.Stop(ctx, entry.SandboxID); err != nil {
+			env.Logger.Warn("safe-mode: failed to stop sandbox",
+				zap.String("skill", entry.Name), zap.Error(err))
+		}
+		if err := env.Runtime.Delete(ctx, entry.SandboxID); err != nil {
+			env.Logger.Warn("safe-mode: failed to delete sandbox",
+				zap.String("skill", entry.Name), zap.Error(err))
+		}
+		if err := env.Registry.Deactivate(entry.Name); err != nil {
+			env.Logger.Warn("safe-mode: failed to deactivate skill",
+				zap.String("skill", entry.Name), zap.Error(err))
+		}
+		fmt.Printf("  Deactivated skill: %s\n", entry.Name)
+	}
+}
+
+// makeSafeModeEnableHandler activates safe mode: deactivates all skills and
+// blocks future skill.activate and skill.invoke calls.
+func makeSafeModeEnableHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		env.SafeMode.Store(true)
+		deactivateAllSkills(env)
+		env.Logger.Info("safe mode enabled")
+		return &api.Response{Success: true}
+	}
+}
+
+// makeSafeModeDisableHandler deactivates safe mode, re-allowing skill operations.
+func makeSafeModeDisableHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		env.SafeMode.Store(false)
+		env.Logger.Info("safe mode disabled")
+		return &api.Response{Success: true}
+	}
+}
+
+// makeSafeModeStatusHandler returns whether safe mode is active.
+func makeSafeModeStatusHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		respData, _ := json.Marshal(map[string]bool{"safe_mode": env.SafeMode.Load()})
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// makeKernelShutdownHandler triggers a graceful daemon shutdown by cancelling
+// the signal context. This does not depend on any LLM — it is a direct
+// control-plane action.
+func makeKernelShutdownHandler(cancelFunc context.CancelFunc) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		// Cancel the main context, which unblocks the <-ctx.Done() in runStart
+		// and triggers the normal graceful shutdown sequence.
+		go cancelFunc()
+		return &api.Response{Success: true}
 	}
 }

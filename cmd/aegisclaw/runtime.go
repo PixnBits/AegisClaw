@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
@@ -26,6 +27,7 @@ type runtimeEnv struct {
 	Runtime       *sandbox.FirecrackerRuntime
 	Registry      *sandbox.SkillRegistry
 	ProposalStore *proposal.Store
+	SafeMode      atomic.Bool
 }
 
 func initRuntime() (*runtimeEnv, error) {

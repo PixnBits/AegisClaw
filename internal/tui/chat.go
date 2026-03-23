@@ -62,10 +62,26 @@ type ChatModel struct {
 	historyIndex  int  // -1 = not browsing; 0..len-1 = browsing
 	savedInput    string // stash current input when browsing
 
+	// Safe mode blocks all tool and skill execution.
+	SafeMode bool
+
 	// Callbacks
 	SendMessage          func(input string, history []ChatMessage) (ChatMessage, []ToolCall, error)
 	ExecuteTool          func(call ToolCall) (string, error)
 	SummarizeToolResult  func(toolName, toolResult string, history []ChatMessage) (ChatMessage, error)
+	ToggleSafeMode       func(enable bool) error
+	RequestShutdown      func() error
+}
+
+// ChatSafeModeMsg carries the result of a safe-mode toggle.
+type ChatSafeModeMsg struct {
+	Enabled bool
+	Err     error
+}
+
+// ChatShutdownMsg signals the TUI to exit after a shutdown request.
+type ChatShutdownMsg struct {
+	Err error
 }
 
 // ChatResponseMsg carries the assistant response.
@@ -114,6 +130,30 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewHeight = msg.Height - 6
 		return m, nil
 
+	case ChatSafeModeMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.SafeMode = msg.Enabled
+		label := "ENABLED"
+		if !msg.Enabled {
+			label = "DISABLED"
+		}
+		m.messages = append(m.messages, ChatMessage{
+			Role:      ChatRoleSystem,
+			Content:   fmt.Sprintf("Safe mode %s.", label),
+			Timestamp: time.Now(),
+		})
+		m.scrollToBottom()
+		return m, nil
+
+	case ChatShutdownMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+		}
+		return m, tea.Quit
+
 	case ChatResponseMsg:
 		m.thinking = false
 		if msg.Err != nil {
@@ -123,8 +163,17 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = append(m.messages, msg.Message)
 		m.scrollToBottom()
 
-		// Execute tool calls sequentially
+		// Execute tool calls sequentially (blocked in safe mode)
 		if len(msg.ToolCalls) > 0 {
+			if m.SafeMode {
+				m.messages = append(m.messages, ChatMessage{
+					Role:      ChatRoleSystem,
+					Content:   "Safe mode: tool execution blocked.",
+					Timestamp: time.Now(),
+				})
+				m.scrollToBottom()
+				return m, nil
+			}
 			return m, m.executeTool(msg.ToolCalls[0], msg.ToolCalls[1:])
 		}
 		return m, nil
@@ -204,6 +253,32 @@ func (m ChatModel) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Check for quit commands
 		if input == "/quit" || input == "/exit" {
 			return m, tea.Quit
+		}
+
+		// /safe-mode and /shutdown are handled directly without LLM.
+		if input == "/safe-mode" || input == "/safe-mode on" {
+			m.messages = append(m.messages, ChatMessage{
+				Role: ChatRoleUser, Content: input, Timestamp: time.Now(),
+			})
+			m.scrollToBottom()
+			return m, m.toggleSafeMode(true)
+		}
+		if input == "/safe-mode off" {
+			m.messages = append(m.messages, ChatMessage{
+				Role: ChatRoleUser, Content: input, Timestamp: time.Now(),
+			})
+			m.scrollToBottom()
+			return m, m.toggleSafeMode(false)
+		}
+		if input == "/shutdown" {
+			m.messages = append(m.messages, ChatMessage{
+				Role: ChatRoleUser, Content: input, Timestamp: time.Now(),
+			})
+			m.messages = append(m.messages, ChatMessage{
+				Role: ChatRoleSystem, Content: "Shutting down all skills and the daemon...", Timestamp: time.Now(),
+			})
+			m.scrollToBottom()
+			return m, m.requestShutdown()
 		}
 
 		// Add user message
@@ -433,5 +508,28 @@ func (m ChatModel) summarizeResult(toolName, toolResult string) tea.Cmd {
 	return func() tea.Msg {
 		msg, err := m.SummarizeToolResult(toolName, toolResult, m.messages)
 		return ChatSummaryMsg{Message: msg, Err: err}
+	}
+}
+
+func (m ChatModel) toggleSafeMode(enable bool) tea.Cmd {
+	return func() tea.Msg {
+		if m.ToggleSafeMode == nil {
+			return ChatSafeModeMsg{Enabled: enable, Err: fmt.Errorf("safe-mode handler not configured")}
+		}
+		err := m.ToggleSafeMode(enable)
+		if err != nil {
+			return ChatSafeModeMsg{Err: err}
+		}
+		return ChatSafeModeMsg{Enabled: enable}
+	}
+}
+
+func (m ChatModel) requestShutdown() tea.Cmd {
+	return func() tea.Msg {
+		if m.RequestShutdown == nil {
+			return ChatShutdownMsg{Err: fmt.Errorf("shutdown handler not configured")}
+		}
+		err := m.RequestShutdown()
+		return ChatShutdownMsg{Err: err}
 	}
 }

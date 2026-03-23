@@ -37,7 +37,10 @@ var startCmd = &cobra.Command{
 	Short: "Start the AegisClaw kernel",
 	Long: `Starts the AegisClaw kernel singleton, loads configuration,
 and initializes the message-hub skill in its own microVM.
-All subsequent operations require the kernel to be running.`,
+All subsequent operations require the kernel to be running.
+
+Use --safe-mode to start with all skills disabled and block new
+skill activation/invocation until safe mode is explicitly turned off.`,
 	RunE: runStart,
 }
 
@@ -163,6 +166,7 @@ func init() {
 	courtCmd.AddCommand(courtDashboardCmd)
 
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")
+	startCmd.Flags().BoolVar(&safeModeFlag, "safe-mode", false, "Start in safe mode: deactivate all skills and block skill activation/invocation")
 
 	secretCmd.AddCommand(secretAddCmd)
 	secretCmd.AddCommand(secretListCmd)

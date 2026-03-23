@@ -25,6 +25,9 @@ Supports slash commands for quick access to AegisClaw operations:
   /status          - Show system status
   /audit           - Show audit summary
   /court           - List court sessions
+  /safe-mode       - Stop all skills and block execution (no LLM)
+  /safe-mode off   - Re-enable skill execution
+  /shutdown        - Emergency stop: all skills + daemon + exit
   /quit            - Exit chat`,
 	RunE: runChat,
 }
@@ -183,6 +186,37 @@ func runChat(cmd *cobra.Command, args []string) error {
 		}, nil
 	}
 
+	model.ToggleSafeMode = func(enable bool) error {
+		action := "safe-mode.enable"
+		if !enable {
+			action = "safe-mode.disable"
+		}
+		resp, err := daemonClient.Call(cmd.Context(), action, nil)
+		if err != nil {
+			return fmt.Errorf("daemon: %w", err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("daemon: %s", resp.Error)
+		}
+		return nil
+	}
+
+	model.RequestShutdown = func() error {
+		// Enable safe mode first to stop all skills.
+		if resp, err := daemonClient.Call(cmd.Context(), "safe-mode.enable", nil); err != nil {
+			return fmt.Errorf("safe-mode: %w", err)
+		} else if !resp.Success {
+			return fmt.Errorf("safe-mode: %s", resp.Error)
+		}
+		// Request daemon shutdown.
+		if resp, err := daemonClient.Call(cmd.Context(), "kernel.shutdown", nil); err != nil {
+			return fmt.Errorf("shutdown: %w", err)
+		} else if !resp.Success {
+			return fmt.Errorf("shutdown: %s", resp.Error)
+		}
+		return nil
+	}
+
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
@@ -245,12 +279,15 @@ func handleSlashCommand(env *runtimeEnv, input string) (tui.ChatMessage, []tui.T
 
 	case "/help":
 		content := `Available commands:
-  /help     — Show this help message
-  /status   — Show system status (sandboxes, skills, audit)
-  /audit    — Show audit chain info and verification
-  /court    — List court sessions / proposals
-  /propose  — Start a new skill proposal
-  /quit     — Exit chat
+  /help          — Show this help message
+  /status        — Show system status (sandboxes, skills, audit)
+  /audit         — Show audit chain info and verification
+  /court         — List court sessions / proposals
+  /propose       — Start a new skill proposal
+  /safe-mode     — Stop all tools and skills immediately (no LLM)
+  /safe-mode off — Re-enable tool and skill execution
+  /shutdown      — Emergency: stop all skills, shut down daemon, exit
+  /quit          — Exit chat
 
 You can also type natural language to chat with AegisClaw.
 Use ↑/↓ arrows to recall previous messages.`
