@@ -147,6 +147,42 @@ func runChat(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	model.SummarizeToolResult = func(toolName, toolResult string, history []tui.ChatMessage) (tui.ChatMessage, error) {
+		systemPrompt := buildSystemPrompt(cmd.Context(), daemonClient)
+		msgs := []llm.ChatMessage{{Role: "system", Content: systemPrompt}}
+		for _, h := range history {
+			if h.Role == tui.ChatRoleSystem {
+				continue
+			}
+			role := "user"
+			if h.Role == tui.ChatRoleAssistant {
+				role = "assistant"
+			} else if h.Role == tui.ChatRoleTool {
+				role = "user" // Ollama doesn't have a tool role; send as user context
+			}
+			msgs = append(msgs, llm.ChatMessage{Role: role, Content: h.Content})
+		}
+		// Add the tool result as context for the LLM.
+		msgs = append(msgs, llm.ChatMessage{
+			Role:    "user",
+			Content: fmt.Sprintf("[Tool %s returned]: %s\nPlease summarize this result for the user in a natural, conversational way. Do NOT output a tool-call block.", toolName, toolResult),
+		})
+
+		resp, err := ollamaClient.Chat(cmd.Context(), llm.ChatRequest{
+			Model:    env.Config.Ollama.DefaultModel,
+			Messages: msgs,
+		})
+		if err != nil {
+			return tui.ChatMessage{}, fmt.Errorf("ollama: %w", err)
+		}
+
+		return tui.ChatMessage{
+			Role:      tui.ChatRoleAssistant,
+			Content:   resp.Message.Content,
+			Timestamp: time.Now(),
+		}, nil
+	}
+
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err = p.Run()
 	return err

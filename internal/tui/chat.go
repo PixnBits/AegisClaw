@@ -58,8 +58,9 @@ type ChatModel struct {
 	err          error
 
 	// Callbacks
-	SendMessage func(input string, history []ChatMessage) (ChatMessage, []ToolCall, error)
-	ExecuteTool func(call ToolCall) (string, error)
+	SendMessage          func(input string, history []ChatMessage) (ChatMessage, []ToolCall, error)
+	ExecuteTool          func(call ToolCall) (string, error)
+	SummarizeToolResult  func(toolName, toolResult string, history []ChatMessage) (ChatMessage, error)
 }
 
 // ChatResponseMsg carries the assistant response.
@@ -71,9 +72,10 @@ type ChatResponseMsg struct {
 
 // ChatToolResultMsg carries the result of a tool execution.
 type ChatToolResultMsg struct {
-	Call   ToolCall
-	Result string
-	Err    error
+	Call      ToolCall
+	Result    string
+	Err       error
+	Remaining []ToolCall
 }
 
 // NewChatModel creates a new chat model.
@@ -122,21 +124,35 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ChatToolResultMsg:
+		toolContent := msg.Result
 		if msg.Err != nil {
-			m.messages = append(m.messages, ChatMessage{
-				Role:      ChatRoleTool,
-				Content:   fmt.Sprintf("Tool %s error: %v", msg.Call.Name, msg.Err),
-				Timestamp: time.Now(),
-				ToolName:  msg.Call.Name,
-			})
-		} else {
-			m.messages = append(m.messages, ChatMessage{
-				Role:      ChatRoleTool,
-				Content:   msg.Result,
-				Timestamp: time.Now(),
-				ToolName:  msg.Call.Name,
-			})
+			toolContent = fmt.Sprintf("Tool %s error: %v", msg.Call.Name, msg.Err)
 		}
+		m.messages = append(m.messages, ChatMessage{
+			Role:      ChatRoleTool,
+			Content:   toolContent,
+			Timestamp: time.Now(),
+			ToolName:  msg.Call.Name,
+		})
+		m.scrollToBottom()
+
+		// Chain remaining tool calls, or summarize if all done.
+		if len(msg.Remaining) > 0 {
+			return m, m.executeTool(msg.Remaining[0], msg.Remaining[1:])
+		}
+		if m.SummarizeToolResult != nil {
+			m.thinking = true
+			return m, m.summarizeResult(msg.Call.Name, toolContent)
+		}
+		return m, nil
+
+	case ChatSummaryMsg:
+		m.thinking = false
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.messages = append(m.messages, msg.Message)
 		m.scrollToBottom()
 		return m, nil
 
@@ -291,18 +307,18 @@ func (m ChatModel) renderMessage(msg ChatMessage) string {
 	case ChatRoleUser:
 		prefix := lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("You")
 		ts := MutedStyle.Render(msg.Timestamp.Format("15:04"))
-		content := lipgloss.NewStyle().MaxWidth(maxWidth).Render(msg.Content)
+		content := lipgloss.NewStyle().Width(maxWidth).Render(msg.Content)
 		return fmt.Sprintf("  %s %s\n  %s", prefix, ts, content)
 
 	case ChatRoleAssistant:
 		prefix := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("AegisClaw")
 		ts := MutedStyle.Render(msg.Timestamp.Format("15:04"))
-		content := lipgloss.NewStyle().MaxWidth(maxWidth).Render(msg.Content)
+		content := lipgloss.NewStyle().Width(maxWidth).Render(msg.Content)
 		return fmt.Sprintf("  %s %s\n  %s", prefix, ts, content)
 
 	case ChatRoleTool:
 		prefix := lipgloss.NewStyle().Bold(true).Foreground(ColorWarning).Render(fmt.Sprintf("Tool:%s", msg.ToolName))
-		content := lipgloss.NewStyle().MaxWidth(maxWidth).Foreground(ColorMuted).Render(msg.Content)
+		content := lipgloss.NewStyle().Width(maxWidth).Foreground(ColorMuted).Render(msg.Content)
 		return fmt.Sprintf("  %s\n  %s", prefix, content)
 
 	case ChatRoleSystem:
@@ -359,9 +375,22 @@ func (m ChatModel) sendMessage(input string) tea.Cmd {
 func (m ChatModel) executeTool(call ToolCall, remaining []ToolCall) tea.Cmd {
 	return func() tea.Msg {
 		if m.ExecuteTool == nil {
-			return ChatToolResultMsg{Call: call, Err: fmt.Errorf("tool execution not configured")}
+			return ChatToolResultMsg{Call: call, Err: fmt.Errorf("tool execution not configured"), Remaining: remaining}
 		}
 		result, err := m.ExecuteTool(call)
-		return ChatToolResultMsg{Call: call, Result: result, Err: err}
+		return ChatToolResultMsg{Call: call, Result: result, Err: err, Remaining: remaining}
+	}
+}
+
+// ChatSummaryMsg carries the LLM's summary of a tool result.
+type ChatSummaryMsg struct {
+	Message ChatMessage
+	Err     error
+}
+
+func (m ChatModel) summarizeResult(toolName, toolResult string) tea.Cmd {
+	return func() tea.Msg {
+		msg, err := m.SummarizeToolResult(toolName, toolResult, m.messages)
+		return ChatSummaryMsg{Message: msg, Err: err}
 	}
 }
