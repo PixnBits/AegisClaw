@@ -42,6 +42,23 @@ type CourtVoteRequest struct {
 	ProposalData json.RawMessage `json:"proposal_data,omitempty"`
 }
 
+// SkillActivateRequest carries the payload for the "skill.activate" action.
+type SkillActivateRequest struct {
+	Name string `json:"name"`
+}
+
+// SkillInvokeRequest carries the payload for the "skill.invoke" action.
+type SkillInvokeRequest struct {
+	Skill string `json:"skill"`
+	Tool  string `json:"tool"`
+	Args  string `json:"args,omitempty"`
+}
+
+// SkillDeactivateRequest carries the payload for the "skill.deactivate" action.
+type SkillDeactivateRequest struct {
+	Name string `json:"name"`
+}
+
 // DefaultSocketPath returns the default daemon socket path.
 // Uses a fixed, well-known location so the root daemon and unprivileged CLI
 // always agree — similar to Docker's /var/run/docker.sock.

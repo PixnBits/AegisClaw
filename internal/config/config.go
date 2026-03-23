@@ -51,6 +51,7 @@ type Config struct {
 		TimeoutSecs  int    `yaml:"timeout_secs" mapstructure:"timeout_secs"`
 		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
 		ModelDir     string `yaml:"model_dir" mapstructure:"model_dir"`
+		DefaultModel string `yaml:"default_model" mapstructure:"default_model"`
 	} `yaml:"ollama" mapstructure:"ollama"`
 	Daemon struct {
 		SocketPath string `yaml:"socket_path" mapstructure:"socket_path"`
@@ -130,11 +131,13 @@ func DefaultConfig() Config {
 			TimeoutSecs  int    `yaml:"timeout_secs" mapstructure:"timeout_secs"`
 			RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
 			ModelDir     string `yaml:"model_dir" mapstructure:"model_dir"`
+			DefaultModel string `yaml:"default_model" mapstructure:"default_model"`
 		}{
 			Endpoint:     "http://127.0.0.1:11434",
 			TimeoutSecs:  300,
 			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "model-registry.json"),
 			ModelDir:     filepath.Join(home, ".local", "share", "aegisclaw", "models"),
+			DefaultModel: "llama3.2:3b",
 		},
 		Daemon: struct {
 			SocketPath string `yaml:"socket_path" mapstructure:"socket_path"`
@@ -186,6 +189,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("ollama.timeout_secs", defaults.Ollama.TimeoutSecs)
 	viper.SetDefault("ollama.registry_path", defaults.Ollama.RegistryPath)
 	viper.SetDefault("ollama.model_dir", defaults.Ollama.ModelDir)
+	viper.SetDefault("ollama.default_model", defaults.Ollama.DefaultModel)
 	viper.SetDefault("daemon.socket_path", defaults.Daemon.SocketPath)
 
 	// Read config file, create with defaults if missing

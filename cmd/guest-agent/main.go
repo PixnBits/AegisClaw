@@ -113,10 +113,15 @@ func main() {
 
 	listener, err := listenVsock(vsockPort)
 	if err != nil {
-		log.Fatalf("failed to listen on vsock port %d: %v", vsockPort, err)
+		log.Printf("vsock unavailable (%v), falling back to TCP", err)
+		configureNetwork()
+		listener, err = net.Listen("tcp", fmt.Sprintf(":%d", vsockPort))
+		if err != nil {
+			log.Fatalf("failed to listen on TCP port %d: %v", vsockPort, err)
+		}
 	}
 	defer listener.Close()
-	log.Printf("listening on vsock port %d", vsockPort)
+	log.Printf("listening on %s", listener.Addr())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -190,6 +195,8 @@ func dispatch(ctx context.Context, req *Request) *Response {
 		return handleStatus(req)
 	case "secrets.inject":
 		return handleSecretsInject(req)
+	case "tool.invoke":
+		return handleToolInvoke(req)
 	default:
 		return errorResponse(req.ID, fmt.Sprintf("unknown request type: %s", req.Type))
 	}
@@ -434,6 +441,59 @@ func handleSecretsInject(req *Request) *Response {
 	}
 }
 
+// ToolInvokePayload is the request to invoke a skill tool.
+type ToolInvokePayload struct {
+	Tool string `json:"tool"`
+	Args string `json:"args,omitempty"`
+}
+
+// ToolInvokeResult is the response from a tool invocation.
+type ToolInvokeResult struct {
+	Output string `json:"output"`
+}
+
+func handleToolInvoke(req *Request) *Response {
+	var payload ToolInvokePayload
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("invalid tool.invoke payload: %v", err))
+	}
+	if payload.Tool == "" {
+		return errorResponse(req.ID, "tool name is required")
+	}
+
+	// Look for the tool as an executable under /workspace/tools/<name>.
+	toolPath := filepath.Join(workspaceDir, "tools", payload.Tool)
+	if _, err := os.Stat(toolPath); err == nil {
+		// Execute the tool binary/script
+		cmd := exec.Command(toolPath)
+		if payload.Args != "" {
+			cmd = exec.Command(toolPath, payload.Args)
+		}
+		cmd.Dir = workspaceDir
+		cmd.Env = []string{
+			"PATH=/usr/local/bin:/usr/bin:/bin",
+			"HOME=/workspace",
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return errorResponse(req.ID, fmt.Sprintf("tool %q failed: %v (%s)", payload.Tool, err, string(out)))
+		}
+		result := ToolInvokeResult{Output: strings.TrimSpace(string(out))}
+		data, _ := json.Marshal(result)
+		return &Response{ID: req.ID, Success: true, Data: data}
+	}
+
+	// No deployed tool binary — return a placeholder so the demo flow is
+	// visible.  The builder pipeline (step 6) will eventually deploy real
+	// tool binaries into /workspace/tools/.
+	log.Printf("tool.invoke: tool %q not found at %s, returning stub", payload.Tool, toolPath)
+	result := ToolInvokeResult{
+		Output: fmt.Sprintf("[stub] Tool %q invoked.  Deploy skill code to /workspace/tools/ via the builder pipeline.", payload.Tool),
+	}
+	data, _ := json.Marshal(result)
+	return &Response{ID: req.ID, Success: true, Data: data}
+}
+
 func errorResponse(id, msg string) *Response {
 	return &Response{
 		ID:      id,
@@ -504,4 +564,47 @@ func listenVsock(port int) (net.Listener, error) {
 	}
 
 	return listener, nil
+}
+
+// configureNetwork brings up eth0 using the kernel-assigned IP from DHCP or
+// static boot params.  Firecracker assigns IPs via the host tap configuration.
+func configureNetwork() {
+	// Read the IP from kernel cmdline (set by host via boot_args).
+	// Format: ... ip=<guest_ip>::<gateway>:<netmask>::eth0:off ...
+	cmdline, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		log.Printf("warning: cannot read /proc/cmdline: %v", err)
+		return
+	}
+
+	// Parse ip= parameter from kernel command line.
+	var guestIP string
+	for _, param := range strings.Fields(string(cmdline)) {
+		if strings.HasPrefix(param, "ip=") {
+			parts := strings.Split(param[3:], ":")
+			if len(parts) > 0 {
+				guestIP = parts[0]
+			}
+		}
+	}
+
+	if guestIP == "" {
+		// Try bringing up eth0 with a simple link-local or DHCP.
+		log.Println("no ip= kernel param, bringing up eth0 with DHCP")
+		runNetCmd("/sbin/ifconfig", "eth0", "up")
+		runNetCmd("/sbin/udhcpc", "-i", "eth0", "-n", "-q")
+		return
+	}
+
+	log.Printf("configuring eth0 with IP %s", guestIP)
+	runNetCmd("/sbin/ifconfig", "eth0", guestIP, "netmask", "255.255.255.252", "up")
+}
+
+func runNetCmd(name string, args ...string) {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Printf("warning: %s %v failed: %v", name, args, err)
+	}
 }

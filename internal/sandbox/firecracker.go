@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -224,7 +225,7 @@ func (r *FirecrackerRuntime) Start(ctx context.Context, id string) error {
 		}
 	}
 
-	fcCfg := r.buildFirecrackerConfig(spec, effectiveSocketPath, rootfsPath, workspacePath, tapName)
+	fcCfg := r.buildFirecrackerConfig(spec, effectiveSocketPath, rootfsPath, workspacePath, tapName, guestIP, hostIP)
 
 	// Configure jailer for UID/GID isolation
 	jailerCfg := r.buildJailerConfig(spec)
@@ -436,7 +437,7 @@ func (r *FirecrackerRuntime) Status(ctx context.Context, id string) (*SandboxInf
 // buildFirecrackerConfig constructs the full Firecracker VM configuration.
 func (r *FirecrackerRuntime) buildFirecrackerConfig(
 	spec SandboxSpec,
-	socketPath, rootfsPath, workspacePath, tapName string,
+	socketPath, rootfsPath, workspacePath, tapName, guestIP, hostIP string,
 ) firecracker.Config {
 	kernelImage := spec.KernelPath
 	if kernelImage == "" {
@@ -448,10 +449,14 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 		AddDrive(workspacePath, false).
 		Build()
 
+	// Pass guest IP to the guest-agent via kernel command line so it can
+	// configure eth0 when vsock transport is not available.
+	kernelArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off init=/sbin/guest-agent ip=%s::%s:255.255.255.252::eth0:off", guestIP, hostIP)
+
 	return firecracker.Config{
 		SocketPath:      socketPath,
 		KernelImagePath: kernelImage,
-		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/guest-agent",
+		KernelArgs:      kernelArgs,
 		Drives:          drives,
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  firecracker.Int64(spec.Resources.VCPUs),
@@ -742,6 +747,96 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// VsockPath returns the host-side Firecracker vsock UDS path for a sandbox.
+// For jailed VMs this is under the jailer chroot.
+func (r *FirecrackerRuntime) VsockPath(id string) (string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	ms, exists := r.sandboxes[id]
+	if !exists {
+		return "", fmt.Errorf("sandbox %s not found", id)
+	}
+	if ms.info.State != StateRunning {
+		return "", fmt.Errorf("sandbox %s is not running (state: %s)", id, ms.info.State)
+	}
+
+	// The vsock UDS is in the same directory as the API socket.
+	// For jailed VMs the jailer places it at <chroot>/root/vsock.sock.
+	if _, err := os.Stat(r.cfg.JailerBin); err == nil {
+		return filepath.Join(r.cfg.ChrootBaseDir, "firecracker", id, "root", "vsock.sock"), nil
+	}
+	return filepath.Join(r.cfg.StateDir, id, "vsock.sock"), nil
+}
+
+// SendToVM connects to a running VM's guest-agent and sends a JSON request,
+// returning the JSON response.  It tries the Firecracker vsock proxy first,
+// falling back to a direct TCP connection to the guest IP.
+func (r *FirecrackerRuntime) SendToVM(ctx context.Context, id string, req interface{}) (json.RawMessage, error) {
+	r.mu.RLock()
+	ms, exists := r.sandboxes[id]
+	guestIP := ms.info.GuestIP
+	r.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("sandbox %s not found", id)
+	}
+
+	const guestPort = 1024
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+
+	// Try vsock first (may hang if guest lacks vsock driver, so use a short deadline).
+	vsockPath, vsockErr := r.VsockPath(id)
+	if vsockErr == nil {
+		conn, err := dialer.DialContext(ctx, "unix", vsockPath)
+		if err == nil {
+			// Firecracker vsock proxy protocol: CONNECT <port>\n → OK <port>\n.
+			conn.SetDeadline(time.Now().Add(3 * time.Second))
+			if _, err := fmt.Fprintf(conn, "CONNECT %d\n", guestPort); err == nil {
+				buf := make([]byte, 64)
+				n, readErr := conn.Read(buf)
+				if readErr == nil {
+					resp := string(buf[:n])
+					if len(resp) >= 2 && resp[:2] == "OK" {
+						conn.SetDeadline(time.Time{}) // clear deadline for data exchange
+						return r.exchangeJSON(conn, id, req)
+					}
+				}
+			}
+			conn.Close()
+		}
+	}
+
+	// Fall back to TCP via guest IP.
+	if guestIP == "" {
+		return nil, fmt.Errorf("sandbox %s: vsock unavailable and no guest IP", id)
+	}
+
+	addr := fmt.Sprintf("%s:%d", guestIP, guestPort)
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to VM %s at %s: %w", id, addr, err)
+	}
+	defer conn.Close()
+	return r.exchangeJSON(conn, id, req)
+}
+
+// exchangeJSON writes a JSON request and reads a JSON response on conn.
+func (r *FirecrackerRuntime) exchangeJSON(conn net.Conn, id string, req interface{}) (json.RawMessage, error) {
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(conn)
+
+	if err := encoder.Encode(req); err != nil {
+		return nil, fmt.Errorf("failed to send request to VM %s: %w", id, err)
+	}
+
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("failed to read response from VM %s: %w", id, err)
+	}
+	return raw, nil
 }
 
 // detectCgroupVersion returns "2" for cgroups v2 and "1" for v1.

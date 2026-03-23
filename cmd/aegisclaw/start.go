@@ -14,6 +14,8 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/provision"
+	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -74,6 +76,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))
+	apiSrv.Handle("skill.activate", makeSkillActivateHandler(env))
+	apiSrv.Handle("skill.deactivate", makeSkillDeactivateHandler(env))
+	apiSrv.Handle("skill.invoke", makeSkillInvokeHandler(env))
+	apiSrv.Handle("skill.list", makeSkillListHandler(env))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
@@ -183,6 +189,193 @@ func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 		}
 
 		respData, _ := json.Marshal(session)
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// makeSkillActivateHandler returns an API handler that activates a skill by
+// spinning up a Firecracker microVM inside the daemon process.
+func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req api.SkillActivateRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		if req.Name == "" {
+			return &api.Response{Error: "skill name is required"}
+		}
+
+		// Check if already active.
+		if existing, ok := env.Registry.Get(req.Name); ok {
+			if existing.State == sandbox.SkillStateActive {
+				pid := 0
+				if info, err := env.Runtime.Status(ctx, existing.SandboxID); err == nil {
+					pid = info.PID
+				}
+				respData, _ := json.Marshal(map[string]interface{}{
+					"name":       existing.Name,
+					"sandbox_id": existing.SandboxID,
+					"pid":        pid,
+					"version":    existing.Version,
+					"hash":       existing.MerkleHash[:16],
+					"root_hash":  env.Registry.RootHash()[:16],
+				})
+				return &api.Response{Success: true, Data: respData}
+			}
+		}
+
+		sandboxID := uuid.New().String()
+		spec := sandbox.SandboxSpec{
+			ID:   sandboxID,
+			Name: fmt.Sprintf("skill-%s", req.Name),
+			Resources: sandbox.Resources{
+				VCPUs:    1,
+				MemoryMB: 256,
+			},
+			NetworkPolicy: sandbox.NetworkPolicy{
+				DefaultDeny: true,
+			},
+			RootfsPath: env.Config.Rootfs.Template,
+		}
+
+		if err := env.Runtime.Create(ctx, spec); err != nil {
+			return &api.Response{Error: "failed to create sandbox: " + err.Error()}
+		}
+
+		if err := env.Runtime.Start(ctx, sandboxID); err != nil {
+			env.Runtime.Delete(ctx, sandboxID)
+			return &api.Response{Error: "failed to start sandbox: " + err.Error()}
+		}
+
+		info, err := env.Runtime.Status(ctx, sandboxID)
+		if err != nil {
+			return &api.Response{Error: "failed to get sandbox status: " + err.Error()}
+		}
+
+		entry, err := env.Registry.Register(req.Name, sandboxID, map[string]string{
+			"sandbox_name": spec.Name,
+			"guest_ip":     info.GuestIP,
+		})
+		if err != nil {
+			env.Runtime.Stop(ctx, sandboxID)
+			env.Runtime.Delete(ctx, sandboxID)
+			return &api.Response{Error: "failed to register skill: " + err.Error()}
+		}
+
+		payload, _ := json.Marshal(map[string]interface{}{
+			"skill_name": req.Name,
+			"sandbox_id": sandboxID,
+			"version":    entry.Version,
+			"hash":       entry.MerkleHash,
+		})
+		action := kernel.NewAction(kernel.ActionSkillActivate, "kernel", payload)
+		env.Kernel.SignAndLog(action)
+
+		env.Logger.Info("skill activated via daemon",
+			zap.String("name", req.Name),
+			zap.String("sandbox_id", sandboxID),
+			zap.Int("pid", info.PID),
+		)
+
+		respData, _ := json.Marshal(map[string]interface{}{
+			"name":       req.Name,
+			"sandbox_id": sandboxID,
+			"pid":        info.PID,
+			"version":    entry.Version,
+			"hash":       entry.MerkleHash[:16],
+			"root_hash":  env.Registry.RootHash()[:16],
+		})
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// makeSkillDeactivateHandler stops a skill's sandbox and marks it inactive.
+func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req api.SkillDeactivateRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		if req.Name == "" {
+			return &api.Response{Error: "skill name is required"}
+		}
+
+		entry, ok := env.Registry.Get(req.Name)
+		if !ok {
+			return &api.Response{Error: fmt.Sprintf("skill %q not found", req.Name)}
+		}
+
+		if err := env.Runtime.Stop(ctx, entry.SandboxID); err != nil {
+			env.Logger.Warn("failed to stop sandbox", zap.String("id", entry.SandboxID), zap.Error(err))
+		}
+		if err := env.Runtime.Delete(ctx, entry.SandboxID); err != nil {
+			env.Logger.Warn("failed to delete sandbox", zap.String("id", entry.SandboxID), zap.Error(err))
+		}
+
+		if err := env.Registry.Deactivate(req.Name); err != nil {
+			return &api.Response{Error: "failed to deactivate: " + err.Error()}
+		}
+
+		return &api.Response{Success: true}
+	}
+}
+
+// makeSkillInvokeHandler sends a tool invocation request to a running skill VM.
+func makeSkillInvokeHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req api.SkillInvokeRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		if req.Skill == "" || req.Tool == "" {
+			return &api.Response{Error: "skill and tool are required"}
+		}
+
+		entry, ok := env.Registry.Get(req.Skill)
+		if !ok {
+			return &api.Response{Error: fmt.Sprintf("skill %q not found", req.Skill)}
+		}
+		if entry.State != sandbox.SkillStateActive {
+			return &api.Response{Error: fmt.Sprintf("skill %q is not active (state: %s)", req.Skill, entry.State)}
+		}
+
+		// Send tool.invoke to the guest-agent via Firecracker vsock.
+		vmReq := map[string]interface{}{
+			"id":   uuid.New().String(),
+			"type": "tool.invoke",
+			"payload": map[string]string{
+				"tool": req.Tool,
+				"args": req.Args,
+			},
+		}
+
+		raw, err := env.Runtime.SendToVM(ctx, entry.SandboxID, vmReq)
+		if err != nil {
+			return &api.Response{Error: "vsock invoke failed: " + err.Error()}
+		}
+
+		// Parse the guest-agent response.
+		var vmResp struct {
+			Success bool            `json:"success"`
+			Error   string          `json:"error,omitempty"`
+			Data    json.RawMessage `json:"data,omitempty"`
+		}
+		if err := json.Unmarshal(raw, &vmResp); err != nil {
+			return &api.Response{Error: "failed to parse VM response: " + err.Error()}
+		}
+		if !vmResp.Success {
+			return &api.Response{Error: "tool failed: " + vmResp.Error}
+		}
+
+		return &api.Response{Success: true, Data: vmResp.Data}
+	}
+}
+
+// makeSkillListHandler returns active skills from the registry.
+func makeSkillListHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		skills := env.Registry.List()
+		respData, _ := json.Marshal(skills)
 		return &api.Response{Success: true, Data: respData}
 	}
 }

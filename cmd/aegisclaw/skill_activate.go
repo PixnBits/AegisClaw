@@ -1,15 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/PixnBits/AegisClaw/internal/kernel"
-	"github.com/PixnBits/AegisClaw/internal/sandbox"
-	"github.com/google/uuid"
+	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 )
 
 var skillCmd = &cobra.Command{
@@ -49,74 +45,36 @@ func runSkillActivate(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
-	ctx := context.Background()
+	fmt.Printf("Activating skill '%s' via daemon...\n", name)
 
-	if existing, ok := env.Registry.Get(name); ok {
-		if existing.State == sandbox.SkillStateActive {
-			return fmt.Errorf("skill %q is already active (sandbox=%s)", name, existing.SandboxID)
-		}
-	}
-
-	sandboxID := uuid.New().String()
-	spec := sandbox.SandboxSpec{
-		ID:   sandboxID,
-		Name: fmt.Sprintf("skill-%s", name),
-		Resources: sandbox.Resources{
-			VCPUs:    1,
-			MemoryMB: 256,
-		},
-		NetworkPolicy: sandbox.NetworkPolicy{
-			DefaultDeny: true,
-		},
-		RootfsPath: env.Config.Rootfs.Template,
-	}
-
-	if err := env.Runtime.Create(ctx, spec); err != nil {
-		return fmt.Errorf("failed to create sandbox for skill %q: %w", name, err)
-	}
-
-	if err := env.Runtime.Start(ctx, sandboxID); err != nil {
-		env.Runtime.Delete(ctx, sandboxID)
-		return fmt.Errorf("failed to start sandbox for skill %q: %w", name, err)
-	}
-
-	info, err := env.Runtime.Status(ctx, sandboxID)
-	if err != nil {
-		return fmt.Errorf("failed to get sandbox status: %w", err)
-	}
-
-	entry, err := env.Registry.Register(name, sandboxID, map[string]string{
-		"sandbox_name": spec.Name,
-		"guest_ip":     info.GuestIP,
+	client := api.NewClient(env.Config.Daemon.SocketPath)
+	resp, err := client.Call(cmd.Context(), "skill.activate", api.SkillActivateRequest{
+		Name: name,
 	})
 	if err != nil {
-		env.Runtime.Stop(ctx, sandboxID)
-		env.Runtime.Delete(ctx, sandboxID)
-		return fmt.Errorf("failed to register skill: %w", err)
+		return fmt.Errorf("failed to contact daemon: %w\n(Is the daemon running? Start it with: sudo aegisclaw start)", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("skill activation failed: %s", resp.Error)
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"skill_name": name,
-		"sandbox_id": sandboxID,
-		"version":    entry.Version,
-		"hash":       entry.MerkleHash,
-	})
-	action := kernel.NewAction(kernel.ActionSkillActivate, "kernel", payload)
-	if _, signErr := env.Kernel.SignAndLog(action); signErr != nil {
-		env.Logger.Error("failed to log skill activation", zap.Error(signErr))
+	var result struct {
+		Name      string `json:"name"`
+		SandboxID string `json:"sandbox_id"`
+		PID       int    `json:"pid"`
+		Version   int    `json:"version"`
+		Hash      string `json:"hash"`
+		RootHash  string `json:"root_hash"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		fmt.Println("Skill activated (could not parse details).")
+		return nil
 	}
 
-	env.Logger.Info("skill activated",
-		zap.String("name", name),
-		zap.String("sandbox_id", sandboxID),
-		zap.Int("pid", info.PID),
-		zap.String("merkle_hash", entry.MerkleHash),
-	)
-
-	fmt.Printf("Skill '%s' activated.\n", name)
-	fmt.Printf("  Sandbox: %s (pid=%d)\n", sandboxID, info.PID)
-	fmt.Printf("  Registry: v%d hash=%s\n", entry.Version, entry.MerkleHash[:16])
-	fmt.Printf("  Root hash: %s\n", env.Registry.RootHash()[:16])
+	fmt.Printf("Skill '%s' activated.\n", result.Name)
+	fmt.Printf("  Sandbox: %s (pid=%d)\n", result.SandboxID, result.PID)
+	fmt.Printf("  Registry: v%d hash=%s\n", result.Version, result.Hash)
+	fmt.Printf("  Root hash: %s\n", result.RootHash)
 	return nil
 }
 
@@ -129,25 +87,17 @@ func runSkillDeactivate(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
-	ctx := context.Background()
+	fmt.Printf("Deactivating skill '%s' via daemon...\n", name)
 
-	entry, ok := env.Registry.Get(name)
-	if !ok {
-		return fmt.Errorf("skill %q not found in registry", name)
+	client := api.NewClient(env.Config.Daemon.SocketPath)
+	resp, err := client.Call(cmd.Context(), "skill.deactivate", api.SkillDeactivateRequest{
+		Name: name,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to contact daemon: %w\n(Is the daemon running? Start it with: sudo aegisclaw start)", err)
 	}
-	if entry.State != sandbox.SkillStateActive {
-		return fmt.Errorf("skill %q is not active (state: %s)", name, entry.State)
-	}
-
-	if err := env.Runtime.Stop(ctx, entry.SandboxID); err != nil {
-		env.Logger.Warn("failed to stop sandbox, will deactivate anyway",
-			zap.String("sandbox_id", entry.SandboxID),
-			zap.Error(err),
-		)
-	}
-
-	if err := env.Registry.Deactivate(name); err != nil {
-		return fmt.Errorf("failed to deactivate skill: %w", err)
+	if !resp.Success {
+		return fmt.Errorf("skill deactivation failed: %s", resp.Error)
 	}
 
 	fmt.Printf("Skill '%s' deactivated.\n", name)
@@ -161,6 +111,37 @@ func runSkillList(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
+	// Try daemon first for live state.
+	client := api.NewClient(env.Config.Daemon.SocketPath)
+	resp, err := client.Call(cmd.Context(), "skill.list", nil)
+	if err == nil && resp.Success {
+		var skills []struct {
+			Name      string `json:"name"`
+			SandboxID string `json:"sandbox_id"`
+			State     string `json:"state"`
+			Version   int    `json:"version"`
+			MerkleHash string `json:"merkle_hash"`
+		}
+		if json.Unmarshal(resp.Data, &skills) == nil {
+			if len(skills) == 0 {
+				fmt.Println("No skills registered.")
+				return nil
+			}
+			fmt.Printf("%-20s %-36s %-10s %-4s %-16s\n",
+				"NAME", "SANDBOX", "STATE", "VER", "HASH")
+			for _, sk := range skills {
+				hashDisplay := sk.MerkleHash
+				if len(hashDisplay) > 16 {
+					hashDisplay = hashDisplay[:16]
+				}
+				fmt.Printf("%-20s %-36s %-10s %-4d %-16s\n",
+					sk.Name, sk.SandboxID, sk.State, sk.Version, hashDisplay)
+			}
+			return nil
+		}
+	}
+
+	// Fall back to local registry.
 	skills := env.Registry.List()
 	if len(skills) == 0 {
 		fmt.Println("No skills registered.")
