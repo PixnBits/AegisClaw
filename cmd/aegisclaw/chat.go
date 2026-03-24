@@ -187,9 +187,15 @@ func runChat(cmd *cobra.Command, args []string) error {
 			msgs = append(msgs, llm.ChatMessage{Role: role, Content: h.Content})
 		}
 		// Add the tool result as context for the LLM.
+		summarizeInstruction := "Please summarize this result for the user in a natural, conversational way. Do NOT output a tool-call block."
+		if toolName == "proposal.create_draft" {
+			summarizeInstruction = "A new draft proposal was just created. Present the details to the user including the FULL proposal ID. Ask the user to confirm before you submit it. Do NOT output a tool-call block. When the user confirms, you will call proposal.submit with the EXACT ID shown above."
+		} else if toolName == "proposal.submit" {
+			summarizeInstruction = "The proposal was just submitted for court review. Tell the user the result and the proposal ID. Do NOT output a tool-call block."
+		}
 		msgs = append(msgs, llm.ChatMessage{
 			Role:    "user",
-			Content: fmt.Sprintf("[Tool %s returned]: %s\nPlease summarize this result for the user in a natural, conversational way. Do NOT output a tool-call block.", toolName, toolResult),
+			Content: fmt.Sprintf("[Tool %s returned]: %s\n%s", toolName, toolResult, summarizeInstruction),
 		})
 
 		resp, err := ollamaClient.Chat(cmd.Context(), llm.ChatRequest{
@@ -411,24 +417,21 @@ Use these tools to help users create, save, and submit governance proposals.
 
 ## Proposal assistant behavior
 
-When a user wants to create a skill, act as a helpful requirements analyst:
+When a user wants to create a NEW skill, act as a helpful requirements analyst:
 
 1. **Listen first.** Let the user describe what they want in their own words.
 2. **Infer what you can** from the description (e.g. if they mention calling an API, that implies network access).
-3. **Never assume.** Ask clarifying questions for anything you're not certain about:
-   - What tools should the skill expose? (name and what each does)
-   - Does it need network access? If so, which hosts/ports?
-   - Does it need secrets (API keys, tokens)?
-   - How sensitive is the data it handles? (1=public, 5=highly sensitive)
-   - What privilege level does it need? (1=read-only, 5=full system access)
-4. **Build incrementally.** You can save a draft at any point so the user can continue later.
-5. **Present before submitting.** When all fields are collected, summarize the complete proposal and explicitly ask the user to confirm before calling proposal.submit.
-6. **Verify after submission.** After calling proposal.submit, always call proposal.list_drafts to confirm the proposal appears with its new status. Report the verified status to the user.
-7. **Show status after submission.** Once submitted, report the court review outcome. The system will notify the user automatically when the status changes.
+3. **Ask only about things you cannot infer.** For simple skills, you can fill in sensible defaults.
+4. **Create the draft.** Call proposal.create_draft with all collected fields. The system returns the new proposal ID.
+5. **Present.** Show the user the proposal details (including the FULL ID) and ask for confirmation.
+6. **Submit only after user confirms.** Call proposal.submit with the EXACT ID returned by proposal.create_draft.
+7. **Report the result.** Tell the user the proposal status. The system will notify automatically on status changes.
 
 CRITICAL RULES:
-- Always use the FULL proposal ID (the complete UUID) when calling tools. Short prefixes may be ambiguous.
-- Always include the full proposal ID in your response to the user after creating, updating, or submitting a proposal. The user needs this ID to track their proposal.
+- Make ONLY ONE tool call per message. Wait for the result before making another call.
+- For a NEW skill request, ALWAYS call proposal.create_draft first. Never call proposal.list_drafts to find an ID to submit — that lists OLD proposals, not the one being created.
+- After proposal.create_draft returns, the ID in the response is YOUR new proposal's ID. Use THAT EXACT ID (the full UUID) for proposal.submit. Do not look up or use any other ID.
+- Always include the full proposal ID in your response to the user.
 
 Required fields before submitting: title, description, skill_name, at least one tool.
 Default values if not discussed: data_sensitivity=1, network_exposure=1, privilege_level=1.
@@ -462,8 +465,9 @@ Default values if not discussed: data_sensitivity=1, network_exposure=1, privile
 
 // parseToolCalls extracts tool-call JSON blocks from LLM output.
 // Accepts both ```tool-call and ```json fenced blocks.
+// Returns at most ONE tool call to prevent the LLM from chaining calls
+// with stale/guessed IDs (e.g. create_draft + submit in one turn).
 func parseToolCalls(content string) []tui.ToolCall {
-	var calls []tui.ToolCall
 	// Try both fence markers — LLMs sometimes use ```json instead of ```tool-call.
 	for _, marker := range []string{"```tool-call", "```json"} {
 		search := content
@@ -484,15 +488,15 @@ func parseToolCalls(content string) []tui.ToolCall {
 				Args  json.RawMessage `json:"args"`
 			}
 			if json.Unmarshal([]byte(block), &tc) == nil && tc.Skill != "" && tc.Tool != "" {
-				calls = append(calls, tui.ToolCall{
+				return []tui.ToolCall{{
 					Name: tc.Skill + "." + tc.Tool,
 					Args: string(tc.Args),
-				})
+				}}
 			}
 			search = after[end+3:]
 		}
 	}
-	return calls
+	return nil
 }
 
 // cleanToolCallContent removes tool-call and json blocks containing skill invocations.

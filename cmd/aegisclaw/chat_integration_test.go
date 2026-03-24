@@ -638,6 +638,19 @@ func TestCleanToolCallContent(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsLimitsToOne(t *testing.T) {
+	// If the LLM emits create_draft + submit in one response, only the first
+	// should be returned so the second can use the ID from the first's result.
+	content := "```tool-call\n{\"skill\":\"proposal\",\"tool\":\"create_draft\",\"args\":{\"title\":\"A\",\"skill_name\":\"a\",\"tools\":[{\"name\":\"t\",\"description\":\"d\"}]}}\n```\nNow submitting:\n```tool-call\n{\"skill\":\"proposal\",\"tool\":\"submit\",\"args\":{\"id\":\"stale-id\"}}\n```"
+	calls := parseToolCalls(content)
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 tool call, got %d", len(calls))
+	}
+	if calls[0].Name != "proposal.create_draft" {
+		t.Errorf("expected proposal.create_draft (the first call), got %s", calls[0].Name)
+	}
+}
+
 // --- Helpers ---
 
 // extractIDFromResult parses the proposal ID from a handler result string.
