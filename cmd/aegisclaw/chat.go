@@ -17,6 +17,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/wizard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 var chatCmd = &cobra.Command{
@@ -42,6 +43,15 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
+	// Open a per-session audit log.
+	sessionLog, err := audit.NewSessionLog(env.Config.Audit.Dir)
+	if err != nil {
+		env.Logger.Warn("failed to create chat session log", zap.Error(err))
+		// Non-fatal: continue without session logging.
+	} else {
+		defer sessionLog.Close()
+	}
+
 	model := tui.NewChatModel()
 
 	// Create Ollama client and daemon API client for skill invocation.
@@ -53,7 +63,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 	model.SendMessage = func(input string, history []tui.ChatMessage) (tui.ChatMessage, []tui.ToolCall, error) {
 		// Handle slash commands
 		if strings.HasPrefix(input, "/") {
-			return handleSlashCommand(env, input)
+			if sessionLog != nil {
+				sessionLog.Log(audit.SessionEvent{Event: audit.EventSlashCommand, Role: "user", Content: input})
+			}
+			msg, tools, err := handleSlashCommand(env, input)
+			if sessionLog != nil && err == nil {
+				sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: msg.Content})
+			}
+			return msg, tools, err
 		}
 
 		// Build the system prompt with available skills.
@@ -73,6 +90,10 @@ func runChat(cmd *cobra.Command, args []string) error {
 		}
 		msgs = append(msgs, llm.ChatMessage{Role: "user", Content: input})
 
+		if sessionLog != nil {
+			sessionLog.Log(audit.SessionEvent{Event: audit.EventUserMessage, Role: "user", Content: input})
+		}
+
 		resp, err := ollamaClient.Chat(cmd.Context(), llm.ChatRequest{
 			Model:    env.Config.Ollama.DefaultModel,
 			Messages: msgs,
@@ -88,6 +109,12 @@ func runChat(cmd *cobra.Command, args []string) error {
 		if len(toolCalls) > 0 {
 			// Strip the JSON tool-call block from the displayed message.
 			cleaned := cleanToolCallContent(content)
+			if sessionLog != nil {
+				sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: cleaned})
+				for _, tc := range toolCalls {
+					sessionLog.Log(audit.SessionEvent{Event: audit.EventToolCall, ToolName: tc.Name, ToolArgs: tc.Args})
+				}
+			}
 			return tui.ChatMessage{
 				Role:      tui.ChatRoleAssistant,
 				Content:   cleaned,
@@ -95,6 +122,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 			}, toolCalls, nil
 		}
 
+		if sessionLog != nil {
+			sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: content})
+		}
 		return tui.ChatMessage{
 			Role:      tui.ChatRoleAssistant,
 			Content:   content,
@@ -103,10 +133,25 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	model.ExecuteTool = func(call tui.ToolCall) (string, error) {
+		if sessionLog != nil {
+			sessionLog.Log(audit.SessionEvent{Event: audit.EventToolCall, ToolName: call.Name, ToolArgs: call.Args})
+		}
+		var result string
+		var toolErr error
+		defer func() {
+			if sessionLog != nil {
+				evt := audit.SessionEvent{Event: audit.EventToolResult, ToolName: call.Name, Content: result}
+				if toolErr != nil {
+					evt.Error = toolErr.Error()
+				}
+				sessionLog.Log(evt)
+			}
+		}()
 		switch call.Name {
 		case "list_proposals":
 			summaries, err := env.ProposalStore.List()
 			if err != nil {
+				toolErr = err
 				return "", err
 			}
 			var lines []string
@@ -114,13 +159,16 @@ func runChat(cmd *cobra.Command, args []string) error {
 				lines = append(lines, fmt.Sprintf("  %s  %s  [%s]  %s", s.ID, s.Title, s.Status, s.Risk))
 			}
 			if len(lines) == 0 {
-				return "No proposals found.", nil
+				result = "No proposals found."
+				return result, nil
 			}
-			return strings.Join(lines, "\n"), nil
+			result = strings.Join(lines, "\n")
+			return result, nil
 
 		case "list_sandboxes":
 			sandboxes, err := env.Runtime.List(context.Background())
 			if err != nil {
+				toolErr = err
 				return "", err
 			}
 			var lines []string
@@ -128,27 +176,35 @@ func runChat(cmd *cobra.Command, args []string) error {
 				lines = append(lines, fmt.Sprintf("  %s  %s  [%s]", sb.Spec.ID[:8], sb.Spec.Name, sb.State))
 			}
 			if len(lines) == 0 {
-				return "No sandboxes found.", nil
+				result = "No sandboxes found."
+				return result, nil
 			}
-			return strings.Join(lines, "\n"), nil
+			result = strings.Join(lines, "\n")
+			return result, nil
 
 		case "proposal.create_draft":
-			return handleProposalCreateDraft(env, call.Args)
+			result, toolErr = handleProposalCreateDraft(env, call.Args)
+			return result, toolErr
 
 		case "proposal.update_draft":
-			return handleProposalUpdateDraft(env, call.Args)
+			result, toolErr = handleProposalUpdateDraft(env, call.Args)
+			return result, toolErr
 
 		case "proposal.get_draft":
-			return handleProposalGetDraft(env, call.Args)
+			result, toolErr = handleProposalGetDraft(env, call.Args)
+			return result, toolErr
 
 		case "proposal.list_drafts":
-			return handleProposalListDrafts(env)
+			result, toolErr = handleProposalListDrafts(env)
+			return result, toolErr
 
 		case "proposal.submit":
-			return handleProposalSubmit(env, daemonClient, cmd.Context(), call.Args)
+			result, toolErr = handleProposalSubmit(env, daemonClient, cmd.Context(), call.Args)
+			return result, toolErr
 
 		case "proposal.status":
-			return handleProposalStatus(env, call.Args)
+			result, toolErr = handleProposalStatus(env, call.Args)
+			return result, toolErr
 
 		default:
 			// Route skill tool calls through the daemon API.
@@ -160,14 +216,18 @@ func runChat(cmd *cobra.Command, args []string) error {
 					Args:  call.Args,
 				})
 				if err != nil {
-					return "", fmt.Errorf("skill invoke: %w", err)
+					toolErr = fmt.Errorf("skill invoke: %w", err)
+					return "", toolErr
 				}
 				if !resp.Success {
-					return "", fmt.Errorf("skill invoke failed: %s", resp.Error)
+					toolErr = fmt.Errorf("skill invoke failed: %s", resp.Error)
+					return "", toolErr
 				}
-				return string(resp.Data), nil
+				result = string(resp.Data)
+				return result, nil
 			}
-			return "", fmt.Errorf("unknown tool: %s", call.Name)
+			toolErr = fmt.Errorf("unknown tool: %s", call.Name)
+			return "", toolErr
 		}
 	}
 
@@ -206,6 +266,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 			return tui.ChatMessage{}, fmt.Errorf("ollama: %w", err)
 		}
 
+		if sessionLog != nil {
+			sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: resp.Message.Content, ToolName: toolName})
+		}
 		return tui.ChatMessage{
 			Role:      tui.ChatRoleAssistant,
 			Content:   resp.Message.Content,
@@ -381,60 +444,54 @@ You help users manage skills (sandboxed microVM workloads), proposals, and syste
   /quit       - Exit chat
 
 ## Tool invocation format
-When you need to call a tool, output EXACTLY this format:
+To call a tool, output EXACTLY one tool-call block per message:
 ` + "```tool-call" + `
-{"skill": "<namespace>", "tool": "<tool-name>", "args": <json-object-or-string>}
+{"skill": "<namespace>", "tool": "<tool-name>", "args": <json-object>}
 ` + "```" + `
 
-## Available built-in tools
+DO: Output the tool-call block and wait for the result.
+DO NOT: Describe what you would do, show example JSON, or make up IDs. ACT by outputting a tool-call block.
 
-### Skill tools
-For active skills (listed below), use skill name as the "skill" field:
+## Proposal tools (namespace: "proposal")
+All proposal tools use "skill": "proposal". The tool names are:
+- create_draft — args: {"title": "...", "description": "...", "skill_name": "...", "tools": [{"name": "...", "description": "..."}], "data_sensitivity": 1-5, "network_exposure": 1-5, "privilege_level": 1-5, "allowed_hosts": [], "allowed_ports": [], "secret_refs": []}
+- update_draft — args: {"id": "<uuid>", ...fields to change}
+- get_draft — args: {"id": "<uuid>"}
+- list_drafts — args: {}
+- submit — args: {"id": "<uuid>"}
+- status — args: {"id": "<uuid>"}
+
+Defaults if not discussed: data_sensitivity=1, network_exposure=1, privilege_level=1.
+Required before submit: title, description, skill_name, at least one tool.
+
+## How to handle a skill proposal request
+
+When a user asks you to create or propose a skill:
+1. Infer the fields from their description. For simple skills, fill in sensible defaults.
+2. Immediately output a tool-call block to call create_draft. Do NOT just describe the proposal — actually call the tool.
+3. After the system returns the draft (with its real UUID), present it to the user and ask them to confirm.
+4. When the user confirms, output a tool-call block to call submit using the EXACT UUID from step 3.
+
+Example — user says "propose a hello skill":
+` + "```tool-call" + `
+{"skill": "proposal", "tool": "create_draft", "args": {"title": "Hello Skill", "description": "A simple greeting skill", "skill_name": "hello", "tools": [{"name": "greet", "description": "Say hello"}]}}
+` + "```" + `
+Then after the system returns ID 550e8400-e29b-41d4-a716-446655440000, and the user confirms:
+` + "```tool-call" + `
+{"skill": "proposal", "tool": "submit", "args": {"id": "550e8400-e29b-41d4-a716-446655440000"}}
+` + "```" + `
+
+CRITICAL RULES:
+- Output ONLY ONE tool-call block per message. Wait for the result before the next call.
+- The "skill" field for ALL proposal tools is always "proposal". Never use the skill being proposed as the namespace.
+- Never invent or guess proposal IDs. Only use IDs returned by the system.
+- Always show the full UUID to the user after creating or submitting a proposal.
+
+## Skill tools
+For active skills (listed below), use the skill's own name as the namespace:
 ` + "```tool-call" + `
 {"skill": "hello-world", "tool": "greet", "args": ""}
 ` + "```" + `
-
-### Proposal tools (skill = "proposal")
-Use these tools to help users create, save, and submit governance proposals.
-
-**proposal.create_draft** — Create a new draft proposal.
-  args: {"title": "...", "description": "...", "skill_name": "...", "tools": [{"name": "...", "description": "..."}], "data_sensitivity": 1-5, "network_exposure": 1-5, "privilege_level": 1-5, "allowed_hosts": [], "allowed_ports": [], "secret_refs": []}
-
-**proposal.update_draft** — Update fields on an existing draft.
-  args: {"id": "<proposal-id>", ...fields to update (same as create_draft)}
-
-**proposal.get_draft** — Load a proposal by ID.
-  args: {"id": "<proposal-id>"}
-
-**proposal.list_drafts** — List all proposals.
-  args: {} (no arguments needed)
-
-**proposal.submit** — Submit a draft for court review. The court will then review it.
-  args: {"id": "<proposal-id>"}
-
-**proposal.status** — Check current status and review results for a proposal.
-  args: {"id": "<proposal-id>"}
-
-## Proposal assistant behavior
-
-When a user wants to create a NEW skill, act as a helpful requirements analyst:
-
-1. **Listen first.** Let the user describe what they want in their own words.
-2. **Infer what you can** from the description (e.g. if they mention calling an API, that implies network access).
-3. **Ask only about things you cannot infer.** For simple skills, you can fill in sensible defaults.
-4. **Create the draft.** Call proposal.create_draft with all collected fields. The system returns the new proposal ID.
-5. **Present.** Show the user the proposal details (including the FULL ID) and ask for confirmation.
-6. **Submit only after user confirms.** Call proposal.submit with the EXACT ID returned by proposal.create_draft.
-7. **Report the result.** Tell the user the proposal status. The system will notify automatically on status changes.
-
-CRITICAL RULES:
-- Make ONLY ONE tool call per message. Wait for the result before making another call.
-- For a NEW skill request, ALWAYS call proposal.create_draft first. Never call proposal.list_drafts to find an ID to submit — that lists OLD proposals, not the one being created.
-- After proposal.create_draft returns, the ID in the response is YOUR new proposal's ID. Use THAT EXACT ID (the full UUID) for proposal.submit. Do not look up or use any other ID.
-- Always include the full proposal ID in your response to the user.
-
-Required fields before submitting: title, description, skill_name, at least one tool.
-Default values if not discussed: data_sensitivity=1, network_exposure=1, privilege_level=1.
 
 `
 
@@ -463,10 +520,23 @@ Default values if not discussed: data_sensitivity=1, network_exposure=1, privile
 	return base
 }
 
+// proposalToolNames lists the tool names that belong to the "proposal" skill namespace.
+var proposalToolNames = map[string]bool{
+	"create_draft": true,
+	"update_draft": true,
+	"get_draft":    true,
+	"list_drafts":  true,
+	"submit":       true,
+	"status":       true,
+}
+
 // parseToolCalls extracts tool-call JSON blocks from LLM output.
 // Accepts both ```tool-call and ```json fenced blocks.
 // Returns at most ONE tool call to prevent the LLM from chaining calls
 // with stale/guessed IDs (e.g. create_draft + submit in one turn).
+// Auto-corrects the namespace for known proposal tools (e.g. if the LLM
+// emits {"skill": "greet-us", "tool": "submit", ...}, the skill is
+// corrected to "proposal").
 func parseToolCalls(content string) []tui.ToolCall {
 	// Try both fence markers — LLMs sometimes use ```json instead of ```tool-call.
 	for _, marker := range []string{"```tool-call", "```json"} {
@@ -488,6 +558,10 @@ func parseToolCalls(content string) []tui.ToolCall {
 				Args  json.RawMessage `json:"args"`
 			}
 			if json.Unmarshal([]byte(block), &tc) == nil && tc.Skill != "" && tc.Tool != "" {
+				// Auto-correct namespace for known proposal tools.
+				if proposalToolNames[tc.Tool] && tc.Skill != "proposal" {
+					tc.Skill = "proposal"
+				}
 				return []tui.ToolCall{{
 					Name: tc.Skill + "." + tc.Tool,
 					Args: string(tc.Args),

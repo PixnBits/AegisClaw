@@ -575,14 +575,14 @@ func TestBuildSystemPromptContainsProposalTools(t *testing.T) {
 	prompt := buildSystemPrompt(context.Background(), stubDaemonClient())
 
 	requiredFragments := []string{
-		"proposal.create_draft",
-		"proposal.update_draft",
-		"proposal.get_draft",
-		"proposal.list_drafts",
-		"proposal.submit",
-		"proposal.status",
+		"create_draft",
+		"update_draft",
+		"get_draft",
+		"list_drafts",
+		"submit",
+		"status",
 		"CRITICAL RULES",
-		"full proposal ID",
+		"full UUID",
 	}
 	for _, frag := range requiredFragments {
 		if !strings.Contains(prompt, frag) {
@@ -648,6 +648,217 @@ func TestParseToolCallsLimitsToOne(t *testing.T) {
 	}
 	if calls[0].Name != "proposal.create_draft" {
 		t.Errorf("expected proposal.create_draft (the first call), got %s", calls[0].Name)
+	}
+}
+
+// TestParseToolCallsAutoCorrectsNamespace verifies that when the LLM uses the
+// wrong namespace for a proposal tool (e.g. "greet-us" instead of "proposal"),
+// parseToolCalls auto-corrects it. This reproduces the bug from session
+// d1b19f2f where the LLM emitted {"skill":"greet-us","tool":"submit",...}
+// which was routed as greet-us.submit instead of proposal.submit.
+func TestParseToolCallsAutoCorrectsNamespace(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		wantName string
+	}{
+		{
+			name:     "submit with wrong namespace",
+			content:  "```tool-call\n{\"skill\":\"greet-us\",\"tool\":\"submit\",\"args\":{\"id\":\"abc-123\"}}\n```",
+			wantName: "proposal.submit",
+		},
+		{
+			name:     "create_draft with wrong namespace",
+			content:  "```json\n{\"skill\":\"my-skill\",\"tool\":\"create_draft\",\"args\":{\"title\":\"X\",\"skill_name\":\"x\",\"tools\":[{\"name\":\"t\",\"description\":\"d\"}]}}\n```",
+			wantName: "proposal.create_draft",
+		},
+		{
+			name:     "correct namespace left alone",
+			content:  "```tool-call\n{\"skill\":\"proposal\",\"tool\":\"submit\",\"args\":{\"id\":\"abc-123\"}}\n```",
+			wantName: "proposal.submit",
+		},
+		{
+			name:     "non-proposal tool not corrected",
+			content:  "```tool-call\n{\"skill\":\"hello-world\",\"tool\":\"greet\",\"args\":\"\"}\n```",
+			wantName: "hello-world.greet",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseToolCalls(tt.content)
+			if len(calls) != 1 {
+				t.Fatalf("expected 1 call, got %d", len(calls))
+			}
+			if calls[0].Name != tt.wantName {
+				t.Errorf("tool name = %q, want %q", calls[0].Name, tt.wantName)
+			}
+		})
+	}
+}
+
+// TestParseToolCallsIgnoresExpositionJSON verifies that a ```json block that
+// contains proposal field data (not a tool-call structure) does NOT get parsed
+// as a tool call. This reproduces the session d1b19f2f where the LLM showed
+// proposal fields in a ```json block instead of actually calling the tool.
+func TestParseToolCallsIgnoresExpositionJSON(t *testing.T) {
+	// This is what the LLM output — a ```json block with proposal fields but
+	// no "skill"/"tool" structure.
+	content := "I'll create this proposal:\n```json\n{\n  \"title\": \"greet-us skill\",\n  \"description\": \"A greeting skill\",\n  \"skill_name\": \"greet-us\",\n  \"tools\": [{\"name\": \"greet\", \"description\": \"Greet user\"}]\n}\n```\nShall I proceed?"
+	calls := parseToolCalls(content)
+	if len(calls) != 0 {
+		t.Errorf("expected 0 tool calls for exposition JSON, got %d: %v", len(calls), calls)
+	}
+}
+
+// TestSessionD1b19f2fExpectedBehavior reproduces the exact scenario from
+// session d1b19f2f-cb90-40a1-b2bb-57c3e24d1abe. The LLM should:
+//  1. On user request "propose a greeting skill" → call proposal.create_draft
+//  2. System returns the draft with a real UUID
+//  3. On user confirmation "please submit" → call proposal.submit with that UUID
+//  4. System transitions to submitted
+//
+// The test validates the full happy-path end-to-end.
+func TestSessionD1b19f2fExpectedBehavior(t *testing.T) {
+	env := testEnv(t)
+	ctx := context.Background()
+	daemonClient := stubDaemonClient()
+
+	// Step 1: The LLM should call create_draft (not just describe it).
+	// Simulate what the LLM SHOULD have output:
+	createContent := "I'll create a proposal for a greeting skill.\n```tool-call\n{\"skill\": \"proposal\", \"tool\": \"create_draft\", \"args\": {\"title\": \"greet-us skill\", \"description\": \"A skill that says hello with time-of-day greeting, respecting DST, in en-US.\", \"skill_name\": \"greet-us\", \"tools\": [{\"name\": \"greet\", \"description\": \"Greet the user with a time-appropriate message\"}]}}\n```"
+
+	toolCalls := parseToolCalls(createContent)
+	if len(toolCalls) != 1 {
+		t.Fatalf("step 1: expected 1 tool call, got %d", len(toolCalls))
+	}
+	if toolCalls[0].Name != "proposal.create_draft" {
+		t.Fatalf("step 1: expected proposal.create_draft, got %s", toolCalls[0].Name)
+	}
+
+	// Step 2: Execute the tool (system creates the draft).
+	createResult, err := handleProposalCreateDraft(env, toolCalls[0].Args)
+	if err != nil {
+		t.Fatalf("step 2: handleProposalCreateDraft failed: %v", err)
+	}
+	if !strings.Contains(createResult, "Draft proposal created") {
+		t.Fatalf("step 2: unexpected result: %s", createResult)
+	}
+	proposalID := extractIDFromResult(t, createResult)
+	t.Logf("step 2: created proposal %s", proposalID)
+
+	// Verify the draft exists.
+	p, err := env.ProposalStore.Get(proposalID)
+	if err != nil {
+		t.Fatalf("step 2: proposal not found in store: %v", err)
+	}
+	if p.Status != proposal.StatusDraft {
+		t.Fatalf("step 2: expected draft status, got %s", p.Status)
+	}
+
+	// Step 3: User confirms → LLM calls submit with the real ID.
+	submitContent := fmt.Sprintf("Submitting now.\n```tool-call\n{\"skill\": \"proposal\", \"tool\": \"submit\", \"args\": {\"id\": \"%s\"}}\n```", proposalID)
+
+	submitCalls := parseToolCalls(submitContent)
+	if len(submitCalls) != 1 {
+		t.Fatalf("step 3: expected 1 tool call, got %d", len(submitCalls))
+	}
+	if submitCalls[0].Name != "proposal.submit" {
+		t.Fatalf("step 3: expected proposal.submit, got %s", submitCalls[0].Name)
+	}
+
+	// Step 4: Execute the submit.
+	submitResult, err := handleProposalSubmit(env, daemonClient, ctx, submitCalls[0].Args)
+	if err != nil {
+		t.Fatalf("step 4: handleProposalSubmit failed: %v", err)
+	}
+	if !strings.Contains(submitResult, "Proposal submitted") {
+		t.Fatalf("step 4: unexpected result: %s", submitResult)
+	}
+
+	// Verify the proposal is now submitted.
+	p, err = env.ProposalStore.Get(proposalID)
+	if err != nil {
+		t.Fatalf("step 4: proposal not found after submit: %v", err)
+	}
+	if p.Status != proposal.StatusSubmitted {
+		t.Fatalf("step 4: expected submitted status, got %s", p.Status)
+	}
+	if p.Title != "greet-us skill" {
+		t.Errorf("step 4: title mismatch: got %q", p.Title)
+	}
+}
+
+// TestSessionD1b19f2fWrongNamespaceFixed reproduces the exact bug where the
+// LLM emitted {"skill":"greet-us","tool":"submit",...} — parseToolCalls should
+// auto-correct this to proposal.submit so the submit handler runs instead of
+// falling through to the skill invocation path.
+func TestSessionD1b19f2fWrongNamespaceFixed(t *testing.T) {
+	env := testEnv(t)
+	ctx := context.Background()
+	daemonClient := stubDaemonClient()
+
+	// First, create a real proposal.
+	createArgs := `{"title":"greet-us skill","description":"greeting","skill_name":"greet-us","tools":[{"name":"greet","description":"Greet user"}]}`
+	createResult, err := handleProposalCreateDraft(env, createArgs)
+	if err != nil {
+		t.Fatalf("create draft failed: %v", err)
+	}
+	proposalID := extractIDFromResult(t, createResult)
+
+	// The LLM uses the wrong namespace (the skill being proposed).
+	badContent := fmt.Sprintf("```tool-call\n{\"skill\":\"greet-us\",\"tool\":\"submit\",\"args\":{\"id\":\"%s\"}}\n```", proposalID)
+
+	calls := parseToolCalls(badContent)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	// The namespace should have been auto-corrected.
+	if calls[0].Name != "proposal.submit" {
+		t.Fatalf("expected proposal.submit after auto-correction, got %s", calls[0].Name)
+	}
+
+	// The corrected tool call should work end-to-end.
+	result, err := handleProposalSubmit(env, daemonClient, ctx, calls[0].Args)
+	if err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+	if !strings.Contains(result, "Proposal submitted") {
+		t.Fatalf("unexpected result: %s", result)
+	}
+
+	// Verify in store.
+	p, err := env.ProposalStore.Get(proposalID)
+	if err != nil {
+		t.Fatalf("not found: %v", err)
+	}
+	if p.Status != proposal.StatusSubmitted {
+		t.Errorf("expected submitted, got %s", p.Status)
+	}
+}
+
+// TestBuildSystemPromptRequiresAction verifies the system prompt contains
+// concrete instructions that tell the LLM to ACT (call the tool) rather
+// than just describe what it would do.
+func TestBuildSystemPromptRequiresAction(t *testing.T) {
+	prompt := buildSystemPrompt(context.Background(), stubDaemonClient())
+
+	required := []string{
+		// Concrete example of create_draft
+		"\"skill\": \"proposal\", \"tool\": \"create_draft\"",
+		// Concrete example of submit
+		"\"skill\": \"proposal\", \"tool\": \"submit\"",
+		// Anti-hallucination rules
+		"DO NOT",
+		"Never invent or guess proposal IDs",
+		// Action emphasis
+		"ACT by outputting a tool-call block",
+		// Namespace rule
+		"\"proposal\"",
+	}
+	for _, frag := range required {
+		if !strings.Contains(prompt, frag) {
+			t.Errorf("system prompt missing required fragment: %q", frag)
+		}
 	}
 }
 
