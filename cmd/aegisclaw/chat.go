@@ -315,7 +315,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return string(p.Status), p.Title, nil
 	}
 
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = p.Run()
 	return err
 }
