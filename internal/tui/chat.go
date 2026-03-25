@@ -283,9 +283,6 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrollToBottom()
 		return m, nil
 
-	case tea.MouseMsg:
-		return m.handleMouse(msg)
-
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -301,29 +298,6 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, m.keys.Back) {
 			m.view = chatViewMain
 			return m, nil
-		}
-		return m, nil
-	}
-	return m, nil
-}
-
-func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		m.scrollOffset -= 3
-		if m.scrollOffset < 0 {
-			m.scrollOffset = 0
-		}
-		return m, nil
-	case tea.MouseButtonWheelDown:
-		m.scrollOffset += 3
-		totalLines := m.countMessageLines()
-		maxOffset := totalLines - m.viewHeight
-		if maxOffset < 0 {
-			maxOffset = 0
-		}
-		if m.scrollOffset > maxOffset {
-			m.scrollOffset = maxOffset
 		}
 		return m, nil
 	}
