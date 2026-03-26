@@ -350,3 +350,75 @@ flowchart TD
 - Zero-trust enforced: no implicit trust between sandboxes.
 
 **References**: See `docs/architecture.md` (detailed component specs), `docs/schemas/` (JSON schemas), and `docs/threat-model.md` for expanded STRIDE tables.
+
+## 11. SDLC, Governance & Release Process
+
+The AegisClaw SDLC is designed to mirror mature risk-measuring company practices while remaining practical for hobbyist and startup users. The **Governance Court** serves as the living team of enterprise experts that weighs in at every needed stage — from ideation and requirements refinement through code implementation, pre-deployment gates, and ongoing operations.
+
+The default process is deliberately strong and detailed to enforce security invariants from day one. Enterprise users can configure lighter or stricter flows via Court-approved policies, but core isolation guarantees (Section 7) remain immutable and are automatically enforced.
+
+### 11.1 Overall SDLC Flow
+The lifecycle consists of these stages, with the Governance Court participating as needed:
+
+1. **Ideation & Refinement** — User or system proposes a change (new skill, improvement, policy). Main agent interactively refines requirements with the user. Court personas (especially User Advocate and CISO) provide early feedback to strengthen the proposal.
+2. **Threat Model / STRIDE Review** — Mandatory before any significant code generation or design changes (see Section 9).
+3. **Design & Planning** — Detailed user stories, JSON schemas, and capability requirements are produced.
+4. **Implementation** — Code generation and editing occur inside the ephemeral Builder Sandbox. Court personas (Coder, Security Architect) perform code reviews via simulated PRs.
+5. **Automated Security Gates** — Executed in the Builder Sandbox and CI pipeline.
+6. **Court Consensus & Final Review** — Full multi-persona review with ≥3 retries per reviewer for consistency.
+7. **Build & Test** — In disposable sandboxes.
+8. **Deployment & Activation** — Signed artifacts only; user final approval for high-impact changes.
+9. **Operations & Monitoring** — Runtime observation, periodic BOM/CVE checks, anomaly detection. Court can be invoked for ongoing reviews.
+
+**Mediator Persona**: Spins up automatically on detected deadlocks or prolonged disagreement. It attempts resolution using the user’s saved profile/preferences and provides advice. If unresolved, escalates to explicit user decision with full context.
+
+### 11.2 Mandatory Security Gates (Default – Strong)
+The following mature practices are enforced by default (via CISO and Security Architect personas + automated tools). Enterprise policies may adjust timing or strictness but cannot disable core invariants.
+
+- **Threat Model / STRIDE Review** before any significant code generation or design changes.
+- **SAST** (e.g., Semgrep or CodeQL) and **SCA** (Software Composition Analysis) in the builder sandbox and CI pipeline.
+- **Signed commits** and **signed build artifacts** (GPG or Sigstore) — especially critical for Firecracker `rootfs.ext4` images and `vmconfig.json` files.
+- **Policy-as-Code** enforcement (e.g., Open Policy Agent / Rego rules) to automatically validate isolation invariants: read-only filesystem (except workspace), `cap-drop ALL`, network egress allow-lists, secret proxy usage.
+- **Reproducible builds** with **SBOM** (Software Bill of Materials) and build provenance for all rootfs images and skill artifacts.
+- **Versioned prompts and schemas** for all Governance Court reviewer personas to improve consistency and auditability.
+- **Secrets scanning** in CI to prevent accidental leakage.
+- **Automated adversarial testing** (prompt injection suites, tool misuse simulations) as part of the pre-deployment gate.
+
+**Primary Build Artifact (Firecracker mode)**: A signed, read-only `rootfs.ext4` image plus the generated `vmconfig.json`. The MicroVM Coordinator Daemon **must** verify signatures and hashes before launching any microVM.
+
+For early hobbyist/startup phases, begin with a minimal viable set of these gates and progressively strengthen them toward SOC 2 Type 1 readiness. The Court itself enforces many checks through its personas.
+
+### 11.3 Release & Rollback Process
+- All deployments use versioned, signed microVM configurations (common kernel across microVMs, but signed/hashed filesystems and `vmconfig.json` per version).
+- A compose-equivalent manifest tracks the combination of microVM versions, enabling simple rollback by reverting to a previous manifest version.
+- Self-improvement patches or core updates are proposed by the system, flow through the full Court process, and result in GitHub PRs (with mandatory human final approval).
+- Automatic rollback triggers on detected anomalies (isolation violation, excessive resource use, inconsistent behavior).
+
+**References**: See Section 9 (Threat Model), Section 10 (Architecture), and `docs/policies/` for Rego rules and enterprise configuration examples.
+
+## 12. Testing, Validation & Quality Assurance of this Project
+
+Testing of AegisClaw must verify both **functionality** and **security assurances** simultaneously. Security is never deprioritized — it is built in from the first “hello world” skill.
+
+### 12.1 Testing Types
+- **Unit & Integration Tests**: Run on developer machines initially. Unit tests may use mocks where safe; integration tests exercise full flows (user chat → Court → skill execution).
+- **End-to-End Skill Flows**: Critical “first run” test: user successfully generates and uses a simple “hello world” skill via the full SDLC and chat interface.
+- **Adversarial & Red-Team Testing**: Prompt injection suites (including into tools like web crawlers), tool misuse simulations, malicious chat scenarios. Automated as a pre-deployment gate.
+- **Chaos Engineering**: Resource exhaustion, network denial, reviewer microVM failures — all must result in safe degradation or abort.
+- **Non-Determinism Handling**: Multi-run consistency checks across reviewer outputs (no fixed seeds). Fallback to human review or Mediator persona when outputs diverge significantly.
+
+### 12.2 Test Environments
+- All tests run in disposable sandboxes matching production isolation rules.
+- Early phase: Developer machine for integration tests; mocks used judiciously.
+- MVP onward: Expand to GitHub Actions and dedicated hardware (e.g., AWS metal) for broader sharing with contributors.
+
+### 12.3 Acceptance Criteria
+- **Functionality First, Security Always**: The system must demonstrate end-to-end skill generation and usage before scaling. Once functional, every critical path must maintain full security invariants.
+- Critical paths (skill addition, high-risk actions, Court reviews) require high test coverage (target 100% where practical) plus red-team-derived tests.
+- Zero isolation violations or secret leaks in any automated or manual test suite.
+- Successful “hello world” skill generation and execution via Court as a blocking integration test.
+- All high-risk actions gated by tests simulating prompt injection and adversarial inputs.
+
+**External Validation**: For now, “contributions welcome” on bug reports and test improvements. Penetration testing and formal bug bounties will be added as popularity grows and we approach SOC 2 readiness.
+
+**References**: Alignment with OWASP Top 10 for Agentic Applications (Section 9), NIST SSDF practices for secure development, and the threat model in `docs/threat-model.md`. Test harnesses and schemas will live in `tests/` and `docs/schemas/`.
