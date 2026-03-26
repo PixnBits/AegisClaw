@@ -166,7 +166,7 @@ All functional requirements are derived from the core vision of a paranoid-by-de
 **Functional Requirements Summary (Non-Exhaustive)**
 - All inter-component communication uses structured JSON with strict schema validation.
 - Capability-based permissions: each skill receives only the exact OS/network/file capabilities it needs.
-- Pluggable sandbox backends (Docker primary, Firecracker opt-in).
+- Sandbox backend: **Firecracker microVMs** (initial implementation). Docker-based sandboxes only after mature Linux support and thorough red-teaming.
 - Support for multiple concurrent skills with resource isolation.
 
 ## 7. Out-of-Scope / Non-Goals / Explicit Boundaries
@@ -179,7 +179,7 @@ To maintain focus and security invariants, the following are explicitly out of s
   - Execution of unsigned or un-reviewed code outside the Court process.
   - Direct exposure of any secrets to LLM context, prompts, or logs.
 
-- **Platform support**: Windows or macOS in the future (alongside the switch to Docker Sandboxes when Linux support lands); will be Linux-only (with Ubuntu focus) at first.
+- **Platform support**: Linux-only (with Ubuntu focus) at first, Windows or macOS in the future (alongside the switch to Docker Sandboxes when Linux support lands).
 - **Cloud LLM fallback** by default (Ollama-only; optional pluggable support must preserve local-first guarantees and go through Court review).
 - **Multi-user concurrent sessions** on a single host without separate isolation boundaries (future consideration).
 - **High-availability / clustered deployment** (Sympozium-style Kubernetes fleet orchestration is complementary, not core).
@@ -193,7 +193,7 @@ Any proposal that would violate these rules must be automatically rejected by th
 ## 8. Non-Functional Requirements
 
 ### Security & Privacy (Elevated from v1.0)
-- **Isolation**: Primary – Docker-based sandboxes with microVM semantics. Opt-in – Firecracker. Requirements: read-only FS (except designated workspace), `cap-drop ALL`, private Docker daemon per sandbox, no shared memory, network egress restricted by per-skill allow-list + proxy.
+- **Isolation**: Firecracker microVMs (initial implementation) providing strong hardware-level isolation. Docker-based sandboxes will be adopted later only after thorough validation and Governance Court approval. Requirements remain: read-only FS (except designated workspace), `cap-drop ALL`, no shared memory, network egress restricted by per-skill allow-list + proxy.
 - **Secrets Management**: Injected at runtime only via dedicated network proxy (or SOPS/age with ephemeral mount). Keys never appear in prompts, code, logs, LLM context, or git history.
 - **LLM Trust**: Ollama-only. Default ensemble: Llama-3.2-3B (fast reviewers), Mistral-Nemo (reasoning), Phi-3 (small audited). All model downloads hash-verified. Court outputs cross-verified by ≥2 models. No cloud APIs by default.
 - **Audit & Tamper-Evidence**: Append-only Merkle-tree log covering every proposal, review, git change, deployment, and runtime action. Tamper-evident; queryable for “why” explanations.
@@ -221,3 +221,132 @@ Any proposal that would violate these rules must be automatically rejected by th
 - Self-improvement: system successfully proposes and merges at least one patch via the Court.
 - 100% of actions and reviews covered by the append-only audit log.
 - Support for at least 10 production-grade skills with full reversibility and auditability by v1.0 public release.
+
+## 9. Security & Privacy Requirements
+
+Security is the foundational differentiator of AegisClaw. Every design decision prioritizes **secure-by-design** principles over convenience, treating the agent as a high-risk system from day one. This section formalizes the threat model, mitigations, and compliance path.
+
+### 9.1 Threat Model (STRIDE)
+
+We apply the **STRIDE** framework (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) to core components. Threats are rated by potential impact (High/Medium) in the context of a local Linux desktop agent with real OS actions.
+
+**Key Components Analyzed**:
+- MicroVM Coordinator Daemon + CLI ("Kernel")
+- Main Agent Sandbox
+- Governance Court Reviewer MicroVMs
+- Builder Sandbox
+- Per-Skill Execution MicroVMs
+- Secrets/Network Proxy
+- Git Repository Interface
+- Audit Log Store
+- Ollama Server
+
+**STRIDE Threat Summary Table** (excerpt; full details in `docs/threat-model.md`):
+
+| Threat Category       | Example Threat                                                                 | Affected Components                          | Impact | Primary Mitigations |
+|-----------------------|-------------------------------------------------------------------------------|----------------------------------------------|--------|---------------------|
+| **Spoofing**         | Malicious reviewer persona or fake Court approval                             | Court Reviewers, CLI                         | High   | Isolated microVMs, signed JSON outputs, multi-reviewer consensus |
+| **Tampering**        | Prompt injection altering skill code or tool behavior                        | Main Agent, Per-Skill MicroVMs, Web tools    | High   | Structured JSON + schema validation, 3-reviewer retries, input sanitization |
+| **Repudiation**      | Untraceable malicious action or self-modification                             | All actions, Git changes                     | High   | Append-only Merkle-tree audit log, signed commits/artifacts |
+| **Information Disclosure** | Credential leak via prompt, log, or side-channel                             | Secrets Proxy, LLM context                   | High   | Runtime injection only via proxy; never in prompts/code/logs; no shared memory |
+| **Denial of Service**| Resource exhaustion from infinite loops or malicious skill                   | Per-Skill MicroVMs, Coordinator              | Medium | Resource limits, timeouts, private daemon per sandbox |
+| **Elevation of Privilege** | Skill escaping microVM or updating kernel directly                          | Per-Skill MicroVMs, Kernel                   | High   | `cap-drop ALL`, read-only FS (except workspace), immutable kernel updates only via Court-approved PRs to the main project (agent cannot self-update kernel) |
+
+**Additional Agentic-Specific Threats (OWASP Top 10 for Agentic Applications 2026 – primary framework)**:
+- **ASI01: Agent Goal Hijack** — Mitigated by interactive refinement, structured proposals, and CISO persona veto.
+- **ASI02: Tool Misuse & Exploitation** — Guardrails before high-risk calls; per-skill allow-lists; explicit human confirmation for write/network actions.
+- **ASI03: Identity & Privilege Abuse** — Capability-based tokens; least-privilege per skill.
+- **ASI04: Agentic Supply Chain Vulnerabilities** — Hash-verified Ollama models; signed artifacts; reproducible builds with BOM/provenance.
+- **ASI05: Unexpected Code Execution** — All code generation occurs in builder sandbox; reviewed before deployment.
+- **Prompt Injection into Tools** (e.g., adversarial websites via web crawler) — Sanitized inputs, output validation, isolated execution.
+
+**Secondary: OWASP Top 10 for LLM Applications** (e.g., Prompt Injection, Insecure Output Handling, Excessive Agency, Supply Chain) addressed via structured outputs, guardrails, and ensemble verification.
+
+**Residual Risk Statement**  
+Certain non-determinism in LLM outputs is accepted but strictly bounded by structured JSON schemas, multi-reviewer retries (minimum 3 attempts per reviewer for consistency), cross-verification, and human final approval for high-risk changes. Isolation violations or kernel-level changes outside the Court process are treated as catastrophic and must trigger immediate abort + alert.
+
+### 9.2 Secrets & Data Protection
+- Secrets provided only via CLI → injected at runtime through a dedicated network proxy (running in its own microVM where feasible).
+- Never stored in prompts, generated code, logs, git, or LLM context.
+- Support for SOPS/age as fallback with ephemeral mounts.
+- All persistent storage (git, audit log) encrypted at rest where possible.
+
+### 9.3 Compliance Path
+- **Immediate focus**: Functionality + core security invariants to prove the model.
+- **Phase 1 (post-MVP)**: GDPR/CCPA basics (data minimization, consent for audit logs, right to explanation via "why" queries).
+- **Phase 2**: SOC 2 Type 1 readiness (controls for security, availability, processing integrity; audit logging, change management via Court).
+- **Later**: SOC 2 Type 2 and ISO 27001 as enterprise needs arise.
+
+Human-in-the-loop required for all high-risk actions and policy relaxations.
+
+**Acceptance Criteria**:
+- Zero successful isolation escapes in red-team exercises.
+- 100% of secrets handled via proxy (verified in automated tests).
+- All Court decisions require ≥3 consistent outputs per reviewer.
+
+## 10. Architecture & Design Principles
+
+### 10.1 Core Design Principles
+- **Zero-Trust**: No component trusts another by default; all communication uses validated JSON schemas and capability tokens.
+- **Local-First by Default**: Ollama-only for all core operations. Any optional cloud LLM support requires explicit human approval plus full Governance Court review and advisement. Isolation must be strictly preserved (e.g., dedicated microVM per cloud caller with no shared memory or context, per-skill network proxy enforcement, and capability tokens limiting data exposure). Cloud usage must never weaken the immutable isolation guarantees outlined in Section 7.
+- **Reproducible & Provable Builds**: Signed artifacts, Software Bill of Materials (SBOM), build provenance.
+- **Capability-Based Security**: Each skill receives only the exact OS/network/file capabilities needed (fine-grained tokens).
+- **Immutable & Consistent Core**: Sandboxing is intentionally non-pluggable in early versions to enforce uniform, verifiable isolation guarantees. Initial implementation uses **Firecracker microVMs**. Transition to Docker-based sandboxes will occur only after full Linux sandbox support is available, thoroughly red-teamed, and approved via the Governance Court. All kernel, client, and sandbox updates must go through Court-approved PRs to the main AegisClaw project — the agent cannot directly update the kernel, itself, or the sandboxing layer outside this controlled process.
+- **Paranoid Pragmatism**: Favor explicit human oversight and auditability over full autonomy for sensitive operations.
+
+### 10.2 High-Level Components
+- **MicroVM Coordinator Daemon + CLI** ("Kernel"): Manages lifecycle of all microVMs; requires root on host. CLI is the sole user entrypoint for secrets and commands. (Future: replaceable by Docker when full sandbox support lands.)
+- **Ollama Server/Endpoint**: Local model serving (default ensemble: Llama-3.2-3B for speed, Mistral-Nemo for reasoning, Phi-3 for small/audited tasks).
+- **Main Agent Sandbox**: Orchestrates user interactions and routes to skills.
+- **Governance Court Reviewer MicroVMs**: Isolated per-review; personas (Coder, Tester, CISO, Security Architect, User Advocate); each performs ≥3 retries for output consistency.
+- **Builder Sandbox**: Ephemeral microVM spun up per build; clean environment for code generation/editing.
+- **Per-Skill Execution MicroVMs**: Isolated runtime for each skill (read-only FS except workspace, `cap-drop ALL`, private daemon).
+- **Secrets/Network Proxy**: Dedicated component for runtime secret injection and egress control.
+- **Network Firewall**: Enforces per-skill allow-lists (falls back to host-level rules if microVM config insufficient).
+- **Git Repository Interface**: Handles all git operations (mirrored to user disk).
+- **Audit Log Store**: Append-only Merkle-tree; tamper-evident writes to user disk.
+- **Optional (Enterprise)**: Persona/Policy Store — deferred to avoid early complexity; can be added as Court-approved extension.
+
+#### 10.3 Data Flow (Mermaid Diagram)
+
+```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
+flowchart TD
+    User[User Chat / CLI] --> Main[Main Agent Sandbox]
+    Main -->|New Skill or Improvement| Court[Governance Court\nReviewer MicroVMs]
+    Court -->|Review cycles with 3+ retries| Builder[Builder Sandbox\nCode Generation]
+    Builder --> Git[Git Repository Interface]
+    Court -->|Consensus or User Override| Deploy[Deployment Proposal]
+    User -->|Final Approval| Deploy
+    Deploy --> Skill[Per-Skill Execution MicroVM]
+    Skill -->|Action via Proxy| Tools[OS / Network Tools]
+    Tools -->|Result| Main
+    Main --> User
+
+    subgraph Isolated MicroVMs
+        Main
+        Court
+        Builder
+        Skill
+    end
+
+    Secrets[Secrets / Network Proxy] -.-> Skill
+    Audit[Audit Log Store] -.-> Court & Main & Skill & Deploy
+```
+
+**Key Cycles**:
+- Review loops in Court until consensus or user override (with audit trail).
+- Self-improvement proposals follow the same path.
+- Error paths: Reviewer failure → escalate to user; isolation check fail → abort; high-risk action → explicit confirmation.
+
+### 10.4 Fallback & Degradation
+- Ollama/reviewer unavailable → graceful degradation to user escalation with clear explanation.
+- Isolation or policy violation → immediate abort + alert in audit log.
+- Common error scenarios (e.g., inconsistent LLM outputs, network denial) logged and surfaced with "why" traces.
+
+**Acceptance Criteria**:
+- All inter-component calls use validated schemas.
+- Builds produce SBOM + signed provenance.
+- Zero-trust enforced: no implicit trust between sandboxes.
+
+**References**: See `docs/architecture.md` (detailed component specs), `docs/schemas/` (JSON schemas), and `docs/threat-model.md` for expanded STRIDE tables.
