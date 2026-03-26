@@ -422,3 +422,120 @@ Testing of AegisClaw must verify both **functionality** and **security assurance
 **External Validation**: For now, “contributions welcome” on bug reports and test improvements. Penetration testing and formal bug bounties will be added as popularity grows and we approach SOC 2 readiness.
 
 **References**: Alignment with OWASP Top 10 for Agentic Applications (Section 9), NIST SSDF practices for secure development, and the threat model in `docs/threat-model.md`. Test harnesses and schemas will live in `tests/` and `docs/schemas/`.
+
+## 13. Deployment, Operations & Monitoring
+
+### 13.1 Deployment
+Initial deployment is build-from-source:
+- Compile the codebase.
+- Start the **MicroVM Coordinator Daemon** with `sudo` (required for Firecracker lifecycle management).
+- Use the **CLI** to initialize, start, stop, chat with the agent, and manage the system.
+
+The initial components (coordinator, CLI, main agent sandbox, Ollama integration, baseline reviewer and builder sandboxes) ship as part of the codebase with signed/hashed filesystems, `vmconfig.json` files, and an initial composition manifest that defines the target state for the daemon.
+
+**CLI Helpers**:
+- One-time initialization (user profile selection: hobbyist/startup/enterprise, strictness level, Ollama endpoint configuration, optional cloud LLM setup).
+- Firecracker setup is manual for now (user responsibility); future Docker sandbox support is expected to simplify this.
+
+All microVMs launch from verified, signed `rootfs.ext4` + `vmconfig.json` combinations.
+
+### 13.2 Updates & Rollback
+Updates follow a versioned composition model:
+- Code generation produces a new revision of the affected microVM component(s).
+- The composition manifest is edited to reference the new version(s) and stored as a new composition version.
+- The daemon is instructed to switch to the new composition: it gracefully stops/restarts the necessary microVMs.
+- Each microVM includes built-in healthchecks (heartbeats, readiness probes). The in-VM controller signals degradation or failure, triggering automatic rollback to the previous composition version (roll-forward safety).
+
+**Manual Controls**:
+- CLI commands allow manual composition changes, version rollback, or forced stop/start.
+- **Safe Mode**: The daemon can start in a minimal configuration containing only core components (coordinator, CLI, basic agent). This allows recovery from severe issues (e.g., a rogue skill consuming resources and preventing normal shutdown commands). In safe mode the user can investigate, revoke skills, and restore normal operation with Court assistance.
+
+### 13.3 Monitoring & Observability
+- **Core**: Append-only Merkle-tree audit log for full traceability of proposals, reviews, actions, and decisions. Queryable via CLI for “why” explanations and activity timelines.
+- **Runtime Monitoring**: Tool usage patterns, resource consumption, unexpected Court invocations, healthcheck failures, and anomaly detection.
+- **Preferred Stack**: OpenTelemetry (OTel) where feasible for metrics/traces; audit-log integrity is non-negotiable and takes precedence.
+- Alerts surface via CLI or simple notifications for high-severity events (isolation violations, repeated healthcheck failures, policy breaches).
+
+**Incident Response / Kill-Switch**:
+- Immediate skill revocation via CLI (clean shutdown + microVM removal + git revert).
+- Host-level emergency stop of the daemon.
+- Safe Mode for recovery when normal chat channels are unresponsive.
+- All incidents are fully logged with forensic detail in the Merkle-tree store.
+
+## 14. Risks, Dependencies, Assumptions & Mitigations
+
+### 14.1 Key Risks & Mitigations
+- **LLM Quality & Instruction Following** (reviewers, coders, guardrails): Mitigated by multi-reviewer retries (≥3), versioned prompts/schemas, cross-verification, structured outputs, and Mediator persona for deadlocks. Court enforces consistency.
+- **Supply-Chain Attacks** (including nation-state hidden triggers in models or dependencies): Hash-verified Ollama models, signed artifacts, SBOM + provenance, reproducible builds, and automated SCA/SAST. Court CISO persona reviews changes.
+- **User Bypass of Controls**: Policies are defined and enforced via the Court; relaxing controls requires explicit human + CISO-level review and audit trail. Immutable design rules (Section 7) cannot be bypassed.
+- **Host Kernel / OS Vulnerabilities**: Assumes user applies timely host OS security patches. MicroVM isolation provides defense-in-depth.
+- **Self-Improvement Gone Wrong**: All proposals (including core updates) flow through the full Court process with human final approval and rollback capability.
+- **Resource Exhaustion or Rogue Skills**: Strict resource limits, healthchecks, private daemons, and Safe Mode.
+
+**Residual Risk**: LLM non-determinism is bounded but never fully eliminated; heavy reliance on human oversight for high-stakes changes remains.
+
+### 14.2 Dependencies & Assumptions
+- **Primary Dependencies**: Firecracker (opt-in, manual setup for now), Ollama, Git. No Docker/Podman in initial implementation.
+- **Assumptions**:
+  - Ubuntu-based Linux host with sufficient resources for microVMs.
+  - User provides secrets exclusively via CLI (never through chat or untrusted channels).
+  - Host OS is kept patched by the user.
+- **Future**: Docker sandbox support expected to reduce Firecracker UX burden.
+
+The Court will periodically review BOMs against new CVEs as part of operations.
+
+## 15. Roadmap & Phasing
+
+**Phase 0 – MVP (v0.1 / Hello-World End-to-End)**
+- Build-from-source deployment with coordinator daemon + CLI.
+- Successful end-to-end “hello world” skill: user setup → Court-reviewed skill addition → chat-based usage.
+- Basic self-hosting capability (system can propose simple improvements via Court).
+- Core isolation invariants and audit logging enforced.
+- Success Gate: Zero isolation violations; functional first skill generation and usage.
+
+**Phase 1 – Short-term (1–2 months)**
+- Self-hosting maturity: AegisClaw opens and reviews its own GitHub PRs.
+- Friends/early testers running the system and providing feedback (Court helps incorporate it).
+- 5–10 basic skills with full audit trails.
+- Safe Mode and basic rollback capabilities.
+
+**Phase 2 – Medium-term (3–6 months)**
+- Stronger automated security gates (full SAST/SCA, policy-as-code, adversarial testing).
+- Enterprise customization of personas and policies.
+- 10+ production-grade skills.
+- Improved observability and healthchecks.
+
+**Phase 3 – Long-term (6–12 months)**
+- Gaining measurable adoption over broader agents by being the safer, more trustworthy choice.
+- Optional controlled cloud LLM support (Court-reviewed).
+- SOC 2 Type 1 readiness path.
+- Broader ecosystem contributions welcomed.
+
+Success between phases emphasizes functionality first, followed immediately by verified security assurances (never skipped).
+
+## 16. Appendices
+
+### Glossary
+- **Governance Court**: Isolated multi-persona LLM review system (Coder, Tester, CISO, Security Architect, User Advocate + Mediator) that enforces the SDLC.
+- **MicroVM Coordinator Daemon (“Kernel”)**: Root-privileged process managing Firecracker microVM lifecycle.
+- **Composition Manifest**: Versioned description of which microVM versions (rootfs + vmconfig.json) should be running.
+- **Secrets Proxy**: Dedicated component for runtime secret injection without exposing keys to LLMs.
+- **Safe Mode**: Minimal daemon configuration for recovery from severe incidents.
+- **Merkle-tree Audit Log**: Tamper-evident, append-only record of all proposals, reviews, actions, and decisions.
+
+### References & Related Documents
+- `docs/threat-model.md` — Expanded STRIDE tables
+- `docs/architecture.md` — Detailed component specifications
+- `docs/schemas/` — JSON schemas for Court communication and proposals
+- `tests/` — Test harnesses and adversarial suites
+- `policies/` — Rego rules and enterprise policy examples
+- OWASP Top 10 for Agentic Applications (2026) and OWASP Top 10 for LLM Applications
+- STRIDE threat modeling framework
+- NIST SSDF (Secure Software Development Framework)
+
+**Living Document Note**  
+This PRD is a living document. Updates and improvements to the PRD itself will be proposed and reviewed through the Governance Court.
+
+---
+
+**Towards a secure, abundant future.**
