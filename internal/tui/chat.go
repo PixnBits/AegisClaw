@@ -58,9 +58,9 @@ type ChatModel struct {
 	err          error
 
 	// Input history (most recent last).
-	inputHistory  []string
-	historyIndex  int  // -1 = not browsing; 0..len-1 = browsing
-	savedInput    string // stash current input when browsing
+	inputHistory []string
+	historyIndex int    // -1 = not browsing; 0..len-1 = browsing
+	savedInput   string // stash current input when browsing
 
 	// Safe mode blocks all tool and skill execution.
 	SafeMode bool
@@ -69,12 +69,12 @@ type ChatModel struct {
 	watchedProposals map[string]string // proposal ID → last known status
 
 	// Callbacks
-	SendMessage          func(input string, history []ChatMessage) (ChatMessage, []ToolCall, error)
-	ExecuteTool          func(call ToolCall) (string, error)
-	SummarizeToolResult  func(toolName, toolResult string, history []ChatMessage) (ChatMessage, error)
-	ToggleSafeMode       func(enable bool) error
-	RequestShutdown      func() error
-	CheckProposalStatus  func(id string) (status, title string, err error)
+	SendMessage         func(input string, history []ChatMessage) (ChatMessage, []ToolCall, error)
+	ExecuteTool         func(call ToolCall) (string, error)
+	SummarizeToolResult func(toolName, toolResult string, history []ChatMessage) (ChatMessage, error)
+	ToggleSafeMode      func(enable bool) error
+	RequestShutdown     func() error
+	CheckProposalStatus func(id string) (status, title string, err error)
 }
 
 // ChatSafeModeMsg carries the result of a safe-mode toggle.

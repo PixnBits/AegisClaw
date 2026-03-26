@@ -611,10 +611,10 @@ func resolveProposalID(env *runtimeEnv, idOrPrefix string) (string, error) {
 // handleProposalCreateDraft creates a new draft proposal from LLM-collected fields.
 func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error) {
 	var args struct {
-		Title           string   `json:"title"`
-		Description     string   `json:"description"`
-		SkillName       string   `json:"skill_name"`
-		Tools           []struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		SkillName   string `json:"skill_name"`
+		Tools       []struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		} `json:"tools"`
@@ -712,11 +712,11 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 // handleProposalUpdateDraft updates fields on an existing draft proposal.
 func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error) {
 	var args struct {
-		ID              string   `json:"id"`
-		Title           *string  `json:"title"`
-		Description     *string  `json:"description"`
-		SkillName       *string  `json:"skill_name"`
-		Tools           []struct {
+		ID          string  `json:"id"`
+		Title       *string `json:"title"`
+		Description *string `json:"description"`
+		SkillName   *string `json:"skill_name"`
+		Tools       []struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		} `json:"tools"`
