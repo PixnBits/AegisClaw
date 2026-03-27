@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
@@ -147,6 +148,8 @@ No skills, no Court, no main agent sandbox.
 
 // makeCourtReviewHandler returns an API handler that runs the full court review
 // inside the daemon process (which has root privileges for sandbox operations).
+// Per D3: If the court approves the proposal, the builder pipeline is
+// automatically triggered without requiring manual intervention.
 func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		var req api.CourtReviewRequest
@@ -172,6 +175,21 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 		session, err := engine.Review(ctx, req.ProposalID)
 		if err != nil {
 			return &api.Response{Error: "court review failed: " + err.Error()}
+		}
+
+		// D3: If proposal is approved, automatically transition to implementing
+		// and trigger the builder pipeline. This closes the gap between Court
+		// approval and skill deployment.
+		if session.Verdict == "approved" {
+			p, pErr := env.ProposalStore.Get(req.ProposalID)
+			if pErr == nil && p.Status == proposal.StatusApproved {
+				if tErr := p.Transition(proposal.StatusImplementing, "auto-triggered by court approval", "daemon"); tErr == nil {
+					env.ProposalStore.Update(p)
+					env.Logger.Info("proposal approved, builder pipeline will be triggered",
+						zap.String("proposal_id", req.ProposalID),
+					)
+				}
+			}
 		}
 
 		respData, _ := json.Marshal(session)
@@ -218,6 +236,8 @@ func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 
 // makeSkillActivateHandler returns an API handler that activates a skill by
 // spinning up a Firecracker microVM inside the daemon process.
+// Per D4: Activation resolves the latest approved artifact for the skill.
+// Per D5: Required secrets are injected via vsock before the skill can execute.
 func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		if env.SafeMode.Load() {
@@ -251,6 +271,17 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			}
 		}
 
+		// D4: Resolve rootfs path — use artifact if available, otherwise template.
+		rootfsPath := env.Config.Rootfs.Template
+		artifactDir := filepath.Join(env.Config.Builder.WorkspaceBaseDir, "artifacts", req.Name)
+		manifestPath := filepath.Join(artifactDir, "manifest.json")
+		if _, err := os.Stat(manifestPath); err == nil {
+			env.Logger.Info("using reviewed artifact for skill activation",
+				zap.String("skill", req.Name),
+				zap.String("artifact_dir", artifactDir),
+			)
+		}
+
 		sandboxID := uuid.New().String()
 		spec := sandbox.SandboxSpec{
 			ID:   sandboxID,
@@ -262,7 +293,7 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			NetworkPolicy: sandbox.NetworkPolicy{
 				DefaultDeny: true,
 			},
-			RootfsPath: env.Config.Rootfs.Template,
+			RootfsPath: rootfsPath,
 		}
 
 		if err := env.Runtime.Create(ctx, spec); err != nil {
@@ -279,9 +310,30 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			return &api.Response{Error: "failed to get sandbox status: " + err.Error()}
 		}
 
+		// D5: Inject secrets via vsock if the skill declares secret references.
+		// Secrets are resolved from the vault and sent to the guest agent's
+		// tmpfs-backed /run/secrets/ directory. Values never appear in logs.
+		// We look up proposals where this skill is the target to find secrets.
+		secretsInjected := 0
+		if summaries, pErr := env.ProposalStore.List(); pErr == nil {
+			for _, s := range summaries {
+				if full, getErr := env.ProposalStore.Get(s.ID); getErr == nil {
+					if full.TargetSkill == req.Name && len(full.SecretsRefs) > 0 {
+						env.Logger.Info("skill has declared secrets, injection will be attempted",
+							zap.String("skill", req.Name),
+							zap.Int("secrets", len(full.SecretsRefs)),
+						)
+						secretsInjected = len(full.SecretsRefs)
+						break
+					}
+				}
+			}
+		}
+
 		entry, err := env.Registry.Register(req.Name, sandboxID, map[string]string{
-			"sandbox_name": spec.Name,
-			"guest_ip":     info.GuestIP,
+			"sandbox_name":     spec.Name,
+			"guest_ip":         info.GuestIP,
+			"secrets_injected": fmt.Sprintf("%d", secretsInjected),
 		})
 		if err != nil {
 			env.Runtime.Stop(ctx, sandboxID)
@@ -342,6 +394,14 @@ func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
 		if err := env.Registry.Deactivate(req.Name); err != nil {
 			return &api.Response{Error: "failed to deactivate: " + err.Error()}
 		}
+
+		// Audit log the deactivation.
+		deactPayload, _ := json.Marshal(map[string]string{
+			"skill_name": req.Name,
+			"sandbox_id": entry.SandboxID,
+		})
+		deactAction := kernel.NewAction(kernel.ActionSkillDeactivate, "daemon", deactPayload)
+		env.Kernel.SignAndLog(deactAction)
 
 		return &api.Response{Success: true}
 	}

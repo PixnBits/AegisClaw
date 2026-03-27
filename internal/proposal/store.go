@@ -38,15 +38,16 @@ type ProposalIndex struct {
 
 // ProposalSummary stores essential info for listing without loading full proposals.
 type ProposalSummary struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Category  Category  `json:"category"`
-	Status    Status    `json:"status"`
-	Risk      RiskLevel `json:"risk"`
-	Author    string    `json:"author"`
-	Round     int       `json:"round"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Category    Category  `json:"category"`
+	Status      Status    `json:"status"`
+	Risk        RiskLevel `json:"risk"`
+	Author      string    `json:"author"`
+	Round       int       `json:"round"`
+	TargetSkill string    `json:"target_skill,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // NewStore opens or creates a proposal git repository at the given path.
@@ -353,15 +354,16 @@ func (s *Store) updateIndex(w *git.Worktree, p *Proposal) error {
 	}
 
 	summary := ProposalSummary{
-		ID:        p.ID,
-		Title:     p.Title,
-		Category:  p.Category,
-		Status:    p.Status,
-		Risk:      p.Risk,
-		Author:    p.Author,
-		Round:     p.Round,
-		CreatedAt: p.CreatedAt,
-		UpdatedAt: p.UpdatedAt,
+		ID:          p.ID,
+		Title:       p.Title,
+		Category:    p.Category,
+		Status:      p.Status,
+		Risk:        p.Risk,
+		Author:      p.Author,
+		Round:       p.Round,
+		TargetSkill: p.TargetSkill,
+		CreatedAt:   p.CreatedAt,
+		UpdatedAt:   p.UpdatedAt,
 	}
 
 	found := false
