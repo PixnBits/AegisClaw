@@ -86,6 +86,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("safe-mode.enable", makeSafeModeEnableHandler(env))
 	apiSrv.Handle("safe-mode.disable", makeSafeModeDisableHandler(env))
 	apiSrv.Handle("safe-mode.status", makeSafeModeStatusHandler(env))
+	// D2: Chat handlers — the daemon owns all LLM interaction.
+	apiSrv.Handle("chat.message", makeChatMessageHandler(env))
+	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
+	apiSrv.Handle("chat.tool", makeChatToolHandler(env))
+	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)

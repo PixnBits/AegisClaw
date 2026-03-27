@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/audit"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
-	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/tui"
 	"github.com/PixnBits/AegisClaw/internal/wizard"
@@ -54,30 +52,95 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	model := tui.NewChatModel()
 
-	// Create Ollama client and daemon API client for skill invocation.
-	ollamaClient := llm.NewClient(llm.ClientConfig{
-		Endpoint: env.Config.Ollama.Endpoint,
-	})
+	// D2: All LLM interaction is routed through the daemon API.
+	// The CLI process is a thin TUI client — it never calls Ollama directly.
 	daemonClient := api.NewClient(env.Config.Daemon.SocketPath)
 
 	model.SendMessage = func(input string, history []tui.ChatMessage) (tui.ChatMessage, []tui.ToolCall, error) {
-		// Handle slash commands
+		// Handle slash commands via daemon.
 		if strings.HasPrefix(input, "/") {
 			if sessionLog != nil {
 				sessionLog.Log(audit.SessionEvent{Event: audit.EventSlashCommand, Role: "user", Content: input})
 			}
-			msg, tools, err := handleSlashCommand(env, input)
-			if sessionLog != nil && err == nil {
-				sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: msg.Content})
+
+			// /quit and /safe-mode are handled locally for responsiveness.
+			parts := strings.Fields(input)
+			switch parts[0] {
+			case "/quit":
+				return tui.ChatMessage{
+					Role:      tui.ChatRoleAssistant,
+					Content:   "Goodbye!",
+					Timestamp: time.Now(),
+				}, nil, nil
+			case "/safe-mode":
+				enable := true
+				if len(parts) > 1 && parts[1] == "off" {
+					enable = false
+				}
+				action := "safe-mode.enable"
+				if !enable {
+					action = "safe-mode.disable"
+				}
+				resp, daemonErr := daemonClient.Call(cmd.Context(), action, nil)
+				if daemonErr != nil {
+					return tui.ChatMessage{}, nil, fmt.Errorf("daemon: %w", daemonErr)
+				}
+				msg := "Safe mode enabled. All skills deactivated."
+				if !enable {
+					msg = "Safe mode disabled. Skill operations re-enabled."
+				}
+				if !resp.Success {
+					msg = "Failed: " + resp.Error
+				}
+				return tui.ChatMessage{
+					Role:      tui.ChatRoleAssistant,
+					Content:   msg,
+					Timestamp: time.Now(),
+				}, nil, nil
+			case "/shutdown":
+				if resp, shutErr := daemonClient.Call(cmd.Context(), "safe-mode.enable", nil); shutErr != nil {
+					return tui.ChatMessage{}, nil, fmt.Errorf("safe-mode: %w", shutErr)
+				} else if !resp.Success {
+					return tui.ChatMessage{}, nil, fmt.Errorf("safe-mode: %s", resp.Error)
+				}
+				if resp, shutErr := daemonClient.Call(cmd.Context(), "kernel.shutdown", nil); shutErr != nil {
+					return tui.ChatMessage{}, nil, fmt.Errorf("shutdown: %w", shutErr)
+				} else if !resp.Success {
+					return tui.ChatMessage{}, nil, fmt.Errorf("shutdown: %s", resp.Error)
+				}
+				return tui.ChatMessage{
+					Role:      tui.ChatRoleAssistant,
+					Content:   "Daemon shutdown initiated.",
+					Timestamp: time.Now(),
+				}, nil, nil
 			}
-			return msg, tools, err
+
+			// Route all other slash commands to daemon.
+			resp, err := daemonClient.Call(cmd.Context(), "chat.slash", api.ChatSlashRequest{
+				Command: input,
+			})
+			if err != nil {
+				return tui.ChatMessage{}, nil, fmt.Errorf("daemon: %w", err)
+			}
+			if !resp.Success {
+				return tui.ChatMessage{}, nil, fmt.Errorf("daemon: %s", resp.Error)
+			}
+			var chatResp api.ChatMessageResponse
+			if unmarshalErr := json.Unmarshal(resp.Data, &chatResp); unmarshalErr != nil {
+				return tui.ChatMessage{}, nil, fmt.Errorf("parse response: %w", unmarshalErr)
+			}
+			if sessionLog != nil {
+				sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: chatResp.Content})
+			}
+			return tui.ChatMessage{
+				Role:      tui.ChatRoleAssistant,
+				Content:   chatResp.Content,
+				Timestamp: time.Now(),
+			}, nil, nil
 		}
 
-		// Build the system prompt with available skills.
-		systemPrompt := buildSystemPrompt(cmd.Context(), daemonClient)
-
-		// Convert TUI history to Ollama messages.
-		msgs := []llm.ChatMessage{{Role: "system", Content: systemPrompt}}
+		// D2: Route regular messages through the daemon, which handles LLM interaction.
+		historyItems := make([]api.ChatHistoryItem, 0, len(history))
 		for _, h := range history {
 			if h.Role == tui.ChatRoleSystem {
 				continue
@@ -86,28 +149,34 @@ func runChat(cmd *cobra.Command, args []string) error {
 			if h.Role == tui.ChatRoleAssistant {
 				role = "assistant"
 			}
-			msgs = append(msgs, llm.ChatMessage{Role: role, Content: h.Content})
+			historyItems = append(historyItems, api.ChatHistoryItem{Role: role, Content: h.Content})
 		}
-		msgs = append(msgs, llm.ChatMessage{Role: "user", Content: input})
 
 		if sessionLog != nil {
 			sessionLog.Log(audit.SessionEvent{Event: audit.EventUserMessage, Role: "user", Content: input})
 		}
 
-		resp, err := ollamaClient.Chat(cmd.Context(), llm.ChatRequest{
-			Model:    env.Config.Ollama.DefaultModel,
-			Messages: msgs,
+		resp, err := daemonClient.Call(cmd.Context(), "chat.message", api.ChatMessageRequest{
+			Input:   input,
+			History: historyItems,
 		})
 		if err != nil {
-			return tui.ChatMessage{}, nil, fmt.Errorf("ollama: %w", err)
+			return tui.ChatMessage{}, nil, fmt.Errorf("daemon: %w", err)
+		}
+		if !resp.Success {
+			return tui.ChatMessage{}, nil, fmt.Errorf("daemon: %s", resp.Error)
 		}
 
-		content := resp.Message.Content
+		var chatResp api.ChatMessageResponse
+		if unmarshalErr := json.Unmarshal(resp.Data, &chatResp); unmarshalErr != nil {
+			return tui.ChatMessage{}, nil, fmt.Errorf("parse response: %w", unmarshalErr)
+		}
+
+		content := chatResp.Content
 
 		// Check if the LLM wants to invoke a skill tool.
 		toolCalls := parseToolCalls(content)
 		if len(toolCalls) > 0 {
-			// Strip the JSON tool-call block from the displayed message.
 			cleaned := cleanToolCallContent(content)
 			if sessionLog != nil {
 				sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: cleaned})
@@ -147,93 +216,57 @@ func runChat(cmd *cobra.Command, args []string) error {
 				sessionLog.Log(evt)
 			}
 		}()
+
+		// Proposal tools are handled locally because they need the
+		// proposal store and are latency-sensitive for the wizard flow.
 		switch call.Name {
-		case "list_proposals":
-			summaries, err := env.ProposalStore.List()
-			if err != nil {
-				toolErr = err
-				return "", err
-			}
-			var lines []string
-			for _, s := range summaries {
-				lines = append(lines, fmt.Sprintf("  %s  %s  [%s]  %s", s.ID, s.Title, s.Status, s.Risk))
-			}
-			if len(lines) == 0 {
-				result = "No proposals found."
-				return result, nil
-			}
-			result = strings.Join(lines, "\n")
-			return result, nil
-
-		case "list_sandboxes":
-			sandboxes, err := env.Runtime.List(context.Background())
-			if err != nil {
-				toolErr = err
-				return "", err
-			}
-			var lines []string
-			for _, sb := range sandboxes {
-				lines = append(lines, fmt.Sprintf("  %s  %s  [%s]", sb.Spec.ID[:8], sb.Spec.Name, sb.State))
-			}
-			if len(lines) == 0 {
-				result = "No sandboxes found."
-				return result, nil
-			}
-			result = strings.Join(lines, "\n")
-			return result, nil
-
 		case "proposal.create_draft":
 			result, toolErr = handleProposalCreateDraft(env, call.Args)
 			return result, toolErr
-
 		case "proposal.update_draft":
 			result, toolErr = handleProposalUpdateDraft(env, call.Args)
 			return result, toolErr
-
 		case "proposal.get_draft":
 			result, toolErr = handleProposalGetDraft(env, call.Args)
 			return result, toolErr
-
 		case "proposal.list_drafts":
 			result, toolErr = handleProposalListDrafts(env)
 			return result, toolErr
-
 		case "proposal.submit":
 			result, toolErr = handleProposalSubmit(env, daemonClient, cmd.Context(), call.Args)
 			return result, toolErr
-
 		case "proposal.status":
 			result, toolErr = handleProposalStatus(env, call.Args)
 			return result, toolErr
+		}
 
-		default:
-			// Route skill tool calls through the daemon API.
-			skill, tool := parseSkillTool(call.Name)
-			if skill != "" && tool != "" {
-				resp, err := daemonClient.Call(cmd.Context(), "skill.invoke", api.SkillInvokeRequest{
-					Skill: skill,
-					Tool:  tool,
-					Args:  call.Args,
-				})
-				if err != nil {
-					toolErr = fmt.Errorf("skill invoke: %w", err)
-					return "", toolErr
-				}
-				if !resp.Success {
-					toolErr = fmt.Errorf("skill invoke failed: %s", resp.Error)
-					return "", toolErr
-				}
-				result = string(resp.Data)
-				return result, nil
-			}
-			toolErr = fmt.Errorf("unknown tool: %s", call.Name)
+		// D2: Route all other tool calls through the daemon.
+		resp, err := daemonClient.Call(cmd.Context(), "chat.tool", api.ChatToolExecRequest{
+			Name: call.Name,
+			Args: call.Args,
+		})
+		if err != nil {
+			toolErr = fmt.Errorf("daemon: %w", err)
 			return "", toolErr
 		}
+		if !resp.Success {
+			toolErr = fmt.Errorf("tool failed: %s", resp.Error)
+			return "", toolErr
+		}
+		var toolResp struct {
+			Result string `json:"result"`
+		}
+		if unmarshalErr := json.Unmarshal(resp.Data, &toolResp); unmarshalErr != nil {
+			result = string(resp.Data)
+		} else {
+			result = toolResp.Result
+		}
+		return result, nil
 	}
 
 	model.SummarizeToolResult = func(toolName, toolResult string, history []tui.ChatMessage) (tui.ChatMessage, error) {
-		systemPrompt := buildSystemPrompt(cmd.Context(), daemonClient)
-		msgs := []llm.ChatMessage{{Role: "system", Content: systemPrompt}}
+		// D2: Route summarization through the daemon.
+		historyItems := make([]api.ChatHistoryItem, 0, len(history))
 		for _, h := range history {
 			if h.Role == tui.ChatRoleSystem {
 				continue
@@ -242,36 +275,34 @@ func runChat(cmd *cobra.Command, args []string) error {
 			if h.Role == tui.ChatRoleAssistant {
 				role = "assistant"
 			} else if h.Role == tui.ChatRoleTool {
-				role = "user" // Ollama doesn't have a tool role; send as user context
+				role = "user"
 			}
-			msgs = append(msgs, llm.ChatMessage{Role: role, Content: h.Content})
+			historyItems = append(historyItems, api.ChatHistoryItem{Role: role, Content: h.Content})
 		}
-		// Add the tool result as context for the LLM.
-		summarizeInstruction := "Please summarize this result for the user in a natural, conversational way. Do NOT output a tool-call block."
-		if toolName == "proposal.create_draft" {
-			summarizeInstruction = "A new draft proposal was just created. Present the details to the user including the FULL proposal ID. Ask the user to confirm before you submit it. Do NOT output a tool-call block. When the user confirms, you will call proposal.submit with the EXACT ID shown above."
-		} else if toolName == "proposal.submit" {
-			summarizeInstruction = "The proposal was just submitted for court review. Tell the user the result and the proposal ID. Do NOT output a tool-call block."
-		}
-		msgs = append(msgs, llm.ChatMessage{
-			Role:    "user",
-			Content: fmt.Sprintf("[Tool %s returned]: %s\n%s", toolName, toolResult, summarizeInstruction),
-		})
 
-		resp, err := ollamaClient.Chat(cmd.Context(), llm.ChatRequest{
-			Model:    env.Config.Ollama.DefaultModel,
-			Messages: msgs,
+		resp, err := daemonClient.Call(cmd.Context(), "chat.summarize", api.ChatSummarizeRequest{
+			ToolName:   toolName,
+			ToolResult: toolResult,
+			History:    historyItems,
 		})
 		if err != nil {
-			return tui.ChatMessage{}, fmt.Errorf("ollama: %w", err)
+			return tui.ChatMessage{}, fmt.Errorf("daemon: %w", err)
+		}
+		if !resp.Success {
+			return tui.ChatMessage{}, fmt.Errorf("daemon: %s", resp.Error)
+		}
+
+		var chatResp api.ChatMessageResponse
+		if unmarshalErr := json.Unmarshal(resp.Data, &chatResp); unmarshalErr != nil {
+			return tui.ChatMessage{}, fmt.Errorf("parse response: %w", unmarshalErr)
 		}
 
 		if sessionLog != nil {
-			sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: resp.Message.Content, ToolName: toolName})
+			sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: chatResp.Content, ToolName: toolName})
 		}
 		return tui.ChatMessage{
 			Role:      tui.ChatRoleAssistant,
-			Content:   resp.Message.Content,
+			Content:   chatResp.Content,
 			Timestamp: time.Now(),
 		}, nil
 	}
@@ -320,116 +351,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-func handleSlashCommand(env *runtimeEnv, input string) (tui.ChatMessage, []tui.ToolCall, error) {
-	parts := strings.Fields(input)
-	cmd := parts[0]
-
-	switch cmd {
-	case "/status":
-		sandboxes, err := env.Runtime.List(context.Background())
-		if err != nil {
-			return tui.ChatMessage{}, nil, fmt.Errorf("failed to list sandboxes: %w", err)
-		}
-		running := 0
-		for _, sb := range sandboxes {
-			if sb.State == "running" {
-				running++
-			}
-		}
-		skills := env.Registry.List()
-		active := 0
-		for _, sk := range skills {
-			if sk.State == "active" {
-				active++
-			}
-		}
-		auditLog := env.Kernel.AuditLog()
-		content := fmt.Sprintf("System Status:\n  Sandboxes: %d total, %d running\n  Skills: %d registered, %d active\n  Audit entries: %d\n  Registry root: %s",
-			len(sandboxes), running, len(skills), active, auditLog.EntryCount(), tui.Truncate(env.Registry.RootHash(), 16))
-		return tui.ChatMessage{
-			Role:      tui.ChatRoleAssistant,
-			Content:   content,
-			Timestamp: time.Now(),
-		}, nil, nil
-
-	case "/audit":
-		auditLog := env.Kernel.AuditLog()
-		auditPath := filepath.Join(env.Config.Audit.Dir, "kernel.merkle.jsonl")
-		verified, verifyErr := audit.VerifyChain(auditPath, env.Kernel.PublicKey())
-		status := "OK"
-		if verifyErr != nil {
-			status = fmt.Sprintf("FAIL at entry %d: %v", verified+1, verifyErr)
-		}
-		content := fmt.Sprintf("Audit Chain:\n  Entries: %d\n  Chain head: %s\n  Verification: %s (%d verified)",
-			auditLog.EntryCount(), tui.Truncate(auditLog.LastHash(), 16), status, verified)
-		return tui.ChatMessage{
-			Role:      tui.ChatRoleAssistant,
-			Content:   content,
-			Timestamp: time.Now(),
-		}, nil, nil
-
-	case "/court":
-		return tui.ChatMessage{
-			Role:      tui.ChatRoleAssistant,
-			Content:   "Listing court sessions...",
-			Timestamp: time.Now(),
-		}, []tui.ToolCall{{Name: "list_proposals"}}, nil
-
-	case "/help":
-		content := `Available commands:
-  /help          — Show this help message
-  /status        — Show system status (sandboxes, skills, audit)
-  /audit         — Show audit chain info and verification
-  /court         — List court sessions / proposals
-  /propose       — Start building a new skill proposal (interactive)
-  /propose <goal>— Start a proposal with a specific goal
-  /safe-mode     — Stop all tools and skills immediately (no LLM)
-  /safe-mode off — Re-enable tool and skill execution
-  /shutdown      — Emergency: stop all skills, shut down daemon, exit
-  /quit          — Exit chat
-
-Proposal workflow:
-  Describe what you want to build and I'll help you write the proposal.
-  Drafts are saved automatically so you can continue later.
-  I'll present the full proposal for your approval before submitting.
-
-You can also type natural language to chat with AegisClaw.
-Use ↑/↓ arrows to recall previous messages.`
-		return tui.ChatMessage{
-			Role:      tui.ChatRoleAssistant,
-			Content:   content,
-			Timestamp: time.Now(),
-		}, nil, nil
-
-	case "/propose":
-		goal := ""
-		if len(parts) > 1 {
-			goal = strings.Join(parts[1:], " ")
-		}
-		if goal != "" {
-			return tui.ChatMessage{
-				Role:      tui.ChatRoleAssistant,
-				Content:   fmt.Sprintf("Let's build a proposal for %q. Tell me more about what this skill should do — what problem does it solve and what tools should it provide?\n\nI'll help you fill in the details and you can save a draft at any point.", goal),
-				Timestamp: time.Now(),
-			}, nil, nil
-		}
-		// No goal provided — check for existing drafts.
-		return tui.ChatMessage{
-			Role:      tui.ChatRoleAssistant,
-			Content:   "What would you like to propose? Describe the skill you want to create and I'll help you build the proposal.\n\nOr, if you have an existing draft, tell me the proposal ID and I'll load it.",
-			Timestamp: time.Now(),
-		}, nil, nil
-
-	default:
-		return tui.ChatMessage{
-			Role:      tui.ChatRoleAssistant,
-			Content:   fmt.Sprintf("Unknown command: %s\nType /help for available commands.", cmd),
-			Timestamp: time.Now(),
-		}, nil, nil
-	}
-}
+// buildSystemPrompt and handleSlashCommand have been moved to the daemon side
+// (chat_handlers.go) as part of D2. The CLI is now a thin TUI client.
 
 // buildSystemPrompt constructs the LLM system prompt including available skills.
+// Retained for backward compatibility with tests; the daemon uses buildDaemonSystemPrompt.
 func buildSystemPrompt(ctx context.Context, daemonClient *api.Client) string {
 	base := `You are AegisClaw, an AI-powered software governance assistant.
 
@@ -590,15 +516,6 @@ func cleanToolCallContent(content string) string {
 		}
 	}
 	return strings.TrimSpace(content)
-}
-
-// parseSkillTool splits a "skill.tool" name into its components.
-func parseSkillTool(name string) (string, string) {
-	parts := strings.SplitN(name, ".", 2)
-	if len(parts) != 2 {
-		return "", ""
-	}
-	return parts[0], parts[1]
 }
 
 // --- Proposal tool handlers ---

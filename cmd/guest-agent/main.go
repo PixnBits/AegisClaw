@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -197,6 +198,10 @@ func dispatch(ctx context.Context, req *Request) *Response {
 		return handleSecretsInject(req)
 	case "tool.invoke":
 		return handleToolInvoke(req)
+	case "review.execute":
+		return handleReviewExecute(ctx, req)
+	case "chat.message":
+		return handleChatMessage(ctx, req)
 	default:
 		return errorResponse(req.ID, fmt.Sprintf("unknown request type: %s", req.Type))
 	}
@@ -500,6 +505,198 @@ func errorResponse(id, msg string) *Response {
 		Success: false,
 		Error:   msg,
 	}
+}
+
+// ReviewExecutePayload is received from the kernel control plane (D1).
+// It mirrors internal/court.ReviewRequest.
+type ReviewExecutePayload struct {
+	ProposalID  string          `json:"proposal_id"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Category    string          `json:"category"`
+	Spec        json.RawMessage `json:"spec,omitempty"`
+	PersonaName string          `json:"persona_name"`
+	PersonaRole string          `json:"persona_role"`
+	Prompt      string          `json:"prompt"`
+	Model       string          `json:"model"`
+	Round       int             `json:"round"`
+}
+
+// handleReviewExecute runs a Court review inside this sandbox (D1).
+//
+// The guest agent receives the review prompt, calls the Ollama endpoint
+// (which the sandbox networking allows on 127.0.0.1:11434), and returns
+// the structured JSON verdict. This ensures that no review request
+// reaches Ollama from the host daemon process.
+func handleReviewExecute(ctx context.Context, req *Request) *Response {
+	var payload ReviewExecutePayload
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("invalid review.execute payload: %v", err))
+	}
+
+	if payload.Model == "" {
+		return errorResponse(req.ID, "model is required")
+	}
+	if payload.Prompt == "" {
+		return errorResponse(req.ID, "prompt is required")
+	}
+
+	// Build the review user message.
+	var userMsg strings.Builder
+	fmt.Fprintf(&userMsg, "Review the following proposal (round %d):\n\n", payload.Round)
+	fmt.Fprintf(&userMsg, "Proposal ID: %s\n", payload.ProposalID)
+	fmt.Fprintf(&userMsg, "Title: %s\n", payload.Title)
+	fmt.Fprintf(&userMsg, "Description: %s\n", payload.Description)
+	fmt.Fprintf(&userMsg, "Category: %s\n", payload.Category)
+	if len(payload.Spec) > 0 {
+		fmt.Fprintf(&userMsg, "Spec: %s\n", string(payload.Spec))
+	}
+	userMsg.WriteString("\nRespond with a JSON object containing:\n")
+	userMsg.WriteString(`- "verdict": one of "approve", "reject", "ask", "abstain"` + "\n")
+	userMsg.WriteString(`- "risk_score": a number between 0 and 10` + "\n")
+	userMsg.WriteString(`- "evidence": an array of strings supporting your verdict` + "\n")
+	userMsg.WriteString(`- "questions": (optional) an array of follow-up questions` + "\n")
+	userMsg.WriteString(`- "comments": a brief summary of your assessment` + "\n")
+
+	// Call Ollama via the allowed network path (127.0.0.1:11434 per sandbox spec).
+	ollamaReq := map[string]interface{}{
+		"model": payload.Model,
+		"messages": []map[string]string{
+			{"role": "system", "content": payload.Prompt},
+			{"role": "user", "content": userMsg.String()},
+		},
+		"format": "json",
+		"options": map[string]interface{}{
+			"temperature": 0.3,
+		},
+		"stream": false,
+	}
+
+	body, err := json.Marshal(ollamaReq)
+	if err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("failed to marshal ollama request: %v", err))
+	}
+
+	ollamaURL := "http://127.0.0.1:11434/api/chat"
+	httpReq, err := newHTTPRequest(ctx, "POST", ollamaURL, body)
+	if err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("failed to create request: %v", err))
+	}
+
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("ollama request failed: %v", err))
+	}
+	defer httpResp.Body.Close()
+
+	var ollamaResp struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(httpResp.Body).Decode(&ollamaResp); err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("failed to decode ollama response: %v", err))
+	}
+
+	raw := strings.TrimSpace(ollamaResp.Message.Content)
+	if raw == "" {
+		return errorResponse(req.ID, "empty response from model")
+	}
+
+	// Validate the JSON structure before returning.
+	var check map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &check); err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("model returned invalid JSON: %v", err))
+	}
+
+	log.Printf("review.execute: model=%s persona=%s verdict=%v", payload.Model, payload.PersonaName, check["verdict"])
+
+	data := json.RawMessage(raw)
+	return &Response{ID: req.ID, Success: true, Data: data}
+}
+
+// ChatMessagePayload is received from the daemon for D2 (main-agent sandbox).
+type ChatMessagePayload struct {
+	Messages []ChatMsg `json:"messages"`
+	Model    string    `json:"model"`
+}
+
+// ChatMsg represents a single message in the conversation.
+type ChatMsg struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// handleChatMessage runs a chat completion inside this sandbox (D2).
+//
+// The main agent's LLM conversation is executed inside the sandbox,
+// ensuring the host process never calls Ollama directly for chat.
+func handleChatMessage(ctx context.Context, req *Request) *Response {
+	var payload ChatMessagePayload
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("invalid chat.message payload: %v", err))
+	}
+
+	if payload.Model == "" {
+		return errorResponse(req.ID, "model is required")
+	}
+	if len(payload.Messages) == 0 {
+		return errorResponse(req.ID, "messages are required")
+	}
+
+	ollamaReq := map[string]interface{}{
+		"model":    payload.Model,
+		"messages": payload.Messages,
+		"stream":   false,
+	}
+
+	body, err := json.Marshal(ollamaReq)
+	if err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("failed to marshal ollama request: %v", err))
+	}
+
+	ollamaURL := "http://127.0.0.1:11434/api/chat"
+	httpReq, err := newHTTPRequest(ctx, "POST", ollamaURL, body)
+	if err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("failed to create request: %v", err))
+	}
+
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("ollama request failed: %v", err))
+	}
+	defer httpResp.Body.Close()
+
+	var ollamaResp struct {
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(httpResp.Body).Decode(&ollamaResp); err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("failed to decode ollama response: %v", err))
+	}
+
+	data, _ := json.Marshal(map[string]string{
+		"role":    ollamaResp.Message.Role,
+		"content": ollamaResp.Message.Content,
+	})
+	return &Response{ID: req.ID, Success: true, Data: data}
+}
+
+// newHTTPRequest creates an HTTP request with JSON content type.
+func newHTTPRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
+// httpClient is a shared HTTP client for in-sandbox Ollama requests.
+var httpClient = &http.Client{
+	Timeout: 5 * time.Minute,
 }
 
 func readUptime() string {
