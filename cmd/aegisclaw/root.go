@@ -1,102 +1,119 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
 const version = "v0.1.0"
 
-// rootCmd represents the base command when called without any subcommands
+// rootCmd represents the base command when called without any subcommands.
+// The CLI surface matches the published specification in docs/cli-design.md:
+//
+//	Core Commands:
+//	  init, start, stop, status, chat, skill, audit, secrets, self, version
+//
+//	Global Flags:
+//	  --json, --verbose/-v, --dry-run, --force
 var rootCmd = &cobra.Command{
 	Use:   "aegisclaw",
 	Short: "AegisClaw - Paranoid Firecracker-isolated agent platform",
 	Long: `AegisClaw is a security-first platform for running isolated agents in Firecracker microVMs.
-All operations are signed, logged, and subject to governance court review.`,
+All operations are signed, logged, and subject to governance court review.
+
+Get started:
+  aegisclaw init          One-time setup
+  aegisclaw start         Start the coordinator daemon
+  aegisclaw chat          Enter interactive chat with the main agent
+
+Security reminders:
+  • Secrets are ONLY managed via 'aegisclaw secrets' — never via chat.
+  • High-risk actions always require confirmation unless --force is used.
+  • Everything is recorded in the append-only Merkle-tree audit log.`,
 }
 
-// sandboxCmd represents the sandbox command
-var sandboxCmd = &cobra.Command{
-	Use:   "sandbox",
-	Short: "Manage AegisClaw sandboxes",
-	Long:  `Commands for listing, starting, stopping, and deleting Firecracker sandboxes.`,
-}
-
-// lsCmd represents the ls command
-var lsCmd = &cobra.Command{
-	Use:   "ls",
-	Short: "List all AegisClaw sandboxes",
-	Long:  `Displays a list of all running and stopped AegisClaw sandboxes with their status.`,
-	RunE:  runLs,
-}
-
-// startCmd represents the start command
+// startCmd represents the start command.
 var startCmd = &cobra.Command{
 	Use:   "start",
-	Short: "Start the AegisClaw kernel",
-	Long: `Starts the AegisClaw kernel singleton, loads configuration,
-and initializes the message-hub skill in its own microVM.
-All subsequent operations require the kernel to be running.
+	Short: "Start the coordinator daemon",
+	Long: `Starts the MicroVM Coordinator Daemon, main agent sandbox, and Court.
 
-Use --safe-mode to start with all skills disabled and block new
-skill activation/invocation until safe mode is explicitly turned off.`,
+Use --safe to enter Safe Mode: a minimal recovery environment with no
+skills, no Court, no main agent sandbox, and no LLM interaction.
+
+Use --background to start as a background daemon.`,
 	RunE: runStart,
 }
 
-// statusCmd represents the status command
+// statusCmd represents the status command.
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show AegisClaw kernel and sandbox status",
-	Long:  `Displays the current status of the kernel, running sandboxes, and system health.`,
-	RunE:  runStatus,
+	Short: "Show system status and health",
+	Long: `Displays running microVMs, active skills, resource usage,
+composition version, and health summary.
+
+Supports --json for scripting.`,
+	RunE: runStatus,
 }
 
-// versionCmd represents the version command
+// versionCmd represents the version command.
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Show AegisClaw version",
-	Long:  `Displays the current version of AegisClaw.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("AegisClaw %s\n", version)
-	},
+	Short: "Show version and build information",
+	Long:  `Displays version, git commit, build date, and SBOM summary if available.`,
+	Run:   runVersion,
 }
 
-// sandboxStartCmd represents the sandbox start command
-var sandboxStartCmd = &cobra.Command{
-	Use:   "start <name>",
-	Short: "Start an AegisClaw sandbox",
-	Long:  `Starts a new Firecracker microVM sandbox with the specified name.`,
+// skillCmd is the skill management command group.
+// Subcommands: add, list, revoke, info
+var skillCmd = &cobra.Command{
+	Use:   "skill",
+	Short: "Manage skills (add, list, revoke, info)",
+	Long: `Commands for managing AegisClaw skills. Each skill runs in its
+own Firecracker microVM with enforced isolation boundaries.
+
+  skill add     Propose and add a new skill (triggers Court review)
+  skill list    List registered skills and their status
+  skill revoke  Revoke and remove a skill
+  skill info    Show detailed information about a skill`,
+}
+
+// Skill subcommands.
+var skillListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List registered skills",
+	Long:  `Displays all registered skills with their state, version, and sandbox information.`,
+	RunE:  runSkillList,
+}
+
+var skillRevokeCmd = &cobra.Command{
+	Use:   "revoke <skill-id>",
+	Short: "Revoke and remove a skill",
+	Long: `Stops the skill's microVM, removes it from the registry, and logs
+the revocation to the audit trail. Requires confirmation unless --force is used.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSkillRevoke,
+}
+
+var skillInfoCmd = &cobra.Command{
+	Use:   "info <skill-id>",
+	Short: "Show detailed skill information",
+	Long:  `Displays full details about a registered skill including its sandbox, version, and metadata.`,
 	Args:  cobra.ExactArgs(1),
-	RunE:  runSandboxStart,
+	RunE:  runSkillInfo,
 }
 
-// stopCmd represents the stop command
-var stopCmd = &cobra.Command{
-	Use:   "stop <name>",
-	Short: "Stop an AegisClaw sandbox",
-	Long:  `Stops the running Firecracker microVM sandbox with the specified name.`,
-	Args:  cobra.ExactArgs(1),
-	RunE:  runSandboxStop,
-}
-
-// deleteCmd represents the delete command
-var deleteCmd = &cobra.Command{
-	Use:   "delete <name>",
-	Short: "Delete an AegisClaw sandbox",
-	Long:  `Permanently deletes the Firecracker microVM sandbox with the specified name and its resources.`,
-	Args:  cobra.ExactArgs(1),
-	RunE:  runSandboxDelete,
-}
-
-// auditCmd represents the audit command group
+// auditCmd represents the audit command group.
 var auditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Audit log operations",
-	Long:  `Commands for verifying the tamper-evident Merkle audit chain.`,
+	Short: "Query the append-only audit log",
+	Long: `Commands for querying and verifying the tamper-evident Merkle audit chain.
+
+  audit log     Browse audit log entries with filters
+  audit why     Explain why an action was performed
+  audit verify  Verify Merkle-tree integrity`,
 }
 
-// auditVerifyCmd verifies the integrity of the Merkle audit chain
+// auditVerifyCmd verifies the integrity of the Merkle audit chain.
 var auditVerifyCmd = &cobra.Command{
 	Use:   "verify",
 	Short: "Verify the Merkle audit chain integrity",
@@ -108,73 +125,41 @@ var auditVerifyCmd = &cobra.Command{
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	cobra.CheckErr(rootCmd.Execute())
 }
 
 func init() {
-	// Add subcommands
+	// Global flags (CLI spec §2).
+	rootCmd.PersistentFlags().BoolVar(&globalJSON, "json", false, "Output in structured JSON (for scripting)")
+	rootCmd.PersistentFlags().BoolVarP(&globalVerbose, "verbose", "v", false, "Increase verbosity")
+	rootCmd.PersistentFlags().BoolVar(&globalDryRun, "dry-run", false, "Simulate action without making changes")
+	rootCmd.PersistentFlags().BoolVar(&globalForce, "force", false, "Skip confirmations (logged in audit trail)")
+
+	// Core Commands (CLI spec §2): init, start, stop, status, chat, skill, audit, secrets, self, version
+	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(startCmd)
+	rootCmd.AddCommand(stopDaemonCmd)
 	rootCmd.AddCommand(statusCmd)
-	rootCmd.AddCommand(sandboxCmd)
-	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(chatCmd)
 	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(auditCmd)
-	rootCmd.AddCommand(proposeCmd)
-	rootCmd.AddCommand(courtCmd)
-	rootCmd.AddCommand(builderCmd)
-	rootCmd.AddCommand(secretCmd)
-	rootCmd.AddCommand(chatCmd)
-	rootCmd.AddCommand(modelCmd)
+	rootCmd.AddCommand(secretsCmd)
+	rootCmd.AddCommand(selfCmd)
+	rootCmd.AddCommand(versionCmd)
 
-	sandboxCmd.AddCommand(lsCmd)
-	sandboxCmd.AddCommand(sandboxStartCmd)
-	sandboxCmd.AddCommand(stopCmd)
-	sandboxCmd.AddCommand(deleteCmd)
-
-	skillCmd.AddCommand(skillActivateCmd)
-	skillCmd.AddCommand(skillDeactivateCmd)
+	// skill subcommands: add, list, revoke, info
+	skillCmd.AddCommand(skillAddCmd)
 	skillCmd.AddCommand(skillListCmd)
+	skillCmd.AddCommand(skillRevokeCmd)
+	skillCmd.AddCommand(skillInfoCmd)
 
+	// audit subcommands: log, why, verify
+	auditCmd.AddCommand(auditLogCmd)
+	auditCmd.AddCommand(auditWhyCmd)
 	auditCmd.AddCommand(auditVerifyCmd)
-	auditCmd.AddCommand(auditExplorerCmd)
 
-	proposeCmd.AddCommand(proposeSkillCmd)
-	proposeCmd.AddCommand(proposeSubmitCmd)
-	proposeCmd.AddCommand(proposeListCmd)
-	proposeCmd.AddCommand(proposeShowCmd)
-	proposeCmd.Flags().StringVar(&proposeCategory, "category", "new_skill", "Proposal category (new_skill, edit_skill, delete_skill, kernel_patch, config_change)")
-
-	// Non-interactive flags for propose skill
-	proposeSkillCmd.Flags().StringVar(&skillName, "name", "", "Skill name (lowercase, letters/digits/hyphens)")
-	proposeSkillCmd.Flags().StringVar(&skillTitle, "title", "", "Proposal title (default: \"Add <goal> skill\")")
-	proposeSkillCmd.Flags().StringVar(&skillDescription, "description", "", "Skill description")
-	proposeSkillCmd.Flags().StringSliceVar(&skillTools, "tool", nil, "Tool definition as name:description (repeatable)")
-	proposeSkillCmd.Flags().IntVar(&dataSensitivity, "data-sensitivity", 1, "Data sensitivity 1-5")
-	proposeSkillCmd.Flags().IntVar(&networkExposure, "network-exposure", 1, "Network exposure 1-5")
-	proposeSkillCmd.Flags().IntVar(&privilegeLevel, "privilege-level", 1, "Privilege level 1-5")
-	proposeSkillCmd.Flags().StringSliceVar(&allowedHosts, "allowed-host", nil, "Allowed network host (repeatable)")
-	proposeSkillCmd.Flags().StringSliceVar(&allowedPortStrs, "allowed-port", nil, "Allowed network port (repeatable)")
-	proposeSkillCmd.Flags().StringSliceVar(&allowedProtocols, "allowed-protocol", nil, "Allowed protocol: tcp, udp, icmp (repeatable)")
-	proposeSkillCmd.Flags().StringSliceVar(&secretRefs, "secret", nil, "Secret reference name (repeatable)")
-	proposeSkillCmd.Flags().BoolVar(&autoSubmit, "submit", false, "Immediately submit for court review")
-
-	courtCmd.AddCommand(courtReviewCmd)
-	courtCmd.AddCommand(courtVoteCmd)
-	courtCmd.AddCommand(courtSessionsCmd)
-	courtCmd.AddCommand(courtDashboardCmd)
-
+	// start flags
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")
-	startCmd.Flags().BoolVar(&safeModeFlag, "safe-mode", false, "Start in safe mode: deactivate all skills and block skill activation/invocation")
-
-	secretCmd.AddCommand(secretAddCmd)
-	secretCmd.AddCommand(secretListCmd)
-	secretCmd.AddCommand(secretDeleteCmd)
-	secretAddCmd.Flags().StringVar(&secretSkillID, "skill", "", "Skill ID to associate with the secret")
-	secretAddCmd.MarkFlagRequired("skill")
-
-	modelCmd.AddCommand(modelListCmd)
-	modelCmd.AddCommand(modelVerifyCmd)
-	modelCmd.AddCommand(modelUpdateCmd)
+	startCmd.Flags().BoolVar(&safeModeFlag, "safe", false, "Start in Safe Mode: minimal recovery environment, no skills, no Court, no LLM")
 }

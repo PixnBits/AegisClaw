@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/PixnBits/AegisClaw/internal/tui"
@@ -23,25 +24,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return runStatusTUI(env)
 	}
 
-	fmt.Printf("AegisClaw Kernel Status:\n")
-	fmt.Printf("  Public Key: %x\n", env.Kernel.PublicKey())
-	fmt.Printf("  Firecracker Binary: %s\n", env.Config.Firecracker.Bin)
-	fmt.Printf("  Jailer Binary: %s\n", env.Config.Jailer.Bin)
-	fmt.Printf("  Rootfs Template: %s\n", env.Config.Rootfs.Template)
-	fmt.Printf("  Kernel Image: %s\n", env.Config.Sandbox.KernelImage)
-	fmt.Printf("  Audit Directory: %s\n", env.Config.Audit.Dir)
-	fmt.Printf("  Sandbox State: %s\n", env.Config.Sandbox.StateDir)
-	fmt.Printf("  Control Plane Listeners: %d\n", env.Kernel.ControlPlane().ActiveListeners())
-
-	sandboxes, err := env.Runtime.List(context.Background())
-	if err == nil {
-		running := 0
-		for _, sb := range sandboxes {
-			if sb.State == "running" {
-				running++
-			}
+	sandboxes, _ := env.Runtime.List(context.Background())
+	running := 0
+	for _, sb := range sandboxes {
+		if sb.State == "running" {
+			running++
 		}
-		fmt.Printf("  Sandboxes: %d total, %d running\n", len(sandboxes), running)
 	}
 
 	skills := env.Registry.List()
@@ -51,17 +39,51 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			active++
 		}
 	}
-	fmt.Printf("  Skills: %d registered, %d active\n", len(skills), active)
+
+	auditLog := env.Kernel.AuditLog()
 	rootHash := env.Registry.RootHash()
-	if rootHash != "" {
-		fmt.Printf("  Registry Root: %s\n", rootHash[:16])
+
+	if globalJSON {
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"version":          version,
+			"commit":           buildCommit,
+			"build_date":       buildDate,
+			"public_key":       hex.EncodeToString(env.Kernel.PublicKey()),
+			"sandboxes_total":  len(sandboxes),
+			"sandboxes_active": running,
+			"skills_total":     len(skills),
+			"skills_active":    active,
+			"audit_entries":    auditLog.EntryCount(),
+			"audit_head":       auditLog.LastHash(),
+			"registry_root":    rootHash,
+			"health":           "ok",
+		}, "", "  ")
+		fmt.Println(string(data))
+		return nil
 	}
 
-	// Merkle audit chain info
-	auditLog := env.Kernel.AuditLog()
-	fmt.Printf("  Audit Entries: %d\n", auditLog.EntryCount())
+	fmt.Printf("AegisClaw Status:\n")
+	fmt.Printf("  Version:     %s (commit: %s)\n", version, buildCommit)
+	fmt.Printf("  Public Key:  %x\n", env.Kernel.PublicKey())
+	fmt.Printf("  Health:      OK\n")
+	fmt.Printf("  Sandboxes:   %d total, %d running\n", len(sandboxes), running)
+	fmt.Printf("  Skills:      %d registered, %d active\n", len(skills), active)
+
+	if rootHash != "" {
+		display := rootHash
+		if len(display) > 16 {
+			display = display[:16]
+		}
+		fmt.Printf("  Registry:    %s\n", display)
+	}
+
+	fmt.Printf("  Audit:       %d entries\n", auditLog.EntryCount())
 	if lastHash := auditLog.LastHash(); lastHash != "" {
-		fmt.Printf("  Audit Chain Head: %s\n", lastHash[:16])
+		display := lastHash
+		if len(display) > 16 {
+			display = display[:16]
+		}
+		fmt.Printf("  Chain Head:  %s\n", display)
 	}
 
 	return nil

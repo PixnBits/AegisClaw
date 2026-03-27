@@ -90,11 +90,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start API server: %w", err)
 	}
 
-	// Apply --safe-mode flag: if set, enable safe mode and deactivate all
+	// Apply --safe flag: if set, enable safe mode and deactivate all
 	// active skills before accepting requests.
 	if safeModeFlag {
 		env.SafeMode.Store(true)
-		fmt.Println("  Safe mode: ENABLED (skill activate/invoke blocked)")
+		fmt.Print(`
+╔══════════════════════════════════════════════════════════════╗
+║                    AEGISCLAW SAFE MODE                       ║
+╚══════════════════════════════════════════════════════════════╝
+
+Minimal recovery environment active.
+No skills, no Court, no main agent sandbox.
+`)
 		deactivateAllSkills(env)
 	}
 
@@ -341,6 +348,7 @@ func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
 }
 
 // makeSkillInvokeHandler sends a tool invocation request to a running skill VM.
+// All invocations are audit-logged per PRD requirements (D6).
 func makeSkillInvokeHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		if env.SafeMode.Load() {
@@ -362,6 +370,14 @@ func makeSkillInvokeHandler(env *runtimeEnv) api.Handler {
 		if entry.State != sandbox.SkillStateActive {
 			return &api.Response{Error: fmt.Sprintf("skill %q is not active (state: %s)", req.Skill, entry.State)}
 		}
+
+		// Audit log the invocation (D6: skill invocation must be audit-logged).
+		invokePayload, _ := json.Marshal(map[string]string{
+			"skill": req.Skill,
+			"tool":  req.Tool,
+		})
+		invokeAction := kernel.NewAction(kernel.ActionSkillInvoke, "daemon", invokePayload)
+		env.Kernel.SignAndLog(invokeAction)
 
 		// Send tool.invoke to the guest-agent via Firecracker vsock.
 		vmReq := map[string]interface{}{
