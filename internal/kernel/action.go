@@ -37,6 +37,7 @@ const (
 	ActionSecretAdd       ActionType = "secret.add"
 	ActionSecretGet       ActionType = "secret.get"
 	ActionSecretDelete    ActionType = "secret.delete"
+	ActionCompositionRollback ActionType = "composition.rollback"
 )
 
 // validActionTypes enumerates all recognized action types for validation.
@@ -66,6 +67,7 @@ var validActionTypes = map[ActionType]bool{
 	ActionSecretAdd:       true,
 	ActionSecretGet:       true,
 	ActionSecretDelete:    true,
+	ActionCompositionRollback: true,
 }
 
 // Action represents any operation that passes through the kernel.

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
@@ -13,21 +14,23 @@ import (
 )
 
 var (
-	runtimeOnce    sync.Once
-	runtimeInst    *sandbox.FirecrackerRuntime
-	registryInst   *sandbox.SkillRegistry
-	proposalInst   *proposal.Store
-	runtimeInitErr error
+	runtimeOnce      sync.Once
+	runtimeInst      *sandbox.FirecrackerRuntime
+	registryInst     *sandbox.SkillRegistry
+	proposalInst     *proposal.Store
+	compositionInst  *composition.Store
+	runtimeInitErr   error
 )
 
 type runtimeEnv struct {
-	Logger        *zap.Logger
-	Config        *config.Config
-	Kernel        *kernel.Kernel
-	Runtime       *sandbox.FirecrackerRuntime
-	Registry      *sandbox.SkillRegistry
-	ProposalStore *proposal.Store
-	SafeMode      atomic.Bool
+	Logger           *zap.Logger
+	Config           *config.Config
+	Kernel           *kernel.Kernel
+	Runtime          *sandbox.FirecrackerRuntime
+	Registry         *sandbox.SkillRegistry
+	ProposalStore    *proposal.Store
+	CompositionStore *composition.Store
+	SafeMode         atomic.Bool
 }
 
 func initRuntime() (*runtimeEnv, error) {
@@ -64,17 +67,22 @@ func initRuntime() (*runtimeEnv, error) {
 			return
 		}
 		proposalInst, runtimeInitErr = proposal.NewStore(cfg.Proposal.StoreDir, logger)
+		if runtimeInitErr != nil {
+			return
+		}
+		compositionInst, runtimeInitErr = composition.NewStore(cfg.Composition.Dir)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
 	}
 
 	return &runtimeEnv{
-		Logger:        logger,
-		Config:        cfg,
-		Kernel:        kern,
-		Runtime:       runtimeInst,
-		Registry:      registryInst,
-		ProposalStore: proposalInst,
+		Logger:           logger,
+		Config:           cfg,
+		Kernel:           kern,
+		Runtime:          runtimeInst,
+		Registry:         registryInst,
+		ProposalStore:    proposalInst,
+		CompositionStore: compositionInst,
 	}, nil
 }

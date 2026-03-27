@@ -56,6 +56,9 @@ type Config struct {
 	Daemon struct {
 		SocketPath string `yaml:"socket_path" mapstructure:"socket_path"`
 	} `yaml:"daemon" mapstructure:"daemon"`
+	Composition struct {
+		Dir string `yaml:"dir" mapstructure:"dir"`
+	} `yaml:"composition" mapstructure:"composition"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -144,6 +147,11 @@ func DefaultConfig() Config {
 		}{
 			SocketPath: "/run/aegisclaw.sock",
 		},
+		Composition: struct {
+			Dir string `yaml:"dir" mapstructure:"dir"`
+		}{
+			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "composition"),
+		},
 	}
 }
 
@@ -191,6 +199,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("ollama.model_dir", defaults.Ollama.ModelDir)
 	viper.SetDefault("ollama.default_model", defaults.Ollama.DefaultModel)
 	viper.SetDefault("daemon.socket_path", defaults.Daemon.SocketPath)
+	viper.SetDefault("composition.dir", defaults.Composition.Dir)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -250,6 +259,7 @@ func validateConfig(config *Config) error {
 		"builder.rootfs_template":    config.Builder.RootfsTemplate,
 		"builder.workspace_base_dir": config.Builder.WorkspaceBaseDir,
 		"vault.dir":                  config.Vault.Dir,
+		"composition.dir":            config.Composition.Dir,
 		"ollama.registry_path":       config.Ollama.RegistryPath,
 		"ollama.model_dir":           config.Ollama.ModelDir,
 	}
