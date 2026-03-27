@@ -3,63 +3,24 @@
 **Paranoid-by-design, self-evolving local agent platform**
 
 Secure, local-first AI agent runtime with:
-- Firecracker microVM isolation for untrusted code/agents
-- Governance Court SDLC (structured, auditable decision-making?)
+- Firecracker microVM isolation for every skill, reviewer, and builder
+- Governance Court: multi-persona AI review for every code change
+- Mandatory security gates (SAST, SCA, secrets scanning, policy-as-code)
+- Append-only Merkle-tree audit log with Ed25519 signatures
 - Currently Ollama-only on Linux
 - Terminal UI (TUI) for interactive ReAct-style chat & agent control
 
-## Quick Highlights
-- Host CLI + guest agent in microVMs
-- Bubble Tea-powered TUI for agent interaction
-- Structured skills via `SkillSpec` + code generation prompts
-- Hardening, tests, and first-run setup already in place
+## Getting Started
 
-## Living Documents
-These Markdown files are the single source of truth for vision, design, and progress — they evolve frequently.
+### Prerequisites
 
-- **[Product Requirements (PRD)](docs/PRD.md)**  
-- **[Architecture Specification](docs/architecture.md)**  
-- **[Human Interface Design](docs/design.md)**  
-- **[Epics & Roadmap](docs/epics.md)** — current focus: completing Epic 6  
-- **[Task Breakdown](docs/tasks.md)**  
+| Requirement | Notes |
+|---|---|
+| **Linux** (x86_64) | Firecracker requires KVM; falls back to direct mode without `/dev/kvm` |
+| **Go 1.26+** | Build from source |
+| **Ollama** | LLM inference — install from [ollama.com](https://ollama.com) |
 
-See [`adrs/`](adrs/) for Architecture Decision Records (rationale for major choices).
-
-## Installation (From Source – Currently the Only Way)
-
-Prerequisites:
-- Go 1.26+ (or latest stable)
-- Linux host (Ollama + Firecracker dependencies)
-- Ollama installed & running locally
-
-```bash
-git clone https://github.com/PixnBits/AegisClaw.git
-cd AegisClaw
-
-# Build the main host CLI
-go build -o aegisclaw ./cmd/aegisclaw
-
-# Build the guest agent (runs inside microVMs)
-go build -o guest-agent ./cmd/guest-agent
-
-# Or install to $GOPATH/bin
-go install ./cmd/aegisclaw
-go install ./cmd/guest-agent
-```
-
-**Note**: Deployment/hardening scripts are in `deploy/` — see `docs/` and recent commits for setup details. First-run and test automation exist.
-
-## Quick Start / Usage
-
-Quick start and common usage examples — copy/paste to try locally.
-
-Prerequisites
-- Linux host
-- Go 1.26+ to build from source
-- Ollama installed and running locally (default: http://127.0.0.1:11434)
-- Firecracker and required tooling available for sandboxed reviewer/builder execution
-
-Build
+### 1. Build
 
 ```bash
 git clone https://github.com/PixnBits/AegisClaw.git
@@ -68,78 +29,133 @@ go build -o aegisclaw ./cmd/aegisclaw
 go build -o guest-agent ./cmd/guest-agent
 ```
 
-Run (host)
+### 2. Initialize
+
+One-time setup — creates directory structure, keypair, and audit log:
 
 ```bash
-# Start the host agent with the TUI (interactive ReAct/chat)
-./aegisclaw
-
-# Run non-interactive commands and capture logs
-Use specific subcommands for non-TUI operations (for example, `start` to run the kernel
-or `status --tui` to launch the TUI dashboard). To capture logs, redirect stdout/stderr:
-
-```bash
-# Start kernel and capture logs to a file
-./aegisclaw start > aegisclaw.log 2>&1 &
-
-# Launch the interactive status dashboard (TUI)
-./aegisclaw status --tui
-
-# Or run directly from source and capture logs
-go run ./cmd/aegisclaw start > aegisclaw.log 2>&1 &
-```
+./aegisclaw init
 ```
 
-Notes
-- The TUI opens an interactive chat-like interface for controlling the agent and submitting proposals.
-- The `guest-agent` binary is intended to run inside Firecracker microVMs and is not invoked directly on the host.
-- Ollama must be running and reachable from the reviewer/builder sandboxes (default localhost:11434). The platform enforces sandbox isolation: host/kernel processes are not permitted to call Ollama directly.
-
-Note about commands: If you built a previous binary or pulled new code, the CLI may have changed. If you see "unknown command", rebuild the binary or run directly from source:
+### 3. Start the Daemon
 
 ```bash
-# Rebuild the binary to pick up new commands
-go build -o aegisclaw ./cmd/aegisclaw
-./aegisclaw model list
-
-# Or run without building the binary
-go run ./cmd/aegisclaw model list
+sudo ./aegisclaw start &
 ```
 
-Model management (local Ollama models)
+### 4. Open Chat
 
 ```bash
-# List registered models and their status
-./aegisclaw model list
-
-# Verify a specific model (checks digest/availability)
-./aegisclaw model verify <model-name>
-
-# Pull/update a model from the Ollama store
-./aegisclaw model update <model-name>
+./aegisclaw chat
 ```
 
-Developer / testing
+Type a message or `/help` for available commands.
+
+### 5. Create Your First Skill
+
+In chat, describe what you want:
+
+```
+please add a skill that says hello to the user with a message appropriate
+for the time of day ("good morning", "good evening", etc.) respecting DST,
+in en-US
+```
+
+The agent creates a proposal, submits it for Court review, builds it in a
+sandboxed pipeline, and activates the skill — all automatically.
+
+Or use the CLI directly:
 
 ```bash
-# Run full unit test suite
+./aegisclaw skill add "time-of-day greeter" \
+  --non-interactive \
+  --name time-of-day-greeter \
+  --tool "greet:Returns a locale-aware DST-respecting greeting"
+```
+
+> **📖 Full walkthrough:** See **[docs/first-skill-tutorial.md](docs/first-skill-tutorial.md)** for a
+> thorough step-by-step guide covering the entire lifecycle — proposal, Court
+> review, builder pipeline, security gates, activation, and invocation.
+
+---
+
+## CLI Commands
+
+```
+aegisclaw init          One-time setup
+aegisclaw start         Start the coordinator daemon
+aegisclaw stop          Gracefully stop the daemon
+aegisclaw status        Show system status and health
+aegisclaw chat          Interactive ReAct chat (primary interface)
+aegisclaw skill         Manage skills (add, list, revoke, info)
+aegisclaw audit         Query the append-only audit log
+aegisclaw secrets       Manage secrets (add, list, rotate)
+aegisclaw self          Self-improvement and system management
+aegisclaw version       Show version and build information
+```
+
+Global flags: `--json`, `--verbose/-v`, `--dry-run`, `--force`
+
+---
+
+## Security Architecture
+
+Every skill runs in its own **Firecracker microVM** with:
+- Read-only rootfs
+- No network access (unless explicitly declared and approved)
+- `cap-drop ALL` — no Linux capabilities
+- Secrets injected via proxy at runtime (never in code)
+
+Every code change goes through:
+1. **Governance Court** — 5 AI personas review in isolated microVMs
+2. **Builder pipeline** — code generated in a sandboxed microVM
+3. **Security gates** — SAST, SCA, secrets scanning, policy-as-code (mandatory, no bypass)
+4. **Versioned deployment** — composition manifests with automatic rollback on health failures
+
+Every action is recorded in the **append-only Merkle-tree audit log**, signed
+with Ed25519, and queryable via `aegisclaw audit log` / `audit why` / `audit verify`.
+
+---
+
+## Project Structure
+
+| Path | Description |
+|---|---|
+| `cmd/aegisclaw` | Host CLI + TUI entrypoint |
+| `cmd/guest-agent` | Agent payload that runs inside Firecracker VMs |
+| `internal/` | Core packages (kernel, court, builder, sandbox, audit, composition) |
+| `internal/builder/securitygate/` | SAST, SCA, secrets, policy-as-code gates |
+| `internal/composition/` | Versioned deployment manifests with rollback |
+| `docs/` | Living specs, roadmap, and tutorials |
+| `adrs/` | Architecture Decision Records |
+
+## Documentation
+
+- **[First Skill Tutorial](docs/first-skill-tutorial.md)** — step-by-step guide for new users
+- **[Product Requirements (PRD)](docs/PRD.md)** — full product vision
+- **[CLI Specification](docs/cli-design.md)** — command reference
+- **[PRD Deviations](docs/prd-deviations.md)** — alignment status (14 of 16 resolved)
+- **[Threat Model](docs/threat-model.md)** — security analysis
+
+See [`adrs/`](adrs/) for Architecture Decision Records.
+
+## Development
+
+```bash
+# Run the full test suite
 go test ./... -count=1
+
+# Run integration tests only
+go test ./cmd/aegisclaw/ -run 'Integration|Journey' -v
+
+# Rebuild after code changes
+go build -o aegisclaw ./cmd/aegisclaw
 ```
-
-If you want me to expand this into a short "First Run" script or add distro-specific installation steps for Ollama/Firecracker, I can add that next.
-
-## Project Structure Overview
-- `cmd/aegisclaw`       → Main host CLI + TUI entrypoint  
-- `cmd/guest-agent`     → Agent payload that runs inside Firecracker VMs  
-- `internal/`           → Core packages (models, services, orchestration)  
-- `config/`             → SkillSpec, CodeGenerator, prompt logic  
-- `deploy/`             → Hardening, tests, first-run setup  
-- `docs/`               → Living specs & roadmap  
-- `adrs/`               → Decision records  
 
 ## Contributing
-Super early — but feedback welcome!  
-- Read the living docs first  
-- Open issues for questions, bugs, or ideas   
+
+Super early — but feedback welcome!
+- Read the living docs first
+- Open issues for questions, bugs, or ideas
 
 Built with ❤️ in Go — feedback? Drop an issue!
