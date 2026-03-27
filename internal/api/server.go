@@ -59,6 +59,45 @@ type SkillDeactivateRequest struct {
 	Name string `json:"name"`
 }
 
+// ChatMessageRequest carries the payload for the "chat.message" action (D2).
+// The CLI sends user input and conversation history; the daemon handles LLM
+// interaction inside a sandboxed agent boundary.
+type ChatMessageRequest struct {
+	Input   string            `json:"input"`
+	History []ChatHistoryItem `json:"history,omitempty"`
+}
+
+// ChatHistoryItem is a single message in the conversation history.
+type ChatHistoryItem struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// ChatMessageResponse is the daemon's response to a chat.message request.
+type ChatMessageResponse struct {
+	Role      string          `json:"role"`
+	Content   string          `json:"content"`
+	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
+}
+
+// ChatSlashRequest carries the payload for the "chat.slash" action (D2).
+type ChatSlashRequest struct {
+	Command string `json:"command"`
+}
+
+// ChatToolExecRequest carries the payload for the "chat.tool" action (D2).
+type ChatToolExecRequest struct {
+	Name string `json:"name"`
+	Args string `json:"args,omitempty"`
+}
+
+// ChatSummarizeRequest carries the payload for the "chat.summarize" action (D2).
+type ChatSummarizeRequest struct {
+	ToolName   string            `json:"tool_name"`
+	ToolResult string            `json:"tool_result"`
+	History    []ChatHistoryItem `json:"history,omitempty"`
+}
+
 // DefaultSocketPath returns the default daemon socket path.
 // Uses a fixed, well-known location so the root daemon and unprivileged CLI
 // always agree — similar to Docker's /var/run/docker.sock.
