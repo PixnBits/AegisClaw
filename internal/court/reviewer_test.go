@@ -217,12 +217,14 @@ func TestReviewResponseValidation(t *testing.T) {
 		resp    ReviewResponse
 		wantErr bool
 	}{
-		{"valid approve", ReviewResponse{Verdict: "approve", RiskScore: 3, Evidence: []string{"ok"}}, false},
-		{"valid reject", ReviewResponse{Verdict: "reject", RiskScore: 8, Evidence: []string{"issue"}}, false},
-		{"invalid verdict", ReviewResponse{Verdict: "maybe", RiskScore: 3, Evidence: []string{"ok"}}, true},
-		{"risk too high", ReviewResponse{Verdict: "approve", RiskScore: 11, Evidence: []string{"ok"}}, true},
-		{"risk too low", ReviewResponse{Verdict: "approve", RiskScore: -1, Evidence: []string{"ok"}}, true},
-		{"no evidence", ReviewResponse{Verdict: "approve", RiskScore: 3}, false},
+		{"valid approve", ReviewResponse{Verdict: "approve", RiskScore: 3, Evidence: []string{"ok"}, Comments: "Looks good"}, false},
+		{"valid reject", ReviewResponse{Verdict: "reject", RiskScore: 8, Evidence: []string{"issue"}, Comments: "Found problems"}, false},
+		{"invalid verdict", ReviewResponse{Verdict: "maybe", RiskScore: 3, Evidence: []string{"ok"}, Comments: "unsure"}, true},
+		{"risk too high", ReviewResponse{Verdict: "approve", RiskScore: 11, Evidence: []string{"ok"}, Comments: "ok"}, true},
+		{"risk too low", ReviewResponse{Verdict: "approve", RiskScore: -1, Evidence: []string{"ok"}, Comments: "ok"}, true},
+		{"no evidence", ReviewResponse{Verdict: "approve", RiskScore: 3, Comments: "Missing evidence"}, true},
+		{"abstain no evidence", ReviewResponse{Verdict: "abstain", RiskScore: 0, Comments: "No opinion"}, false},
+		{"missing comments", ReviewResponse{Verdict: "approve", RiskScore: 3, Evidence: []string{"ok"}}, true},
 	}
 
 	for _, tt := range tests {

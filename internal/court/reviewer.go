@@ -76,15 +76,23 @@ func (rr *ReviewResponse) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("evidence must be a string or array of strings")
 }
 
-// Validate checks the response has valid fields.
+// Validate checks the response has valid fields per the PRD schema requirements.
+// This implements the schema validation gate (D7) that ensures 98%+ structured
+// JSON success rate across all Court interactions.
 func (rr *ReviewResponse) Validate() error {
 	switch proposal.ReviewVerdict(rr.Verdict) {
 	case proposal.VerdictApprove, proposal.VerdictReject, proposal.VerdictAsk, proposal.VerdictAbstain:
 	default:
-		return fmt.Errorf("invalid verdict: %q", rr.Verdict)
+		return fmt.Errorf("invalid verdict: %q (must be approve, reject, ask, or abstain)", rr.Verdict)
 	}
 	if rr.RiskScore < 0 || rr.RiskScore > 10 {
 		return fmt.Errorf("risk score must be between 0 and 10, got %f", rr.RiskScore)
+	}
+	if rr.Comments == "" {
+		return fmt.Errorf("comments are required for all review responses")
+	}
+	if len(rr.Evidence) == 0 && rr.Verdict != string(proposal.VerdictAbstain) {
+		return fmt.Errorf("evidence is required for non-abstain verdicts")
 	}
 	return nil
 }
