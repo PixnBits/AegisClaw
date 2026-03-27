@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PixnBits/AegisClaw/internal/builder/securitygate"
 	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
@@ -27,21 +28,22 @@ const (
 
 // PipelineResult captures the outcome of a pipeline run.
 type PipelineResult struct {
-	ProposalID  string            `json:"proposal_id"`
-	State       PipelineState     `json:"state"`
-	BuilderID   string            `json:"builder_id"`
-	CommitHash  string            `json:"commit_hash"`
-	Branch      string            `json:"branch"`
-	Diff        string            `json:"diff"`
-	Files       map[string]string `json:"files"`
-	FileHashes  map[string]string `json:"file_hashes"`
-	Reasoning   string            `json:"reasoning"`
-	Analysis    *AnalysisResult   `json:"analysis,omitempty"`
-	Error       string            `json:"error,omitempty"`
-	Round       int               `json:"round"`
-	StartedAt   time.Time         `json:"started_at"`
-	CompletedAt time.Time         `json:"completed_at,omitempty"`
-	Duration    time.Duration     `json:"duration,omitempty"`
+	ProposalID          string                       `json:"proposal_id"`
+	State               PipelineState                `json:"state"`
+	BuilderID           string                       `json:"builder_id"`
+	CommitHash          string                       `json:"commit_hash"`
+	Branch              string                       `json:"branch"`
+	Diff                string                       `json:"diff"`
+	Files               map[string]string            `json:"files"`
+	FileHashes          map[string]string            `json:"file_hashes"`
+	Reasoning           string                       `json:"reasoning"`
+	Analysis            *AnalysisResult              `json:"analysis,omitempty"`
+	SecurityGateResult  *securitygate.PipelineResult `json:"security_gate_result,omitempty"`
+	Error               string                       `json:"error,omitempty"`
+	Round               int                          `json:"round"`
+	StartedAt           time.Time                    `json:"started_at"`
+	CompletedAt         time.Time                    `json:"completed_at,omitempty"`
+	Duration            time.Duration                `json:"duration,omitempty"`
 }
 
 // Pipeline orchestrates the end-to-end flow from approved proposal to code diff.
@@ -264,6 +266,39 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 		if analysisResult.BinaryHash != "" {
 			result.FileHashes["_binary"] = analysisResult.BinaryHash
 		}
+	}
+
+	// Step 8.5 (D8): Run security gates — SAST, SCA, secrets scanning, and
+	// policy-as-code evaluation. These gates are mandatory and cannot be
+	// bypassed even if the analyzer step passes.
+	sgPipeline := securitygate.DefaultPipeline(securitygate.DefaultPolicies())
+	sgReq := &securitygate.EvalRequest{
+		ProposalID: prop.ID,
+		SkillName:  spec.Name,
+		Files:      codeResp.Files,
+		Diff:       diff,
+	}
+	sgResult, sgErr := sgPipeline.Evaluate(sgReq)
+	if sgErr != nil {
+		p.logger.Error("security gate evaluation failed", zap.Error(sgErr))
+		result.State = PipelineStateFailed
+		result.Error = fmt.Sprintf("security gate evaluation failed: %v", sgErr)
+		return result, fmt.Errorf("pipeline: %s", result.Error)
+	}
+	result.SecurityGateResult = sgResult
+
+	if !sgResult.Passed {
+		p.logger.Warn("security gates blocked pipeline",
+			zap.String("proposal_id", prop.ID),
+			zap.Int("blocking_findings", sgResult.BlockingFindings),
+			zap.Int("total_findings", sgResult.TotalFindings),
+		)
+		result.State = PipelineStateFailed
+		result.Error = fmt.Sprintf("security gates failed: %d blocking findings out of %d total",
+			sgResult.BlockingFindings, sgResult.TotalFindings)
+		result.CompletedAt = time.Now().UTC()
+		result.Duration = result.CompletedAt.Sub(result.StartedAt)
+		return result, fmt.Errorf("pipeline: %s", result.Error)
 	}
 
 	// Step 9: Mark complete
