@@ -20,6 +20,8 @@ const (
 	ActionSandboxDelete   ActionType = "sandbox.delete"
 	ActionSkillRegister   ActionType = "skill.register"
 	ActionSkillActivate   ActionType = "skill.activate"
+	ActionSkillDeactivate ActionType = "skill.deactivate"
+	ActionSkillInvoke     ActionType = "skill.invoke"
 	ActionMessageRoute    ActionType = "message.route"
 	ActionControlPlane    ActionType = "controlplane.message"
 	ActionProposalCreate  ActionType = "proposal.create"
@@ -47,6 +49,8 @@ var validActionTypes = map[ActionType]bool{
 	ActionSandboxDelete:   true,
 	ActionSkillRegister:   true,
 	ActionSkillActivate:   true,
+	ActionSkillDeactivate: true,
+	ActionSkillInvoke:     true,
 	ActionMessageRoute:    true,
 	ActionControlPlane:    true,
 	ActionProposalCreate:  true,

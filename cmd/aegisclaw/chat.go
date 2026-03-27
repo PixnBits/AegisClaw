@@ -896,7 +896,7 @@ func handleProposalListDrafts(env *runtimeEnv) (string, error) {
 	var lines []string
 	for _, s := range summaries {
 		lines = append(lines, fmt.Sprintf("  %s  %-28s  [%s]  risk=%s  round=%d",
-			s.ID, truncate(s.Title, 28), s.Status, s.Risk, s.Round))
+			s.ID, truncateStr(s.Title, 28), s.Status, s.Risk, s.Round))
 	}
 	return "Proposals:\n" + strings.Join(lines, "\n"), nil
 }
@@ -1011,14 +1011,4 @@ func handleProposalStatus(env *runtimeEnv, argsJSON string) (string, error) {
 		fmt.Fprintf(&b, "  Last change: %s → %s (%s)\n", last.From, last.To, last.Reason)
 	}
 	return b.String(), nil
-}
-
-func clampInt(v, min, max int) int {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
 }
