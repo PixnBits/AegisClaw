@@ -109,9 +109,13 @@ func makeCompositionHistoryHandler(env *runtimeEnv) api.Handler {
 
 		summaries := make([]historySummary, len(history))
 		for i, m := range history {
+			hash := m.Hash
+			if len(hash) > 16 {
+				hash = hash[:16]
+			}
 			summaries[i] = historySummary{
 				Version:    m.Version,
-				Hash:       m.Hash[:16],
+				Hash:       hash,
 				CreatedAt:  m.CreatedAt.Format("2006-01-02T15:04:05Z"),
 				CreatedBy:  m.CreatedBy,
 				Reason:     m.Reason,
