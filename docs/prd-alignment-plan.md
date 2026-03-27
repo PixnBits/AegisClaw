@@ -10,6 +10,22 @@ Source:
 
 The fastest path to real PRD alignment is not to add more surface commands. It is to connect the existing subsystems into one enforced workflow and remove host-side bypasses.
 
+## Implementation Reality Check
+
+The deviation review shows that alignment is not a matter of layering new commands onto the current binary. The implemented CLI surface and the live runtime wiring diverge substantially from both the PRD and [docs/cli-design.md](docs/cli-design.md):
+
+- The current top-level command model includes legacy and implementation-specific surfaces such as `sandbox`, `propose`, `court`, `builder`, `secret`, and `model`, while the published CLI centers on `chat`, `skill`, `audit`, `secrets`, `self`, and a simpler operator flow.
+- The current runtime still depends on host-side orchestration for chat and Court review, which is structurally different from the PRD's sandbox-first architecture.
+- Several subsystems exist as partial capabilities with their own command entrypoints, but PRD alignment requires them to become daemon-managed stages in one enforced workflow rather than user-visible standalone control surfaces.
+
+Implementation consequence:
+
+- A meaningful alignment effort will likely remove or heavily shrink significant portions of existing code rather than preserving all current commands and flows.
+- Some current commands should probably become internal or disappear entirely once their responsibilities move behind the daemon or behind higher-level `skill`, `audit`, `chat`, and `self` workflows.
+- We should prefer deleting obsolete host-side bypasses and mismatched CLI pathways over carrying compatibility code that preserves non-PRD behavior.
+
+This should be treated as an expected part of alignment work, not as churn or regression. In several areas, removal of existing code is the cleanest path to making the architecture match the trust model.
+
 ## Phase 1: Restore Required Isolation Boundaries
 
 ### 1. Replace host-side Court review with Firecracker-backed review execution
@@ -186,6 +202,18 @@ Acceptance criteria:
 4. Add schema, policy, and supply-chain gates.
 5. Implement rollback, why queries, and high-risk approvals.
 6. Improve proposal refinement UX after the security-critical workflow is real.
+
+## Expected Code Reduction Areas
+
+The following parts of the current codebase are candidates for major simplification, internalization, or removal during alignment:
+
+- Host-side chat orchestration in [cmd/aegisclaw/chat.go](cmd/aegisclaw/chat.go) once the main agent moves behind a sandbox boundary.
+- Host-side Court launcher wiring in [cmd/aegisclaw/court_cmd.go](cmd/aegisclaw/court_cmd.go) once review execution is daemon-managed and Firecracker-backed.
+- Standalone proposal and builder command flows in [cmd/aegisclaw/propose_skill.go](cmd/aegisclaw/propose_skill.go) and [cmd/aegisclaw/builder_cmd.go](cmd/aegisclaw/builder_cmd.go) if those stages become internal parts of the approved workflow.
+- Legacy CLI surface in [cmd/aegisclaw/root.go](cmd/aegisclaw/root.go) that does not match the published contract, especially where commands expose implementation details rather than product operations.
+- Placeholder guest execution behavior in [cmd/guest-agent/main.go](cmd/guest-agent/main.go) once artifact-backed deployment replaces the current stub path.
+
+The goal should be architectural convergence, not preservation of every current entrypoint.
 
 ## Files Most Likely To Change
 
