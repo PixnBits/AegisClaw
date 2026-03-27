@@ -91,6 +91,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
 	apiSrv.Handle("chat.tool", makeChatToolHandler(env))
 	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
+	// D10: Composition manifest handlers for versioned deployment and rollback.
+	apiSrv.Handle("composition.current", makeCompositionCurrentHandler(env))
+	apiSrv.Handle("composition.rollback", makeCompositionRollbackHandler(env))
+	apiSrv.Handle("composition.history", makeCompositionHistoryHandler(env))
+	apiSrv.Handle("composition.health", makeCompositionHealthHandler(env))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
