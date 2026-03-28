@@ -22,11 +22,9 @@ Key features:
   version; unhealthy deployments roll back automatically
 - **Terminal UI (TUI)** — interactive ReAct-style chat is the primary interface
 
-> **Implementation note:** The main chat agent currently runs as a host-side
-> process (not yet inside its own microVM). Court reviewers and the builder
-> pipeline do run in Firecracker microVMs. See
-> [`docs/prd-deviations.md`](docs/prd-deviations.md) for the full alignment
-> status and open items (D2, DA, DB, DC).
+The main agent, Governance Court reviewers, the builder, and all skills run
+exclusively inside Firecracker microVMs. KVM is a hard requirement — the
+daemon will not start without it and there is no fallback mode.
 
 ---
 

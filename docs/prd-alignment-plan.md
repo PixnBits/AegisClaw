@@ -1,245 +1,170 @@
 # PRD Alignment Plan
 
-Date: 2026-03-26
+Date: 2026-03-26  
+Updated: 2026-03-28 (reflects DirectLauncher removal, agent VM wiring, D2-b/D2-c/DC resolution)
 
 Source:
 - Derived from [docs/prd-deviations.md](docs/prd-deviations.md).
 - Goal is implementation alignment with [docs/PRD.md](docs/PRD.md), not PRD simplification.
 
-## Priority Order
+## What Is Already Done
 
-The fastest path to real PRD alignment is not to add more surface commands. It is to connect the existing subsystems into one enforced workflow and remove host-side bypasses.
+The following deviations have been fully resolved and require no further work unless a regression is introduced:
 
-## Implementation Reality Check
+| ID | What was done |
+|---|---|
+| D1 | `FirecrackerLauncher` is the only court launcher. `DirectLauncher` deleted. Daemon fails hard without KVM/Firecracker. |
+| D2-b | Daemon `makeChatMessageHandler` forwards conversation to agent microVM via vsock; no direct Ollama calls from daemon. |
+| D2-c | `internal/court/direct_launcher.go` deleted. No opt-out from microVM isolation anywhere in the codebase. |
+| D3 | Court approval auto-triggers the builder pipeline. |
+| D4 | Skill activation resolves artifact manifests from builder output. |
+| D5 | `aegisclaw secrets add` uses secure terminal prompt. Secret injection wired through activation path. |
+| D6 | `audit log` (with filters) and `audit why` (with chain verification) implemented. |
+| D8 | Mandatory SAST, SCA, secrets scanning, and policy-as-code gates in builder pipeline — no bypass. |
+| D10 | Versioned composition manifests with automatic rollback on health failures. |
+| D13–D16 | CLI surface matches published specification; global flags; version/status metadata. |
+| DC | `ensureAgentVM` lazily creates the agent microVM on first chat message; auto-restarts on crash. |
 
-The deviation review shows that alignment is not a matter of layering new commands onto the current binary. The implemented CLI surface and the live runtime wiring diverge substantially from both the PRD and [docs/cli-design.md](docs/cli-design.md):
+## Open Work
 
-- The current top-level command model includes legacy and implementation-specific surfaces such as `sandbox`, `propose`, `court`, `builder`, `secret`, and `model`, while the published CLI centers on `chat`, `skill`, `audit`, `secrets`, `self`, and a simpler operator flow.
-- The current runtime still depends on host-side orchestration for chat and Court review, which is structurally different from the PRD's sandbox-first architecture.
-- Several subsystems exist as partial capabilities with their own command entrypoints, but PRD alignment requires them to become daemon-managed stages in one enforced workflow rather than user-visible standalone control surfaces.
+The following items remain open in priority order. All isolation-critical items come before usability items.
 
-Implementation consequence:
+### Priority 1 — Isolation correctness
 
-- A meaningful alignment effort will likely remove or heavily shrink significant portions of existing code rather than preserving all current commands and flows.
-- Some current commands should probably become internal or disappear entirely once their responsibilities move behind the daemon or behind higher-level `skill`, `audit`, `chat`, and `self` workflows.
-- We should prefer deleting obsolete host-side bypasses and mismatched CLI pathways over carrying compatibility code that preserves non-PRD behavior.
+#### D2-a: Full ReAct loop inside the agent VM
 
-This should be treated as an expected part of alignment work, not as churn or regression. In several areas, removal of existing code is the cleanest path to making the architecture match the trust model.
+**Source:** `docs/architecture.md` §3, §7  
+**Why it matters:** The outer ReAct loop (iterate tool calls, execute via `toolRegistry`, re-send to agent VM) currently runs in the daemon. The daemon still drives the control flow for tool dispatch, which is business logic that belongs inside the sandbox per §1.
 
-## Phase 1: Restore Required Isolation Boundaries
+**What needs to change:**
 
-### 1. Replace host-side Court review with Firecracker-backed review execution
+1. `cmd/guest-agent/main.go` — `handleChatMessage` must loop internally:
+   - Call Ollama via proxy.
+   - Parse for a `tool-call` block.
+   - If found: send `{"type":"tool.exec","payload":{"tool":"...","args":"..."}}` to daemon via vsock, receive `{"type":"tool.result","payload":{"result":"...","error":""}}`, append to conversation, loop.
+   - If not found: return `{"status":"final","role":"assistant","content":"..."}`.
+2. `cmd/aegisclaw/chat_handlers.go` — `makeChatMessageHandler` becomes a thin forwarder: send conversation to agent VM once, await the single final response. Remove the outer `for i := 0; i < reactMaxIterations; i++` loop and the `toolRegistry.Execute` call.
+3. `internal/ipc/` — Ensure the vsock channel from the agent VM to the daemon can carry `tool.exec`/`tool.result` message pairs (bidirectional protocol; guest initiates).
 
-Why:
-- D1 is the highest-severity deviation because it breaks the platform's core trust model.
+**Acceptance criteria:**
+- `makeChatMessageHandler` sends one message to the agent VM and awaits one response.
+- The agent VM returns only `{"status":"final",...}` — no `"tool_call"` status visible to the daemon.
+- Tool execution still happens in the daemon (tool handlers are trusted host-side code).
 
-Code changes:
-- Switch Court engine initialization from DirectLauncher to FirecrackerLauncher in [cmd/aegisclaw/court_cmd.go](cmd/aegisclaw/court_cmd.go).
-- Implement the review.execute request path inside the guest agent in [cmd/guest-agent/main.go](cmd/guest-agent/main.go).
-- Fix control-plane and vsock plumbing for reviewer sandboxes in [internal/court/reviewer.go](internal/court/reviewer.go), [internal/kernel/controlplane.go](internal/kernel/controlplane.go), and [internal/ipc/bridge.go](internal/ipc/bridge.go).
-- Ensure reviewer sandbox networking allows only the local Ollama endpoint or an approved proxy path in [internal/sandbox/firecracker.go](internal/sandbox/firecracker.go) and [internal/sandbox/netpolicy.go](internal/sandbox/netpolicy.go).
+---
 
-Acceptance criteria:
-- court review launches one microVM per reviewer model/persona.
-- No review request reaches Ollama from the host CLI or daemon process.
-- Reviewer sandboxes can complete a review and return structured results over vsock.
+#### D2-c-cli: Remove `ExecuteTool` callbacks from the CLI process
 
-### 2. Move the main agent orchestration behind a sandbox boundary or explicitly split host UI from sandboxed agent runtime
+**Source:** `docs/architecture.md` §11  
+**Why it matters:** `cmd/aegisclaw/chat.go` wires `model.ExecuteTool` to call `handleProposalCreateDraft`, `handleProposalSubmit`, and related handlers directly in the CLI process. The CLI is a thin TUI client; tool execution must not happen there.
 
-Why:
-- D2 remains a PRD violation even if the Court is fixed.
+**What needs to change:**
 
-Code changes:
-- Introduce a dedicated main-agent sandbox runtime that owns LLM conversation and tool-routing logic now embedded in [cmd/aegisclaw/chat.go](cmd/aegisclaw/chat.go).
-- Keep the current CLI/TUI as a thin UI client that forwards user input to the daemon and receives agent responses.
-- Reuse the existing daemon API layer in [internal/api/server.go](internal/api/server.go) and [internal/api/client.go](internal/api/client.go) for the host-to-daemon boundary.
+1. `cmd/aegisclaw/chat.go` — Remove the `model.ExecuteTool` callback entirely. The natural-language chat path must not call any `handleProposal*` function.
+2. The CLI sends user input to the daemon; the daemon forwards to the agent VM; the agent VM issues `tool.exec` IPC; the daemon's `ToolRegistry` executes the handler. Tool results never pass through the CLI process.
+3. Slash commands (`/status`, `/audit`, etc.) remain handled by the daemon and are unaffected.
 
-Acceptance criteria:
-- The host process no longer calls Ollama for chat directly.
-- The sandboxed main agent becomes the only component authorized to plan tool usage.
+**Acceptance criteria:**
+- Deleting `model.ExecuteTool` assignment from `chat.go` does not break the natural-language path.
+- `handleProposalCreateDraft` and related functions are only called from `cmd/aegisclaw/tool_registry.go`, not from the CLI.
 
-## Phase 2: Complete the Skill Lifecycle
+---
 
-### 3. Wire Court approval to the builder pipeline automatically
+#### DA: IPC message bus ACL enforcement
 
-Why:
-- D3 and D4 are the main reason the product cannot satisfy the PRD's end-to-end skill workflow.
+**Source:** `docs/architecture.md` §5  
+**Why it matters:** Any connected vsock CID can request any registered tool. The message bus must enforce an ACL based on the authenticated sender role before dispatching.
 
-Code changes:
-- Add a daemon API and service path for starting builder pipeline runs after approval in [internal/api/server.go](internal/api/server.go) and [cmd/aegisclaw/start.go](cmd/aegisclaw/start.go).
-- Instantiate and use [internal/builder/pipeline.go](internal/builder/pipeline.go) from the daemon runtime instead of leaving it as a disconnected package.
-- Expand [cmd/aegisclaw/builder_cmd.go](cmd/aegisclaw/builder_cmd.go) with run, inspect, and retry commands instead of status-only behavior.
-- Transition approved proposals into implementing and complete states automatically via [internal/proposal/store.go](internal/proposal/store.go) and [internal/proposal/proposal.go](internal/proposal/proposal.go).
+**What needs to change:**
 
-Acceptance criteria:
-- Approved proposals trigger a builder run without manual file movement.
-- Builder results are persisted, visible, and linked back to the proposal.
+1. `internal/ipc/hub.go` — Add `ACLPolicy` type with `Check(senderRole, msgType, toolName) error`. Wire into `RouteMessage` after identity lookup, before handler dispatch.
+2. Implement the ACL table from `docs/architecture.md` §5.1 (agent → proposal.*, list_*; court → none; builder → file.* in /workspace; skill → declared tools only).
+3. Load the ACL from a compiled-in default at daemon startup — not from a config file.
 
-### 4. Change skill activation to deploy reviewed artifacts, not a generic template rootfs
+**Acceptance criteria:**
+- A vsock connection claiming `role:skill` cannot call `proposal.create_draft`.
+- ACL violations are logged and return an error to the caller.
 
-Why:
-- The current skill activation path can start a VM, but it does not prove that the VM is running reviewed skill code.
+---
 
-Code changes:
-- Define a deployable artifact format that the builder emits: at minimum a versioned skill bundle, and ideally the PRD's signed rootfs.ext4 plus vmconfig.json model.
-- Update [internal/builder/artifact.go](internal/builder/artifact.go) and [internal/builder/pipeline.go](internal/builder/pipeline.go) to emit deployable artifacts instead of only Git diffs and hashes.
-- Modify [cmd/aegisclaw/start.go](cmd/aegisclaw/start.go) so skill.activate resolves the latest approved artifact for a skill instead of always using env.Config.Rootfs.Template.
-- Update [cmd/guest-agent/main.go](cmd/guest-agent/main.go) to load deployed tool code from the artifact-defined location and remove the current stub fallback once deployment exists.
+#### DB: Central tool registry in daemon
 
-Acceptance criteria:
-- Activating a skill always boots the reviewed artifact for that skill version.
-- Invoking a skill executes built code, not the placeholder response path.
+**Source:** `docs/architecture.md` §6  
+**Why it matters:** Tool dispatch is currently ad-hoc (each handler registered independently in `start.go`). The ACL layer (DA above) needs a single registry to consult.
 
-### 5. Enforce runtime secret injection on activation/invocation
+**What needs to change:**
 
-Why:
-- D5 is a security gap, not just a missing feature.
+1. `cmd/aegisclaw/tool_registry.go` already exists with the correct shape. Ensure all tool handlers that belong in the daemon are registered there and that `start.go` uses it as the single registration point.
+2. The message bus `RouteMessage` dispatches `tool.exec` to the registry instead of ad-hoc handler maps.
 
-Code changes:
-- Read secret references from approved proposals or skill metadata and resolve them through [internal/vault/proxy.go](internal/vault/proxy.go).
-- Send secrets.inject over vsock before skill use, using [cmd/guest-agent/main.go](cmd/guest-agent/main.go) support already present.
-- Prevent activation of a skill that declares secrets until required secret references exist in the vault.
-- Add daemon-side audit entries for secret injection events without logging plaintext values.
+**Acceptance criteria:**
+- Adding a new tool requires only one registration call in `tool_registry.go`.
+- The ACL check references the same registry.
 
-Acceptance criteria:
-- Secrets never travel through prompts, code generation outputs, or persistent logs.
-- A skill with declared secrets cannot execute unless injection succeeds.
+---
 
-## Phase 3: Enforce PRD Security and Supply-Chain Gates
+### Priority 2 — Supply-chain and governance
 
-### 6. Add strict schema validation and reviewer consistency checks
+#### D9: SBOM and provenance emission
 
-Why:
-- D7 means Court outputs are more permissive than the PRD allows.
+**Source:** PRD  
+**Why it matters:** `internal/builder/artifact.go` signs artifacts but does not emit an SBOM or provenance record. Without these, the supply chain is not fully auditable.
 
-Code changes:
-- Promote persona output schemas from documentation strings in [config/personas.yaml](config/personas.yaml) into versioned machine-readable JSON Schemas under docs/schemas or a new runtime schema directory.
-- Validate all reviewer responses against those schemas before accepting them in [internal/court/reviewer.go](internal/court/reviewer.go).
-- Add per-reviewer retry logic so each persona must produce three consistent outputs before its review is accepted.
-- Record structured-JSON parse/validation success metrics in audit or runtime telemetry.
+**What needs to change:**
 
-Acceptance criteria:
-- Invalid or inconsistent reviewer outputs are retried or rejected automatically.
-- Structured-output reliability becomes measurable instead of assumed.
+1. `internal/builder/artifact.go` — Emit a CycloneDX or SPDX SBOM alongside each built artifact.
+2. Include a provenance record (builder VM ID, build timestamp, git commit of generated code, signing key fingerprint).
+3. Store SBOM and provenance in the artifact directory; include their hashes in the composition manifest.
 
-### 7. Add policy-as-code and builder security gates
+**Acceptance criteria:**
+- Every activated skill has an SBOM and provenance record on disk.
+- `aegisclaw audit log` surfaces the provenance hash.
 
-Why:
-- D8 is a material gap between the PRD and implementation maturity.
+---
 
-Code changes:
-- Add OPA/Rego policy bundles under docs/policies or a runtime policy directory and evaluate them from the builder and deployment flow.
-- Extend [internal/builder/analysis.go](internal/builder/analysis.go) so it runs concrete gates: go test, static analysis, dependency checks, secrets scanning, and policy validation.
-- Fail pipeline runs automatically when isolation or secret-handling policies are violated.
+#### D7: Full JSON Schema validation for reviewer outputs
 
-Acceptance criteria:
-- No skill artifact can be deployed unless policy, static analysis, and dependency gates pass.
+**Source:** PRD  
+**Why it matters:** `ReviewResponse.Validate()` checks required fields but does not enforce a versioned JSON Schema. Malformed or adversarially crafted reviewer responses could slip through.
 
-### 8. Add artifact signing, SBOM generation, provenance, and launch-time verification
+**What needs to change:**
 
-Why:
-- D9 leaves the supply chain effectively unenforced.
+1. Define a versioned JSON Schema for `ReviewResponse` under `docs/schemas/review-response.v1.json`.
+2. Validate all reviewer responses against the schema in `internal/court/reviewer.go` before `Validate()` is called.
 
-Code changes:
-- Extend builder outputs to generate SBOM and provenance metadata in [internal/builder/artifact.go](internal/builder/artifact.go).
-- Sign build artifacts using Sigstore or GPG from the builder/deploy pipeline.
-- Update [internal/sandbox/firecracker.go](internal/sandbox/firecracker.go) so Create or Start verifies artifact signatures and hashes before launch.
-- Add model and rootfs hash verification where assets are provisioned in [internal/provision/provision.go](internal/provision/provision.go).
+---
 
-Acceptance criteria:
-- A sandbox cannot launch from an unsigned or hash-mismatched artifact.
-- Every deployable artifact has a verifiable SBOM and provenance record.
+### Priority 3 — Governance and usability
 
-## Phase 4: Operations, Governance, and User Controls
+#### D11: High-risk approval gates
 
-### 9. Implement versioned composition manifests and rollback
+**Source:** PRD, CLI  
+**`--force` flag exists** but typed per-action approval gates (pause + require explicit human decision for high-risk operations) are not yet implemented. Deferred pending D2-a completion so the agent VM can drive the approval interaction.
 
-Why:
-- D10 prevents the recovery model in the PRD from being real.
+#### D12: Full conversational proposal refinement
 
-Code changes:
-- Add a composition manifest data model for active component versions.
-- Store manifest revisions in Git and use them as the source of truth for deployment.
-- Replace the placeholder rollback callback in [cmd/aegisclaw/audit_explorer.go](cmd/aegisclaw/audit_explorer.go) with a real rollback engine that restores the previous manifest and restarts affected sandboxes.
-- Add health checks for sandboxes and automatic rollback triggers in the daemon runtime.
+**Source:** PRD  
+**`skill add` wizard + auto-submit exists** but full multi-turn conversational refinement through the sandboxed main agent is pending D2-a completion.
 
-Acceptance criteria:
-- The system can roll back a deployment to a known prior composition.
-- Health failures trigger a deterministic recovery path.
-
-### 10. Add explicit high-risk approval gates and why queries
-
-Why:
-- D6 and D11 are governance gaps that affect enterprise trust and auditability.
-
-Code changes:
-- Classify tool actions by risk and require explicit approval before executing high-risk operations.
-- Add a daemon/API path to query the audit log for action rationale, proposal history, and review evidence.
-- Expose that functionality through CLI and TUI, not only raw log browsing.
-
-Acceptance criteria:
-- High-risk operations pause for human approval with a logged decision.
-- Users can ask why an action was proposed, approved, rejected, or executed and receive a structured answer from audit records.
-
-### 11. Bring the proposal UX closer to the PRD's refinement flow
-
-Why:
-- D12 is lower risk than isolation or deployment, but it matters for product fidelity.
-
-Code changes:
-- Preserve the wizard as a fallback, but let the sandboxed main agent conduct requirement refinement interactively.
-- Persist refinement questions, answers, and generated proposal JSON to the audit trail.
-- Ensure CISO and User Advocate feedback can appear before full Court review begins.
-
-Acceptance criteria:
-- A user can request a new skill conversationally and the system refines requirements before submission.
+---
 
 ## Recommended Execution Sequence
 
-1. Fix reviewer isolation first.
-2. Wire approval to build and deployable artifacts.
-3. Enforce secret injection and launch-time artifact verification.
-4. Add schema, policy, and supply-chain gates.
-5. Implement rollback, why queries, and high-risk approvals.
-6. Improve proposal refinement UX after the security-critical workflow is real.
-
-## Expected Code Reduction Areas
-
-The following parts of the current codebase are candidates for major simplification, internalization, or removal during alignment:
-
-- Host-side chat orchestration in [cmd/aegisclaw/chat.go](cmd/aegisclaw/chat.go) once the main agent moves behind a sandbox boundary.
-- Host-side Court launcher wiring in [cmd/aegisclaw/court_cmd.go](cmd/aegisclaw/court_cmd.go) once review execution is daemon-managed and Firecracker-backed.
-- Standalone proposal and builder command flows in [cmd/aegisclaw/propose_skill.go](cmd/aegisclaw/propose_skill.go) and [cmd/aegisclaw/builder_cmd.go](cmd/aegisclaw/builder_cmd.go) if those stages become internal parts of the approved workflow.
-- Legacy CLI surface in [cmd/aegisclaw/root.go](cmd/aegisclaw/root.go) that does not match the published contract, especially where commands expose implementation details rather than product operations.
-- Placeholder guest execution behavior in [cmd/guest-agent/main.go](cmd/guest-agent/main.go) once artifact-backed deployment replaces the current stub path.
-
-The goal should be architectural convergence, not preservation of every current entrypoint.
+1. **D2-a** — Internalize the ReAct loop in the agent VM. This is the prerequisite for D2-c-cli, D11, and D12.
+2. **D2-c-cli** — Remove `ExecuteTool` from the CLI once D2-a is complete.
+3. **DA + DB** — Add ACL enforcement and ensure the tool registry is the single dispatch point.
+4. **D9** — SBOM and provenance emission.
+5. **D7** — JSON Schema validation for reviewer outputs.
+6. **D11 + D12** — High-risk approval gates and conversational refinement (after D2-a).
 
 ## Files Most Likely To Change
 
-- [cmd/aegisclaw/court_cmd.go](cmd/aegisclaw/court_cmd.go)
-- [cmd/aegisclaw/start.go](cmd/aegisclaw/start.go)
-- [cmd/aegisclaw/chat.go](cmd/aegisclaw/chat.go)
-- [cmd/aegisclaw/builder_cmd.go](cmd/aegisclaw/builder_cmd.go)
-- [cmd/aegisclaw/audit_explorer.go](cmd/aegisclaw/audit_explorer.go)
-- [cmd/guest-agent/main.go](cmd/guest-agent/main.go)
-- [internal/court/reviewer.go](internal/court/reviewer.go)
-- [internal/builder/pipeline.go](internal/builder/pipeline.go)
-- [internal/builder/artifact.go](internal/builder/artifact.go)
-- [internal/sandbox/firecracker.go](internal/sandbox/firecracker.go)
-- [internal/kernel/controlplane.go](internal/kernel/controlplane.go)
-- [internal/ipc/bridge.go](internal/ipc/bridge.go)
-- [internal/vault/proxy.go](internal/vault/proxy.go)
-- [internal/provision/provision.go](internal/provision/provision.go)
-- [internal/api/server.go](internal/api/server.go)
-
-## Suggested First Implementation Slice
-
-If we want the smallest change set that meaningfully improves PRD alignment, the first slice should be:
-
-1. Firecracker-backed court reviews.
-2. Builder pipeline trigger after approval.
-3. Deployment of built skill artifacts into activated skill VMs.
-4. Secret proxy injection on skill startup.
-
-That slice closes the most serious trust and functionality gaps while preserving the existing architecture.
+| File | Why |
+|---|---|
+| `cmd/guest-agent/main.go` | D2-a: internalize full ReAct loop including tool.exec/tool.result exchange |
+| `cmd/aegisclaw/chat_handlers.go` | D2-a: simplify to single-call forwarder once agent VM owns loop |
+| `cmd/aegisclaw/chat.go` | D2-c-cli: remove `ExecuteTool` callback |
+| `cmd/aegisclaw/tool_registry.go` | DB: ensure single registration point for all daemon tools |
+| `internal/ipc/hub.go` | DA: add ACL enforcement in `RouteMessage` |
+| `internal/builder/artifact.go` | D9: emit SBOM and provenance |
+| `internal/court/reviewer.go` | D7: JSON Schema validation |
