@@ -109,6 +109,10 @@ func (p *OllamaProxy) StartForVM(vmID, vsockPath string) error {
 	if err != nil {
 		return fmt.Errorf("llm proxy: listen for vm %s at %s: %w", vmID, listenPath, err)
 	}
+	// The jailed Firecracker process runs as a sandbox-specific UID/GID and
+	// needs write permission to connect to this socket.  Go's net.Listen
+	// applies the process umask which may strip the world-write bit.
+	_ = os.Chmod(listenPath, 0666)
 
 	p.mu.Lock()
 	p.listeners[vmID] = l
@@ -179,9 +183,27 @@ func (p *OllamaProxy) handleConn(vmID string, conn net.Conn) {
 	_ = json.NewEncoder(conn).Encode(resp)
 }
 
+// isModelAllowed checks whether the requested model is in the allowlist.
+// Model names from Ollama often carry a ":tag" suffix (e.g. "mistral-nemo:latest")
+// while the registry stores bare names (e.g. "mistral-nemo").  Both forms are
+// checked so the allowlist works regardless of how the persona file specifies
+// the model name.
+func (p *OllamaProxy) isModelAllowed(model string) bool {
+	if p.allowedModels[model] {
+		return true
+	}
+	// Strip tag suffix and try again: "mistral-nemo:latest" → "mistral-nemo"
+	for i, c := range model {
+		if c == ':' {
+			return p.allowedModels[model[:i]]
+		}
+	}
+	return false
+}
+
 func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyResponse {
 	// Enforce model allowlist — this is the primary security gate.
-	if !p.allowedModels[req.Model] {
+	if !p.isModelAllowed(req.Model) {
 		p.logger.Warn("llm proxy: blocked disallowed model",
 			zap.String("vm_id", vmID),
 			zap.String("model", req.Model),

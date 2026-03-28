@@ -48,8 +48,11 @@ func ensureKernel(ctx context.Context, kernelPath string, logger *zap.Logger) er
 		arch = "aarch64"
 	}
 
+	// Use the Firecracker CI kernel which has CONFIG_VIRTIO_VSOCKETS=y built-in.
+	// The quickstart kernel only has vsock as a module which doesn't work for
+	// guests running without a module-loading init system.
 	url := fmt.Sprintf(
-		"https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/%s/kernels/vmlinux.bin",
+		"https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/%s/vmlinux-5.10.225",
 		arch,
 	)
 

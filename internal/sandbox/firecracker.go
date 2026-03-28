@@ -803,7 +803,9 @@ func (r *FirecrackerRuntime) VsockCallbackPath(id string, port uint) (string, er
 
 // SendToVM connects to a running VM's guest-agent and sends a JSON request,
 // returning the JSON response.  It tries the Firecracker vsock proxy first,
-// falling back to a direct TCP connection to the guest IP.
+// retrying for up to 30 seconds to give the guest time to boot and start its
+// vsock listener.  Falls back to a direct TCP connection to the guest IP only
+// when vsock is unavailable.
 func (r *FirecrackerRuntime) SendToVM(ctx context.Context, id string, req interface{}) (json.RawMessage, error) {
 	r.mu.RLock()
 	ms, exists := r.sandboxes[id]
@@ -815,31 +817,48 @@ func (r *FirecrackerRuntime) SendToVM(ctx context.Context, id string, req interf
 	}
 
 	const guestPort = 1024
-	dialer := net.Dialer{Timeout: 5 * time.Second}
+	dialer := net.Dialer{Timeout: 2 * time.Second}
 
-	// Try vsock first (may hang if guest lacks vsock driver, so use a short deadline).
+	// Try vsock with retries — the guest needs time to boot and start its
+	// vsock listener (AF_VSOCK port 1024).  Firecracker returns "OK <port>\n"
+	// once the guest has an active listener; until then it returns an error
+	// code (e.g. ECONNREFUSED) and we retry.
 	vsockPath, vsockErr := r.VsockPath(id)
 	if vsockErr == nil {
-		conn, err := dialer.DialContext(ctx, "unix", vsockPath)
-		if err == nil {
-			// Firecracker vsock proxy protocol: CONNECT <port>\n → OK <port>\n.
-			conn.SetDeadline(time.Now().Add(3 * time.Second))
-			if _, err := fmt.Fprintf(conn, "CONNECT %d\n", guestPort); err == nil {
-				buf := make([]byte, 64)
-				n, readErr := conn.Read(buf)
-				if readErr == nil {
-					resp := string(buf[:n])
-					if len(resp) >= 2 && resp[:2] == "OK" {
-						conn.SetDeadline(time.Time{}) // clear deadline for data exchange
-						return r.exchangeJSON(conn, id, req)
+		const (
+			vsockAttempts = 90 // up to ~30 s at 333 ms/attempt
+			vsockDelay    = 333 * time.Millisecond
+		)
+		for attempt := 0; attempt < vsockAttempts; attempt++ {
+			conn, err := dialer.DialContext(ctx, "unix", vsockPath)
+			if err == nil {
+				// Firecracker vsock proxy protocol: CONNECT <port>\n → OK <port>\n.
+				conn.SetDeadline(time.Now().Add(2 * time.Second))
+				_, writeErr := fmt.Fprintf(conn, "CONNECT %d\n", guestPort)
+				if writeErr == nil {
+					buf := make([]byte, 64)
+					n, readErr := conn.Read(buf)
+					if readErr == nil {
+						resp := string(buf[:n])
+						if len(resp) >= 2 && resp[:2] == "OK" {
+							conn.SetDeadline(time.Time{}) // clear deadline for data exchange
+							return r.exchangeJSON(conn, id, req)
+						}
 					}
 				}
+				conn.Close()
 			}
-			conn.Close()
+
+			// Check if the context was cancelled before sleeping.
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("sandbox %s: context cancelled waiting for vsock: %w", id, ctx.Err())
+			case <-time.After(vsockDelay):
+			}
 		}
 	}
 
-	// Fall back to TCP via guest IP.
+	// Fall back to TCP via guest IP (used when guest kernel lacks virtio_vsock).
 	if guestIP == "" {
 		return nil, fmt.Errorf("sandbox %s: vsock unavailable and no guest IP", id)
 	}

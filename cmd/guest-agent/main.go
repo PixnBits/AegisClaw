@@ -111,9 +111,20 @@ func main() {
 		log.Fatalf("failed to create workspace directory: %v", err)
 	}
 
-	listener, err := listenVsock(vsockPort)
-	if err != nil {
-		log.Printf("vsock unavailable (%v), falling back to TCP", err)
+	// The virtio_vsock transport may not be ready when init (PID 1)
+	// starts — the virtio device probe runs asynchronously.  Retry for
+	// up to 2 seconds before falling back to TCP.
+	var listener net.Listener
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		listener, err = listenVsock(vsockPort)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if listener == nil {
+		log.Printf("vsock unavailable after retries (%v), falling back to TCP", err)
 		configureNetwork()
 		listener, err = net.Listen("tcp", fmt.Sprintf(":%d", vsockPort))
 		if err != nil {
@@ -782,13 +793,10 @@ func callOllamaViaProxy(ctx context.Context, model string, messages []map[string
 	}
 
 	// Wrap the raw fd in a net.Conn for JSON encode/decode.
+	// net.FileConn can't handle AF_VSOCK (getsockname fails), so we wrap
+	// the fd in an os.File and use it directly.
 	file := os.NewFile(uintptr(fd), "vsock-proxy")
-	conn, err := net.FileConn(file)
-	file.Close() // FileConn duplicates the fd; close our reference.
-	if err != nil {
-		unix.Close(fd)
-		return "", fmt.Errorf("net.FileConn: %w", err)
-	}
+	conn := &vsockConn{file: file}
 	defer conn.Close()
 
 	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -858,6 +866,48 @@ func mountEssentialFS() {
 	}
 }
 
+// vsockConn wraps an os.File (backed by an AF_VSOCK fd) as a net.Conn.
+// Go's net.FileConn doesn't support AF_VSOCK (getsockname fails), so
+// we bypass it and use the file directly for Read/Write.
+type vsockConn struct {
+	file *os.File
+}
+
+func (c *vsockConn) Read(b []byte) (int, error)         { return c.file.Read(b) }
+func (c *vsockConn) Write(b []byte) (int, error)        { return c.file.Write(b) }
+func (c *vsockConn) Close() error                       { return c.file.Close() }
+func (c *vsockConn) LocalAddr() net.Addr                { return vsockAddr(0) }
+func (c *vsockConn) RemoteAddr() net.Addr               { return vsockAddr(0) }
+func (c *vsockConn) SetDeadline(t time.Time) error      { return c.file.SetDeadline(t) }
+func (c *vsockConn) SetReadDeadline(t time.Time) error  { return c.file.SetReadDeadline(t) }
+func (c *vsockConn) SetWriteDeadline(t time.Time) error { return c.file.SetWriteDeadline(t) }
+
+// vsockListener implements net.Listener over an AF_VSOCK file descriptor.
+// Go's net.FileListener can't handle AF_VSOCK sockets (getsockname returns
+// an address family that the net package doesn't understand), so we wrap the
+// raw fd ourselves.
+type vsockListener struct {
+	fd   int
+	port int
+}
+
+func (l *vsockListener) Accept() (net.Conn, error) {
+	nfd, _, err := unix.Accept(l.fd)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(nfd), "vsock-conn")
+	return &vsockConn{file: file}, nil
+}
+
+func (l *vsockListener) Close() error   { return unix.Close(l.fd) }
+func (l *vsockListener) Addr() net.Addr { return vsockAddr(l.port) }
+
+type vsockAddr int
+
+func (a vsockAddr) Network() string { return "vsock" }
+func (a vsockAddr) String() string  { return fmt.Sprintf("vsock://:%d", int(a)) }
+
 func listenVsock(port int) (net.Listener, error) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
@@ -878,14 +928,7 @@ func listenVsock(port int) (net.Listener, error) {
 		return nil, fmt.Errorf("listen vsock: %w", err)
 	}
 
-	file := os.NewFile(uintptr(fd), fmt.Sprintf("vsock:%d", port))
-	listener, err := net.FileListener(file)
-	file.Close()
-	if err != nil {
-		return nil, fmt.Errorf("FileListener: %w", err)
-	}
-
-	return listener, nil
+	return &vsockListener{fd: fd, port: port}, nil
 }
 
 // configureNetwork brings up eth0 using the kernel-assigned IP from DHCP or
