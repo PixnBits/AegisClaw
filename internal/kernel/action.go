@@ -39,6 +39,10 @@ const (
 	ActionSecretDelete        ActionType = "secret.delete"
 	ActionCompositionRollback ActionType = "composition.rollback"
 	ActionLLMInfer            ActionType = "llm.infer"
+	// ActionSystemComponentActivate is logged when a core system microVM
+	// (e.g. AegisHub) is launched at daemon startup. These are distinct from
+	// skill activations which go through user-initiated proposals.
+	ActionSystemComponentActivate ActionType = "system.component.activate"
 )
 
 // validActionTypes enumerates all recognized action types for validation.
@@ -68,8 +72,9 @@ var validActionTypes = map[ActionType]bool{
 	ActionSecretAdd:           true,
 	ActionSecretGet:           true,
 	ActionSecretDelete:        true,
-	ActionCompositionRollback: true,
-	ActionLLMInfer:            true,
+	ActionCompositionRollback:     true,
+	ActionLLMInfer:                true,
+	ActionSystemComponentActivate: true,
 }
 
 // Action represents any operation that passes through the kernel.

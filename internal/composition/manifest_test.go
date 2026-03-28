@@ -416,3 +416,59 @@ func TestManifestValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestComponentHubType verifies that ComponentHub is a distinct type and can
+// be stored and retrieved from the composition store. AegisHub must always be
+// the first component in the manifest on daemon startup.
+func TestComponentHubType(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore() error: %v", err)
+	}
+
+	if ComponentHub == ComponentSkill || ComponentHub == ComponentMainAgent {
+		t.Error("ComponentHub must be a distinct type from other component types")
+	}
+
+	components := map[string]Component{
+		"aegishub": {
+			Name:        "aegishub",
+			Type:        ComponentHub,
+			Version:     "1",
+			SandboxID:   "aegishub-abc12345",
+			ArtifactRef: "/var/lib/aegisclaw/rootfs-templates/aegishub-rootfs.ext4",
+			Health:      HealthHealthy,
+		},
+	}
+
+	m, err := store.Publish(components, "daemon", "AegisHub microVM launched")
+	if err != nil {
+		t.Fatalf("Publish() error: %v", err)
+	}
+
+	hub, ok := m.Components["aegishub"]
+	if !ok {
+		t.Fatal("expected aegishub component in manifest")
+	}
+	if hub.Type != ComponentHub {
+		t.Errorf("expected ComponentHub type, got %q", hub.Type)
+	}
+	if hub.SandboxID != "aegishub-abc12345" {
+		t.Errorf("expected sandbox ID to be preserved, got %q", hub.SandboxID)
+	}
+
+	// Verify the composition store correctly persists and reloads the hub entry.
+	store2, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore() reload error: %v", err)
+	}
+	current := store2.Current()
+	if current == nil {
+		t.Fatal("expected non-nil current manifest after reload")
+	}
+	if _, ok := current.Components["aegishub"]; !ok {
+		t.Error("aegishub not found in reloaded manifest")
+	}
+}
+
