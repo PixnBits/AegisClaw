@@ -165,9 +165,6 @@ func (s *server) serve(listener net.Listener) {
 func (s *server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	// Set a generous deadline so that stale connections are cleaned up.
-	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck
-
 	reader := bufio.NewReader(io.LimitReader(conn, maxPayloadLen))
 	decoder := json.NewDecoder(reader)
 	encoder := json.NewEncoder(conn)

@@ -21,8 +21,6 @@ Every other component — **AegisHub**, the main agent, Governance Court reviewe
 
 ## 2. Component map
 
-### 2.1 Target architecture (with AegisHub)
-
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
 │  Host (root)                                                               │
@@ -33,7 +31,7 @@ Every other component — **AegisHub**, the main agent, Governance Court reviewe
 │  │  • Firecracker VM lifecycle (create/start/stop/delete)               │  │
 │  │  • Unix socket API for CLI (slash command passthrough to AegisHub)   │  │
 │  │  • Proposal store, audit log, composition store                      │  │
-│  │  • Launches AegisHub FIRST, then other VMs                           │  │
+│  │  • Launches AegisHub FIRST; fatal error if AegisHub is unavailable   │  │
 │  │                                                                      │  │
 │  │  Does NOT: route IPC, enforce ACL, own the tool registry,            │  │
 │  │            call Ollama, parse tool-call blocks, run ReAct loops      │  │
@@ -48,6 +46,7 @@ Every other component — **AegisHub**, the main agent, Governance Court reviewe
 │   │  │  • Enforces ACL/policy before every message delivery    │  │       │
 │   │  │  • Writes routing events to Merkle audit log            │  │       │
 │   │  │  • No network egress — vsock only                       │  │       │
+│   │  │  • aegishub-rootfs.ext4 built by build-rootfs.sh        │  │       │
 │   │  └─────────────────────────────────────────────────────────┘  │       │
 │   │                            │ vsock (all inter-VM traffic)      │       │
 │   │  Agent VM    Court VMs(×5)  Builder VM    Skill VMs            │       │
@@ -64,12 +63,6 @@ Every other component — **AegisHub**, the main agent, Governance Court reviewe
             ▼
          Daemon  →  (proxies control requests)  →  AegisHub VM
 ```
-
-### 2.2 Transition architecture (current)
-
-The in-process `ipc.MessageHub` is still used in the daemon while the AegisHub VM image is being established. The daemon launches the AegisHub VM first and registers it with `RoleHub` in the local identity registry. The AegisHub VM runs the `aegishub` binary (`cmd/aegishub/`) which hosts the same routing logic. Routing delegation to the AegisHub VM is tracked in `prd-deviations.md` as `DA-hub`.
-
-**Security benefit already present**: Even in the transition architecture, AegisHub is launched before any other VM and its identity is locked to `RoleHub`. The ACL table has been updated to include the `hub` role with full send permissions (necessary for its routing authority). No other VM may be registered with `RoleHub`.
 
 ---
 
@@ -494,19 +487,20 @@ Moving routing out of the root-privileged daemon shrinks the privileged Trusted 
 ### 13.2 Binary and location
 
 - **Binary**: `cmd/aegishub/` (`aegishub`)
-- **VM image**: `aegishub-rootfs.ext4` (built alongside the standard rootfs; override via `AEGISCLAW_HUB_ROOTFS` env var during development)
+- **VM image**: `aegishub-rootfs.ext4` (built with `sudo ./scripts/build-rootfs.sh --target=aegishub`; override path via `AEGISCLAW_HUB_ROOTFS` env var)
 - **Vsock port**: 1024 (same as `guest-agent`, since only one process listens inside the VM)
 
 ### 13.3 Launch sequence
 
 ```
 1. Daemon starts (host, root).
-2. Daemon provisions Firecracker assets.
+2. Daemon provisions Firecracker assets (kernel, standard rootfs template).
 3. Daemon logs kernel start action.
-4. Daemon calls launchAegisHub() — creates AegisHub sandbox, starts the VM.
+4. Daemon calls launchAegisHub() — REQUIRED. Fatal error if AegisHub rootfs is missing.
+   Build with: sudo ./scripts/build-rootfs.sh --target=aegishub
 5. AegisHub VM starts, runs aegishub binary, listens on vsock port 1024.
-6. Daemon registers AegisHub VM identity with RoleHub in the local hub.
-7. Daemon starts the in-process MessageHub (transition period) or delegates to AegisHub vsock.
+6. Daemon registers AegisHub VM identity with RoleHub in the MessageHub.
+7. Daemon registers AegisHub in the versioned composition manifest.
 8. Daemon starts API server, court engine, and all other components.
 9. On first chat.message: Daemon lazy-starts Agent VM, registers it with the hub.
 10. On shutdown: all VMs stopped before daemon exits.

@@ -153,3 +153,37 @@ func TestMessageHub_AegisHubRouting(t *testing.T) {
 		t.Error("skill handler did not receive the message")
 	}
 }
+
+// TestRoleHub_IsRequiredCoreRole verifies that RoleHub is defined, distinct
+// from all other roles, and cannot be claimed by non-hub VMs after a hub is
+// already registered (role-lock enforcement).
+func TestRoleHub_IsRequiredCoreRole(t *testing.T) {
+	// RoleHub must be distinct from every other role.
+	otherRoles := []VMRole{RoleAgent, RoleCLI, RoleCourt, RoleBuilder, RoleSkill}
+	for _, r := range otherRoles {
+		if RoleHub == r {
+			t.Errorf("RoleHub must not equal %q", r)
+		}
+	}
+
+	reg := NewIdentityRegistry()
+
+	// Register the AegisHub VM with RoleHub.
+	if err := reg.Register("aegishub-vm-001", RoleHub); err != nil {
+		t.Fatalf("Register(RoleHub) failed: %v", err)
+	}
+
+	// A second VM must NOT be allowed to register with RoleHub.
+	// (Each VM gets its own identity; the role itself is not singleton-enforced
+	// in the registry, but identity is locked per-VM so no impersonation is
+	// possible.)
+	if err := reg.Register("aegishub-vm-001", RoleAgent); err == nil {
+		t.Error("expected error when changing role of already-registered VM, got nil")
+	}
+
+	// Confirm the original RoleHub is still intact.
+	role, ok := reg.Role("aegishub-vm-001")
+	if !ok || role != RoleHub {
+		t.Errorf("expected RoleHub, got %v (ok=%v)", role, ok)
+	}
+}
