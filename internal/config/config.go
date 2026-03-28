@@ -59,6 +59,12 @@ type Config struct {
 	Composition struct {
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"composition" mapstructure:"composition"`
+	Agent struct {
+		// RootfsPath is the ext4 rootfs image used for the main agent microVM.
+		// It must contain the guest-agent binary at /sbin/init or as PID-1.
+		// Defaults to /var/lib/aegisclaw/rootfs-templates/agent.ext4.
+		RootfsPath string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+	} `yaml:"agent" mapstructure:"agent"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -151,6 +157,11 @@ func DefaultConfig() Config {
 			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "composition"),
+		},
+		Agent: struct {
+			RootfsPath string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+		}{
+			RootfsPath: "/var/lib/aegisclaw/rootfs-templates/agent.ext4",
 		},
 	}
 }

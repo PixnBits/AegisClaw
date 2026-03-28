@@ -77,6 +77,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		hub.Stop()
 		return fmt.Errorf("failed to init court engine: %w", err)
 	}
+	// Store court engine on env so the tool registry can trigger inline reviews.
+	env.Court = courtEngine
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))
 	apiSrv.Handle("skill.activate", makeSkillActivateHandler(env))
@@ -87,10 +89,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("safe-mode.disable", makeSafeModeDisableHandler(env))
 	apiSrv.Handle("safe-mode.status", makeSafeModeStatusHandler(env))
 	// D2: Chat handlers — the daemon owns all LLM interaction.
-	apiSrv.Handle("chat.message", makeChatMessageHandler(env))
+	// The tool registry is built once at startup and shared across requests.
+	toolRegistry := buildToolRegistry(env)
+	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
-	apiSrv.Handle("chat.tool", makeChatToolHandler(env))
-	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
 	// D10: Composition manifest handlers for versioned deployment and rollback.
 	apiSrv.Handle("composition.current", makeCompositionCurrentHandler(env))
 	apiSrv.Handle("composition.rollback", makeCompositionRollbackHandler(env))

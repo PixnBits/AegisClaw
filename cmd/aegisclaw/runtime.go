@@ -7,6 +7,7 @@ import (
 
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/config"
+	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
@@ -14,12 +15,12 @@ import (
 )
 
 var (
-	runtimeOnce      sync.Once
-	runtimeInst      *sandbox.FirecrackerRuntime
-	registryInst     *sandbox.SkillRegistry
-	proposalInst     *proposal.Store
-	compositionInst  *composition.Store
-	runtimeInitErr   error
+	runtimeOnce     sync.Once
+	runtimeInst     *sandbox.FirecrackerRuntime
+	registryInst    *sandbox.SkillRegistry
+	proposalInst    *proposal.Store
+	compositionInst *composition.Store
+	runtimeInitErr  error
 )
 
 type runtimeEnv struct {
@@ -30,7 +31,13 @@ type runtimeEnv struct {
 	Registry         *sandbox.SkillRegistry
 	ProposalStore    *proposal.Store
 	CompositionStore *composition.Store
+	Court            *court.Engine
 	SafeMode         atomic.Bool
+
+	// AgentVMID is the ID of the main agent microVM. Protected by agentVMMu.
+	// Set once by ensureAgentVM on the first chat.message request.
+	AgentVMID string
+	agentVMMu sync.Mutex
 }
 
 func initRuntime() (*runtimeEnv, error) {

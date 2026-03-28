@@ -36,21 +36,25 @@ type HubStats struct {
 // (will be a microVM in production) and routes all inter-skill messages.
 // No direct skill-to-skill communication is permitted.
 type MessageHub struct {
-	router *Router
-	kern   *kernel.Kernel
-	logger *zap.Logger
-	state  HubState
-	stats  HubStats
-	mu     sync.RWMutex
+	router   *Router
+	kern     *kernel.Kernel
+	logger   *zap.Logger
+	state    HubState
+	stats    HubStats
+	mu       sync.RWMutex
+	identity *IdentityRegistry
+	acl      *ACLPolicy
 }
 
 // NewMessageHub creates the message-hub with the given kernel and logger.
 func NewMessageHub(kern *kernel.Kernel, logger *zap.Logger) *MessageHub {
 	return &MessageHub{
-		router: NewRouter(),
-		kern:   kern,
-		logger: logger,
-		state:  HubStateStopped,
+		router:   NewRouter(),
+		kern:     kern,
+		logger:   logger,
+		state:    HubStateStopped,
+		identity: NewIdentityRegistry(),
+		acl:      defaultACLPolicy(),
 	}
 }
 
@@ -131,6 +135,25 @@ func (h *MessageHub) UnregisterSkill(skillID string) {
 	)
 }
 
+// RegisterVM associates a VM ID with its access-control role (DA).
+// Must be called when a VM is started so that RouteMessage can enforce the ACL.
+func (h *MessageHub) RegisterVM(vmID string, role VMRole) error {
+	if err := h.identity.Register(vmID, role); err != nil {
+		return err
+	}
+	h.logger.Info("VM registered with identity",
+		zap.String("vm_id", vmID),
+		zap.String("role", string(role)),
+	)
+	return nil
+}
+
+// UnregisterVM removes a VM's identity entry on shutdown.
+func (h *MessageHub) UnregisterVM(vmID string) {
+	h.identity.Unregister(vmID)
+	h.logger.Info("VM identity unregistered", zap.String("vm_id", vmID))
+}
+
 // RouteMessage validates, audits, and delivers a message from one skill to another.
 // senderVMID is the verified identity from the vsock connection (not from the message).
 func (h *MessageHub) RouteMessage(senderVMID string, msg *Message) (*DeliveryResult, error) {
@@ -155,6 +178,32 @@ func (h *MessageHub) RouteMessage(senderVMID string, msg *Message) (*DeliveryRes
 			zap.String("message_id", msg.ID),
 			zap.Error(err),
 		)
+	}
+
+	// ACL enforcement (DA): check that the sender's role is permitted to send
+	// this message type before routing.
+	senderRole, registered := h.identity.Role(senderVMID)
+	if !registered {
+		// Unknown sender — allow only if it looks like the CLI (empty vmID is
+		// used by the bridge for host-originated messages).
+		if senderVMID != "" {
+			h.mu.Lock()
+			h.stats.MessagesRejected++
+			h.mu.Unlock()
+			return nil, fmt.Errorf("IPC denied: VM %q has no registered identity", senderVMID)
+		}
+		senderRole = RoleCLI
+	}
+	if aclErr := h.acl.Check(senderRole, msg.Type); aclErr != nil {
+		h.mu.Lock()
+		h.stats.MessagesRejected++
+		h.mu.Unlock()
+		h.logger.Warn("ACL denied message",
+			zap.String("vm_id", senderVMID),
+			zap.String("role", string(senderRole)),
+			zap.String("msg_type", msg.Type),
+		)
+		return nil, aclErr
 	}
 
 	result, err := h.router.Route(senderVMID, msg)
