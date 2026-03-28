@@ -17,10 +17,12 @@ var initStrictness string
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize AegisClaw (first-time setup)",
-	Long: `One-time setup: creates the ~/.aegisclaw/ directory structure,
-git repo, Merkle-tree audit log, and initial composition manifest.
+	Long: `One-time setup: creates the ~/.config/aegisclaw/ and
+~/.local/share/aegisclaw/ directory structures, loads default configuration,
+generates an Ed25519 keypair, and opens the Merkle-tree audit log.
 
-Verifies Ollama availability and model hashes.`,
+Use --profile to select a user profile which determines the default
+strictness level. Use --strictness to override.`,
 	RunE: runInit,
 }
 

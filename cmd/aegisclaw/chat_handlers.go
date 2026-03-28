@@ -122,12 +122,11 @@ func makeChatSlashHandler(env *runtimeEnv) api.Handler {
   /help          — Show this help message
   /status        — Show system status (sandboxes, skills, audit)
   /audit         — Show audit chain info and verification
-  /court         — List court sessions / proposals
-  /propose       — Start building a new skill proposal (interactive)
-  /safe-mode     — Stop all tools and skills immediately (no LLM)
-  /safe-mode off — Re-enable tool and skill execution
+  /safe-mode     — Stop all skills and block execution (no LLM)
+  /safe-mode off — Re-enable skill execution
   /shutdown      — Emergency: stop all skills, shut down daemon, exit
-  /quit          — Exit chat`
+  /quit          — Exit chat
+  /exit          — Exit chat`
 
 		default:
 			content = fmt.Sprintf("Unknown command: %s (type /help for available commands)", cmd)
