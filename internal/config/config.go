@@ -106,7 +106,7 @@ func DefaultConfig() Config {
 		}{
 			StateDir:     filepath.Join(home, ".local", "share", "aegisclaw", "sandboxes"),
 			ChrootBase:   filepath.Join(home, ".local", "share", "aegisclaw", "jailer"),
-			KernelImage:  "/var/lib/aegisclaw/vmlinux",
+			KernelImage:  "/var/lib/aegisclaw/vmlinux-5.10.225",
 			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "registry.json"),
 		},
 		Proposal: struct {
