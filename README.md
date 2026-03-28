@@ -2,13 +2,33 @@
 
 **Paranoid-by-design, self-evolving local agent platform**
 
-Secure, local-first AI agent runtime with:
-- Firecracker microVM isolation for every skill, reviewer, and builder
-- Governance Court: multi-persona AI review for every code change
-- Mandatory security gates (SAST, SCA, secrets scanning, policy-as-code)
-- Append-only Merkle-tree audit log with Ed25519 signatures
-- Currently Ollama-only on Linux
-- Terminal UI (TUI) for interactive ReAct-style chat & agent control
+AegisClaw is a local AI agent runtime that treats every boundary between
+components as a security boundary. You describe what you want in plain English
+(or via CLI) and the system proposes a new "skill", puts it through a
+Governance Court of five AI reviewers, runs mandatory security gates, and
+deploys the approved code inside a Firecracker microVM — all on your own
+machine, without calling any cloud service.
+
+Key features:
+- **Governance Court** — 5 AI personas (CISO, SeniorCoder, SecurityArchitect,
+  Tester, UserAdvocate) review every proposed code change in isolated microVMs
+- **Builder pipeline** — code generation runs inside a sandboxed Firecracker
+  microVM; output is committed and signed before activation
+- **Mandatory security gates** — SAST, SCA, secrets scanning, and
+  policy-as-code run on every build; no bypass mechanism exists
+- **Append-only Merkle-tree audit log** — every action is signed with Ed25519
+  and queryable via `audit log` / `audit why` / `audit verify`
+- **Versioned deployment** — composition manifests track every deployed skill
+  version; unhealthy deployments roll back automatically
+- **Terminal UI (TUI)** — interactive ReAct-style chat is the primary interface
+
+> **Implementation note:** The main chat agent currently runs as a host-side
+> process (not yet inside its own microVM). Court reviewers and the builder
+> pipeline do run in Firecracker microVMs. See
+> [`docs/prd-deviations.md`](docs/prd-deviations.md) for the full alignment
+> status and open items (D2, DA, DB, DC).
+
+---
 
 ## Getting Started
 
@@ -16,9 +36,52 @@ Secure, local-first AI agent runtime with:
 
 | Requirement | Notes |
 |---|---|
-| **Linux** (x86_64) | Firecracker requires KVM; falls back to direct mode without `/dev/kvm` |
-| **Go 1.26+** | Build from source |
+| **Linux** (x86_64 or aarch64) | Firecracker requires KVM — `/dev/kvm` must be accessible. The daemon will not start without it. |
+| **Go 1.25+** | Build from source |
+| **Firecracker + jailer** | MicroVM runtime — see install instructions below |
 | **Ollama** | LLM inference — install from [ollama.com](https://ollama.com) |
+
+#### Install Firecracker and jailer
+
+Firecracker releases ship a `firecracker` binary and a `jailer` binary. Install
+both to `/usr/local/bin/`:
+
+```bash
+ARCH=$(uname -m)   # x86_64 or aarch64
+FC_VERSION=v1.11.0
+curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz" \
+  | tar -xz
+sudo install -o root -g root -m 0755 "release-${FC_VERSION}-${ARCH}/firecracker-${FC_VERSION}-${ARCH}" /usr/local/bin/firecracker
+sudo install -o root -g root -m 0755 "release-${FC_VERSION}-${ARCH}/jailer-${FC_VERSION}-${ARCH}"     /usr/local/bin/jailer
+```
+
+Verify KVM access:
+
+```bash
+ls -la /dev/kvm      # must exist and be accessible to root
+```
+
+#### Install Ollama and pull required models
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Start the Ollama server if it is not already running.
+# Skip this line if 'systemctl status ollama' or 'pgrep ollama' shows it's active.
+ollama serve &
+
+# Model used by the main chat agent (default: llama3.2:3b)
+ollama pull llama3.2:3b
+
+# Model used by Court reviewer personas
+ollama pull mistral-nemo
+```
+
+> Both models are needed for a full first run. `llama3.2:3b` handles your
+> chat messages; `mistral-nemo` drives the five Governance Court reviewers
+> that evaluate every proposed skill.
+
+---
 
 ### 1. Build
 
@@ -31,7 +94,7 @@ go build -o guest-agent ./cmd/guest-agent
 
 ### 2. Initialize
 
-One-time setup — creates directory structure, keypair, and audit log:
+One-time setup — creates directory structure, Ed25519 keypair, and audit log:
 
 ```bash
 ./aegisclaw init
@@ -41,6 +104,17 @@ One-time setup — creates directory structure, keypair, and audit log:
 
 ```bash
 sudo ./aegisclaw start &
+```
+
+> **Why sudo?** Firecracker requires root for KVM device access and network
+> namespace creation. On first run, `start` automatically downloads the
+> Firecracker kernel image and builds the Alpine rootfs template — no manual
+> download required.
+
+Verify the daemon is up:
+
+```bash
+./aegisclaw status
 ```
 
 ### 4. Open Chat
@@ -100,17 +174,20 @@ Global flags: `--json`, `--verbose/-v`, `--dry-run`, `--force`
 
 ## Security Architecture
 
+Every code change goes through:
+1. **Governance Court** — 5 AI personas review proposals in isolated Firecracker
+   microVMs (requires KVM; daemon fails fast if unavailable)
+2. **Builder pipeline** — code generation runs in a sandboxed Firecracker microVM
+3. **Security gates** — SAST, SCA, secrets scanning, policy-as-code (mandatory,
+   no bypass)
+4. **Versioned deployment** — composition manifests with automatic rollback on
+   health failures
+
 Every skill runs in its own **Firecracker microVM** with:
 - Read-only rootfs
-- No network access (unless explicitly declared and approved)
+- No network access (unless explicitly declared and approved in the proposal)
 - `cap-drop ALL` — no Linux capabilities
 - Secrets injected via proxy at runtime (never in code)
-
-Every code change goes through:
-1. **Governance Court** — 5 AI personas review in isolated microVMs
-2. **Builder pipeline** — code generated in a sandboxed microVM
-3. **Security gates** — SAST, SCA, secrets scanning, policy-as-code (mandatory, no bypass)
-4. **Versioned deployment** — composition manifests with automatic rollback on health failures
 
 Every action is recorded in the **append-only Merkle-tree audit log**, signed
 with Ed25519, and queryable via `aegisclaw audit log` / `audit why` / `audit verify`.
@@ -121,20 +198,22 @@ with Ed25519, and queryable via `aegisclaw audit log` / `audit why` / `audit ver
 
 | Path | Description |
 |---|---|
-| `cmd/aegisclaw` | Host CLI + TUI entrypoint |
-| `cmd/guest-agent` | Agent payload that runs inside Firecracker VMs |
+| `cmd/aegisclaw` | Host CLI + TUI entrypoint and daemon |
+| `cmd/guest-agent` | Agent binary that runs inside Firecracker VMs |
 | `internal/` | Core packages (kernel, court, builder, sandbox, audit, composition) |
 | `internal/builder/securitygate/` | SAST, SCA, secrets, policy-as-code gates |
 | `internal/composition/` | Versioned deployment manifests with rollback |
+| `internal/provision/` | Automatic Firecracker kernel + rootfs provisioning |
 | `docs/` | Living specs, roadmap, and tutorials |
 | `adrs/` | Architecture Decision Records |
 
 ## Documentation
 
 - **[First Skill Tutorial](docs/first-skill-tutorial.md)** — step-by-step guide for new users
+- **[Architecture](docs/architecture.md)** — component interaction model and north-star design
 - **[Product Requirements (PRD)](docs/PRD.md)** — full product vision
 - **[CLI Specification](docs/cli-design.md)** — command reference
-- **[PRD Deviations](docs/prd-deviations.md)** — alignment status (14 of 16 resolved)
+- **[PRD Deviations](docs/prd-deviations.md)** — alignment status and open items
 - **[Threat Model](docs/threat-model.md)** — security analysis
 
 See [`adrs/`](adrs/) for Architecture Decision Records.
