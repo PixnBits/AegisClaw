@@ -186,8 +186,19 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 
 		session, err := engine.Review(ctx, req.ProposalID)
 		if err != nil {
+			env.Logger.Warn("court review failed",
+				zap.String("proposal_id", req.ProposalID),
+				zap.Error(err),
+			)
 			return &api.Response{Error: "court review failed: " + err.Error()}
 		}
+
+		env.Logger.Info("court review completed",
+			zap.String("proposal_id", req.ProposalID),
+			zap.String("verdict", session.Verdict),
+			zap.String("state", string(session.State)),
+			zap.Float64("risk_score", session.RiskScore),
+		)
 
 		// D3: If proposal is approved, automatically transition to implementing
 		// and trigger the builder pipeline. This closes the gap between Court
@@ -197,8 +208,9 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 			if pErr == nil && p.Status == proposal.StatusApproved {
 				if tErr := p.Transition(proposal.StatusImplementing, "auto-triggered by court approval", "daemon"); tErr == nil {
 					env.ProposalStore.Update(p)
-					env.Logger.Info("proposal approved, builder pipeline will be triggered",
+					env.Logger.Info("proposal auto-transitioned to implementing",
 						zap.String("proposal_id", req.ProposalID),
+						zap.String("status", string(p.Status)),
 					)
 				}
 			}
@@ -240,6 +252,14 @@ func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 		if err != nil {
 			return &api.Response{Error: "vote failed: " + err.Error()}
 		}
+
+		env.Logger.Info("court vote recorded",
+			zap.String("proposal_id", req.ProposalID),
+			zap.String("voter", req.Voter),
+			zap.Bool("approve", req.Approve),
+			zap.String("reason", req.Reason),
+			zap.String("verdict", session.Verdict),
+		)
 
 		respData, _ := json.Marshal(session)
 		return &api.Response{Success: true, Data: respData}

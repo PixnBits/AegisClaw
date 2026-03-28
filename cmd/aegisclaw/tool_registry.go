@@ -119,7 +119,7 @@ func parseSkillToolName(name string) (skill, tool string) {
 }
 
 // buildToolRegistry constructs the daemon's tool registry with all proposal handlers
-// and an inline list_proposals / list_sandboxes implementation.
+// and inline implementations for listing/activating resources.
 func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	reg := &ToolRegistry{env: env}
 
@@ -170,6 +170,43 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			lines = append(lines, fmt.Sprintf("  %s  %s  [%s]", sb.Spec.ID[:8], sb.Spec.Name, sb.State))
 		}
 		return strings.Join(lines, "\n"), nil
+	})
+
+	reg.Register("list_skills", func(_ context.Context, _ string) (string, error) {
+		skills := env.Registry.List()
+		if len(skills) == 0 {
+			return "No skills registered.", nil
+		}
+		var lines []string
+		for _, sk := range skills {
+			lines = append(lines, fmt.Sprintf("  %s  [%s]  sandbox=%s  version=%d", sk.Name, sk.State, sk.SandboxID[:8], sk.Version))
+		}
+		return "Skills:\n" + strings.Join(lines, "\n"), nil
+	})
+
+	reg.Register("activate_skill", func(ctx context.Context, args string) (string, error) {
+		var params struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(args), &params); err != nil {
+			// Allow bare string as the skill name.
+			params.Name = strings.TrimSpace(args)
+		}
+		if params.Name == "" {
+			return "", fmt.Errorf("skill name is required (args: {\"name\": \"skill-name\"})")
+		}
+		// Delegate to the same handler used by the skill.activate API endpoint.
+		reqData, _ := json.Marshal(map[string]string{"name": params.Name})
+		resp := makeSkillActivateHandler(env)(ctx, reqData)
+		if !resp.Success {
+			return "", fmt.Errorf("activation failed: %s", resp.Error)
+		}
+		var result map[string]interface{}
+		if json.Unmarshal(resp.Data, &result) == nil {
+			return fmt.Sprintf("Skill %q activated.\n  Sandbox: %s\n  Version: %v\n  Hash: %v",
+				params.Name, result["sandbox_id"], result["version"], result["hash"]), nil
+		}
+		return fmt.Sprintf("Skill %q activated.", params.Name), nil
 	})
 
 	return reg
