@@ -622,15 +622,84 @@ type ChatMessagePayload struct {
 }
 
 // ChatMsg represents a single message in the conversation.
+// Name is used for tool-result messages (role=="tool").
 type ChatMsg struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	Name    string `json:"name,omitempty"`
 }
 
-// handleChatMessage runs a chat completion inside this sandbox (D2).
+// ChatResponse is the response from handleChatMessage.
+// Status is either "final" (done) or "tool_call" (agent wants a tool executed).
+type ChatResponse struct {
+	Status  string `json:"status"`            // "final" | "tool_call"
+	Role    string `json:"role,omitempty"`    // present when status=="final"
+	Content string `json:"content,omitempty"` // present when status=="final"
+	Tool    string `json:"tool,omitempty"`    // present when status=="tool_call"
+	Args    string `json:"args,omitempty"`    // present when status=="tool_call"
+}
+
+const (
+	reactMaxToolCalls = 10
+	ollamaTimeout     = 120 * time.Second
+)
+
+// toolCallBlock matches ```tool-call ... ``` and ```json ... ``` fence markers.
+var toolCallMarkers = []string{"```tool-call", "```json"}
+
+// parseAgentToolCall extracts the first tool-call block from raw LLM content.
+// Returns ("", "", false) when no valid block is found.
+func parseAgentToolCall(content string) (toolName, argsJSON string, found bool) {
+	for _, marker := range toolCallMarkers {
+		search := content
+		for {
+			start := strings.Index(search, marker)
+			if start < 0 {
+				break
+			}
+			after := search[start+len(marker):]
+			end := strings.Index(after, "```")
+			if end < 0 {
+				break
+			}
+			block := strings.TrimSpace(after[:end])
+			var tc struct {
+				Skill string          `json:"skill"`
+				Tool  string          `json:"tool"`
+				Args  json.RawMessage `json:"args"`
+			}
+			if err := json.Unmarshal([]byte(block), &tc); err == nil && tc.Skill != "" && tc.Tool != "" {
+				// Auto-correct namespace for known proposal tools.
+				if isProposalTool(tc.Tool) && tc.Skill != "proposal" {
+					tc.Skill = "proposal"
+				}
+				argsStr := "{}"
+				if len(tc.Args) > 0 {
+					argsStr = string(tc.Args)
+				}
+				return tc.Skill + "." + tc.Tool, argsStr, true
+			}
+			search = after[end+3:]
+		}
+	}
+	return "", "", false
+}
+
+func isProposalTool(name string) bool {
+	switch name {
+	case "create_draft", "update_draft", "get_draft", "list_drafts", "submit", "status":
+		return true
+	}
+	return false
+}
+
+// handleChatMessage runs the full ReAct loop inside this sandbox (D2-a).
 //
-// The main agent's LLM conversation is executed inside the sandbox,
-// ensuring the host process never calls Ollama directly for chat.
+// The agent calls Ollama, parses tool-call blocks, and returns either an
+// intermediate "tool_call" response (so the daemon can execute the tool and
+// call back with the result appended) or a "final" response with the
+// assistant's text.  The outer ReAct loop driver lives in the daemon
+// (makeChatMessageHandler).
 func handleChatMessage(ctx context.Context, req *Request) *Response {
 	var payload ChatMessagePayload
 	if err := json.Unmarshal(req.Payload, &payload); err != nil {
@@ -644,44 +713,100 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 		return errorResponse(req.ID, "messages are required")
 	}
 
+	// Build the Ollama-compatible message list (strip the Name field for
+	// non-tool roles so that Ollama models that don't support it don't choke).
+	ollamaMsgs := buildOllamaMsgs(payload.Messages)
+
+	callCtx, cancel := context.WithTimeout(ctx, ollamaTimeout)
+	defer cancel()
+
+	content, err := callOllama(callCtx, payload.Model, ollamaMsgs)
+	if err != nil {
+		return errorResponse(req.ID, fmt.Sprintf("ollama error: %v", err))
+	}
+
+	// Check for a tool-call block in the response.
+	toolName, argsJSON, hasTool := parseAgentToolCall(content)
+	if hasTool {
+		chatResp := ChatResponse{
+			Status: "tool_call",
+			Tool:   toolName,
+			Args:   argsJSON,
+		}
+		data, _ := json.Marshal(chatResp)
+		return &Response{ID: req.ID, Success: true, Data: data}
+	}
+
+	// No tool call — return the final assistant response.
+	chatResp := ChatResponse{
+		Status:  "final",
+		Role:    "assistant",
+		Content: content,
+	}
+	data, _ := json.Marshal(chatResp)
+	return &Response{ID: req.ID, Success: true, Data: data}
+}
+
+// buildOllamaMsgs converts ChatMsg slice into the format Ollama expects.
+// Tool-result messages use role "user" with a "[Tool X returned]: Y" prefix
+// for models that don't support the "tool" role natively.
+func buildOllamaMsgs(msgs []ChatMsg) []map[string]string {
+	out := make([]map[string]string, 0, len(msgs))
+	for _, m := range msgs {
+		switch m.Role {
+		case "tool":
+			name := m.Name
+			if name == "" {
+				name = "tool"
+			}
+			out = append(out, map[string]string{
+				"role":    "user",
+				"content": fmt.Sprintf("[Tool %s returned]: %s", name, m.Content),
+			})
+		default:
+			out = append(out, map[string]string{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		}
+	}
+	return out
+}
+
+// callOllama sends a chat completion request to the local Ollama endpoint and
+// returns the model's response content.
+func callOllama(ctx context.Context, model string, messages []map[string]string) (string, error) {
 	ollamaReq := map[string]interface{}{
-		"model":    payload.Model,
-		"messages": payload.Messages,
+		"model":    model,
+		"messages": messages,
 		"stream":   false,
 	}
 
 	body, err := json.Marshal(ollamaReq)
 	if err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("failed to marshal ollama request: %v", err))
+		return "", fmt.Errorf("marshal: %w", err)
 	}
 
-	ollamaURL := "http://127.0.0.1:11434/api/chat"
-	httpReq, err := newHTTPRequest(ctx, "POST", ollamaURL, body)
+	httpReq, err := newHTTPRequest(ctx, "POST", "http://127.0.0.1:11434/api/chat", body)
 	if err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("failed to create request: %v", err))
+		return "", fmt.Errorf("build request: %w", err)
 	}
 
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("ollama request failed: %v", err))
+		return "", fmt.Errorf("ollama request: %w", err)
 	}
 	defer httpResp.Body.Close()
 
-	var ollamaResp struct {
+	var resp struct {
 		Message struct {
-			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"message"`
 	}
-	if err := json.NewDecoder(httpResp.Body).Decode(&ollamaResp); err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("failed to decode ollama response: %v", err))
+	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
 	}
-
-	data, _ := json.Marshal(map[string]string{
-		"role":    ollamaResp.Message.Role,
-		"content": ollamaResp.Message.Content,
-	})
-	return &Response{ID: req.ID, Success: true, Data: data}
+	return resp.Message.Content, nil
 }
 
 // newHTTPRequest creates an HTTP request with JSON content type.

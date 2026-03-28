@@ -931,3 +931,57 @@ func handleProposalStatus(env *runtimeEnv, argsJSON string) (string, error) {
 	}
 	return b.String(), nil
 }
+
+// handleProposalSubmitDirect transitions a draft to submitted and starts court
+// review directly via env.Court (used inside the daemon tool registry where no
+// daemon API client is available).
+func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON string) (string, error) {
+	var args struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", fmt.Errorf("invalid args: %w", err)
+	}
+	if args.ID == "" {
+		return "", fmt.Errorf("id is required")
+	}
+
+	fullID, err := resolveProposalID(env, args.ID)
+	if err != nil {
+		return "", err
+	}
+
+	p, err := env.ProposalStore.Get(fullID)
+	if err != nil {
+		return "", fmt.Errorf("not found: %w", err)
+	}
+	if p.Status != proposal.StatusDraft {
+		return fmt.Sprintf("Proposal is already %s (not draft).", p.Status), nil
+	}
+
+	if err := p.Transition(proposal.StatusSubmitted, "submitted for court review", "agent"); err != nil {
+		return "", fmt.Errorf("transition failed: %w", err)
+	}
+	if err := env.ProposalStore.Update(p); err != nil {
+		return "", fmt.Errorf("failed to save: %w", err)
+	}
+
+	payload, _ := json.Marshal(map[string]string{"proposal_id": p.ID})
+	action := kernel.NewAction(kernel.ActionProposalSubmit, "agent", payload)
+	env.Kernel.SignAndLog(action)
+
+	result := fmt.Sprintf("Proposal submitted for court review.\n  ID: %s\n  Title: %s\n  Status: %s\n\nIMPORTANT: Tell the user the proposal ID (%s) so they can track it.", p.ID, p.Title, p.Status, p.ID)
+
+	// Trigger court review inline if the court engine is available.
+	if env.Court != nil {
+		session, reviewErr := env.Court.Review(ctx, p.ID)
+		if reviewErr == nil {
+			result += fmt.Sprintf("\n\nCourt review completed.\n  State: %s\n  Verdict: %s\n  Risk: %.1f",
+				session.State, session.Verdict, session.RiskScore)
+		} else {
+			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRun manually: aegisclaw court review %s", reviewErr, p.ID)
+		}
+	}
+
+	return result, nil
+}
