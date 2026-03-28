@@ -9,6 +9,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"go.uber.org/zap"
@@ -32,6 +33,7 @@ type runtimeEnv struct {
 	ProposalStore    *proposal.Store
 	CompositionStore *composition.Store
 	Court            *court.Engine
+	LLMProxy         *llm.OllamaProxy
 	SafeMode         atomic.Bool
 
 	// AgentVMID is the ID of the main agent microVM. Protected by agentVMMu.
@@ -91,5 +93,6 @@ func initRuntime() (*runtimeEnv, error) {
 		Registry:         registryInst,
 		ProposalStore:    proposalInst,
 		CompositionStore: compositionInst,
+		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 	}, nil
 }
