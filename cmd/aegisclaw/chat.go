@@ -24,6 +24,7 @@ var chatCmd = &cobra.Command{
 	Long: `Opens an interactive chat interface with persistent context.
 Supports slash commands for quick access to AegisClaw operations:
   /help          - Show available slash commands
+  /call          - Invoke a skill tool: /call <skill>.<tool> [args...]
   /status        - Show system status (sandboxes, skills, audit)
   /audit         - Show audit chain info and verification
   /safe-mode     - Stop all skills and block execution (no LLM)
@@ -363,6 +364,7 @@ You help users manage skills (sandboxed microVM workloads), proposals, and syste
 
 ## Slash commands (handled locally, not by you)
   /help       - Show available commands
+  /call       - Invoke a skill tool: /call <skill>.<tool> [args...]
   /status     - System status (sandboxes, skills, audit)
   /audit      - Audit chain info and verification
   /safe-mode  - Stop all skills and block execution (no LLM)
@@ -420,6 +422,9 @@ For active skills (listed below), use the skill's own name as the namespace:
 ` + "```tool-call" + `
 {"skill": "hello-world", "tool": "greet", "args": ""}
 ` + "```" + `
+
+Users can also invoke skills directly with: /call <skill>.<tool> [args...]
+Example: /call hello-world.greet "world"
 
 `
 

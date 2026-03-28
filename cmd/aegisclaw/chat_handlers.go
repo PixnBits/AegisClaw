@@ -9,6 +9,7 @@ import (
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/audit"
+	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/tui"
 	"github.com/google/uuid"
@@ -275,16 +276,91 @@ func makeChatSlashHandler(env *runtimeEnv) api.Handler {
 			content = fmt.Sprintf("Audit Chain:\n  Entries: %d\n  Chain head: %s\n  Verification: %s (%d verified)",
 				auditLog.EntryCount(), tui.Truncate(auditLog.LastHash(), 16), status, verified)
 
+		case "/call":
+			// /call <skill>.<tool> [args...]
+			// Invoke a skill tool directly from chat.
+			if len(parts) < 2 {
+				content = "Usage: /call <skill>.<tool> [args...]\nExample: /call hello.greet \"world\""
+			} else {
+				callTarget := parts[1]
+				callArgs := ""
+				if len(parts) > 2 {
+					callArgs = strings.Join(parts[2:], " ")
+				}
+				skillName, toolName := parseSkillToolName(callTarget)
+				if skillName == "" || toolName == "" {
+					content = fmt.Sprintf("Invalid target %q — expected <skill>.<tool> format.\nExample: /call hello.greet \"world\"", callTarget)
+				} else {
+					entry, ok := env.Registry.Get(skillName)
+					if !ok {
+						content = fmt.Sprintf("Skill %q not found. Use /status to see available skills.", skillName)
+					} else if entry.State != sandbox.SkillStateActive {
+						content = fmt.Sprintf("Skill %q is not active (state: %s).", skillName, entry.State)
+					} else {
+						// Audit log the invocation.
+						invokePayload, _ := json.Marshal(map[string]string{
+							"skill":  skillName,
+							"tool":   toolName,
+							"args":   callArgs,
+							"source": "slash_command",
+						})
+						invokeAction := kernel.NewAction(kernel.ActionSkillInvoke, "chat", invokePayload)
+						env.Kernel.SignAndLog(invokeAction)
+
+						vmReq := map[string]interface{}{
+							"id":   uuid.New().String(),
+							"type": "tool.invoke",
+							"payload": map[string]string{
+								"tool": toolName,
+								"args": callArgs,
+							},
+						}
+						raw, err := env.Runtime.SendToVM(ctx, entry.SandboxID, vmReq)
+						if err != nil {
+							content = fmt.Sprintf("Error invoking %s.%s: %v", skillName, toolName, err)
+						} else {
+							var vmResp struct {
+								Success bool            `json:"success"`
+								Error   string          `json:"error,omitempty"`
+								Data    json.RawMessage `json:"data,omitempty"`
+							}
+							if err := json.Unmarshal(raw, &vmResp); err != nil {
+								content = fmt.Sprintf("Error parsing VM response: %v", err)
+							} else if !vmResp.Success {
+								content = fmt.Sprintf("Tool %s.%s failed: %s", skillName, toolName, vmResp.Error)
+							} else {
+								var result struct {
+									Output string `json:"output"`
+								}
+								if json.Unmarshal(vmResp.Data, &result) == nil && result.Output != "" {
+									content = fmt.Sprintf("Result from %s.%s:\n%s", skillName, toolName, result.Output)
+								} else {
+									content = fmt.Sprintf("Result from %s.%s:\n%s", skillName, toolName, string(vmResp.Data))
+								}
+							}
+						}
+						env.Logger.Info("slash /call executed",
+							zap.String("skill", skillName),
+							zap.String("tool", toolName),
+							zap.String("args", callArgs),
+						)
+					}
+				}
+			}
+
 		case "/help":
 			content = `Available commands:
   /help          — Show this help message
+  /call          — Invoke a skill tool: /call <skill>.<tool> [args...]
   /status        — Show system status (sandboxes, skills, audit)
   /audit         — Show audit chain info and verification
   /safe-mode     — Stop all skills and block execution (no LLM)
   /safe-mode off — Re-enable skill execution
   /shutdown      — Emergency: stop all skills, shut down daemon, exit
   /quit          — Exit chat
-  /exit          — Exit chat`
+  /exit          — Exit chat
+
+Example: /call hello.greet "world"`
 
 		default:
 			content = fmt.Sprintf("Unknown command: %s (type /help for available commands)", cmd)
@@ -305,14 +381,16 @@ func makeChatSlashHandler(env *runtimeEnv) api.Handler {
 func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	var b strings.Builder
 	b.WriteString("You are the AegisClaw main agent — a security-first assistant that manages skills running in isolated Firecracker microVMs.\n\n")
-	b.WriteString("Available tools:\n")
+	b.WriteString("## Available tools\n")
 	b.WriteString("- list_proposals: List all proposals and their status\n")
 	b.WriteString("- list_sandboxes: List running sandboxes\n")
+	b.WriteString("- list_skills: List registered skills and their state\n")
+	b.WriteString("- activate_skill: Activate a skill by name (starts its microVM)\n")
 	b.WriteString("- proposal.create_draft: Create a new skill proposal draft\n")
 	b.WriteString("- proposal.update_draft: Update fields on a draft proposal\n")
 	b.WriteString("- proposal.get_draft: Get the current state of a draft\n")
 	b.WriteString("- proposal.list_drafts: List all draft proposals\n")
-	b.WriteString("- proposal.submit: Submit a proposal for court review\n")
+	b.WriteString("- proposal.submit: Submit a proposal for court review (auto-triggers review)\n")
 	b.WriteString("- proposal.status: Check the status of a proposal\n\n")
 
 	skills := env.Registry.List()
@@ -325,10 +403,24 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	}
 
 	if activeSkills == 0 {
-		b.WriteString("No skills are currently active. Use /propose or describe a skill you need.\n")
+		b.WriteString("No skills are currently active. Help the user propose and create one.\n")
 	}
 
-	b.WriteString("\nTo invoke a tool, respond with a JSON block:\n")
+	b.WriteString("\n## Skill SDLC workflow\n")
+	b.WriteString("To create a new skill:\n")
+	b.WriteString("1. Use proposal.create_draft to create a draft with title, description, skill_name, and tools.\n")
+	b.WriteString("2. Use proposal.submit to submit it for court review (review runs automatically).\n")
+	b.WriteString("3. After approval, use activate_skill to start the skill's microVM.\n")
+	b.WriteString("4. Once active, invoke the skill's tools using <skillname>.<toolname> or tell the user: /call <skill>.<tool> [args]\n\n")
+
+	b.WriteString("## Chat slash commands (handled directly, not via tools)\n")
+	b.WriteString("Users can type these commands in chat:\n")
+	b.WriteString("  /call <skill>.<tool> [args] — Invoke a skill tool directly\n")
+	b.WriteString("  /status — System status\n")
+	b.WriteString("  /help — List all commands\n\n")
+
+	b.WriteString("## Tool invocation format\n")
+	b.WriteString("To invoke a tool, respond with a JSON block:\n")
 	b.WriteString("```tool-call\n{\"name\": \"tool_name\", \"args\": \"arguments\"}\n```\n")
 
 	return b.String()
