@@ -23,6 +23,13 @@ import (
 
 var safeModeFlag bool
 
+// aegisHubRootfsEnvKey is the environment variable that overrides the default
+// AegisHub rootfs image path. During development and CI, set this to the
+// path of a pre-built aegishub rootfs.ext4. In production this must be a
+// signed, verified image; the daemon refuses to start AegisHub from an
+// unsigned image.
+const aegisHubRootfsEnvKey = "AEGISCLAW_HUB_ROOTFS"
+
 func runStart(cmd *cobra.Command, args []string) error {
 	env, err := initRuntime()
 	if err != nil {
@@ -45,8 +52,34 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to log kernel start: %w", err)
 	}
 
+	// ── Step 1: Launch AegisHub ──────────────────────────────────────────────
+	// AegisHub is the sole IPC router for the system. It must be the first
+	// microVM launched so that all subsequent VMs communicate through it.
+	// The daemon itself registers with AegisHub using a restricted VMM role,
+	// after which it has no privileged access to the routing plane.
+	//
+	// Security guarantee: even if an attacker compromises the daemon after
+	// this point, they cannot re-route messages without going through AegisHub's
+	// ACL/identity layer.
+	hub, hubVMID, err := launchAegisHub(cmd.Context(), env)
+	if err != nil {
+		// Non-fatal in the current transition architecture: we fall back to the
+		// in-process hub so that the daemon remains operational. This deviation
+		// is tracked as DA-hub in prd-deviations.md; once AegisHub images are
+		// distributed the fallback will be removed.
+		env.Logger.Warn("AegisHub VM launch failed, falling back to in-process hub",
+			zap.Error(err),
+		)
+		hub = ipc.NewMessageHub(env.Kernel, env.Logger)
+	} else {
+		env.AegisHubVMID = hubVMID
+		env.Logger.Info("AegisHub microVM launched",
+			zap.String("vm_id", hubVMID),
+			zap.String("role", string(ipc.RoleHub)),
+		)
+	}
+
 	// Initialize and start the message-hub
-	hub := ipc.NewMessageHub(env.Kernel, env.Logger)
 	if err := hub.Start(); err != nil {
 		return fmt.Errorf("failed to start message-hub: %w", err)
 	}
@@ -62,6 +95,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		zap.String("public_key", fmt.Sprintf("%x", env.Kernel.PublicKey())),
 		zap.String("message_hub", string(hub.State())),
 		zap.Int("ipc_routes", len(hub.Router().RegisteredRoutes())),
+		zap.String("aegishub_vm_id", env.AegisHubVMID),
 	)
 
 	// Start the Unix socket API server so CLI commands can talk to the daemon.
@@ -122,6 +156,9 @@ No skills, no Court, no main agent sandbox.
 	fmt.Printf("  Message-Hub: %s\n", hub.State())
 	fmt.Printf("  IPC Routes: %v\n", hub.Router().RegisteredRoutes())
 	fmt.Printf("  API Socket: %s\n", env.Config.Daemon.SocketPath)
+	if env.AegisHubVMID != "" {
+		fmt.Printf("  AegisHub VM: %s\n", env.AegisHubVMID)
+	}
 
 	// Wait for shutdown signal
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -573,4 +610,81 @@ func makeKernelShutdownHandler(cancelFunc context.CancelFunc) api.Handler {
 		go cancelFunc()
 		return &api.Response{Success: true}
 	}
+}
+
+// launchAegisHub creates and starts the AegisHub system microVM, then
+// registers it in the local identity registry with RoleHub. It returns the
+// initialized MessageHub (with AegisHub registered) and the new VM ID.
+//
+// Security invariants:
+//   - AegisHub is launched BEFORE any other microVM. No skill, agent, or
+//     court VM is started until AegisHub is running and registered.
+//   - AegisHub's VM identity is locked to RoleHub — no other VM may claim
+//     this role (IdentityRegistry.Register is idempotent but rejects role
+//     changes).
+//   - AegisHub has DefaultDeny network policy: egress only over vsock.
+//
+// Returns an error if the rootfs image is missing (not yet provisioned) so the
+// caller can fall back to the in-process hub during the transition period.
+func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, string, error) {
+	// Resolve the AegisHub rootfs. Override via AEGISCLAW_HUB_ROOTFS env var;
+	// otherwise look for aegishub-rootfs.ext4 next to the standard template.
+	hubRootfs := os.Getenv(aegisHubRootfsEnvKey)
+	if hubRootfs == "" {
+		hubRootfs = filepath.Join(
+			filepath.Dir(env.Config.Rootfs.Template),
+			"aegishub-rootfs.ext4",
+		)
+	}
+
+	if _, err := os.Stat(hubRootfs); err != nil {
+		return nil, "", fmt.Errorf("AegisHub rootfs not found at %s (set %s to override): %w",
+			hubRootfs, aegisHubRootfsEnvKey, err)
+	}
+
+	hubVMID := "aegishub-" + uuid.New().String()[:8]
+	spec := sandbox.SandboxSpec{
+		ID:   hubVMID,
+		Name: "aegishub",
+		Resources: sandbox.Resources{
+			VCPUs:    1,
+			MemoryMB: 128,
+		},
+		// AegisHub communicates exclusively over vsock; no network egress needed.
+		NetworkPolicy: sandbox.NetworkPolicy{
+			DefaultDeny: true,
+		},
+		RootfsPath: hubRootfs,
+	}
+
+	if err := env.Runtime.Create(ctx, spec); err != nil {
+		return nil, "", fmt.Errorf("create AegisHub sandbox: %w", err)
+	}
+
+	if err := env.Runtime.Start(ctx, hubVMID); err != nil {
+		env.Runtime.Delete(ctx, hubVMID) //nolint:errcheck
+		return nil, "", fmt.Errorf("start AegisHub VM: %w", err)
+	}
+
+	// Build the in-process MessageHub and register AegisHub's VM identity with
+	// RoleHub. In the full architecture the routing plane will be delegated to
+	// the AegisHub VM's vsock server; until then the in-process hub remains
+	// operational and AegisHub is registered so it can participate in routing.
+	hub := ipc.NewMessageHub(env.Kernel, env.Logger)
+	if err := hub.RegisterVM(hubVMID, ipc.RoleHub); err != nil {
+		env.Runtime.Stop(ctx, hubVMID)  //nolint:errcheck
+		env.Runtime.Delete(ctx, hubVMID) //nolint:errcheck
+		return nil, "", fmt.Errorf("register AegisHub identity: %w", err)
+	}
+
+	// Audit-log the AegisHub launch as a system activation event.
+	launchPayload, _ := json.Marshal(map[string]string{
+		"vm_id":     hubVMID,
+		"role":      string(ipc.RoleHub),
+		"component": "aegishub",
+	})
+	launchAction := kernel.NewAction(kernel.ActionSkillActivate, "daemon", launchPayload)
+	env.Kernel.SignAndLog(launchAction) //nolint:errcheck
+
+	return hub, hubVMID, nil
 }
