@@ -20,6 +20,11 @@ const (
 	RoleBuilder VMRole = "builder"
 	// RoleSkill represents a deployed skill VM.
 	RoleSkill VMRole = "skill"
+	// RoleHub is the AegisHub system microVM — the sole IPC router for the entire
+	// system. It runs in its own Firecracker VM and is the only component that may
+	// send routing-control messages to all other VMs. The host daemon registers
+	// AegisHub with this role at startup, before any other VM is launched.
+	RoleHub VMRole = "hub"
 )
 
 // aclEntry is a single permit row: (role, messageType) → allowed.
@@ -60,6 +65,11 @@ func defaultACLPolicy() *ACLPolicy {
 	// Skill VMs may only report tool results; they cannot initiate other calls.
 	p.permit(RoleSkill, "tool.result")
 	p.permit(RoleSkill, "status")
+
+	// AegisHub (system router) may send any message type as part of its routing
+	// and orchestration role. The daemon assigns this role to the AegisHub VM
+	// at startup and never to any other VM.
+	p.permit(RoleHub, "")
 
 	return p
 }

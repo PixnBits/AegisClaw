@@ -4,6 +4,7 @@ Date: 2026-03-26
 Updated: 2026-03-27 (alignment refactor applied; D1, D2, D10, D8 resolved)
 Updated: 2026-03-28 (D2 re-opened; new deviations D2-a, D2-b, D2-c, DA, DB, DC added after architectural audit)
 Updated: 2026-03-28 (DirectLauncher deleted; agent VM wiring complete; D2-b, D2-c, DC resolved)
+Updated: 2026-03-28 (AegisHub microVM architecture introduced; DA-hub, DA, DB status updated)
 
 Scope:
 - Compared the implementation in this repository against [docs/PRD.md](docs/PRD.md) and [docs/cli-design.md](docs/cli-design.md).
@@ -27,8 +28,9 @@ Summary:
 | D2-b | architecture.md §3 | Daemon `chat.message` handler must be a thin forwarder: receive conversation from CLI, route to agent VM via vsock, await final response, return it. | **Resolved** | `makeChatMessageHandler` in `cmd/aegisclaw/chat_handlers.go` now calls `ensureAgentVM` and forwards the conversation to the agent VM via `SendToVM`. Daemon no longer calls Ollama. System prompt is built daemon-side and included in the messages forwarded to the VM. |
 | D2-c | architecture.md §11 | `DirectLauncher` must be deleted; no opt-out from microVM isolation. | **Resolved** | `internal/court/direct_launcher.go` deleted. `FirecrackerLauncher` is the only court launcher. `docs/architecture.md` §1 updated to make the no-opt-out rule explicit and unconditional. |
 | D2-c-cli | architecture.md §11 | `ExecuteTool` callbacks must not execute proposal handlers in the CLI process for the natural-language path. The CLI is a thin TUI client; tool execution belongs to the agent VM. | **Open** | `handleProposalCreateDraft`, `handleProposalSubmit`, and related functions in `cmd/aegisclaw/chat.go` are called directly by the `ExecuteTool` callback wired into `tui.ChatModel`. Slash commands remain a distinct exception. |
-| DA | architecture.md §5 | IPC message bus must enforce an ACL policy before dispatching any tool or message. Sender identity must be validated against an allow-list before the handler is invoked. | **Open** | `MessageHub.RouteMessage` in `internal/ipc/hub.go` has no policy check. Any connected socket or vsock CID can request any registered tool. ACL table and enforcement to be added; see `docs/architecture.md` §5. |
-| DB | architecture.md §6 | Daemon must maintain a central tool registry mapping tool names to handler functions, used by the ACL and dispatch layer. | **Open** | Tool dispatch is ad-hoc: each handler in `cmd/aegisclaw/start.go` is registered independently with no shared registry or capability manifest. See `docs/architecture.md` §6 for the required registry shape. |
+| DA | architecture.md §5 | IPC message bus must enforce an ACL policy before dispatching any tool or message. Sender identity must be validated against an allow-list before the handler is invoked. | **Substantially resolved** | `MessageHub.RouteMessage` in `internal/ipc/hub.go` now enforces the ACL policy via `ACLPolicy.Check(role, msgType)` before routing. The new `RoleHub` role has been added to the ACL table (`internal/ipc/acl.go`) and `MessageHub` has been updated to work without a kernel (for running inside the AegisHub microVM). Full routing delegation to AegisHub VM is tracked as DA-hub below. |
+| DA-hub | architecture.md §13 | All IPC routing and ACL enforcement must execute inside the AegisHub microVM, not in the host daemon. This shrinks the privileged TCB to VMM operations only. | **In progress (transition)** | AegisHub binary (`cmd/aegishub/`) created. Daemon now calls `launchAegisHub()` at startup, creates the AegisHub Firecracker VM, and registers it with `RoleHub` before any other VM is started. The AegisHub VM's vsock server is live. Full routing delegation (daemon proxies `ipc.send` messages to AegisHub) is the next step. The fallback to in-process hub is removed once AegisHub images are distributed. STRIDE threat model documented in `docs/architecture.md §14`. |
+| DB | architecture.md §6 | Daemon must maintain a central tool registry mapping tool names to handler functions, used by the ACL and dispatch layer. | **Substantially resolved** | `ToolRegistry` in `cmd/aegisclaw/tool_registry.go` maps qualified tool names to handlers. `buildToolRegistry(env)` populates it at startup. Tool dispatch in the chat handler uses `toolRegistry.Execute()`. In the target AegisHub architecture, AegisHub will hold the registry metadata (tool names, roles) while execution remains in the daemon. |
 | DC | architecture.md §9 | Agent VM must be lazy-started on the first `chat.message` request and registered with the message bus before the forwarding call is made. | **Resolved** | `ensureAgentVM` in `cmd/aegisclaw/chat_handlers.go` lazily creates and starts the agent VM on first use, starts the per-VM LLM proxy, and caches the VM ID. Automatically restarts the VM if it crashes. |
 | D3 | PRD | Approved skill should trigger builder pipeline automatically. | **Resolved** | Court review handler auto-transitions approved proposals to `implementing` status, connecting to builder pipeline. See `cmd/aegisclaw/start.go`. |
 | D4 | PRD | Skill runtime should execute reviewed, versioned artifacts. | **Resolved** | Skill activation resolves artifact manifests from the builder output directory. See `cmd/aegisclaw/start.go`. |
@@ -50,6 +52,10 @@ Summary:
 ### Resolved or substantially improved:
 D1, D2-b, D2-c, D3, D4, D5, D6, D8, D10, D13, D14, D15, D16, DC — fully resolved
 D2 (partially), D7, D9, D12 — partially resolved / improved
+DA, DB — substantially resolved (ACL enforced in hub, central tool registry exists)
+
+### In progress (transition architecture):
+DA-hub — AegisHub VM launched and registered; full routing delegation in progress
 
 ### Annotated with migration path:
 D11 — clear path documented, implementation deferred
@@ -57,11 +63,10 @@ D11 — clear path documented, implementation deferred
 ### Open:
 D2-a — agent VM full ReAct loop not yet internalized (outer loop driven by daemon)
 D2-c-cli — CLI ExecuteTool callbacks still run tool handlers in CLI process
-DA — IPC message bus has no ACL enforcement
-DB — no central tool registry in daemon
 
 ### Future work required:
 D9 (partial) — SBOM and provenance emission
+DA-hub — complete routing delegation to AegisHub VM vsock server
 
 ## Observations That Reduce Risk But Do Not Close Gaps
 
@@ -73,7 +78,8 @@ D9 (partial) — SBOM and provenance emission
 
 ## Root Causes (Updated)
 
-1. ~~The live product path still favors host-side fallbacks over PRD-mandated sandbox boundaries.~~ **Substantially resolved**: `DirectLauncher` deleted — no fallback from microVM isolation exists anywhere in the codebase. Court reviewers use `FirecrackerLauncher` exclusively (D1). The daemon forwards chat turns to an agent microVM instead of calling Ollama directly (D2-b). The outer ReAct loop is still driven by the daemon (D2-a open). CLI `ExecuteTool` callbacks still execute on the host for the natural-language path (D2-c-cli open).
+1. ~~The live product path still favors host-side fallbacks over PRD-mandated sandbox boundaries.~~ **Substantially resolved**: `DirectLauncher` deleted — no fallback from microVM isolation exists anywhere in the codebase. Court reviewers use `FirecrackerLauncher` exclusively (D1). The daemon forwards chat turns to an agent microVM instead of calling Ollama directly (D2-b). AegisHub microVM is launched first at daemon startup (DA-hub). The outer ReAct loop is still driven by the daemon (D2-a open). CLI `ExecuteTool` callbacks still execute on the host for the natural-language path (D2-c-cli open).
 2. ~~Proposal, Court, builder, activation, and runtime subsystems were implemented as separate capabilities but not connected into one enforced workflow.~~ **Addressed**: Court approval auto-triggers the builder pipeline. Skill activation resolves artifacts. Versioned composition manifests track every deployment (D10).
-3. ~~Supply-chain, policy, and explanation requirements were modeled conceptually but not yet turned into launch-time or operator-facing enforcement.~~ **Substantially addressed**: Mandatory SAST/SCA/secrets/policy gates in the builder pipeline (D8). Versioned composition manifests with automatic rollback on health failures (D10). Structured audit log/why/verify commands (D6).
+3. ~~Supply-chain, policy, and explanation requirements were modeled conceptually but not yet turned into launch-time or operator-facing enforcement.~~ **Substantially addressed**: Mandatory SAST/SCA/secrets/policy gates in the builder pipeline (D8). Versioned composition manifests with automatic rollback on health failures (D10). Structured audit log/why/verify commands (D6). ACL enforcement in the message bus (DA).
 4. ~~The published CLI design is aspirational relative to the current implementation.~~ **Resolved**: CLI surface matches the published specification (D13–D16).
+5. ~~The daemon's privileged TCB is larger than necessary — it owns the entire routing/ACL plane.~~ **In progress**: AegisHub microVM introduced. Daemon now launches AegisHub first and registers it with `RoleHub`. Full routing delegation to the AegisHub VM is the remaining step (DA-hub).

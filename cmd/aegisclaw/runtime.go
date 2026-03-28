@@ -40,6 +40,12 @@ type runtimeEnv struct {
 	// Set once by ensureAgentVM on the first chat.message request.
 	AgentVMID string
 	agentVMMu sync.Mutex
+
+	// AegisHubVMID is the ID of the AegisHub system microVM launched at daemon
+	// startup. AegisHub is the sole IPC router for the system; all inter-VM
+	// traffic routes through it for ACL enforcement and audit logging.
+	// The daemon registers it before starting any other VM.
+	AegisHubVMID string
 }
 
 func initRuntime() (*runtimeEnv, error) {
