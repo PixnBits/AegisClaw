@@ -12,6 +12,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -101,4 +102,12 @@ func initRuntime() (*runtimeEnv, error) {
 		CompositionStore: compositionInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 	}, nil
+}
+
+// generateVMID produces a short, human-readable VM identifier with the given
+// prefix (e.g. "aegishub", "agent", "court") and a random 8-character suffix.
+// The format is: "<prefix>-<8-hex-chars>". All VM IDs in the daemon use this
+// helper so the format stays consistent and is easy to change in one place.
+func generateVMID(prefix string) string {
+	return prefix + "-" + uuid.New().String()[:8]
 }

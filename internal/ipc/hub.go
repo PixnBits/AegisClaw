@@ -60,7 +60,7 @@ func NewMessageHub(kern *kernel.Kernel, logger *zap.Logger) *MessageHub {
 
 // NewMessageHubNoKernel creates a MessageHub without kernel audit logging.
 // Use this when the hub runs inside a microVM (e.g. AegisHub) where the host
-// kernel singleton is not available. All routing and ACL logic is identical;
+// kernel instance is not available. All routing and ACL logic is identical;
 // only audit-log writes to the Merkle chain are skipped.
 func NewMessageHubNoKernel(logger *zap.Logger) *MessageHub {
 	return &MessageHub{
