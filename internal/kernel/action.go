@@ -12,62 +12,64 @@ import (
 type ActionType string
 
 const (
-	ActionKernelStart     ActionType = "kernel.start"
-	ActionKernelStop      ActionType = "kernel.stop"
-	ActionSandboxCreate   ActionType = "sandbox.create"
-	ActionSandboxStart    ActionType = "sandbox.start"
-	ActionSandboxStop     ActionType = "sandbox.stop"
-	ActionSandboxDelete   ActionType = "sandbox.delete"
-	ActionSkillRegister   ActionType = "skill.register"
-	ActionSkillActivate   ActionType = "skill.activate"
-	ActionSkillDeactivate ActionType = "skill.deactivate"
-	ActionSkillInvoke     ActionType = "skill.invoke"
-	ActionMessageRoute    ActionType = "message.route"
-	ActionControlPlane    ActionType = "controlplane.message"
-	ActionProposalCreate  ActionType = "proposal.create"
-	ActionProposalSubmit  ActionType = "proposal.submit"
-	ActionProposalReview  ActionType = "proposal.review"
-	ActionProposalApprove ActionType = "proposal.approve"
-	ActionProposalReject  ActionType = "proposal.reject"
-	ActionProposalVote    ActionType = "proposal.vote"
-	ActionBuilderCreate   ActionType = "builder.create"
-	ActionBuilderStart    ActionType = "builder.start"
-	ActionBuilderStop     ActionType = "builder.stop"
-	ActionBuilderBuild    ActionType = "builder.build"
-	ActionSecretAdd       ActionType = "secret.add"
-	ActionSecretGet       ActionType = "secret.get"
-	ActionSecretDelete    ActionType = "secret.delete"
+	ActionKernelStart         ActionType = "kernel.start"
+	ActionKernelStop          ActionType = "kernel.stop"
+	ActionSandboxCreate       ActionType = "sandbox.create"
+	ActionSandboxStart        ActionType = "sandbox.start"
+	ActionSandboxStop         ActionType = "sandbox.stop"
+	ActionSandboxDelete       ActionType = "sandbox.delete"
+	ActionSkillRegister       ActionType = "skill.register"
+	ActionSkillActivate       ActionType = "skill.activate"
+	ActionSkillDeactivate     ActionType = "skill.deactivate"
+	ActionSkillInvoke         ActionType = "skill.invoke"
+	ActionMessageRoute        ActionType = "message.route"
+	ActionControlPlane        ActionType = "controlplane.message"
+	ActionProposalCreate      ActionType = "proposal.create"
+	ActionProposalSubmit      ActionType = "proposal.submit"
+	ActionProposalReview      ActionType = "proposal.review"
+	ActionProposalApprove     ActionType = "proposal.approve"
+	ActionProposalReject      ActionType = "proposal.reject"
+	ActionProposalVote        ActionType = "proposal.vote"
+	ActionBuilderCreate       ActionType = "builder.create"
+	ActionBuilderStart        ActionType = "builder.start"
+	ActionBuilderStop         ActionType = "builder.stop"
+	ActionBuilderBuild        ActionType = "builder.build"
+	ActionSecretAdd           ActionType = "secret.add"
+	ActionSecretGet           ActionType = "secret.get"
+	ActionSecretDelete        ActionType = "secret.delete"
 	ActionCompositionRollback ActionType = "composition.rollback"
+	ActionLLMInfer            ActionType = "llm.infer"
 )
 
 // validActionTypes enumerates all recognized action types for validation.
 var validActionTypes = map[ActionType]bool{
-	ActionKernelStart:     true,
-	ActionKernelStop:      true,
-	ActionSandboxCreate:   true,
-	ActionSandboxStart:    true,
-	ActionSandboxStop:     true,
-	ActionSandboxDelete:   true,
-	ActionSkillRegister:   true,
-	ActionSkillActivate:   true,
-	ActionSkillDeactivate: true,
-	ActionSkillInvoke:     true,
-	ActionMessageRoute:    true,
-	ActionControlPlane:    true,
-	ActionProposalCreate:  true,
-	ActionProposalSubmit:  true,
-	ActionProposalReview:  true,
-	ActionProposalApprove: true,
-	ActionProposalReject:  true,
-	ActionProposalVote:    true,
-	ActionBuilderCreate:   true,
-	ActionBuilderStart:    true,
-	ActionBuilderStop:     true,
-	ActionBuilderBuild:    true,
-	ActionSecretAdd:       true,
-	ActionSecretGet:       true,
-	ActionSecretDelete:    true,
+	ActionKernelStart:         true,
+	ActionKernelStop:          true,
+	ActionSandboxCreate:       true,
+	ActionSandboxStart:        true,
+	ActionSandboxStop:         true,
+	ActionSandboxDelete:       true,
+	ActionSkillRegister:       true,
+	ActionSkillActivate:       true,
+	ActionSkillDeactivate:     true,
+	ActionSkillInvoke:         true,
+	ActionMessageRoute:        true,
+	ActionControlPlane:        true,
+	ActionProposalCreate:      true,
+	ActionProposalSubmit:      true,
+	ActionProposalReview:      true,
+	ActionProposalApprove:     true,
+	ActionProposalReject:      true,
+	ActionProposalVote:        true,
+	ActionBuilderCreate:       true,
+	ActionBuilderStart:        true,
+	ActionBuilderStop:         true,
+	ActionBuilderBuild:        true,
+	ActionSecretAdd:           true,
+	ActionSecretGet:           true,
+	ActionSecretDelete:        true,
 	ActionCompositionRollback: true,
+	ActionLLMInfer:            true,
 }
 
 // Action represents any operation that passes through the kernel.

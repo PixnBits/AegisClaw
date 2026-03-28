@@ -173,9 +173,21 @@ func (ie *IsolationEnforcer) checkEndpoint(ctx IsolationContext, endpoint string
 	return nil
 }
 
-// ValidateNetworkPolicy checks that a sandbox's NetworkPolicy allows Ollama access
-// on the correct host and port while maintaining default-deny.
+// ValidateNetworkPolicy checks that a sandbox's NetworkPolicy is correctly
+// configured for LLM access.
+//
+// Two valid configurations are accepted:
+//  1. NoNetwork mode: the sandbox has no TAP device; LLM access goes through
+//     the host-side vsock proxy.  This is the preferred paranoid configuration
+//     for court reviewer sandboxes.
+//  2. Localhost-only mode (legacy): DefaultDeny with AllowedHosts: [127.0.0.1]
+//     and AllowedPorts: [11434].  Kept for skill VMs that still use a TAP.
 func ValidateNetworkPolicy(defaultDeny bool, allowedHosts []string, allowedPorts []uint16) error {
+	// NoNetwork mode: no hosts/ports means no TAP device — the most secure option.
+	if defaultDeny && len(allowedHosts) == 0 && len(allowedPorts) == 0 {
+		return nil
+	}
+
 	if !defaultDeny {
 		return fmt.Errorf("network policy must have default_deny=true")
 	}

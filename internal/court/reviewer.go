@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/google/uuid"
@@ -107,22 +108,25 @@ type SandboxLauncher interface {
 // FirecrackerLauncher uses real Firecracker sandboxes for reviewer execution.
 type FirecrackerLauncher struct {
 	runtime *sandbox.FirecrackerRuntime
-	kern    *kernel.Kernel
 	config  sandbox.RuntimeConfig
+	proxy   *llm.OllamaProxy
 	logger  *zap.Logger
 }
 
 // NewFirecrackerLauncher creates a real launcher for reviewer sandboxes.
-func NewFirecrackerLauncher(runtime *sandbox.FirecrackerRuntime, kern *kernel.Kernel, cfg sandbox.RuntimeConfig, logger *zap.Logger) *FirecrackerLauncher {
+// proxy must not be nil; it is started per-VM after each reviewer VM boots.
+func NewFirecrackerLauncher(runtime *sandbox.FirecrackerRuntime, cfg sandbox.RuntimeConfig, proxy *llm.OllamaProxy, logger *zap.Logger) *FirecrackerLauncher {
 	return &FirecrackerLauncher{
 		runtime: runtime,
-		kern:    kern,
 		config:  cfg,
+		proxy:   proxy,
 		logger:  logger,
 	}
 }
 
 // LaunchReviewer creates and starts a Firecracker reviewer sandbox.
+// The sandbox has NO network interface; all LLM access goes through the
+// host-side OllamaProxy over vsock (no TAP device, no IP stack in the VM).
 func (fl *FirecrackerLauncher) LaunchReviewer(ctx context.Context, persona *Persona, model string) (string, error) {
 	sandboxID := uuid.New().String()
 	// Sanitize model name for sandbox naming (colons are invalid in sandbox names).
@@ -134,10 +138,11 @@ func (fl *FirecrackerLauncher) LaunchReviewer(ctx context.Context, persona *Pers
 			VCPUs:    1,
 			MemoryMB: 512,
 		},
+		// NoNetwork: reviewer VMs reach Ollama exclusively through the host-side
+		// LLM proxy over vsock.  No TAP device means no IP stack in the VM.
 		NetworkPolicy: sandbox.NetworkPolicy{
-			DefaultDeny:  true,
-			AllowedHosts: []string{"127.0.0.1"},
-			AllowedPorts: []uint16{11434},
+			NoNetwork:   true,
+			DefaultDeny: true,
 		},
 		RootfsPath: fl.config.RootfsTemplate,
 	}
@@ -150,6 +155,20 @@ func (fl *FirecrackerLauncher) LaunchReviewer(ctx context.Context, persona *Pers
 		return "", fmt.Errorf("failed to start reviewer sandbox: %w", err)
 	}
 
+	// Start the per-VM LLM proxy listener.  The proxy binds to
+	// <vsock_path>_1025 which Firecracker routes guest vsock connections to.
+	vsockPath, err := fl.runtime.VsockPath(sandboxID)
+	if err != nil {
+		fl.runtime.Stop(ctx, sandboxID)
+		fl.runtime.Delete(ctx, sandboxID)
+		return "", fmt.Errorf("failed to get vsock path for reviewer sandbox: %w", err)
+	}
+	if err := fl.proxy.StartForVM(sandboxID, vsockPath); err != nil {
+		fl.runtime.Stop(ctx, sandboxID)
+		fl.runtime.Delete(ctx, sandboxID)
+		return "", fmt.Errorf("failed to start llm proxy for reviewer sandbox: %w", err)
+	}
+
 	fl.logger.Info("reviewer sandbox launched",
 		zap.String("sandbox_id", sandboxID),
 		zap.String("persona", persona.Name),
@@ -158,7 +177,9 @@ func (fl *FirecrackerLauncher) LaunchReviewer(ctx context.Context, persona *Pers
 	return sandboxID, nil
 }
 
-// SendReviewRequest sends the review prompt via the kernel control plane (vsock).
+// SendReviewRequest sends the review prompt to the reviewer sandbox via vsock
+// using the Firecracker vsock proxy protocol (CONNECT <port>\n) and waits for
+// the structured verdict response.
 func (fl *FirecrackerLauncher) SendReviewRequest(ctx context.Context, sandboxID string, req *ReviewRequest) (*ReviewResponse, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
@@ -170,20 +191,29 @@ func (fl *FirecrackerLauncher) SendReviewRequest(ctx context.Context, sandboxID 
 		Payload: payload,
 	}
 
-	resp, err := fl.kern.ControlPlane().Send(sandboxID, ctlMsg)
+	// Use SendToVM which speaks the Firecracker vsock CONNECT protocol
+	// (CONNECT 1024\n → OK 1024\n), falling back to TCP via guest IP.
+	rawResp, err := fl.runtime.SendToVM(ctx, sandboxID, ctlMsg)
 	if err != nil {
-		return nil, fmt.Errorf("vsock send failed: %w", err)
+		return nil, fmt.Errorf("send to reviewer vm failed: %w", err)
 	}
 
-	if !resp.Success {
-		return nil, fmt.Errorf("reviewer returned error: %s", resp.Error)
+	var guestResp struct {
+		Success bool            `json:"success"`
+		Error   string          `json:"error,omitempty"`
+		Data    json.RawMessage `json:"data,omitempty"`
+	}
+	if err := json.Unmarshal(rawResp, &guestResp); err != nil {
+		return nil, fmt.Errorf("parse reviewer response envelope: %w", err)
+	}
+	if !guestResp.Success {
+		return nil, fmt.Errorf("reviewer returned error: %s", guestResp.Error)
 	}
 
 	var reviewResp ReviewResponse
-	if err := json.Unmarshal(resp.Data, &reviewResp); err != nil {
+	if err := json.Unmarshal(guestResp.Data, &reviewResp); err != nil {
 		return nil, fmt.Errorf("failed to parse review response: %w", err)
 	}
-
 	if err := reviewResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid review response: %w", err)
 	}
@@ -191,8 +221,9 @@ func (fl *FirecrackerLauncher) SendReviewRequest(ctx context.Context, sandboxID 
 	return &reviewResp, nil
 }
 
-// StopReviewer stops and deletes a reviewer sandbox.
+// StopReviewer stops and deletes a reviewer sandbox and closes its LLM proxy.
 func (fl *FirecrackerLauncher) StopReviewer(ctx context.Context, sandboxID string) error {
+	fl.proxy.StopForVM(sandboxID)
 	if err := fl.runtime.Stop(ctx, sandboxID); err != nil {
 		fl.logger.Error("failed to stop reviewer sandbox", zap.String("id", sandboxID), zap.Error(err))
 	}

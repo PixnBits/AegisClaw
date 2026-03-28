@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/PixnBits/AegisClaw/internal/court"
+	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"go.uber.org/zap"
 )
@@ -86,7 +87,12 @@ func initCourtLauncher(env *runtimeEnv) (court.SandboxLauncher, error) {
 		ChrootBaseDir:  env.Config.Sandbox.ChrootBase,
 		StateDir:       env.Config.Sandbox.StateDir,
 	}
-	return court.NewFirecrackerLauncher(env.Runtime, env.Kernel, rtCfg, env.Logger), nil
+	// Build the per-VM LLM proxy.  The proxy owns the only path from reviewer
+	// VMs to Ollama; VMs have no network interface and call the proxy via vsock.
+	allowedModels := llm.AllowedModelsFromRegistry()
+	proxy := llm.NewOllamaProxy(allowedModels, "", env.Kernel, env.Logger)
+
+	return court.NewFirecrackerLauncher(env.Runtime, rtCfg, proxy, env.Logger), nil
 }
 
 // isKVMAvailable checks whether /dev/kvm is accessible.

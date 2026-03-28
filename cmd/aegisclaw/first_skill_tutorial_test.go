@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/PixnBits/AegisClaw/internal/builder"
+	"github.com/PixnBits/AegisClaw/internal/builder/securitygate"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
@@ -418,4 +422,347 @@ func TestFirstSkillTutorialSpecFields(t *testing.T) {
 	if !ok || len(personas) < 5 {
 		t.Errorf("spec.persona_requirements should have 5 entries, got %v", personas)
 	}
+}
+
+// greeterSkillFiles returns the minimal source files for the time-of-day greeter
+// skill. These are used by both the security-gate and artifact tests so the
+// code is defined once and matches what the tutorial describes.
+func greeterSkillFiles() map[string]string {
+	return map[string]string{
+		"main.go": `package main
+
+import (
+	"encoding/json"
+	"os"
+	"time"
+)
+
+// Request mirrors the vsock message envelope sent by the daemon.
+type Request struct {
+	ID      string          ` + "`" + `json:"id"` + "`" + `
+	Type    string          ` + "`" + `json:"type"` + "`" + `
+	Payload json.RawMessage ` + "`" + `json:"payload"` + "`" + `
+}
+
+// Response is the vsock reply envelope.
+type Response struct {
+	ID      string ` + "`" + `json:"id"` + "`" + `
+	Success bool   ` + "`" + `json:"success"` + "`" + `
+	Error   string ` + "`" + `json:"error,omitempty"` + "`" + `
+	Data    any    ` + "`" + `json:"data,omitempty"` + "`" + `
+}
+
+// greet returns a locale-aware greeting for the current Eastern Time hour.
+// America/New_York observes US DST automatically via the IANA tz database.
+func greet() string {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.UTC
+	}
+	hour := time.Now().In(loc).Hour()
+	switch {
+	case hour >= 5 && hour < 12:
+		return "Good morning!"
+	case hour >= 12 && hour < 17:
+		return "Good afternoon!"
+	case hour >= 17 && hour < 21:
+		return "Good evening!"
+	default:
+		return "Good night!"
+	}
+}
+
+func main() {
+	dec := json.NewDecoder(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+
+	var req Request
+	if err := dec.Decode(&req); err != nil {
+		enc.Encode(Response{Error: "decode error"}) //nolint:errcheck
+		return
+	}
+
+	switch req.Type {
+	case "greet":
+		enc.Encode(Response{ //nolint:errcheck
+			ID:      req.ID,
+			Success: true,
+			Data:    map[string]string{"greeting": greet()},
+		})
+	default:
+		enc.Encode(Response{ID: req.ID, Error: "unknown tool: " + req.Type}) //nolint:errcheck
+	}
+}
+`,
+		"go.mod": `module github.com/PixnBits/AegisClaw/skills/time-of-day-greeter
+
+go 1.25
+`,
+	}
+}
+
+// greeterSkillSpec returns the SkillSpec for the time-of-day greeter.
+func greeterSkillSpec() *builder.SkillSpec {
+	return &builder.SkillSpec{
+		Name:        "time-of-day-greeter",
+		Description: "A skill that greets the user with a time-appropriate message (good morning, good afternoon, good evening, good night) based on the current local time, respecting DST, in en-US locale.",
+		Tools: []builder.ToolSpec{
+			{
+				Name:         "greet",
+				Description:  "Returns a locale-aware, DST-respecting greeting appropriate for the current time of day",
+				InputSchema:  `{"type":"object","properties":{}}`,
+				OutputSchema: `{"type":"object","properties":{"greeting":{"type":"string"}}}`,
+			},
+		},
+		NetworkPolicy:       builder.SkillNetworkPolicy{DefaultDeny: true},
+		Language:            "go",
+		EntryPoint:          "main.go",
+		PersonaRequirements: []string{"CISO", "SeniorCoder", "SecurityArchitect", "Tester", "UserAdvocate"},
+	}
+}
+
+// TestFirstSkillTutorialSecurityGates exercises Tutorial Step 6 — the mandatory
+// security gates (D8) that run before any skill artifact can be deployed.
+//
+// The four gates tested are:
+//   - SAST: static analysis for anti-patterns (injection, weak crypto, hardcoded creds)
+//   - SCA: dependency scanning for banned/vulnerable packages
+//   - Secrets scanning: detects accidentally embedded keys/tokens
+//   - Policy-as-code: enforces isolation invariants (no host FS, no privileged ops)
+//
+// The greeter skill uses only stdlib time/encoding/os, so it must pass all gates.
+func TestFirstSkillTutorialSecurityGates(t *testing.T) {
+	files := greeterSkillFiles()
+
+	// ── Step 6a: Run the full default security gate pipeline ───────────
+	sgPipeline := securitygate.DefaultPipeline(securitygate.DefaultPolicies())
+	req := &securitygate.EvalRequest{
+		ProposalID: "tutorial-sg-test-001",
+		SkillName:  "time-of-day-greeter",
+		Files:      files,
+	}
+
+	sgResult, err := sgPipeline.Evaluate(req)
+	if err != nil {
+		t.Fatalf("Step 6a - security gate evaluation: %v", err)
+	}
+
+	// ── Step 6b: All four gates must pass ──────────────────────────────
+	if !sgResult.Passed {
+		t.Errorf("Step 6b - security gate pipeline failed (blocking: %d, total: %d)",
+			sgResult.BlockingFindings, sgResult.TotalFindings)
+		for _, gr := range sgResult.Gates {
+			for _, f := range gr.Findings {
+				if f.Severity == securitygate.SeverityError || f.Severity == securitygate.SeverityCritical {
+					t.Logf("  BLOCKING [%s] %s:%d %s (%s)", f.Rule, f.File, f.Line, f.Message, f.Severity)
+				}
+			}
+		}
+	}
+
+	gatesSeen := make(map[securitygate.GateType]bool)
+	for _, gr := range sgResult.Gates {
+		gatesSeen[gr.Gate] = true
+	}
+	for _, g := range []securitygate.GateType{
+		securitygate.GateSAST,
+		securitygate.GateSCA,
+		securitygate.GateSecretsScanning,
+		securitygate.GatePolicy,
+	} {
+		if !gatesSeen[g] {
+			t.Errorf("Step 6b - gate %q did not run", g)
+		}
+	}
+
+	// ── Step 6c: No blocking findings ─────────────────────────────────
+	if sgResult.BlockingFindings != 0 {
+		t.Errorf("Step 6c - expected 0 blocking findings, got %d", sgResult.BlockingFindings)
+	}
+
+	// ── Step 6d: SAST gate produces no error/critical findings ─────────
+	for _, gr := range sgResult.Gates {
+		if gr.Gate != securitygate.GateSAST {
+			continue
+		}
+		for _, f := range gr.Findings {
+			if f.Severity == securitygate.SeverityError || f.Severity == securitygate.SeverityCritical {
+				t.Errorf("Step 6d - SAST blocking finding: [%s] %s", f.Rule, f.Message)
+			}
+		}
+	}
+
+	// ── Step 6e: SCA gate passes (no banned deps in go.mod) ───────────
+	for _, gr := range sgResult.Gates {
+		if gr.Gate == securitygate.GateSCA && !gr.Passed {
+			t.Errorf("Step 6e - SCA gate failed: %v", gr.Findings)
+		}
+	}
+
+	// ── Step 6f: Secrets gate passes ──────────────────────────────────
+	for _, gr := range sgResult.Gates {
+		if gr.Gate == securitygate.GateSecretsScanning && !gr.Passed {
+			t.Errorf("Step 6f - secrets gate failed: %v", gr.Findings)
+		}
+	}
+
+	// ── Step 6g: Policy gate — no blocking violations ──────────────────
+	for _, gr := range sgResult.Gates {
+		if gr.Gate != securitygate.GatePolicy {
+			continue
+		}
+		for _, f := range gr.Findings {
+			if f.Severity == securitygate.SeverityError || f.Severity == securitygate.SeverityCritical {
+				t.Errorf("Step 6g - policy blocking violation: [%s] %s", f.Rule, f.Message)
+			}
+		}
+	}
+
+	t.Logf("Security gates: passed=%v  blocking=%d  total=%d  gates=%d",
+		sgResult.Passed, sgResult.BlockingFindings, sgResult.TotalFindings, len(sgResult.Gates))
+}
+
+// TestFirstSkillTutorialArtifactSigning exercises Tutorial Step 7 — artifact
+// packaging, cryptographic signing, and verification.
+//
+// After the builder pipeline completes, the skill binary is:
+//  1. Signed with the kernel's Ed25519 key
+//  2. Stored in the artifact store alongside a manifest and checksum file
+//  3. Verifiable — the manifest signature and binary hash must round-trip
+func TestFirstSkillTutorialArtifactSigning(t *testing.T) {
+	kernel.ResetInstance()
+	logger := zaptest.NewLogger(t)
+	auditDir := t.TempDir()
+	artifactDir := filepath.Join(t.TempDir(), "artifacts")
+
+	kern, err := kernel.GetInstance(logger, auditDir)
+	if err != nil {
+		t.Fatalf("kernel init: %v", err)
+	}
+	t.Cleanup(func() {
+		kern.Shutdown()
+		kernel.ResetInstance()
+	})
+
+	store, err := builder.NewArtifactStore(artifactDir, kern, logger)
+	if err != nil {
+		t.Fatalf("NewArtifactStore: %v", err)
+	}
+
+	spec := greeterSkillSpec()
+
+	// Simulate the binary produced by the builder pipeline.
+	// In production this is the compiled Go binary; here we use a stub.
+	simulatedBinary := []byte("ELF-binary-stub-time-of-day-greeter-v1.0.0")
+
+	// File hashes as the pipeline's computeFileHashes would produce.
+	fileHashes := map[string]string{
+		"main.go": "abc123deadbeef",
+		"go.mod":  "fedcba987654",
+	}
+
+	proposalID := "tutorial-artifact-" + uuid.New().String()[:8]
+
+	// ── Step 7a: Package and sign the artifact ─────────────────────────
+	manifest, err := store.PackageArtifact(
+		"time-of-day-greeter",
+		proposalID,
+		"v1.0.0",
+		"abc1234def5678",
+		simulatedBinary,
+		fileHashes,
+		spec,
+	)
+	if err != nil {
+		t.Fatalf("Step 7a - PackageArtifact: %v", err)
+	}
+
+	// ── Step 7b: Manifest fields match the proposal and spec ──────────
+	if manifest.SkillID != "time-of-day-greeter" {
+		t.Errorf("Step 7b - SkillID = %q, want 'time-of-day-greeter'", manifest.SkillID)
+	}
+	if manifest.ProposalID != proposalID {
+		t.Errorf("Step 7b - ProposalID = %q, want %q", manifest.ProposalID, proposalID)
+	}
+	if manifest.Version != "v1.0.0" {
+		t.Errorf("Step 7b - Version = %q, want 'v1.0.0'", manifest.Version)
+	}
+	if manifest.Language != "go" {
+		t.Errorf("Step 7b - Language = %q, want 'go'", manifest.Language)
+	}
+	if manifest.EntryPoint != "main.go" {
+		t.Errorf("Step 7b - EntryPoint = %q, want 'main.go'", manifest.EntryPoint)
+	}
+
+	// ── Step 7c: Binary is signed with the kernel key ─────────────────
+	if manifest.Signature == "" {
+		t.Error("Step 7c - Signature is empty")
+	}
+	if manifest.KernelPubKey == "" {
+		t.Error("Step 7c - KernelPubKey is empty")
+	}
+	// Verify the stored public key matches the actual kernel key.
+	pubKeyHex := hex.EncodeToString(kern.PublicKey())
+	if manifest.KernelPubKey != pubKeyHex {
+		t.Errorf("Step 7c - KernelPubKey mismatch: manifest=%s kernel=%s",
+			manifest.KernelPubKey[:16]+"...", pubKeyHex[:16]+"...")
+	}
+
+	// ── Step 7d: Sandbox manifest enforces isolation ───────────────────
+	if !manifest.Sandbox.ReadOnlyRoot {
+		t.Error("Step 7d - sandbox.ReadOnlyRoot must be true (immutable rootfs)")
+	}
+	if manifest.Sandbox.VCPUs < 1 {
+		t.Errorf("Step 7d - sandbox.VCPUs = %d, want >= 1", manifest.Sandbox.VCPUs)
+	}
+	if manifest.Sandbox.MemoryMB < 1 {
+		t.Errorf("Step 7d - sandbox.MemoryMB = %d, want >= 1", manifest.Sandbox.MemoryMB)
+	}
+	// Greeter needs no network — policy string should say "deny".
+	if !strings.Contains(manifest.Sandbox.NetworkPolicy, "deny") {
+		t.Errorf("Step 7d - sandbox.NetworkPolicy should contain 'deny', got %q",
+			manifest.Sandbox.NetworkPolicy)
+	}
+
+	// ── Step 7e: Validate the manifest round-trips cleanly ────────────
+	if err := manifest.Validate(); err != nil {
+		t.Errorf("Step 7e - manifest.Validate: %v", err)
+	}
+
+	// ── Step 7f: VerifyArtifact confirms hash and signature integrity ──
+	verified, err := store.VerifyArtifact("time-of-day-greeter")
+	if err != nil {
+		t.Fatalf("Step 7f - VerifyArtifact: %v", err)
+	}
+	if verified.BinaryHash != manifest.BinaryHash {
+		t.Errorf("Step 7f - verified BinaryHash mismatch: got %s, want %s",
+			verified.BinaryHash[:16]+"...", manifest.BinaryHash[:16]+"...")
+	}
+	if verified.Signature != manifest.Signature {
+		t.Errorf("Step 7f - verified Signature mismatch")
+	}
+
+	// ── Step 7g: Listing confirms the artifact is stored ──────────────
+	ids, err := store.ListArtifacts()
+	if err != nil {
+		t.Fatalf("Step 7g - ListArtifacts: %v", err)
+	}
+	found := false
+	for _, id := range ids {
+		if id == "time-of-day-greeter" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Step 7g - 'time-of-day-greeter' not found in artifact list: %v", ids)
+	}
+
+	// ── Step 7h: Audit log captured the packaging event ───────────────
+	auditLog := kern.AuditLog()
+	if auditLog.EntryCount() < 1 {
+		t.Error("Step 7h - expected at least 1 audit entry from artifact packaging")
+	}
+
+	t.Logf("Artifact signed: skill=%s  version=%s  size=%d  sig=%s...",
+		manifest.SkillID, manifest.Version, manifest.BinarySize, manifest.Signature[:16])
 }
