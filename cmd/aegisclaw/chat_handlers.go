@@ -182,7 +182,7 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 	}
 
 	agentRootfs := env.Config.Agent.RootfsPath
-	agentID := "agent-" + uuid.New().String()[:8]
+	agentID := generateVMID("agent")
 
 	spec := sandbox.SandboxSpec{
 		ID:   agentID,

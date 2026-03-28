@@ -158,6 +158,7 @@ The `ipc.MessageHub.RouteMessage` method must enforce an ACL before delivering a
 | **Builder VM** (`role: builder`) | `build.result`, `status` | All others |
 | **Skill VM** (`role: skill`) | `tool.result`, `status` | All others |
 | **AegisHub VM** (`role: hub`) | All (wildcard) | — |
+| **Daemon tool endpoint** (`role: daemon`) | `tool.result`, `status` | All others |
 
 The `hub` wildcard is necessary because AegisHub acts as the routing authority — it must be able to forward any permitted message to its destination. This does not bypass ACL; AegisHub itself enforces the ACL before delivering. The daemon validates that only the AegisHub VM may be assigned `RoleHub`.
 
@@ -513,13 +514,13 @@ Moving routing out of the root-privileged daemon shrinks the privileged Trusted 
 - ACL enforcement (role → permitted message types)
 - Message routing decisions (find handler for destination VM/ID)
 - Audit log entries for every routing event
-- VM identity registration and unregistration
+- VM identity registration and unregistration (routing table is live operational state — see §13.6)
 - Hub health/stats reporting (`hub.status`, `hub.routes`)
 
 **AegisHub is NOT responsible for:**
 - VM lifecycle management (create/start/stop/delete) — that stays in the daemon
-- Tool handler execution (proposal.create_draft etc.) — those run in the daemon
-- Secret injection — that stays in the daemon
+- Tool handler execution — tool handlers (e.g. `proposal.create_draft`) are implemented and executed in the daemon, but **invocations arrive as AegisHub-routed `tool.exec` messages**. The daemon registers itself with AegisHub as a tool-handler endpoint (with a restricted `RoleDaemon` role), so every tool call from an agent VM is ACL-gated by AegisHub before reaching the daemon. Direct daemon calls that bypass AegisHub's routing plane are a security defect. (Current state: daemon registers but full ACL-gated tool dispatch is tracked as D2-a.)
+- Secret injection — that stays in the daemon (injected at VM launch time, not routed through the message plane)
 - LLM inference — that stays in agent/court/builder VMs
 
 ### 13.5 Protocol (daemon ↔ AegisHub)
@@ -556,14 +557,23 @@ When `deliver_to_vm` is non-empty, the daemon must forward the message to that V
 
 ### 13.6 Governance
 
-AegisHub is an **immutable core component**. Changes to its code or VM image must flow through the Governance Court SDLC:
-1. Proposal created with `proposal.create_draft` (target skill: `aegishub`)
-2. Court review with all 5 personas (mandatory CISO and Security Architect reviews)
-3. Builder pipeline: SAST + SCA + policy gates + artifact signing
-4. Signed composition manifest update
-5. Graceful restart via daemon with rollback on health failure
+AegisHub has two distinct kinds of state with different mutability guarantees:
 
-No direct operator modifications to the AegisHub binary or image are permitted outside this process.
+**Immutable** — the AegisHub binary and rootfs image:
+- The running AegisHub microVM cannot modify its own binary or filesystem at runtime (rootfs is read-only, `cap-drop ALL`).
+- Replacing the binary or image requires a full Governance Court SDLC cycle:
+  1. Proposal created with `proposal.create_draft` (target: `aegishub`)
+  2. Court review with all 5 personas (mandatory CISO and Security Architect reviews)
+  3. Builder pipeline: SAST + SCA + policy gates + artifact signing
+  4. Signed composition manifest update
+  5. Daemon restarts AegisHub from the new signed image; rolls back automatically on health failure
+- No direct operator modifications to the AegisHub binary or image are permitted outside this process.
+
+**Dynamic operational state** — the routing table:
+- AegisHub's in-memory routing table tracks which VM IDs are currently registered and their roles.
+- The table changes at runtime as VMs start and stop: the daemon sends `hub.register_vm` when it starts a skill, agent, or court VM, and `hub.unregister_vm` when the VM stops.
+- This is expected and intentional — the table must grow as tools, skills, and new agent types are added to the system.
+- The ACL policy (which roles may send which message types) is part of the **immutable binary** — it does not change when new VMs register. Adding a new skill only adds a `RoleSkill` routing entry; it does not grant any new ACL permissions beyond those already defined for `RoleSkill`.
 
 ---
 

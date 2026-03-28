@@ -645,7 +645,7 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 			hubRootfs, aegisHubRootfsEnvKey, err)
 	}
 
-	hubVMID := "aegishub-" + uuid.New().String()[:8]
+	hubVMID := generateVMID("aegishub")
 	spec := sandbox.SandboxSpec{
 		ID:   hubVMID,
 		Name: "aegishub",

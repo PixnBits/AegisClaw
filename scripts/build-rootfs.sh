@@ -164,7 +164,7 @@ fi
 
 # Set up minimal /etc/passwd and /etc/group
 cat > "${MOUNTPOINT}/etc/passwd" << 'EOF'
-root:x:0:0:root:/:/sbin/nologin
+root:x:0:0:root:/root:/sbin/nologin
 nobody:x:65534:65534:nobody:/:/sbin/nologin
 EOF
 

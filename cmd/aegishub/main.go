@@ -170,7 +170,10 @@ func (s *server) handleConn(conn net.Conn) {
 	encoder := json.NewEncoder(conn)
 
 	for {
-		conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck
+		if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			s.logger.Warn("failed to set connection deadline", zap.Error(err))
+			return
+		}
 
 		var req HubRequest
 		if err := decoder.Decode(&req); err != nil {
