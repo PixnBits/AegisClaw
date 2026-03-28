@@ -176,6 +176,7 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 		}
 		// VM is gone — fall through to (re)create it.
 		env.Logger.Warn("agent VM is no longer running, restarting", zap.String("vm_id", env.AgentVMID))
+		env.LLMProxy.StopForVM(env.AgentVMID)
 		env.AgentVMID = ""
 	}
 
@@ -189,11 +190,11 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 			VCPUs:    1,
 			MemoryMB: 512,
 		},
+		// NoNetwork: the agent VM reaches Ollama exclusively through the
+		// host-side LLM proxy over vsock, just like reviewer VMs.
 		NetworkPolicy: sandbox.NetworkPolicy{
-			DefaultDeny:      true,
-			AllowedHosts:     []string{"127.0.0.1"},
-			AllowedPorts:     []uint16{11434},
-			AllowedProtocols: []string{"tcp"},
+			NoNetwork:   true,
+			DefaultDeny: true,
 		},
 		RootfsPath:  agentRootfs,
 		KernelPath:  env.Config.Sandbox.KernelImage,
@@ -205,6 +206,19 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 	}
 	if err := env.Runtime.Start(ctx, agentID); err != nil {
 		return "", fmt.Errorf("start agent VM: %w", err)
+	}
+
+	// Start the per-VM LLM proxy so the guest-agent can reach Ollama via vsock.
+	vsockPath, err := env.Runtime.VsockPath(agentID)
+	if err != nil {
+		env.Runtime.Stop(ctx, agentID)
+		env.Runtime.Delete(ctx, agentID)
+		return "", fmt.Errorf("get vsock path for agent VM: %w", err)
+	}
+	if err := env.LLMProxy.StartForVM(agentID, vsockPath); err != nil {
+		env.Runtime.Stop(ctx, agentID)
+		env.Runtime.Delete(ctx, agentID)
+		return "", fmt.Errorf("start llm proxy for agent VM: %w", err)
 	}
 
 	env.AgentVMID = agentID
