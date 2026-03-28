@@ -7,7 +7,9 @@ LOGS_DIR="${REPO_ROOT}/logs/live-test-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$LOGS_DIR"
 
 printf "This will reset your local AegisClaw state directories and run the live end-to-end test.\n"
-printf "Directories to be removed: $HOME/.config/aegisclaw  $HOME/.local/share/aegisclaw  $HOME/.cache/aegisclaw\n"
+printf "Directories to be removed:\n"
+printf "  User:  \$HOME/.config/aegisclaw  \$HOME/.local/share/aegisclaw  \$HOME/.cache/aegisclaw\n"
+printf "  Root:  /root/.config/aegisclaw   /root/.local/share/aegisclaw   /root/.cache/aegisclaw\n"
 read -r -p "Continue? (y/N) " ans
 if [[ "${ans:-N}" != "y" && "${ans:-N}" != "Y" ]]; then
   echo "Aborting. No changes made."
@@ -28,6 +30,18 @@ for d in "$HOME/.config/aegisclaw" "$HOME/.local/share/aegisclaw" "$HOME/.cache/
     rm -rf "$d"
   fi
 done
+
+# The test runs as root (sudo), so also reset root's state directories.
+# Without this, the audit log and proposal store accumulate across runs.
+ROOT_HOME="$(sudo sh -c 'echo $HOME')"
+if [ "$ROOT_HOME" != "$HOME" ]; then
+  for d in "$ROOT_HOME/.config/aegisclaw" "$ROOT_HOME/.local/share/aegisclaw" "$ROOT_HOME/.cache/aegisclaw"; do
+    if [ -e "$d" ]; then
+      echo "Removing $d (root state)"
+      sudo rm -rf "$d"
+    fi
+  done
+fi
 
 # Prepare log files
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
