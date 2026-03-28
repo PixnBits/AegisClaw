@@ -174,23 +174,29 @@ func (r *FirecrackerRuntime) Start(ctx context.Context, id string) error {
 	spec := ms.info.Spec
 	sandboxDir := filepath.Join(r.cfg.StateDir, spec.ID)
 
-	// Set up network (tap device + nftables)
-	tapName, hostIP, guestIP, err := r.setupNetwork(spec)
-	if err != nil {
-		ms.info.State = StateError
-		ms.info.Error = fmt.Sprintf("network setup failed: %v", err)
-		return fmt.Errorf("failed to set up network for sandbox %s: %w", id, err)
-	}
-	ms.info.TapDevice = tapName
-	ms.info.HostIP = hostIP
-	ms.info.GuestIP = guestIP
+	// Set up network (tap device + nftables) — skipped for NoNetwork sandboxes.
+	// NoNetwork sandboxes boot with no TAP device and no IP stack; they reach
+	// host services exclusively via the vsock kernel channel (e.g. the LLM proxy).
+	var tapName, hostIP, guestIP string
+	if !spec.NetworkPolicy.NoNetwork {
+		var netErr error
+		tapName, hostIP, guestIP, netErr = r.setupNetwork(spec)
+		if netErr != nil {
+			ms.info.State = StateError
+			ms.info.Error = fmt.Sprintf("network setup failed: %v", netErr)
+			return fmt.Errorf("failed to set up network for sandbox %s: %w", id, netErr)
+		}
+		ms.info.TapDevice = tapName
+		ms.info.HostIP = hostIP
+		ms.info.GuestIP = guestIP
 
-	// Apply nftables rules based on network policy
-	if err := r.applyNetworkPolicy(spec.ID, tapName, guestIP, &spec.NetworkPolicy); err != nil {
-		r.teardownNetwork(tapName, spec.ID)
-		ms.info.State = StateError
-		ms.info.Error = fmt.Sprintf("network policy failed: %v", err)
-		return fmt.Errorf("failed to apply network policy for sandbox %s: %w", id, err)
+		// Apply nftables rules based on network policy.
+		if err := r.applyNetworkPolicy(spec.ID, tapName, guestIP, &spec.NetworkPolicy); err != nil {
+			r.teardownNetwork(tapName, spec.ID)
+			ms.info.State = StateError
+			ms.info.Error = fmt.Sprintf("network policy failed: %v", err)
+			return fmt.Errorf("failed to apply network policy for sandbox %s: %w", id, err)
+		}
 	}
 
 	// Build Firecracker configuration
@@ -449,11 +455,16 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 		AddDrive(workspacePath, false).
 		Build()
 
-	// Pass guest IP to the guest-agent via kernel command line so it can
-	// configure eth0 when vsock transport is not available.
-	kernelArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off init=/sbin/guest-agent ip=%s::%s:255.255.255.252::eth0:off", guestIP, hostIP)
+		// Pass guest IP to the guest-agent via kernel command line so it can
+		// configure eth0 when vsock transport is not available.
+	// For NoNetwork sandboxes, omit the IP configuration entirely so the
+	// guest kernel does not attempt to bring up a non-existent interface.
+	kernelArgs := "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/guest-agent"
+	if !spec.NetworkPolicy.NoNetwork {
+		kernelArgs += fmt.Sprintf(" ip=%s::%s:255.255.255.252::eth0:off", guestIP, hostIP)
+	}
 
-	return firecracker.Config{
+	cfg := firecracker.Config{
 		SocketPath:      socketPath,
 		KernelImagePath: kernelImage,
 		KernelArgs:      kernelArgs,
@@ -461,14 +472,6 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  firecracker.Int64(spec.Resources.VCPUs),
 			MemSizeMib: firecracker.Int64(spec.Resources.MemoryMB),
-		},
-		NetworkInterfaces: []firecracker.NetworkInterface{
-			{
-				StaticConfiguration: &firecracker.StaticNetworkConfiguration{
-					MacAddress:  generateMAC(spec.VsockCID),
-					HostDevName: tapName,
-				},
-			},
 		},
 		VsockDevices: []firecracker.VsockDevice{
 			{
@@ -481,9 +484,22 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 			Enabled: true,
 		},
 	}
-}
 
-// buildJailerConfig creates the jailer configuration for UID/GID isolation.
+	// Only attach a network interface when the sandbox has a TAP device.
+	if !spec.NetworkPolicy.NoNetwork {
+		cfg.NetworkInterfaces = []firecracker.NetworkInterface{
+			{
+				StaticConfiguration: &firecracker.StaticNetworkConfiguration{
+					MacAddress:  generateMAC(spec.VsockCID),
+					HostDevName: tapName,
+				},
+			},
+		}
+	}
+
+	return cfg
+	// buildJailerConfig creates the jailer configuration for UID/GID isolation.
+}
 func (r *FirecrackerRuntime) buildJailerConfig(spec SandboxSpec) firecracker.JailerConfig {
 	// Each sandbox gets a unique UID/GID based on its CID offset.
 	// Starting from 10000 to avoid conflicts with system users.
@@ -769,6 +785,20 @@ func (r *FirecrackerRuntime) VsockPath(id string) (string, error) {
 		return filepath.Join(r.cfg.ChrootBaseDir, "firecracker", id, "root", "vsock.sock"), nil
 	}
 	return filepath.Join(r.cfg.StateDir, id, "vsock.sock"), nil
+}
+
+// VsockCallbackPath returns the host-side socket path where Firecracker delivers
+// guest-initiated vsock connections to the host on the given port.
+//
+// When a guest connects to VMADDR_CID_HOST:<port>, Firecracker connects to
+// <vsock_base_path>_<port> on the host.  The host LLM proxy listens on this
+// path so the VM can reach Ollama without a network interface.
+func (r *FirecrackerRuntime) VsockCallbackPath(id string, port uint) (string, error) {
+	base, err := r.VsockPath(id)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s_%d", base, port), nil
 }
 
 // SendToVM connects to a running VM's guest-agent and sends a JSON request,

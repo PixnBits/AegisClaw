@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -558,47 +557,23 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 	userMsg.WriteString(`- "questions": (optional) an array of follow-up questions` + "\n")
 	userMsg.WriteString(`- "comments": a brief summary of your assessment` + "\n")
 
-	// Call Ollama via the allowed network path (127.0.0.1:11434 per sandbox spec).
-	ollamaReq := map[string]interface{}{
-		"model": payload.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": payload.Prompt},
-			{"role": "user", "content": userMsg.String()},
-		},
-		"format": "json",
-		"options": map[string]interface{}{
-			"temperature": 0.3,
-		},
-		"stream": false,
+	// Call Ollama via the host LLM proxy over vsock (no network interface in
+	// this sandbox — all LLM access goes through the kernel vsock channel).
+	messages := []map[string]string{
+		{"role": "system", "content": payload.Prompt},
+		{"role": "user", "content": userMsg.String()},
 	}
+	options := map[string]interface{}{"temperature": 0.3}
 
-	body, err := json.Marshal(ollamaReq)
+	proxyCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+
+	raw, err := callOllamaViaProxy(proxyCtx, payload.Model, messages, "json", options)
 	if err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("failed to marshal ollama request: %v", err))
+		return errorResponse(req.ID, fmt.Sprintf("ollama proxy error: %v", err))
 	}
 
-	ollamaURL := "http://127.0.0.1:11434/api/chat"
-	httpReq, err := newHTTPRequest(ctx, "POST", ollamaURL, body)
-	if err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("failed to create request: %v", err))
-	}
-
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("ollama request failed: %v", err))
-	}
-	defer httpResp.Body.Close()
-
-	var ollamaResp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.NewDecoder(httpResp.Body).Decode(&ollamaResp); err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("failed to decode ollama response: %v", err))
-	}
-
-	raw := strings.TrimSpace(ollamaResp.Message.Content)
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return errorResponse(req.ID, "empty response from model")
 	}
@@ -720,7 +695,7 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 	callCtx, cancel := context.WithTimeout(ctx, ollamaTimeout)
 	defer cancel()
 
-	content, err := callOllama(callCtx, payload.Model, ollamaMsgs)
+	content, err := callOllamaViaProxy(callCtx, payload.Model, ollamaMsgs, "", nil)
 	if err != nil {
 		return errorResponse(req.ID, fmt.Sprintf("ollama error: %v", err))
 	}
@@ -773,55 +748,80 @@ func buildOllamaMsgs(msgs []ChatMsg) []map[string]string {
 	return out
 }
 
-// callOllama sends a chat completion request to the local Ollama endpoint and
-// returns the model's response content.
-func callOllama(ctx context.Context, model string, messages []map[string]string) (string, error) {
-	ollamaReq := map[string]interface{}{
-		"model":    model,
-		"messages": messages,
-		"stream":   false,
-	}
-
-	body, err := json.Marshal(ollamaReq)
+// callOllamaViaProxy sends an LLM inference request to the host-side OllamaProxy
+// over vsock (AF_VSOCK, host CID 2, port 1025).  The proxy validates the model
+// against the allowlist and proxies to the local Ollama service; this VM has no
+// network interface and cannot reach Ollama directly.
+func callOllamaViaProxy(ctx context.Context, model string, messages []map[string]string, format string, options map[string]interface{}) (string, error) {
+	// Dial host (CID 2) on the well-known LLM proxy port.
+	const proxyPort = 1025
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
-		return "", fmt.Errorf("marshal: %w", err)
+		return "", fmt.Errorf("vsock socket: %w", err)
 	}
 
-	httpReq, err := newHTTPRequest(ctx, "POST", "http://127.0.0.1:11434/api/chat", body)
+	// Apply the context deadline as a socket-level timeout.
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			unix.Close(fd)
+			return "", fmt.Errorf("context already expired")
+		}
+		tv := unix.NsecToTimeval(remaining.Nanoseconds())
+		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
+		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+	}
+
+	sa := &unix.SockaddrVM{
+		CID:  unix.VMADDR_CID_HOST,
+		Port: proxyPort,
+	}
+	if err := unix.Connect(fd, sa); err != nil {
+		unix.Close(fd)
+		return "", fmt.Errorf("vsock connect to llm proxy: %w", err)
+	}
+
+	// Wrap the raw fd in a net.Conn for JSON encode/decode.
+	file := os.NewFile(uintptr(fd), "vsock-proxy")
+	conn, err := net.FileConn(file)
+	file.Close() // FileConn duplicates the fd; close our reference.
 	if err != nil {
-		return "", fmt.Errorf("build request: %w", err)
+		unix.Close(fd)
+		return "", fmt.Errorf("net.FileConn: %w", err)
+	}
+	defer conn.Close()
+
+	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
+	proxyReq := struct {
+		RequestID string                 `json:"request_id"`
+		Model     string                 `json:"model"`
+		Messages  []map[string]string    `json:"messages"`
+		Format    string                 `json:"format,omitempty"`
+		Options   map[string]interface{} `json:"options,omitempty"`
+	}{
+		RequestID: reqID,
+		Model:     model,
+		Messages:  messages,
+		Format:    format,
+		Options:   options,
 	}
 
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("ollama request: %w", err)
+	if err := json.NewEncoder(conn).Encode(proxyReq); err != nil {
+		return "", fmt.Errorf("send proxy request: %w", err)
 	}
-	defer httpResp.Body.Close()
 
-	var resp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
+	var proxyResp struct {
+		RequestID string `json:"request_id"`
+		Content   string `json:"content,omitempty"`
+		Error     string `json:"error,omitempty"`
 	}
-	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+	if err := json.NewDecoder(conn).Decode(&proxyResp); err != nil {
+		return "", fmt.Errorf("read proxy response: %w", err)
 	}
-	return resp.Message.Content, nil
-}
-
-// newHTTPRequest creates an HTTP request with JSON content type.
-func newHTTPRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
+	if proxyResp.Error != "" {
+		return "", fmt.Errorf("llm proxy: %s", proxyResp.Error)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	return req, nil
-}
-
-// httpClient is a shared HTTP client for in-sandbox Ollama requests.
-var httpClient = &http.Client{
-	Timeout: 5 * time.Minute,
+	return proxyResp.Content, nil
 }
 
 func readUptime() string {

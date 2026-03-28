@@ -1,0 +1,253 @@
+package llm
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"go.uber.org/zap"
+)
+
+// OllamaProxyVsockPort is the well-known vsock port the guest-agent connects to
+// on the host (CID 2) for LLM inference.  When a guest running inside a
+// Firecracker VM connects to VMADDR_CID_HOST:OllamaProxyVsockPort, Firecracker
+// routes the connection to <vsock_device_path>_1025 on the host.
+const OllamaProxyVsockPort = 1025
+
+// MaxProxyPayloadBytes is the maximum request payload the proxy will accept.
+// This prevents a compromised or misbehaving guest from causing resource
+// exhaustion on the host.
+const MaxProxyPayloadBytes = 256 * 1024 // 256 KB
+
+// ProxyRequest is the vsock request from a guest agent to the host LLM proxy.
+type ProxyRequest struct {
+	RequestID string                 `json:"request_id"`
+	Model     string                 `json:"model"`
+	Messages  []map[string]string    `json:"messages"`
+	Format    string                 `json:"format,omitempty"`
+	Options   map[string]interface{} `json:"options,omitempty"`
+}
+
+// ProxyResponse is the host's reply to a guest ProxyRequest.
+type ProxyResponse struct {
+	RequestID string `json:"request_id"`
+	Content   string `json:"content,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// OllamaProxy listens on per-VM vsock UDS paths and proxies LLM inference
+// requests to the local Ollama service.  VMs that use this proxy require no
+// network interface — all LLM access flows through the vsock kernel channel.
+//
+// Security properties:
+//   - Listens only on per-VM <vsock_path>_1025 sockets; inaccessible outside the VM channel.
+//   - Validates every model name against a compile-time allowlist.
+//   - Enforces a hard per-request payload cap (MaxProxyPayloadBytes).
+//   - Audit-logs every inference call via the kernel tamper-evident log.
+//   - Ollama is called on host loopback only; no traffic leaves the machine.
+type OllamaProxy struct {
+	allowedModels map[string]bool
+	ollamaURL     string
+	kern          *kernel.Kernel
+	logger        *zap.Logger
+
+	mu        sync.Mutex
+	listeners map[string]net.Listener // vmID -> UDS listener on vsock.sock_1025
+}
+
+// NewOllamaProxy creates a proxy whose allowedModels list is enforced on every
+// request.  ollamaURL defaults to the standard local endpoint if empty.
+func NewOllamaProxy(allowedModels []string, ollamaURL string, kern *kernel.Kernel, logger *zap.Logger) *OllamaProxy {
+	if ollamaURL == "" {
+		ollamaURL = OllamaEndpoint + "/api/chat"
+	}
+	m := make(map[string]bool, len(allowedModels))
+	for _, name := range allowedModels {
+		m[name] = true
+	}
+	return &OllamaProxy{
+		allowedModels: m,
+		ollamaURL:     ollamaURL,
+		kern:          kern,
+		logger:        logger,
+		listeners:     make(map[string]net.Listener),
+	}
+}
+
+// AllowedModelsFromRegistry returns model names from KnownGoodModels, suitable
+// for passing directly to NewOllamaProxy.
+func AllowedModelsFromRegistry() []string {
+	names := make([]string, len(KnownGoodModels))
+	for i, m := range KnownGoodModels {
+		names[i] = m.Name
+	}
+	return names
+}
+
+// StartForVM starts the LLM proxy for a specific VM.  vsockPath is the
+// Firecracker vsock device socket (e.g. /run/aegisclaw/.../vsock.sock).
+// The proxy binds to vsockPath + "_1025", which is where Firecracker delivers
+// guest-initiated connections to host CID 2 port 1025.
+//
+// This method must be called after the VM starts (so the chroot directory
+// exists) and before the guest is asked to perform any LLM inference.
+func (p *OllamaProxy) StartForVM(vmID, vsockPath string) error {
+	listenPath := fmt.Sprintf("%s_%d", vsockPath, OllamaProxyVsockPort)
+
+	// Remove any stale socket left by a prior crash.
+	_ = os.Remove(listenPath)
+
+	l, err := net.Listen("unix", listenPath)
+	if err != nil {
+		return fmt.Errorf("llm proxy: listen for vm %s at %s: %w", vmID, listenPath, err)
+	}
+
+	p.mu.Lock()
+	p.listeners[vmID] = l
+	p.mu.Unlock()
+
+	go p.serveVM(vmID, l)
+
+	p.logger.Info("llm proxy started for vm",
+		zap.String("vm_id", vmID),
+		zap.String("socket", listenPath),
+	)
+	return nil
+}
+
+// StopForVM closes the proxy listener for the specified VM.
+func (p *OllamaProxy) StopForVM(vmID string) {
+	p.mu.Lock()
+	l, ok := p.listeners[vmID]
+	if ok {
+		delete(p.listeners, vmID)
+	}
+	p.mu.Unlock()
+
+	if ok {
+		l.Close()
+		p.logger.Info("llm proxy stopped for vm", zap.String("vm_id", vmID))
+	}
+}
+
+// Stop closes every active proxy listener.
+func (p *OllamaProxy) Stop() {
+	p.mu.Lock()
+	ls := make([]net.Listener, 0, len(p.listeners))
+	for _, l := range p.listeners {
+		ls = append(ls, l)
+	}
+	p.listeners = make(map[string]net.Listener)
+	p.mu.Unlock()
+
+	for _, l := range ls {
+		l.Close()
+	}
+}
+
+func (p *OllamaProxy) serveVM(vmID string, l net.Listener) {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			return // listener closed; exit silently
+		}
+		go p.handleConn(vmID, conn)
+	}
+}
+
+func (p *OllamaProxy) handleConn(vmID string, conn net.Conn) {
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(300 * time.Second))
+
+	// Guard against oversized payloads before decoding.
+	limited := io.LimitReader(conn, MaxProxyPayloadBytes+1)
+	var req ProxyRequest
+	if err := json.NewDecoder(limited).Decode(&req); err != nil {
+		_ = json.NewEncoder(conn).Encode(ProxyResponse{Error: "decode: " + err.Error()})
+		return
+	}
+
+	resp := p.handleRequest(vmID, &req)
+	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyResponse {
+	// Enforce model allowlist — this is the primary security gate.
+	if !p.allowedModels[req.Model] {
+		p.logger.Warn("llm proxy: blocked disallowed model",
+			zap.String("vm_id", vmID),
+			zap.String("model", req.Model),
+			zap.Any("allowlist", p.allowedModels),
+		)
+		return ProxyResponse{
+			RequestID: req.RequestID,
+			Error:     fmt.Sprintf("model %q is not in the approved allowlist", req.Model),
+		}
+	}
+
+	// Build the Ollama /api/chat request.
+	ollamaReq := map[string]interface{}{
+		"model":    req.Model,
+		"messages": req.Messages,
+		"stream":   false,
+	}
+	if req.Format != "" {
+		ollamaReq["format"] = req.Format
+	}
+	if len(req.Options) > 0 {
+		ollamaReq["options"] = req.Options
+	}
+
+	body, err := json.Marshal(ollamaReq)
+	if err != nil {
+		return ProxyResponse{RequestID: req.RequestID, Error: "marshal: " + err.Error()}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.ollamaURL, bytes.NewReader(body))
+	if err != nil {
+		return ProxyResponse{RequestID: req.RequestID, Error: "build request: " + err.Error()}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return ProxyResponse{RequestID: req.RequestID, Error: "ollama: " + err.Error()}
+	}
+	defer httpResp.Body.Close()
+
+	var ollamaResp struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(httpResp.Body).Decode(&ollamaResp); err != nil {
+		return ProxyResponse{RequestID: req.RequestID, Error: "decode response: " + err.Error()}
+	}
+
+	// Audit-log this inference call so every LLM invocation is in the
+	// tamper-evident chain, associated with the requesting VM.
+	payload, _ := json.Marshal(map[string]string{
+		"vm_id": vmID,
+		"model": req.Model,
+	})
+	action := kernel.NewAction(kernel.ActionLLMInfer, "llm-proxy", payload)
+	if _, err := p.kern.SignAndLog(action); err != nil {
+		p.logger.Warn("llm proxy: audit log failed", zap.Error(err))
+	}
+
+	return ProxyResponse{
+		RequestID: req.RequestID,
+		Content:   ollamaResp.Message.Content,
+	}
+}

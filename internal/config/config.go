@@ -211,6 +211,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("ollama.default_model", defaults.Ollama.DefaultModel)
 	viper.SetDefault("daemon.socket_path", defaults.Daemon.SocketPath)
 	viper.SetDefault("composition.dir", defaults.Composition.Dir)
+	viper.SetDefault("agent.rootfs_path", defaults.Agent.RootfsPath)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {

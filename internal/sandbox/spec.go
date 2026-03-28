@@ -26,7 +26,16 @@ type Resources struct {
 
 // NetworkPolicy defines network access rules for a sandbox.
 // DefaultDeny must always be true; allowed entries selectively open access.
+//
+// When NoNetwork is true the sandbox receives no TAP device and therefore has
+// no IP stack at all — the strongest possible isolation.  AllowedHosts and
+// AllowedPorts are ignored when NoNetwork is set.  LLM inference (and any
+// other host-service access) must go through the vsock kernel channel instead.
 type NetworkPolicy struct {
+	// NoNetwork, when true, causes the sandbox to boot with no network interface.
+	// Use this for any VM whose only host access is via vsock (e.g. court reviewers
+	// that reach Ollama through the host-side LLM proxy).
+	NoNetwork        bool     `json:"no_network,omitempty"`
 	DefaultDeny      bool     `json:"default_deny"`
 	AllowedHosts     []string `json:"allowed_hosts,omitempty"`
 	AllowedPorts     []uint16 `json:"allowed_ports,omitempty"`
