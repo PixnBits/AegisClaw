@@ -57,10 +57,10 @@ func init() {
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsRotateCmd)
 
-	secretsAddCmd.Flags().StringVar(&secretsSkillID, "skill", "", "Skill ID to associate with the secret")
+	secretsAddCmd.Flags().StringVar(&secretsSkillID, "skill", "", "Skill name to associate with the secret")
 	secretsAddCmd.MarkFlagRequired("skill")
 
-	secretsRotateCmd.Flags().StringVar(&secretsSkillID, "skill", "", "Skill ID to associate with the rotated secret")
+	secretsRotateCmd.Flags().StringVar(&secretsSkillID, "skill", "", "Skill name to associate with the rotated secret")
 }
 
 // readSecretFromTerminal reads a secret from terminal without echoing.
