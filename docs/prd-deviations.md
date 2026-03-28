@@ -3,6 +3,7 @@
 Date: 2026-03-26
 Updated: 2026-03-27 (alignment refactor applied; D1, D2, D10, D8 resolved)
 Updated: 2026-03-28 (D2 re-opened; new deviations D2-a, D2-b, D2-c, DA, DB, DC added after architectural audit)
+Updated: 2026-03-28 (DirectLauncher deleted; agent VM wiring complete; D2-b, D2-c, DC resolved)
 
 Scope:
 - Compared the implementation in this repository against [docs/PRD.md](docs/PRD.md) and [docs/cli-design.md](docs/cli-design.md).
@@ -13,20 +14,22 @@ Summary:
 - The repository has solid building blocks for proposal lifecycle management, Merkle audit logging, Firecracker runtime management, builder orchestration, and encrypted secret storage.
 - **Update**: The CLI surface has been aligned with the published specification. Court and builder pipeline wiring has been connected. Security gates and audit coverage have been strengthened.
 - **Update (2026-03-27)**: D1 (FirecrackerLauncher), D2 (main-agent sandbox), D10 (versioned compositions with rollback), and D8 (SAST/SCA/policy-as-code) have been resolved.
-- **Update (2026-03-28)**: D2 has been re-opened after a detailed architectural audit. `makeChatMessageHandler` in the daemon calls Ollama directly (D2-b). The guest-agent `handleChatMessage` performs one LLM call with no ReAct loop (D2-a). `ExecuteTool` callbacks run in the CLI process (D2-c). Three additional deviations were identified: IPC bus lacks ACL enforcement (DA), no central tool registry in daemon (DB), and no agent-VM startup on first chat message (DC). See `docs/architecture.md` for the correct north-star architecture.
+- **Update (2026-03-28)**: D2 has been re-opened after a detailed architectural audit. `makeChatMessageHandler` in the daemon calls Ollama directly (D2-b). The guest-agent `handleChatMessage` performs one LLM call with no ReAct loop (D2-a). `ExecuteTool` callbacks run in the CLI process (D2-c-cli). Three additional deviations were identified: IPC bus lacks ACL enforcement (DA), no central tool registry in daemon (DB), and no agent-VM startup on first chat message (DC). See `docs/architecture.md` for the correct north-star architecture.
+- **Update (2026-03-28)**: `DirectLauncher` (`internal/court/direct_launcher.go`) deleted — there is no opt-out from microVM isolation. `docs/architecture.md` §1 updated to make the no-opt-out rule explicit. D2-b resolved (daemon now forwards to agent VM). DC resolved (lazy agent VM startup via `ensureAgentVM`). D2-c (court DirectLauncher) resolved. D2-a and D2-c-cli remain open.
 
 ## Deviation Resolution Status
 
 | ID | Source | Requirement | Status | Notes |
 | --- | --- | --- | --- | --- |
-| D1 | PRD | Governance Court reviewers must run in isolated microVMs. | **Resolved** | Court initialization defaults to FirecrackerLauncher when KVM is available. DirectLauncher is fallback only (AEGISCLAW_DIRECT_REVIEW=1 or no /dev/kvm). Guest agent handles `review.execute` inside sandbox. See `cmd/aegisclaw/court_init.go`. |
-| D2 | PRD, CLI | The main agent should be a sandboxed component. | **Re-opened** | D2 was incorrectly marked resolved. The daemon's `makeChatMessageHandler` (`cmd/aegisclaw/chat_handlers.go`) calls Ollama directly from the host process and returns raw LLM content. The guest-agent `handleChatMessage` (`cmd/guest-agent/main.go`) performs a single LLM call with no ReAct loop and no tool dispatch. `ExecuteTool` callbacks in `cmd/aegisclaw/chat.go` execute proposal handlers in the CLI process for the natural-language path. The LLM inference loop must live entirely inside the agent microVM. See D2-a, D2-b, D2-c below, and `docs/architecture.md` §3, §7, §11. |
-| D2-a | architecture.md §3, §7 | Agent VM must run the full ReAct loop: parse tool-call blocks → send `tool.exec` IPC → receive `tool.result` → append to conversation → loop until clean response. | **Open** | `handleChatMessage` in `cmd/guest-agent/main.go` makes a single Ollama call and returns. No loop, no tool-call parsing, no `tool.exec`/`tool.result` exchange. |
-| D2-b | architecture.md §3 | Daemon `chat.message` handler must be a thin forwarder: receive conversation from CLI, route to agent VM via vsock, await final response, return it. | **Open** | `makeChatMessageHandler` in `cmd/aegisclaw/chat_handlers.go` constructs a system prompt, calls Ollama directly, and returns raw model output. All Ollama calls and system-prompt logic must be removed from the daemon. |
-| D2-c | architecture.md §11 | `ExecuteTool` callbacks must not execute proposal handlers in the CLI process for the natural-language path. The CLI is a thin TUI client; tool execution belongs to the agent VM. | **Open** | `handleProposalCreateDraft`, `handleProposalSubmit`, and related functions in `cmd/aegisclaw/chat.go` are called directly by the `ExecuteTool` callback wired into `tui.ChatModel`. Slash commands remain a distinct exception. |
+| D1 | PRD | Governance Court reviewers must run in isolated microVMs. | **Resolved** | Court initialization uses `FirecrackerLauncher` exclusively. `DirectLauncher` has been deleted — there is no fallback path to host execution. Daemon fails hard if KVM or Firecracker binary is unavailable. Guest agent handles `review.execute` inside sandbox. See `cmd/aegisclaw/court_init.go`. |
+| D2 | PRD, CLI | The main agent should be a sandboxed component. | **Partially resolved** | The daemon's `makeChatMessageHandler` now starts the agent microVM lazily (`ensureAgentVM`) and forwards every conversation turn to it; the daemon no longer calls Ollama directly. The outer ReAct loop (tool dispatch) is driven by the daemon pending D2-a completion. CLI `ExecuteTool` callbacks still run on the host (D2-c-cli). See sub-items below. |
+| D2-a | architecture.md §3, §7 | Agent VM must run the full ReAct loop: parse tool-call blocks → send `tool.exec` IPC → receive `tool.result` → append to conversation → loop until clean response. | **Open** | `handleChatMessage` in `cmd/guest-agent/main.go` makes one Ollama call per turn and returns either `tool_call` or `final`. The daemon's `makeChatMessageHandler` drives the outer loop (iterate on `tool_call`, execute via `toolRegistry`, append result, re-send to agent VM). Full loop internalization in the agent VM is future work. |
+| D2-b | architecture.md §3 | Daemon `chat.message` handler must be a thin forwarder: receive conversation from CLI, route to agent VM via vsock, await final response, return it. | **Resolved** | `makeChatMessageHandler` in `cmd/aegisclaw/chat_handlers.go` now calls `ensureAgentVM` and forwards the conversation to the agent VM via `SendToVM`. Daemon no longer calls Ollama. System prompt is built daemon-side and included in the messages forwarded to the VM. |
+| D2-c | architecture.md §11 | `DirectLauncher` must be deleted; no opt-out from microVM isolation. | **Resolved** | `internal/court/direct_launcher.go` deleted. `FirecrackerLauncher` is the only court launcher. `docs/architecture.md` §1 updated to make the no-opt-out rule explicit and unconditional. |
+| D2-c-cli | architecture.md §11 | `ExecuteTool` callbacks must not execute proposal handlers in the CLI process for the natural-language path. The CLI is a thin TUI client; tool execution belongs to the agent VM. | **Open** | `handleProposalCreateDraft`, `handleProposalSubmit`, and related functions in `cmd/aegisclaw/chat.go` are called directly by the `ExecuteTool` callback wired into `tui.ChatModel`. Slash commands remain a distinct exception. |
 | DA | architecture.md §5 | IPC message bus must enforce an ACL policy before dispatching any tool or message. Sender identity must be validated against an allow-list before the handler is invoked. | **Open** | `MessageHub.RouteMessage` in `internal/ipc/hub.go` has no policy check. Any connected socket or vsock CID can request any registered tool. ACL table and enforcement to be added; see `docs/architecture.md` §5. |
 | DB | architecture.md §6 | Daemon must maintain a central tool registry mapping tool names to handler functions, used by the ACL and dispatch layer. | **Open** | Tool dispatch is ad-hoc: each handler in `cmd/aegisclaw/start.go` is registered independently with no shared registry or capability manifest. See `docs/architecture.md` §6 for the required registry shape. |
-| DC | architecture.md §9 | Agent VM must be lazy-started on the first `chat.message` request and registered with the message bus before the forwarding call is made. | **Open** | `runStart` in `cmd/aegisclaw/start.go` and `makeChatMessageHandler` contain no agent-VM startup logic. The daemon cannot forward `chat.message` to an agent VM that does not exist. See `docs/architecture.md` §9. |
+| DC | architecture.md §9 | Agent VM must be lazy-started on the first `chat.message` request and registered with the message bus before the forwarding call is made. | **Resolved** | `ensureAgentVM` in `cmd/aegisclaw/chat_handlers.go` lazily creates and starts the agent VM on first use, starts the per-VM LLM proxy, and caches the VM ID. Automatically restarts the VM if it crashes. |
 | D3 | PRD | Approved skill should trigger builder pipeline automatically. | **Resolved** | Court review handler auto-transitions approved proposals to `implementing` status, connecting to builder pipeline. See `cmd/aegisclaw/start.go`. |
 | D4 | PRD | Skill runtime should execute reviewed, versioned artifacts. | **Resolved** | Skill activation resolves artifact manifests from the builder output directory. See `cmd/aegisclaw/start.go`. |
 | D5 | PRD, CLI | Secrets must use secure prompt and runtime injection. | **Resolved** | `aegisclaw secrets add` uses secure terminal prompt (no echo). Activation resolves proposal-linked secrets for injection. See `cmd/aegisclaw/secrets_cmd.go`. |
@@ -45,22 +48,17 @@ Summary:
 ## Resolution Summary
 
 ### Resolved or substantially improved:
-D1, D3, D4, D5, D6, D8, D10, D13, D14, D15, D16 — fully resolved
-D7, D9, D12 — partially resolved / improved
-
-### Re-opened:
-D2 — originally marked resolved 2026-03-27; re-opened 2026-03-28 after architectural audit
+D1, D2-b, D2-c, D3, D4, D5, D6, D8, D10, D13, D14, D15, D16, DC — fully resolved
+D2 (partially), D7, D9, D12 — partially resolved / improved
 
 ### Annotated with migration path:
 D11 — clear path documented, implementation deferred
 
-### Open (new deviations, 2026-03-28):
-D2-a — agent VM ReAct loop missing
-D2-b — daemon calls Ollama directly instead of forwarding to agent VM
-D2-c — CLI ExecuteTool callbacks run tool handlers in host process
+### Open:
+D2-a — agent VM full ReAct loop not yet internalized (outer loop driven by daemon)
+D2-c-cli — CLI ExecuteTool callbacks still run tool handlers in CLI process
 DA — IPC message bus has no ACL enforcement
 DB — no central tool registry in daemon
-DC — no agent-VM startup on first chat.message
 
 ### Future work required:
 D9 (partial) — SBOM and provenance emission

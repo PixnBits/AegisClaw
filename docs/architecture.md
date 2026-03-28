@@ -1,7 +1,7 @@
 # AegisClaw — Component Interaction Model
 
 **Status**: North-star architecture document. Code must converge to this; deviations are tracked in `docs/prd-deviations.md`.  
-**Last updated**: 2026-03-27
+**Last updated**: 2026-03-28
 
 ---
 
@@ -9,7 +9,13 @@
 
 Every component boundary is a security boundary. The rule that determines whether a component is sandboxed is simple: **if it ever touches untrusted input (user text, LLM output, external network data, or generated code), it runs in a Firecracker microVM. No exceptions.**
 
-The daemon is the only component that runs on the host as root. It manages microVM lifecycles (create, start, stop, delete) and mediates all inter-component communication via the message bus. It does not do LLM inference, does not parse tool calls, and does not execute business logic that belongs to the agent.
+This rule admits no opt-out mechanism of any kind. There are no environment variables, build tags, configuration flags, or runtime modes that permit a sandboxed component to run on the host. KVM and Firecracker are hard dependencies — the daemon refuses to start without them. Any code path that allows bypassing microVM isolation is a security defect and must be removed.
+
+The only components that run directly on the host are:
+- **The daemon** (`aegisclaw start`) — root process that manages VM lifecycles, the message bus, the audit log, the proposal store, and the Unix socket API. It does not do LLM inference, does not parse tool calls, and does not execute business logic that belongs to the agent.
+- **The CLI** (`aegisclaw chat`, `aegisclaw skill`, etc.) — unprivileged thin client that communicates with the daemon over the Unix socket. It does not do LLM inference and does not execute tool handlers.
+
+Every other component — the main agent, Governance Court reviewers, the builder, and all skills — runs inside a Firecracker microVM with a read-only rootfs and `cap-drop ALL`.
 
 ---
 
@@ -377,7 +383,7 @@ assert.GreaterOrEqual(t, kern.AuditLog().EntryCount(), 2)
 
 | Pattern | Why not acceptable |
 |---|---|
-| `DirectLauncher` or process-based fallback | Bypasses the security boundary we are testing |
+| Any process-based or host-side launcher | Bypasses the security boundary we are testing |
 | Returning a canned `chat.message` response | Doesn't test that the agent's ReAct loop works |
 | Asserting on exact LLM response text | LLM output is non-deterministic; assert on side effects |
 | Mocking `proposal.create_draft` | Defeats the purpose; we need to know the real handler was called |
@@ -419,11 +425,11 @@ Required behavior:
 
 Remove: all Ollama client code, system prompt construction, and tool-call parsing from `makeChatMessageHandler`.
 
-### D2-c: Remove DirectLauncher from production path
+### D2-c: Delete DirectLauncher
 
-File: `cmd/aegisclaw/court_init.go`
+File: `internal/court/direct_launcher.go`
 
-`DirectLauncher` must not be used in any production code path. It may be retained behind a build tag `//go:build dev_direct` with a compile-time warning, but the default build must use `FirecrackerLauncher` only. The `AEGISCLAW_DIRECT_REVIEW` environment variable override must be removed.
+`DirectLauncher` must be deleted entirely. There is no scenario in which direct host-side LLM execution is acceptable — not in development, not behind a build tag, not with an environment variable override. The security boundary is not a performance optimization; it is a correctness requirement. `internal/court/direct_launcher.go` has been removed. `FirecrackerLauncher` is the only supported court launcher.
 
 ### DA-new: IPC ACL enforcement
 
