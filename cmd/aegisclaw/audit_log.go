@@ -32,9 +32,9 @@ Examples:
 var auditWhyCmd = &cobra.Command{
 	Use:   "why <action-id>",
 	Short: "Explain why an action was performed",
-	Long: `Queries the audit log for the specified action and returns a structured
-explanation including the proposal, review evidence, and decision chain that
-led to the action.`,
+	Long: `Looks up the specified action by ID or hash prefix in the audit log
+and displays its fields: hash, timestamp, actor, proposal, skill, and
+full payload. Also verifies the entry's individual chain integrity.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runAuditWhy,
 }

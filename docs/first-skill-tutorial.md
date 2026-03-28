@@ -228,7 +228,7 @@ For our low-risk greeter skill, approval is near-certain.
 
 ```bash
 # In chat:
-/court
+/status
 
 # Or via CLI:
 ./aegisclaw status

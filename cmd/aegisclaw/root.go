@@ -35,12 +35,12 @@ Security reminders:
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the coordinator daemon",
-	Long: `Starts the MicroVM Coordinator Daemon, main agent sandbox, and Court.
+	Long: `Starts the MicroVM Coordinator Daemon, provisions Firecracker assets,
+initializes the message-hub and IPC bridge, starts the Unix socket API
+server, and blocks until interrupted (Ctrl+C or 'aegisclaw stop').
 
-Use --safe to enter Safe Mode: a minimal recovery environment with no
-skills, no Court, no main agent sandbox, and no LLM interaction.
-
-Use --background to start as a background daemon.`,
+Use --safe to enter Safe Mode: deactivates all skills and blocks skill
+activation/invocation. No Court, no main agent sandbox, no LLM interaction.`,
 	RunE: runStart,
 }
 
@@ -48,9 +48,10 @@ Use --background to start as a background daemon.`,
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show system status and health",
-	Long: `Displays running microVMs, active skills, resource usage,
-composition version, and health summary.
+	Long: `Displays version, public key, sandbox counts, skill counts, registry root
+hash, and audit chain summary.
 
+Use --tui to launch an interactive TUI dashboard with live updates.
 Supports --json for scripting.`,
 	RunE: runStatus,
 }
@@ -59,7 +60,7 @@ Supports --json for scripting.`,
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version and build information",
-	Long:  `Displays version, git commit, build date, and SBOM summary if available.`,
+	Long:  `Displays version, git commit, build date, Go version, and OS/architecture.`,
 	Run:   runVersion,
 }
 
@@ -86,7 +87,7 @@ var skillListCmd = &cobra.Command{
 }
 
 var skillRevokeCmd = &cobra.Command{
-	Use:   "revoke <skill-id>",
+	Use:   "revoke <skill-name>",
 	Short: "Revoke and remove a skill",
 	Long: `Stops the skill's microVM, removes it from the registry, and logs
 the revocation to the audit trail. Requires confirmation unless --force is used.`,
@@ -95,7 +96,7 @@ the revocation to the audit trail. Requires confirmation unless --force is used.
 }
 
 var skillInfoCmd = &cobra.Command{
-	Use:   "info <skill-id>",
+	Use:   "info <skill-name>",
 	Short: "Show detailed skill information",
 	Long:  `Displays full details about a registered skill including its sandbox, version, and metadata.`,
 	Args:  cobra.ExactArgs(1),

@@ -23,14 +23,14 @@ var chatCmd = &cobra.Command{
 	Short: "Interactive ReAct chat interface",
 	Long: `Opens an interactive chat interface with persistent context.
 Supports slash commands for quick access to AegisClaw operations:
-  /propose <goal>  - Start a proposal wizard
-  /status          - Show system status
-  /audit           - Show audit summary
-  /court           - List court sessions
-  /safe-mode       - Stop all skills and block execution (no LLM)
-  /safe-mode off   - Re-enable skill execution
-  /shutdown        - Emergency stop: all skills + daemon + exit
-  /quit            - Exit chat`,
+  /help          - Show available slash commands
+  /status        - Show system status (sandboxes, skills, audit)
+  /audit         - Show audit chain info and verification
+  /safe-mode     - Stop all skills and block execution (no LLM)
+  /safe-mode off - Re-enable skill execution
+  /shutdown      - Emergency stop: all skills + daemon + exit
+  /quit          - Exit chat
+  /exit          - Exit chat`,
 	RunE: runChat,
 }
 
@@ -362,12 +362,14 @@ func buildSystemPrompt(ctx context.Context, daemonClient *api.Client) string {
 You help users manage skills (sandboxed microVM workloads), proposals, and system operations.
 
 ## Slash commands (handled locally, not by you)
-  /status     - System status
-  /audit      - Audit chain info
-  /court      - Court sessions
-  /safe-mode  - Emergency stop all skills
+  /help       - Show available commands
+  /status     - System status (sandboxes, skills, audit)
+  /audit      - Audit chain info and verification
+  /safe-mode  - Stop all skills and block execution (no LLM)
+  /safe-mode off - Re-enable skill execution
   /shutdown   - Emergency daemon shutdown
   /quit       - Exit chat
+  /exit       - Exit chat
 
 ## Tool invocation format
 To call a tool, output EXACTLY one tool-call block per message:
