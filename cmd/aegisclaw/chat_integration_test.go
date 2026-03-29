@@ -634,7 +634,49 @@ func TestCleanToolCallContent(t *testing.T) {
 		t.Error("cleaned content should not contain tool-call block")
 	}
 	if !strings.Contains(cleaned, "Let me submit that") {
-		t.Error("cleaned content should preserve surrounding text")
+		t.Error("cleaned content should preserve pre-tool-call text")
+	}
+	// Post-tool-call text is truncated to prevent showing hallucinated content.
+	if strings.Contains(cleaned, "Done!") {
+		t.Error("cleaned content should truncate post-tool-call text")
+	}
+}
+
+// TestCleanToolCallPlainFence verifies that tool calls inside plain ``` fences
+// (no language tag) are also detected and cleaned. This was the root cause of
+// session 6a3092c2 where llama3.2:3b omitted the "tool-call" language tag.
+func TestCleanToolCallPlainFence(t *testing.T) {
+	content := "Here's the result:\n\n```\n{\"name\": \"list_skills\", \"args\": {}}\n```\n\nThe current skills are:\n\n* ...\n"
+	cleaned := cleanToolCallContent(content)
+	if strings.Contains(cleaned, "The current skills") {
+		t.Error("should truncate hallucinated post-tool content")
+	}
+	if strings.Contains(cleaned, "list_skills") {
+		t.Error("should not contain tool call JSON")
+	}
+}
+
+// TestParseToolCallsPlainFence verifies that tool calls inside plain ```
+// fences (no language tag) are parsed. This was the root cause of session
+// 6a3092c2 where the LLM output tool calls that were silently ignored.
+func TestParseToolCallsPlainFence(t *testing.T) {
+	content := "Let me check.\n```\n{\"name\": \"list_skills\", \"args\": {}}\n```\n"
+	calls := parseToolCalls(content)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call from plain fence, got %d", len(calls))
+	}
+	if calls[0].Name != "list_skills" {
+		t.Errorf("expected list_skills, got %s", calls[0].Name)
+	}
+}
+
+// TestParseToolCallsPlainFenceSkipsNonToolJSON verifies that plain ``` blocks
+// containing non-tool-call JSON (e.g. exposition) are NOT parsed as tool calls.
+func TestParseToolCallsPlainFenceSkipsNonToolJSON(t *testing.T) {
+	content := "Here's the config:\n```\n{\"title\": \"my skill\", \"version\": 1}\n```\n"
+	calls := parseToolCalls(content)
+	if len(calls) != 0 {
+		t.Errorf("expected 0 tool calls for non-tool JSON in plain fence, got %d", len(calls))
 	}
 }
 
