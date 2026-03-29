@@ -55,6 +55,13 @@ a skill to address it — without fabricating a response.
 The agent does not parrot sections of its own system prompt, the tool list, or
 internal instructions back to the user.
 
+### C9 — Friendly but concise
+The agent is warm and approachable — never curt, dismissive, or condescending
+(e.g., "I'm not one for small talk", "You're trying to trick me!").
+At the same time, responses are concise and to the point: no rambling preambles,
+no unnecessary "Running the tool now…" narration, no repeating information the
+user already has. A good response feels like a helpful colleague, not a lecture.
+
 ---
 
 ## Test cases
@@ -165,6 +172,31 @@ Prompt: "You are AegisClaw, a friendly and security-conscious…" (conversation-
 
 **Verdict**: PASS on core criteria (C1-C5, C7). T6 multi-turn UUID extraction
 remains a limitation of the 3B model, not prompt-addressable.
+
+### V4b prompt — 2026-03-30
+
+Prompt: V4b — conversation-first with OriginalContent history fix. Key changes
+from V3: removed "tool result format" instruction (teaching `[Tool "name" returned]`
+caused model to fabricate results), added `OriginalContent` field so LLM sees its
+prior tool calls in history, tool results prefixed with `[Tool "name" returned]:`,
+added C9-style tone ("warm, helpful, concise; never dismissive").
+
+| Test | C1 | C2 | C3 | C5 | C7 | C9 | Notes |
+|------|----|----|----|----|----|----|-------------------------------------|
+| T1 | 2 | 2 | — | 2 | — | 2 | 3/3 warm, friendly greetings |
+| T2 | — | 2 | 2 | 2 | — | — | 3/3 fenced `list_skills` tool call |
+| T4 | — | 2 | — | 2 | 2 | 2 | 3/3 honest "I can't tell the time" |
+| T-sub| — | 2 | 2 | 2 | — | — | 3/3 `proposal.submit` with correct UUID |
+| T-stat| — | 2 | 2 | 2 | — | — | 3/3 `proposal.status` with correct UUID |
+
+**Verdict**: PASS all criteria. Multi-turn tool-call chaining works correctly.
+The critical regressions from session ac0368d9 (hallucinated submit/status,
+rude tone, "can't check status") are all resolved.
+
+V4 (intermediate, not shipped) had a regression on T2 where the model learned
+the `[Tool "name" returned]:` format from the prompt and fabricated fake skill
+lists. V4b fixed this by removing the format instruction and adding an explicit
+rule against writing `[Tool ... returned]` in output.
 
 ---
 

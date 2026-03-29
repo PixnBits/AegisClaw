@@ -476,7 +476,8 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	// Lead with conversational identity so small models don't over-constrain
 	// themselves to tool-only responses.
 	b.WriteString("You are AegisClaw, a friendly and security-conscious coding assistant.\n")
-	b.WriteString("You help users manage skills that run in isolated Firecracker microVMs.\n\n")
+	b.WriteString("You help users manage skills that run in isolated Firecracker microVMs.\n")
+	b.WriteString("Be warm, helpful, and concise. Never be dismissive or condescending.\n\n")
 
 	// Explicit: conversation is the default mode.
 	b.WriteString("Most of the time, just talk to the user normally. Answer questions, explain things, and be helpful.\n\n")
@@ -488,7 +489,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("When you do need a tool, you MUST wrap it in triple-backtick fences with the language tag tool-call:\n\n")
 	b.WriteString("```tool-call\n{\"name\": \"list_skills\", \"args\": {}}\n```\n\n")
 	b.WriteString("That exact format is required: opening fence, JSON, closing fence.\n")
-	b.WriteString("After the closing fence, STOP. Do not write anything else. Do not narrate running the tool. Do not guess the result. The system will execute the tool and return the result to you in the next message.\n\n")
+	b.WriteString("After the closing fence, STOP. Do not write anything else. Do not narrate running the tool. Do not guess the result. The system will execute the tool and show you the result automatically.\n\n")
 
 	// Tool listing — natural-language descriptions.
 	b.WriteString("Available tools:\n")
@@ -520,8 +521,10 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 
 	// Rules (anti-hallucination).
 	b.WriteString("Rules:\n")
-	b.WriteString("- Never fabricate tool results or pretend you called a tool.\n")
+	b.WriteString("- NEVER fabricate tool results or pretend you called a tool.\n")
+	b.WriteString("- NEVER write fake output like \"Status: approved\" or \"[Tool ... returned]\" yourself.\n")
 	b.WriteString("- Never invent tools that are not listed above.\n")
+	b.WriteString("- If you need data you do not have, call the appropriate tool.\n")
 	b.WriteString("- If you cannot help with something, say so honestly.\n")
 
 	return b.String()

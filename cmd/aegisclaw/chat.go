@@ -150,7 +150,17 @@ func runChat(cmd *cobra.Command, args []string) error {
 			if h.Role == tui.ChatRoleAssistant {
 				role = "assistant"
 			}
-			historyItems = append(historyItems, api.ChatHistoryItem{Role: role, Content: h.Content})
+			content := h.Content
+			// Use OriginalContent (which includes tool-call blocks) so the
+			// LLM sees its own prior tool calls and understands the pattern.
+			if h.Role == tui.ChatRoleAssistant && h.OriginalContent != "" {
+				content = h.OriginalContent
+			}
+			// Tag tool results so the LLM distinguishes them from user input.
+			if h.Role == tui.ChatRoleTool {
+				content = fmt.Sprintf("[Tool %q returned]:\n%s", h.ToolName, h.Content)
+			}
+			historyItems = append(historyItems, api.ChatHistoryItem{Role: role, Content: content})
 		}
 
 		if sessionLog != nil {
@@ -188,9 +198,10 @@ func runChat(cmd *cobra.Command, args []string) error {
 				sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: cleaned})
 			}
 			return tui.ChatMessage{
-				Role:      tui.ChatRoleAssistant,
-				Content:   cleaned,
-				Timestamp: time.Now(),
+				Role:            tui.ChatRoleAssistant,
+				Content:         cleaned,
+				Timestamp:       time.Now(),
+				OriginalContent: content, // preserve tool-call block for history
 			}, toolCalls, nil
 		}
 
@@ -277,10 +288,15 @@ func runChat(cmd *cobra.Command, args []string) error {
 			role := "user"
 			if h.Role == tui.ChatRoleAssistant {
 				role = "assistant"
-			} else if h.Role == tui.ChatRoleTool {
-				role = "user"
 			}
-			historyItems = append(historyItems, api.ChatHistoryItem{Role: role, Content: h.Content})
+			content := h.Content
+			if h.Role == tui.ChatRoleAssistant && h.OriginalContent != "" {
+				content = h.OriginalContent
+			}
+			if h.Role == tui.ChatRoleTool {
+				content = fmt.Sprintf("[Tool %q returned]:\n%s", h.ToolName, h.Content)
+			}
+			historyItems = append(historyItems, api.ChatHistoryItem{Role: role, Content: content})
 		}
 
 		resp, err := daemonClient.Call(cmd.Context(), "chat.summarize", api.ChatSummarizeRequest{
