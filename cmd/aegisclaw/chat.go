@@ -453,24 +453,19 @@ Example: /call hello-world.greet "world"
 	return base
 }
 
-// proposalToolNames lists the tool names that belong to the "proposal" skill namespace.
-var proposalToolNames = map[string]bool{
-	"create_draft": true,
-	"update_draft": true,
-	"get_draft":    true,
-	"list_drafts":  true,
-	"submit":       true,
-	"status":       true,
-}
-
 // parseToolCalls extracts tool-call JSON blocks from LLM output.
 // Accepts both ```tool-call and ```json fenced blocks.
 // Returns at most ONE tool call to prevent the LLM from chaining calls
 // with stale/guessed IDs (e.g. create_draft + submit in one turn).
-// Auto-corrects the namespace for known proposal tools (e.g. if the LLM
-// emits {"skill": "greet-us", "tool": "submit", ...}, the skill is
-// corrected to "proposal").
 func parseToolCalls(content string) []tui.ToolCall {
+	// proposalTools are tool names that belong under the "proposal." namespace.
+	// If an LLM uses the wrong skill namespace for these, we auto-correct.
+	proposalTools := map[string]bool{
+		"create_draft": true, "update_draft": true,
+		"get_draft": true, "list_drafts": true,
+		"submit": true, "status": true,
+	}
+
 	// Try both fence markers — LLMs sometimes use ```json instead of ```tool-call.
 	for _, marker := range []string{"```tool-call", "```json"} {
 		search := content
@@ -485,24 +480,82 @@ func parseToolCalls(content string) []tui.ToolCall {
 				break
 			}
 			block := strings.TrimSpace(after[:end])
+
+			// Primary: {"name": "tool_name", "args": {...}}
 			var tc struct {
+				Name string          `json:"name"`
+				Args json.RawMessage `json:"args"`
+			}
+			if json.Unmarshal([]byte(block), &tc) == nil && tc.Name != "" {
+				return []tui.ToolCall{{
+					Name: tc.Name,
+					Args: string(tc.Args),
+				}}
+			}
+
+			// Legacy: {"skill": "proposal", "tool": "create_draft", "args": {...}}
+			var legacy struct {
 				Skill string          `json:"skill"`
 				Tool  string          `json:"tool"`
 				Args  json.RawMessage `json:"args"`
 			}
-			if json.Unmarshal([]byte(block), &tc) == nil && tc.Skill != "" && tc.Tool != "" {
-				// Auto-correct namespace for known proposal tools.
-				if proposalToolNames[tc.Tool] && tc.Skill != "proposal" {
-					tc.Skill = "proposal"
+			if json.Unmarshal([]byte(block), &legacy) == nil && legacy.Tool != "" {
+				name := legacy.Skill + "." + legacy.Tool
+				// Auto-correct namespace: if the tool is a proposal tool
+				// but the skill isn't "proposal", fix it.
+				if proposalTools[legacy.Tool] && legacy.Skill != "proposal" {
+					name = "proposal." + legacy.Tool
 				}
 				return []tui.ToolCall{{
-					Name: tc.Skill + "." + tc.Tool,
-					Args: string(tc.Args),
+					Name: name,
+					Args: string(legacy.Args),
 				}}
 			}
+
 			search = after[end+3:]
 		}
 	}
+
+	// Fallback: try to find bare JSON {"name": "..."} outside of fences.
+	// Small models sometimes omit the fence wrapper entirely.
+	// Only match top-level objects that have both "name" and structurally
+	// look like a tool call (not nested objects inside arrays).
+	if idx := strings.Index(content, `{"name"`); idx >= 0 {
+		// Skip if this position is inside a fenced block.
+		beforeIdx := content[:idx]
+		fenceCount := strings.Count(beforeIdx, "```")
+		if fenceCount%2 == 0 { // even = not inside a fence
+			rest := content[idx:]
+			depth, end := 0, -1
+			for i, ch := range rest {
+				switch ch {
+				case '{':
+					depth++
+				case '}':
+					depth--
+					if depth == 0 {
+						end = i + 1
+					}
+				}
+				if end >= 0 {
+					break
+				}
+			}
+			if end > 0 {
+				var tc struct {
+					Name string          `json:"name"`
+					Args json.RawMessage `json:"args"`
+				}
+				if json.Unmarshal([]byte(rest[:end]), &tc) == nil && tc.Name != "" {
+					return []tui.ToolCall{{
+						Name: tc.Name,
+						Args: string(tc.Args),
+					}}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -520,6 +573,33 @@ func cleanToolCallContent(content string) string {
 				break
 			}
 			content = content[:start] + after[end+3:]
+		}
+	}
+	// Also strip bare JSON tool-call objects (small models sometimes omit fences).
+	if idx := strings.Index(content, `{"name"`); idx >= 0 {
+		rest := content[idx:]
+		depth, end := 0, -1
+		for i, ch := range rest {
+			switch ch {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					end = i + 1
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end > 0 {
+			var tc struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal([]byte(rest[:end]), &tc) == nil && tc.Name != "" {
+				content = content[:idx] + content[idx+end:]
+			}
 		}
 	}
 	return strings.TrimSpace(content)
