@@ -487,7 +487,8 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	// Format with example.
 	b.WriteString("When you do need a tool, you MUST wrap it in triple-backtick fences with the language tag tool-call:\n\n")
 	b.WriteString("```tool-call\n{\"name\": \"list_skills\", \"args\": {}}\n```\n\n")
-	b.WriteString("That exact format is required: opening fence, JSON, closing fence. Then stop.\n\n")
+	b.WriteString("That exact format is required: opening fence, JSON, closing fence.\n")
+	b.WriteString("After the closing fence, STOP. Do not write anything else. Do not narrate running the tool. Do not guess the result. The system will execute the tool and return the result to you in the next message.\n\n")
 
 	// Tool listing — natural-language descriptions.
 	b.WriteString("Available tools:\n")
