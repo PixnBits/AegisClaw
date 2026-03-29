@@ -128,6 +128,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	toolRegistry := buildToolRegistry(env)
 	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
+	apiSrv.Handle("chat.tool", makeChatToolExecHandler(env, toolRegistry))
+	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
 	// D10: Composition manifest handlers for versioned deployment and rollback.
 	apiSrv.Handle("composition.current", makeCompositionCurrentHandler(env))
 	apiSrv.Handle("composition.rollback", makeCompositionRollbackHandler(env))
@@ -653,9 +655,10 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 			VCPUs:    1,
 			MemoryMB: 128,
 		},
-		// AegisHub communicates exclusively over vsock; no network egress needed.
+		// AegisHub communicates exclusively over vsock; no TAP device or IP needed.
 		NetworkPolicy: sandbox.NetworkPolicy{
 			DefaultDeny: true,
+			NoNetwork:   true,
 		},
 		RootfsPath: hubRootfs,
 	}

@@ -15,6 +15,7 @@ const version = "v0.1.0"
 //	Global Flags:
 //	  --json, --verbose/-v, --dry-run, --force
 var rootCmd = &cobra.Command{
+	SilenceErrors: true,
 	Use:   "aegisclaw",
 	Short: "AegisClaw - Paranoid Firecracker-isolated agent platform",
 	Long: `AegisClaw is a security-first platform for running isolated agents in Firecracker microVMs.
@@ -41,7 +42,8 @@ server, and blocks until interrupted (Ctrl+C or 'aegisclaw stop').
 
 Use --safe to enter Safe Mode: deactivates all skills and blocks skill
 activation/invocation. No Court, no main agent sandbox, no LLM interaction.`,
-	RunE: runStart,
+	SilenceUsage: true,
+	RunE:         runStart,
 }
 
 // statusCmd represents the status command.

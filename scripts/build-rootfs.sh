@@ -96,10 +96,36 @@ done
 # Build the target binary (static, no CGO)
 echo ">>> Building ${BINARY_NAME} binary..."
 BINARY_BIN="${WORKDIR}/${BINARY_NAME}"
+
+# Locate go binary — sudo resets PATH, so check common install locations.
+GO_BIN=""
+for candidate in "$(command -v go 2>/dev/null)" /usr/local/go/bin/go /usr/lib/go/bin/go "${GOROOT:-/nonexistent}/bin/go" "${HOME}/go/bin/go" /snap/go/current/bin/go; do
+    if [ -x "${candidate}" ]; then
+        GO_BIN="${candidate}"
+        break
+    fi
+done
+if [ -z "${GO_BIN}" ] && [ -n "${SUDO_USER:-}" ]; then
+    # Try the invoking user's GOROOT / go installation
+    USER_HOME=$(getent passwd "${SUDO_USER}" | cut -d: -f6)
+    for candidate in "${USER_HOME}/go/bin/go" "${USER_HOME}/.local/go/bin/go" "${USER_HOME}/sdk/go/bin/go"; do
+        if [ -x "${candidate}" ]; then
+            GO_BIN="${candidate}"
+            break
+        fi
+    done
+fi
+if [ -z "${GO_BIN}" ]; then
+    echo "ERROR: Go compiler not found. Install Go or set GOROOT."
+    echo "  Common fix: export PATH=\$PATH:/usr/local/go/bin"
+    exit 1
+fi
+echo "Using Go: ${GO_BIN}"
+
 (
     cd "${PROJECT_ROOT}"
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-        go build -ldflags="-s -w" -o "${BINARY_BIN}" ${BINARY_SRC_PKG}
+        "${GO_BIN}" build -ldflags="-s -w" -o "${BINARY_BIN}" ${BINARY_SRC_PKG}
 )
 echo "${BINARY_NAME} binary: $(ls -lh "${BINARY_BIN}" | awk '{print $5}')"
 

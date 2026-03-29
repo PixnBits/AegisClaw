@@ -23,7 +23,6 @@ import (
 const (
 	minVsockCID      = 3
 	tapDevicePrefix  = "fc-"
-	subnetBase       = "10.0.0."
 	subnetMask       = "/30"
 	seccompLevel     = 2 // advanced seccomp filtering
 	defaultWorkspace = 512
@@ -530,9 +529,17 @@ func (r *FirecrackerRuntime) setupNetwork(spec SandboxSpec) (tapName, hostIP, gu
 	index := int(spec.VsockCID - minVsockCID)
 	subnetOffset := index * 4
 
+	// Each VM gets a /30 subnet from the 10.0.0.0/16 space.
+	// Compute full two-octet offset so CIDs above ~66 don't overflow a single octet.
+	hostOff := subnetOffset + 1
+	guestOff := subnetOffset + 2
+	if hostOff > 65534 {
+		return "", "", "", fmt.Errorf("CID %d exceeds available 10.0.0.0/16 address space", spec.VsockCID)
+	}
+
 	tapName = fmt.Sprintf("%s%s", tapDevicePrefix, spec.ID[:minInt(8, len(spec.ID))])
-	hostIP = fmt.Sprintf("%s%d", subnetBase, subnetOffset+1)
-	guestIP = fmt.Sprintf("%s%d", subnetBase, subnetOffset+2)
+	hostIP = fmt.Sprintf("10.0.%d.%d", hostOff/256, hostOff%256)
+	guestIP = fmt.Sprintf("10.0.%d.%d", guestOff/256, guestOff%256)
 
 	// Create tap device
 	if err := runCmd("ip", "tuntap", "add", "dev", tapName, "mode", "tap"); err != nil {
