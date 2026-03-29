@@ -16,8 +16,8 @@ const version = "v0.1.0"
 //	  --json, --verbose/-v, --dry-run, --force
 var rootCmd = &cobra.Command{
 	SilenceErrors: true,
-	Use:   "aegisclaw",
-	Short: "AegisClaw - Paranoid Firecracker-isolated agent platform",
+	Use:           "aegisclaw",
+	Short:         "AegisClaw - Paranoid Firecracker-isolated agent platform",
 	Long: `AegisClaw is a security-first platform for running isolated agents in Firecracker microVMs.
 All operations are signed, logged, and subject to governance court review.
 
