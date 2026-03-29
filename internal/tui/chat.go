@@ -34,6 +34,12 @@ type ChatMessage struct {
 	Content   string
 	Timestamp time.Time
 	ToolName  string
+
+	// OriginalContent preserves the full LLM output including tool-call
+	// blocks. The View uses Content (cleaned for display) while history
+	// building uses OriginalContent so the LLM sees its own prior tool
+	// calls. Empty means Content is the original.
+	OriginalContent string
 }
 
 // ToolCall represents a tool invocation from the assistant.
