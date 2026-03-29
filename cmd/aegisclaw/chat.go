@@ -179,11 +179,13 @@ func runChat(cmd *cobra.Command, args []string) error {
 		toolCalls := parseToolCalls(content)
 		if len(toolCalls) > 0 {
 			cleaned := cleanToolCallContent(content)
+			// When the LLM only emitted a tool-call block (no surrounding prose),
+			// show a friendly interim message so the user knows what's happening.
+			if cleaned == "" {
+				cleaned = toolCallFriendlyLabel(toolCalls[0].Name)
+			}
 			if sessionLog != nil {
 				sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: cleaned})
-				for _, tc := range toolCalls {
-					sessionLog.Log(audit.SessionEvent{Event: audit.EventToolCall, ToolName: tc.Name, ToolArgs: tc.Args})
-				}
 			}
 			return tui.ChatMessage{
 				Role:      tui.ChatRoleAssistant,
@@ -602,7 +604,44 @@ func cleanToolCallContent(content string) string {
 			}
 		}
 	}
+	// Strip bare "tool-call" / "tool_call" labels left behind by small models
+	// that emit the fence language tag without the triple-backtick fences.
+	content = strings.TrimSpace(content)
+	for _, label := range []string{"tool-call", "tool_call"} {
+		content = strings.ReplaceAll(content, label, "")
+	}
 	return strings.TrimSpace(content)
+}
+
+// toolCallFriendlyLabel returns a user-friendly description like "Checking proposals..."
+// for a given tool name. Used as the interim message while a tool is executing.
+func toolCallFriendlyLabel(name string) string {
+	switch name {
+	case "list_skills":
+		return "Looking up skills…"
+	case "list_proposals", "proposal.list_drafts":
+		return "Checking proposals…"
+	case "list_sandboxes":
+		return "Listing sandboxes…"
+	case "proposal.create_draft":
+		return "Creating a proposal draft…"
+	case "proposal.update_draft":
+		return "Updating the proposal…"
+	case "proposal.get_draft":
+		return "Fetching proposal details…"
+	case "proposal.submit":
+		return "Submitting proposal for review…"
+	case "proposal.status":
+		return "Checking proposal status…"
+	case "activate_skill":
+		return "Activating skill…"
+	default:
+		if strings.Contains(name, ".") {
+			parts := strings.SplitN(name, ".", 2)
+			return fmt.Sprintf("Calling %s on %s…", parts[1], parts[0])
+		}
+		return fmt.Sprintf("Running %s…", name)
+	}
 }
 
 // --- Proposal tool handlers ---

@@ -120,6 +120,54 @@ Turn 3 — User: what's the status of that one?
 
 ---
 
+## How to run
+
+Use the Python harness below (requires Ollama running on localhost:11434).
+Write the prompt under test to a file, then call:
+
+```bash
+python3 /tmp/test_prompt.py          # single-turn: T1, T2, T4
+python3 /tmp/test_v3_multiturn.py    # multi-turn: T5, T6
+```
+
+Each script sends the prompt + test message(s) to Ollama 3 times at
+temperature 0.3, num_predict 200–300, and prints the responses.
+
+---
+
+## Evaluation history
+
+### Baseline (pre-V3) — 2026-03-29
+
+Prompt: "You are AegisClaw, a security-first coding assistant…" (tool-heavy opening)
+
+| Test | C1 | C2 | C3 | C5 | C7 | Notes |
+|------|----|----|----|----|----|---------------------------------|
+| T1 | 0 | 0 | — | 2 | — | 3/3 called list_skills on "hello" |
+| T2 | — | 2 | 0 | 2 | — | 3/3 bare JSON (no fences) |
+| T4 | — | 1.7 | — | 1.3 | 1.7 | 1/3 hallucinated sandbox "time" field |
+| T5 | 2 | 2 | — | 2 | — | 3/3 offered to activate skill |
+
+**Verdict**: FAIL — agent calls tools for greetings, no fenced format.
+
+### V3 prompt — 2026-03-29
+
+Prompt: "You are AegisClaw, a friendly and security-conscious…" (conversation-first)
+
+| Test | C1 | C2 | C3 | C5 | C6 | C7 | Notes |
+|------|----|----|----|----|----|----|-------------------------------------|
+| T1 | 2 | 2 | — | 2 | — | — | 3/3 conversational greeting |
+| T2 | — | 2 | 2 | 2 | — | — | 3/3 fenced `list_skills` block |
+| T3 | 2 | 2 | — | 2 | 2 | — | 3/3 asked clarifying Qs first |
+| T4 | — | 2 | — | 2 | — | 2 | 3/3 "I can't tell the time" |
+| T5 | 2 | 2 | — | 1.7 | 2 | — | 2/3 offered activation; 1 misread status |
+| T6 | — | 0.7 | 0.3 | 1.3 | 1.3 | — | 0/3 correctly called proposal.submit |
+
+**Verdict**: PASS on core criteria (C1-C5, C7). T6 multi-turn UUID extraction
+remains a limitation of the 3B model, not prompt-addressable.
+
+---
+
 ## Running an evaluation
 
 ```bash
