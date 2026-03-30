@@ -501,22 +501,76 @@ func (s *Store) ResolveID(prefix string) (string, error) {
 		return "", err
 	}
 
-	var matches []string
+	// 1. Exact UUID match.
 	for _, p := range summaries {
 		if p.ID == prefix {
-			return prefix, nil // exact match
-		}
-		if len(prefix) >= 4 && len(p.ID) > len(prefix) && p.ID[:len(prefix)] == prefix {
-			matches = append(matches, p.ID)
+			return prefix, nil
 		}
 	}
 
-	switch len(matches) {
-	case 0:
-		return "", fmt.Errorf("no proposal found matching %q", prefix)
-	case 1:
-		return matches[0], nil
-	default:
-		return "", fmt.Errorf("ambiguous prefix %q matches %d proposals", prefix, len(matches))
+	// 2. UUID prefix match (minimum 4 chars).
+	var prefixMatches []string
+	if len(prefix) >= 4 {
+		for _, p := range summaries {
+			if len(p.ID) > len(prefix) && p.ID[:len(prefix)] == prefix {
+				prefixMatches = append(prefixMatches, p.ID)
+			}
+		}
 	}
+	if len(prefixMatches) == 1 {
+		return prefixMatches[0], nil
+	}
+	if len(prefixMatches) > 1 {
+		return "", fmt.Errorf("ambiguous prefix %q matches %d proposals", prefix, len(prefixMatches))
+	}
+
+	// 3. Title or skill-name match (case-insensitive, for LLM-friendly lookups).
+	norm := strings.ToLower(strings.TrimSpace(prefix))
+	var titleMatches []string
+	for _, p := range summaries {
+		if strings.EqualFold(p.Title, norm) ||
+			strings.EqualFold(p.TargetSkill, norm) ||
+			slugMatch(p.Title, norm) {
+			titleMatches = append(titleMatches, p.ID)
+		}
+	}
+	if len(titleMatches) == 1 {
+		return titleMatches[0], nil
+	}
+	if len(titleMatches) > 1 {
+		return "", fmt.Errorf("ambiguous name %q matches %d proposals", prefix, len(titleMatches))
+	}
+
+	return "", fmt.Errorf("no proposal found matching %q", prefix)
+}
+
+// slugMatch returns true if the slugified title equals the query.
+// e.g. "Time Telling Skill" matches "time-telling-skill" or "time telling skill".
+func slugMatch(title, query string) bool {
+	slug := strings.ToLower(title)
+	slug = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, slug)
+	// Collapse runs of dashes and trim.
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	slug = strings.Trim(slug, "-")
+
+	// Also normalise the query the same way.
+	normQ := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, query)
+	for strings.Contains(normQ, "--") {
+		normQ = strings.ReplaceAll(normQ, "--", "-")
+	}
+	normQ = strings.Trim(normQ, "-")
+
+	return slug == normQ
 }

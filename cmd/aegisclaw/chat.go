@@ -819,8 +819,8 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 	action := kernel.NewAction(kernel.ActionProposalCreate, "chat", payload)
 	env.Kernel.SignAndLog(action)
 
-	return fmt.Sprintf("Draft proposal created.\n  ID: %s\n  Title: %s\n  Skill: %s\n  Risk: %s\n  Status: %s",
-		p.ID, p.Title, p.TargetSkill, p.Risk, p.Status), nil
+	return fmt.Sprintf("Draft proposal created.\n  ID: %s\n  Title: %s\n  Skill: %s\n  Risk: %s\n  Status: %s\nUse this ID (%s) for proposal.submit, proposal.status, and proposal.update_draft calls.",
+		p.ID, p.Title, p.TargetSkill, p.Risk, p.Status, p.ID[:8]), nil
 }
 
 // handleProposalUpdateDraft updates fields on an existing draft proposal.
