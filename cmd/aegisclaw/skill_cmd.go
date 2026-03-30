@@ -15,18 +15,18 @@ import (
 
 // CLI flags for non-interactive skill addition.
 var (
-	skillAddName         string
-	skillAddTitle        string
-	skillAddDescription  string
-	skillAddTools        []string
-	skillAddSensitivity  int
-	skillAddExposure     int
-	skillAddPrivilege    int
-	skillAddHosts        []string
-	skillAddPortStrs     []string
-	skillAddProtocols    []string
-	skillAddSecretRefs   []string
-	skillAddNonInteract  bool
+	skillAddName        string
+	skillAddTitle       string
+	skillAddDescription string
+	skillAddTools       []string
+	skillAddSensitivity int
+	skillAddExposure    int
+	skillAddPrivilege   int
+	skillAddHosts       []string
+	skillAddPortStrs    []string
+	skillAddProtocols   []string
+	skillAddSecretRefs  []string
+	skillAddNonInteract bool
 )
 
 var skillAddCmd = &cobra.Command{

@@ -84,17 +84,17 @@ type RoundResult struct {
 
 // Engine orchestrates the court review process.
 type Engine struct {
-	config     EngineConfig
-	store      *proposal.Store
-	kernel     *kernel.Kernel
-	personas   []*Persona
-	reviewerFn ReviewerFunc
+	config       EngineConfig
+	store        *proposal.Store
+	kernel       *kernel.Kernel
+	personas     []*Persona
+	reviewerFn   ReviewerFunc
 	roundUpdater RoundUpdateFunc
-	logger     *zap.Logger
-	mu         sync.Mutex
-	sessions   map[string]*Session
-	sessionDir string // directory for persisting session JSON files
-	auditDir   string // directory for court review logs
+	logger       *zap.Logger
+	mu           sync.Mutex
+	sessions     map[string]*Session
+	sessionDir   string // directory for persisting session JSON files
+	auditDir     string // directory for court review logs
 }
 
 // NewEngine creates a Court Engine. If sessionDir is non-empty, sessions are

@@ -165,7 +165,7 @@ fi
 echo ">>> Setting up filesystem structure..."
 mkdir -p "${MOUNTPOINT}"/{dev,proc,sys,tmp,run,sbin,etc}
 if [ "${TARGET}" != "aegishub" ]; then
-    mkdir -p "${MOUNTPOINT}"/{workspace}
+    mkdir -p "${MOUNTPOINT}/workspace"
     mkdir -p "${MOUNTPOINT}/run/secrets"
 fi
 
