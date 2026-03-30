@@ -134,7 +134,7 @@ func TestIterationFeedbackFormat(t *testing.T) {
 		Questions:    []string{"What about X?", "Is Y safe?"},
 		Concerns:     []string{"[CISO] Performance impact"},
 		RoundNumber:  2,
-		HasQuestions:  true,
+		HasQuestions: true,
 	}
 
 	prompt := fb.FormatFeedbackPrompt()
@@ -290,7 +290,7 @@ func TestEngineWeightedConsensusIntegration(t *testing.T) {
 	}
 
 	cfg := DefaultEngineConfig()
-	engine, _ := NewEngine(cfg, store, kern, personas, reviewFn, logger)
+	engine, _ := NewEngine(cfg, store, kern, personas, reviewFn, logger, auditDir)
 
 	p := createTestProposal(t, store)
 	session, err := engine.Review(context.Background(), p.ID)

@@ -29,6 +29,7 @@ const (
 	ActionProposalReview      ActionType = "proposal.review"
 	ActionProposalApprove     ActionType = "proposal.approve"
 	ActionProposalReject      ActionType = "proposal.reject"
+	ActionProposalEscalate    ActionType = "proposal.escalate"
 	ActionProposalVote        ActionType = "proposal.vote"
 	ActionBuilderCreate       ActionType = "builder.create"
 	ActionBuilderStart        ActionType = "builder.start"
@@ -64,6 +65,7 @@ var validActionTypes = map[ActionType]bool{
 	ActionProposalReview:      true,
 	ActionProposalApprove:     true,
 	ActionProposalReject:      true,
+	ActionProposalEscalate:    true,
 	ActionProposalVote:        true,
 	ActionBuilderCreate:       true,
 	ActionBuilderStart:        true,

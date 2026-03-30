@@ -630,12 +630,20 @@ const (
 	ollamaTimeout     = 120 * time.Second
 )
 
-// toolCallBlock matches ```tool-call ... ``` and ```json ... ``` fence markers.
-var toolCallMarkers = []string{"```tool-call", "```json"}
+// toolCallMarkers lists fence markers in priority order. Plain "```" is last
+// because it also matches the prefix of the tagged variants.
+var toolCallMarkers = []string{"```tool-call", "```json", "```"}
 
 // parseAgentToolCall extracts the first tool-call block from raw LLM content.
+// Supports both modern {"name":"...","args":{}} and legacy {"skill":"...","tool":"..."} formats.
 // Returns ("", "", false) when no valid block is found.
+//
+// Handles three cases:
+//  1. Fenced with closing fence: ```tool-call\n{...}\n```
+//  2. Fenced without closing fence: ```tool-call\n{...}  (small models often omit the closing fence)
+//  3. Bare JSON: {"name": "...", "args": {...}}  (no fences at all)
 func parseAgentToolCall(content string) (toolName, argsJSON string, found bool) {
+	// Phase 1: Try each fence marker, first with closing fence, then without.
 	for _, marker := range toolCallMarkers {
 		search := content
 		for {
@@ -645,35 +653,76 @@ func parseAgentToolCall(content string) (toolName, argsJSON string, found bool) 
 			}
 			after := search[start+len(marker):]
 			end := strings.Index(after, "```")
+
+			var block string
+			if end >= 0 {
+				block = strings.TrimSpace(after[:end])
+			} else {
+				// No closing fence — try using everything after the marker.
+				block = strings.TrimSpace(after)
+			}
+
+			if name, args, ok := tryParseToolJSON(block); ok {
+				return name, args, true
+			}
+
 			if end < 0 {
-				break
-			}
-			block := strings.TrimSpace(after[:end])
-			var tc struct {
-				Skill string          `json:"skill"`
-				Tool  string          `json:"tool"`
-				Args  json.RawMessage `json:"args"`
-			}
-			if err := json.Unmarshal([]byte(block), &tc); err == nil && tc.Skill != "" && tc.Tool != "" {
-				// Auto-correct namespace for known proposal tools.
-				if isProposalTool(tc.Tool) && tc.Skill != "proposal" {
-					tc.Skill = "proposal"
-				}
-				argsStr := "{}"
-				if len(tc.Args) > 0 {
-					argsStr = string(tc.Args)
-				}
-				return tc.Skill + "." + tc.Tool, argsStr, true
+				break // no closing fence, no point continuing with this marker
 			}
 			search = after[end+3:]
 		}
 	}
+
+	// Phase 2: Bare JSON fallback — look for {"name": anywhere in the content.
+	if idx := strings.Index(content, `{"name"`); idx >= 0 {
+		candidate := content[idx:]
+		if name, args, ok := tryParseToolJSON(candidate); ok {
+			return name, args, true
+		}
+	}
+
+	return "", "", false
+}
+
+// tryParseToolJSON attempts to parse a string as a tool-call JSON object.
+// Tries modern format first, then legacy format.
+func tryParseToolJSON(block string) (toolName, argsJSON string, found bool) {
+	// Modern format: {"name": "tool_name", "args": {...}}
+	var modern struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(block), &modern); err == nil && modern.Name != "" {
+		argsStr := "{}"
+		if len(modern.Args) > 0 {
+			argsStr = string(modern.Args)
+		}
+		return modern.Name, argsStr, true
+	}
+
+	// Legacy format: {"skill": "proposal", "tool": "create_draft", "args": {...}}
+	var legacy struct {
+		Skill string          `json:"skill"`
+		Tool  string          `json:"tool"`
+		Args  json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(block), &legacy); err == nil && legacy.Skill != "" && legacy.Tool != "" {
+		if isProposalTool(legacy.Tool) && legacy.Skill != "proposal" {
+			legacy.Skill = "proposal"
+		}
+		argsStr := "{}"
+		if len(legacy.Args) > 0 {
+			argsStr = string(legacy.Args)
+		}
+		return legacy.Skill + "." + legacy.Tool, argsStr, true
+	}
+
 	return "", "", false
 }
 
 func isProposalTool(name string) bool {
 	switch name {
-	case "create_draft", "update_draft", "get_draft", "list_drafts", "submit", "status":
+	case "create_draft", "update_draft", "get_draft", "list_drafts", "submit", "status", "reviews", "vote":
 		return true
 	}
 	return false

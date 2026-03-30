@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -78,6 +79,11 @@ func NewStore(repoPath string, logger *zap.Logger) (*Store, error) {
 	}, nil
 }
 
+// RepoPath returns the filesystem path to the proposal store repository.
+func (s *Store) RepoPath() string {
+	return s.repoPath
+}
+
 func initRepo(path string) (*git.Repository, error) {
 	repo, err := git.PlainInit(path, false)
 	if err != nil {
@@ -123,6 +129,17 @@ func initRepo(path string) (*git.Repository, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create initial commit: %w", err)
+	}
+
+	// Ensure main branch reference exists
+	head, err := repo.Head()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD after commit: %w", err)
+	}
+	mainBranchRef := plumbing.NewBranchReferenceName(defaultBranch)
+	ref := plumbing.NewHashReference(mainBranchRef, head.Hash())
+	if err := repo.Storer.SetReference(ref); err != nil {
+		return nil, fmt.Errorf("failed to create main branch reference: %w", err)
 	}
 
 	return repo, nil
@@ -214,8 +231,17 @@ func (s *Store) Update(p *Proposal) error {
 	}
 
 	branchRef := plumbing.NewBranchReferenceName(p.BranchName())
+
+	// Assume branch exists (created in Create), checkout with reset if needed
 	if err := w.Checkout(&git.CheckoutOptions{Branch: branchRef}); err != nil {
-		return fmt.Errorf("proposal branch %s not found: %w", p.BranchName(), err)
+		// If worktree has unstaged changes, try to reset
+		if resetErr := w.Reset(&git.ResetOptions{Mode: git.HardReset}); resetErr != nil {
+			return fmt.Errorf("failed to reset worktree: %w", resetErr)
+		}
+		// Try checkout again
+		if checkoutErr := w.Checkout(&git.CheckoutOptions{Branch: branchRef}); checkoutErr != nil {
+			return fmt.Errorf("failed to checkout %s after reset: %w", p.BranchName(), checkoutErr)
+		}
 	}
 
 	if err := s.writeProposalFile(p); err != nil {
@@ -236,6 +262,16 @@ func (s *Store) Update(p *Proposal) error {
 		},
 	})
 	if err != nil {
+		// A "clean" working tree means the data is identical to what's already
+		// committed — treat this as a successful no-op rather than an error.
+		if strings.Contains(err.Error(), "clean") {
+			s.checkoutMain(w)
+			s.logger.Debug("proposal update skipped (no changes)",
+				zap.String("proposal_id", p.ID),
+				zap.Int("version", p.Version),
+			)
+			return nil
+		}
 		s.checkoutMain(w)
 		return fmt.Errorf("failed to commit proposal update: %w", err)
 	}

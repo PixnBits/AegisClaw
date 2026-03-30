@@ -171,11 +171,14 @@ func TestChatSendWhileThinking(t *testing.T) {
 	m = updated.(ChatModel)
 
 	if cmd != nil {
-		t.Error("expected no command while thinking")
+		t.Error("expected no command while thinking (message should be queued)")
 	}
-	// Input should remain since we can't send
-	if m.input != "msg" {
-		t.Errorf("expected input preserved, got %q", m.input)
+	// Input is cleared (message shown in chat) but queued for later send.
+	if m.input != "" {
+		t.Errorf("expected input cleared after queuing, got %q", m.input)
+	}
+	if len(m.pendingInputs) != 1 || m.pendingInputs[0] != "msg" {
+		t.Errorf("expected queued input [\"msg\"], got %v", m.pendingInputs)
 	}
 }
 

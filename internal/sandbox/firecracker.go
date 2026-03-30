@@ -458,7 +458,11 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 		// configure eth0 when vsock transport is not available.
 	// For NoNetwork sandboxes, omit the IP configuration entirely so the
 	// guest kernel does not attempt to bring up a non-existent interface.
-	kernelArgs := "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/guest-agent"
+	initPath := spec.InitPath
+	if initPath == "" {
+		initPath = "/sbin/guest-agent"
+	}
+	kernelArgs := "console=ttyS0 reboot=k panic=1 pci=off init=" + initPath
 	if !spec.NetworkPolicy.NoNetwork {
 		kernelArgs += fmt.Sprintf(" ip=%s::%s:255.255.255.252::eth0:off", guestIP, hostIP)
 	}

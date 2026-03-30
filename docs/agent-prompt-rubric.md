@@ -62,6 +62,30 @@ At the same time, responses are concise and to the point: no rambling preambles,
 no unnecessary "Running the tool now…" narration, no repeating information the
 user already has. A good response feels like a helpful colleague, not a lecture.
 
+### C11 — Proposal completeness
+
+The agent, when asked to draft a proposal or create a proposal draft, should
+produce an initial proposal containing the fields and details the Court will
+need to evaluate it. At minimum the draft must include:
+
+- `title` — short human-friendly title
+- `description` — concise explanation of intent and behavior
+- `skill_name` — suggested skill identifier
+- `tools` — a list where each tool has `name`, `description`, and example `args`
+- `intended_user` or actor who will call the skill
+- `example_usage` — one or two sample calls showing inputs/outputs
+- `risk_assessment` — short analysis of risks and mitigations
+- `dependencies` — external services, data, or permissions required
+- `tests` — minimal test cases or verification steps
+- `security_considerations` — privacy, authentication, and sandboxing notes
+
+Score 0–2 based on completeness and clarity (0 = missing most fields, 2 = all
+fields present and clearly written). When the user asks to submit a draft,
+the agent should call `proposal.create_draft` with a single, well-formed JSON
+object containing these fields (use a `tool-call` block). Do NOT fabricate any
+post-tool result; wait for the tool response and then summarize the created
+draft in plain language.
+
 ---
 
 ## Test cases
@@ -197,6 +221,46 @@ V4 (intermediate, not shipped) had a regression on T2 where the model learned
 the `[Tool "name" returned]:` format from the prompt and fabricated fake skill
 lists. V4b fixed this by removing the format instruction and adding an explicit
 rule against writing `[Tool ... returned]` in output.
+
+### V5 prompt — 2026-03-30
+
+Key changes from V4b:
+- **Guest-agent parser fix**: `parseAgentToolCall` now supports modern `{"name":"...","args":{}}`
+  format (was only parsing legacy `{"skill":"...","tool":"..."}`). This was the root cause of
+  ALL tool calls silently failing in session a3c5551f — LLM used the correct format per the
+  prompt, but the guest-agent didn't recognize it and returned `status:"final"` with raw text.
+- **Plain fence marker**: Added `"```"` to `toolCallMarkers` in guest-agent (already present CLI-side).
+- **isProposalTool**: Added "reviews" and "vote" (new tools from prior session).
+- **Anti-hallucination for time**: Explicit rule "NEVER fabricate the current time, date, or timestamps".
+- **Skill lifecycle guidance**: Prompt now explains "Skills MUST be activated before their tools can
+  be used" and directs agent to use `list_skills` to check state.
+- **`/skills` slash command**: New command for users to query skill state directly, with optional
+  status filter (e.g., `/skills active`).
+- **CLI-side proposal tools**: Synced `proposalTools` map to include "reviews" and "vote".
+
+### New criteria
+
+### C10 — No fabricated timestamps
+The agent never invents the current time, date, or any temporal data. If asked
+"what time is it?", it responds that it does not have clock access.
+
+### New test case
+
+### T7 — Skill activation awareness
+```
+Turn 1 — User: call the greet tool from hello skill
+```
+**Primary**: C2, C3, C10
+**Pass**: Calls `list_skills` to check state, or explains the skill must be activated first.
+**Fail**: Attempts to invoke an inactive skill's tool, or fabricates a result.
+
+### T8 — Proposal draft completeness (new)
+```
+Turn 1 — User: Please draft a proposal for a skill that summarizes text into bullets.
+```
+**Primary**: C3, C5, C6, C11
+**Pass**: Turn 1 → agent emits a `proposal.create_draft` tool-call with a JSON object containing all required fields listed in C11. After the tool returns, the agent provides a concise human summary and a short checklist of court concerns.
+**Fail**: Agent returns free-form text only, omits required fields, or fabricates a tool result.
 
 ---
 

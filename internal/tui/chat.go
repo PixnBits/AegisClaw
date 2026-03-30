@@ -71,6 +71,12 @@ type ChatModel struct {
 	// Safe mode blocks all tool and skill execution.
 	SafeMode bool
 
+	// toolPending is true while a tool cycle (execute + summarize) is in
+	// progress. User messages submitted during this window are queued in
+	// pendingInputs and replayed after the cycle finishes.
+	toolPending   bool
+	pendingInputs []string
+
 	// Watched proposals for status change notifications.
 	watchedProposals map[string]string // proposal ID → last known status
 
@@ -114,6 +120,11 @@ type chatPollTickMsg struct{}
 
 // chatPollNoChangeMsg re-arms the poll timer when no changes were found.
 type chatPollNoChangeMsg struct{}
+
+// chatDrainMsg replays a queued user message after a tool cycle finishes.
+type chatDrainMsg struct {
+	Input string
+}
 
 // ChatProposalNotifyMsg delivers a proposal status change notification.
 type ChatProposalNotifyMsg struct {
@@ -182,12 +193,12 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.thinking = false
 		if msg.Err != nil {
 			m.err = msg.Err
-			return m, nil
+			return m, m.drainPendingInput()
 		}
 		m.messages = append(m.messages, msg.Message)
 		m.scrollToBottom()
 
-		// Execute tool calls sequentially (blocked in safe mode)
+		// Execute tool calls sequentially (blocked in safe mode).
 		if len(msg.ToolCalls) > 0 {
 			if m.SafeMode {
 				m.messages = append(m.messages, ChatMessage{
@@ -196,11 +207,12 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Timestamp: time.Now(),
 				})
 				m.scrollToBottom()
-				return m, nil
+				return m, m.drainPendingInput()
 			}
+			m.toolPending = true
 			return m, m.executeTool(msg.ToolCalls[0], msg.ToolCalls[1:])
 		}
-		return m, nil
+		return m, m.drainPendingInput()
 
 	case ChatToolResultMsg:
 		toolContent := msg.Result
@@ -243,10 +255,11 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nextCmd
 		}
+		m.toolPending = false
 		if watchCmd != nil {
-			return m, watchCmd
+			return m, tea.Batch(watchCmd, m.drainPendingInput())
 		}
-		return m, nil
+		return m, m.drainPendingInput()
 
 	case chatPollTickMsg:
 		if len(m.watchedProposals) > 0 {
@@ -281,13 +294,24 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ChatSummaryMsg:
 		m.thinking = false
+		m.toolPending = false
 		if msg.Err != nil {
 			m.err = msg.Err
-			return m, nil
+			return m, m.drainPendingInput()
 		}
 		m.messages = append(m.messages, msg.Message)
 		m.scrollToBottom()
-		return m, nil
+		return m, m.drainPendingInput()
+
+	case chatDrainMsg:
+		// Replay a queued user message now that the tool cycle is done.
+		if m.thinking || m.toolPending {
+			// Another cycle started — re-queue.
+			m.pendingInputs = append([]string{msg.Input}, m.pendingInputs...)
+			return m, nil
+		}
+		m.thinking = true
+		return m, m.sendMessage(msg.Input)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -316,7 +340,7 @@ func (m ChatModel) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case tea.KeyEnter:
-		if m.input == "" || m.thinking {
+		if m.input == "" {
 			return m, nil
 		}
 		input := m.input
@@ -331,6 +355,17 @@ func (m ChatModel) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Check for quit commands
 		if input == "/quit" || input == "/exit" {
 			return m, tea.Quit
+		}
+
+		// Queue messages while a tool cycle is running so the agent
+		// doesn't see them interleaved with tool results.
+		if m.thinking || m.toolPending {
+			m.pendingInputs = append(m.pendingInputs, input)
+			m.messages = append(m.messages, ChatMessage{
+				Role: ChatRoleUser, Content: input, Timestamp: time.Now(),
+			})
+			m.scrollToBottom()
+			return m, nil
 		}
 
 		// /safe-mode and /shutdown are handled directly without LLM.
@@ -454,7 +489,10 @@ func (m ChatModel) View() string {
 	b.WriteString(m.renderMessages())
 
 	// Thinking indicator
-	if m.thinking {
+	if m.toolPending && !m.thinking {
+		b.WriteString(StatusPending.Render("  running tool… (you can keep typing)"))
+		b.WriteString("\n")
+	} else if m.thinking {
 		b.WriteString(StatusPending.Render("  thinking..."))
 		b.WriteString("\n")
 	}
@@ -602,6 +640,20 @@ func (m ChatModel) summarizeResult(toolName, toolResult string) tea.Cmd {
 	return func() tea.Msg {
 		msg, err := m.SummarizeToolResult(toolName, toolResult, m.messages)
 		return ChatSummaryMsg{Message: msg, Err: err}
+	}
+}
+
+// drainPendingInput pops the first queued user message (if any) and returns a
+// command to replay it. The message is already displayed in the chat view;
+// this simply sends it to the LLM once the current cycle is done.
+func (m *ChatModel) drainPendingInput() tea.Cmd {
+	if len(m.pendingInputs) == 0 {
+		return nil
+	}
+	next := m.pendingInputs[0]
+	m.pendingInputs = m.pendingInputs[1:]
+	return func() tea.Msg {
+		return chatDrainMsg{Input: next}
 	}
 }
 

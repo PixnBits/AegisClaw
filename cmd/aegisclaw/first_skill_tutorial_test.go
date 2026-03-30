@@ -205,7 +205,7 @@ func TestFirstSkillTutorialJourney(t *testing.T) {
 	}
 
 	cfg := court.DefaultEngineConfig()
-	engine, err := court.NewEngine(cfg, store, kern, personas, reviewerFn, logger)
+	engine, err := court.NewEngine(cfg, store, kern, personas, reviewerFn, logger, auditDir)
 	if err != nil {
 		t.Fatalf("Step 7 - court engine: %v", err)
 	}
@@ -840,7 +840,7 @@ func TestFirstSkillTutorialLive(t *testing.T) {
 
 	// ── Initialise the real Court engine ─────────────────────────────
 	t.Log("Initialising court engine (FirecrackerLauncher + OllamaProxy)…")
-	engine, err := initCourtEngine(env)
+	engine, err := initCourtEngine(env, nil)
 	if err != nil {
 		t.Fatalf("initCourtEngine: %v", err)
 	}

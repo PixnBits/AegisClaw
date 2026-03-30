@@ -252,6 +252,12 @@ func runChat(cmd *cobra.Command, args []string) error {
 		case "proposal.status":
 			result, toolErr = handleProposalStatus(env, call.Args)
 			return result, toolErr
+		case "proposal.reviews":
+			result, toolErr = handleProposalReviews(env, call.Args)
+			return result, toolErr
+		case "proposal.vote":
+			result, toolErr = handleProposalVote(env, cmd.Context(), call.Args)
+			return result, toolErr
 		}
 
 		// D2: Route all other tool calls through the daemon.
@@ -482,6 +488,7 @@ func parseToolCalls(content string) []tui.ToolCall {
 		"create_draft": true, "update_draft": true,
 		"get_draft": true, "list_drafts": true,
 		"submit": true, "status": true,
+		"reviews": true, "vote": true,
 	}
 
 	// Try fence markers in priority order. Plain "```" is last because it also
@@ -818,7 +825,9 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 
 // handleProposalUpdateDraft updates fields on an existing draft proposal.
 func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error) {
-	var args struct {
+	// Use json.RawMessage for array fields so we can apply lenient
+	// coercion for small LLMs that serialize arrays as strings.
+	var raw struct {
 		ID          string  `json:"id"`
 		Title       *string `json:"title"`
 		Description *string `json:"description"`
@@ -827,15 +836,48 @@ func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error)
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		} `json:"tools"`
-		DataSensitivity *int     `json:"data_sensitivity"`
-		NetworkExposure *int     `json:"network_exposure"`
-		PrivilegeLevel  *int     `json:"privilege_level"`
-		AllowedHosts    []string `json:"allowed_hosts"`
-		AllowedPorts    []int    `json:"allowed_ports"`
-		SecretRefs      []string `json:"secret_refs"`
+		DataSensitivity *int            `json:"data_sensitivity"`
+		NetworkExposure *int            `json:"network_exposure"`
+		PrivilegeLevel  *int            `json:"privilege_level"`
+		AllowedHosts    json.RawMessage `json:"allowed_hosts"`
+		AllowedPorts    json.RawMessage `json:"allowed_ports"`
+		SecretRefs      json.RawMessage `json:"secret_refs"`
 	}
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
+	}
+
+	type toolSpec struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+
+	args := struct {
+		ID              string
+		Title           *string
+		Description     *string
+		SkillName       *string
+		Tools           []toolSpec
+		DataSensitivity *int
+		NetworkExposure *int
+		PrivilegeLevel  *int
+		AllowedHosts    []string
+		AllowedPorts    []int
+		SecretRefs      []string
+	}{
+		ID:              raw.ID,
+		Title:           raw.Title,
+		Description:     raw.Description,
+		SkillName:       raw.SkillName,
+		DataSensitivity: raw.DataSensitivity,
+		NetworkExposure: raw.NetworkExposure,
+		PrivilegeLevel:  raw.PrivilegeLevel,
+		AllowedHosts:    coerceStringSlice(raw.AllowedHosts),
+		AllowedPorts:    coerceIntSlice(raw.AllowedPorts),
+		SecretRefs:      coerceStringSlice(raw.SecretRefs),
+	}
+	for _, t := range raw.Tools {
+		args.Tools = append(args.Tools, toolSpec{Name: t.Name, Description: t.Description})
 	}
 	if args.ID == "" {
 		return "", fmt.Errorf("id is required")
@@ -850,8 +892,8 @@ func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("proposal not found: %w", err)
 	}
-	if p.Status != proposal.StatusDraft {
-		return "", fmt.Errorf("can only update draft proposals (current status: %s)", p.Status)
+	if p.Status != proposal.StatusDraft && p.Status != proposal.StatusInReview {
+		return "", fmt.Errorf("can only update draft or in_review proposals (current status: %s)", p.Status)
 	}
 
 	if args.Title != nil {
@@ -927,12 +969,64 @@ func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error)
 		p.SecretsRefs = args.SecretRefs
 	}
 
+	p.BumpVersion()
+
 	if err := env.ProposalStore.Update(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
 	return fmt.Sprintf("Draft updated.\n  ID: %s\n  Title: %s\n  Skill: %s\n  Risk: %s",
 		p.ID, p.Title, p.TargetSkill, p.Risk), nil
+}
+
+// coerceStringSlice parses a json.RawMessage as []string, tolerating common
+// LLM mistakes like sending a plain string or a Python-style list literal.
+func coerceStringSlice(raw json.RawMessage) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr
+	}
+	// Attempt to treat as a single string value.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+		// Check for Python-style list: "['a', 'b']"
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+			// Replace single quotes with double quotes and try JSON parse.
+			fixed := strings.ReplaceAll(s, "'", "\"")
+			if err := json.Unmarshal([]byte(fixed), &arr); err == nil {
+				return arr
+			}
+		}
+		return []string{s}
+	}
+	return nil
+}
+
+// coerceIntSlice parses a json.RawMessage as []int, tolerating string input.
+func coerceIntSlice(raw json.RawMessage) []int {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var arr []int
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr
+	}
+	// Attempt to treat as a single string containing a list.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+			fixed := strings.ReplaceAll(s, "'", "\"")
+			if err := json.Unmarshal([]byte(fixed), &arr); err == nil {
+				return arr
+			}
+		}
+	}
+	return nil
 }
 
 // handleProposalGetDraft loads and returns a proposal's details.
@@ -1172,4 +1266,100 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 	}
 
 	return result, nil
+}
+
+// handleProposalReviews returns detailed review feedback for a proposal.
+func handleProposalReviews(env *runtimeEnv, argsJSON string) (string, error) {
+	var args struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", fmt.Errorf("invalid args: %w", err)
+	}
+	if args.ID == "" {
+		return "", fmt.Errorf("id is required")
+	}
+
+	fullID, err := resolveProposalID(env, args.ID)
+	if err != nil {
+		return "", err
+	}
+
+	p, err := env.ProposalStore.Get(fullID)
+	if err != nil {
+		return "", fmt.Errorf("not found: %w", err)
+	}
+
+	if len(p.Reviews) == 0 {
+		return fmt.Sprintf("Proposal %s has no reviews yet.\n  Status: %s", p.ID[:8], p.Status), nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Proposal %s — %s\n", p.ID[:8], p.Title)
+	fmt.Fprintf(&b, "  Status: %s  Risk: %s  Rounds: %d\n\n", p.Status, p.Risk, p.Round)
+
+	// Group reviews by round.
+	maxRound := 0
+	for _, r := range p.Reviews {
+		if r.Round > maxRound {
+			maxRound = r.Round
+		}
+	}
+	for round := 1; round <= maxRound; round++ {
+		reviews := p.ReviewsForRound(round)
+		if len(reviews) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "Round %d:\n", round)
+		for _, r := range reviews {
+			fmt.Fprintf(&b, "  %s (%s): %s  risk=%.1f\n", r.Persona, r.Model, r.Verdict, r.RiskScore)
+			if r.Comments != "" {
+				fmt.Fprintf(&b, "    Comment: %s\n", r.Comments)
+			}
+			for _, q := range r.Questions {
+				fmt.Fprintf(&b, "    Question: %s\n", q)
+			}
+		}
+		b.WriteString("\n")
+	}
+	return b.String(), nil
+}
+
+// handleProposalVote casts a human vote on a proposal via the court engine.
+func handleProposalVote(env *runtimeEnv, ctx context.Context, argsJSON string) (string, error) {
+	var args struct {
+		ID      string `json:"id"`
+		Approve bool   `json:"approve"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", fmt.Errorf("invalid args: %w", err)
+	}
+	if args.ID == "" {
+		return "", fmt.Errorf("id is required")
+	}
+	if args.Reason == "" {
+		return "", fmt.Errorf("reason is required")
+	}
+
+	fullID, err := resolveProposalID(env, args.ID)
+	if err != nil {
+		return "", err
+	}
+
+	if env.Court == nil {
+		return "", fmt.Errorf("court engine not available")
+	}
+
+	session, err := env.Court.VoteOnProposal(ctx, fullID, "chat-user", args.Approve, args.Reason)
+	if err != nil {
+		return "", fmt.Errorf("vote failed: %w", err)
+	}
+
+	action := "approved"
+	if !args.Approve {
+		action = "rejected"
+	}
+	return fmt.Sprintf("Vote recorded: %s\n  Proposal: %s\n  Verdict: %s\n  State: %s",
+		action, fullID[:8], session.Verdict, session.State), nil
 }
