@@ -95,7 +95,17 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			}
 			msgs = append(msgs, agentChatMsg{Role: h.Role, Content: h.Content})
 		}
-		msgs = append(msgs, agentChatMsg{Role: "user", Content: req.Input})
+		// Only append req.Input if it's not already the last message in
+		// history. The TUI appends the user message to the chat log before
+		// calling SendMessage (so it renders immediately), which means the
+		// history already contains the current input.
+		alreadyInHistory := false
+		if n := len(msgs); n > 0 && msgs[n-1].Role == "user" && msgs[n-1].Content == req.Input {
+			alreadyInHistory = true
+		}
+		if !alreadyInHistory {
+			msgs = append(msgs, agentChatMsg{Role: "user", Content: req.Input})
+		}
 
 		for i := 0; i < reactMaxIterations; i++ {
 			payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: model})
@@ -348,10 +358,51 @@ func makeChatSlashHandler(env *runtimeEnv) api.Handler {
 				}
 			}
 
+		case "/skills":
+			// /skills [status-filter]
+			// List skills with their state and tools. Optional filter: active, inactive, stopped, error
+			skills := env.Registry.List()
+			filterState := ""
+			if len(parts) > 1 {
+				filterState = strings.ToLower(parts[1])
+			}
+			var lines []string
+			for _, sk := range skills {
+				state := string(sk.State)
+				if filterState != "" && state != filterState {
+					continue
+				}
+				line := fmt.Sprintf("  %-20s [%s]  sandbox=%s  v%d", sk.Name, sk.State, sk.SandboxID[:8], sk.Version)
+				if sk.ActivatedAt != nil {
+					line += fmt.Sprintf("  activated=%s", sk.ActivatedAt.Format("2006-01-02 15:04"))
+				}
+				if sk.StoppedAt != nil {
+					line += fmt.Sprintf("  stopped=%s", sk.StoppedAt.Format("2006-01-02 15:04"))
+				}
+				if desc, ok := sk.Metadata["description"]; ok && desc != "" {
+					line += "\n    " + desc
+				}
+				lines = append(lines, line)
+			}
+			if len(lines) == 0 {
+				if filterState != "" {
+					content = fmt.Sprintf("No skills with state %q. Valid states: active, inactive, stopped, error", filterState)
+				} else {
+					content = "No skills registered."
+				}
+			} else {
+				header := "Skills"
+				if filterState != "" {
+					header += fmt.Sprintf(" (filtered: %s)", filterState)
+				}
+				content = header + ":\n" + strings.Join(lines, "\n")
+			}
+
 		case "/help":
 			content = `Available commands:
   /help          — Show this help message
   /call          — Invoke a skill tool: /call <skill>.<tool> [args...]
+  /skills        — List skills and tools: /skills [active|inactive|stopped|error]
   /status        — Show system status (sandboxes, skills, audit)
   /audit         — Show audit chain info and verification
   /safe-mode     — Stop all skills and block execution (no LLM)
@@ -497,12 +548,24 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"list_proposals\" — list all proposals. args: {}\n")
 	b.WriteString("- \"list_sandboxes\" — list running sandboxes. args: {}\n")
 	b.WriteString("- \"proposal.create_draft\" — create a new skill proposal. args: {\"title\": \"...\", \"description\": \"...\", \"skill_name\": \"...\", \"tools\": [{\"name\": \"...\", \"description\": \"...\"}]}\n")
-	b.WriteString("- \"proposal.update_draft\" — update a draft. args: {\"id\": \"uuid\", ...fields}\n")
+	b.WriteString("- \"proposal.update_draft\" — update a draft or in-review proposal between court rounds. args: {\"id\": \"uuid\", ...fields}\n")
 	b.WriteString("- \"proposal.get_draft\" — get draft details. args: {\"id\": \"uuid\"}\n")
 	b.WriteString("- \"proposal.list_drafts\" — list drafts. args: {}\n")
 	b.WriteString("- \"proposal.submit\" — submit for review. args: {\"id\": \"uuid\"}\n")
 	b.WriteString("- \"proposal.status\" — check proposal status. args: {\"id\": \"uuid\"}\n")
+	b.WriteString("- \"proposal.reviews\" — get detailed reviewer feedback for a proposal: verdicts, comments, questions from each round. args: {\"id\": \"uuid\"}\n")
+	b.WriteString("- \"proposal.vote\" — cast a human vote to approve or reject a proposal (useful for escalated proposals). args: {\"id\": \"uuid\", \"approve\": true, \"reason\": \"...\"}\n")
 	b.WriteString("- \"activate_skill\" — activate an approved skill. args: {\"name\": \"skill_name\"}\n")
+
+	// Proposal drafting instructions: tell the agent how to build a court-ready draft
+	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")
+	b.WriteString("proposal that includes the fields the Court requires. At minimum, the\n")
+	b.WriteString("draft should include: title, description, skill_name, tools (name+description+args),\n")
+	b.WriteString("intended_user, example_usage, risk_assessment, dependencies, tests, and security_considerations.\n")
+	b.WriteString("Always prefer to CALL the `proposal.create_draft` tool rather than only returning free-form text.\n")
+	b.WriteString("When calling the tool, use a single fenced ```tool-call``` block with JSON args matching those fields.\n")
+	b.WriteString("After the tool returns, summarize the created draft in plain language and present a short checklist\n")
+	b.WriteString("of items the Court will look for (e.g., tests, risk mitigations, deployment constraints).\n\n")
 
 	// Active skill tools.
 	skills := env.Registry.List()
@@ -514,10 +577,14 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("\n")
 
 	// Workflow.
-	b.WriteString("To add a skill: create_draft -> submit -> activate_skill. One step at a time.\n\n")
+	b.WriteString("Skill lifecycle: create_draft → submit → (review) → activate_skill → invoke tool. Skills MUST be activated before their tools can be used.\n")
+	b.WriteString("To check what skills exist and their current state, use list_skills. Only \"active\" skills can be invoked.\n\n")
+
+	// Escalation guidance.
+	b.WriteString("If a proposal is \"escalated\", it means the AI reviewers could not reach consensus after multiple rounds. Use proposal.reviews to see their feedback, then explain the situation to the user. If the user wants to proceed, use proposal.vote to approve or reject it on their behalf.\n\n")
 
 	// Slash commands.
-	b.WriteString("Users can type: /help /call /status /audit /safe-mode /shutdown /quit /exit. These are handled by the system, not you.\n\n")
+	b.WriteString("Users can type: /help /call /status /skills /audit /safe-mode /shutdown /quit /exit. These are handled by the system, not you.\n\n")
 
 	// Rules (anti-hallucination).
 	b.WriteString("Rules:\n")
@@ -525,6 +592,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- NEVER write fake output like \"Status: approved\" or \"[Tool ... returned]\" yourself.\n")
 	b.WriteString("- Never invent tools that are not listed above.\n")
 	b.WriteString("- If you need data you do not have, call the appropriate tool.\n")
+	b.WriteString("- If no tool can provide the information, say so honestly — do NOT make it up.\n")
 	b.WriteString("- If you cannot help with something, say so honestly.\n")
 
 	return b.String()

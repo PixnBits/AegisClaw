@@ -20,6 +20,7 @@ const (
 	StatusInReview     Status = "in_review"
 	StatusApproved     Status = "approved"
 	StatusRejected     Status = "rejected"
+	StatusEscalated    Status = "escalated"
 	StatusImplementing Status = "implementing"
 	StatusComplete     Status = "complete"
 	StatusFailed       Status = "failed"
@@ -28,16 +29,18 @@ const (
 
 var validStatuses = map[Status]bool{
 	StatusDraft: true, StatusSubmitted: true, StatusInReview: true,
-	StatusApproved: true, StatusRejected: true, StatusImplementing: true,
-	StatusComplete: true, StatusFailed: true, StatusWithdrawn: true,
+	StatusApproved: true, StatusRejected: true, StatusEscalated: true,
+	StatusImplementing: true, StatusComplete: true, StatusFailed: true,
+	StatusWithdrawn: true,
 }
 
 var allowedTransitions = map[Status][]Status{
 	StatusDraft:        {StatusSubmitted, StatusWithdrawn},
 	StatusSubmitted:    {StatusInReview, StatusWithdrawn},
-	StatusInReview:     {StatusApproved, StatusRejected, StatusWithdrawn},
+	StatusInReview:     {StatusApproved, StatusRejected, StatusEscalated, StatusWithdrawn},
 	StatusApproved:     {StatusImplementing, StatusWithdrawn},
 	StatusRejected:     {StatusDraft},
+	StatusEscalated:    {StatusApproved, StatusRejected, StatusDraft},
 	StatusImplementing: {StatusComplete, StatusFailed},
 	StatusFailed:       {StatusDraft},
 }
@@ -321,6 +324,45 @@ func (p *Proposal) AddReview(review Review) error {
 	p.Version++
 	p.MerkleHash = p.computeHash()
 	return nil
+}
+
+// ApplyFeedback appends reviewer feedback to the proposal description and
+// updates metadata (version, timestamps, merkle hash) so changes are
+// tracked in the proposal git history when persisted via Store.Update.
+func (p *Proposal) ApplyFeedback(feedback, actor, reason string) error {
+	if feedback == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	// Record an informational history entry (no status change).
+	p.History = append(p.History, StatusChange{
+		From:      p.Status,
+		To:        p.Status,
+		Reason:    reason,
+		Actor:     actor,
+		Timestamp: now,
+	})
+	p.PrevHash = p.MerkleHash
+	if p.Description == "" {
+		p.Description = feedback
+	} else {
+		p.Description = p.Description + "\n\n" + feedback
+	}
+	p.UpdatedAt = now
+	p.Version++
+	p.MerkleHash = p.computeHash()
+	return nil
+}
+
+// BumpVersion increments the version counter, updates timestamps, and
+// recomputes the Merkle hash. Call this after mutating proposal fields
+// directly (e.g., from tool handlers) rather than through Transition,
+// AddReview, or ApplyFeedback which bump the version internally.
+func (p *Proposal) BumpVersion() {
+	p.PrevHash = p.MerkleHash
+	p.UpdatedAt = time.Now().UTC()
+	p.Version++
+	p.MerkleHash = p.computeHash()
 }
 
 // AggregateRisk computes the average risk score from all reviews.

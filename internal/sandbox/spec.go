@@ -52,6 +52,7 @@ type SandboxSpec struct {
 	VsockCID      uint32        `json:"vsock_cid"`
 	RootfsPath    string        `json:"rootfs_path"`
 	KernelPath    string        `json:"kernel_path,omitempty"`
+	InitPath      string        `json:"init_path,omitempty"`
 	WorkspaceMB   int           `json:"workspace_mb"`
 }
 

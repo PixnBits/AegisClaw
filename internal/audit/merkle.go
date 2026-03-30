@@ -116,6 +116,11 @@ func (ml *MerkleLog) Append(payload json.RawMessage) (string, string, error) {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
 
+	// Check if already closed
+	if ml.file == nil {
+		return "", "", fmt.Errorf("audit log is closed")
+	}
+
 	id := uuid.New().String()
 	ts := time.Now().UTC()
 	hash := computeHash(id, ml.lastHash, ts, payload)
@@ -172,7 +177,12 @@ func (ml *MerkleLog) EntryCount() uint64 {
 func (ml *MerkleLog) Close() error {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
-	return ml.file.Close()
+	if ml.file == nil {
+		return nil // already closed
+	}
+	err := ml.file.Close()
+	ml.file = nil
+	return err
 }
 
 // Path returns the file path of the audit log.

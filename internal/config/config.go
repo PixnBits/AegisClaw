@@ -36,6 +36,7 @@ type Config struct {
 	} `yaml:"proposal" mapstructure:"proposal"`
 	Court struct {
 		PersonaDir string `yaml:"persona_dir" mapstructure:"persona_dir"`
+		SessionDir string `yaml:"session_dir" mapstructure:"session_dir"`
 	} `yaml:"court" mapstructure:"court"`
 	Builder struct {
 		RootfsTemplate      string `yaml:"rootfs_template" mapstructure:"rootfs_template"`
@@ -116,8 +117,10 @@ func DefaultConfig() Config {
 		},
 		Court: struct {
 			PersonaDir string `yaml:"persona_dir" mapstructure:"persona_dir"`
+			SessionDir string `yaml:"session_dir" mapstructure:"session_dir"`
 		}{
 			PersonaDir: filepath.Join(home, ".config", "aegisclaw", "personas"),
+			SessionDir: filepath.Join(home, ".local", "share", "aegisclaw", "court-sessions"),
 		},
 		Builder: struct {
 			RootfsTemplate      string `yaml:"rootfs_template" mapstructure:"rootfs_template"`
@@ -199,6 +202,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("sandbox.registry_path", defaults.Sandbox.RegistryPath)
 	viper.SetDefault("proposal.store_dir", defaults.Proposal.StoreDir)
 	viper.SetDefault("court.persona_dir", defaults.Court.PersonaDir)
+	viper.SetDefault("court.session_dir", defaults.Court.SessionDir)
 	viper.SetDefault("builder.rootfs_template", defaults.Builder.RootfsTemplate)
 	viper.SetDefault("builder.workspace_base_dir", defaults.Builder.WorkspaceBaseDir)
 	viper.SetDefault("builder.max_concurrent_builds", defaults.Builder.MaxConcurrentBuilds)

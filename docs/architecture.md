@@ -1,7 +1,7 @@
 # AegisClaw — Component Interaction Model
 
 **Status**: North-star architecture document. Code must converge to this; deviations are tracked in `docs/prd-deviations.md`.  
-**Last updated**: 2026-03-28
+**Last updated**: 2026-03-30
 
 ---
 
@@ -283,11 +283,91 @@ If the loop limit is hit, the agent returns the last LLM response with an append
 
 ---
 
+## 8.5. Governance Court review flow
+
+The Governance Court is a multi-round, multi-persona review system that evaluates every skill proposal before it can be approved. All reviewer LLM inference runs inside Firecracker microVMs — never on the host.
+
+### 8.5.1 Overview
+
+```
+CLI (skill add) → daemon API (court.review) → Court Engine → [rounds 1..3]
+                                                                │
+               ┌────────────────────────────────────────────────┘
+               │
+               ▼
+         ┌─────────────────────────────┐
+         │  For each round:            │
+         │  1. Launch reviewer VMs     │  5 personas × 1–2 models each
+         │  2. Send review.execute     │  via vsock through LLM proxy
+         │  3. Collect reviews         │  verdicts: approve / reject / ask
+         │  4. Check consensus         │  weighted quorum (0.8 threshold)
+         │  5. If no consensus:        │
+         │     → round updater         │  agent VM incorporates feedback
+         │     → next round            │
+         └─────────────────────────────┘
+               │
+               ▼
+         Consensus reached → approve / reject
+         Max rounds (3) hit → escalate (human review required)
+```
+
+### 8.5.2 Personas and models
+
+Five security personas review every proposal, each with a distinct focus area:
+
+| Persona | Role | Models |
+|---|---|---|
+| **CISO** | Security risk assessment | mistral-nemo, llama3.2:3b |
+| **SecurityArchitect** | Architecture review | mistral-nemo, llama3.2:3b |
+| **SeniorCoder** | Code quality | mistral-nemo, llama3.2:3b |
+| **Tester** | Test coverage | llama3.2:3b |
+| **UserAdvocate** | Usability | llama3.2:3b |
+
+Persona definitions live in `config/personas/`. Each reviewer VM is a Firecracker microVM with no network (vsock-only access to Ollama via the host-side LLM proxy).
+
+### 8.5.3 Round updater
+
+Between court rounds, the **round updater** (`makeCourtRoundUpdater` in `cmd/aegisclaw/court_init.go`) drives an agent VM to incorporate reviewer feedback into the proposal:
+
+1. Daemon sends aggregated feedback to the agent VM with a focused system prompt instructing it to call `proposal.update_draft`.
+2. Agent VM calls Ollama, generates a tool call to update the proposal's description/title.
+3. The daemon detects the version advance (`Proposal.BumpVersion()` increments version, hash chain, and timestamp).
+4. If the version advanced, the engine proceeds to the next round.
+5. If the agent fails to produce a valid tool call after a nudge retry, the proposal is escalated.
+
+**Daemon-side fallback**: Small LLMs sometimes omit the closing fence of a tool-call block or return the tool call inside a `"final"` response. The daemon's `extractToolCallFromContent` function extracts and executes these tool calls directly when the guest-agent classifies the response as `"final"`. This is an interim measure tracked under D2-a; the target architecture has the full ReAct loop inside the agent VM.
+
+### 8.5.4 Consensus
+
+The consensus engine (`internal/court/consensus.go`) uses weighted voting with a 0.8 quorum threshold. Each persona has an equal weight. Verdicts of `approve` count toward the quorum; `reject` counts against; `ask` (questions/concerns) counts as non-approval but not rejection. If the quorum is not met after 3 rounds, the proposal is escalated to `StatusEscalated` for human review via `aegisclaw court vote`.
+
+### 8.5.5 Session persistence
+
+Court sessions are persisted to `~/.local/share/aegisclaw/court-sessions/` as JSON files. On daemon restart, `Engine.ResumeStalled()` finds proposals in `submitted` or `in_review` status that lack an active session and re-queues them with a concurrency limit of 2 simultaneous reviews.
+
+### 8.5.6 Proposal status machine
+
+```
+draft → submitted → in_review → approved → implementing → ...
+                        │              ↑
+                        ▼              │
+                    escalated ─────────┘  (human vote can resolve)
+                        │
+                        ▼
+                    rejected / draft  (human vote can reset)
+```
+
+The `StatusEscalated` state is entered when the court cannot reach consensus within the maximum number of rounds. Escalated proposals require a human vote (`aegisclaw court vote <id> approve "reason"`) to proceed.
+
+---
+
 ## 9. Agent VM provisioning
 
-### 9.1 Rootfs
+### 9.1 Rootfs and InitPath
 
 The agent VM uses the standard rootfs built by `scripts/build-rootfs.sh` with the `guest-agent` binary embedded. No special agent rootfs is needed — the guest-agent binary already handles `chat.message` and `tool.exec` dispatch.
+
+Each `SandboxSpec` has an optional `InitPath` field (default: `/sbin/guest-agent`). This allows VMs with different init binaries (e.g., AegisHub uses `/sbin/aegishub`) to share the same Firecracker launch code. The init path is passed as the kernel `init=` boot argument.
 
 Network policy for the agent VM:
 - **Allow**: `127.0.0.1:11434` (Ollama on host, port-forwarded by Firecracker)
@@ -407,11 +487,11 @@ assert.GreaterOrEqual(t, kern.AuditLog().EntryCount(), 2)
 
 This section lists the specific code changes implied by this architecture. Each item corresponds to a deviation entry in `docs/prd-deviations.md`.
 
-### D2-a: Move ReAct loop into agent VM
+### D2-a: Move ReAct loop into agent VM — **Open**
 
 File: `cmd/guest-agent/main.go`, function `handleChatMessage`
 
-Current behavior: one Ollama call, return raw content.
+Current behavior: Guest-agent makes one Ollama call per daemon round-trip, parses tool-call blocks, and returns either `{status:"tool_call"}` or `{status:"final"}`. The daemon drives the outer ReAct loop and executes tool handlers inline.
 
 Required behavior:
 1. Loop up to 10 times:
@@ -423,43 +503,35 @@ Required behavior:
 
 The guest-agent can send vsock messages back to the host using the existing vsock connection (the connection is bidirectional — the host sends requests and the guest sends responses, but the guest can also initiate `ipc.send` messages on the same or a separate vsock channel).
 
-### D2-b: Daemon chat.message handler — forward only
+### D2-b: Daemon chat.message handler — forward only — **Resolved**
 
 File: `cmd/aegisclaw/chat_handlers.go`, function `makeChatMessageHandler`
 
-Current behavior: calls Ollama directly, returns raw LLM content.
+`makeChatMessageHandler` calls `ensureAgentVM` and forwards the conversation to the agent VM via `SendToVM`. The daemon no longer calls Ollama for chat. System prompt is built daemon-side and included in the forwarded messages.
 
-Required behavior:
-1. Look up or start the agent VM.
-2. Send `{"type": "chat.message", "payload": {"messages": [...], "model": "..."}}` to agent VM over vsock.
-3. Wait for response (with 10-minute timeout).
-4. Return the agent VM's response to the CLI.
-
-Remove: all Ollama client code, system prompt construction, and tool-call parsing from `makeChatMessageHandler`.
-
-### D2-c: Delete DirectLauncher
+### D2-c: Delete DirectLauncher — **Resolved**
 
 File: `internal/court/direct_launcher.go`
 
-`DirectLauncher` must be deleted entirely. There is no scenario in which direct host-side LLM execution is acceptable — not in development, not behind a build tag, not with an environment variable override. The security boundary is not a performance optimization; it is a correctness requirement. `internal/court/direct_launcher.go` has been removed. `FirecrackerLauncher` is the only supported court launcher.
+`DirectLauncher` has been deleted. `FirecrackerLauncher` is the only supported court launcher. The daemon fails with a fatal error if KVM or the Firecracker binary is unavailable.
 
-### DA-new: IPC ACL enforcement
+### DA-new: IPC ACL enforcement — **Resolved**
 
-File: `internal/ipc/hub.go`
+File: `internal/ipc/hub.go`, `internal/ipc/acl.go`
 
-Add `ACLPolicy` type and `Check(role, msgType, toolName)` method. Wire into `RouteMessage` after identity verification. Load ACL at daemon startup from a compiled-in default policy (not a config file — the ACL is a security invariant, not a user preference).
+`ACLPolicy` type with `Check(role, msgType)` method is implemented and wired into `RouteMessage` after identity verification. Policy is compiled-in (not a config file).
 
-### DB-new: Tool registry in daemon
+### DB-new: Tool registry in daemon — **Resolved**
 
-File: `internal/ipc/` (new file `tool_registry.go`) or `cmd/aegisclaw/`
+File: `cmd/aegisclaw/tool_registry.go`
 
-Register all tool handlers at daemon startup. The message bus dispatches `tool.exec` messages to the registry.
+`ToolRegistry` maps qualified tool names to handler functions. `buildToolRegistry(env)` populates it at daemon startup. Tool dispatch in the chat handler uses `toolRegistry.Execute()`.
 
-### DC-new: Agent VM startup in daemon
+### DC-new: Agent VM startup in daemon — **Resolved**
 
-File: `cmd/aegisclaw/start.go` or `cmd/aegisclaw/chat_handlers.go`
+File: `cmd/aegisclaw/chat_handlers.go`
 
-Lazy-start the agent VM on first `chat.message`. Register with message bus. Track VM ID in `runtimeEnv`.
+`ensureAgentVM` lazily creates and starts the agent VM on first `chat.message`, starts the per-VM LLM proxy for vsock-based Ollama access, and caches the VM ID. Automatically restarts the VM if it crashes.
 
 ---
 
@@ -467,8 +539,8 @@ Lazy-start the agent VM on first `chat.message`. Register with message bus. Trac
 
 These rules take precedence over any convenience, testing, or performance argument:
 
-1. **The daemon never calls Ollama.** LLM inference happens only inside microVMs.
-2. **The daemon never parses tool-call blocks.** The agent VM owns the ReAct loop.
+1. **The daemon never calls Ollama.** LLM inference happens only inside microVMs. The daemon forwards conversations to agent/reviewer VMs via vsock; the VMs call Ollama via the host-side LLM proxy.
+2. **The daemon never parses tool-call blocks.** The agent VM owns the ReAct loop. *(Interim exception: the court round updater's `extractToolCallFromContent` performs daemon-side tool extraction as a fallback for small LLMs that omit closing fences. This is tracked under D2-a and will be removed when the full ReAct loop moves into the agent VM.)*
 3. **Firecracker is mandatory for all sandboxed components.** There are no process-level fallbacks in production code paths.
 4. **ACL is enforced at the message bus.** No tool handler is callable without passing the ACL check.
 5. **Integration tests use real microVMs and real Ollama.** No process-level substitutes or mocked LLM responses.
@@ -489,6 +561,7 @@ Moving routing out of the root-privileged daemon shrinks the privileged Trusted 
 
 - **Binary**: `cmd/aegishub/` (`aegishub`)
 - **VM image**: `aegishub-rootfs.ext4` (built with `sudo ./scripts/build-rootfs.sh --target=aegishub`; override path via `AEGISCLAW_HUB_ROOTFS` env var)
+- **InitPath**: `/sbin/aegishub` — set in the `SandboxSpec.InitPath` field so the Firecracker kernel boots this binary instead of the default `/sbin/guest-agent`
 - **Vsock port**: 1024 (same as `guest-agent`, since only one process listens inside the VM)
 
 ### 13.3 Launch sequence

@@ -40,7 +40,7 @@ func setupTestEngine(t *testing.T, reviewerFn ReviewerFunc) (*Engine, *proposal.
 	}
 
 	cfg := DefaultEngineConfig()
-	engine, err := NewEngine(cfg, store, kern, personas, reviewerFn, logger)
+	engine, err := NewEngine(cfg, store, kern, personas, reviewerFn, logger, auditDir)
 	if err != nil {
 		t.Fatalf("engine init failed: %v", err)
 	}
@@ -248,14 +248,14 @@ func TestEngineNilDeps(t *testing.T) {
 	reviewFn := allApproveReviewer()
 	cfg := DefaultEngineConfig()
 
-	_, err := NewEngine(cfg, nil, nil, personas, reviewFn, logger)
+	_, err := NewEngine(cfg, nil, nil, personas, reviewFn, logger, "")
 	if err == nil {
 		t.Error("expected error for nil store")
 	}
 
 	storeDir := t.TempDir()
 	store, _ := proposal.NewStore(storeDir, logger)
-	_, err = NewEngine(cfg, store, nil, personas, reviewFn, logger)
+	_, err = NewEngine(cfg, store, nil, personas, reviewFn, logger, "")
 	if err == nil {
 		t.Error("expected error for nil kernel")
 	}
@@ -295,7 +295,7 @@ func TestEngineConfigValidation(t *testing.T) {
 	// Invalid max rounds
 	cfg := DefaultEngineConfig()
 	cfg.MaxRounds = 0
-	_, err := NewEngine(cfg, store, kern, personas, reviewFn, logger)
+	_, err := NewEngine(cfg, store, kern, personas, reviewFn, logger, auditDir)
 	if err == nil {
 		t.Error("expected error for MaxRounds=0")
 	}
@@ -303,7 +303,7 @@ func TestEngineConfigValidation(t *testing.T) {
 	// Invalid quorum
 	cfg = DefaultEngineConfig()
 	cfg.ConsensusQuorum = 1.5
-	_, err = NewEngine(cfg, store, kern, personas, reviewFn, logger)
+	_, err = NewEngine(cfg, store, kern, personas, reviewFn, logger, auditDir)
 	if err == nil {
 		t.Error("expected error for ConsensusQuorum > 1")
 	}
@@ -311,7 +311,7 @@ func TestEngineConfigValidation(t *testing.T) {
 	// Invalid risk threshold
 	cfg = DefaultEngineConfig()
 	cfg.MaxRiskThreshold = 0
-	_, err = NewEngine(cfg, store, kern, personas, reviewFn, logger)
+	_, err = NewEngine(cfg, store, kern, personas, reviewFn, logger, auditDir)
 	if err == nil {
 		t.Error("expected error for MaxRiskThreshold=0")
 	}
@@ -409,4 +409,160 @@ func TestEngineVoteOnDraftFails(t *testing.T) {
 	if err == nil {
 		t.Error("expected error voting on draft proposal")
 	}
+}
+
+func TestSessionPersistence(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	storeDir := t.TempDir()
+	auditDir := t.TempDir()
+	sessionDir := t.TempDir()
+
+	kernel.ResetInstance()
+	kern, err := kernel.GetInstance(logger, auditDir)
+	if err != nil {
+		t.Fatalf("kernel init failed: %v", err)
+	}
+	t.Cleanup(func() {
+		kern.Shutdown()
+		kernel.ResetInstance()
+	})
+
+	store, err := proposal.NewStore(storeDir, logger)
+	if err != nil {
+		t.Fatalf("store init failed: %v", err)
+	}
+
+	personas := []*Persona{
+		{Name: "CISO", Role: "security", SystemPrompt: "Review security", Models: []string{"test-model"}, Weight: 0.3},
+		{Name: "SeniorCoder", Role: "code_quality", SystemPrompt: "Review code", Models: []string{"test-model"}, Weight: 0.3},
+		{Name: "Tester", Role: "test_coverage", SystemPrompt: "Review tests", Models: []string{"test-model"}, Weight: 0.2},
+		{Name: "SecurityArchitect", Role: "architecture", SystemPrompt: "Review architecture", Models: []string{"test-model"}, Weight: 0.1},
+		{Name: "UserAdvocate", Role: "usability", SystemPrompt: "Review UX", Models: []string{"test-model"}, Weight: 0.1},
+	}
+
+	cfg := DefaultEngineConfig()
+
+	// Engine 1: run a review, session should be persisted to disk.
+	engine1, err := NewEngine(cfg, store, kern, personas, allApproveReviewer(), logger, auditDir, sessionDir)
+	if err != nil {
+		t.Fatalf("engine init failed: %v", err)
+	}
+
+	p := createTestProposal(t, store)
+	session, err := engine1.Review(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("Review failed: %v", err)
+	}
+	if session.State != SessionApproved {
+		t.Fatalf("expected approved, got %q", session.State)
+	}
+
+	// Engine 2: create a fresh engine with same sessionDir — it should load the session.
+	engine2, err := NewEngine(cfg, store, kern, personas, allApproveReviewer(), logger, auditDir, sessionDir)
+	if err != nil {
+		t.Fatalf("engine2 init failed: %v", err)
+	}
+
+	loaded, ok := engine2.GetSession(session.ID)
+	if !ok {
+		t.Fatal("persisted session not found in new engine")
+	}
+	if loaded.State != SessionApproved {
+		t.Errorf("loaded session state: got %q, want %q", loaded.State, SessionApproved)
+	}
+	if loaded.ProposalID != p.ID {
+		t.Errorf("loaded session proposal ID: got %q, want %q", loaded.ProposalID, p.ID)
+	}
+	if loaded.Verdict != "approved" {
+		t.Errorf("loaded session verdict: got %q, want %q", loaded.Verdict, "approved")
+	}
+}
+
+func TestResumeStalled(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	storeDir := t.TempDir()
+	auditDir := t.TempDir()
+	sessionDir := t.TempDir()
+
+	kernel.ResetInstance()
+	kern, err := kernel.GetInstance(logger, auditDir)
+	if err != nil {
+		t.Fatalf("kernel init failed: %v", err)
+	}
+	t.Cleanup(func() {
+		kern.Shutdown()
+		kernel.ResetInstance()
+	})
+
+	store, err := proposal.NewStore(storeDir, logger)
+	if err != nil {
+		t.Fatalf("store init failed: %v", err)
+	}
+
+	personas := []*Persona{
+		{Name: "CISO", Role: "security", SystemPrompt: "Review security", Models: []string{"test-model"}, Weight: 0.3},
+		{Name: "SeniorCoder", Role: "code_quality", SystemPrompt: "Review code", Models: []string{"test-model"}, Weight: 0.3},
+		{Name: "Tester", Role: "test_coverage", SystemPrompt: "Review tests", Models: []string{"test-model"}, Weight: 0.2},
+		{Name: "SecurityArchitect", Role: "architecture", SystemPrompt: "Review architecture", Models: []string{"test-model"}, Weight: 0.1},
+		{Name: "UserAdvocate", Role: "usability", SystemPrompt: "Review UX", Models: []string{"test-model"}, Weight: 0.1},
+	}
+
+	// Create a proposal and transition it to submitted (simulating a stuck proposal).
+	p, err := proposal.NewProposal("Stalled Proposal", "Was submitted before restart", proposal.CategoryNewSkill, "admin")
+	if err != nil {
+		t.Fatalf("NewProposal failed: %v", err)
+	}
+	if err := store.Create(p); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+	if err := p.Transition(proposal.StatusSubmitted, "ready for review", "admin"); err != nil {
+		t.Fatalf("transition to submitted failed: %v", err)
+	}
+	if err := store.Update(p); err != nil {
+		t.Fatalf("store.Update failed: %v", err)
+	}
+
+	// Create a fresh engine (simulates daemon restart) — no active sessions.
+	reviewed := make(chan string, 1)
+	trackingReviewer := func(ctx context.Context, prop *proposal.Proposal, persona *Persona) (*proposal.Review, error) {
+		select {
+		case reviewed <- prop.ID:
+		default:
+		}
+		return &proposal.Review{
+			ID:        uuid.New().String(),
+			Persona:   persona.Name,
+			Model:     persona.Models[0],
+			Round:     1,
+			Verdict:   proposal.VerdictApprove,
+			RiskScore: 2.0,
+			Evidence:  []string{"No issues"},
+			Comments:  "Approved",
+			Timestamp: time.Now().UTC(),
+		}, nil
+	}
+
+	cfg := DefaultEngineConfig()
+	engine, err := NewEngine(cfg, store, kern, personas, trackingReviewer, logger, auditDir, sessionDir)
+	if err != nil {
+		t.Fatalf("engine init failed: %v", err)
+	}
+
+	resumed := engine.ResumeStalled(context.Background())
+	if resumed != 1 {
+		t.Fatalf("expected 1 resumed, got %d", resumed)
+	}
+
+	// Wait for the background review goroutine to fire.
+	select {
+	case id := <-reviewed:
+		if id != p.ID {
+			t.Errorf("resumed wrong proposal: got %q, want %q", id, p.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for resumed review to start")
+	}
+
+	// Give time for the review to complete before cleanup
+	time.Sleep(2 * time.Second)
 }

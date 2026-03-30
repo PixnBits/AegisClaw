@@ -104,16 +104,24 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("ping", func(ctx context.Context, _ json.RawMessage) *api.Response {
 		return &api.Response{Success: true}
 	})
+	// Build tool registry early so the court engine can use it for
+	// daemon-driven proposal updates between rounds.
+	toolRegistry := buildToolRegistry(env)
 
 	// Create the court engine once and share it across handlers so session
 	// state persists between review and vote calls.
-	courtEngine, err := initCourtEngine(env)
+	courtEngine, err := initCourtEngine(env, toolRegistry)
 	if err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to init court engine: %w", err)
 	}
 	// Store court engine on env so the tool registry can trigger inline reviews.
 	env.Court = courtEngine
+
+	// Resume any proposals that were stuck in submitted/in_review when the
+	// daemon last stopped. Reviews run in background goroutines.
+	courtEngine.ResumeStalled(cmd.Context())
+
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))
 	apiSrv.Handle("skill.activate", makeSkillActivateHandler(env))
@@ -125,7 +133,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("safe-mode.status", makeSafeModeStatusHandler(env))
 	// D2: Chat handlers — the daemon owns all LLM interaction.
 	// The tool registry is built once at startup and shared across requests.
-	toolRegistry := buildToolRegistry(env)
 	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
 	apiSrv.Handle("chat.tool", makeChatToolExecHandler(env, toolRegistry))
@@ -661,6 +668,7 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 			NoNetwork:   true,
 		},
 		RootfsPath: hubRootfs,
+		InitPath:   "/sbin/aegishub",
 	}
 
 	if err := env.Runtime.Create(ctx, spec); err != nil {

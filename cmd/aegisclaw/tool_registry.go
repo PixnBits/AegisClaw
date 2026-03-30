@@ -141,6 +141,12 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	reg.Register("proposal.status", func(_ context.Context, args string) (string, error) {
 		return handleProposalStatus(env, args)
 	})
+	reg.Register("proposal.reviews", func(_ context.Context, args string) (string, error) {
+		return handleProposalReviews(env, args)
+	})
+	reg.Register("proposal.vote", func(ctx context.Context, args string) (string, error) {
+		return handleProposalVote(env, ctx, args)
+	})
 
 	reg.Register("list_proposals", func(_ context.Context, _ string) (string, error) {
 		summaries, err := env.ProposalStore.List()
