@@ -522,6 +522,9 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	// Tool-use gating — only act when asked.
 	b.WriteString("You have access to tools for managing skills and proposals. Only use a tool when the user asks you to DO something (list skills, create a proposal, check status, etc.). Do NOT call a tool for greetings, questions, or conversation.\n\n")
 
+	// Skill ↔ proposal mapping — make the connection explicit for small models.
+	b.WriteString("HOW TO ADD A SKILL: When a user asks to add, create, build, or make a skill, you MUST create a proposal for it by calling the proposal.create_draft tool. There is no other way to add a skill. Every skill starts as a proposal.\n\n")
+
 	// Format with example.
 	b.WriteString("When you do need a tool, you MUST wrap it in triple-backtick fences with the language tag tool-call:\n\n")
 	b.WriteString("```tool-call\n{\"name\": \"list_skills\", \"args\": {}}\n```\n\n")
@@ -544,9 +547,9 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"activate_skill\" — activate an approved skill. args: {\"name\": \"skill_name\"}\n")
 
 	// Proposal drafting instructions: tell the agent how to build a court-ready draft
-	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")
-	b.WriteString("proposal that includes the fields the Court requires. At minimum, the\n")
-	b.WriteString("draft should include: title, description, skill_name, tools (name+description+args),\n")
+	b.WriteString("\nWhen asked to add a SKILL, or to DRAFT or CREATE a proposal, produce a complete initial\n")
+	b.WriteString("proposal by calling `proposal.create_draft`. The draft should include:\n")
+	b.WriteString("title, description, skill_name, tools (name+description+args),\n")
 	b.WriteString("intended_user, example_usage, risk_assessment, dependencies, tests, and security_considerations.\n")
 	b.WriteString("Always prefer to CALL the `proposal.create_draft` tool rather than only returning free-form text.\n")
 	b.WriteString("When calling the tool, use a single fenced ```tool-call``` block with JSON args matching those fields.\n")
