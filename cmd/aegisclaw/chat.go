@@ -880,7 +880,7 @@ func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error)
 		args.Tools = append(args.Tools, toolSpec{Name: t.Name, Description: t.Description})
 	}
 	if args.ID == "" {
-		return "", fmt.Errorf("id is required")
+		return "", fmt.Errorf("id is required — use the UUID returned by create_draft, or call list_proposals to find it")
 	}
 
 	fullID, err := resolveProposalID(env, args.ID)
@@ -1038,7 +1038,7 @@ func handleProposalGetDraft(env *runtimeEnv, argsJSON string) (string, error) {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if args.ID == "" {
-		return "", fmt.Errorf("id is required")
+		return "", fmt.Errorf("id is required — use the UUID returned by create_draft, or call list_proposals to find it")
 	}
 
 	fullID, err := resolveProposalID(env, args.ID)
@@ -1111,7 +1111,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if args.ID == "" {
-		return "", fmt.Errorf("id is required")
+		return "", fmt.Errorf("id is required — use the UUID returned by create_draft, or call list_proposals to find it")
 	}
 
 	fullID, err := resolveProposalID(env, args.ID)
@@ -1183,7 +1183,7 @@ func handleProposalStatus(env *runtimeEnv, argsJSON string) (string, error) {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if args.ID == "" {
-		return "", fmt.Errorf("id is required")
+		return "", fmt.Errorf("id is required — use the UUID returned by create_draft, or call list_proposals to find it")
 	}
 
 	fullID, err := resolveProposalID(env, args.ID)
@@ -1225,7 +1225,7 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if args.ID == "" {
-		return "", fmt.Errorf("id is required")
+		return "", fmt.Errorf("id is required — use the UUID returned by create_draft, or call list_proposals to find it")
 	}
 
 	fullID, err := resolveProposalID(env, args.ID)
@@ -1277,7 +1277,7 @@ func handleProposalReviews(env *runtimeEnv, argsJSON string) (string, error) {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if args.ID == "" {
-		return "", fmt.Errorf("id is required")
+		return "", fmt.Errorf("id is required — use the UUID returned by create_draft, or call list_proposals to find it")
 	}
 
 	fullID, err := resolveProposalID(env, args.ID)
@@ -1336,7 +1336,7 @@ func handleProposalVote(env *runtimeEnv, ctx context.Context, argsJSON string) (
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if args.ID == "" {
-		return "", fmt.Errorf("id is required")
+		return "", fmt.Errorf("id is required — use the UUID returned by create_draft, or call list_proposals to find it")
 	}
 	if args.Reason == "" {
 		return "", fmt.Errorf("reason is required")

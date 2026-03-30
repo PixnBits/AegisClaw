@@ -538,10 +538,10 @@ func (s *Store) ResolveID(prefix string) (string, error) {
 		return titleMatches[0], nil
 	}
 	if len(titleMatches) > 1 {
-		return "", fmt.Errorf("ambiguous name %q matches %d proposals", prefix, len(titleMatches))
+		return "", fmt.Errorf("ambiguous name %q matches %d proposals; use list_proposals to find the exact ID", prefix, len(titleMatches))
 	}
 
-	return "", fmt.Errorf("no proposal found matching %q", prefix)
+	return "", fmt.Errorf("no proposal found matching %q; call list_proposals to see all proposals", prefix)
 }
 
 // slugMatch returns true if the slugified title equals the query.

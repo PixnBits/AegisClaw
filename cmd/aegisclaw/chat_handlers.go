@@ -566,6 +566,9 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("Skill lifecycle: create_draft → submit → (review) → activate_skill → invoke tool. Skills MUST be activated before their tools can be used.\n")
 	b.WriteString("To check what skills exist and their current state, use list_skills. Only \"active\" skills can be invoked.\n\n")
 
+	// ID usage guidance.
+	b.WriteString("IMPORTANT: When you create a proposal, the tool returns its UUID. You MUST save that ID and use it (or its first 8 characters) for ALL subsequent proposal tool calls (submit, status, get_draft, update_draft, reviews, vote). If you lose the ID, call list_proposals to find it. NEVER invent or guess an ID.\n\n")
+
 	// Escalation guidance.
 	b.WriteString("If a proposal is \"escalated\", it means the AI reviewers could not reach consensus after multiple rounds. Use proposal.reviews to see their feedback, then explain the situation to the user. If the user wants to proceed, use proposal.vote to approve or reject it on their behalf.\n\n")
 
