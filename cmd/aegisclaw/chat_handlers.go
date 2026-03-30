@@ -182,7 +182,7 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 	}
 
 	agentRootfs := env.Config.Agent.RootfsPath
-	agentID := "agent-" + uuid.New().String()[:8]
+	agentID := generateVMID("agent")
 
 	spec := sandbox.SandboxSpec{
 		ID:   agentID,
@@ -375,53 +375,154 @@ Example: /call hello.greet "world"`
 	}
 }
 
+// makeChatToolExecHandler returns an API handler for "chat.tool": executes a
+// tool by name via the tool registry. This is the daemon-side counterpart of
+// the CLI's model.ExecuteTool callback.
+func makeChatToolExecHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req api.ChatToolExecRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		if req.Name == "" {
+			return &api.Response{Error: "tool name is required"}
+		}
+
+		result, err := toolRegistry.Execute(ctx, req.Name, req.Args)
+		if err != nil {
+			return &api.Response{Error: err.Error()}
+		}
+
+		respData, _ := json.Marshal(map[string]string{"result": result})
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// makeChatSummarizeHandler returns an API handler for "chat.summarize": sends
+// a tool result back through the agent VM so the LLM can produce a
+// human-readable summary.
+func makeChatSummarizeHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req api.ChatSummarizeRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+
+		agentVMID, err := ensureAgentVM(ctx, env)
+		if err != nil {
+			return &api.Response{Error: "agent VM unavailable: " + err.Error()}
+		}
+
+		model := env.Config.Ollama.DefaultModel
+		systemPrompt := buildDaemonSystemPrompt(env)
+
+		msgs := make([]agentChatMsg, 0, len(req.History)+3)
+		msgs = append(msgs, agentChatMsg{Role: "system", Content: systemPrompt})
+		for _, h := range req.History {
+			if h.Role == "system" {
+				continue
+			}
+			msgs = append(msgs, agentChatMsg{Role: h.Role, Content: h.Content})
+		}
+		msgs = append(msgs, agentChatMsg{
+			Role:    "tool",
+			Name:    req.ToolName,
+			Content: req.ToolResult,
+		})
+		msgs = append(msgs, agentChatMsg{
+			Role:    "user",
+			Content: fmt.Sprintf("The tool %q returned the above result. Please summarize it for the user.", req.ToolName),
+		})
+
+		payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: model})
+		vmReq := agentVMRequest{
+			ID:      uuid.New().String(),
+			Type:    "chat.message",
+			Payload: json.RawMessage(payloadBytes),
+		}
+
+		raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
+		if err != nil {
+			return &api.Response{Error: "agent VM error: " + err.Error()}
+		}
+
+		var vmResp agentVMResponse
+		if err := json.Unmarshal(raw, &vmResp); err != nil {
+			return &api.Response{Error: "malformed agent response: " + err.Error()}
+		}
+		if !vmResp.Success {
+			return &api.Response{Error: "agent error: " + vmResp.Error}
+		}
+
+		var chatResp agentChatResponse
+		if err := json.Unmarshal(vmResp.Data, &chatResp); err != nil {
+			return &api.Response{Error: "malformed agent chat response: " + err.Error()}
+		}
+
+		respData, _ := json.Marshal(api.ChatMessageResponse{
+			Role:    "assistant",
+			Content: chatResp.Content,
+		})
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
 // buildDaemonSystemPrompt constructs the system prompt with available skills.
 // Used by the daemon-side chat message handler (D2) to drive the agent VM's
 // ReAct loop with up-to-date tool and skill availability.
 func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	var b strings.Builder
-	b.WriteString("You are the AegisClaw main agent — a security-first assistant that manages skills running in isolated Firecracker microVMs.\n\n")
-	b.WriteString("## Available tools\n")
-	b.WriteString("- list_proposals: List all proposals and their status\n")
-	b.WriteString("- list_sandboxes: List running sandboxes\n")
-	b.WriteString("- list_skills: List registered skills and their state\n")
-	b.WriteString("- activate_skill: Activate a skill by name (starts its microVM)\n")
-	b.WriteString("- proposal.create_draft: Create a new skill proposal draft\n")
-	b.WriteString("- proposal.update_draft: Update fields on a draft proposal\n")
-	b.WriteString("- proposal.get_draft: Get the current state of a draft\n")
-	b.WriteString("- proposal.list_drafts: List all draft proposals\n")
-	b.WriteString("- proposal.submit: Submit a proposal for court review (auto-triggers review)\n")
-	b.WriteString("- proposal.status: Check the status of a proposal\n\n")
 
+	// Lead with conversational identity so small models don't over-constrain
+	// themselves to tool-only responses.
+	b.WriteString("You are AegisClaw, a friendly and security-conscious coding assistant.\n")
+	b.WriteString("You help users manage skills that run in isolated Firecracker microVMs.\n\n")
+
+	// Explicit: conversation is the default mode.
+	b.WriteString("Most of the time, just talk to the user normally. Answer questions, explain things, and be helpful.\n\n")
+
+	// Tool-use gating — only act when asked.
+	b.WriteString("You have access to tools for managing skills and proposals. Only use a tool when the user asks you to DO something (list skills, create a proposal, check status, etc.). Do NOT call a tool for greetings, questions, or conversation.\n\n")
+
+	// Format with example.
+	b.WriteString("When you do need a tool, you MUST wrap it in triple-backtick fences with the language tag tool-call:\n\n")
+	b.WriteString("```tool-call\n{\"name\": \"list_skills\", \"args\": {}}\n```\n\n")
+	b.WriteString("That exact format is required: opening fence, JSON, closing fence.\n")
+	b.WriteString("After the closing fence, STOP. Do not write anything else. Do not narrate running the tool. Do not guess the result. The system will execute the tool and return the result to you in the next message.\n\n")
+
+	// Tool listing — natural-language descriptions.
+	b.WriteString("Available tools:\n")
+	b.WriteString("- \"list_skills\" — list registered skills. args: {}\n")
+	b.WriteString("- \"list_proposals\" — list all proposals. args: {}\n")
+	b.WriteString("- \"list_sandboxes\" — list running sandboxes. args: {}\n")
+	b.WriteString("- \"proposal.create_draft\" — create a new skill proposal. args: {\"title\": \"...\", \"description\": \"...\", \"skill_name\": \"...\", \"tools\": [{\"name\": \"...\", \"description\": \"...\"}]}\n")
+	b.WriteString("- \"proposal.update_draft\" — update a draft. args: {\"id\": \"uuid\", ...fields}\n")
+	b.WriteString("- \"proposal.get_draft\" — get draft details. args: {\"id\": \"uuid\"}\n")
+	b.WriteString("- \"proposal.list_drafts\" — list drafts. args: {}\n")
+	b.WriteString("- \"proposal.submit\" — submit for review. args: {\"id\": \"uuid\"}\n")
+	b.WriteString("- \"proposal.status\" — check proposal status. args: {\"id\": \"uuid\"}\n")
+	b.WriteString("- \"activate_skill\" — activate an approved skill. args: {\"name\": \"skill_name\"}\n")
+
+	// Active skill tools.
 	skills := env.Registry.List()
-	activeSkills := 0
 	for _, sk := range skills {
 		if sk.State == sandbox.SkillStateActive {
-			activeSkills++
-			b.WriteString(fmt.Sprintf("- %s.*: Invoke tools on the '%s' skill\n", sk.Name, sk.Name))
+			b.WriteString(fmt.Sprintf("- \"%s.*\" — invoke tools on the '%s' skill\n", sk.Name, sk.Name))
 		}
 	}
+	b.WriteString("\n")
 
-	if activeSkills == 0 {
-		b.WriteString("No skills are currently active. Help the user propose and create one.\n")
-	}
+	// Workflow.
+	b.WriteString("To add a skill: create_draft -> submit -> activate_skill. One step at a time.\n\n")
 
-	b.WriteString("\n## Skill SDLC workflow\n")
-	b.WriteString("To create a new skill:\n")
-	b.WriteString("1. Use proposal.create_draft to create a draft with title, description, skill_name, and tools.\n")
-	b.WriteString("2. Use proposal.submit to submit it for court review (review runs automatically).\n")
-	b.WriteString("3. After approval, use activate_skill to start the skill's microVM.\n")
-	b.WriteString("4. Once active, invoke the skill's tools using <skillname>.<toolname> or tell the user: /call <skill>.<tool> [args]\n\n")
+	// Slash commands.
+	b.WriteString("Users can type: /help /call /status /audit /safe-mode /shutdown /quit /exit. These are handled by the system, not you.\n\n")
 
-	b.WriteString("## Chat slash commands (handled directly, not via tools)\n")
-	b.WriteString("Users can type these commands in chat:\n")
-	b.WriteString("  /call <skill>.<tool> [args] — Invoke a skill tool directly\n")
-	b.WriteString("  /status — System status\n")
-	b.WriteString("  /help — List all commands\n\n")
-
-	b.WriteString("## Tool invocation format\n")
-	b.WriteString("To invoke a tool, respond with a JSON block:\n")
-	b.WriteString("```tool-call\n{\"name\": \"tool_name\", \"args\": \"arguments\"}\n```\n")
+	// Rules (anti-hallucination).
+	b.WriteString("Rules:\n")
+	b.WriteString("- Never fabricate tool results or pretend you called a tool.\n")
+	b.WriteString("- Never invent tools that are not listed above.\n")
+	b.WriteString("- If you cannot help with something, say so honestly.\n")
 
 	return b.String()
 }

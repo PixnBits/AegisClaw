@@ -179,11 +179,13 @@ func runChat(cmd *cobra.Command, args []string) error {
 		toolCalls := parseToolCalls(content)
 		if len(toolCalls) > 0 {
 			cleaned := cleanToolCallContent(content)
+			// When the LLM only emitted a tool-call block (no surrounding prose),
+			// show a friendly interim message so the user knows what's happening.
+			if cleaned == "" {
+				cleaned = toolCallFriendlyLabel(toolCalls[0].Name)
+			}
 			if sessionLog != nil {
 				sessionLog.Log(audit.SessionEvent{Event: audit.EventAssistantMessage, Role: "assistant", Content: cleaned})
-				for _, tc := range toolCalls {
-					sessionLog.Log(audit.SessionEvent{Event: audit.EventToolCall, ToolName: tc.Name, ToolArgs: tc.Args})
-				}
 			}
 			return tui.ChatMessage{
 				Role:      tui.ChatRoleAssistant,
@@ -453,26 +455,23 @@ Example: /call hello-world.greet "world"
 	return base
 }
 
-// proposalToolNames lists the tool names that belong to the "proposal" skill namespace.
-var proposalToolNames = map[string]bool{
-	"create_draft": true,
-	"update_draft": true,
-	"get_draft":    true,
-	"list_drafts":  true,
-	"submit":       true,
-	"status":       true,
-}
-
 // parseToolCalls extracts tool-call JSON blocks from LLM output.
-// Accepts both ```tool-call and ```json fenced blocks.
-// Returns at most ONE tool call to prevent the LLM from chaining calls
-// with stale/guessed IDs (e.g. create_draft + submit in one turn).
-// Auto-corrects the namespace for known proposal tools (e.g. if the LLM
-// emits {"skill": "greet-us", "tool": "submit", ...}, the skill is
-// corrected to "proposal").
+// Accepts ```tool-call, ```json, and plain ``` fenced blocks (small models
+// often omit the language tag). Returns at most ONE tool call to prevent
+// the LLM from chaining calls with stale/guessed IDs.
 func parseToolCalls(content string) []tui.ToolCall {
-	// Try both fence markers — LLMs sometimes use ```json instead of ```tool-call.
-	for _, marker := range []string{"```tool-call", "```json"} {
+	// proposalTools are tool names that belong under the "proposal." namespace.
+	// If an LLM uses the wrong skill namespace for these, we auto-correct.
+	proposalTools := map[string]bool{
+		"create_draft": true, "update_draft": true,
+		"get_draft": true, "list_drafts": true,
+		"submit": true, "status": true,
+	}
+
+	// Try fence markers in priority order. Plain "```" is last because it also
+	// matches the prefix of the tagged variants; the JSON unmarshal check
+	// rejects blocks with a language tag prefix (e.g. "tool-call\n{...}").
+	for _, marker := range []string{"```tool-call", "```json", "```"} {
 		search := content
 		for {
 			start := strings.Index(search, marker)
@@ -485,44 +484,212 @@ func parseToolCalls(content string) []tui.ToolCall {
 				break
 			}
 			block := strings.TrimSpace(after[:end])
+
+			// Primary: {"name": "tool_name", "args": {...}}
 			var tc struct {
+				Name string          `json:"name"`
+				Args json.RawMessage `json:"args"`
+			}
+			if json.Unmarshal([]byte(block), &tc) == nil && tc.Name != "" {
+				return []tui.ToolCall{{
+					Name: tc.Name,
+					Args: string(tc.Args),
+				}}
+			}
+
+			// Legacy: {"skill": "proposal", "tool": "create_draft", "args": {...}}
+			var legacy struct {
 				Skill string          `json:"skill"`
 				Tool  string          `json:"tool"`
 				Args  json.RawMessage `json:"args"`
 			}
-			if json.Unmarshal([]byte(block), &tc) == nil && tc.Skill != "" && tc.Tool != "" {
-				// Auto-correct namespace for known proposal tools.
-				if proposalToolNames[tc.Tool] && tc.Skill != "proposal" {
-					tc.Skill = "proposal"
+			if json.Unmarshal([]byte(block), &legacy) == nil && legacy.Tool != "" {
+				name := legacy.Skill + "." + legacy.Tool
+				// Auto-correct namespace: if the tool is a proposal tool
+				// but the skill isn't "proposal", fix it.
+				if proposalTools[legacy.Tool] && legacy.Skill != "proposal" {
+					name = "proposal." + legacy.Tool
 				}
 				return []tui.ToolCall{{
-					Name: tc.Skill + "." + tc.Tool,
-					Args: string(tc.Args),
+					Name: name,
+					Args: string(legacy.Args),
 				}}
 			}
+
 			search = after[end+3:]
 		}
 	}
+
+	// Fallback: try to find bare JSON {"name": "..."} outside of fences.
+	// Small models sometimes omit the fence wrapper entirely.
+	// Only match top-level objects that have both "name" and structurally
+	// look like a tool call (not nested objects inside arrays).
+	if idx := strings.Index(content, `{"name"`); idx >= 0 {
+		// Skip if this position is inside a fenced block.
+		beforeIdx := content[:idx]
+		fenceCount := strings.Count(beforeIdx, "```")
+		if fenceCount%2 == 0 { // even = not inside a fence
+			rest := content[idx:]
+			depth, end := 0, -1
+			for i, ch := range rest {
+				switch ch {
+				case '{':
+					depth++
+				case '}':
+					depth--
+					if depth == 0 {
+						end = i + 1
+					}
+				}
+				if end >= 0 {
+					break
+				}
+			}
+			if end > 0 {
+				var tc struct {
+					Name string          `json:"name"`
+					Args json.RawMessage `json:"args"`
+				}
+				if json.Unmarshal([]byte(rest[:end]), &tc) == nil && tc.Name != "" {
+					return []tui.ToolCall{{
+						Name: tc.Name,
+						Args: string(tc.Args),
+					}}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
-// cleanToolCallContent removes tool-call and json blocks containing skill invocations.
+// cleanToolCallContent removes tool-call blocks and any post-tool-call text.
+// When an LLM emits a tool call, everything after the first block is typically
+// hallucinated narration ("Running the tool..." + fabricated results), so we
+// truncate there and keep only the pre-tool-call prose.
 func cleanToolCallContent(content string) string {
-	for _, marker := range []string{"```tool-call", "```json"} {
+	// Find the earliest tool-call block across all marker types.
+	firstToolPos := -1
+
+	// Check tagged and plain fences.
+	for _, marker := range []string{"```tool-call", "```json", "```"} {
+		search := content
+		offset := 0
 		for {
-			start := strings.Index(content, marker)
+			start := strings.Index(search, marker)
 			if start < 0 {
 				break
 			}
-			after := content[start+len(marker):]
+			after := search[start+len(marker):]
 			end := strings.Index(after, "```")
 			if end < 0 {
 				break
 			}
-			content = content[:start] + after[end+3:]
+			block := strings.TrimSpace(after[:end])
+
+			// For plain ``` fences, only count blocks that contain tool-call JSON.
+			if marker == "```" {
+				var tc struct {
+					Name string `json:"name"`
+				}
+				var legacy struct {
+					Tool string `json:"tool"`
+				}
+				isToolCall := (json.Unmarshal([]byte(block), &tc) == nil && tc.Name != "") ||
+					(json.Unmarshal([]byte(block), &legacy) == nil && legacy.Tool != "")
+				if !isToolCall {
+					search = after[end+3:]
+					offset += start + len(marker) + end + 3
+					continue
+				}
+			}
+
+			pos := offset + start
+			if firstToolPos < 0 || pos < firstToolPos {
+				firstToolPos = pos
+			}
+			break // only need the first occurrence per marker
 		}
 	}
+
+	// Check bare JSON tool-call objects outside fences.
+	if idx := strings.Index(content, `{"name"`); idx >= 0 {
+		beforeIdx := content[:idx]
+		fenceCount := strings.Count(beforeIdx, "```")
+		if fenceCount%2 == 0 { // not inside a fence
+			rest := content[idx:]
+			depth, end := 0, -1
+			for i, ch := range rest {
+				switch ch {
+				case '{':
+					depth++
+				case '}':
+					depth--
+					if depth == 0 {
+						end = i + 1
+					}
+				}
+				if end >= 0 {
+					break
+				}
+			}
+			if end > 0 {
+				var tc struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal([]byte(rest[:end]), &tc) == nil && tc.Name != "" {
+					if firstToolPos < 0 || idx < firstToolPos {
+						firstToolPos = idx
+					}
+				}
+			}
+		}
+	}
+
+	// Truncate at the first tool-call position — everything after is likely
+	// hallucinated ("Running the tool..." + fabricated results).
+	if firstToolPos >= 0 {
+		content = content[:firstToolPos]
+	}
+
+	// Strip bare "tool-call" / "tool_call" labels left behind by small models
+	// that emit the fence language tag without the triple-backtick fences.
+	content = strings.TrimSpace(content)
+	for _, label := range []string{"tool-call", "tool_call"} {
+		content = strings.ReplaceAll(content, label, "")
+	}
 	return strings.TrimSpace(content)
+}
+
+// toolCallFriendlyLabel returns a user-friendly description like "Checking proposals..."
+// for a given tool name. Used as the interim message while a tool is executing.
+func toolCallFriendlyLabel(name string) string {
+	switch name {
+	case "list_skills":
+		return "Looking up skills…"
+	case "list_proposals", "proposal.list_drafts":
+		return "Checking proposals…"
+	case "list_sandboxes":
+		return "Listing sandboxes…"
+	case "proposal.create_draft":
+		return "Creating a proposal draft…"
+	case "proposal.update_draft":
+		return "Updating the proposal…"
+	case "proposal.get_draft":
+		return "Fetching proposal details…"
+	case "proposal.submit":
+		return "Submitting proposal for review…"
+	case "proposal.status":
+		return "Checking proposal status…"
+	case "activate_skill":
+		return "Activating skill…"
+	default:
+		if strings.Contains(name, ".") {
+			parts := strings.SplitN(name, ".", 2)
+			return fmt.Sprintf("Calling %s on %s…", parts[1], parts[0])
+		}
+		return fmt.Sprintf("Running %s…", name)
+	}
 }
 
 // --- Proposal tool handlers ---

@@ -12,39 +12,47 @@ Every component boundary is a security boundary. The rule that determines whethe
 This rule admits no opt-out mechanism of any kind. There are no environment variables, build tags, configuration flags, or runtime modes that permit a sandboxed component to run on the host. KVM and Firecracker are hard dependencies — the daemon refuses to start without them. Any code path that allows bypassing microVM isolation is a security defect and must be removed.
 
 The only components that run directly on the host are:
-- **The daemon** (`aegisclaw start`) — root process that manages VM lifecycles, the message bus, the audit log, the proposal store, and the Unix socket API. It does not do LLM inference, does not parse tool calls, and does not execute business logic that belongs to the agent.
+- **The daemon** (`aegisclaw start`) — root process that manages VM lifecycles, launches AegisHub first, proxies CLI commands, and appends to the audit log. It does **not** own the routing plane; all IPC routing decisions belong to AegisHub. It does not do LLM inference, does not parse tool calls, and does not execute business logic that belongs to the agent.
 - **The CLI** (`aegisclaw chat`, `aegisclaw skill`, etc.) — unprivileged thin client that communicates with the daemon over the Unix socket. It does not do LLM inference and does not execute tool handlers.
 
-Every other component — the main agent, Governance Court reviewers, the builder, and all skills — runs inside a Firecracker microVM with a read-only rootfs and `cap-drop ALL`.
+Every other component — **AegisHub**, the main agent, Governance Court reviewers, the builder, and all skills — runs inside a Firecracker microVM with a read-only rootfs and `cap-drop ALL`.
 
 ---
 
 ## 2. Component map
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│  Host (root)                                                           │
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  Daemon (aegisclaw start)                                        │  │
-│  │                                                                  │  │
-│  │  • Firecracker VM lifecycle (create/start/stop/delete)           │  │
-│  │  • Unix socket API for CLI                                       │  │
-│  │  • Message bus (ipc.MessageHub + ipc.Router)                     │  │
-│  │  • Tool registry (maps tool names → handler funcs)               │  │
-│  │  • Proposal store, audit log, composition store                  │  │
-│  │  • Slash command dispatch (/status, /audit, /safe-mode…)         │  │
-│  │                                                                  │  │
-│  │  Does NOT: call Ollama, parse tool-call blocks, run ReAct loops  │  │
-│  └──────────┬───────────────────────────────────────────────────────┘  │
-│             │ vsock                                                    │
-│   ┌─────────┼───────────────────────────────────────────────────────┐  │
-│   │  microVMs (Firecracker, each with read-only rootfs, cap-drop)   │  │
-│   │                                                                 │  │
-│   │  Agent VM          Court VMs (×5)   Builder VM   Skill VMs      │  │
-│   │  (guest-agent)     (guest-agent)    (guest-agent) (guest-agent) │  │
-│   └─────────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│  Host (root)                                                               │
+│                                                                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │  Daemon (aegisclaw start)  ← MINIMAL TCB after bootstrap             │  │
+│  │                                                                      │  │
+│  │  • Firecracker VM lifecycle (create/start/stop/delete)               │  │
+│  │  • Unix socket API for CLI (slash command passthrough to AegisHub)   │  │
+│  │  • Proposal store, audit log, composition store                      │  │
+│  │  • Launches AegisHub FIRST; fatal error if AegisHub is unavailable   │  │
+│  │                                                                      │  │
+│  │  Does NOT: route IPC, enforce ACL, own the tool registry,            │  │
+│  │            call Ollama, parse tool-call blocks, run ReAct loops      │  │
+│  └──────────┬────────────────────────────────────────────────────────┬──┘  │
+│             │ vsock (VMM ops only)         vsock (all IPC)           │     │
+│   ┌─────────┼──────────────────────────────────────────────────────┐ │     │
+│   │  microVMs (Firecracker, each with read-only rootfs, cap-drop)  │ │     │
+│   │                                                                │ │     │
+│   │  ┌─────────────────────────────────────────────────────────┐  │ │     │
+│   │  │  AegisHub VM  (cmd/aegishub)   ← sole IPC router        │  │◄┘     │
+│   │  │  • MessageHub + Router + ACL + IdentityRegistry         │  │       │
+│   │  │  • Enforces ACL/policy before every message delivery    │  │       │
+│   │  │  • Writes routing events to Merkle audit log            │  │       │
+│   │  │  • No network egress — vsock only                       │  │       │
+│   │  │  • aegishub-rootfs.ext4 built by build-rootfs.sh        │  │       │
+│   │  └─────────────────────────────────────────────────────────┘  │       │
+│   │                            │ vsock (all inter-VM traffic)      │       │
+│   │  Agent VM    Court VMs(×5)  Builder VM    Skill VMs            │       │
+│   │  (guest-agent) (guest-agent) (guest-agent) (guest-agent)       │       │
+│   └────────────────────────────────────────────────────────────────┘       │
+└────────────────────────────────────────────────────────────────────────────┘
 
      ┌──────────────┐
      │  CLI process │  (unprivileged, thin TUI client)
@@ -53,7 +61,7 @@ Every other component — the main agent, Governance Court reviewers, the builde
      └──────┬───────┘
             │ Unix socket /run/aegisclaw.sock
             ▼
-          Daemon
+         Daemon  →  (proxies control requests)  →  AegisHub VM
 ```
 
 ---
@@ -142,13 +150,17 @@ The `ipc.MessageHub.RouteMessage` method must enforce an ACL before delivering a
 
 ### 5.1 ACL table
 
-| Sender role | Permitted `tool.*` targets | Denied targets |
+| Sender role | Permitted `type.*` targets | Denied targets |
 |---|---|---|
-| **Agent VM** (`role: agent`) | `proposal.*`, `list_proposals`, `list_sandboxes`, any registered skill tool (`<skillname>.*`) | `kernel.*`, `sandbox.*`, `court.*`, `composition.*`, `safe-mode.*` |
-| **CLI** (`role: cli`, single-user mode) | All registered tools, all `proposal.*`, `skill.*`, `composition.*`, `safe-mode.*` | `kernel.shutdown` requires explicit `--force` flag in audit log |
-| **Court reviewer VM** (`role: court`) | None — court VMs only respond to `review.execute` requests from the daemon; they do not initiate `tool.exec` calls | All |
-| **Builder VM** (`role: builder`) | `file.read`, `file.write`, `file.list` within `/workspace` only | All other tools |
-| **Skill VM** (`role: skill`) | Only the tools explicitly declared in its approved `SandboxSpec.AllowedTools` list | All others |
+| **Agent VM** (`role: agent`) | `tool.exec`, `chat.message`, `status` | All others |
+| **CLI** (`role: cli`, single-user mode) | All (wildcard) | — |
+| **Court reviewer VM** (`role: court`) | `review.result`, `status` | All others |
+| **Builder VM** (`role: builder`) | `build.result`, `status` | All others |
+| **Skill VM** (`role: skill`) | `tool.result`, `status` | All others |
+| **AegisHub VM** (`role: hub`) | All (wildcard) | — |
+| **Daemon tool endpoint** (`role: daemon`) | `tool.result`, `status` | All others |
+
+The `hub` wildcard is necessary because AegisHub acts as the routing authority — it must be able to forward any permitted message to its destination. This does not bypass ACL; AegisHub itself enforces the ACL before delivering. The daemon validates that only the AegisHub VM may be assigned `RoleHub`.
 
 ### 5.2 Policy enforcement in code
 
@@ -461,3 +473,160 @@ These rules take precedence over any convenience, testing, or performance argume
 4. **ACL is enforced at the message bus.** No tool handler is callable without passing the ACL check.
 5. **Integration tests use real microVMs and real Ollama.** No process-level substitutes or mocked LLM responses.
 6. **Secrets never appear in LLM context, logs, or generated code.** Enforced at the proxy; not the agent's responsibility to sanitize.
+7. **AegisHub is the first and last VM in the launch sequence.** No other VM may be started before AegisHub is registered. No message routing decision may bypass AegisHub.
+
+---
+
+## 13. AegisHub microVM — specification
+
+### 13.1 Purpose
+
+AegisHub is the **sole IPC router** for the AegisClaw system. All inter-VM traffic routes through it. No VM may communicate with another VM directly — every message must pass through AegisHub's identity verification and ACL check.
+
+Moving routing out of the root-privileged daemon shrinks the privileged Trusted Computing Base (TCB) to the minimum required for VMM operations. AegisHub benefits from the same hardware-level isolation as every other component: Firecracker + read-only rootfs + `cap-drop ALL` + no shared memory.
+
+### 13.2 Binary and location
+
+- **Binary**: `cmd/aegishub/` (`aegishub`)
+- **VM image**: `aegishub-rootfs.ext4` (built with `sudo ./scripts/build-rootfs.sh --target=aegishub`; override path via `AEGISCLAW_HUB_ROOTFS` env var)
+- **Vsock port**: 1024 (same as `guest-agent`, since only one process listens inside the VM)
+
+### 13.3 Launch sequence
+
+```
+1. Daemon starts (host, root).
+2. Daemon provisions Firecracker assets (kernel, standard rootfs template).
+3. Daemon logs kernel start action.
+4. Daemon calls launchAegisHub() — REQUIRED. Fatal error if AegisHub rootfs is missing.
+   Build with: sudo ./scripts/build-rootfs.sh --target=aegishub
+5. AegisHub VM starts, runs aegishub binary, listens on vsock port 1024.
+6. Daemon registers AegisHub VM identity with RoleHub in the MessageHub.
+7. Daemon registers AegisHub in the versioned composition manifest.
+8. Daemon starts API server, court engine, and all other components.
+9. On first chat.message: Daemon lazy-starts Agent VM, registers it with the hub.
+10. On shutdown: all VMs stopped before daemon exits.
+```
+
+### 13.4 Responsibilities
+
+**AegisHub IS responsible for:**
+- Identity verification (checking `From` field matches vsock-verified sender)
+- ACL enforcement (role → permitted message types)
+- Message routing decisions (find handler for destination VM/ID)
+- Audit log entries for every routing event
+- VM identity registration and unregistration (routing table is live operational state — see §13.6)
+- Hub health/stats reporting (`hub.status`, `hub.routes`)
+
+**AegisHub is NOT responsible for:**
+- VM lifecycle management (create/start/stop/delete) — that stays in the daemon
+- Tool handler execution — tool handlers (e.g. `proposal.create_draft`) are implemented and executed in the daemon, but **invocations arrive as AegisHub-routed `tool.exec` messages**. The daemon registers itself with AegisHub as a tool-handler endpoint (with a restricted `RoleDaemon` role), so every tool call from an agent VM is ACL-gated by AegisHub before reaching the daemon. Direct daemon calls that bypass AegisHub's routing plane are a security defect. (Current state: daemon registers but full ACL-gated tool dispatch is tracked as D2-a.)
+- Secret injection — that stays in the daemon (injected at VM launch time, not routed through the message plane)
+- LLM inference — that stays in agent/court/builder VMs
+
+### 13.5 Protocol (daemon ↔ AegisHub)
+
+The daemon communicates with AegisHub over vsock using JSON envelopes:
+
+```json
+// Request
+{
+  "id": "<uuid>",
+  "type": "hub.register_vm | hub.unregister_vm | hub.route | hub.status",
+  "payload": { ... }
+}
+
+// Response
+{
+  "id": "<same-uuid>",
+  "success": true,
+  "error": "",
+  "data": { ... }
+}
+```
+
+For `hub.route`, the response `data` contains:
+```json
+{
+  "delivery_result": { "message_id": "...", "success": true, "response": { ... } },
+  "deliver_to_vm": "<vm-id-if-forwarding-needed>",
+  "forward_message": { ... }
+}
+```
+
+When `deliver_to_vm` is non-empty, the daemon must forward the message to that VM via vsock.
+
+### 13.6 Governance
+
+AegisHub has two distinct kinds of state with different mutability guarantees:
+
+**Immutable** — the AegisHub binary and rootfs image:
+- The running AegisHub microVM cannot modify its own binary or filesystem at runtime (rootfs is read-only, `cap-drop ALL`).
+- Replacing the binary or image requires a full Governance Court SDLC cycle:
+  1. Proposal created with `proposal.create_draft` (target: `aegishub`)
+  2. Court review with all 5 personas (mandatory CISO and Security Architect reviews)
+  3. Builder pipeline: SAST + SCA + policy gates + artifact signing
+  4. Signed composition manifest update
+  5. Daemon restarts AegisHub from the new signed image; rolls back automatically on health failure
+- No direct operator modifications to the AegisHub binary or image are permitted outside this process.
+
+**Dynamic operational state** — the routing table:
+- AegisHub's in-memory routing table tracks which VM IDs are currently registered and their roles.
+- The table changes at runtime as VMs start and stop: the daemon sends `hub.register_vm` when it starts a skill, agent, or court VM, and `hub.unregister_vm` when the VM stops.
+- This is expected and intentional — the table must grow as tools, skills, and new agent types are added to the system.
+- The ACL policy (which roles may send which message types) is part of the **immutable binary** — it does not change when new VMs register. Adding a new skill only adds a `RoleSkill` routing entry; it does not grant any new ACL permissions beyond those already defined for `RoleSkill`.
+
+---
+
+## 14. STRIDE threat model — AegisHub boundary
+
+This section documents the STRIDE analysis for the AegisHub VM boundary as required by the problem statement. Apply this analysis whenever the AegisHub protocol or VM image changes.
+
+### Threat: **Spoofing** (identity)
+
+| Scenario | Mitigation |
+|---|---|
+| VM A claims `From: VM-B` in its IPC message, impersonating VM B | The `Router.Route()` method validates `msg.From == senderVMID` (vsock-verified identity). Message is rejected if they differ. |
+| Attacker sends messages to AegisHub claiming to be the daemon | Daemon-side requests come over vsock UDS owned by the daemon process; socket permissions (0600) prevent other processes from connecting. |
+| AegisHub VM image is replaced with a malicious one | Images must be signed; daemon verifies signature before loading. (Full enforcement: future work via composition manifest signing.) |
+
+### Threat: **Tampering** (integrity)
+
+| Scenario | Mitigation |
+|---|---|
+| AegisHub in-memory routing table is modified by a compromised VM | AegisHub runs in its own Firecracker VM with read-only rootfs and `cap-drop ALL`. No other process can modify its memory. |
+| Message payload is modified in transit between VM and AegisHub | All communication is over vsock (VM → host → AegisHub); no shared memory; Firecracker provides isolation boundaries. |
+| AegisHub audit log entries are modified | Merkle-tree audit log provides tamper evidence; entries are signed by the daemon's Ed25519 key. |
+
+### Threat: **Repudiation** (non-repudiation)
+
+| Scenario | Mitigation |
+|---|---|
+| A VM denies having sent a message | Every `hub.route` call is signed and appended to the Merkle audit log with the vsock-verified sender ID. |
+| Routing decisions are not traceable | AegisHub logs `(message_id, from, to, type, sender_vmid, timestamp)` for every routing attempt, including rejections. |
+
+### Threat: **Information Disclosure**
+
+| Scenario | Mitigation |
+|---|---|
+| Skill VM reads messages intended for the agent VM | No direct VM-to-VM communication; all traffic goes through AegisHub's routing table which enforces destination. |
+| AegisHub leaks routing metadata (who talks to whom) | AegisHub runs in an isolated VM; its memory is not accessible to other VMs. Log entries are visible only to the daemon. |
+| Secrets injected into a skill VM are visible to AegisHub | Secret injection is a direct vsock call from the daemon to the skill VM; AegisHub is not in this path. |
+
+### Threat: **Denial of Service**
+
+| Scenario | Mitigation |
+|---|---|
+| Flood of messages overwhelms AegisHub | `maxPayloadLen = 4 MiB` cap per message; connection deadline of 30s; per-VM vsock limits via Firecracker. |
+| AegisHub VM crashes, all inter-VM communication stops | Daemon health monitoring detects AegisHub VM exit; restarts it and re-registers all VMs. (Implementation: future work.) |
+| Agent VM sends 10,000 `tool.exec` messages rapidly | Rate limiting at the vsock layer (future work). Currently bounded by the daemon's chat handler timeouts. |
+
+### Threat: **Elevation of Privilege**
+
+| Scenario | Mitigation |
+|---|---|
+| Skill VM tries to call proposal.create_draft directly | ACL denies `tool.exec` from `RoleSkill`; only `tool.result` and `status` are permitted. |
+| A compromised VM tries to register itself with `RoleHub` | `IdentityRegistry.Register()` rejects role changes after initial registration; only the daemon can register VMs at startup. |
+| AegisHub itself is compromised and starts routing arbitrary messages | AegisHub runs with `cap-drop ALL`; it cannot escape its VM boundary or access the host filesystem. The daemon's audit log would detect abnormal routing patterns. |
+| Daemon bypasses AegisHub to deliver messages directly | All vsock communication goes through the ControlPlane which logs every message. Direct delivery without routing would still be audited. |
+
+---

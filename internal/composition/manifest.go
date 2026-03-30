@@ -28,11 +28,15 @@ import (
 type ComponentType string
 
 const (
-	ComponentSkill      ComponentType = "skill"
-	ComponentReviewer   ComponentType = "reviewer"
-	ComponentBuilder    ComponentType = "builder"
-	ComponentMainAgent  ComponentType = "main-agent"
+	ComponentSkill       ComponentType = "skill"
+	ComponentReviewer    ComponentType = "reviewer"
+	ComponentBuilder     ComponentType = "builder"
+	ComponentMainAgent   ComponentType = "main-agent"
 	ComponentCoordinator ComponentType = "coordinator"
+	// ComponentHub is the AegisHub system microVM — the sole IPC router.
+	// It is always the first component launched and the last stopped.
+	// Changes to AegisHub must flow through the Governance Court SDLC.
+	ComponentHub ComponentType = "hub"
 )
 
 // HealthStatus represents a component's health.

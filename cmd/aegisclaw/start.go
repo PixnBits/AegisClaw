@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
+	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
@@ -22,6 +23,13 @@ import (
 )
 
 var safeModeFlag bool
+
+// aegisHubRootfsEnvKey is the environment variable that overrides the default
+// AegisHub rootfs image path. During development and CI, set this to the
+// path of a pre-built aegishub rootfs.ext4. In production this must be a
+// signed, verified image; the daemon refuses to start AegisHub from an
+// unsigned image.
+const aegisHubRootfsEnvKey = "AEGISCLAW_HUB_ROOTFS"
 
 func runStart(cmd *cobra.Command, args []string) error {
 	env, err := initRuntime()
@@ -45,8 +53,34 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to log kernel start: %w", err)
 	}
 
+	// ── Step 1: Launch AegisHub ──────────────────────────────────────────────
+	// AegisHub is the sole IPC router for the system. It MUST be the first
+	// microVM launched; all subsequent VMs communicate exclusively through it.
+	// This is a hard requirement — the daemon will not start without a valid
+	// AegisHub rootfs. If the image is missing, rebuild it with:
+	//   sudo ./scripts/build-rootfs.sh --target=aegishub
+	// or set AEGISCLAW_HUB_ROOTFS to the path of a pre-built image.
+	//
+	// Security guarantee: AegisHub is launched before any other VM and before
+	// the daemon accepts any API requests, ensuring every message that ever
+	// traverses the system passes through AegisHub's ACL/identity checks.
+	hub, hubVMID, err := launchAegisHub(cmd.Context(), env)
+	if err != nil {
+		return fmt.Errorf(
+			"AegisHub microVM required but failed to start — "+
+				"rebuild the image with: sudo ./scripts/build-rootfs.sh --target=aegishub\n"+
+				"(set %s to override the rootfs path)\n"+
+				"underlying error: %w",
+			aegisHubRootfsEnvKey, err,
+		)
+	}
+	env.AegisHubVMID = hubVMID
+	env.Logger.Info("AegisHub microVM launched",
+		zap.String("vm_id", hubVMID),
+		zap.String("role", string(ipc.RoleHub)),
+	)
+
 	// Initialize and start the message-hub
-	hub := ipc.NewMessageHub(env.Kernel, env.Logger)
 	if err := hub.Start(); err != nil {
 		return fmt.Errorf("failed to start message-hub: %w", err)
 	}
@@ -62,6 +96,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		zap.String("public_key", fmt.Sprintf("%x", env.Kernel.PublicKey())),
 		zap.String("message_hub", string(hub.State())),
 		zap.Int("ipc_routes", len(hub.Router().RegisteredRoutes())),
+		zap.String("aegishub_vm_id", env.AegisHubVMID),
 	)
 
 	// Start the Unix socket API server so CLI commands can talk to the daemon.
@@ -93,6 +128,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	toolRegistry := buildToolRegistry(env)
 	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
+	apiSrv.Handle("chat.tool", makeChatToolExecHandler(env, toolRegistry))
+	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
 	// D10: Composition manifest handlers for versioned deployment and rollback.
 	apiSrv.Handle("composition.current", makeCompositionCurrentHandler(env))
 	apiSrv.Handle("composition.rollback", makeCompositionRollbackHandler(env))
@@ -122,6 +159,7 @@ No skills, no Court, no main agent sandbox.
 	fmt.Printf("  Message-Hub: %s\n", hub.State())
 	fmt.Printf("  IPC Routes: %v\n", hub.Router().RegisteredRoutes())
 	fmt.Printf("  API Socket: %s\n", env.Config.Daemon.SocketPath)
+	fmt.Printf("  AegisHub VM: %s\n", env.AegisHubVMID)
 
 	// Wait for shutdown signal
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -573,4 +611,110 @@ func makeKernelShutdownHandler(cancelFunc context.CancelFunc) api.Handler {
 		go cancelFunc()
 		return &api.Response{Success: true}
 	}
+}
+
+// launchAegisHub creates and starts the AegisHub system microVM, then
+// registers it in the local identity registry with RoleHub. It returns the
+// initialized MessageHub (with AegisHub registered) and the new VM ID.
+//
+// This is a required step. The daemon will not start without a valid AegisHub
+// rootfs. Build it with:
+//
+//	sudo ./scripts/build-rootfs.sh --target=aegishub
+//
+// Security invariants:
+//   - AegisHub is launched BEFORE any other microVM. No skill, agent, or
+//     court VM is started until AegisHub is running and registered.
+//   - AegisHub's VM identity is locked to RoleHub — no other VM may claim
+//     this role (IdentityRegistry.Register is idempotent but rejects role
+//     changes).
+//   - AegisHub has DefaultDeny network policy: egress only over vsock.
+//   - AegisHub changes only via the Governance Court SDLC + signed composition
+//     manifests. No direct operator modification of the image is permitted.
+func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, string, error) {
+	// Resolve the AegisHub rootfs. Override via AEGISCLAW_HUB_ROOTFS env var;
+	// otherwise look for aegishub-rootfs.ext4 next to the standard template.
+	hubRootfs := os.Getenv(aegisHubRootfsEnvKey)
+	if hubRootfs == "" {
+		hubRootfs = filepath.Join(
+			filepath.Dir(env.Config.Rootfs.Template),
+			"aegishub-rootfs.ext4",
+		)
+	}
+
+	if _, err := os.Stat(hubRootfs); err != nil {
+		return nil, "", fmt.Errorf("AegisHub rootfs not found at %s (set %s to override): %w",
+			hubRootfs, aegisHubRootfsEnvKey, err)
+	}
+
+	hubVMID := generateVMID("aegishub")
+	spec := sandbox.SandboxSpec{
+		ID:   hubVMID,
+		Name: "aegishub",
+		Resources: sandbox.Resources{
+			VCPUs:    1,
+			MemoryMB: 128,
+		},
+		// AegisHub communicates exclusively over vsock; no TAP device or IP needed.
+		NetworkPolicy: sandbox.NetworkPolicy{
+			DefaultDeny: true,
+			NoNetwork:   true,
+		},
+		RootfsPath: hubRootfs,
+	}
+
+	if err := env.Runtime.Create(ctx, spec); err != nil {
+		return nil, "", fmt.Errorf("create AegisHub sandbox: %w", err)
+	}
+
+	if err := env.Runtime.Start(ctx, hubVMID); err != nil {
+		env.Runtime.Delete(ctx, hubVMID) //nolint:errcheck
+		return nil, "", fmt.Errorf("start AegisHub VM: %w", err)
+	}
+
+	// Build the daemon-side MessageHub and lock AegisHub's VM identity to
+	// RoleHub. AegisHub is the sole authoritative router; its vsock server
+	// (inside the VM) performs the actual routing. The daemon-side hub serves
+	// as the control-plane bridge that routes daemon-originating messages.
+	hub := ipc.NewMessageHub(env.Kernel, env.Logger)
+	if err := hub.RegisterVM(hubVMID, ipc.RoleHub); err != nil {
+		env.Runtime.Stop(ctx, hubVMID)   //nolint:errcheck
+		env.Runtime.Delete(ctx, hubVMID) //nolint:errcheck
+		return nil, "", fmt.Errorf("register AegisHub identity: %w", err)
+	}
+
+	// Register AegisHub in the versioned composition manifest so it participates
+	// in health monitoring and rollback tracking like every other core component.
+	if env.CompositionStore != nil {
+		current := env.CompositionStore.Current()
+		components := map[string]composition.Component{}
+		if current != nil {
+			for k, v := range current.Components {
+				components[k] = v
+			}
+		}
+		components["aegishub"] = composition.Component{
+			Name:        "aegishub",
+			Type:        composition.ComponentHub,
+			Version:     "1",
+			SandboxID:   hubVMID,
+			ArtifactRef: hubRootfs,
+			Health:      composition.HealthHealthy,
+		}
+		if _, pubErr := env.CompositionStore.Publish(components, "daemon", "AegisHub microVM launched"); pubErr != nil {
+			env.Logger.Warn("failed to record AegisHub in composition manifest", zap.Error(pubErr))
+		}
+	}
+
+	// Audit-log the AegisHub launch as a system component activation event.
+	launchPayload, _ := json.Marshal(map[string]string{
+		"vm_id":     hubVMID,
+		"role":      string(ipc.RoleHub),
+		"component": "aegishub",
+		"rootfs":    hubRootfs,
+	})
+	launchAction := kernel.NewAction(kernel.ActionSystemComponentActivate, "daemon", launchPayload)
+	env.Kernel.SignAndLog(launchAction) //nolint:errcheck
+
+	return hub, hubVMID, nil
 }

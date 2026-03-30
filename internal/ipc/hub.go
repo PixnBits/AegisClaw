@@ -58,6 +58,21 @@ func NewMessageHub(kern *kernel.Kernel, logger *zap.Logger) *MessageHub {
 	}
 }
 
+// NewMessageHubNoKernel creates a MessageHub without kernel audit logging.
+// Use this when the hub runs inside a microVM (e.g. AegisHub) where the host
+// kernel instance is not available. All routing and ACL logic is identical;
+// only audit-log writes to the Merkle chain are skipped.
+func NewMessageHubNoKernel(logger *zap.Logger) *MessageHub {
+	return &MessageHub{
+		router:   NewRouter(),
+		kern:     nil, // intentional: running inside a microVM, no host kernel singleton available
+		logger:   logger,
+		state:    HubStateStopped,
+		identity: NewIdentityRegistry(),
+		acl:      defaultACLPolicy(),
+	}
+}
+
 // Start initializes the message-hub and registers its own route handler.
 func (h *MessageHub) Start() error {
 	h.mu.Lock()
@@ -112,13 +127,15 @@ func (h *MessageHub) RegisterSkill(skillID string, handler RouteHandler) error {
 		return err
 	}
 
-	payload, _ := json.Marshal(map[string]string{
-		"skill_id": skillID,
-		"action":   "register",
-	})
-	action := kernel.NewAction(kernel.ActionSkillRegister, MessageHubID, payload)
-	if _, err := h.kern.SignAndLog(action); err != nil {
-		h.logger.Error("failed to log skill registration", zap.Error(err))
+	if h.kern != nil {
+		payload, _ := json.Marshal(map[string]string{
+			"skill_id": skillID,
+			"action":   "register",
+		})
+		action := kernel.NewAction(kernel.ActionSkillRegister, MessageHubID, payload)
+		if _, err := h.kern.SignAndLog(action); err != nil {
+			h.logger.Error("failed to log skill registration", zap.Error(err))
+		}
 	}
 
 	h.logger.Info("skill registered with message-hub",
@@ -165,19 +182,21 @@ func (h *MessageHub) RouteMessage(senderVMID string, msg *Message) (*DeliveryRes
 	h.mu.RUnlock()
 
 	// Sign and audit the routing action
-	payload, _ := json.Marshal(map[string]interface{}{
-		"message_id":  msg.ID,
-		"from":        msg.From,
-		"to":          msg.To,
-		"type":        msg.Type,
-		"sender_vmid": senderVMID,
-	})
-	action := kernel.NewAction(kernel.ActionMessageRoute, MessageHubID, payload)
-	if _, err := h.kern.SignAndLog(action); err != nil {
-		h.logger.Error("failed to audit message routing",
-			zap.String("message_id", msg.ID),
-			zap.Error(err),
-		)
+	if h.kern != nil {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"message_id":  msg.ID,
+			"from":        msg.From,
+			"to":          msg.To,
+			"type":        msg.Type,
+			"sender_vmid": senderVMID,
+		})
+		action := kernel.NewAction(kernel.ActionMessageRoute, MessageHubID, payload)
+		if _, err := h.kern.SignAndLog(action); err != nil {
+			h.logger.Error("failed to audit message routing",
+				zap.String("message_id", msg.ID),
+				zap.Error(err),
+			)
+		}
 	}
 
 	// ACL enforcement (DA): check that the sender's role is permitted to send
