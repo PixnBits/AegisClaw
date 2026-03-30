@@ -35,6 +35,7 @@ type runtimeEnv struct {
 	CompositionStore *composition.Store
 	Court            *court.Engine
 	LLMProxy         *llm.OllamaProxy
+	ToolProxy        *ToolProxy
 	SafeMode         atomic.Bool
 
 	// AgentVMID is the ID of the main agent microVM. Protected by agentVMMu.

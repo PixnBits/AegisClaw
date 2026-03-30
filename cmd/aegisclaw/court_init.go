@@ -61,17 +61,19 @@ func initCourtEngine(env *runtimeEnv, toolRegistry *ToolRegistry) (*court.Engine
 		return nil, fmt.Errorf("failed to create court engine: %w", err)
 	}
 	if toolRegistry != nil {
-		engine.SetRoundUpdater(makeCourtRoundUpdater(env, toolRegistry))
+		engine.SetRoundUpdater(makeCourtRoundUpdater(env))
 	}
 
 	return engine, nil
 }
 
-// makeCourtRoundUpdater returns an updater that notifies the agent after each
-// non-consensus round and blocks the next round until the proposal is updated.
-// This runs in daemon context, so it works even when no interactive
-// `./aegisclaw chat` session is active.
-func makeCourtRoundUpdater(env *runtimeEnv, toolRegistry *ToolRegistry) court.RoundUpdateFunc {
+// makeCourtRoundUpdater returns an updater that sends aggregated feedback to
+// the agent VM and waits for the agent to update the proposal.  The full ReAct
+// loop runs inside the agent VM (D2-a resolved): the agent calls Ollama, parses
+// tool-call blocks, executes tools via the tool proxy, and returns a final
+// response.  The round updater only needs to verify that the proposal version
+// advanced.
+func makeCourtRoundUpdater(env *runtimeEnv) court.RoundUpdateFunc {
 	return func(ctx context.Context, p *proposal.Proposal, feedback *court.IterationFeedback) (*proposal.Proposal, error) {
 		if p == nil {
 			return nil, fmt.Errorf("proposal is nil")
@@ -99,153 +101,52 @@ func makeCourtRoundUpdater(env *runtimeEnv, toolRegistry *ToolRegistry) court.Ro
 			{Role: "user", Content: userPrompt},
 		}
 
-		allowedTools := map[string]bool{
-			"proposal.get_draft":    true,
-			"proposal.reviews":      true,
-			"proposal.update_draft": true,
+		// Send a single chat.message — the agent VM runs the full ReAct loop
+		// internally, calling tools via the tool proxy over vsock.
+		payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: env.Config.Ollama.DefaultModel})
+		vmReq := agentVMRequest{
+			ID:      uuid.New().String(),
+			Type:    "chat.message",
+			Payload: json.RawMessage(payloadBytes),
 		}
 
-		nudged := false // track whether we already retried after a "final" without update
+		env.Logger.Info("court round updater: sending to agent VM",
+			zap.String("proposal_id", p.ID),
+			zap.Int("version_before", beforeVersion),
+		)
 
-		for i := 0; i < reactMaxIterations; i++ {
-			payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: env.Config.Ollama.DefaultModel})
-			vmReq := agentVMRequest{
-				ID:      uuid.New().String(),
-				Type:    "chat.message",
-				Payload: json.RawMessage(payloadBytes),
-			}
-
-			env.Logger.Debug("court round updater: sending to agent",
-				zap.String("proposal_id", p.ID),
-				zap.Int("iteration", i),
-				zap.Int("msg_count", len(msgs)),
-			)
-
-			raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
-			if err != nil {
-				return nil, fmt.Errorf("agent VM chat.message failed: %w", err)
-			}
-
-			var vmResp agentVMResponse
-			if err := json.Unmarshal(raw, &vmResp); err != nil {
-				return nil, fmt.Errorf("malformed agent response: %w", err)
-			}
-			if !vmResp.Success {
-				return nil, fmt.Errorf("agent error: %s", vmResp.Error)
-			}
-
-			var chatResp agentChatResponse
-			if err := json.Unmarshal(vmResp.Data, &chatResp); err != nil {
-				return nil, fmt.Errorf("malformed agent chat response: %w", err)
-			}
-
-			env.Logger.Info("court round updater: agent response",
-				zap.String("proposal_id", p.ID),
-				zap.Int("iteration", i),
-				zap.String("status", chatResp.Status),
-				zap.String("tool", chatResp.Tool),
-			)
-
-			switch chatResp.Status {
-			case "final":
-				// Check if the proposal was actually updated (could have happened
-				// via a prior tool_call iteration in this same loop).
-				updated, err := env.ProposalStore.Get(p.ID)
-				if err != nil {
-					return nil, fmt.Errorf("proposal reload failed after agent final response: %w", err)
-				}
-				if updated.Version > beforeVersion {
-					env.Logger.Info("agent updated proposal after court round",
-						zap.String("proposal_id", p.ID),
-						zap.Int("version_before", beforeVersion),
-						zap.Int("version_after", updated.Version),
-					)
-					return updated, nil
-				}
-
-				// Daemon-side fallback: the guest-agent may have returned "final"
-				// even though the LLM content contains a tool-call block (e.g.
-				// small models omit the closing ``` fence). Try to extract and
-				// execute the tool call ourselves before nudging.
-				if tool, args, ok := extractToolCallFromContent(chatResp.Content); ok && allowedTools[tool] {
-					env.Logger.Info("court round updater: daemon-side extracted tool call from final content",
-						zap.String("proposal_id", p.ID),
-						zap.String("tool", tool),
-					)
-					result, toolErr := toolRegistry.Execute(ctx, tool, args)
-					toolResult := ""
-					if toolErr != nil {
-						toolResult = fmt.Sprintf("Error executing %s: %v", tool, toolErr)
-						env.Logger.Warn("court round updater: daemon-side tool execution failed",
-							zap.String("tool", tool),
-							zap.Error(toolErr),
-						)
-					} else {
-						toolResult = result
-					}
-					toolCallContent := fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", tool, args)
-					msgs = append(msgs,
-						agentChatMsg{Role: "assistant", Content: toolCallContent},
-						agentChatMsg{Role: "tool", Name: tool, Content: toolResult},
-					)
-					continue
-				}
-
-				// Agent responded with text but didn't call the tool.
-				// Nudge it once with an explicit instruction.
-				if !nudged {
-					nudged = true
-					env.Logger.Warn("court round updater: agent gave final response without updating proposal, nudging",
-						zap.String("proposal_id", p.ID),
-						zap.String("agent_content_preview", truncate(chatResp.Content, 200)),
-					)
-					msgs = append(msgs,
-						agentChatMsg{Role: "assistant", Content: chatResp.Content},
-						agentChatMsg{Role: "user", Content: buildRoundUpdaterNudge(p.ID)},
-					)
-					continue
-				}
-
-				// Already nudged once and agent still didn't update. Give up.
-				env.Logger.Error("court round updater: agent failed to update proposal after nudge",
-					zap.String("proposal_id", p.ID),
-					zap.String("agent_content_preview", truncate(chatResp.Content, 200)),
-				)
-				return nil, fmt.Errorf("proposal not updated by agent (version stayed at %d)", updated.Version)
-
-			case "tool_call":
-				toolResult := ""
-				if !allowedTools[chatResp.Tool] {
-					toolResult = fmt.Sprintf("Error: tool %q is not allowed during court round updates. Allowed tools: proposal.get_draft, proposal.reviews, proposal.update_draft.", chatResp.Tool)
-				} else {
-					env.Logger.Info("court round updater: executing tool",
-						zap.String("proposal_id", p.ID),
-						zap.String("tool", chatResp.Tool),
-					)
-					result, toolErr := toolRegistry.Execute(ctx, chatResp.Tool, chatResp.Args)
-					if toolErr != nil {
-						toolResult = fmt.Sprintf("Error executing %s: %v", chatResp.Tool, toolErr)
-						env.Logger.Warn("court round updater: tool execution failed",
-							zap.String("tool", chatResp.Tool),
-							zap.Error(toolErr),
-						)
-					} else {
-						toolResult = result
-					}
-				}
-
-				toolCallContent := fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", chatResp.Tool, chatResp.Args)
-				msgs = append(msgs,
-					agentChatMsg{Role: "assistant", Content: toolCallContent},
-					agentChatMsg{Role: "tool", Name: chatResp.Tool, Content: toolResult},
-				)
-
-			default:
-				return nil, fmt.Errorf("unexpected agent status: %q", chatResp.Status)
-			}
+		raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
+		if err != nil {
+			return nil, fmt.Errorf("agent VM chat.message failed: %w", err)
 		}
 
-		return nil, fmt.Errorf("agent did not finish proposal update within %d iterations", reactMaxIterations)
+		var vmResp agentVMResponse
+		if err := json.Unmarshal(raw, &vmResp); err != nil {
+			return nil, fmt.Errorf("malformed agent response: %w", err)
+		}
+		if !vmResp.Success {
+			return nil, fmt.Errorf("agent error: %s", vmResp.Error)
+		}
+
+		// Check if the proposal was updated during the agent's ReAct loop.
+		updated, err := env.ProposalStore.Get(p.ID)
+		if err != nil {
+			return nil, fmt.Errorf("proposal reload failed after agent response: %w", err)
+		}
+		if updated.Version > beforeVersion {
+			env.Logger.Info("agent updated proposal after court round",
+				zap.String("proposal_id", p.ID),
+				zap.Int("version_before", beforeVersion),
+				zap.Int("version_after", updated.Version),
+			)
+			return updated, nil
+		}
+
+		env.Logger.Error("court round updater: agent did not update proposal",
+			zap.String("proposal_id", p.ID),
+			zap.Int("version", updated.Version),
+		)
+		return nil, fmt.Errorf("proposal not updated by agent (version stayed at %d)", updated.Version)
 	}
 }
 
@@ -289,81 +190,6 @@ func buildRoundUpdaterUserPrompt(p *proposal.Proposal, feedbackText string) stri
 	b.WriteString(feedbackText)
 	b.WriteString("\n\nCall proposal.update_draft now with improvements that address this feedback.")
 	return b.String()
-}
-
-// buildRoundUpdaterNudge returns an explicit nudge message when the agent
-// failed to use the tool on its first attempt.
-func buildRoundUpdaterNudge(proposalID string) string {
-	var b strings.Builder
-	b.WriteString("You did not call a tool. You MUST call proposal.update_draft to proceed.\n")
-	b.WriteString("Output EXACTLY this format (fill in the fields):\n\n")
-	b.WriteString("```tool-call\n")
-	b.WriteString(fmt.Sprintf("{\"name\": \"proposal.update_draft\", \"args\": {\"id\": \"%s\", \"description\": \"<improved description addressing feedback>\"}}\n", proposalID))
-	b.WriteString("```\n\n")
-	b.WriteString("Do it now. Do NOT write anything else.")
-	return b.String()
-}
-
-// truncate returns at most maxLen characters of s, appending "…" if truncated.
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "…"
-}
-
-// extractToolCallFromContent is a daemon-side fallback parser that extracts a
-// tool call from agent content that was classified as "final" by the guest-agent.
-// This handles the case where the LLM produced a fenced tool-call block but the
-// guest-agent's parser missed it (e.g. missing closing fence).
-func extractToolCallFromContent(content string) (toolName, argsJSON string, found bool) {
-	markers := []string{"```tool-call", "```json", "```"}
-	for _, marker := range markers {
-		start := strings.Index(content, marker)
-		if start < 0 {
-			continue
-		}
-		after := content[start+len(marker):]
-
-		// Try with closing fence first, then without.
-		end := strings.Index(after, "```")
-		var block string
-		if end >= 0 {
-			block = strings.TrimSpace(after[:end])
-		} else {
-			block = strings.TrimSpace(after)
-		}
-
-		var modern struct {
-			Name string          `json:"name"`
-			Args json.RawMessage `json:"args"`
-		}
-		if err := json.Unmarshal([]byte(block), &modern); err == nil && modern.Name != "" {
-			argsStr := "{}"
-			if len(modern.Args) > 0 {
-				argsStr = string(modern.Args)
-			}
-			return modern.Name, argsStr, true
-		}
-	}
-
-	// Bare JSON fallback: look for {"name": anywhere in the content.
-	if idx := strings.Index(content, `{"name"`); idx >= 0 {
-		candidate := content[idx:]
-		var modern struct {
-			Name string          `json:"name"`
-			Args json.RawMessage `json:"args"`
-		}
-		if err := json.Unmarshal([]byte(candidate), &modern); err == nil && modern.Name != "" {
-			argsStr := "{}"
-			if len(modern.Args) > 0 {
-				argsStr = string(modern.Args)
-			}
-			return modern.Name, argsStr, true
-		}
-	}
-
-	return "", "", false
 }
 
 // initCourtLauncher returns the FirecrackerLauncher for Court reviewer sandboxes.

@@ -108,6 +108,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// daemon-driven proposal updates between rounds.
 	toolRegistry := buildToolRegistry(env)
 
+	// Start the tool proxy so agent VMs can execute tools via vsock.
+	env.ToolProxy = NewToolProxy(toolRegistry, env.Logger)
+
 	// Create the court engine once and share it across handlers so session
 	// state persists between review and vote calls.
 	courtEngine, err := initCourtEngine(env, toolRegistry)

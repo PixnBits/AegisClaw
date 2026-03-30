@@ -16,8 +16,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const reactMaxIterations = 10
-
 // agentVMRequest is the JSON structure sent to the agent VM for chat.message.
 // It mirrors the guest-agent's Request{Type, Payload} envelope.
 type agentVMRequest struct {
@@ -62,12 +60,15 @@ type agentChatResponse struct {
 // by forwarding conversation turns to the agent microVM (D2-b).
 //
 // The loop:
+// makeChatMessageHandler returns an API handler that forwards the conversation
+// to the agent microVM and waits for the final response (D2-a resolved).
+//
+// The full ReAct loop now runs inside the agent VM. The daemon:
 //  1. ensureAgentVM — starts the agent VM on first call (DC).
-//  2. Build messages (system prompt + history + user input + any accumulated tool results).
-//  3. Send to agent VM → parse agentChatResponse.
-//  4. If status=="tool_call": execute via toolRegistry, append result, go to 2.
-//  5. If status=="final": return the assistant content to the CLI.
-//  6. If max iterations reached: return a polite error.
+//  2. Builds messages (system prompt + history + user input).
+//  3. Sends a single chat.message to the agent VM.
+//  4. The agent VM loops internally: Ollama → tool-call → tool proxy → repeat.
+//  5. Returns the final assistant content to the CLI.
 func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		var req api.ChatMessageRequest
@@ -107,64 +108,36 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			msgs = append(msgs, agentChatMsg{Role: "user", Content: req.Input})
 		}
 
-		for i := 0; i < reactMaxIterations; i++ {
-			payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: model})
-			vmReq := agentVMRequest{
-				ID:      uuid.New().String(),
-				Type:    "chat.message",
-				Payload: json.RawMessage(payloadBytes),
-			}
-
-			raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
-			if err != nil {
-				return &api.Response{Error: "agent VM error: " + err.Error()}
-			}
-
-			var vmResp agentVMResponse
-			if err := json.Unmarshal(raw, &vmResp); err != nil {
-				return &api.Response{Error: "malformed agent response: " + err.Error()}
-			}
-			if !vmResp.Success {
-				return &api.Response{Error: "agent error: " + vmResp.Error}
-			}
-
-			var chatResp agentChatResponse
-			if err := json.Unmarshal(vmResp.Data, &chatResp); err != nil {
-				return &api.Response{Error: "malformed agent chat response: " + err.Error()}
-			}
-
-			switch chatResp.Status {
-			case "final":
-				respData, _ := json.Marshal(api.ChatMessageResponse{
-					Role:    "assistant",
-					Content: chatResp.Content,
-				})
-				return &api.Response{Success: true, Data: respData}
-
-			case "tool_call":
-				toolResult, toolErr := toolRegistry.Execute(ctx, chatResp.Tool, chatResp.Args)
-				if toolErr != nil {
-					toolResult = fmt.Sprintf("Error executing %s: %v", chatResp.Tool, toolErr)
-				}
-				env.Logger.Info("tool executed via ReAct loop",
-					zap.String("tool", chatResp.Tool),
-					zap.Bool("success", toolErr == nil),
-				)
-				// Append the assistant's tool-call turn and the tool result.
-				toolCallContent := fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", chatResp.Tool, chatResp.Args)
-				msgs = append(msgs,
-					agentChatMsg{Role: "assistant", Content: toolCallContent},
-					agentChatMsg{Role: "tool", Name: chatResp.Tool, Content: toolResult},
-				)
-
-			default:
-				return &api.Response{Error: fmt.Sprintf("unexpected agent status: %q", chatResp.Status)}
-			}
+		payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: model})
+		vmReq := agentVMRequest{
+			ID:      uuid.New().String(),
+			Type:    "chat.message",
+			Payload: json.RawMessage(payloadBytes),
 		}
 
+		raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
+		if err != nil {
+			return &api.Response{Error: "agent VM error: " + err.Error()}
+		}
+
+		var vmResp agentVMResponse
+		if err := json.Unmarshal(raw, &vmResp); err != nil {
+			return &api.Response{Error: "malformed agent response: " + err.Error()}
+		}
+		if !vmResp.Success {
+			return &api.Response{Error: "agent error: " + vmResp.Error}
+		}
+
+		var chatResp agentChatResponse
+		if err := json.Unmarshal(vmResp.Data, &chatResp); err != nil {
+			return &api.Response{Error: "malformed agent chat response: " + err.Error()}
+		}
+
+		// The agent VM now runs the full ReAct loop internally and always
+		// returns status=="final" with the assistant's content.
 		respData, _ := json.Marshal(api.ChatMessageResponse{
 			Role:    "assistant",
-			Content: "I reached the tool call limit without a final answer. Please try rephrasing your request.",
+			Content: chatResp.Content,
 		})
 		return &api.Response{Success: true, Data: respData}
 	}
@@ -188,6 +161,9 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 		// VM is gone — fall through to (re)create it.
 		env.Logger.Warn("agent VM is no longer running, restarting", zap.String("vm_id", env.AgentVMID))
 		env.LLMProxy.StopForVM(env.AgentVMID)
+		if env.ToolProxy != nil {
+			env.ToolProxy.StopForVM(env.AgentVMID)
+		}
 		env.AgentVMID = ""
 	}
 
@@ -230,6 +206,16 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 		env.Runtime.Stop(ctx, agentID)
 		env.Runtime.Delete(ctx, agentID)
 		return "", fmt.Errorf("start llm proxy for agent VM: %w", err)
+	}
+
+	// Start the per-VM tool proxy so the guest-agent can execute tools via vsock.
+	if env.ToolProxy != nil {
+		if err := env.ToolProxy.StartForVM(agentID, vsockPath); err != nil {
+			env.LLMProxy.StopForVM(agentID)
+			env.Runtime.Stop(ctx, agentID)
+			env.Runtime.Delete(ctx, agentID)
+			return "", fmt.Errorf("start tool proxy for agent VM: %w", err)
+		}
 	}
 
 	env.AgentVMID = agentID

@@ -83,12 +83,12 @@ This is the primary interaction path and the one most likely to be implemented i
 4. Agent VM executes the ReAct loop (inside the microVM):
 
    loop:
-     a. Agent calls Ollama at 127.0.0.1:11434  (allowed by sandbox network policy)
-        with the current message list.
+     a. Agent calls Ollama via the host-side LLM proxy over vsock
+        (host CID 2, port 1025) with the current message list.
 
      b. Parse LLM response for a tool-call block:
         ```tool-call
-        {"skill": "proposal", "tool": "create_draft", "args": {...}}
+        {"name": "proposal.create_draft", "args": {...}}
         ```
 
      c. If NO tool-call block found:
@@ -96,13 +96,11 @@ This is the primary interaction path and the one most likely to be implemented i
         → Loop exits.
 
      d. If tool-call block found:
-        → Send to message bus via vsock:
-          {"type": "tool.exec", "from": "<agent-vm-id>", "to": "message-hub",
-           "payload": {"tool": "proposal.create_draft", "args": {...}}}
+        → Send to host-side ToolProxy via vsock (host CID 2, port 1026):
+          {"tool": "proposal.create_draft", "args": "{...}"}
 
-     e. Receive from message bus:
-          {"type": "tool.result",
-           "payload": {"tool": "proposal.create_draft", "result": "...", "error": ""}}
+     e. Receive from ToolProxy:
+          {"result": "Draft proposal created.\n  ID: ...", "error": ""}
 
      f. Append to conversation:
           {"role": "tool", "name": "proposal.create_draft", "content": "<result>"}
@@ -211,9 +209,27 @@ This is safe because:
 
 ## 7. ReAct loop wire protocol
 
-All messages between the agent VM and the message bus use the existing `ipc.Message` envelope.
+The ReAct loop runs inside the agent VM. Tool execution uses the host-side ToolProxy over vsock; future work will route tool calls through AegisHub for full ACL enforcement.
 
-### tool.exec (agent → hub)
+### Tool request (agent VM → ToolProxy via vsock port 1026)
+
+The guest-agent opens an AF_VSOCK connection to host CID 2, port 1026. Firecracker routes this to the host-side UDS at `vsock.sock_1026`. One request-response per connection:
+
+```json
+{"tool": "proposal.create_draft", "args": "{\"title\": \"Add time-of-day greeter skill\", \"description\": \"...\", \"skill_name\": \"time-of-day-greeter\"}"}
+```
+
+### Tool response (ToolProxy → agent VM)
+
+```json
+{"result": "Draft proposal created.\n  ID: 550e8400-e29b-41d4-a716-446655440000\n  ...", "error": ""}
+```
+
+If the tool fails, `"error"` is non-empty and `"result"` is empty. The agent VM appends the error to the conversation as a `tool` role message and continues the ReAct loop, allowing the LLM to respond to the failure.
+
+### Future: AegisHub-routed tool.exec (agent → hub → daemon)
+
+When full AegisHub routing is implemented, tool calls will use `ipc.Message` envelopes routed through the message bus with ACL enforcement:
 
 ```json
 {
@@ -224,37 +240,10 @@ All messages between the agent VM and the message bus use the existing `ipc.Mess
   "timestamp": "...",
   "payload": {
     "tool": "proposal.create_draft",
-    "args": {
-      "title": "Add time-of-day greeter skill",
-      "description": "...",
-      "skill_name": "time-of-day-greeter",
-      "tools": [{"name": "greet", "description": "..."}],
-      "data_sensitivity": 1,
-      "network_exposure": 1,
-      "privilege_level": 1
-    }
+    "args": { ... }
   }
 }
 ```
-
-### tool.result (hub → agent)
-
-```json
-{
-  "id": "<same-uuid>",
-  "from": "message-hub",
-  "to":   "<agent-vm-id>",
-  "type": "tool.result",
-  "timestamp": "...",
-  "payload": {
-    "tool":   "proposal.create_draft",
-    "result": "Draft proposal created.\n  ID: 550e8400-e29b-41d4-a716-446655440000\n  ...",
-    "error":  ""
-  }
-}
-```
-
-If the tool fails, `"error"` is non-empty and `"result"` is empty. The agent VM appends the error to the conversation as a `tool` role message and continues the ReAct loop, allowing the LLM to respond to the failure.
 
 ### Conversation message format (tool results in LLM history)
 
@@ -327,15 +316,13 @@ Persona definitions live in `config/personas/`. Each reviewer VM is a Firecracke
 
 ### 8.5.3 Round updater
 
-Between court rounds, the **round updater** (`makeCourtRoundUpdater` in `cmd/aegisclaw/court_init.go`) drives an agent VM to incorporate reviewer feedback into the proposal:
+Between court rounds, the **round updater** (`makeCourtRoundUpdater` in `cmd/aegisclaw/court_init.go`) sends aggregated feedback to the agent VM and waits for it to update the proposal:
 
-1. Daemon sends aggregated feedback to the agent VM with a focused system prompt instructing it to call `proposal.update_draft`.
-2. Agent VM calls Ollama, generates a tool call to update the proposal's description/title.
-3. The daemon detects the version advance (`Proposal.BumpVersion()` increments version, hash chain, and timestamp).
+1. Daemon sends a single `chat.message` to the agent VM with a focused system prompt and the aggregated reviewer feedback.
+2. The agent VM runs the full ReAct loop internally: calls Ollama, parses tool-call blocks, executes `proposal.update_draft` via the ToolProxy, and returns a final response.
+3. The round updater verifies the proposal version advanced (`Proposal.BumpVersion()` increments version, hash chain, and timestamp).
 4. If the version advanced, the engine proceeds to the next round.
-5. If the agent fails to produce a valid tool call after a nudge retry, the proposal is escalated.
-
-**Daemon-side fallback**: Small LLMs sometimes omit the closing fence of a tool-call block or return the tool call inside a `"final"` response. The daemon's `extractToolCallFromContent` function extracts and executes these tool calls directly when the guest-agent classifies the response as `"final"`. This is an interim measure tracked under D2-a; the target architecture has the full ReAct loop inside the agent VM.
+5. If the agent fails to update the proposal, the proposal is escalated.
 
 ### 8.5.4 Consensus
 
@@ -370,8 +357,9 @@ The agent VM uses the standard rootfs built by `scripts/build-rootfs.sh` with th
 Each `SandboxSpec` has an optional `InitPath` field (default: `/sbin/guest-agent`). This allows VMs with different init binaries (e.g., AegisHub uses `/sbin/aegishub`) to share the same Firecracker launch code. The init path is passed as the kernel `init=` boot argument.
 
 Network policy for the agent VM:
-- **Allow**: `127.0.0.1:11434` (Ollama on host, port-forwarded by Firecracker)
-- **Allow**: vsock to host (for message bus communication)
+- **No network interface** — the agent VM has `NoNetwork: true`
+- **Allow**: vsock to host CID 2, port 1025 (LLM proxy for Ollama inference)
+- **Allow**: vsock to host CID 2, port 1026 (ToolProxy for tool execution)
 - **Deny**: all other outbound
 
 ### 9.2 Lifetime
@@ -487,21 +475,21 @@ assert.GreaterOrEqual(t, kern.AuditLog().EntryCount(), 2)
 
 This section lists the specific code changes implied by this architecture. Each item corresponds to a deviation entry in `docs/prd-deviations.md`.
 
-### D2-a: Move ReAct loop into agent VM — **Open**
+### D2-a: Move ReAct loop into agent VM — **Resolved**
 
 File: `cmd/guest-agent/main.go`, function `handleChatMessage`
 
-Current behavior: Guest-agent makes one Ollama call per daemon round-trip, parses tool-call blocks, and returns either `{status:"tool_call"}` or `{status:"final"}`. The daemon drives the outer ReAct loop and executes tool handlers inline.
+The guest-agent runs the full ReAct loop inside the microVM:
+1. Loops up to 10 times:
+   a. Calls Ollama via the host-side LLM proxy over vsock (port 1025).
+   b. Parses response for tool-call blocks using `parseAgentToolCall`.
+   c. If tool-call found: sends the request to the host-side ToolProxy over vsock (port 1026), receives the result, appends to conversation, continues.
+   d. If no tool-call: returns final content to the daemon.
+2. Returns `{"status": "final", "role": "assistant", "content": "<final>"}`.
 
-Required behavior:
-1. Loop up to 10 times:
-   a. Call Ollama with current message list.
-   b. Parse response for `tool-call` block (same regex/JSON logic as `parseToolCalls` in `cmd/aegisclaw/chat.go`).
-   c. If tool-call found: send `tool.exec` via vsock, receive `tool.result`, append to messages, continue.
-   d. If no tool-call: return final content.
-2. Return `{"role": "assistant", "content": "<final>"}`.
+The daemon's `makeChatMessageHandler` is now a thin forwarder: one `SendToVM` call, one `final` response back. The daemon-side `extractToolCallFromContent` fallback and the daemon ReAct loop have been removed.
 
-The guest-agent can send vsock messages back to the host using the existing vsock connection (the connection is bidirectional — the host sends requests and the guest sends responses, but the guest can also initiate `ipc.send` messages on the same or a separate vsock channel).
+The host-side `ToolProxy` (`cmd/aegisclaw/tool_proxy.go`) listens on per-VM vsock callback sockets (`vsock.sock_1026`) and executes tool calls via `ToolRegistry.Execute()`. It follows the same Firecracker callback socket pattern as the LLM proxy: the guest connects to host CID 2, port 1026; Firecracker routes the connection to the host-side UDS listener.
 
 ### D2-b: Daemon chat.message handler — forward only — **Resolved**
 
@@ -531,7 +519,7 @@ File: `cmd/aegisclaw/tool_registry.go`
 
 File: `cmd/aegisclaw/chat_handlers.go`
 
-`ensureAgentVM` lazily creates and starts the agent VM on first `chat.message`, starts the per-VM LLM proxy for vsock-based Ollama access, and caches the VM ID. Automatically restarts the VM if it crashes.
+`ensureAgentVM` lazily creates and starts the agent VM on first `chat.message`, starts the per-VM LLM proxy (port 1025) and ToolProxy (port 1026) for vsock-based Ollama access and tool execution, and caches the VM ID. Automatically restarts the VM if it crashes.
 
 ---
 
@@ -540,7 +528,7 @@ File: `cmd/aegisclaw/chat_handlers.go`
 These rules take precedence over any convenience, testing, or performance argument:
 
 1. **The daemon never calls Ollama.** LLM inference happens only inside microVMs. The daemon forwards conversations to agent/reviewer VMs via vsock; the VMs call Ollama via the host-side LLM proxy.
-2. **The daemon never parses tool-call blocks.** The agent VM owns the ReAct loop. *(Interim exception: the court round updater's `extractToolCallFromContent` performs daemon-side tool extraction as a fallback for small LLMs that omit closing fences. This is tracked under D2-a and will be removed when the full ReAct loop moves into the agent VM.)*
+2. **The daemon never parses tool-call blocks.** The agent VM owns the full ReAct loop. Tool execution requests from the guest-agent are routed through the host-side ToolProxy over vsock.
 3. **Firecracker is mandatory for all sandboxed components.** There are no process-level fallbacks in production code paths.
 4. **ACL is enforced at the message bus.** No tool handler is callable without passing the ACL check.
 5. **Integration tests use real microVMs and real Ollama.** No process-level substitutes or mocked LLM responses.

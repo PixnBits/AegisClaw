@@ -730,11 +730,10 @@ func isProposalTool(name string) bool {
 
 // handleChatMessage runs the full ReAct loop inside this sandbox (D2-a).
 //
-// The agent calls Ollama, parses tool-call blocks, and returns either an
-// intermediate "tool_call" response (so the daemon can execute the tool and
-// call back with the result appended) or a "final" response with the
-// assistant's text.  The outer ReAct loop driver lives in the daemon
-// (makeChatMessageHandler).
+// The agent calls Ollama in a loop, parses tool-call blocks, executes tools
+// via the host-side tool proxy over vsock, appends the results to the
+// conversation, and repeats until the LLM produces a final response with no
+// tool call.  The daemon receives only the final assistant content.
 func handleChatMessage(ctx context.Context, req *Request) *Response {
 	var payload ChatMessagePayload
 	if err := json.Unmarshal(req.Payload, &payload); err != nil {
@@ -748,35 +747,51 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 		return errorResponse(req.ID, "messages are required")
 	}
 
-	// Build the Ollama-compatible message list (strip the Name field for
-	// non-tool roles so that Ollama models that don't support it don't choke).
-	ollamaMsgs := buildOllamaMsgs(payload.Messages)
+	msgs := payload.Messages
 
-	callCtx, cancel := context.WithTimeout(ctx, ollamaTimeout)
-	defer cancel()
+	for i := 0; i < reactMaxToolCalls; i++ {
+		ollamaMsgs := buildOllamaMsgs(msgs)
 
-	content, err := callOllamaViaProxy(callCtx, payload.Model, ollamaMsgs, "", nil)
-	if err != nil {
-		return errorResponse(req.ID, fmt.Sprintf("ollama error: %v", err))
-	}
-
-	// Check for a tool-call block in the response.
-	toolName, argsJSON, hasTool := parseAgentToolCall(content)
-	if hasTool {
-		chatResp := ChatResponse{
-			Status: "tool_call",
-			Tool:   toolName,
-			Args:   argsJSON,
+		callCtx, cancel := context.WithTimeout(ctx, ollamaTimeout)
+		content, err := callOllamaViaProxy(callCtx, payload.Model, ollamaMsgs, "", nil)
+		cancel()
+		if err != nil {
+			return errorResponse(req.ID, fmt.Sprintf("ollama error: %v", err))
 		}
-		data, _ := json.Marshal(chatResp)
-		return &Response{ID: req.ID, Success: true, Data: data}
+
+		toolName, argsJSON, hasTool := parseAgentToolCall(content)
+		if !hasTool {
+			// No tool call — return the final assistant response.
+			chatResp := ChatResponse{
+				Status:  "final",
+				Role:    "assistant",
+				Content: content,
+			}
+			data, _ := json.Marshal(chatResp)
+			return &Response{ID: req.ID, Success: true, Data: data}
+		}
+
+		// Execute the tool via the host-side tool proxy over vsock.
+		log.Printf("chat.message: tool call detected: %s (iteration %d)", toolName, i)
+		toolResult, toolErr := callToolViaProxy(ctx, toolName, argsJSON)
+		if toolErr != nil {
+			toolResult = fmt.Sprintf("Error executing %s: %v", toolName, toolErr)
+		}
+
+		// Append the assistant's tool-call turn and the tool result to the
+		// conversation, then loop back to call Ollama again.
+		toolCallContent := fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", toolName, argsJSON)
+		msgs = append(msgs,
+			ChatMsg{Role: "assistant", Content: toolCallContent},
+			ChatMsg{Role: "tool", Name: toolName, Content: toolResult},
+		)
 	}
 
-	// No tool call — return the final assistant response.
+	// Exhausted the tool-call limit — return what we have with a note.
 	chatResp := ChatResponse{
 		Status:  "final",
 		Role:    "assistant",
-		Content: content,
+		Content: "[system: tool call limit reached — please try again or rephrase your request]",
 	}
 	data, _ := json.Marshal(chatResp)
 	return &Response{ID: req.ID, Success: true, Data: data}
@@ -879,6 +894,68 @@ func callOllamaViaProxy(ctx context.Context, model string, messages []map[string
 		return "", fmt.Errorf("llm proxy: %s", proxyResp.Error)
 	}
 	return proxyResp.Content, nil
+}
+
+// callToolViaProxy sends a tool execution request to the host-side ToolProxy
+// over vsock (AF_VSOCK, host CID 2, port 1026).  The proxy executes the tool
+// in the daemon process and returns the result.  This is the complement of the
+// LLM proxy: where the LLM proxy gives us Ollama access, the tool proxy gives
+// us access to the daemon's tool registry.
+func callToolViaProxy(ctx context.Context, tool, argsJSON string) (string, error) {
+	const toolProxyPort = 1026
+
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err != nil {
+		return "", fmt.Errorf("vsock socket for tool proxy: %w", err)
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			unix.Close(fd)
+			return "", fmt.Errorf("context already expired")
+		}
+		tv := unix.NsecToTimeval(remaining.Nanoseconds())
+		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
+		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+	}
+
+	sa := &unix.SockaddrVM{
+		CID:  unix.VMADDR_CID_HOST,
+		Port: toolProxyPort,
+	}
+	if err := unix.Connect(fd, sa); err != nil {
+		unix.Close(fd)
+		return "", fmt.Errorf("vsock connect to tool proxy: %w", err)
+	}
+
+	file := os.NewFile(uintptr(fd), "vsock-tool-proxy")
+	conn := &vsockConn{file: file}
+	defer conn.Close()
+
+	toolReq := struct {
+		Tool string `json:"tool"`
+		Args string `json:"args"`
+	}{
+		Tool: tool,
+		Args: argsJSON,
+	}
+
+	if err := json.NewEncoder(conn).Encode(toolReq); err != nil {
+		return "", fmt.Errorf("send tool proxy request: %w", err)
+	}
+
+	var toolResp struct {
+		Result string `json:"result,omitempty"`
+		Error  string `json:"error,omitempty"`
+	}
+	if err := json.NewDecoder(conn).Decode(&toolResp); err != nil {
+		return "", fmt.Errorf("read tool proxy response: %w", err)
+	}
+	if toolResp.Error != "" {
+		return "", fmt.Errorf("tool proxy: %s", toolResp.Error)
+	}
+	return toolResp.Result, nil
 }
 
 func readUptime() string {
