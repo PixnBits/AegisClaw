@@ -107,7 +107,7 @@ func makeCourtRoundUpdater(env *runtimeEnv, toolRegistry *ToolRegistry) court.Ro
 
 		nudged := false // track whether we already retried after a "final" without update
 
-		for i := 0; i < reactMaxIterations; i++ {
+		for i := 0; i < reactMaxIterationsDefault; i++ {
 			payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: env.Config.Ollama.DefaultModel})
 			vmReq := agentVMRequest{
 				ID:      uuid.New().String(),
@@ -245,7 +245,7 @@ func makeCourtRoundUpdater(env *runtimeEnv, toolRegistry *ToolRegistry) court.Ro
 			}
 		}
 
-		return nil, fmt.Errorf("agent did not finish proposal update within %d iterations", reactMaxIterations)
+		return nil, fmt.Errorf("agent did not finish proposal update within %d iterations", reactMaxIterationsDefault)
 	}
 }
 

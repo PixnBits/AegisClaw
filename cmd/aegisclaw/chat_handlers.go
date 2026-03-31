@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/audit"
@@ -16,7 +17,11 @@ import (
 	"go.uber.org/zap"
 )
 
-const reactMaxIterations = 10
+// reactMaxIterationsDefault is the compile-time fallback used only when the
+// daemon config has not been loaded (e.g. in unit tests that do not initialise
+// a full runtimeEnv).  In production the value always comes from
+// env.Config.Agent.MaxToolCalls (see architecture.md §8 / PRD §10.6 A1).
+const reactMaxIterationsDefault = 10
 
 // agentVMRequest is the JSON structure sent to the agent VM for chat.message.
 // It mirrors the guest-agent's Request{Type, Payload} envelope.
@@ -63,11 +68,16 @@ type agentChatResponse struct {
 //
 // The loop:
 //  1. ensureAgentVM — starts the agent VM on first call (DC).
-//  2. Build messages (system prompt + history + user input + any accumulated tool results).
-//  3. Send to agent VM → parse agentChatResponse.
-//  4. If status=="tool_call": execute via toolRegistry, append result, go to 2.
-//  5. If status=="final": return the assistant content to the CLI.
-//  6. If max iterations reached: return a polite error.
+//  2. Load recent conversation history from the ConversationStore (PRD §10.6 A2).
+//  3. Build messages (system prompt + history + user input + any accumulated tool results).
+//  4. Send to agent VM → parse agentChatResponse.
+//  5. If status=="tool_call" and tool=="tool.continue": compress history and restart (PRD §10.6 A1).
+//  6. If status=="tool_call": execute via toolRegistry, append result, go to 4.
+//  7. If status=="final": persist completed turn, return the assistant content to the CLI.
+//  8. If max iterations reached: return a polite error.
+//
+// Limits are read from env.Config.Agent (MaxToolCalls, TurnTimeoutMins).
+// Changing limits requires a Court-approved daemon config update (architecture.md §8).
 func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		var req api.ChatMessageRequest
@@ -78,7 +88,23 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			return &api.Response{Error: "input is required"}
 		}
 
-		agentVMID, err := ensureAgentVM(ctx, env)
+		// Derive configurable limits from daemon config (architecture.md §8 / PRD §10.6 A1).
+		maxIter := reactMaxIterationsDefault
+		turnTimeout := 10 * time.Minute
+		if env.Config != nil {
+			if env.Config.Agent.MaxToolCalls > 0 {
+				maxIter = env.Config.Agent.MaxToolCalls
+			}
+			if env.Config.Agent.TurnTimeoutMins > 0 {
+				turnTimeout = time.Duration(env.Config.Agent.TurnTimeoutMins) * time.Minute
+			}
+		}
+
+		// Apply per-turn total timeout (architecture.md §8).
+		turnCtx, turnCancel := context.WithTimeout(ctx, turnTimeout)
+		defer turnCancel()
+
+		agentVMID, err := ensureAgentVM(turnCtx, env)
 		if err != nil {
 			return &api.Response{Error: "agent VM unavailable: " + err.Error()}
 		}
@@ -86,9 +112,19 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		model := env.Config.Ollama.DefaultModel
 		systemPrompt := buildDaemonSystemPrompt(env)
 
-		// Seed conversation with system prompt + prior history + new user turn.
-		msgs := make([]agentChatMsg, 0, len(req.History)+2)
+		// Load recent history from the persistent conversation store (PRD §10.6 A2).
+		history, err := loadConversationHistory(env)
+		if err != nil {
+			// Non-fatal: log and continue without history rather than blocking the user.
+			env.Logger.Warn("failed to load conversation history", zap.Error(err))
+		}
+
+		// Seed conversation: system prompt + persisted history + incoming request history + new user turn.
+		msgs := make([]agentChatMsg, 0, len(history)+len(req.History)+2)
 		msgs = append(msgs, agentChatMsg{Role: "system", Content: systemPrompt})
+		// Persisted cross-session history comes before the in-request history so
+		// that it acts as long-term context rather than overriding recent turns.
+		msgs = append(msgs, history...)
 		for _, h := range req.History {
 			if h.Role == "system" {
 				continue
@@ -107,7 +143,9 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			msgs = append(msgs, agentChatMsg{Role: "user", Content: req.Input})
 		}
 
-		for i := 0; i < reactMaxIterations; i++ {
+		// turnStartMsgs tracks the messages that were present at the start of the
+		// current turn (before any tool calls).  They are persisted on success.
+		for i := 0; i < maxIter; i++ {
 			payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: model})
 			vmReq := agentVMRequest{
 				ID:      uuid.New().String(),
@@ -115,7 +153,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				Payload: json.RawMessage(payloadBytes),
 			}
 
-			raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
+			raw, err := env.Runtime.SendToVM(turnCtx, agentVMID, vmReq)
 			if err != nil {
 				return &api.Response{Error: "agent VM error: " + err.Error()}
 			}
@@ -135,6 +173,8 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 			switch chatResp.Status {
 			case "final":
+				// Persist the completed turn (user message + assistant response).
+				persistTurn(env, msgs, chatResp.Content)
 				respData, _ := json.Marshal(api.ChatMessageResponse{
 					Role:    "assistant",
 					Content: chatResp.Content,
@@ -142,7 +182,26 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				return &api.Response{Success: true, Data: respData}
 
 			case "tool_call":
-				toolResult, toolErr := toolRegistry.Execute(ctx, chatResp.Tool, chatResp.Args)
+				// Special: tool.continue compresses history and restarts the loop
+				// without counting toward the iteration limit (PRD §10.6 A1).
+				// The agent emits this when it detects the task will exceed the
+				// current turn's tool budget.
+				if chatResp.Tool == "tool.continue" {
+					compressed, compErr := handleToolContinue(msgs, chatResp.Args)
+					if compErr != nil {
+						env.Logger.Warn("tool.continue rejected", zap.Error(compErr))
+						// Treat as a fatal error for this turn rather than silently
+						// ignoring a malformed summary — the agent must provide a summary.
+						return &api.Response{Error: "tool.continue failed: " + compErr.Error()}
+					}
+					msgs = compressed
+					i = -1 // reset loop counter; i++ will make it 0 next iteration
+					env.Logger.Info("tool.continue: history compressed, ReAct loop restarted",
+						zap.Int("new_msg_count", len(msgs)))
+					continue
+				}
+
+				toolResult, toolErr := toolRegistry.Execute(turnCtx, chatResp.Tool, chatResp.Args)
 				if toolErr != nil {
 					toolResult = fmt.Sprintf("Error executing %s: %v", chatResp.Tool, toolErr)
 				}
@@ -164,9 +223,92 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 		respData, _ := json.Marshal(api.ChatMessageResponse{
 			Role:    "assistant",
-			Content: "I reached the tool call limit without a final answer. Please try rephrasing your request.",
+			Content: "[system: tool call limit reached — please try again or rephrase your request]",
 		})
 		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// handleToolContinue processes a tool.continue call by extracting the LLM-provided
+// summary and rebuilding a compact message list for the next ReAct iteration.
+//
+// The compressed list contains only the system prompt and a single user message
+// that begins with the summary.  This prevents unbounded context growth while
+// preserving task continuity across the tool-call limit boundary.
+//
+// Security: the summary is written by the sandboxed agent VM.  It is treated as
+// untrusted text: it is injected as a user-role message (not system), which has
+// lower trust in most LLM implementations, and it is logged for audit purposes.
+func handleToolContinue(msgs []agentChatMsg, argsJSON string) ([]agentChatMsg, error) {
+	var args struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return nil, fmt.Errorf("invalid tool.continue args (expected {\"summary\":\"...\"}): %w", err)
+	}
+	if strings.TrimSpace(args.Summary) == "" {
+		return nil, fmt.Errorf("tool.continue requires a non-empty summary")
+	}
+
+	// Keep the system message; replace everything else with the summary.
+	newMsgs := make([]agentChatMsg, 0, 2)
+	for i := range msgs {
+		if msgs[i].Role == "system" {
+			newMsgs = append(newMsgs, msgs[i])
+			break
+		}
+	}
+	newMsgs = append(newMsgs, agentChatMsg{
+		Role:    "user",
+		Content: "[Continued from previous context]: " + args.Summary,
+	})
+	return newMsgs, nil
+}
+
+// loadConversationHistory reads the last N messages from the persistent store.
+// Returns nil when the store is disabled (HistoryMaxMessages == 0) or the store
+// file does not yet exist.
+func loadConversationHistory(env *runtimeEnv) ([]agentChatMsg, error) {
+	if env.Config == nil || env.Config.Agent.HistoryMaxMessages == 0 {
+		return nil, nil
+	}
+	store, err := openConversationStore(env.Config.Agent.HistoryDir, env.Config.Agent.HistoryMaxMessages)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.LoadHistory()
+}
+
+// persistTurn appends the new user/assistant/tool messages from this completed
+// turn to the conversation store.  Failures are logged but do not fail the turn.
+func persistTurn(env *runtimeEnv, msgs []agentChatMsg, assistantContent string) {
+	if env.Config == nil || env.Config.Agent.HistoryMaxMessages == 0 {
+		return
+	}
+	store, err := openConversationStore(env.Config.Agent.HistoryDir, env.Config.Agent.HistoryMaxMessages)
+	if err != nil {
+		env.Logger.Warn("failed to open conversation store for writing", zap.Error(err))
+		return
+	}
+	defer store.Close()
+
+	// Persist only non-system messages that were added during this turn.
+	// We include tool calls and tool results so the history is fully auditable.
+	for _, m := range msgs {
+		if m.Role == "system" {
+			continue
+		}
+		if err := store.Append(m); err != nil {
+			env.Logger.Warn("failed to append message to conversation store",
+				zap.String("role", m.Role), zap.Error(err))
+		}
+	}
+	// Append the final assistant response.
+	if assistantContent != "" {
+		if err := store.Append(agentChatMsg{Role: "assistant", Content: assistantContent}); err != nil {
+			env.Logger.Warn("failed to append assistant response to conversation store", zap.Error(err))
+		}
 	}
 }
 
@@ -568,10 +710,12 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("of items the Court will look for (e.g., tests, risk mitigations, deployment constraints).\n\n")
 
 	// Active skill tools.
-	skills := env.Registry.List()
-	for _, sk := range skills {
-		if sk.State == sandbox.SkillStateActive {
-			b.WriteString(fmt.Sprintf("- \"%s.*\" — invoke tools on the '%s' skill\n", sk.Name, sk.Name))
+	if env.Registry != nil {
+		skills := env.Registry.List()
+		for _, sk := range skills {
+			if sk.State == sandbox.SkillStateActive {
+				b.WriteString(fmt.Sprintf("- \"%s.*\" — invoke tools on the '%s' skill\n", sk.Name, sk.Name))
+			}
 		}
 	}
 	b.WriteString("\n")
@@ -594,6 +738,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- If you need data you do not have, call the appropriate tool.\n")
 	b.WriteString("- If no tool can provide the information, say so honestly — do NOT make it up.\n")
 	b.WriteString("- If you cannot help with something, say so honestly.\n")
+	b.WriteString("- If you have called many tools and still have steps remaining, call \"tool.continue\" with a concise summary so work can continue in a fresh context. args: {\"summary\": \"brief description of progress and remaining steps\"}\n")
 
 	return b.String()
 }

@@ -215,5 +215,41 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 		return fmt.Sprintf("Skill %q activated.", params.Name), nil
 	})
 
+	// ---------------------------------------------------------------------------
+	// Phase 3 stubs – event-driven and scheduled goals (PRD §10.6 A3).
+	//
+	// These handlers are scaffolding only.  Full implementation requires:
+	//  - A dedicated Orchestrator microVM (architecture.md §8.2 A3).
+	//  - Court-reviewed proposals for each skill (see docs/PRD.md §10.6).
+	//  - New ACL entries for RoleOrchestrator in internal/ipc/acl.go.
+	//
+	// When invoked today they return a clear "not yet implemented" message so
+	// the agent can inform the user rather than silently failing.
+	// ---------------------------------------------------------------------------
+
+	// schedule.create registers a cron-style recurring trigger.
+	// Future: sends a registration message to the Orchestrator microVM which
+	// injects chat.message events into AegisHub at the scheduled time.
+	reg.Register("schedule.create", func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("schedule.create is not yet implemented — " +
+			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap")
+	})
+
+	// webhook.register opens an inbound HTTPS endpoint in an isolated microVM.
+	// Future: a dedicated Network Proxy VM accepts the webhook and injects an
+	// event.trigger message through AegisHub to the agent VM.
+	reg.Register("webhook.register", func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("webhook.register is not yet implemented — " +
+			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap")
+	})
+
+	// monitor.start polls an external resource and fires on state change.
+	// Future: runs in its own isolated skill microVM; fires event.trigger via
+	// AegisHub → Orchestrator → agent VM on detected change.
+	reg.Register("monitor.start", func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("monitor.start is not yet implemented — " +
+			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap")
+	})
+
 	return reg
 }

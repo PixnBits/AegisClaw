@@ -31,6 +31,24 @@ const (
 	// may send tool.result responses and status messages only — it does not
 	// initiate routing calls (those go through the daemon's direct vsock API).
 	RoleDaemon VMRole = "daemon"
+
+	// RoleOrchestrator represents the optional Orchestrator microVM that injects
+	// scheduled or event-driven chat.message payloads into AegisHub (PRD §10.6
+	// A3 / architecture.md §8.2 A3).  It may only send event.trigger messages;
+	// it cannot execute tools or modify proposals directly.
+	// NOTE: This role is a roadmap placeholder.  The Orchestrator VM is not yet
+	// launched by the daemon.  When implemented, the daemon will register it at
+	// startup with this role using the same pattern as AegisHub.
+	RoleOrchestrator VMRole = "orchestrator"
+
+	// RolePlanner represents the optional Planner microVM that decomposes
+	// high-level user goals into ordered sub-proposals (PRD §10.6 A5 /
+	// architecture.md §8.2 A5).  It may only submit proposal.create_draft and
+	// proposal.list_drafts tool calls; it cannot execute skills or initiate
+	// high-risk actions.
+	// NOTE: This role is a roadmap placeholder.  The Planner VM is not yet
+	// launched by the daemon.
+	RolePlanner VMRole = "planner"
 )
 
 // aclEntry is a single permit row: (role, messageType) → allowed.
@@ -83,6 +101,20 @@ func defaultACLPolicy() *ACLPolicy {
 	// RoleDaemon endpoints receive tool.exec deliveries.
 	p.permit(RoleDaemon, "tool.result")
 	p.permit(RoleDaemon, "status")
+
+	// Orchestrator microVM (roadmap — PRD §10.6 A3 / architecture.md §8.2 A3):
+	// may only inject event.trigger messages into AegisHub.  AegisHub forwards
+	// these as chat.message events to the agent VM after verifying the sender
+	// role.  The Orchestrator cannot execute tools or reach the daemon directly.
+	p.permit(RoleOrchestrator, "event.trigger")
+	p.permit(RoleOrchestrator, "status")
+
+	// Planner microVM (roadmap — PRD §10.6 A5 / architecture.md §8.2 A5):
+	// may only create proposal drafts and list existing proposals.  It cannot
+	// execute skills, submit proposals, or vote — those actions require explicit
+	// human or agent approval.
+	p.permit(RolePlanner, "tool.exec") // restricted to proposal.create_draft / list_drafts by convention
+	p.permit(RolePlanner, "status")
 
 	return p
 }

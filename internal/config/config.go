@@ -65,6 +65,30 @@ type Config struct {
 		// It must contain the guest-agent binary at /sbin/init or as PID-1.
 		// Defaults to /var/lib/aegisclaw/rootfs-templates/alpine.ext4.
 		RootfsPath string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+
+		// ReAct loop limits (architecture.md §8).
+		// Changing these values requires a Court-approved proposal; defaults
+		// are intentionally conservative and must never be set to 0 or
+		// negative values (Load() enforces minimum floor of 1).
+		//
+		// MaxToolCalls caps the number of tool dispatches per chat turn.
+		MaxToolCalls int `yaml:"max_tool_calls" mapstructure:"max_tool_calls"`
+		// MaxLoopDepth caps the ReAct loop depth independently of MaxToolCalls.
+		MaxLoopDepth int `yaml:"max_loop_depth" mapstructure:"max_loop_depth"`
+		// LLMTimeoutSecs is the per-Ollama-call deadline inside the agent VM.
+		LLMTimeoutSecs int `yaml:"llm_timeout_secs" mapstructure:"llm_timeout_secs"`
+		// TurnTimeoutMins is the total wall-clock deadline for one chat turn.
+		// The daemon returns an error to the CLI when this elapses.
+		TurnTimeoutMins int `yaml:"turn_timeout_mins" mapstructure:"turn_timeout_mins"`
+
+		// Conversation history persistence (architecture.md §8.1 / PRD §10.6 A2).
+		// HistoryDir is the host-side directory where conversation JSONL files
+		// are stored between sessions.  Security: no secrets are ever written
+		// to this store — only conversation roles and text.
+		HistoryDir string `yaml:"history_dir" mapstructure:"history_dir"`
+		// HistoryMaxMessages is the maximum number of past messages loaded at
+		// the start of a new session to provide context continuity.
+		HistoryMaxMessages int `yaml:"history_max_messages" mapstructure:"history_max_messages"`
 	} `yaml:"agent" mapstructure:"agent"`
 }
 
@@ -162,9 +186,21 @@ func DefaultConfig() Config {
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "composition"),
 		},
 		Agent: struct {
-			RootfsPath string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+			RootfsPath         string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+			MaxToolCalls       int    `yaml:"max_tool_calls" mapstructure:"max_tool_calls"`
+			MaxLoopDepth       int    `yaml:"max_loop_depth" mapstructure:"max_loop_depth"`
+			LLMTimeoutSecs     int    `yaml:"llm_timeout_secs" mapstructure:"llm_timeout_secs"`
+			TurnTimeoutMins    int    `yaml:"turn_timeout_mins" mapstructure:"turn_timeout_mins"`
+			HistoryDir         string `yaml:"history_dir" mapstructure:"history_dir"`
+			HistoryMaxMessages int    `yaml:"history_max_messages" mapstructure:"history_max_messages"`
 		}{
-			RootfsPath: "/var/lib/aegisclaw/rootfs-templates/alpine.ext4",
+			RootfsPath:         "/var/lib/aegisclaw/rootfs-templates/alpine.ext4",
+			MaxToolCalls:       10,
+			MaxLoopDepth:       10,
+			LLMTimeoutSecs:     120,
+			TurnTimeoutMins:    10,
+			HistoryDir:         filepath.Join(home, ".local", "share", "aegisclaw", "conversations"),
+			HistoryMaxMessages: 50,
 		},
 	}
 }
@@ -216,6 +252,12 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("daemon.socket_path", defaults.Daemon.SocketPath)
 	viper.SetDefault("composition.dir", defaults.Composition.Dir)
 	viper.SetDefault("agent.rootfs_path", defaults.Agent.RootfsPath)
+	viper.SetDefault("agent.max_tool_calls", defaults.Agent.MaxToolCalls)
+	viper.SetDefault("agent.max_loop_depth", defaults.Agent.MaxLoopDepth)
+	viper.SetDefault("agent.llm_timeout_secs", defaults.Agent.LLMTimeoutSecs)
+	viper.SetDefault("agent.turn_timeout_mins", defaults.Agent.TurnTimeoutMins)
+	viper.SetDefault("agent.history_dir", defaults.Agent.HistoryDir)
+	viper.SetDefault("agent.history_max_messages", defaults.Agent.HistoryMaxMessages)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -260,6 +302,8 @@ func getConfigDir() (string, error) {
 
 // validateConfig checks that all paths are absolute and point to expected locations
 // Security: Prevents relative paths that could lead to directory traversal.
+// Also enforces minimum values for ReAct loop limits — zero or negative values
+// would disable safety bounds and are treated as configuration errors.
 func validateConfig(config *Config) error {
 	paths := map[string]string{
 		"firecracker.bin":            config.Firecracker.Bin,
@@ -278,12 +322,31 @@ func validateConfig(config *Config) error {
 		"composition.dir":            config.Composition.Dir,
 		"ollama.registry_path":       config.Ollama.RegistryPath,
 		"ollama.model_dir":           config.Ollama.ModelDir,
+		"agent.history_dir":          config.Agent.HistoryDir,
 	}
 
 	for name, path := range paths {
 		if !filepath.IsAbs(path) {
 			return fmt.Errorf("%s must be an absolute path: %s", name, path)
 		}
+	}
+
+	// Enforce minimum safety bounds for ReAct loop limits.
+	// A value of 0 or below would disable the safety ceiling entirely.
+	if config.Agent.MaxToolCalls < 1 {
+		return fmt.Errorf("agent.max_tool_calls must be >= 1 (got %d)", config.Agent.MaxToolCalls)
+	}
+	if config.Agent.MaxLoopDepth < 1 {
+		return fmt.Errorf("agent.max_loop_depth must be >= 1 (got %d)", config.Agent.MaxLoopDepth)
+	}
+	if config.Agent.LLMTimeoutSecs < 1 {
+		return fmt.Errorf("agent.llm_timeout_secs must be >= 1 (got %d)", config.Agent.LLMTimeoutSecs)
+	}
+	if config.Agent.TurnTimeoutMins < 1 {
+		return fmt.Errorf("agent.turn_timeout_mins must be >= 1 (got %d)", config.Agent.TurnTimeoutMins)
+	}
+	if config.Agent.HistoryMaxMessages < 0 {
+		return fmt.Errorf("agent.history_max_messages must be >= 0 (got %d)", config.Agent.HistoryMaxMessages)
 	}
 
 	return nil

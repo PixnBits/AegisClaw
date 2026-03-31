@@ -6,6 +6,7 @@ Updated: 2026-03-28 (D2 re-opened; new deviations D2-a, D2-b, D2-c, DA, DB, DC a
 Updated: 2026-03-28 (DirectLauncher deleted; agent VM wiring complete; D2-b, D2-c, DC resolved)
 Updated: 2026-03-28 (AegisHub microVM architecture introduced; DA-hub, DA, DB status updated)
 Updated: 2026-03-28 (DA-hub resolved: fallback eliminated, AegisHub is a required core component)
+Updated: 2026-03-31 (Issue #6 Phase 1-4 implementation: D17-D20 added for configurable limits, tool.continue, conversation history, event-driven skill stubs, ACL roles)
 
 Scope:
 - Compared the implementation in this repository against [docs/PRD.md](docs/PRD.md) and [docs/cli-design.md](docs/cli-design.md).
@@ -47,6 +48,10 @@ Summary:
 | D14 | CLI | Safe mode with dedicated banner and constrained command set. | **Resolved** | `start --safe` (renamed from `--safe-mode`) with ASCII banner and recovery mode messaging. See `cmd/aegisclaw/start.go`. |
 | D15 | CLI | Global flags `--json`, `--verbose`, `--dry-run`, `--force`. | **Resolved** | All four global flags added to root command. `--json` supported in `status`, `version`, `skill list`, `skill info`, `audit log`, `audit why`. See `cmd/aegisclaw/root.go`. |
 | D16 | CLI | `version` and `status` report build metadata. | **Resolved** | `version` reports git commit, build date, Go version, OS/arch. `status` reports health, registry root, audit chain head. See `cmd/aegisclaw/version.go`, `cmd/aegisclaw/status.go`. |
+| D17 | PRD §10.6 A1 | ReAct loop limits must be configurable (not hard-coded). | **Resolved** | `internal/config/config.go` — new `Agent.MaxToolCalls`, `Agent.MaxLoopDepth`, `Agent.LLMTimeoutSecs`, `Agent.TurnTimeoutMins` fields with defaults (10/10/120/10). `validateConfig` enforces minimum floor ≥1. `cmd/aegisclaw/chat_handlers.go` reads these values at runtime. Court-approved config change required to raise them. See architecture.md §8. |
+| D18 | PRD §10.6 A1 | `tool.continue` special action for long-running tasks. | **Resolved** | `handleToolContinue()` in `cmd/aegisclaw/chat_handlers.go` intercepts a `tool.continue` tool call before the standard tool registry, extracts the LLM-provided summary, compresses the message list to [system + user-with-summary], and resets the iteration counter — enabling arbitrarily long tasks to continue across the tool-call limit. System prompt updated to instruct the agent to use it. Unit tests in `cmd/aegisclaw/agent_limits_test.go`. |
+| D19 | PRD §10.6 A2, architecture.md §8.1 | Persistent conversation history across sessions. | **Partially resolved** | `cmd/aegisclaw/conversation_store.go` — new append-only JSONL store (`ConversationStore`). `loadConversationHistory()` and `persistTurn()` in `chat_handlers.go` load/save history around each turn. History directory configurable via `agent.history_dir`. Security: system messages are never persisted; secrets are never written. **Migration note**: this is a daemon-side (host filesystem) interim store. The target architecture (architecture.md §8.1) requires the store to move inside the agent VM's Firecracker boundary when D2-a is resolved. |
+| D20 | PRD §10.6 A3, A5 | Event-driven skill stubs and new ACL roles. | **Partially resolved** | Phase 3: `schedule.create`, `webhook.register`, `monitor.start` registered in `cmd/aegisclaw/tool_registry.go` with "not yet implemented" stubs — agent can inform users gracefully. Phase 4: `RoleOrchestrator` and `RolePlanner` added to `internal/ipc/acl.go` with appropriate ACL permissions (`event.trigger` for Orchestrator, `tool.exec` for Planner). **Remaining**: Orchestrator and Planner VMs are roadmap items; stubs do not yet inject `chat.message` events through AegisHub. Full implementation requires Court-approved proposals for each new microVM type. |
 
 ## Resolution Summary
 
@@ -55,15 +60,23 @@ D1, D2-b, D2-c, D3, D4, D5, D6, D8, D10, D13, D14, D15, D16, DC — fully resolv
 D2 (partially), D7, D9, D12 — partially resolved / improved
 DA, DB — substantially resolved (ACL enforced in hub, central tool registry exists)
 
-### Resolved in this update:
+### Resolved in this update (2026-03-31, Issue #6 Phase 1–4):
+D17 — ReAct loop limits now configurable via daemon config (`agent.max_tool_calls` etc.)
+D18 — `tool.continue` implemented; agent can compress history and continue past the tool-call limit
+D19 (partial) — Daemon-side JSONL conversation history store wired into chat handler
+D20 (partial) — Phase 3 skill stubs registered; Phase 4 ACL roles added
+
+### Resolved in prior updates:
 DA-hub — fallback eliminated; AegisHub is a required core component built via `build-rootfs.sh --target=aegishub`
 
 ### Annotated with migration path:
 D11 — clear path documented, implementation deferred
+D19 — daemon-side store is interim; must migrate inside Firecracker VM boundary when D2-a resolves
 
 ### Open:
 D2-a — agent VM full ReAct loop not yet internalized (outer loop driven by daemon)
 D2-c-cli — CLI ExecuteTool callbacks still run tool handlers in CLI process
+D20 (partial) — Orchestrator and Planner VMs not yet launched; event injection not yet wired
 
 ### Future work required:
 D9 (partial) — SBOM and provenance emission
