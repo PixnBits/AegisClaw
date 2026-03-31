@@ -41,9 +41,13 @@ type agentVMResponse struct {
 
 // agentChatPayload is placed in agentVMRequest.Payload for chat.message requests.
 // It mirrors the guest-agent's ChatMessagePayload.
+// LLMTimeoutSecs and MaxToolCalls are forwarded from the daemon config so that
+// the guest-agent can apply the same Court-approved limits (architecture.md §8).
 type agentChatPayload struct {
-	Messages []agentChatMsg `json:"messages"`
-	Model    string         `json:"model"`
+	Messages       []agentChatMsg `json:"messages"`
+	Model          string         `json:"model"`
+	LLMTimeoutSecs int            `json:"llm_timeout_secs,omitempty"`
+	MaxToolCalls   int            `json:"max_tool_calls,omitempty"`
 }
 
 // agentChatMsg is a single message in the conversation sent to the agent VM.
@@ -90,10 +94,14 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 		// Derive configurable limits from daemon config (architecture.md §8 / PRD §10.6 A1).
 		maxIter := reactMaxIterationsDefault
+		llmTimeoutSecs := 120 // compile-time default (matches guest-agent's ollamaTimeoutDefault)
 		turnTimeout := 10 * time.Minute
 		if env.Config != nil {
 			if env.Config.Agent.MaxToolCalls > 0 {
 				maxIter = env.Config.Agent.MaxToolCalls
+			}
+			if env.Config.Agent.LLMTimeoutSecs > 0 {
+				llmTimeoutSecs = env.Config.Agent.LLMTimeoutSecs
 			}
 			if env.Config.Agent.TurnTimeoutMins > 0 {
 				turnTimeout = time.Duration(env.Config.Agent.TurnTimeoutMins) * time.Minute
@@ -111,6 +119,21 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 		model := env.Config.Ollama.DefaultModel
 		systemPrompt := buildDaemonSystemPrompt(env)
+
+		// Audit-log the start of this agent turn (architecture.md §8, Merkle chain).
+		// Security: only metadata is logged (not raw content) to keep the Merkle
+		// log free of potentially large or sensitive user inputs.
+		if env.Kernel != nil {
+			turnPayload, _ := json.Marshal(map[string]interface{}{
+				"agent_vm_id":      agentVMID,
+				"model":            model,
+				"input_len_bytes":  len(req.Input),
+				"history_messages": len(req.History),
+				"max_tool_calls":   maxIter,
+				"llm_timeout_secs": llmTimeoutSecs,
+			})
+			env.Kernel.SignAndLog(kernel.NewAction(kernel.ActionAgentTurnStart, "chat", turnPayload))
+		}
 
 		// Load recent history from the persistent conversation store (PRD §10.6 A2).
 		history, err := loadConversationHistory(env)
@@ -143,10 +166,17 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			msgs = append(msgs, agentChatMsg{Role: "user", Content: req.Input})
 		}
 
-		// turnStartMsgs tracks the messages that were present at the start of the
-		// current turn (before any tool calls).  They are persisted on success.
-		for i := 0; i < maxIter; i++ {
-			payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: model})
+		// ReAct loop: iteration counts tool dispatches. tool.continue resets
+		// the counter explicitly (not via the loop variable) so the intent is clear.
+		// The loop runs at most maxIter times between tool.continue resets.
+		iteration := 0
+		for iteration < maxIter {
+			payloadBytes, _ := json.Marshal(agentChatPayload{
+				Messages:       msgs,
+				Model:          model,
+				LLMTimeoutSecs: llmTimeoutSecs,
+				MaxToolCalls:   maxIter,
+			})
 			vmReq := agentVMRequest{
 				ID:      uuid.New().String(),
 				Type:    "chat.message",
@@ -182,10 +212,10 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				return &api.Response{Success: true, Data: respData}
 
 			case "tool_call":
-				// Special: tool.continue compresses history and restarts the loop
-				// without counting toward the iteration limit (PRD §10.6 A1).
+				// Special: tool.continue compresses history and resets the
+				// iteration counter — the loop does NOT count this as an iteration.
 				// The agent emits this when it detects the task will exceed the
-				// current turn's tool budget.
+				// current turn's tool budget (PRD §10.6 A1).
 				if chatResp.Tool == "tool.continue" {
 					compressed, compErr := handleToolContinue(msgs, chatResp.Args)
 					if compErr != nil {
@@ -194,8 +224,18 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 						// ignoring a malformed summary — the agent must provide a summary.
 						return &api.Response{Error: "tool.continue failed: " + compErr.Error()}
 					}
+					// Audit-log the compression event (architecture.md §8).
+					if env.Kernel != nil {
+						contPayload, _ := json.Marshal(map[string]interface{}{
+							"iteration":   iteration,
+							"msgs_before": len(msgs),
+							"msgs_after":  len(compressed),
+							"summary_len": len(chatResp.Args),
+						})
+						env.Kernel.SignAndLog(kernel.NewAction(kernel.ActionAgentToolContinue, "chat", contPayload))
+					}
 					msgs = compressed
-					i = -1 // reset loop counter; i++ will make it 0 next iteration
+					iteration = 0 // explicit reset — do not count this as a tool dispatch
 					env.Logger.Info("tool.continue: history compressed, ReAct loop restarted",
 						zap.Int("new_msg_count", len(msgs)))
 					continue
@@ -215,6 +255,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 					agentChatMsg{Role: "assistant", Content: toolCallContent},
 					agentChatMsg{Role: "tool", Name: chatResp.Tool, Content: toolResult},
 				)
+				iteration++
 
 			default:
 				return &api.Response{Error: fmt.Sprintf("unexpected agent status: %q", chatResp.Status)}
@@ -698,6 +739,10 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"proposal.reviews\" — get detailed reviewer feedback for a proposal: verdicts, comments, questions from each round. args: {\"id\": \"uuid\"}\n")
 	b.WriteString("- \"proposal.vote\" — cast a human vote to approve or reject a proposal (useful for escalated proposals). args: {\"id\": \"uuid\", \"approve\": true, \"reason\": \"...\"}\n")
 	b.WriteString("- \"activate_skill\" — activate an approved skill. args: {\"name\": \"skill_name\"}\n")
+	b.WriteString("- \"conversation.summarize\" — summarize the current conversation session (not yet fully implemented). args: {\"session_id\": \"optional\", \"max_tokens\": 200}\n")
+	b.WriteString("- \"schedule.create\" — register a recurring scheduled goal (not yet fully implemented). args: {\"cron\": \"0 9 * * 1-5\", \"goal\": \"what to do\"}\n")
+	b.WriteString("- \"webhook.register\" — register an inbound webhook trigger (not yet fully implemented). args: {\"path\": \"/hooks/my-event\", \"goal\": \"what to do on receipt\"}\n")
+	b.WriteString("- \"monitor.start\" — start monitoring a resource and fire on state change (not yet fully implemented). args: {\"target\": \"http://...\", \"condition\": \"status!=200\", \"goal\": \"what to do\"}\n")
 
 	// Proposal drafting instructions: tell the agent how to build a court-ready draft
 	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")

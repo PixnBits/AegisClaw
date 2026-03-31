@@ -602,9 +602,16 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 }
 
 // ChatMessagePayload is received from the daemon for D2 (main-agent sandbox).
+// LLMTimeoutSecs and MaxToolCalls are optional per-session overrides forwarded
+// from the daemon's Court-approved config (architecture.md §8 / PRD §10.6 A1).
+// When zero (default), the guest-agent falls back to its compile-time constants.
+// Security: these values are capped internally at compile-time maximums to
+// prevent a compromised daemon from setting arbitrarily large timeouts.
 type ChatMessagePayload struct {
-	Messages []ChatMsg `json:"messages"`
-	Model    string    `json:"model"`
+	Messages       []ChatMsg `json:"messages"`
+	Model          string    `json:"model"`
+	LLMTimeoutSecs int       `json:"llm_timeout_secs,omitempty"` // 0 = use default (120s)
+	MaxToolCalls   int       `json:"max_tool_calls,omitempty"`   // 0 = use default (10)
 }
 
 // ChatMsg represents a single message in the conversation.
@@ -626,8 +633,19 @@ type ChatResponse struct {
 }
 
 const (
+	// reactMaxToolCalls is the compile-time default for the maximum number of
+	// tool calls per chat turn. This is the hard ceiling; the daemon may send a
+	// lower value (but never higher) via ChatMessagePayload.MaxToolCalls.
+	// Architecture note: changing this ceiling requires a Governance Court proposal
+	// (architecture.md §8 / PRD §10.6 A1).
 	reactMaxToolCalls = 10
-	ollamaTimeout     = 120 * time.Second
+	// ollamaTimeoutDefault is the compile-time default per-LLM-call timeout.
+	// The daemon may override this lower (never higher) via ChatMessagePayload.LLMTimeoutSecs.
+	ollamaTimeoutDefault = 120 * time.Second
+	// ollamaTimeoutMax is the maximum per-LLM-call timeout the guest-agent will
+	// honour regardless of what the daemon requests.  This prevents a compromised
+	// host from keeping the VM occupied indefinitely.
+	ollamaTimeoutMax = 300 * time.Second
 )
 
 // toolCallMarkers lists fence markers in priority order. Plain "```" is last
@@ -735,6 +753,10 @@ func isProposalTool(name string) bool {
 // call back with the result appended) or a "final" response with the
 // assistant's text.  The outer ReAct loop driver lives in the daemon
 // (makeChatMessageHandler).
+//
+// Per-session limit overrides are accepted from the daemon via the payload
+// (architecture.md §8 / PRD §10.6 A1).  The guest-agent enforces absolute
+// maximums to defend against a compromised or misconfigured daemon.
 func handleChatMessage(ctx context.Context, req *Request) *Response {
 	var payload ChatMessagePayload
 	if err := json.Unmarshal(req.Payload, &payload); err != nil {
@@ -748,11 +770,23 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 		return errorResponse(req.ID, "messages are required")
 	}
 
+	// Resolve the per-call LLM timeout: honour the daemon's hint but cap at the
+	// compile-time maximum so a compromised host cannot hold the VM indefinitely.
+	llmTimeout := ollamaTimeoutDefault
+	if payload.LLMTimeoutSecs > 0 {
+		requested := time.Duration(payload.LLMTimeoutSecs) * time.Second
+		if requested < ollamaTimeoutMax {
+			llmTimeout = requested
+		} else {
+			llmTimeout = ollamaTimeoutMax
+		}
+	}
+
 	// Build the Ollama-compatible message list (strip the Name field for
 	// non-tool roles so that Ollama models that don't support it don't choke).
 	ollamaMsgs := buildOllamaMsgs(payload.Messages)
 
-	callCtx, cancel := context.WithTimeout(ctx, ollamaTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, llmTimeout)
 	defer cancel()
 
 	content, err := callOllamaViaProxy(callCtx, payload.Model, ollamaMsgs, "", nil)

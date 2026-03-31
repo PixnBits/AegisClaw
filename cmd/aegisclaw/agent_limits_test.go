@@ -125,7 +125,10 @@ func TestPhase3SkillStubsRegistered(t *testing.T) {
 	env := testEnv(t)
 	reg := buildToolRegistry(env)
 
-	stubs := []string{"schedule.create", "webhook.register", "monitor.start"}
+	stubs := []string{
+		"schedule.create", "webhook.register", "monitor.start",
+		"conversation.summarize", // Phase 2 stub
+	}
 	names := make(map[string]bool)
 	for _, n := range reg.Names() {
 		names[n] = true
@@ -137,21 +140,107 @@ func TestPhase3SkillStubsRegistered(t *testing.T) {
 	}
 }
 
-// TestPhase3SkillStubsReturnNotImplemented confirms the stubs return clear errors.
+// TestPhase3SkillStubsReturnNotImplemented confirms the stubs return clear errors
+// even when valid args are provided (full implementation is pending a Court proposal).
 func TestPhase3SkillStubsReturnNotImplemented(t *testing.T) {
 	env := testEnv(t)
 	reg := buildToolRegistry(env)
 
-	stubs := []string{"schedule.create", "webhook.register", "monitor.start"}
-	for _, stub := range stubs {
-		_, err := reg.Execute(nil, stub, "{}")
-		if err == nil {
-			t.Errorf("stub %q should return an error (not yet implemented)", stub)
-			continue
+	cases := []struct {
+		name string
+		args string
+	}{
+		{"schedule.create", `{"cron":"0 9 * * 1-5","goal":"check alerts"}`},
+		{"webhook.register", `{"path":"/hooks/deploy","goal":"redeploy on push"}`},
+		{"monitor.start", `{"target":"http://localhost:8080/health","condition":"status!=200","goal":"alert on failure"}`},
+		{"conversation.summarize", `{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := reg.Execute(nil, tc.name, tc.args)
+			if err == nil {
+				t.Errorf("stub %q should return an error (not yet implemented)", tc.name)
+				return
+			}
+			if !strings.Contains(err.Error(), "not yet implemented") {
+				t.Errorf("stub %q error should mention 'not yet implemented', got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestPhase3StubArgValidation confirms that the improved stubs validate their
+// arg schemas and return useful errors for missing required fields.
+func TestPhase3StubArgValidation(t *testing.T) {
+	env := testEnv(t)
+	reg := buildToolRegistry(env)
+
+	cases := []struct {
+		stub    string
+		args    string
+		wantMsg string
+	}{
+		{
+			stub:    "schedule.create",
+			args:    `{"goal":"run report"}`, // missing cron
+			wantMsg: "\"cron\" field is required",
+		},
+		{
+			stub:    "schedule.create",
+			args:    `{"cron":"0 9 * * 1-5"}`, // missing goal
+			wantMsg: "\"goal\" field is required",
+		},
+		{
+			stub:    "schedule.create",
+			args:    `not json`,
+			wantMsg: "invalid args",
+		},
+		{
+			stub:    "webhook.register",
+			args:    `{"goal":"redeploy"}`, // missing path
+			wantMsg: "\"path\" field is required",
+		},
+		{
+			stub:    "webhook.register",
+			args:    `{"path":"/hooks/foo"}`, // missing goal
+			wantMsg: "\"goal\" field is required",
+		},
+		{
+			stub:    "webhook.register",
+			args:    `{"path":"/hooks/foo","goal":"x","secret_ref":"bad/path"}`, // bad secret_ref
+			wantMsg: "\"secret_ref\" must be a simple vault key name",
+		},
+		{
+			stub:    "monitor.start",
+			args:    `{"condition":"status!=200","goal":"alert"}`, // missing target
+			wantMsg: "\"target\" field is required",
+		},
+		{
+			stub:    "monitor.start",
+			args:    `{"target":"http://x.com","goal":"alert"}`, // missing condition
+			wantMsg: "\"condition\" field is required",
+		},
+		{
+			stub:    "monitor.start",
+			args:    `{"target":"http://x.com","condition":"status!=200"}`, // missing goal
+			wantMsg: "\"goal\" field is required",
+		},
+	}
+	for _, tc := range cases {
+		key := tc.wantMsg
+		if len(key) > 20 {
+			key = key[:20]
 		}
-		if !strings.Contains(err.Error(), "not yet implemented") {
-			t.Errorf("stub %q error should mention 'not yet implemented', got: %v", stub, err)
-		}
+		t.Run(tc.stub+"/"+key, func(t *testing.T) {
+			_, err := reg.Execute(nil, tc.stub, tc.args)
+			if err == nil {
+				t.Errorf("%s with args %q: expected error containing %q, got nil", tc.stub, tc.args, tc.wantMsg)
+				return
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("%s: expected error %q, got %q", tc.stub, tc.wantMsg, err.Error())
+			}
+		})
 	}
 }
 
@@ -162,6 +251,19 @@ func TestSystemPromptMentionsToolContinue(t *testing.T) {
 	prompt := buildDaemonSystemPrompt(env)
 	if !strings.Contains(prompt, "tool.continue") {
 		t.Errorf("system prompt should mention tool.continue for long tasks; got:\n%s", prompt)
+	}
+}
+
+// TestSystemPromptMentionsEventDrivenTools verifies the system prompt documents
+// the Phase 3 event-driven tools so the agent knows they exist.
+func TestSystemPromptMentionsEventDrivenTools(t *testing.T) {
+	env := testEnv(t)
+	prompt := buildDaemonSystemPrompt(env)
+	tools := []string{"schedule.create", "webhook.register", "monitor.start", "conversation.summarize"}
+	for _, tool := range tools {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("system prompt should mention %q; got:\n%s", tool, prompt)
+		}
 	}
 }
 

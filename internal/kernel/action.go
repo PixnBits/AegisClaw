@@ -44,6 +44,31 @@ const (
 	// (e.g. AegisHub) is launched at daemon startup. These are distinct from
 	// skill activations which go through user-initiated proposals.
 	ActionSystemComponentActivate ActionType = "system.component.activate"
+
+	// Agent session / ReAct loop events (Issue #6, architecture.md §8).
+	// These are emitted by the daemon's chat handler so every agent turn and
+	// every tool.continue compression event is fully auditable in the Merkle log.
+
+	// ActionAgentTurnStart is logged at the beginning of each chat.message
+	// request, recording the user input and session context.
+	ActionAgentTurnStart ActionType = "agent.turn.start"
+	// ActionAgentToolContinue is logged when the agent emits tool.continue,
+	// compressing the conversation history and restarting the ReAct loop.
+	ActionAgentToolContinue ActionType = "agent.tool_continue"
+	// ActionAgentConversationSummarize is logged when the conversation.summarize
+	// tool is called (Phase 2, PRD §10.6 A2).
+	ActionAgentConversationSummarize ActionType = "agent.conversation.summarize"
+
+	// Event-driven tool registration events (Issue #6 Phase 3, PRD §10.6 A3).
+	// These are logged when an event-driven goal is registered.  Full
+	// implementations will be added once each skill's Court proposal is approved.
+
+	// ActionEventScheduleCreate is logged when schedule.create is invoked.
+	ActionEventScheduleCreate ActionType = "event.schedule.create"
+	// ActionEventWebhookRegister is logged when webhook.register is invoked.
+	ActionEventWebhookRegister ActionType = "event.webhook.register"
+	// ActionEventMonitorStart is logged when monitor.start is invoked.
+	ActionEventMonitorStart ActionType = "event.monitor.start"
 )
 
 // validActionTypes enumerates all recognized action types for validation.
@@ -74,9 +99,15 @@ var validActionTypes = map[ActionType]bool{
 	ActionSecretAdd:           true,
 	ActionSecretGet:           true,
 	ActionSecretDelete:        true,
-	ActionCompositionRollback:     true,
-	ActionLLMInfer:                true,
-	ActionSystemComponentActivate: true,
+	ActionCompositionRollback:        true,
+	ActionLLMInfer:                   true,
+	ActionSystemComponentActivate:    true,
+	ActionAgentTurnStart:             true,
+	ActionAgentToolContinue:          true,
+	ActionAgentConversationSummarize: true,
+	ActionEventScheduleCreate:        true,
+	ActionEventWebhookRegister:       true,
+	ActionEventMonitorStart:          true,
 }
 
 // Action represents any operation that passes through the kernel.

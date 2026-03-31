@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 // ToolHandler is a function that executes a named tool and returns a human-readable result.
@@ -216,6 +218,37 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	})
 
 	// ---------------------------------------------------------------------------
+	// Phase 2 – conversation.summarize stub (PRD §10.6 A2, architecture.md §8.1).
+	//
+	// This tool is called automatically at session close to produce a persistent
+	// summary of the conversation.  The summary is stored in the JSONL history
+	// and used as context for the next session.
+	//
+	// Full implementation requires a dedicated "conversation.summarize" skill VM
+	// with a Court-approved proposal.  The stub logs the request to the Merkle
+	// chain so all summarization attempts are auditable.
+	// ---------------------------------------------------------------------------
+
+	reg.Register("conversation.summarize", func(ctx context.Context, args string) (string, error) {
+		var params struct {
+			SessionID string `json:"session_id"` // optional identifier for the session
+			MaxTokens int    `json:"max_tokens"`  // optional output length hint
+		}
+		_ = json.Unmarshal([]byte(args), &params)
+
+		// Audit-log the summarization request even though the skill is not yet implemented.
+		if env.Kernel != nil {
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"session_id": params.SessionID,
+				"max_tokens": params.MaxTokens,
+			})
+			env.Kernel.SignAndLog(kernel.NewAction(kernel.ActionAgentConversationSummarize, "tool", auditPayload))
+		}
+		return "", fmt.Errorf("conversation.summarize is not yet implemented — " +
+			"see PRD §10.6 A2 and docs/prd-deviations.md for the roadmap")
+	})
+
+	// ---------------------------------------------------------------------------
 	// Phase 3 stubs – event-driven and scheduled goals (PRD §10.6 A3).
 	//
 	// These handlers are scaffolding only.  Full implementation requires:
@@ -223,32 +256,126 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	//  - Court-reviewed proposals for each skill (see docs/PRD.md §10.6).
 	//  - New ACL entries for RoleOrchestrator in internal/ipc/acl.go.
 	//
-	// When invoked today they return a clear "not yet implemented" message so
-	// the agent can inform the user rather than silently failing.
+	// Each stub:
+	//  - Validates its JSON arguments and reports schema errors clearly.
+	//  - Logs the attempt to the Merkle audit chain (fully auditable from day 1).
+	//  - Returns a clear "not yet implemented" message for the agent to relay.
 	// ---------------------------------------------------------------------------
 
 	// schedule.create registers a cron-style recurring trigger.
+	// Expected args: {"cron": "0 9 * * 1-5", "goal": "brief task description", "model": "optional-model"}
 	// Future: sends a registration message to the Orchestrator microVM which
 	// injects chat.message events into AegisHub at the scheduled time.
-	reg.Register("schedule.create", func(_ context.Context, _ string) (string, error) {
+	reg.Register("schedule.create", func(ctx context.Context, args string) (string, error) {
+		var params struct {
+			Cron  string `json:"cron"`
+			Goal  string `json:"goal"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(args), &params); err != nil {
+			return "", fmt.Errorf("schedule.create: invalid args (expected {\"cron\":\"...\",\"goal\":\"...\"}): %w", err)
+		}
+		if params.Cron == "" {
+			return "", fmt.Errorf("schedule.create: \"cron\" field is required (e.g. \"0 9 * * 1-5\" for 09:00 Mon–Fri)")
+		}
+		if params.Goal == "" {
+			return "", fmt.Errorf("schedule.create: \"goal\" field is required — describe what the agent should do")
+		}
+
+		// Audit-log the registration attempt.
+		if env.Kernel != nil {
+			auditPayload, _ := json.Marshal(map[string]string{
+				"cron":  params.Cron,
+				"goal":  params.Goal,
+				"model": params.Model,
+			})
+			env.Kernel.SignAndLog(kernel.NewAction(kernel.ActionEventScheduleCreate, "tool", auditPayload))
+		}
 		return "", fmt.Errorf("schedule.create is not yet implemented — " +
-			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap")
+			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap (args validated: cron=%q goal=%q)", params.Cron, params.Goal)
 	})
 
 	// webhook.register opens an inbound HTTPS endpoint in an isolated microVM.
+	// Expected args: {"path": "/hook/my-event", "goal": "brief task description", "secret_ref": "optional-secret-name"}
 	// Future: a dedicated Network Proxy VM accepts the webhook and injects an
 	// event.trigger message through AegisHub to the agent VM.
-	reg.Register("webhook.register", func(_ context.Context, _ string) (string, error) {
+	reg.Register("webhook.register", func(ctx context.Context, args string) (string, error) {
+		var params struct {
+			Path      string `json:"path"`
+			Goal      string `json:"goal"`
+			SecretRef string `json:"secret_ref"` // optional HMAC secret name from the secrets vault
+		}
+		if err := json.Unmarshal([]byte(args), &params); err != nil {
+			return "", fmt.Errorf("webhook.register: invalid args (expected {\"path\":\"...\",\"goal\":\"...\"}): %w", err)
+		}
+		if params.Path == "" {
+			return "", fmt.Errorf("webhook.register: \"path\" field is required (e.g. \"/hooks/deploy\")")
+		}
+		if params.Goal == "" {
+			return "", fmt.Errorf("webhook.register: \"goal\" field is required — describe what the agent should do on receipt")
+		}
+		// Security: secret_ref (if provided) must reference a name in the secrets
+		// vault — it is never passed to the LLM or stored in plain text.
+		if params.SecretRef != "" && strings.ContainsAny(params.SecretRef, "/ \\\"") {
+			return "", fmt.Errorf("webhook.register: \"secret_ref\" must be a simple vault key name (no path separators or quotes)")
+		}
+
+		// Audit-log the registration attempt.
+		if env.Kernel != nil {
+			auditPayload, _ := json.Marshal(map[string]string{
+				"path":       params.Path,
+				"goal":       params.Goal,
+				"secret_ref": params.SecretRef,
+			})
+			env.Kernel.SignAndLog(kernel.NewAction(kernel.ActionEventWebhookRegister, "tool", auditPayload))
+		}
 		return "", fmt.Errorf("webhook.register is not yet implemented — " +
-			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap")
+			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap (args validated: path=%q goal=%q)", params.Path, params.Goal)
 	})
 
 	// monitor.start polls an external resource and fires on state change.
+	// Expected args: {"target": "http://...", "condition": "status!=200", "goal": "brief task", "interval_secs": 60}
 	// Future: runs in its own isolated skill microVM; fires event.trigger via
 	// AegisHub → Orchestrator → agent VM on detected change.
-	reg.Register("monitor.start", func(_ context.Context, _ string) (string, error) {
+	reg.Register("monitor.start", func(ctx context.Context, args string) (string, error) {
+		var params struct {
+			Target       string `json:"target"`        // URL or resource to poll
+			Condition    string `json:"condition"`     // trigger condition description
+			Goal         string `json:"goal"`          // what the agent should do on trigger
+			IntervalSecs int    `json:"interval_secs"` // polling interval (default 60)
+		}
+		if err := json.Unmarshal([]byte(args), &params); err != nil {
+			return "", fmt.Errorf("monitor.start: invalid args (expected {\"target\":\"...\",\"condition\":\"...\",\"goal\":\"...\"}): %w", err)
+		}
+		if params.Target == "" {
+			return "", fmt.Errorf("monitor.start: \"target\" field is required (URL or resource to monitor)")
+		}
+		if params.Condition == "" {
+			return "", fmt.Errorf("monitor.start: \"condition\" field is required (e.g. \"response_code!=200\")")
+		}
+		if params.Goal == "" {
+			return "", fmt.Errorf("monitor.start: \"goal\" field is required — describe what the agent should do when condition fires")
+		}
+		// Security: ensure no secrets appear in the target URL (a monitoring VM
+		// will poll this URL from inside its own isolated network namespace).
+		if strings.ContainsAny(params.Target, "?#") {
+			// Warn but don't block — query params may be legitimate.
+			env.Logger.Warn("monitor.start: target URL contains query parameters — ensure no secrets are embedded",
+				zap.String("target_prefix", params.Target[:min(len(params.Target), 40)]))
+		}
+
+		// Audit-log the registration attempt.
+		if env.Kernel != nil {
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"target":        params.Target,
+				"condition":     params.Condition,
+				"goal":          params.Goal,
+				"interval_secs": params.IntervalSecs,
+			})
+			env.Kernel.SignAndLog(kernel.NewAction(kernel.ActionEventMonitorStart, "tool", auditPayload))
+		}
 		return "", fmt.Errorf("monitor.start is not yet implemented — " +
-			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap")
+			"see PRD §10.6 A3 and docs/prd-deviations.md for the roadmap (args validated: target=%q condition=%q)", params.Target, params.Condition)
 	})
 
 	return reg

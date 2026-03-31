@@ -49,7 +49,10 @@ type ConversationStore struct {
 	file    *os.File
 }
 
-// openConversationStore opens (or creates) the store at dir/conversation.jsonl.
+// maxConvLineSizeBytes is the maximum size of a single JSON line in the
+// conversation store. Lines larger than this are rejected by the scanner.
+// 1 MB is generous — a normal conversation message is well under 10 KB.
+const maxConvLineSizeBytes = 1024 * 1024 // 1 MB
 // maxMsgs is the maximum number of past messages returned by LoadHistory.
 // Pass maxMsgs=0 to disable history loading (the file is still written).
 func openConversationStore(dir string, maxMsgs int) (*ConversationStore, error) {
@@ -112,7 +115,7 @@ func (s *ConversationStore) LoadHistory() ([]agentChatMsg, error) {
 	// Read all lines, keep only the last maxMsgs valid non-system messages.
 	var all []agentChatMsg
 	scanner := bufio.NewScanner(rf)
-	scanner.Buffer(make([]byte, 1*1024*1024), 1*1024*1024) // 1 MB line cap
+	scanner.Buffer(make([]byte, maxConvLineSizeBytes), maxConvLineSizeBytes) // cap individual lines
 	for scanner.Scan() {
 		var m agentChatMsg
 		if err := json.Unmarshal(scanner.Bytes(), &m); err != nil {
