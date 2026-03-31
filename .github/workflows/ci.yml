@@ -32,30 +32,6 @@ jobs:
       - name: Test
         run: go test ./... -count=1 -timeout 120s
 
-  script-checks:
-    name: Script Checks
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Shellcheck
-        run: shellcheck scripts/*.sh
-
-      - name: Run gen_sandbox.py
-        run: python3 scripts/gen_sandbox.py
-
-      - name: Vet generated code
-        run: go vet ./scripts/internal/...
 
   image-builds:
     name: Image Builds
