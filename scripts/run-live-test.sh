@@ -67,11 +67,11 @@ fi
 
 echo "Collecting system journal (last 500 lines) to $AUX_LOG (requires sudo)..."
 if command -v journalctl >/dev/null 2>&1; then
-  sudo journalctl -n 500 --no-pager > "$AUX_LOG" 2>&1 || true
+  sudo journalctl -n 500 --no-pager 2>&1 | tee "$AUX_LOG" > /dev/null || true
 else
   echo "journalctl not found; skipping system journal capture" > "$AUX_LOG"
 fi
 
 echo "Test finished with exit code: $TEST_EXIT"
 echo "Logs and artifacts collected in: $LOGS_DIR"
-exit $TEST_EXIT
+exit "$TEST_EXIT"
