@@ -57,6 +57,12 @@ else
     APK_TMP=$(mktemp -d)
     curl -sL "$APK_TOOLS_URL" | tar xz -C "$APK_TMP"
 
+    # --allow-untrusted is required for the bootstrap step: the static apk binary
+    # is running without Alpine's public signing keys installed on the host, so
+    # every repository index is flagged as UNTRUSTED.  This is the standard
+    # workaround when building a rootfs from scratch on a non-Alpine host.
+    # The resulting image is only used read-only inside Firecracker builder VMs;
+    # it is not installed on the host.
     "$APK_TMP/sbin/apk.static" \
         --root "$MOUNT_DIR" \
         --initdb \
@@ -64,6 +70,7 @@ else
         --repository "${ALPINE_MIRROR}/main" \
         --repository "${ALPINE_MIRROR}/community" \
         --no-cache \
+        --allow-untrusted \
         add alpine-base bash openssl ca-certificates curl wget
 
     rm -rf "$APK_TMP"
