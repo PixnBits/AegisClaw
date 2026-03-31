@@ -1260,6 +1260,11 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 		if reviewErr == nil {
 			result += fmt.Sprintf("\n\nCourt review completed.\n  State: %s\n  Verdict: %s\n  Risk: %.1f",
 				session.State, session.Verdict, session.RiskScore)
+			if session.Verdict == "approved" {
+				result += fmt.Sprintf("\n\nNEXT STEP: The proposal is approved but the skill is NOT yet active. "+
+					"You MUST call the activate_skill tool with {\"name\": %q} to register and start the skill. "+
+					"Until you do that, the skill's tools cannot be used.", p.TargetSkill)
+			}
 		} else {
 			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRun manually: aegisclaw court review %s", reviewErr, p.ID)
 		}

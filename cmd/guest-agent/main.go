@@ -563,10 +563,17 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 	}
 	userMsg.WriteString("\nRespond with a JSON object containing:\n")
 	userMsg.WriteString(`- "verdict": one of "approve", "reject", "ask", "abstain"` + "\n")
-	userMsg.WriteString(`- "risk_score": a number between 0 and 10` + "\n")
+	userMsg.WriteString(`    approve = the proposal is acceptable and risks are manageable` + "\n")
+	userMsg.WriteString(`    reject  = the proposal has unacceptable risks that cannot be mitigated` + "\n")
+	userMsg.WriteString(`    ask     = you need specific information that is missing from the proposal before you can decide` + "\n")
+	userMsg.WriteString(`    abstain = the proposal is outside your area of expertise` + "\n")
+	userMsg.WriteString(`- "risk_score": a number between 0 (no risk) and 10 (critical risk)` + "\n")
 	userMsg.WriteString(`- "evidence": an array of strings supporting your verdict` + "\n")
-	userMsg.WriteString(`- "questions": (optional) an array of follow-up questions` + "\n")
+	userMsg.WriteString(`- "questions": an array of follow-up questions (required when verdict is "ask", omit otherwise)` + "\n")
 	userMsg.WriteString(`- "comments": a brief summary of your assessment` + "\n")
+	userMsg.WriteString("\nIMPORTANT: Use \"approve\" when the proposal is reasonable and risks are low or manageable. ")
+	userMsg.WriteString("Only use \"ask\" when you genuinely need information that is NOT already in the proposal. ")
+	userMsg.WriteString("A simple, low-risk skill proposal with no network access and no secrets should typically be approved.\n")
 
 	// Call Ollama via the host LLM proxy over vsock (no network interface in
 	// this sandbox — all LLM access goes through the kernel vsock channel).

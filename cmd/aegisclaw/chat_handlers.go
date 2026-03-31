@@ -566,8 +566,9 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("\n")
 
 	// Workflow.
-	b.WriteString("Skill lifecycle: create_draft → submit → (review) → activate_skill → invoke tool. Skills MUST be activated before their tools can be used.\n")
-	b.WriteString("To check what skills exist and their current state, use list_skills. Only \"active\" skills can be invoked.\n\n")
+	b.WriteString("Skill lifecycle: create_draft → submit → (court review) → activate_skill → invoke tool.\n")
+	b.WriteString("IMPORTANT: An approved proposal does NOT mean the skill is active. After the court approves a proposal, you MUST call activate_skill to register the skill. Only \"active\" skills can be invoked.\n")
+	b.WriteString("To check what skills exist and their current state, use list_skills.\n\n")
 
 	// ID usage guidance.
 	b.WriteString("IMPORTANT: When you create a proposal, the tool returns its UUID. You MUST save that ID and use it (or its first 8 characters) for ALL subsequent proposal tool calls (submit, status, get_draft, update_draft, reviews, vote). If you lose the ID, call list_proposals to find it. NEVER invent or guess an ID.\n\n")
@@ -582,7 +583,8 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("Rules:\n")
 	b.WriteString("- NEVER fabricate tool results or pretend you called a tool.\n")
 	b.WriteString("- NEVER write fake output like \"Status: approved\" or \"[Tool ... returned]\" yourself.\n")
-	b.WriteString("- Never invent tools that are not listed above.\n")
+	b.WriteString("- ONLY call tools listed above. Do NOT call any other tool name (e.g. date, time, shell, exec, etc.).\n")
+	b.WriteString("- You do NOT have access to system time, dates, or real-time information. NEVER guess or fabricate the current time.\n")
 	b.WriteString("- If you need data you do not have, call the appropriate tool.\n")
 	b.WriteString("- If no tool can provide the information, say so honestly — do NOT make it up.\n")
 	b.WriteString("- If you cannot help with something, say so honestly.\n")

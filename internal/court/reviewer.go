@@ -16,6 +16,17 @@ import (
 	"go.uber.org/zap"
 )
 
+// verdictGuidance is appended to every reviewer system prompt so models
+// understand when to use each verdict option.
+const verdictGuidance = `
+
+Verdict guide:
+- "approve" when the proposal is acceptable and risks are manageable
+- "reject" when the proposal has unacceptable, unmitigable risks
+- "ask" ONLY when you need specific information that is genuinely missing from the proposal
+- "abstain" when the proposal is outside your expertise
+A simple skill with no network access, no secrets, and no elevated privileges is low risk — approve it unless you see a concrete threat.`
+
 // ReviewRequest is the payload sent to each reviewer sandbox via vsock.
 type ReviewRequest struct {
 	ProposalID  string          `json:"proposal_id"`
@@ -351,7 +362,7 @@ func (r *Reviewer) runSingleModel(ctx context.Context, p *proposal.Proposal, per
 		Spec:        p.Spec,
 		PersonaName: persona.Name,
 		PersonaRole: persona.Role,
-		Prompt:      persona.SystemPrompt,
+		Prompt:      persona.SystemPrompt + verdictGuidance,
 		Model:       model,
 		Round:       p.Round,
 	}

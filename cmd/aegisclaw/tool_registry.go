@@ -44,7 +44,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, tool, argsJSON string) (stri
 		return r.invokeSkillTool(ctx, skill, skillTool, argsJSON)
 	}
 
-	return "", fmt.Errorf("unknown tool: %s", tool)
+	return "", fmt.Errorf("unknown tool: %s. Available tools: %s", tool, strings.Join(r.Names(), ", "))
 }
 
 // invokeSkillTool sends a tool.invoke request to the skill's sandbox VM.
