@@ -6,14 +6,25 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 LOGS_DIR="${REPO_ROOT}/logs/live-test-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$LOGS_DIR"
 
+# Parse flags
+YES=false
+for arg in "$@"; do
+  case "$arg" in
+    --yes|-y) YES=true ;;
+    *) echo "Unknown argument: $arg"; exit 1 ;;
+  esac
+done
+
 printf "This will reset your local AegisClaw state directories and run the live end-to-end test.\n"
 printf "Directories to be removed:\n"
 printf "  User:  \$HOME/.config/aegisclaw  \$HOME/.local/share/aegisclaw  \$HOME/.cache/aegisclaw\n"
 printf "  Root:  /root/.config/aegisclaw   /root/.local/share/aegisclaw   /root/.cache/aegisclaw\n"
-read -r -p "Continue? (y/N) " ans
-if [[ "${ans:-N}" != "y" && "${ans:-N}" != "Y" ]]; then
-  echo "Aborting. No changes made."
-  exit 1
+if [ "$YES" = false ]; then
+  read -r -p "Continue? (y/N) " ans
+  if [[ "${ans:-N}" != "y" && "${ans:-N}" != "Y" ]]; then
+    echo "Aborting. No changes made."
+    exit 1
+  fi
 fi
 
 echo "Stopping possible running AegisClaw services/processes (may request sudo)..."
