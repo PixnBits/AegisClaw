@@ -61,8 +61,8 @@ jobs:
       - name: Build builder rootfs
         run: sudo env PATH="$PATH" ./scripts/build-builder-rootfs.sh /tmp/builder.ext4
 
-  script-checks:
-    name: Script Checks
+  live-test:
+    name: Live Test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,11 +77,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Shellcheck
-        run: shellcheck scripts/*.sh
-
-      - name: Run gen_sandbox.py
-        run: python3 scripts/gen_sandbox.py
-
-      - name: Vet generated code
-        run: go vet ./scripts/internal/...
+      - name: Run live test
+        run: ./scripts/run-live-test.sh --yes
