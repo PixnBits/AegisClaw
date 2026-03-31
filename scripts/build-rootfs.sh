@@ -127,7 +127,7 @@ echo "Using Go: ${GO_BIN}"
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
         "${GO_BIN}" build -ldflags="-s -w" -o "${BINARY_BIN}" ${BINARY_SRC_PKG}
 )
-echo "${BINARY_NAME} binary: $(ls -lh "${BINARY_BIN}" | awk '{print $5}')"
+echo "${BINARY_NAME} binary: $(du -sh "${BINARY_BIN}" | cut -f1)"
 
 # Create ext4 image
 echo ">>> Creating ext4 image (${ROOTFS_SIZE_MB} MB)..."
@@ -165,7 +165,7 @@ fi
 echo ">>> Setting up filesystem structure..."
 mkdir -p "${MOUNTPOINT}"/{dev,proc,sys,tmp,run,sbin,etc}
 if [ "${TARGET}" != "aegishub" ]; then
-    mkdir -p "${MOUNTPOINT}"/{workspace}
+    mkdir -p "${MOUNTPOINT}/workspace"
     mkdir -p "${MOUNTPOINT}/run/secrets"
 fi
 
@@ -227,7 +227,7 @@ mkdir -p "$(dirname "${OUTPUT}")"
 cp "${WORKDIR}/rootfs.ext4" "${OUTPUT}"
 chmod 444 "${OUTPUT}"
 
-FINAL_SIZE=$(ls -lh "${OUTPUT}" | awk '{print $5}')
+FINAL_SIZE=$(du -sh "${OUTPUT}" | cut -f1)
 echo ""
 echo "=== Rootfs build complete ==="
 echo "Target:  ${TARGET}"

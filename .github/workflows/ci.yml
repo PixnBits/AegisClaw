@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -count=1 -timeout 120s
+
+
+  image-builds:
+    name: Image Builds
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install build tools
+        run: sudo apt-get install -y e2fsprogs
+
+      - name: Build guest rootfs
+        run: sudo env PATH="$PATH" ./scripts/build-rootfs.sh --target=guest /tmp/guest.ext4
+
+      - name: Build aegishub rootfs
+        run: sudo env PATH="$PATH" ./scripts/build-rootfs.sh --target=aegishub /tmp/aegishub.ext4
+
+      - name: Build builder rootfs
+        run: sudo env PATH="$PATH" ./scripts/build-builder-rootfs.sh /tmp/builder.ext4
+
+  live-test:
+    name: Live Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run live test
+        run: ./scripts/run-live-test.sh --yes
