@@ -270,16 +270,173 @@ This follows the standard function-calling convention for chat models. The next 
 
 ## 8. ReAct loop limits and safety bounds
 
-To prevent runaway loops (e.g., from a confused or injected LLM response):
+To prevent runaway loops (e.g., from a confused or injected LLM response), the agent VM enforces the following hard bounds. These are intentional guardrails, not arbitrary restrictions — they exist to make the agent's behavior predictable, auditable, and DoS-resistant within its Firecracker isolation boundary.
 
 | Bound | Value | Rationale |
 |---|---|---|
-| Max tool calls per turn | 10 | Prevents infinite loop; a real skill-creation flow needs ≤5 |
-| Max ReAct loop depth | 10 | Same ceiling, enforced independently |
-| Agent VM LLM timeout | 120 seconds per Ollama call | Prevents hung requests |
-| Total `chat.message` timeout | 10 minutes | Enforced by daemon; returns error to CLI on expiry |
+| Max tool calls per turn | 10 | Prevents infinite loops; a typical skill-creation flow needs ≤5. Hard-coded in `cmd/guest-agent/main.go`. |
+| Max ReAct loop depth | 10 | Independent ceiling enforced by the loop counter, not just the tool call count. |
+| Agent VM LLM timeout | 120 seconds per Ollama call | Prevents hung requests caused by an unresponsive model or resource exhaustion. |
+| Total `chat.message` timeout | 10 minutes | Enforced by the daemon; returns an error to the CLI on expiry to prevent the user session from hanging indefinitely. |
 
 If the loop limit is hit, the agent returns the last LLM response with an appended note: `"[system: tool call limit reached — please try again or rephrase your request]"`.
+
+**Why these limits exist**
+
+- *Security*: An unbounded loop is a denial-of-service vector. A prompt-injected payload could force the agent to execute thousands of tool calls; the limit caps the blast radius within a single turn.
+- *Predictability*: Users and auditors can reason about a bounded action sequence. An arbitrarily long chain of tool calls is harder to audit, summarize, and verify in the Merkle log.
+- *Operational safety*: The 10-minute total timeout ensures the daemon's chat handler always frees resources and returns a response, even if the LLM produces pathological output.
+
+Changing these limits requires a **Court-approved daemon configuration change** (see §8.2 — roadmap item A1). The default values must not be increased without a CISO persona review and Merkle-logged justification.
+
+---
+
+## 8.1 Agent state and persistence
+
+### Current behavior (in-memory only)
+
+All agent conversation state — the message list passed to Ollama on each ReAct iteration — lives exclusively in the `chat.message` handler's in-memory slice inside the agent VM. This state is:
+
+- **Non-persistent**: A daemon restart, VM crash, or `aegisclaw stop` wipes all context.
+- **Single-turn scoped**: Each `chat.message` request carries the full conversation history from the CLI; the agent VM itself does not accumulate history between requests. There is no "background memory" between user interactions.
+- **Not summarized**: No automatic summarization or compression occurs at session close.
+
+This design is intentional for the MVP: minimal attack surface, no secrets-at-rest risk from agent-managed storage, and full determinism from the Merkle-logged conversation payloads the daemon receives.
+
+### Implications
+
+| Property | Current state | Impact |
+|---|---|---|
+| Cross-session memory | None | Agent cannot recall context from previous sessions; user must re-provide background for multi-day projects |
+| Daemon restart recovery | Full context loss | Any in-flight reasoning is lost; user must restart the conversation |
+| Long-term goal tracking | Not supported | Multi-step goals that span hours or days require the user to manage continuity manually |
+| Storage attack surface | Zero (no disk writes from agent) | No risk of secrets leaking into agent-managed files |
+
+### Roadmap (see §8.2, item A2)
+
+Durable in-VM storage is an explicit roadmap item. When implemented, it must:
+- Reside **inside the agent's Firecracker VM** boundary (not on the host filesystem).
+- Use an append-only format (file or SQLite) to preserve the audit-log philosophy.
+- Encrypt stored content at rest; the encryption key is injected at VM launch via the secrets proxy.
+- Never store raw secrets, API keys, or PII beyond what the user explicitly permits via a Court-reviewed privacy policy.
+- Be subject to the same composition manifest versioning and rollback guarantees as all other VM images.
+
+---
+
+## 8.2 Extending the agent for long-running and event-driven goals
+
+This section describes the architectural implications of the extensions proposed in GitHub Issue #6 and documented in `docs/PRD.md §10.6`. All items below are **roadmap proposals**, not current behavior. Each extension must be introduced via a Governance Court proposal, pass the SAST/SCA/policy security gate, and be deployed via a signed composition manifest update.
+
+**Non-negotiable constraints for all extensions:**
+- All new microVM types use the standard Firecracker rootfs pipeline with read-only FS and `cap-drop ALL`.
+- All new IPC message types are registered in the AegisHub ACL table; no new component may communicate without an explicit ACL entry.
+- All new actions and routing events are Merkle-logged.
+- No secrets may enter the agent VM or any LLM context as a result of these extensions.
+- Backward compatibility: existing `chat.message` → ReAct loop behavior is unchanged.
+
+### A1 — Configurable tool-call limit (addresses PRD L1)
+
+**Minimal change**: Add a `max_tool_calls` field to the daemon's Court-approved configuration. The agent VM reads this setting at startup via a vsock configuration message from the daemon. The default remains 10.
+
+**More robust option**: Introduce a `tool.continue` pseudo-action. When the agent detects it is approaching the limit and the task is incomplete, it may emit a structured `tool.continue` call containing a compressed summary of work done and remaining steps. The daemon saves this summary, terminates the current turn, and resubmits it as the first message in the next `chat.message` turn. This allows arbitrarily long tasks without losing context and without removing the per-turn safety ceiling.
+
+```
+Agent VM                    Daemon                 AegisHub
+   │ (near limit, task       │                        │
+   │  incomplete)            │                        │
+   │──tool.exec(tool.continue,{summary:"..."})──►     │
+   │                         │◄──tool.result(ok)──────│
+   │──final response──────►  │                        │
+   │                         │ saves summary          │
+   │                         │ re-sends as next turn  │
+   │◄──chat.message(summary) │                        │
+```
+
+ACL impact: `tool.continue` is a new tool name registered in the daemon's tool registry; it requires no new ACL role — the existing `agent → tool.exec` permission covers it.
+
+### A2 — Durable in-VM session storage (addresses PRD L2)
+
+**Minimal change**: Add an append-only flat file (`~/.aegisclaw/agent-memory.jsonl`) writable only inside the agent VM's Firecracker boundary. The agent skill `memory.append` and `memory.search` (new skills, Court-reviewed) write to and query this file. The file is encrypted using a key injected at VM launch.
+
+**More robust option**: Activate a local vector DB skill (Chroma or LanceDB, running as a dedicated skill microVM) and expose `memory.embed`, `memory.search`, and `memory.summarize` tools. At session close, an automatic summarization tool compresses the conversation and writes a summary entry. On the next session start, the agent loads recent summaries via `memory.search` to restore context.
+
+Component map addition:
+```
+Agent VM  →  (vsock/tool.exec)  →  AegisHub  →  Memory Skill VM
+                                                   │
+                                              [encrypted SQLite / vector DB
+                                               inside Firecracker boundary]
+```
+
+### A3 — Event-driven and scheduled goals (addresses PRD L3)
+
+**Minimal change (new skills)**: Introduce three new Court-reviewed skills running in isolated microVMs:
+- `schedule.create` — registers a cron-style trigger; at fire time, injects a `chat.message` into AegisHub addressed to the agent VM.
+- `webhook.register` — opens an inbound HTTPS endpoint (via the network proxy, in a dedicated microVM with a strict egress allow-list); on receipt, injects a `chat.message`.
+- `monitor.start` — polls an external resource on a configurable interval; on state change, injects a `chat.message`.
+
+All injected events are authenticated (the skill VM must use its assigned `RoleSkill` identity), ACL-gated (skill VMs may send `tool.result` and `status`, not arbitrary `chat.message`; a new `event.trigger` message type with its own ACL entry is preferred), and Merkle-logged.
+
+**More robust option (Orchestrator microVM)**: Add an optional **Orchestrator VM** — a dedicated Firecracker microVM that runs a scheduler and event loop. It receives trigger registrations from the agent VM (via `tool.exec → orchestrator.schedule_create`), fires synthetic `chat.message` events into AegisHub at the scheduled time, and maintains a durable trigger store (encrypted, inside its own VM boundary). The Orchestrator VM has no direct network access; external triggers are relayed through a dedicated Network Proxy VM.
+
+```
+Updated component map (with Orchestrator):
+
+  Host (root)
+  └── Daemon
+       ├── AegisHub VM  (sole IPC router)
+       ├── Agent VM     (ReAct loop)
+       ├── Orchestrator VM  [roadmap]
+       │    ├── Scheduler (cron / delay)
+       │    ├── Trigger store (encrypted, in-VM)
+       │    └── Event injector → AegisHub
+       ├── Network Proxy VM  (for webhook/monitor inbound)  [roadmap]
+       ├── Court VMs (×5)
+       ├── Builder VM
+       └── Skill VMs
+```
+
+ACL additions required:
+| New sender role | Permitted targets | Notes |
+|---|---|---|
+| `RoleOrchestrator` | `event.trigger` | AegisHub forwards as `chat.message` to Agent VM after ACL check |
+| `RoleNetworkProxy` | `event.inbound` → Orchestrator | Relays external webhooks; no direct agent access |
+
+### A4 — Pre-approved goal templates (addresses PRD L4)
+
+**Minimal change**: Extend the Court's proposal schema with a `goal_template` type. A user-signed, Court-reviewed template pre-authorizes a bounded set of tool calls for a specific, named goal (e.g., "send Slack message to #dev-alerts"). The daemon checks the template registry before presenting a human-confirmation prompt; if a matching template exists and is valid, the action proceeds without interactive confirmation.
+
+Templates are:
+- Stored as signed JSON artifacts in the composition manifest.
+- Revocable at any time with immediate effect (daemon invalidates in memory without restart).
+- Logged on every use in the Merkle audit log.
+- Subject to automatic expiry (configurable TTL, default: 30 days).
+- Incapable of overriding the CISO persona veto or any isolation invariant.
+
+**More robust option**: Async approval flow — the daemon sends a TUI notification or a Slack message (via the Slack skill) with a one-click approve/deny link. The in-flight action is suspended (state saved to the proposal store) until the response arrives. This is a Court-reviewed extension to the proposal status machine (new states: `awaiting_async_approval`, `async_approved`, `async_denied`).
+
+### A5 — Planner microVM and fast-track Court path (addresses PRD L5)
+
+**Minimal change (fast-track Court)**: Add a `fast_track` flag to the Court proposal schema. Proposals marked `fast_track: true` follow a shortened review process: ≥4/5 personas must approve in round 1 (no retry rounds). Human final approval is still required for all code changes. The CISO and Security Architect personas cannot be skipped.
+
+**More robust option (Planner microVM)**: Add an optional **Planner VM** — a Firecracker microVM that receives a high-level user goal via `chat.message`, decomposes it into an ordered list of sub-proposals using an LLM, and submits each sub-proposal to the proposal store. The Planner VM output is treated as a proposal draft (not an execution order); it enters the normal Court review flow. The Planner VM has no tool execution privileges — it may only call `proposal.create_draft` and `proposal.list_drafts`.
+
+```
+Agent VM  →  tool.exec(planner.decompose, {goal: "..."})
+          →  AegisHub  →  Planner VM
+                          │
+                    [LLM decomposes goal into sub-proposals]
+                          │
+                    proposal.create_draft × N  →  Daemon proposal store
+                          │
+                    Returns ordered list of proposal IDs to Agent VM
+```
+
+### A6 — Multi-session and HA routing (addresses PRD L6)
+
+**Minimal change**: Add a `session_id` field to the `chat.message` payload. AegisHub routes by `session_id` → agent VM ID mapping in its routing table. The daemon spawns a new agent VM per session (or reuses an idle one from a pool). Each session is fully isolated — no shared memory between session VMs.
+
+**More robust option**: Add a lightweight session manager component in AegisHub (or as a separate daemon-side service) that load-balances `chat.message` requests across a pool of agent VMs, enforces per-session quotas, and handles VM failover. The session manager is itself a Court-approved component update and must not introduce any new trust boundaries that bypass AegisHub's ACL.
 
 ---
 

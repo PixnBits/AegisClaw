@@ -297,7 +297,11 @@ Human-in-the-loop required for all high-risk actions and policy relaxations.
 ### 10.2 High-Level Components
 - **MicroVM Coordinator Daemon + CLI** ("Kernel"): Manages lifecycle of all microVMs; requires root on host. CLI is the sole user entrypoint for secrets and commands. (Future: replaceable by Docker when full sandbox support lands.)
 - **Ollama Server/Endpoint**: Local model serving (default ensemble: Llama-3.2-3B for speed, Mistral-Nemo for reasoning, Phi-3 for small/audited tasks).
-- **Main Agent Sandbox**: Orchestrates user interactions and routes to skills.
+- **Main Agent Sandbox** (`guest-agent`): Orchestrates user interactions and routes to skills via a **ReAct (Reason + Act) loop** running entirely inside its Firecracker microVM. On each `chat.message`:
+  1. The agent calls Ollama with the current in-memory conversation history.
+  2. If the LLM response contains a `tool-call` block, the agent dispatches it to the tool registry via AegisHub, receives the result, appends it to the conversation, and loops.
+  3. If no tool-call is present, the final LLM content is returned to the user.
+  The loop enforces a hard limit of 10 tool calls per turn and a 10-minute total timeout. All conversation state is held in-memory for the lifetime of the agent VM; no durable session storage exists today (see §10.5 and §10.6).
 - **Governance Court Reviewer MicroVMs**: Isolated per-review; personas (Coder, Tester, CISO, Security Architect, User Advocate); each performs ≥3 retries for output consistency.
 - **Builder Sandbox**: Ephemeral microVM spun up per build; clean environment for code generation/editing.
 - **Per-Skill Execution MicroVMs**: Isolated runtime for each skill (read-only FS except workspace, `cap-drop ALL`, private daemon).
@@ -350,6 +354,40 @@ flowchart TD
 - Zero-trust enforced: no implicit trust between sandboxes.
 
 **References**: See `docs/architecture.md` (detailed component specs), `docs/schemas/` (JSON schemas), and `docs/threat-model.md` for expanded STRIDE tables.
+
+### 10.5 Agent Limitations (Current)
+
+The following limitations exist in the current ReAct loop implementation and are intentional guardrails. They prevent the agent from handling broader real-world objectives that require architectural extensions described in §10.6. All future work to relax these constraints must be proposed and approved through the Governance Court and must preserve the platform's security invariants.
+
+| # | Limitation | Current Behavior | Root Cause |
+|---|-----------|-----------------|------------|
+| **L1** | **Goals requiring >10 tool calls or deep chaining** | Loop aborts with `"[system: tool call limit reached — please try again or rephrase your request]"` | Hard-coded limits of 10 tool calls and 10 loop depth per turn in `cmd/guest-agent/main.go` |
+| **L2** | **No persistent memory across sessions or daemon restarts** | All conversation state is in-memory only; a daemon restart wipes all context | No durable storage or summarization mechanism exists in the agent VM |
+| **L3** | **No event-driven, scheduled, or monitoring goals** | The agent reacts only to incoming `chat.message` IPC; no scheduler, webhook listener, or background polling exists | The agent VM is purely reactive; no Orchestrator microVM or background task runner exists |
+| **L4** | **High-risk or irreversible actions without explicit human confirmation** | Write, delete, shell, and financial actions are gated by the Governance Court and require human-in-the-loop approval before execution | By design — correct behavior per the "Paranoid Pragmatism" principle |
+| **L5** | **Self-modification without full Court review** | The agent can propose patches, but they must traverse the complete multi-LLM reviewer flow, Merkle-log audit, git PR, and mandatory human approval | By design — all self-improvement is Court-gated; purely autonomous self-modification is structurally blocked |
+| **L6** | **No concurrent multi-user or high-availability operation** | Single daemon, single agent VM; no session routing, no clustering | Single-machine architecture; session IDs and AegisHub routing delegation are prerequisites for HA |
+
+Limitations L4 and L5 are **not defects** — they are deliberate security invariants that must not be weakened without explicit human approval and full Court review. Limitations L1–L3 and L6 represent genuine capability gaps addressed by the roadmap in §10.6.
+
+### 10.6 Roadmap for Agent Autonomy
+
+The following extensions are proposed to address the capability gaps identified in §10.5 and GitHub Issue #6. **All items must be proposed, reviewed, and deployed through the Governance Court.** No secrets may enter the agent VM or LLM context. Every new capability must remain fully auditable via the Merkle-tree log. Existing single-turn chat behavior must remain unchanged (backward-compatible).
+
+| # | Addresses | Minimal Change (quick win) | More Robust Option | Security Constraints |
+|---|-----------|---------------------------|--------------------|----------------------|
+| **A1** | L1 — tool call limit | Make the per-turn tool call limit configurable via a Court-approved daemon setting; default remains 10 | Add a `tool.continue` special action that summarizes loop history and restarts the ReAct loop, enabling arbitrarily long tasks without context loss | Limit changes require Court review; any new `tool.continue` action is ACL-gated and Merkle-logged |
+| **A2** | L2 — no persistent memory | Add a simple append-only file or SQLite store **inside the agent VM** (not on the host) that survives daemon restarts | Integrate a local vector DB skill (Chroma/LanceDB) plus an automatic session-summarization tool that runs at session close; summaries are encrypted at rest | Storage lives inside the Firecracker boundary; no plaintext secrets or PII written to disk; subject to Court-approved skill activation |
+| **A3** | L3 — no event-driven goals | Introduce new Court-reviewed skills: `schedule.create`, `webhook.register`, `monitor.start` — each executing in its own isolated microVM | Add an optional **Orchestrator microVM** that injects synthetic `chat.message` events on a schedule or in response to external triggers; the agent VM remains unmodified | Each new microVM follows the standard Firecracker isolation profile; the Orchestrator has no direct network access; all injected events are ACL-gated and Merkle-logged |
+| **A4** | L4 — high-risk confirmation friction | Extend the Court to support **pre-approved goal templates** defined and signed by the user (e.g., "always allow sending Slack messages to #dev-alerts") | Async notification + one-click approval via TUI or Slack skill (reusing existing skills); full audit trail for each pre-approval decision | Templates are Court-reviewed artifacts; revocation is immediate and logged; they cannot override the CISO persona veto or isolation invariants |
+| **A5** | L5 — self-improvement bottleneck | Create a "fast-track" Court path for patches that achieve ≥4/5 reviewer consensus; human approval still required for all code changes | Introduce an optional **Planner microVM** that decomposes high-level goals into sub-tasks before handing them to the ReAct agent; planner output is treated as a proposal, not an execution order | Fast-track still requires the full multi-LLM SDLC; the Planner VM runs in Firecracker with `cap-drop ALL`; self-modification of the kernel, daemon, or Court remains blocked by design |
+| **A6** | L6 — single-user / single-VM | Add session IDs to `chat.message` payloads; AegisHub routes by session ID (routing table already supports arbitrary VM IDs) | Add a lightweight reverse-proxy or session-manager component in AegisHub for load-balancing across multiple agent VMs | Per-session isolation must be strictly maintained; no shared memory between sessions; scales via AegisHub's existing routing plane |
+
+**Non-negotiable constraints for all roadmap items:**
+- Changes to limits, ACL tables, or component topology require a Court-reviewed proposal targeting the affected component.
+- No roadmap item may weaken the immutable design rules in §7 (per-skill microVM isolation, no secrets in LLM context).
+- All new microVM types (Orchestrator, Planner) use the standard Firecracker rootfs pipeline and must pass the SAST/SCA/policy security gate before activation.
+- All new skills (`schedule.create`, `webhook.register`, etc.) follow the standard skill-addition SDLC (FR-001.1).
 
 ## 11. SDLC, Governance & Release Process
 
@@ -504,12 +542,18 @@ The Court will periodically review BOMs against new CVEs as part of operations.
 - Enterprise customization of personas and policies.
 - 10+ production-grade skills.
 - Improved observability and healthchecks.
+- **Agent autonomy (A1)**: Configurable tool-call limit via Court-approved daemon setting.
+- **Agent autonomy (A2)**: Durable in-VM session storage (append-only file or SQLite inside agent VM).
+- **Agent autonomy (A4)**: Pre-approved goal templates via Court-reviewed user policy.
 
 **Phase 3 – Long-term (6–12 months)**
 - Gaining measurable adoption over broader agents by being the safer, more trustworthy choice.
 - Optional controlled cloud LLM support (Court-reviewed).
 - SOC 2 Type 1 readiness path.
 - Broader ecosystem contributions welcomed.
+- **Agent autonomy (A3)**: Event-driven and scheduled goals via isolated Orchestrator microVM and new skills (`schedule.create`, `webhook.register`, `monitor.start`).
+- **Agent autonomy (A5)**: Fast-track Court path (≥4/5 consensus) and optional Planner microVM for goal decomposition.
+- **Agent autonomy (A6)**: Multi-session support via AegisHub session-ID routing; optional HA session manager.
 
 Success between phases emphasizes functionality first, followed immediately by verified security assurances (never skipped).
 
@@ -522,6 +566,10 @@ Success between phases emphasizes functionality first, followed immediately by v
 - **Secrets Proxy**: Dedicated component for runtime secret injection without exposing keys to LLMs.
 - **Safe Mode**: Minimal daemon configuration for recovery from severe incidents.
 - **Merkle-tree Audit Log**: Tamper-evident, append-only record of all proposals, reviews, actions, and decisions.
+- **ReAct Loop**: The Reason + Act loop running inside the agent VM: call LLM → parse tool-call → dispatch tool → append result → repeat until no tool-call or limit reached.
+- **Orchestrator microVM** *(roadmap)*: An optional isolated Firecracker VM that injects scheduled or event-driven `chat.message` payloads into AegisHub, enabling background and monitoring goals without modifying the core agent VM.
+- **Planner microVM** *(roadmap)*: An optional isolated Firecracker VM that decomposes high-level user goals into ordered sub-tasks represented as structured proposals before handing them to the ReAct agent.
+- **Pre-approved Goal Template** *(roadmap)*: A Court-reviewed, user-signed policy artifact that pre-authorizes specific, bounded action patterns (e.g., “always allow sending Slack messages to #dev-alerts”), reducing confirmation friction for routine trusted tasks.
 
 ### References & Related Documents
 - `docs/threat-model.md` — Expanded STRIDE tables
