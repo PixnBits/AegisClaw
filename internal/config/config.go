@@ -103,6 +103,28 @@ type Config struct {
 		// MaxSubscriptions is the hard cap on active subscriptions. Defaults to 20.
 		MaxSubscriptions int `yaml:"max_subscriptions" mapstructure:"max_subscriptions"`
 	} `yaml:"eventbus" mapstructure:"eventbus"`
+	Worker struct {
+		// Dir is where worker records are persisted.
+		// Defaults to ~/.local/share/aegisclaw/workers.
+		Dir string `yaml:"dir" mapstructure:"dir"`
+		// MaxConcurrent is the hard cap on simultaneously running Worker VMs.
+		// Defaults to 4.
+		MaxConcurrent int `yaml:"max_concurrent" mapstructure:"max_concurrent"`
+		// DefaultTimeoutMins is the default task timeout for workers without an
+		// explicit timeout. Defaults to 20.
+		DefaultTimeoutMins int `yaml:"default_timeout_mins" mapstructure:"default_timeout_mins"`
+		// RootfsPath is the rootfs image used for Worker VMs.
+		// Defaults to the same image as the main agent.
+		RootfsPath string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+	} `yaml:"worker" mapstructure:"worker"`
+	Dashboard struct {
+		// Enabled controls whether the local web dashboard starts with the daemon.
+		// Defaults to false.
+		Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+		// Addr is the listen address for the dashboard HTTP server.
+		// Defaults to "127.0.0.1:7878".
+		Addr string `yaml:"addr" mapstructure:"addr"`
+	} `yaml:"dashboard" mapstructure:"dashboard"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -232,6 +254,24 @@ func DefaultConfig() Config {
 			MaxPendingTimers: 20,
 			MaxSubscriptions: 20,
 		},
+		Worker: struct {
+			Dir                string `yaml:"dir" mapstructure:"dir"`
+			MaxConcurrent      int    `yaml:"max_concurrent" mapstructure:"max_concurrent"`
+			DefaultTimeoutMins int    `yaml:"default_timeout_mins" mapstructure:"default_timeout_mins"`
+			RootfsPath         string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+		}{
+			Dir:                filepath.Join(home, ".local", "share", "aegisclaw", "workers"),
+			MaxConcurrent:      4,
+			DefaultTimeoutMins: 20,
+			RootfsPath:         "/var/lib/aegisclaw/rootfs-templates/alpine.ext4",
+		},
+		Dashboard: struct {
+			Enabled bool   `yaml:"enabled" mapstructure:"enabled"`
+			Addr    string `yaml:"addr" mapstructure:"addr"`
+		}{
+			Enabled: false,
+			Addr:    "127.0.0.1:7878",
+		},
 	}
 }
 
@@ -292,6 +332,12 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("eventbus.dir", defaults.EventBus.Dir)
 	viper.SetDefault("eventbus.max_pending_timers", defaults.EventBus.MaxPendingTimers)
 	viper.SetDefault("eventbus.max_subscriptions", defaults.EventBus.MaxSubscriptions)
+	viper.SetDefault("worker.dir", defaults.Worker.Dir)
+	viper.SetDefault("worker.max_concurrent", defaults.Worker.MaxConcurrent)
+	viper.SetDefault("worker.default_timeout_mins", defaults.Worker.DefaultTimeoutMins)
+	viper.SetDefault("worker.rootfs_path", defaults.Worker.RootfsPath)
+	viper.SetDefault("dashboard.enabled", defaults.Dashboard.Enabled)
+	viper.SetDefault("dashboard.addr", defaults.Dashboard.Addr)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -357,6 +403,8 @@ func validateConfig(config *Config) error {
 		"snapshot.dir":               config.Snapshot.Dir,
 		"memory.dir":                 config.Memory.Dir,
 		"eventbus.dir":               config.EventBus.Dir,
+		"worker.dir":                 config.Worker.Dir,
+		"worker.rootfs_path":         config.Worker.RootfsPath,
 	}
 
 	for name, path := range paths {

@@ -807,5 +807,53 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 				a.ApprovalID, a.Title, a.RiskLevel), nil
 		})
 
+	// ── Worker tools (Phase 3) ────────────────────────────────────────────────
+
+	reg.Register("spawn_worker",
+		"Spawn an ephemeral Worker agent for a focused subtask. Args: {task_description, role (researcher|coder|summarizer|custom), tools_granted (list), timeout_mins, task_id}. Blocks until complete; returns structured result.",
+		func(ctx context.Context, args string) (string, error) {
+			var params spawnWorkerParams
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				return "", fmt.Errorf("invalid spawn_worker args: %w", err)
+			}
+			return spawnWorker(ctx, env, params)
+		})
+
+	reg.Register("worker_status",
+		"Get the status and result of a previously spawned worker. Args: {worker_id} or {} to list recent workers.",
+		func(_ context.Context, args string) (string, error) {
+			if env.WorkerStore == nil {
+				return "Worker store not initialized.", nil
+			}
+			var params struct {
+				WorkerID string `json:"worker_id"`
+			}
+			json.Unmarshal([]byte(args), &params) //nolint:errcheck
+
+			if params.WorkerID != "" {
+				w, ok := env.WorkerStore.Get(params.WorkerID)
+				if !ok {
+					return fmt.Sprintf("Worker %s not found.", params.WorkerID), nil
+				}
+				return formatWorkerRecord(w), nil
+			}
+			// List recent workers.
+			workers := env.WorkerStore.List(false)
+			if len(workers) == 0 {
+				return "No workers found.", nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("Recent Workers (%d):\n", len(workers)))
+			limit := 10
+			if len(workers) < limit {
+				limit = len(workers)
+			}
+			for _, w := range workers[:limit] {
+				b.WriteString(fmt.Sprintf("  [%s]  %-11s  %-12s  steps=%-3d  task=%s\n",
+					w.WorkerID[:8], w.Status, w.Role, w.StepCount, w.TaskID))
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
+		})
+
 	return reg
 }

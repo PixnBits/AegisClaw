@@ -66,6 +66,14 @@ const (
 	ActionApprovalRequest ActionType = "approval.request"
 	// ActionApprovalDecide is logged when a human approves or rejects a request.
 	ActionApprovalDecide ActionType = "approval.decide"
+	// ActionWorkerSpawn is logged when the Orchestrator spawns an ephemeral Worker.
+	ActionWorkerSpawn ActionType = "worker.spawn"
+	// ActionWorkerComplete is logged when a Worker finishes successfully.
+	ActionWorkerComplete ActionType = "worker.complete"
+	// ActionWorkerTimeout is logged when a Worker exceeds its deadline.
+	ActionWorkerTimeout ActionType = "worker.timeout"
+	// ActionWorkerDestroy is logged when a Worker VM is stopped and deleted.
+	ActionWorkerDestroy ActionType = "worker.destroy"
 	// ActionSystemComponentActivate is logged when a core system microVM
 	// (e.g. AegisHub) is launched at daemon startup. These are distinct from
 	// skill activations which go through user-initiated proposals.
@@ -115,6 +123,10 @@ var validActionTypes = map[ActionType]bool{
 	ActionEventUnsubscribe:        true,
 	ActionApprovalRequest:         true,
 	ActionApprovalDecide:          true,
+	ActionWorkerSpawn:             true,
+	ActionWorkerComplete:          true,
+	ActionWorkerTimeout:           true,
+	ActionWorkerDestroy:           true,
 	ActionSystemComponentActivate: true,
 }
 

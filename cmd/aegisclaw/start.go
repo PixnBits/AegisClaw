@@ -116,6 +116,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Fires due timers and dispatches wakeup events.
 	startEventBusDaemon(cmd.Context(), env)
 
+	// Phase 4: Start the local web dashboard if enabled.
+	startDashboard(cmd.Context(), env, apiSrv)
+
 	// Create the court engine once and share it across handlers so session
 	// state persists between review and vote calls.
 	courtEngine, err := initCourtEngine(env, toolRegistry)
@@ -155,6 +158,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("event.approvals.decide", makeApprovalsDecideHandler(env))
 	apiSrv.Handle("event.timers.list", makeTimersListHandler(env))
 	apiSrv.Handle("event.signals.list", makeSignalsListHandler(env))
+	// Phase 3: Worker handlers.
+	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
+	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
