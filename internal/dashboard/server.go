@@ -90,6 +90,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/audit", s.handleAudit)
 	s.mux.HandleFunc("/skills", s.handleSkills)
 	s.mux.HandleFunc("/settings", s.handleSettings)
+	s.mux.HandleFunc("/chat", s.handleChat)
+	s.mux.HandleFunc("/chat/send", s.handleChatSend)
 	s.mux.HandleFunc("/events", s.handleSSE)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -204,6 +206,57 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "Settings", settingsTmpl, nil)
+}
+
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, "Chat", chatTmpl, nil)
+}
+
+func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 512<<10) // 512 KB limit
+	var req struct {
+		Input   string `json:"input"`
+		History []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"history,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON: " + err.Error()}) //nolint:errcheck
+		return
+	}
+	req.Input = strings.TrimSpace(req.Input)
+	if req.Input == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "input required"}) //nolint:errcheck
+		return
+	}
+	payload := mustMarshal(map[string]interface{}{
+		"input":   req.Input,
+		"history": req.History,
+	})
+	resp, err := s.apiClient.Call(r.Context(), "chat.message", payload)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+		return
+	}
+	if resp == nil || !resp.Success {
+		errMsg := "unknown error"
+		if resp != nil && resp.Error != "" {
+			errMsg = resp.Error
+		}
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg}) //nolint:errcheck
+		return
+	}
+	w.Write(resp.Data) //nolint:errcheck
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +385,17 @@ button.approve{background:#1a7f37;border-color:#3fb950;color:#3fb950}
 input[type=text],input[type=search]{background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:.3rem .6rem;font-size:.875rem}
 a.nav-link{color:#58a6ff}
 #sse-status{font-size:.75rem;color:#8b949e;margin-left:auto}
+#chat-wrap{position:fixed;top:3rem;bottom:0;left:0;right:0;display:flex;flex-direction:column;z-index:1}
+#chat-msgs{flex:1;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:.75rem}
+#chat-input-area{border-top:1px solid #30363d;padding:.75rem 1.5rem;background:#161b22}
+.msg{display:flex}
+.msg-user{justify-content:flex-end}
+.msg-assistant,.msg-error{justify-content:flex-start}
+.bubble{max-width:75%;padding:.6rem .9rem;border-radius:8px;white-space:pre-wrap;word-break:break-word;font-size:.875rem;line-height:1.6}
+.msg-user .bubble{background:#1a3a6b;border:1px solid #2952a3;color:#e6edf3}
+.msg-assistant .bubble{background:#161b22;border:1px solid #30363d}
+.msg-error .bubble{background:#2d0f0f;border:1px solid #f85149;color:#f85149}
+.typing .bubble{color:#8b949e;font-style:italic}
 `
 
 const dashboardNav = `
@@ -345,6 +409,7 @@ const dashboardNav = `
   <a href="/approvals">Approvals</a>
   <a href="/audit">Audit</a>
   <a href="/settings">Settings</a>
+  <a href="/chat">Chat</a>
   <span id="sse-status">&#9679;</span>
 </nav>`
 
@@ -638,3 +703,110 @@ const skillsTmpl = `
   <p class="empty">No proposals yet. Submit a skill proposal via <code>aegisclaw skill add</code>.</p>
   {{end}}
 </div>`
+
+const chatTmpl = `
+<div id="chat-wrap">
+  <div id="chat-msgs"></div>
+  <div id="chat-input-area">
+    <form id="chat-form">
+      <div style="display:flex;gap:.5rem;align-items:flex-end">
+        <textarea id="chat-input" rows="1"
+          placeholder="Message the agent… (Enter to send, Shift+Enter for newline)"
+          style="flex:1;resize:none;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:.5rem .75rem;font-size:.875rem;font-family:inherit;line-height:1.5;max-height:120px;overflow-y:auto"></textarea>
+        <button type="submit" id="send-btn">Send</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+(function(){
+  var history=[];
+  var MAX=40;
+
+  function appendMsg(role,text){
+    var msgs=document.getElementById('chat-msgs');
+    var div=document.createElement('div');
+    div.className='msg msg-'+role;
+    var bub=document.createElement('div');
+    bub.className='bubble';
+    bub.textContent=text;
+    div.appendChild(bub);
+    msgs.appendChild(div);
+    msgs.scrollTop=msgs.scrollHeight;
+    return div;
+  }
+
+  function setDisabled(disabled){
+    var inp=document.getElementById('chat-input');
+    var btn=document.getElementById('send-btn');
+    inp.disabled=disabled;
+    btn.disabled=disabled;
+    btn.textContent=disabled?'…':'Send';
+    if(!disabled)inp.focus();
+  }
+
+  var typingDiv=null;
+  function showTyping(){
+    typingDiv=appendMsg('typing','Agent is thinking…');
+  }
+  function clearTyping(){
+    if(typingDiv){typingDiv.remove();typingDiv=null;}
+  }
+
+  document.getElementById('chat-form').addEventListener('submit',function(e){
+    e.preventDefault();
+    var inp=document.getElementById('chat-input');
+    var text=inp.value.trim();
+    if(!text)return;
+    inp.value='';
+    inp.style.height='auto';
+    sendMessage(text);
+  });
+
+  document.getElementById('chat-input').addEventListener('keydown',function(e){
+    if(e.key==='Enter'&&!e.shiftKey){
+      e.preventDefault();
+      document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+    }
+  });
+
+  document.getElementById('chat-input').addEventListener('input',function(){
+    this.style.height='auto';
+    this.style.height=Math.min(this.scrollHeight,120)+'px';
+  });
+
+  async function sendMessage(input){
+    appendMsg('user',input);
+    var snapshot=history.slice();
+    history.push({role:'user',content:input});
+    if(history.length>MAX)history.splice(0,2);
+    setDisabled(true);
+    showTyping();
+    try{
+      var res=await fetch('/chat/send',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({input:input,history:snapshot})
+      });
+      var data=await res.json();
+      clearTyping();
+      if(data.error){
+        appendMsg('error','Error: '+data.error);
+        history.pop();
+      }else{
+        var content=data.content||'(empty response)';
+        appendMsg('assistant',content);
+        history.push({role:'assistant',content:data.content||''});
+        if(history.length>MAX)history.splice(0,2);
+      }
+    }catch(e){
+      clearTyping();
+      appendMsg('error','Network error: '+e.message);
+      history.pop();
+    }
+    setDisabled(false);
+  }
+
+  document.getElementById('chat-input').focus();
+})();
+</script>`
