@@ -108,11 +108,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
 	approvals, _ := s.fetchRaw(r.Context(), "event.approvals.list", map[string]bool{"pending_only": true})
 	timers, _ := s.fetchRaw(r.Context(), "event.timers.list", nil)
+	sandboxes, _ := s.fetchRaw(r.Context(), "sandbox.list", map[string]bool{"running_only": true})
 	memories, _ := s.fetchRaw(r.Context(), "memory.list", map[string]interface{}{"limit": 1, "count_only": true})
 
 	workerCount := countItems(workers)
 	approvalCount := countItems(approvals)
 	timerCount := countItems(timers)
+	runningVMCount := countItems(sandboxes)
+	runningVMVCPUs, runningVMMemoryMB := sandboxResourceTotals(sandboxes)
 
 	var memCount int
 	if m, ok := memories.(map[string]interface{}); ok {
@@ -122,12 +125,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "Overview", overviewTmpl, map[string]interface{}{
-		"WorkerCount":   workerCount,
-		"ApprovalCount": approvalCount,
-		"TimerCount":    timerCount,
-		"MemoryCount":   memCount,
-		"Workers":       workers,
-		"Approvals":     approvals,
+		"WorkerCount":       workerCount,
+		"ApprovalCount":     approvalCount,
+		"TimerCount":        timerCount,
+		"MemoryCount":       memCount,
+		"RunningVMCount":    runningVMCount,
+		"RunningVMVCPUs":    runningVMVCPUs,
+		"RunningVMMemoryMB": runningVMMemoryMB,
+		"RunningVMs":        sandboxes,
+		"Workers":           workers,
+		"Approvals":         approvals,
 	})
 }
 
@@ -277,7 +284,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	ctx := r.Context()
-	ticker := time.NewTicker(5 * time.Second)
+  ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	fmt.Fprintf(w, "data: {\"type\":\"heartbeat\"}\n\n")
@@ -290,10 +297,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-ticker.C:
 			workers, _ := s.fetchRaw(ctx, "worker.list", map[string]bool{"active_only": true})
 			approvals, _ := s.fetchRaw(ctx, "event.approvals.list", map[string]bool{"pending_only": true})
+			toolEvents, _ := s.fetchRaw(ctx, "chat.tool_events", map[string]int{"limit": 40})
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type":              "update",
 				"active_workers":    workers,
 				"pending_approvals": approvals,
+				"tool_events":       toolEvents,
 				"ts":                time.Now().UTC().Format(time.RFC3339),
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)
@@ -360,6 +369,29 @@ func countItems(v interface{}) int {
 	return 0
 }
 
+func sandboxResourceTotals(v interface{}) (vcpus int64, memoryMB int64) {
+	if v == nil {
+		return 0, 0
+	}
+	list, ok := v.([]interface{})
+	if !ok {
+		return 0, 0
+	}
+	for _, raw := range list {
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if c, ok := m["vcpus"].(float64); ok {
+			vcpus += int64(c)
+		}
+		if mem, ok := m["memory_mb"].(float64); ok {
+			memoryMB += int64(mem)
+		}
+	}
+	return vcpus, memoryMB
+}
+
 // pageWrap renders a full HTML page with shared chrome around the body content.
 func pageWrap(title, body string) string {
 	return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">` +
@@ -400,9 +432,18 @@ button.approve{background:#1a7f37;border-color:#3fb950;color:#3fb950}
 input[type=text],input[type=search]{background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:.3rem .6rem;font-size:.875rem}
 a.nav-link{color:#58a6ff}
 #sse-status{font-size:.75rem;color:#8b949e;margin-left:auto}
-#chat-wrap{position:fixed;top:3rem;bottom:0;left:0;right:0;display:flex;flex-direction:column;z-index:1}
-#chat-msgs{flex:1;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:.75rem}
-#chat-input-area{border-top:1px solid #30363d;padding:.75rem 1.5rem;background:#161b22}
+#chat-wrap{position:fixed;top:3rem;bottom:0;left:0;right:0;display:flex;z-index:1}
+#chat-layout{display:flex;flex:1;min-height:0}
+#chat-sidebar{width:260px;background:#11161d;border-right:1px solid #30363d;display:flex;flex-direction:column}
+#chat-sessions-header{padding:.8rem;border-bottom:1px solid #30363d;display:flex;justify-content:space-between;align-items:center}
+#chat-sessions{overflow-y:auto;padding:.5rem;display:flex;flex-direction:column;gap:.35rem}
+.session-item{border:1px solid #2b3440;background:#0d1117;border-radius:6px;padding:.5rem .6rem;cursor:pointer}
+.session-item.active{border-color:#58a6ff;background:#122033}
+.session-title{font-size:.82rem;color:#dbe5f1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.session-meta{font-size:.72rem;color:#8b949e;margin-top:.2rem}
+#chat-main{display:flex;flex-direction:column;flex:1;min-width:0}
+#chat-msgs{flex:1;overflow-y:auto;padding:1.2rem;display:flex;flex-direction:column;gap:.9rem}
+#chat-input-area{border-top:1px solid #30363d;padding:.75rem 1rem;background:#161b22}
 .msg{display:flex}
 .msg-user{justify-content:flex-end}
 .msg-assistant,.msg-error{justify-content:flex-start}
@@ -411,6 +452,24 @@ a.nav-link{color:#58a6ff}
 .msg-assistant .bubble{background:#161b22;border:1px solid #30363d}
 .msg-error .bubble{background:#2d0f0f;border:1px solid #f85149;color:#f85149}
 .typing .bubble{color:#8b949e;font-style:italic}
+.assistant-stack{display:flex;flex-direction:column;gap:.45rem;max-width:80%}
+.tool-log{border:1px solid #2f3a47;background:#0f151d;border-radius:8px;padding:.5rem .65rem;font-size:.8rem}
+.tool-log-title{color:#b5c6da;font-weight:600;margin-bottom:.35rem}
+.tool-call{border-top:1px dashed #2b3440;padding-top:.35rem;margin-top:.35rem}
+.tool-call:first-of-type{border-top:none;margin-top:0;padding-top:0}
+.tool-summary{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.tool-name{font-weight:600;color:#dce7f3}
+.tool-state-ok{color:#3fb950}
+.tool-state-fail{color:#f85149}
+.tool-duration{color:#8b949e}
+.tool-details{margin-top:.25rem}
+.tool-details summary{cursor:pointer;color:#9ec1e6}
+.tool-payload{white-space:pre-wrap;word-break:break-word;background:#0b1016;border:1px solid #2a323d;border-radius:6px;padding:.4rem .55rem;margin-top:.35rem;max-height:220px;overflow:auto}
+@media (max-width: 900px){
+  #chat-sidebar{width:190px}
+  .bubble{max-width:90%}
+  .assistant-stack{max-width:94%}
+}
 `
 
 const dashboardNav = `
@@ -434,10 +493,10 @@ const dashboardSSEScript = `
   const s=document.getElementById('sse-status');
   try{
     const es=new EventSource('/events');
-    es.onopen=()=>{s.textContent='&#9679; live';s.style.color='#3fb950'};
-    es.onerror=()=>{s.textContent='&#9679; disconnected';s.style.color='#f85149'};
+    es.onopen=()=>{s.innerHTML='&#9679; live';s.style.color='#3fb950'};
+    es.onerror=()=>{s.innerHTML='&#9679; disconnected';s.style.color='#f85149'};
     es.onmessage=(e)=>{const d=JSON.parse(e.data);if(d.type==='update'&&window.onSSEUpdate)window.onSSEUpdate(d)};
-  }catch(e){s.textContent='&#9679; no sse'}
+  }catch(e){s.innerHTML='&#9679; no sse'}
 })();
 </script>`
 
@@ -622,6 +681,10 @@ const overviewTmpl = `
 <h1>{{.Title}}</h1>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem">
   <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#f2cc60">{{.RunningVMCount}}</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Running MicroVMs</div>
+  </div>
+  <div class="section" style="padding:1.25rem;text-align:center">
     <div style="font-size:2rem;font-weight:700;color:#3fb950">{{.WorkerCount}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Active Workers</div>
   </div>
@@ -637,7 +700,35 @@ const overviewTmpl = `
     <div style="font-size:2rem;font-weight:700;color:#a5d6ff">{{.MemoryCount}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Memory Entries</div>
   </div>
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#7ee787">{{.RunningVMVCPUs}}</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Allocated vCPUs</div>
+  </div>
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#79c0ff">{{.RunningVMMemoryMB}} MB</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Allocated VM Memory</div>
+  </div>
 </div>
+
+{{if .RunningVMs}}
+<div class="section">
+  <div class="section-header">Running MicroVMs</div>
+  <table>
+    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>vCPUs</th><th>Memory</th></tr></thead>
+    <tbody>
+    {{range .RunningVMs}}
+    <tr>
+      <td><strong>{{index . "name"}}</strong></td>
+      <td><code>{{truncate (index . "id") 12}}</code></td>
+      <td><span class="badge badge-running">{{index . "state"}}</span></td>
+      <td>{{index . "vcpus"}}</td>
+      <td>{{index . "memory_mb"}} MB</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
 
 {{if .Workers}}
 <div class="section">
@@ -723,22 +814,35 @@ const skillsTmpl = `
 
 const chatTmpl = `
 <div id="chat-wrap">
-  <div id="chat-msgs"></div>
-  <div id="chat-input-area">
-    <form id="chat-form">
-      <div style="display:flex;gap:.5rem;align-items:flex-end">
-        <textarea id="chat-input" rows="1"
-          placeholder="Message the agent… (Enter to send, Shift+Enter for newline)"
-          style="flex:1;resize:none;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:.5rem .75rem;font-size:.875rem;font-family:inherit;line-height:1.5;max-height:120px;overflow-y:auto"></textarea>
-        <button type="submit" id="send-btn">Send</button>
+  <div id="chat-layout">
+    <aside id="chat-sidebar">
+      <div id="chat-sessions-header">
+        <strong>Sessions</strong>
+        <button type="button" id="new-session-btn">New</button>
       </div>
-    </form>
+      <div id="chat-sessions"></div>
+    </aside>
+    <section id="chat-main">
+      <div id="chat-msgs"></div>
+      <div id="chat-input-area">
+        <form id="chat-form">
+          <div style="display:flex;gap:.5rem;align-items:flex-end">
+            <textarea id="chat-input" rows="1"
+              placeholder="Message the agent… (Enter to send, Shift+Enter for newline)"
+              style="flex:1;resize:none;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:.5rem .75rem;font-size:.875rem;font-family:inherit;line-height:1.5;max-height:120px;overflow-y:auto"></textarea>
+            <button type="submit" id="send-btn">Send</button>
+          </div>
+        </form>
+      </div>
+    </section>
   </div>
 </div>
 <script>
 (function(){
-  var history=[];
-  var MAX=40;
+  var SESSION_KEY='aegisclaw.chat.sessions.v1';
+  var MAX=120;
+  var sessions=[];
+  var activeSessionId='';
 
   function appendMsg(role,text){
     var msgs=document.getElementById('chat-msgs');
@@ -753,6 +857,176 @@ const chatTmpl = `
     return div;
   }
 
+  function safeText(v){
+    return (v===undefined||v===null)?'':String(v);
+  }
+
+  function appendAssistant(content,toolCalls){
+    var msgs=document.getElementById('chat-msgs');
+    var row=document.createElement('div');
+    row.className='msg msg-assistant';
+
+    var stack=document.createElement('div');
+    stack.className='assistant-stack';
+
+    if(Array.isArray(toolCalls) && toolCalls.length>0){
+      var log=document.createElement('div');
+      log.className='tool-log';
+      var title=document.createElement('div');
+      title.className='tool-log-title';
+      title.textContent='Tool calls';
+      log.appendChild(title);
+
+      for(var i=0;i<toolCalls.length;i++){
+        var tc=toolCalls[i]||{};
+        var call=document.createElement('div');
+        call.className='tool-call';
+
+        var summary=document.createElement('div');
+        summary.className='tool-summary';
+        var name=document.createElement('span');
+        name.className='tool-name';
+        name.textContent=safeText(tc.tool||'unknown');
+        summary.appendChild(name);
+
+        var state=document.createElement('span');
+        state.className=(tc.success===false)?'tool-state-fail':'tool-state-ok';
+        state.textContent=(tc.success===false)?'error':'ok';
+        summary.appendChild(state);
+
+        if(typeof tc.duration_ms==='number'){
+          var dur=document.createElement('span');
+          dur.className='tool-duration';
+          dur.textContent=tc.duration_ms+'ms';
+          summary.appendChild(dur);
+        }
+        call.appendChild(summary);
+
+        var details=document.createElement('details');
+        details.className='tool-details';
+        var sum=document.createElement('summary');
+        sum.textContent='Details';
+        details.appendChild(sum);
+
+        if(tc.args){
+          var args=document.createElement('pre');
+          args.className='tool-payload';
+          args.textContent='args:\n'+safeText(tc.args);
+          details.appendChild(args);
+        }
+        if(tc.response){
+          var resp=document.createElement('pre');
+          resp.className='tool-payload';
+          resp.textContent='response:\n'+safeText(tc.response);
+          details.appendChild(resp);
+        }
+        if(tc.error){
+          var err=document.createElement('pre');
+          err.className='tool-payload';
+          err.textContent='error:\n'+safeText(tc.error);
+          details.appendChild(err);
+        }
+
+        call.appendChild(details);
+        log.appendChild(call);
+      }
+
+      stack.appendChild(log);
+    }
+
+    var bubble=document.createElement('div');
+    bubble.className='bubble';
+    bubble.textContent=safeText(content);
+    stack.appendChild(bubble);
+
+    row.appendChild(stack);
+    msgs.appendChild(row);
+    msgs.scrollTop=msgs.scrollHeight;
+  }
+
+  function uid(){
+    return Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+  }
+
+  function loadSessions(){
+    try{
+      var raw=localStorage.getItem(SESSION_KEY);
+      sessions=raw?JSON.parse(raw):[];
+      if(!Array.isArray(sessions))sessions=[];
+    }catch(_){
+      sessions=[];
+    }
+    if(sessions.length===0){
+      createSession('New session');
+      return;
+    }
+    activeSessionId=sessions[0].id;
+  }
+
+  function saveSessions(){
+    localStorage.setItem(SESSION_KEY,JSON.stringify(sessions));
+  }
+
+  function getActiveSession(){
+    for(var i=0;i<sessions.length;i++){
+      if(sessions[i].id===activeSessionId)return sessions[i];
+    }
+    return null;
+  }
+
+  function createSession(title){
+    var s={
+      id:uid(),
+      title:title||'New session',
+      created_at:Date.now(),
+      updated_at:Date.now(),
+      messages:[]
+    };
+    sessions.unshift(s);
+    activeSessionId=s.id;
+    saveSessions();
+    renderSessionList();
+    renderActiveSession();
+  }
+
+  function renderSessionList(){
+    var root=document.getElementById('chat-sessions');
+    root.innerHTML='';
+    for(var i=0;i<sessions.length;i++){
+      (function(s){
+        var item=document.createElement('div');
+        item.className='session-item'+(s.id===activeSessionId?' active':'');
+        var t=document.createElement('div');
+        t.className='session-title';
+        t.textContent=s.title||'Untitled session';
+        item.appendChild(t);
+        var m=document.createElement('div');
+        m.className='session-meta';
+        m.textContent=new Date(s.updated_at).toLocaleString();
+        item.appendChild(m);
+        item.addEventListener('click',function(){
+          activeSessionId=s.id;
+          renderSessionList();
+          renderActiveSession();
+        });
+        root.appendChild(item);
+      })(sessions[i]);
+    }
+  }
+
+  function renderActiveSession(){
+    var msgs=document.getElementById('chat-msgs');
+    msgs.innerHTML='';
+    var s=getActiveSession();
+    if(!s)return;
+    for(var i=0;i<s.messages.length;i++){
+      var msg=s.messages[i];
+      if(msg.role==='user')appendMsg('user',msg.content);
+      else if(msg.role==='assistant')appendAssistant(msg.content,msg.tool_calls||[]);
+      else if(msg.role==='error')appendMsg('error',msg.content);
+    }
+  }
+
   function setDisabled(disabled){
     var inp=document.getElementById('chat-input');
     var btn=document.getElementById('send-btn');
@@ -763,6 +1037,99 @@ const chatTmpl = `
   }
 
   var typingDiv=null;
+  var liveToolRow=null;
+  var liveToolLog=null;
+  var awaitingResponse=false;
+  var lastToolEventIDSeen=0;
+
+  function ensureLiveToolLog(){
+    var msgs=document.getElementById('chat-msgs');
+    if(!liveToolRow){
+      liveToolRow=document.createElement('div');
+      liveToolRow.className='msg msg-assistant';
+      var stack=document.createElement('div');
+      stack.className='assistant-stack';
+      liveToolLog=document.createElement('div');
+      liveToolLog.className='tool-log';
+      var title=document.createElement('div');
+      title.className='tool-log-title';
+      title.textContent='Tool calls (live)';
+      liveToolLog.appendChild(title);
+      stack.appendChild(liveToolLog);
+      liveToolRow.appendChild(stack);
+    }
+    if(!liveToolRow.parentNode){
+      msgs.appendChild(liveToolRow);
+    }
+    msgs.scrollTop=msgs.scrollHeight;
+  }
+
+  function clearLiveToolLog(){
+    if(liveToolRow){
+      liveToolRow.remove();
+    }
+    liveToolRow=null;
+    liveToolLog=null;
+  }
+
+  function appendLiveToolEvent(ev){
+    if(!liveToolLog)return;
+    var call=document.createElement('div');
+    call.className='tool-call';
+
+    var summary=document.createElement('div');
+    summary.className='tool-summary';
+
+    var name=document.createElement('span');
+    name.className='tool-name';
+    name.textContent=safeText(ev.tool||'unknown');
+    summary.appendChild(name);
+
+    var state=document.createElement('span');
+    if(ev.phase==='start'){
+      state.className='tool-state-ok';
+      state.textContent='running';
+    }else if(ev.success===false){
+      state.className='tool-state-fail';
+      state.textContent='error';
+    }else{
+      state.className='tool-state-ok';
+      state.textContent='ok';
+    }
+    summary.appendChild(state);
+
+    if(typeof ev.duration_ms==='number' && ev.duration_ms>0){
+      var dur=document.createElement('span');
+      dur.className='tool-duration';
+      dur.textContent=ev.duration_ms+'ms';
+      summary.appendChild(dur);
+    }
+
+    call.appendChild(summary);
+
+    var details=document.createElement('details');
+    details.className='tool-details';
+    var sum=document.createElement('summary');
+    sum.textContent='Details';
+    details.appendChild(sum);
+
+    var payload=document.createElement('pre');
+    payload.className='tool-payload';
+    var ts=safeText(ev.timestamp);
+    var phase=safeText(ev.phase||'unknown');
+    var text='phase: '+phase+'\n'+'timestamp: '+ts;
+    if(ev.error){
+      text+='\nerror: '+safeText(ev.error);
+    }
+    payload.textContent=text;
+    details.appendChild(payload);
+    call.appendChild(details);
+
+    liveToolLog.appendChild(call);
+    var msgs=document.getElementById('chat-msgs');
+    msgs.scrollTop=msgs.scrollHeight;
+  }
+
   function showTyping(){
     typingDiv=appendMsg('typing','Agent is thinking…');
   }
@@ -793,11 +1160,32 @@ const chatTmpl = `
   });
 
   async function sendMessage(input){
+    var s=getActiveSession();
+    if(!s){
+      createSession('New session');
+      s=getActiveSession();
+    }
+
+    var snapshot=[];
+    for(var i=0;i<s.messages.length;i++){
+      if(s.messages[i].role==='user' || s.messages[i].role==='assistant'){
+        snapshot.push({role:s.messages[i].role,content:s.messages[i].content});
+      }
+    }
+
     appendMsg('user',input);
-    var snapshot=history.slice();
-    history.push({role:'user',content:input});
-    if(history.length>MAX)history.splice(0,2);
+    s.messages.push({role:'user',content:input});
+    if(s.messages.length>MAX)s.messages=s.messages.slice(s.messages.length-MAX);
+    if(!s.title || s.title==='New session'){
+      s.title=input.slice(0,42);
+    }
+    s.updated_at=Date.now();
+    saveSessions();
+    renderSessionList();
+
     setDisabled(true);
+    awaitingResponse=true;
+    ensureLiveToolLog();
     showTyping();
     try{
       var res=await fetch('/chat/send',{
@@ -807,22 +1195,61 @@ const chatTmpl = `
       });
       var data=await res.json();
       clearTyping();
+      clearLiveToolLog();
+      awaitingResponse=false;
       if(data.error){
         appendMsg('error','Error: '+data.error);
-        history.pop();
+        s.messages.push({role:'error',content:'Error: '+data.error});
+        s.updated_at=Date.now();
+        saveSessions();
+        renderSessionList();
       }else{
         var content=data.content||'(empty response)';
-        appendMsg('assistant',content);
-        history.push({role:'assistant',content:data.content||''});
-        if(history.length>MAX)history.splice(0,2);
+        var toolCalls=Array.isArray(data.tool_calls)?data.tool_calls:[];
+        appendAssistant(content,toolCalls);
+        s.messages.push({role:'assistant',content:content,tool_calls:toolCalls});
+        if(s.messages.length>MAX)s.messages=s.messages.slice(s.messages.length-MAX);
+        s.updated_at=Date.now();
+        saveSessions();
+        renderSessionList();
       }
     }catch(e){
       clearTyping();
+      clearLiveToolLog();
+      awaitingResponse=false;
       appendMsg('error','Network error: '+e.message);
-      history.pop();
+      s.messages.push({role:'error',content:'Network error: '+e.message});
+      s.updated_at=Date.now();
+      saveSessions();
+      renderSessionList();
     }
     setDisabled(false);
   }
+
+  document.getElementById('new-session-btn').addEventListener('click',function(){
+    createSession('New session');
+  });
+
+  window.onSSEUpdate=function(d){
+    if(!d || !Array.isArray(d.tool_events) || d.tool_events.length===0){
+      return;
+    }
+
+    var newest=lastToolEventIDSeen;
+    for(var i=0;i<d.tool_events.length;i++){
+      var ev=d.tool_events[i]||{};
+      var id=Number(ev.id||0);
+      if(id>newest)newest=id;
+      if(!awaitingResponse)continue;
+      if(id<=lastToolEventIDSeen)continue;
+      appendLiveToolEvent(ev);
+    }
+    lastToolEventIDSeen=newest;
+  };
+
+  loadSessions();
+  renderSessionList();
+  renderActiveSession();
 
   document.getElementById('chat-input').focus();
 })();

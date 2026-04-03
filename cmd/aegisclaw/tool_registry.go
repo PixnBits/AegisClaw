@@ -369,6 +369,23 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			return fmt.Sprintf("Tools matching %q:\n%s", params.Query, strings.Join(lines, "\n")), nil
 		})
 
+	reg.Register("script.list_languages",
+		"List supported scripting runtimes for script execution. args: {}",
+		func(_ context.Context, _ string) (string, error) {
+			langs := supportedScriptLanguages()
+			return "Supported script runtimes: " + strings.Join(langs, ", "), nil
+		})
+
+	reg.Register("script.run",
+		"Execute short script code with strict limits and timeout. args: {language, code, args[], timeout_ms}. The LLM should generate code directly in the request.",
+		func(ctx context.Context, args string) (string, error) {
+			params, err := parseRunScriptParams(args)
+			if err != nil {
+				return "", err
+			}
+			return runScript(ctx, params)
+		})
+
 	reg.Register("snapshot.create",
 		"Create a Firecracker snapshot (memory + VM state) of the running agent VM. args: {label}",
 		func(ctx context.Context, args string) (string, error) {

@@ -132,6 +132,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Resume any proposals that were stuck in submitted/in_review when the
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
+	bootstrapDefaultScriptRunner(cmd.Context(), env, courtEngine)
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))
@@ -139,6 +140,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("skill.deactivate", makeSkillDeactivateHandler(env))
 	apiSrv.Handle("skill.invoke", makeSkillInvokeHandler(env))
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
+	apiSrv.Handle("sandbox.list", makeSandboxListHandler(env))
 	apiSrv.Handle("safe-mode.enable", makeSafeModeEnableHandler(env))
 	apiSrv.Handle("safe-mode.disable", makeSafeModeDisableHandler(env))
 	apiSrv.Handle("safe-mode.status", makeSafeModeStatusHandler(env))
@@ -147,6 +149,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
 	apiSrv.Handle("chat.tool", makeChatToolExecHandler(env, toolRegistry))
+	apiSrv.Handle("chat.tool_events", makeChatToolEventsHandler(env))
 	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
 	// D10: Composition manifest handlers for versioned deployment and rollback.
 	apiSrv.Handle("composition.current", makeCompositionCurrentHandler(env))
@@ -575,6 +578,39 @@ func makeSkillListHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		skills := env.Registry.List()
 		respData, _ := json.Marshal(skills)
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// makeSandboxListHandler returns runtime sandbox inventory for dashboard/API use.
+func makeSandboxListHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req struct {
+			RunningOnly bool `json:"running_only"`
+		}
+		_ = json.Unmarshal(data, &req)
+
+		items, err := env.Runtime.List(ctx)
+		if err != nil {
+			return &api.Response{Error: "failed to list sandboxes: " + err.Error()}
+		}
+
+		rows := make([]map[string]interface{}, 0, len(items))
+		for _, sb := range items {
+			if req.RunningOnly && sb.State != sandbox.StateRunning {
+				continue
+			}
+			rows = append(rows, map[string]interface{}{
+				"id":         sb.Spec.ID,
+				"name":       sb.Spec.Name,
+				"state":      string(sb.State),
+				"vcpus":      sb.Spec.Resources.VCPUs,
+				"memory_mb":  sb.Spec.Resources.MemoryMB,
+				"started_at": sb.StartedAt,
+			})
+		}
+
+		respData, _ := json.Marshal(rows)
 		return &api.Response{Success: true, Data: respData}
 	}
 }

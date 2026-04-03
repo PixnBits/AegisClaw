@@ -43,6 +43,23 @@ type SkillNetworkPolicy struct {
 
 var skillNameRegex = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,62}$`)
 var skillSecretRefRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]{0,127}$`)
+var supportedSkillLanguages = map[string]struct{}{
+	"go":         {},
+	"python":     {},
+	"javascript": {},
+	"typescript": {},
+	"bash":       {},
+	"sh":         {},
+}
+
+func isScriptingLanguage(language string) bool {
+	switch language {
+	case "python", "javascript", "typescript", "bash", "sh":
+		return true
+	default:
+		return false
+	}
+}
 
 // Validate checks the SkillSpec has all required fields.
 func (ss *SkillSpec) Validate() error {
@@ -72,8 +89,9 @@ func (ss *SkillSpec) Validate() error {
 	if ss.Language == "" {
 		ss.Language = "go"
 	}
-	if ss.Language != "go" {
-		return fmt.Errorf("only Go language is supported, got %q", ss.Language)
+	ss.Language = strings.ToLower(strings.TrimSpace(ss.Language))
+	if _, ok := supportedSkillLanguages[ss.Language]; !ok {
+		return fmt.Errorf("unsupported language %q; supported: go, python, javascript, typescript, bash, sh", ss.Language)
 	}
 	if ss.EntryPoint == "" {
 		return fmt.Errorf("entry point is required")
@@ -205,9 +223,13 @@ func (cg *CodeGenerator) Generate(builderID string, req *CodeGenRequest) (*CodeG
 
 	// Apply template if not already set
 	if req.SystemPrompt == "" {
-		tmpl, ok := cg.templates["skill_codegen"]
+		templateName := "skill_codegen"
+		if isScriptingLanguage(req.Spec.Language) {
+			templateName = "skill_script_runner"
+		}
+		tmpl, ok := cg.templates[templateName]
 		if !ok {
-			return nil, fmt.Errorf("skill_codegen template not found")
+			return nil, fmt.Errorf("%s template not found", templateName)
 		}
 		specJSON, _ := json.Marshal(req.Spec)
 		req.SystemPrompt, _ = tmpl.Format(map[string]string{
@@ -344,6 +366,39 @@ Errors to fix:
 {{errors}}
 
 Return ONLY valid JSON with corrected files and reasoning.`,
+		},
+		"skill_script_runner": {
+			Name:        "skill_script_runner",
+			Description: "Generate a hardened Go wrapper that executes approved scripts",
+			System: `You are an expert Go security engineer building AegisClaw skills.
+Generate a production-grade Go skill that exposes script execution safely.
+The final implementation MUST be Go and compile with the standard Go toolchain.
+
+Security requirements:
+- Strict interpreter allowlist (python3, node, bash only when explicitly requested)
+- Script content length limits and argument length limits
+- Context timeout for execution and forced process termination on timeout
+- No shell interpolation for user-provided args (use exec.CommandContext)
+- Redact sensitive values from logs and structured error responses
+- Return stdout/stderr with truncation limits
+
+Output format: JSON object with "files" (map of path to content), "reasoning" (string).`,
+			User: `Generate a Go-based scripting-runner skill for this specification:
+
+{{skill_spec}}
+
+Requirements:
+- main.go with vsock-based communication
+- Tool(s) must validate interpreter selection against an allowlist
+- Enforce per-request timeout and output-size limits
+- Unit tests for validation, timeout handling, and output truncation
+- go.mod and no placeholder code
+
+Return ONLY valid JSON matching this schema:
+{
+  "files": {"path/file.go": "package content..."},
+  "reasoning": "explanation of design decisions"
+}`,
 		},
 	}
 }
