@@ -280,7 +280,7 @@ func DefaultConfig() Config {
 			Enabled bool   `yaml:"enabled" mapstructure:"enabled"`
 			Addr    string `yaml:"addr" mapstructure:"addr"`
 		}{
-			Enabled: false,
+			Enabled: true,
 			Addr:    "127.0.0.1:7878",
 		},
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/audit"
@@ -81,6 +82,9 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		if req.Input == "" {
 			return &api.Response{Error: "input is required"}
 		}
+		if env.ToolEvents == nil {
+			env.ToolEvents = NewToolEventBuffer(400)
+		}
 
 		agentVMID, err := ensureAgentVM(ctx, env)
 		if err != nil {
@@ -130,6 +134,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		}
 
 		memoryToolEvidence := false
+		toolTrace := make([]map[string]interface{}, 0)
 
 		for i := 0; i < reactMaxIterations; i++ {
 			payloadBytes, _ := json.Marshal(agentChatPayload{
@@ -163,16 +168,43 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 			switch chatResp.Status {
 			case "final":
+				toolTraceJSON, _ := json.Marshal(toolTrace)
 				finalContent := enforceMemoryTruth(chatResp.Content, env, memoryToolEvidence)
 				respData, _ := json.Marshal(api.ChatMessageResponse{
-					Role:    "assistant",
-					Content: finalContent,
+					Role:      "assistant",
+					Content:   finalContent,
+					ToolCalls: toolTraceJSON,
 				})
 				return &api.Response{Success: true, Data: respData}
 
 			case "tool_call":
+				started := time.Now()
+				if env.ToolEvents != nil {
+					env.ToolEvents.RecordStart(chatResp.Tool)
+				}
 				toolResult, toolErr := toolRegistry.Execute(ctx, chatResp.Tool, chatResp.Args)
+				duration := time.Since(started)
+				argsPreview := chatResp.Args
+				if len(argsPreview) > 1000 {
+					argsPreview = argsPreview[:1000] + "\n...[args truncated]"
+				}
+				resultPreview := toolResult
+				if len(resultPreview) > 3000 {
+					resultPreview = resultPreview[:3000] + "\n...[response truncated]"
+				}
+				if env.ToolEvents != nil {
+					env.ToolEvents.RecordFinish(chatResp.Tool, toolErr == nil, toolErr, duration)
+				}
+				toolTrace = append(toolTrace, map[string]interface{}{
+					"tool":        chatResp.Tool,
+					"args":        argsPreview,
+					"response":    resultPreview,
+					"success":     toolErr == nil,
+					"duration_ms": duration.Milliseconds(),
+					"timestamp":   time.Now().UTC().Format(time.RFC3339),
+				})
 				if toolErr != nil {
+					toolTrace[len(toolTrace)-1]["error"] = toolErr.Error()
 					toolResult = fmt.Sprintf("Error executing %s: %v", chatResp.Tool, toolErr)
 				}
 				env.Logger.Info("tool executed via ReAct loop",
@@ -198,6 +230,26 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			Role:    "assistant",
 			Content: "I reached the tool call limit without a final answer. Please try rephrasing your request.",
 		})
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+// makeChatToolEventsHandler returns recent chat tool events for dashboard/UI consumers.
+func makeChatToolEventsHandler(env *runtimeEnv) api.Handler {
+	return func(_ context.Context, data json.RawMessage) *api.Response {
+		if env.ToolEvents == nil {
+			env.ToolEvents = NewToolEventBuffer(400)
+		}
+		limit := 20
+		if len(data) > 0 {
+			var req struct {
+				Limit int `json:"limit"`
+			}
+			if err := json.Unmarshal(data, &req); err == nil && req.Limit > 0 {
+				limit = req.Limit
+			}
+		}
+		respData, _ := json.Marshal(env.ToolEvents.Recent(limit))
 		return &api.Response{Success: true, Data: respData}
 	}
 }
@@ -589,6 +641,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 
 	// Tool-use gating — only act when asked.
 	b.WriteString("You have access to tools for managing skills and proposals. Only use a tool when the user asks you to DO something (list skills, create a proposal, check status, etc.). Do NOT call a tool for greetings, questions, or conversation.\n\n")
+	b.WriteString("If the user asks for dynamic runtime data or a computed result not already available in context, call tools to obtain it. Use `script.run` for short, bounded computation or runtime inspection when no dedicated tool exists. Generate minimal code directly in the tool args, execute it, and then summarize results.\n\n")
 
 	// Format with example.
 	b.WriteString("When you do need a tool, you MUST wrap it in triple-backtick fences with the language tag tool-call:\n\n")
@@ -611,6 +664,8 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"proposal.vote\" — cast a human vote to approve or reject a proposal (useful for escalated proposals). args: {\"id\": \"uuid\", \"approve\": true, \"reason\": \"...\"}\n")
 	b.WriteString("- \"activate_skill\" — activate an approved skill. args: {\"name\": \"skill_name\"}\n")
 	b.WriteString("- \"search_tools\" — search all available tools by keyword. args: {\"query\": \"...\"}\n")
+	b.WriteString("- \"script.list_languages\" — list supported scripting runtimes. args: {}\n")
+	b.WriteString("- \"script.run\" — execute short script code with strict limits. args: {\"language\": \"python|javascript|bash|sh\", \"code\": \"...\", \"args\": [], \"timeout_ms\": 3000}\n")
 	b.WriteString("- \"snapshot.create\" — create a Firecracker snapshot of the running agent VM. args: {\"label\": \"agent-baseline\"}\n")
 	b.WriteString("- \"snapshot.list\" — list all stored agent VM snapshots. args: {}\n")
 	b.WriteString("- \"snapshot.restore\" — restore the agent VM from a named snapshot. args: {\"label\": \"agent-baseline\"}\n")

@@ -10,9 +10,9 @@ func validSkillSpec() SkillSpec {
 		Description: "A test skill for unit testing",
 		Tools: []ToolSpec{
 			{
-				Name:        "greet",
-				Description: "Returns a greeting",
-				InputSchema: `{"type": "object", "properties": {"name": {"type": "string"}}}`,
+				Name:         "greet",
+				Description:  "Returns a greeting",
+				InputSchema:  `{"type": "object", "properties": {"name": {"type": "string"}}}`,
 				OutputSchema: `{"type": "object", "properties": {"message": {"type": "string"}}}`,
 			},
 		},
@@ -82,9 +82,14 @@ func TestSkillSpecValidation(t *testing.T) {
 			wantErr: "tool[0] description is required",
 		},
 		{
-			name:    "unsupported language",
+			name:    "supported scripting language",
 			modify:  func(s *SkillSpec) { s.Language = "python" },
-			wantErr: "only Go language is supported",
+			wantErr: "",
+		},
+		{
+			name:    "unsupported language",
+			modify:  func(s *SkillSpec) { s.Language = "rust" },
+			wantErr: "unsupported language",
 		},
 		{
 			name:    "empty entry point",
@@ -289,7 +294,7 @@ func TestPromptTemplateFormat(t *testing.T) {
 func TestDefaultTemplates(t *testing.T) {
 	templates := DefaultTemplates()
 
-	expected := []string{"skill_codegen", "skill_edit", "skill_fix"}
+	expected := []string{"skill_codegen", "skill_edit", "skill_fix", "skill_script_runner"}
 	for _, name := range expected {
 		tmpl, ok := templates[name]
 		if !ok {

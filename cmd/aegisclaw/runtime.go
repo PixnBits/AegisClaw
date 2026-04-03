@@ -48,6 +48,7 @@ type runtimeEnv struct {
 	WorkerStore      *worker.Store
 	Court            *court.Engine
 	LLMProxy         *llm.OllamaProxy
+	ToolEvents       *ToolEventBuffer
 	SafeMode         atomic.Bool
 
 	// AgentVMID is the ID of the main agent microVM. Protected by agentVMMu.
@@ -150,6 +151,7 @@ func initRuntime() (*runtimeEnv, error) {
 		EventBus:         eventBusInst,
 		WorkerStore:      workerStoreInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
+		ToolEvents:       NewToolEventBuffer(400),
 	}, nil
 }
 
