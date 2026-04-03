@@ -1,5 +1,39 @@
 # AegisClaw Changelog
 
+## Unreleased — Phase 6
+
+### Phase 6: Security Hardening, Privacy & Self-Hosting
+
+#### Software Bill of Materials (SBOM)
+- **`internal/sbom`**: New package that generates CycloneDX 1.4 JSON SBOMs from builder output.
+- `Generate(BuildInfo)` detects Go module dependencies from `go.mod` or import-scan fallback.
+- `Write(dir, *SBOM)` serialises to `<sbom_dir>/<proposal_id>/sbom.json`.
+- Builder pipeline: Step 9.5 emits `sbom.json` after every successful build (non-fatal on write error).
+  `PipelineResult.SBOMPath` records the path.
+- `Pipeline.SetSBOMDir(dir)` enables SBOM generation; default dir: `~/.local/share/aegisclaw/sbom`.
+- Config: `builder.sbom_dir` (default `~/.local/share/aegisclaw/sbom`).
+- Tool: `skill.sbom` — returns the SBOM for a skill by name or proposal ID.
+- CLI: `aegisclaw skill sbom <skill-name|proposal-id>` — prints the SBOM to stdout.
+
+#### Memory PII Redaction
+- **`internal/memory/pii.go`**: `Scrubber` type with 7 regex rules for common PII patterns:
+  email addresses, US phone numbers, SSNs, IPv4 addresses, JWT tokens, AWS access key IDs,
+  and generic API keys/passwords.
+- `Scrubber.Scrub(text)`, `Scrubber.ScrubEntry(*MemoryEntry)`, `Scrubber.ContainsPII(text)`.
+- Hooked into `Store.Store()`: when `PIIRedaction: true`, every entry is scrubbed before encryption.
+- Config: `memory.pii_redaction` (default `false`).
+- Wired into `runtime.go` via `StoreConfig.PIIRedaction = cfg.Memory.PIIRedaction`.
+
+#### Dashboard: Overview & Skills Pages
+- **`/` Overview page**: New home page showing quick-stats cards (active workers, pending approvals,
+  active timers, memory entry count) and live tables for active workers and pending approvals.
+  No longer redirects to `/agents`.
+- **`/skills` Skills & Proposals page**: Lists active skills (from `list_skills`) and all proposals
+  (from `list_proposals`) with status badges.
+- Navigation updated: `Overview`, `Agents`, `Skills`, `Async Hub`, `Memory`, `Approvals`, `Audit`, `Settings`.
+- Settings page expanded to document `memory.pii_redaction` and `worker.default_timeout_mins`.
+- Privacy Controls section added to Settings page.
+
 ## Unreleased — Phases 3, 4, 5
 
 ### Phase 5: Eval Harness

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
@@ -429,4 +430,89 @@ func runSkillInfo(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+var skillSBOMCmd = &cobra.Command{
+Use:   "sbom <name-or-id>",
+Short: "Print the Software Bill of Materials (SBOM) for a built skill",
+Long: `Prints the CycloneDX 1.4 SBOM emitted when the skill was built.
+The SBOM documents the skill component and its detected dependencies.
+
+Examples:
+  aegisclaw skill sbom greeter
+  aegisclaw skill sbom <proposal-id>`,
+Args: cobra.ExactArgs(1),
+RunE: runSkillSBOM,
+}
+
+func runSkillSBOM(_ *cobra.Command, args []string) error {
+nameOrID := args[0]
+
+env, err := initRuntime()
+if err != nil {
+return err
+}
+defer env.Logger.Sync()
+
+sbomDir := env.Config.Builder.SBOMDir
+if sbomDir == "" {
+return fmt.Errorf("SBOM directory not configured (builder.sbom_dir)")
+}
+
+// Try by proposal ID first (exact directory match).
+directPath := filepath.Join(sbomDir, nameOrID, "sbom.json")
+if s, readErr := tryReadSBOM(directPath); readErr == nil {
+return printSBOM(s)
+}
+
+// Try by skill name: scan all proposals.
+proposals, listErr := env.ProposalStore.List()
+if listErr != nil {
+return fmt.Errorf("list proposals: %w", listErr)
+}
+for _, p := range proposals {
+path := filepath.Join(sbomDir, p.ID, "sbom.json")
+s, readErr := tryReadSBOM(path)
+if readErr != nil {
+continue
+}
+if s.Metadata.Component.Name == nameOrID {
+return printSBOM(s)
+}
+}
+return fmt.Errorf("no SBOM found for %q — build the skill first with: aegisclaw skill add", nameOrID)
+}
+
+func tryReadSBOM(path string) (*sbomPkg, error) {
+return readSBOMFile(path)
+}
+
+func printSBOM(s *sbomPkg) error {
+if globalJSON {
+data, _ := json.MarshalIndent(s, "", "  ")
+fmt.Println(string(data))
+return nil
+}
+fmt.Printf("SBOM for %s v%s  (CycloneDX %s)\n", s.Metadata.Component.Name, s.Metadata.Component.Version, s.SpecVersion)
+fmt.Printf("  Serial: %s\n", s.SerialNumber)
+fmt.Printf("  Built:  %s\n", s.Metadata.Timestamp)
+if len(s.Metadata.Component.Hashes) > 0 {
+fmt.Printf("  Hash:   %s (%s)\n", s.Metadata.Component.Hashes[0].Content, s.Metadata.Component.Hashes[0].Alg)
+}
+if len(s.Components) > 0 {
+fmt.Printf("\n  Dependencies (%d):\n", len(s.Components))
+for _, c := range s.Components {
+ver := c.Version
+if ver == "" {
+ver = "unknown"
+}
+fmt.Printf("    %-50s  %s\n", c.Name, ver)
+}
+}
+for _, p := range s.Metadata.Component.Properties {
+if p.Name == "aegisclaw:proposal_id" {
+fmt.Printf("\n  Proposal: %s\n", p.Value)
+}
+}
+return nil
 }

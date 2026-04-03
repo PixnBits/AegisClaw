@@ -114,9 +114,10 @@ func initRuntime() (*runtimeEnv, error) {
 			ttl = memory.TTL90d
 		}
 		memoryInst, runtimeInitErr = memory.NewStore(memory.StoreConfig{
-			Dir:        cfg.Memory.Dir,
-			MaxSizeMB:  cfg.Memory.MaxSizeMB,
-			DefaultTTL: ttl,
+			Dir:          cfg.Memory.Dir,
+			MaxSizeMB:    cfg.Memory.MaxSizeMB,
+			DefaultTTL:   ttl,
+			PIIRedaction: cfg.Memory.PIIRedaction,
 		}, memIdentity)
 		if runtimeInitErr != nil {
 			return

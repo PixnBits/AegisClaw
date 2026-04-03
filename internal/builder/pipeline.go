@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/sbom"
 	"go.uber.org/zap"
 )
 
@@ -39,6 +41,9 @@ type PipelineResult struct {
 	Reasoning           string                       `json:"reasoning"`
 	Analysis            *AnalysisResult              `json:"analysis,omitempty"`
 	SecurityGateResult  *securitygate.PipelineResult `json:"security_gate_result,omitempty"`
+	// SBOMPath is the filesystem path to the emitted sbom.json for this build.
+	// Empty if SBOM generation was skipped (e.g. no output dir configured).
+	SBOMPath            string                       `json:"sbom_path,omitempty"`
 	Error               string                       `json:"error,omitempty"`
 	Round               int                          `json:"round"`
 	StartedAt           time.Time                    `json:"started_at"`
@@ -56,8 +61,11 @@ type Pipeline struct {
 	kern      *kernel.Kernel
 	store     *proposal.Store
 	logger    *zap.Logger
-	mu        sync.Mutex
-	runs      map[string]*PipelineResult
+	// sbomDir, when non-empty, enables SBOM generation.  The sbom.json file is
+	// written to <sbomDir>/<proposalID>/ after a successful build.
+	sbomDir string
+	mu      sync.Mutex
+	runs    map[string]*PipelineResult
 }
 
 // NewPipeline creates a Pipeline connecting all subsystems.
@@ -96,6 +104,14 @@ func NewPipeline(
 		logger:    logger,
 		runs:      make(map[string]*PipelineResult),
 	}, nil
+}
+
+// SetSBOMDir configures the directory where SBOM JSON files are written.
+// Call this before Execute; an empty string disables SBOM generation.
+func (p *Pipeline) SetSBOMDir(dir string) {
+	p.mu.Lock()
+	p.sbomDir = dir
+	p.mu.Unlock()
 }
 
 // Execute runs the full pipeline for an approved proposal.
@@ -299,6 +315,33 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 		result.CompletedAt = time.Now().UTC()
 		result.Duration = result.CompletedAt.Sub(result.StartedAt)
 		return result, fmt.Errorf("pipeline: %s", result.Error)
+	}
+
+	// Step 9.5: Emit SBOM if configured.
+	p.mu.Lock()
+	sbomDir := p.sbomDir
+	p.mu.Unlock()
+	if sbomDir != "" {
+		version := commitHash
+		if len(version) > 12 {
+			version = version[:12]
+		}
+		s := sbom.Generate(sbom.BuildInfo{
+			SkillName:        spec.Name,
+			SkillDescription: spec.Description,
+			Version:          version,
+			Language:         spec.Language,
+			Files:            codeResp.Files,
+			FileHashes:       result.FileHashes,
+			ProposalID:       prop.ID,
+		})
+		destDir := filepath.Join(sbomDir, prop.ID)
+		if sbomPath, sbomErr := sbom.Write(destDir, s); sbomErr != nil {
+			p.logger.Warn("SBOM write failed (non-fatal)", zap.Error(sbomErr))
+		} else {
+			result.SBOMPath = sbomPath
+			p.logger.Info("SBOM written", zap.String("path", sbomPath))
+		}
 	}
 
 	// Step 9: Mark complete

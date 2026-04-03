@@ -164,3 +164,25 @@ This plan is living — update it via Court-reviewed proposals as we learn from 
 - **2026-04-02**: Dashboard uses HTMX + Go backend for minimal attack surface.
 
 Any deviation from this plan requires a formal proposal and Governance Court consensus.
+
+## Phase 6: Security Hardening, Privacy & Self-Hosting (delivered)
+
+**Goal**: Raise the security and compliance bar while enabling basic self-hosting bootstrapping.
+
+Deliverables:
+- `internal/sbom/` — CycloneDX 1.4 SBOM generation; emitted by builder pipeline as Step 9.5.
+  `skill.sbom` tool + `aegisclaw skill sbom <name>` CLI command.
+  Config: `builder.sbom_dir` (default `~/.local/share/aegisclaw/sbom`).
+- `internal/memory/pii.go` — Regex-based PII scrubber (email, phone, SSN, IP, JWT, AWS keys,
+  generic secrets). Hooked into Store.Store() when `memory.pii_redaction: true`.
+- Dashboard `/` Overview page — quick-stats cards + live tables (active workers, pending approvals).
+- Dashboard `/skills` Skills & Proposals page — list proposals and active skills.
+- Settings page — expanded with PII redaction documentation + Privacy Controls section.
+- Navigation updated to include Overview and Skills pages.
+- `builder.sbom_dir` and `memory.pii_redaction` config fields with defaults.
+
+**Acceptance Criteria**:
+- `go test ./internal/sbom/...` passes all 4 tests.
+- `go test ./internal/memory/...` passes all scrubber + store tests (23 tests).
+- `go test ./internal/dashboard/...` passes all 8 tests (including new Overview and Skills pages).
+- `go build ./...` and `go vet ./...` pass cleanly.
