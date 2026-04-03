@@ -18,6 +18,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -30,6 +31,7 @@ var (
 	compositionInst *composition.Store
 	memoryInst      *memory.Store
 	eventBusInst    *eventbus.Bus
+	workerStoreInst *worker.Store
 	runtimeInitErr  error
 )
 
@@ -43,6 +45,7 @@ type runtimeEnv struct {
 	CompositionStore *composition.Store
 	MemoryStore      *memory.Store
 	EventBus         *eventbus.Bus
+	WorkerStore      *worker.Store
 	Court            *court.Engine
 	LLMProxy         *llm.OllamaProxy
 	SafeMode         atomic.Bool
@@ -124,6 +127,11 @@ func initRuntime() (*runtimeEnv, error) {
 			MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
 			MaxSubscriptions: cfg.EventBus.MaxSubscriptions,
 		})
+		if runtimeInitErr != nil {
+			return
+		}
+		// Worker Store: persist worker lifecycle records.
+		workerStoreInst, runtimeInitErr = worker.NewStore(cfg.Worker.Dir)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -139,6 +147,7 @@ func initRuntime() (*runtimeEnv, error) {
 		CompositionStore: compositionInst,
 		MemoryStore:      memoryInst,
 		EventBus:         eventBusInst,
+		WorkerStore:      workerStoreInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 	}, nil
 }

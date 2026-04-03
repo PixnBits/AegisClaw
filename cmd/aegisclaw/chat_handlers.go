@@ -570,6 +570,16 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("5. Store task context in memory (task_id) before scheduling async work so the agent can resume seamlessly on wakeup.\n")
 	b.WriteString("6. Always cancel timers and unsubscribe signals once the associated task completes.\n\n")
 
+	// Delegation rules (Phase 3).
+	b.WriteString("DELEGATION RULES (Worker agents):\n")
+	b.WriteString("1. You are the Orchestrator. For focused subtasks (deep research, code implementation, long summaries), use `spawn_worker` to delegate rather than doing everything yourself.\n")
+	b.WriteString("2. Choose the right role: researcher (gathering information), coder (implementation), summarizer (condensing content), custom (anything else).\n")
+	b.WriteString("3. Grant workers only the tools they need (tools_granted list). Never grant spawn_worker to workers — no worker-to-worker spawning.\n")
+	b.WriteString("4. Store task_id in memory before spawning so you can correlate results on wakeup.\n")
+	b.WriteString("5. Use `worker_status` to check on workers you've spawned.\n")
+	b.WriteString("6. Workers return structured JSON results. Parse and synthesize the result before presenting to the user.\n")
+	b.WriteString("7. Never delegate to a worker: human approvals, secret access, proposal submission, or any action requiring your oversight.\n\n")
+
 	// Tool-use gating — only act when asked.
 	b.WriteString("You have access to tools for managing skills and proposals. Only use a tool when the user asks you to DO something (list skills, create a proposal, check status, etc.). Do NOT call a tool for greetings, questions, or conversation.\n\n")
 
@@ -609,7 +619,8 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"list_pending_async\" — list active timers, subscriptions, and pending approvals. args: {} or {\"type\": \"timers|subscriptions|approvals\"}\n")
 	b.WriteString("- \"subscribe_signal\" — subscribe to signals from email/calendar/git/webhook. args: {\"source\": \"email\", \"task_id\": \"...\"}\n")
 	b.WriteString("- \"unsubscribe_signal\" — deactivate a signal subscription. args: {\"subscription_id\": \"...\"}\n")
-	b.WriteString("- \"request_human_approval\" — request human sign-off for a high-risk action. args: {\"title\": \"...\", \"description\": \"...\", \"risk_level\": \"high\", \"task_id\": \"...\"}\n")
+	b.WriteString("- \"worker_status\" — get status and result of a previously spawned worker. args: {\"worker_id\": \"...\"} or {} to list recent workers\n")
+	b.WriteString("- \"spawn_worker\" — delegate a focused subtask to an ephemeral Worker agent. args: {\"task_description\": \"...\", \"role\": \"researcher|coder|summarizer|custom\", \"tools_granted\": [...], \"timeout_mins\": 30, \"task_id\": \"...\"}\n")
 
 	// Proposal drafting instructions: tell the agent how to build a court-ready draft
 	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")

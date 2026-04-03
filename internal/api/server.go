@@ -154,6 +154,18 @@ func (s *Server) Start() error {
 }
 
 // Stop closes the listener and removes the socket file.
+// CallDirect invokes a registered handler directly without going through the
+// Unix socket. Used by the dashboard server (same process) to avoid a round trip.
+func (s *Server) CallDirect(ctx context.Context, action string, data json.RawMessage) *Response {
+	s.mu.RLock()
+	h, ok := s.handlers[action]
+	s.mu.RUnlock()
+	if !ok {
+		return &Response{Error: "unknown action: " + action}
+	}
+	return h(ctx, data)
+}
+
 func (s *Server) Stop() {
 	if s.listener != nil {
 		s.listener.Close()

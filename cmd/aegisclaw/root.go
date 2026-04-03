@@ -152,6 +152,8 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(memoryCmd)
 	rootCmd.AddCommand(eventCmd)
+	rootCmd.AddCommand(workerCmd)
+	rootCmd.AddCommand(evalCmd)
 
 	// skill subcommands: add, list, revoke, info
 	skillCmd.AddCommand(skillAddCmd)
@@ -177,6 +179,13 @@ func init() {
 	eventApprovalsCmd.AddCommand(eventApprovalsListCmd)
 	eventApprovalsCmd.AddCommand(eventApprovalsApproveCmd)
 	eventApprovalsCmd.AddCommand(eventApprovalsRejectCmd)
+
+	// worker subcommands: list, status
+	workerCmd.AddCommand(workerListCmd)
+	workerCmd.AddCommand(workerStatusCmd)
+	// eval subcommands: run, report
+	evalCmd.AddCommand(evalRunCmd)
+	evalCmd.AddCommand(evalReportCmd)
 
 	// start flags
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")
