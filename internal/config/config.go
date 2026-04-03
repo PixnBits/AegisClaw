@@ -65,7 +65,18 @@ type Config struct {
 		// It must contain the guest-agent binary at /sbin/init or as PID-1.
 		// Defaults to /var/lib/aegisclaw/rootfs-templates/alpine.ext4.
 		RootfsPath string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+		// StructuredOutput enables Ollama JSON-mode enforcement in the agent VM
+		// for the ReAct loop (Phase 0).  When true the guest-agent validates
+		// tool-call JSON and retries on parse failure.  Defaults to false for
+		// backward compatibility; set to true for improved compliance.
+		StructuredOutput bool `yaml:"structured_output" mapstructure:"structured_output"`
 	} `yaml:"agent" mapstructure:"agent"`
+	Snapshot struct {
+		// Dir is where VM snapshots (memory + disk state) are stored.
+		// Snapshots are used for fast Orchestrator wakeups and Worker spawning.
+		// Defaults to ~/.local/share/aegisclaw/snapshots.
+		Dir string `yaml:"dir" mapstructure:"dir"`
+	} `yaml:"snapshot" mapstructure:"snapshot"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -162,9 +173,16 @@ func DefaultConfig() Config {
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "composition"),
 		},
 		Agent: struct {
-			RootfsPath string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+			RootfsPath       string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
+			StructuredOutput bool   `yaml:"structured_output" mapstructure:"structured_output"`
 		}{
-			RootfsPath: "/var/lib/aegisclaw/rootfs-templates/alpine.ext4",
+			RootfsPath:       "/var/lib/aegisclaw/rootfs-templates/alpine.ext4",
+			StructuredOutput: false,
+		},
+		Snapshot: struct {
+			Dir string `yaml:"dir" mapstructure:"dir"`
+		}{
+			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "snapshots"),
 		},
 	}
 }
@@ -216,6 +234,8 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("daemon.socket_path", defaults.Daemon.SocketPath)
 	viper.SetDefault("composition.dir", defaults.Composition.Dir)
 	viper.SetDefault("agent.rootfs_path", defaults.Agent.RootfsPath)
+	viper.SetDefault("agent.structured_output", defaults.Agent.StructuredOutput)
+	viper.SetDefault("snapshot.dir", defaults.Snapshot.Dir)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -278,6 +298,7 @@ func validateConfig(config *Config) error {
 		"composition.dir":            config.Composition.Dir,
 		"ollama.registry_path":       config.Ollama.RegistryPath,
 		"ollama.model_dir":           config.Ollama.ModelDir,
+		"snapshot.dir":               config.Snapshot.Dir,
 	}
 
 	for name, path := range paths {

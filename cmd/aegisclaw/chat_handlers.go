@@ -37,8 +37,12 @@ type agentVMResponse struct {
 // agentChatPayload is placed in agentVMRequest.Payload for chat.message requests.
 // It mirrors the guest-agent's ChatMessagePayload.
 type agentChatPayload struct {
-	Messages []agentChatMsg `json:"messages"`
-	Model    string         `json:"model"`
+	Messages         []agentChatMsg `json:"messages"`
+	Model            string         `json:"model"`
+	// StructuredOutput requests JSON-mode enforcement in the guest-agent (Phase 0).
+	// When true the guest-agent uses Ollama format=json and validates the response
+	// schema before returning.
+	StructuredOutput bool `json:"structured_output,omitempty"`
 }
 
 // agentChatMsg is a single message in the conversation sent to the agent VM.
@@ -108,7 +112,11 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		}
 
 		for i := 0; i < reactMaxIterations; i++ {
-			payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: model})
+			payloadBytes, _ := json.Marshal(agentChatPayload{
+				Messages:         msgs,
+				Model:            model,
+				StructuredOutput: env.Config.Agent.StructuredOutput,
+			})
 			vmReq := agentVMRequest{
 				ID:      uuid.New().String(),
 				Type:    "chat.message",
@@ -556,6 +564,10 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"proposal.reviews\" — get detailed reviewer feedback for a proposal: verdicts, comments, questions from each round. args: {\"id\": \"uuid\"}\n")
 	b.WriteString("- \"proposal.vote\" — cast a human vote to approve or reject a proposal (useful for escalated proposals). args: {\"id\": \"uuid\", \"approve\": true, \"reason\": \"...\"}\n")
 	b.WriteString("- \"activate_skill\" — activate an approved skill. args: {\"name\": \"skill_name\"}\n")
+	b.WriteString("- \"search_tools\" — search all available tools by keyword. args: {\"query\": \"...\"}\n")
+	b.WriteString("- \"snapshot.create\" — create a Firecracker snapshot of the running agent VM. args: {\"label\": \"agent-baseline\"}\n")
+	b.WriteString("- \"snapshot.list\" — list all stored agent VM snapshots. args: {}\n")
+	b.WriteString("- \"snapshot.restore\" — restore the agent VM from a named snapshot. args: {\"label\": \"agent-baseline\"}\n")
 
 	// Proposal drafting instructions: tell the agent how to build a court-ready draft
 	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")

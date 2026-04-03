@@ -40,6 +40,10 @@ const (
 	ActionSecretDelete        ActionType = "secret.delete"
 	ActionCompositionRollback ActionType = "composition.rollback"
 	ActionLLMInfer            ActionType = "llm.infer"
+	// ActionSnapshotCreate is logged when a VM snapshot is created (memory + disk state).
+	ActionSnapshotCreate ActionType = "snapshot.create"
+	// ActionSnapshotRestore is logged when a VM is restored from a snapshot.
+	ActionSnapshotRestore ActionType = "snapshot.restore"
 	// ActionSystemComponentActivate is logged when a core system microVM
 	// (e.g. AegisHub) is launched at daemon startup. These are distinct from
 	// skill activations which go through user-initiated proposals.
@@ -76,6 +80,8 @@ var validActionTypes = map[ActionType]bool{
 	ActionSecretDelete:        true,
 	ActionCompositionRollback:     true,
 	ActionLLMInfer:                true,
+	ActionSnapshotCreate:          true,
+	ActionSnapshotRestore:         true,
 	ActionSystemComponentActivate: true,
 }
 

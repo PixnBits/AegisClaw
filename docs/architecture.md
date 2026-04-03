@@ -1,7 +1,15 @@
 # AegisClaw — Component Interaction Model
 
 **Status**: North-star architecture document. Code must converge to this; deviations are tracked in `docs/prd-deviations.md`.  
-**Last updated**: 2026-03-30
+**Last updated**: 2026-04-03
+
+**Related documents** (Agentic Evolution):
+- `docs/agentic-evolution.md` — Hierarchical multi-agent vision, Orchestrator + Worker model, memory, and async
+- `docs/agent-prompts.md` — Orchestrator and Worker LLM prompt specifications
+- `docs/event-bus-and-async.md` — Event Bus, timers, and cryptographic signal delivery
+- `docs/memory-store.md` — Tiered persistent memory system (working → episodic → semantic)
+- `docs/web-dashboard.md` — Local control-plane web UI
+- `docs/implementation-plan.md` — Phased delivery roadmap (Phase 0–5)
 
 ---
 
