@@ -43,6 +43,10 @@ type Config struct {
 		WorkspaceBaseDir    string `yaml:"workspace_base_dir" mapstructure:"workspace_base_dir"`
 		MaxConcurrentBuilds int    `yaml:"max_concurrent_builds" mapstructure:"max_concurrent_builds"`
 		BuildTimeoutMinutes int    `yaml:"build_timeout_minutes" mapstructure:"build_timeout_minutes"`
+		// SBOMDir is where sbom.json files are written after a successful build.
+		// Defaults to ~/.local/share/aegisclaw/sbom.
+		// Set to "" to disable SBOM generation.
+		SBOMDir string `yaml:"sbom_dir" mapstructure:"sbom_dir"`
 	} `yaml:"builder" mapstructure:"builder"`
 	Vault struct {
 		Dir string `yaml:"dir" mapstructure:"dir"`
@@ -93,6 +97,9 @@ type Config struct {
 		// CompactOnStartup runs the compaction daemon once at daemon startup
 		// in addition to the daily background schedule. Defaults to false.
 		CompactOnStartup bool `yaml:"compact_on_startup" mapstructure:"compact_on_startup"`
+		// PIIRedaction enables automatic PII scrubbing (email, phone, SSN, IP,
+		// JWT, AWS keys) before persisting memory entries.  Defaults to false.
+		PIIRedaction bool `yaml:"pii_redaction" mapstructure:"pii_redaction"`
 	} `yaml:"memory" mapstructure:"memory"`
 	EventBus struct {
 		// Dir is where event bus state (timers, subscriptions, approvals) is stored.
@@ -186,11 +193,13 @@ func DefaultConfig() Config {
 			WorkspaceBaseDir    string `yaml:"workspace_base_dir" mapstructure:"workspace_base_dir"`
 			MaxConcurrentBuilds int    `yaml:"max_concurrent_builds" mapstructure:"max_concurrent_builds"`
 			BuildTimeoutMinutes int    `yaml:"build_timeout_minutes" mapstructure:"build_timeout_minutes"`
+			SBOMDir             string `yaml:"sbom_dir" mapstructure:"sbom_dir"`
 		}{
 			RootfsTemplate:      "/var/lib/aegisclaw/rootfs-templates/builder.ext4",
 			WorkspaceBaseDir:    filepath.Join(home, ".local", "share", "aegisclaw", "workspaces"),
 			MaxConcurrentBuilds: 2,
 			BuildTimeoutMinutes: 10,
+			SBOMDir:             filepath.Join(home, ".local", "share", "aegisclaw", "sbom"),
 		},
 		Vault: struct {
 			Dir string `yaml:"dir" mapstructure:"dir"`
@@ -238,12 +247,14 @@ func DefaultConfig() Config {
 			MaxSizeMB        int64  `yaml:"max_size_mb" mapstructure:"max_size_mb"`
 			DefaultTTL       string `yaml:"default_ttl" mapstructure:"default_ttl"`
 			CompactOnStartup bool   `yaml:"compact_on_startup" mapstructure:"compact_on_startup"`
+			PIIRedaction     bool   `yaml:"pii_redaction" mapstructure:"pii_redaction"`
 		}{
 			Dir:              filepath.Join(home, ".local", "share", "aegisclaw", "memory"),
 			EmbeddingModel:   "nomic-embed-text",
 			MaxSizeMB:        2048,
 			DefaultTTL:       "90d",
 			CompactOnStartup: false,
+			PIIRedaction:     false,
 		},
 		EventBus: struct {
 			Dir              string `yaml:"dir" mapstructure:"dir"`

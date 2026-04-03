@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/PixnBits/AegisClaw/internal/sbom"
 	"github.com/google/uuid"
 )
 
@@ -288,6 +290,63 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 					params.Name, result["sandbox_id"], result["version"], result["hash"]), nil
 			}
 			return fmt.Sprintf("Skill %q activated.", params.Name), nil
+		})
+
+	reg.Register("skill.sbom",
+		"Return the Software Bill of Materials (SBOM) for a skill. args: {proposal_id} OR {skill_name}",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				ProposalID string `json:"proposal_id"`
+				SkillName  string `json:"skill_name"`
+				Name       string `json:"name"` // alias
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.ProposalID = strings.TrimSpace(args)
+			}
+			if params.Name != "" && params.SkillName == "" {
+				params.SkillName = params.Name
+			}
+
+			sbomDir := ""
+			if env.Config != nil {
+				sbomDir = env.Config.Builder.SBOMDir
+			}
+			if sbomDir == "" {
+				return "", fmt.Errorf("SBOM directory not configured (builder.sbom_dir)")
+			}
+
+			// If a proposal_id is given, look directly in that subdirectory.
+			if params.ProposalID != "" {
+				path := filepath.Join(sbomDir, params.ProposalID, "sbom.json")
+				s, err := sbom.Read(path)
+				if err != nil {
+					return "", fmt.Errorf("SBOM not found for proposal %s: %w", params.ProposalID, err)
+				}
+				b, _ := json.MarshalIndent(s, "", "  ")
+				return string(b), nil
+			}
+
+			// Try to find by skill name: scan proposal store.
+			if params.SkillName != "" && env.ProposalStore != nil {
+				proposals, err := env.ProposalStore.List()
+				if err != nil {
+					return "", fmt.Errorf("list proposals: %w", err)
+				}
+				for _, p := range proposals {
+					path := filepath.Join(sbomDir, p.ID, "sbom.json")
+					s, readErr := sbom.Read(path)
+					if readErr != nil {
+						continue
+					}
+					if s.Metadata.Component.Name == params.SkillName {
+						b, _ := json.MarshalIndent(s, "", "  ")
+						return string(b), nil
+					}
+				}
+				return "", fmt.Errorf("SBOM not found for skill %q", params.SkillName)
+			}
+
+			return "", fmt.Errorf("provide proposal_id or skill_name")
 		})
 
 	reg.Register("search_tools",

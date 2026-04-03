@@ -5,11 +5,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/dashboard"
 )
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // stubClient is a minimal APIClient for tests.
 type stubClient struct{}
@@ -53,16 +61,17 @@ func TestDashboard_HealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestDashboard_IndexRedirect(t *testing.T) {
+func TestDashboard_IndexPage(t *testing.T) {
 	s := newTestServer(t)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	s.ServeHTTP(w, r)
-	if w.Code != http.StatusSeeOther {
-		t.Errorf("expected 303, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if loc := w.Header().Get("Location"); loc != "/agents" {
-		t.Errorf("expected redirect to /agents, got %q", loc)
+	body := w.Body.String()
+	if !strings.Contains(body, "Overview") {
+		t.Errorf("expected Overview page, got: %s", body[:minInt(200, len(body))])
 	}
 }
 
@@ -118,4 +127,18 @@ func TestDashboard_NotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
 	}
+}
+
+func TestDashboard_SkillsPage(t *testing.T) {
+s := newTestServer(t)
+w := httptest.NewRecorder()
+r := httptest.NewRequest(http.MethodGet, "/skills", nil)
+s.ServeHTTP(w, r)
+if w.Code != http.StatusOK {
+t.Errorf("expected 200, got %d", w.Code)
+}
+body := w.Body.String()
+if !strings.Contains(body, "Skills") {
+t.Errorf("expected Skills page, got body of length %d", len(body))
+}
 }

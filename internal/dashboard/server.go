@@ -88,6 +88,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/approvals", s.handleApprovals)
 	s.mux.HandleFunc("/approvals/decide", s.handleApprovalsDecide)
 	s.mux.HandleFunc("/audit", s.handleAudit)
+	s.mux.HandleFunc("/skills", s.handleSkills)
 	s.mux.HandleFunc("/settings", s.handleSettings)
 	s.mux.HandleFunc("/events", s.handleSSE)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +102,31 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.Redirect(w, r, "/agents", http.StatusSeeOther)
+	// Fetch quick-stats from the daemon.
+	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
+	approvals, _ := s.fetchRaw(r.Context(), "event.approvals.list", map[string]bool{"pending_only": true})
+	timers, _ := s.fetchRaw(r.Context(), "event.timers.list", nil)
+	memories, _ := s.fetchRaw(r.Context(), "memory.list", map[string]interface{}{"limit": 1, "count_only": true})
+
+	workerCount := countItems(workers)
+	approvalCount := countItems(approvals)
+	timerCount := countItems(timers)
+
+	var memCount int
+	if m, ok := memories.(map[string]interface{}); ok {
+		if c, ok := m["total"].(float64); ok {
+			memCount = int(c)
+		}
+	}
+
+	s.renderTemplate(w, "Overview", overviewTmpl, map[string]interface{}{
+		"WorkerCount":   workerCount,
+		"ApprovalCount": approvalCount,
+		"TimerCount":    timerCount,
+		"MemoryCount":   memCount,
+		"Workers":       workers,
+		"Approvals":     approvals,
+	})
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
@@ -162,6 +187,15 @@ func (s *Server) handleApprovalsDecide(w http.ResponseWriter, r *http.Request) {
 		"reason":      reason,
 	}))
 	http.Redirect(w, r, "/approvals", http.StatusSeeOther)
+}
+
+func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
+	proposals, _ := s.fetchRaw(r.Context(), "list_proposals", nil)
+	skills, _ := s.fetchRaw(r.Context(), "list_skills", nil)
+	s.renderTemplate(w, "Skills & Proposals", skillsTmpl, map[string]interface{}{
+		"Proposals": proposals,
+		"Skills":    skills,
+	})
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
@@ -247,6 +281,17 @@ func mustMarshal(v interface{}) json.RawMessage {
 	return b
 }
 
+// countItems returns the number of items in v if it's a slice, else 0.
+func countItems(v interface{}) int {
+	if v == nil {
+		return 0
+	}
+	if s, ok := v.([]interface{}); ok {
+		return len(s)
+	}
+	return 0
+}
+
 // pageWrap renders a full HTML page with shared chrome around the body content.
 func pageWrap(title, body string) string {
 	return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">` +
@@ -292,7 +337,9 @@ a.nav-link{color:#58a6ff}
 const dashboardNav = `
 <nav>
   <span class="logo">&#128737; AegisClaw</span>
+  <a href="/">Overview</a>
   <a href="/agents">Agents</a>
+  <a href="/skills">Skills</a>
   <a href="/async">Async Hub</a>
   <a href="/memory">Memory</a>
   <a href="/approvals">Approvals</a>
@@ -466,10 +513,128 @@ const settingsTmpl = `
     <table style="width:auto">
       <tr><th style="width:260px">Setting</th><th>Description</th></tr>
       <tr><td><code>agent.structured_output</code></td><td>Enable JSON-mode for LLM responses</td></tr>
-      <tr><td><code>memory.default_ttl</code></td><td>Default TTL tier for new memories</td></tr>
+      <tr><td><code>memory.default_ttl</code></td><td>Default TTL tier for new memories (90d/180d/365d/2yr/forever)</td></tr>
+      <tr><td><code>memory.pii_redaction</code></td><td>Automatically redact PII (email, phone, SSN, IP, JWT, AWS keys) before storing memories</td></tr>
       <tr><td><code>eventbus.max_pending_timers</code></td><td>Max concurrent active timers</td></tr>
       <tr><td><code>worker.max_concurrent</code></td><td>Max concurrent Worker VMs</td></tr>
-      <tr><td><code>dashboard.addr</code></td><td>Dashboard listen address</td></tr>
+      <tr><td><code>worker.default_timeout_mins</code></td><td>Default Worker task timeout</td></tr>
+      <tr><td><code>dashboard.addr</code></td><td>Dashboard listen address (default 127.0.0.1:7878)</td></tr>
     </table>
   </div>
+</div>
+<div class="section">
+  <div class="section-header">Privacy Controls</div>
+  <div style="padding:1rem">
+    <p style="color:#8b949e;font-size:.875rem;margin-bottom:.75rem">
+      PII redaction scrubs common sensitive patterns before storing in the encrypted memory vault.<br>
+      Enable with <code>memory.pii_redaction: true</code> in config.yaml.<br>
+      For GDPR right-to-forget: <code>aegisclaw memory delete &lt;query&gt;</code>
+    </p>
+    <p style="color:#8b949e;font-size:.875rem">
+      Redacted patterns: email addresses, US phone numbers, SSNs, IPv4 addresses, JWT tokens, AWS access keys, generic API keys/passwords.
+    </p>
+  </div>
+</div>`
+
+const overviewTmpl = `
+<h1>{{.Title}}</h1>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem">
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#3fb950">{{.WorkerCount}}</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Active Workers</div>
+  </div>
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#d29922">{{.ApprovalCount}}</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Pending Approvals</div>
+  </div>
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#58a6ff">{{.TimerCount}}</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Active Timers</div>
+  </div>
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#a5d6ff">{{.MemoryCount}}</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Memory Entries</div>
+  </div>
+</div>
+
+{{if .Workers}}
+<div class="section">
+  <div class="section-header">Active Workers</div>
+  <table>
+    <thead><tr><th>ID</th><th>Role</th><th>Status</th><th>Task</th></tr></thead>
+    <tbody>
+    {{range .Workers}}
+    <tr>
+      <td><code>{{truncate (index . "worker_id") 8}}</code></td>
+      <td>{{index . "role"}}</td>
+      <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
+      <td>{{truncate (index . "task_description") 80}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if .Approvals}}
+<div class="section">
+  <div class="section-header">Pending Approvals &mdash; <a href="/approvals" class="nav-link">View all</a></div>
+  {{range .Approvals}}
+  <div style="padding:.75rem 1rem;border-bottom:1px solid #21262d;display:flex;justify-content:space-between">
+    <div>
+      <strong>{{index . "title"}}</strong>
+      <span class="badge badge-pending" style="margin-left:.5rem">{{index . "risk_level"}}</span>
+    </div>
+    <a href="/approvals" class="nav-link" style="font-size:.85rem">Review</a>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{if and (eq .WorkerCount 0) (eq .ApprovalCount 0) (eq .TimerCount 0)}}
+<div class="section">
+  <p class="empty">System is idle. Start a chat session to get going.</p>
+</div>
+{{end}}`
+
+const skillsTmpl = `
+<h1>{{.Title}}</h1>
+<div class="section">
+  <div class="section-header">Active Skills</div>
+  {{if .Skills}}
+  <table>
+    <thead><tr><th>Name</th><th>Version</th><th>Status</th></tr></thead>
+    <tbody>
+    {{range .Skills}}
+    <tr>
+      <td><strong>{{index . "name"}}</strong></td>
+      <td>{{index . "version"}}</td>
+      <td><span class="badge badge-active">active</span></td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No skills activated yet. Use <code>aegisclaw skill add</code> to create one.</p>
+  {{end}}
+</div>
+<div class="section">
+  <div class="section-header">Proposals</div>
+  {{if .Proposals}}
+  <table>
+    <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Category</th></tr></thead>
+    <tbody>
+    {{range .Proposals}}
+    <tr>
+      <td><code>{{truncate (index . "id") 8}}</code></td>
+      <td>{{truncate (index . "title") 60}}</td>
+      <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
+      <td>{{index . "category"}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No proposals yet. Submit a skill proposal via <code>aegisclaw skill add</code>.</p>
+  {{end}}
 </div>`

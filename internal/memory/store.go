@@ -99,6 +99,10 @@ type StoreConfig struct {
 	MaxSizeMB int64
 	// DefaultTTL is the TTL tier assigned when none is specified (default TTL90d).
 	DefaultTTL TTLTier
+	// PIIRedaction enables automatic PII scrubbing before storing entries.
+	// When true, a Scrubber is applied to every entry's Key and Value.
+	// Defaults to false.
+	PIIRedaction bool
 }
 
 // Store is the tiered persistent memory store.
@@ -111,6 +115,8 @@ type Store struct {
 	mu        sync.RWMutex
 	// index holds all non-deleted entries in memory for fast retrieval.
 	index map[string]*MemoryEntry // keyed by MemoryID
+	// scrubber is set when PIIRedaction is enabled.
+	scrubber *Scrubber
 }
 
 const vaultFileName = "memory.vault.jsonl.age"
@@ -147,6 +153,9 @@ func NewStore(cfg StoreConfig, identity *age.X25519Identity) (*Store, error) {
 		recipient: identity.Recipient(),
 		index:     make(map[string]*MemoryEntry),
 	}
+	if cfg.PIIRedaction {
+		s.scrubber = NewScrubber()
+	}
 
 	if err := s.loadIndex(); err != nil {
 		return nil, fmt.Errorf("load memory store index: %w", err)
@@ -160,12 +169,18 @@ func NewStore(cfg StoreConfig, identity *age.X25519Identity) (*Store, error) {
 
 // Store persists a new memory entry and returns its assigned MemoryID.
 // The entry is appended to the vault file and added to the in-memory index.
+// If PIIRedaction is enabled, the entry's Key and Value are scrubbed before storage.
 func (s *Store) Store(e *MemoryEntry) (string, error) {
 	if e == nil {
 		return "", fmt.Errorf("memory entry must not be nil")
 	}
 	if e.Key == "" {
 		return "", fmt.Errorf("memory entry key is required")
+	}
+
+	// Apply PII redaction before any further processing.
+	if s.scrubber != nil {
+		e = s.scrubber.ScrubEntry(e)
 	}
 
 	now := time.Now().UTC()

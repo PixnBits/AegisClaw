@@ -155,11 +155,12 @@ func init() {
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(evalCmd)
 
-	// skill subcommands: add, list, revoke, info
+	// skill subcommands: add, list, revoke, info, sbom
 	skillCmd.AddCommand(skillAddCmd)
 	skillCmd.AddCommand(skillListCmd)
 	skillCmd.AddCommand(skillRevokeCmd)
 	skillCmd.AddCommand(skillInfoCmd)
+	skillCmd.AddCommand(skillSBOMCmd)
 
 	// audit subcommands: log, why, verify
 	auditCmd.AddCommand(auditLogCmd)
