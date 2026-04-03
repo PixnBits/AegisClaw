@@ -14,6 +14,8 @@ import (
 var KnownGoodModels = []ModelEntry{
 	{Name: "mistral-nemo", SHA256: "", Tags: []string{"security", "code_review", "architecture"}},
 	{Name: "llama3.2:3b", SHA256: "", Tags: []string{"code_review", "testing", "usability"}},
+	{Name: "gemma4:26b", SHA256: "", Tags: []string{"security", "architecture", "code_review"}},
+	{Name: "gemma4:e4b", SHA256: "", Tags: []string{"code_review", "testing", "usability"}},
 	{Name: "qwen2.5-coder:14b", SHA256: "", Tags: []string{"code_generation", "code_review"}},
 	{Name: "nemotron-mini", SHA256: "", Tags: []string{"code_review", "testing"}},
 }
@@ -188,11 +190,8 @@ func (m *Manager) Update(ctx context.Context, name string) (*ModelStatus, error)
 		tags = existing.Tags
 	}
 
-	// Extract hash from digest (remove "sha256:" prefix if present)
-	hash := pullResp.Digest
-	if strings.HasPrefix(hash, "sha256:") {
-		hash = hash[7:]
-	}
+	// Extract hash from digest.
+	hash := strings.TrimPrefix(pullResp.Digest, "sha256:")
 
 	if err := m.registry.Register(ModelEntry{
 		Name:   name,
