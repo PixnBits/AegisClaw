@@ -6,255 +6,255 @@
 package dashboard
 
 import (
-"context"
-"encoding/json"
-"fmt"
-"html/template"
-"net/http"
-"strings"
-"time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"html/template"
+	"net/http"
+	"strings"
+	"time"
 )
 
 // Server is the dashboard HTTP server.
 type Server struct {
-addr      string
-apiClient APIClient
-funcMap   template.FuncMap
-mux       *http.ServeMux
+	addr      string
+	apiClient APIClient
+	funcMap   template.FuncMap
+	mux       *http.ServeMux
 }
 
 // APIClient abstracts daemon API calls for the dashboard.
 type APIClient interface {
-Call(ctx context.Context, action string, payload json.RawMessage) (*APIResponse, error)
+	Call(ctx context.Context, action string, payload json.RawMessage) (*APIResponse, error)
 }
 
 // APIResponse mirrors api.Response.
 type APIResponse struct {
-Success bool            `json:"success"`
-Error   string          `json:"error,omitempty"`
-Data    json.RawMessage `json:"data,omitempty"`
+	Success bool            `json:"success"`
+	Error   string          `json:"error,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // New creates the dashboard server.
 func New(addr string, client APIClient) (*Server, error) {
-s := &Server{
-addr:      addr,
-apiClient: client,
-mux:       http.NewServeMux(),
-}
-s.funcMap = template.FuncMap{
-"fmtTime": func(t time.Time) string {
-if t.IsZero() {
-return "-"
-}
-return t.Format("2006-01-02 15:04:05")
-},
-"truncate": func(s string, n int) string {
-if len(s) <= n {
-return s
-}
-return s[:n] + "…"
-},
-"join": strings.Join,
-}
-s.registerRoutes()
-return s, nil
+	s := &Server{
+		addr:      addr,
+		apiClient: client,
+		mux:       http.NewServeMux(),
+	}
+	s.funcMap = template.FuncMap{
+		"fmtTime": func(t time.Time) string {
+			if t.IsZero() {
+				return "-"
+			}
+			return t.Format("2006-01-02 15:04:05")
+		},
+		"truncate": func(s string, n int) string {
+			if len(s) <= n {
+				return s
+			}
+			return s[:n] + "…"
+		},
+		"join": strings.Join,
+	}
+	s.registerRoutes()
+	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-s.mux.ServeHTTP(w, r)
+	s.mux.ServeHTTP(w, r)
 }
 
 // Start starts the dashboard HTTP server (blocks until ctx is done).
 func (s *Server) Start(ctx context.Context) error {
-srv := &http.Server{
-Addr:    s.addr,
-Handler: s,
-}
-go func() {
-<-ctx.Done()
-shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-defer cancel()
-srv.Shutdown(shutCtx) //nolint:errcheck
-}()
-return srv.ListenAndServe()
+	srv := &http.Server{
+		Addr:    s.addr,
+		Handler: s,
+	}
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutCtx) //nolint:errcheck
+	}()
+	return srv.ListenAndServe()
 }
 
 func (s *Server) registerRoutes() {
-s.mux.HandleFunc("/", s.handleIndex)
-s.mux.HandleFunc("/agents", s.handleAgents)
-s.mux.HandleFunc("/async", s.handleAsync)
-s.mux.HandleFunc("/memory", s.handleMemory)
-s.mux.HandleFunc("/approvals", s.handleApprovals)
-s.mux.HandleFunc("/approvals/decide", s.handleApprovalsDecide)
-s.mux.HandleFunc("/audit", s.handleAudit)
-s.mux.HandleFunc("/settings", s.handleSettings)
-s.mux.HandleFunc("/events", s.handleSSE)
-s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-w.WriteHeader(http.StatusOK)
-fmt.Fprint(w, "ok")
-})
+	s.mux.HandleFunc("/", s.handleIndex)
+	s.mux.HandleFunc("/agents", s.handleAgents)
+	s.mux.HandleFunc("/async", s.handleAsync)
+	s.mux.HandleFunc("/memory", s.handleMemory)
+	s.mux.HandleFunc("/approvals", s.handleApprovals)
+	s.mux.HandleFunc("/approvals/decide", s.handleApprovalsDecide)
+	s.mux.HandleFunc("/audit", s.handleAudit)
+	s.mux.HandleFunc("/settings", s.handleSettings)
+	s.mux.HandleFunc("/events", s.handleSSE)
+	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok")
+	})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-if r.URL.Path != "/" {
-http.NotFound(w, r)
-return
-}
-http.Redirect(w, r, "/agents", http.StatusSeeOther)
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	http.Redirect(w, r, "/agents", http.StatusSeeOther)
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
-workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": false})
-s.renderTemplate(w, "Agents", agentsTmpl, map[string]interface{}{
-"Workers": workers,
-})
+	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": false})
+	s.renderTemplate(w, "Agents", agentsTmpl, map[string]interface{}{
+		"Workers": workers,
+	})
 }
 
 func (s *Server) handleAsync(w http.ResponseWriter, r *http.Request) {
-timers, _ := s.fetchRaw(r.Context(), "event.timers.list", nil)
-signals, _ := s.fetchRaw(r.Context(), "event.signals.list", map[string]interface{}{"limit": 20})
-s.renderTemplate(w, "Async Hub", asyncTmpl, map[string]interface{}{
-"Timers":  timers,
-"Signals": signals,
-})
+	timers, _ := s.fetchRaw(r.Context(), "event.timers.list", nil)
+	signals, _ := s.fetchRaw(r.Context(), "event.signals.list", map[string]interface{}{"limit": 20})
+	s.renderTemplate(w, "Async Hub", asyncTmpl, map[string]interface{}{
+		"Timers":  timers,
+		"Signals": signals,
+	})
 }
 
 func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
-query := r.URL.Query().Get("q")
-var memories interface{}
-if query != "" {
-memories, _ = s.fetchRaw(r.Context(), "memory.search", map[string]interface{}{"query": query, "k": 20})
-} else {
-memories, _ = s.fetchRaw(r.Context(), "memory.list", map[string]interface{}{"limit": 50})
-}
-s.renderTemplate(w, "Memory Vault", memoryTmpl, map[string]interface{}{
-"Memories": memories,
-"Query":    query,
-})
+	query := r.URL.Query().Get("q")
+	var memories interface{}
+	if query != "" {
+		memories, _ = s.fetchRaw(r.Context(), "memory.search", map[string]interface{}{"query": query, "k": 20})
+	} else {
+		memories, _ = s.fetchRaw(r.Context(), "memory.list", map[string]interface{}{"limit": 50})
+	}
+	s.renderTemplate(w, "Memory Vault", memoryTmpl, map[string]interface{}{
+		"Memories": memories,
+		"Query":    query,
+	})
 }
 
 func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
-showAll := r.URL.Query().Get("all") == "1"
-approvals, _ := s.fetchRaw(r.Context(), "event.approvals.list", map[string]bool{"pending_only": !showAll})
-s.renderTemplate(w, "Approvals", approvalsTmpl, map[string]interface{}{
-"Approvals": approvals,
-"ShowAll":   showAll,
-})
+	showAll := r.URL.Query().Get("all") == "1"
+	approvals, _ := s.fetchRaw(r.Context(), "event.approvals.list", map[string]bool{"pending_only": !showAll})
+	s.renderTemplate(w, "Approvals", approvalsTmpl, map[string]interface{}{
+		"Approvals": approvals,
+		"ShowAll":   showAll,
+	})
 }
 
 func (s *Server) handleApprovalsDecide(w http.ResponseWriter, r *http.Request) {
-if r.Method != http.MethodPost {
-http.Error(w, "POST required", http.StatusMethodNotAllowed)
-return
-}
-approvalID := r.FormValue("approval_id")
-approved := r.FormValue("decision") == "approve"
-reason := r.FormValue("reason")
-if approvalID == "" {
-http.Error(w, "approval_id required", http.StatusBadRequest)
-return
-}
-s.apiClient.Call(r.Context(), "event.approvals.decide", mustMarshal(map[string]interface{}{ //nolint:errcheck
-"approval_id": approvalID,
-"approved":    approved,
-"decided_by":  "user",
-"reason":      reason,
-}))
-http.Redirect(w, r, "/approvals", http.StatusSeeOther)
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	approvalID := r.FormValue("approval_id")
+	approved := r.FormValue("decision") == "approve"
+	reason := r.FormValue("reason")
+	if approvalID == "" {
+		http.Error(w, "approval_id required", http.StatusBadRequest)
+		return
+	}
+	s.apiClient.Call(r.Context(), "event.approvals.decide", mustMarshal(map[string]interface{}{ //nolint:errcheck
+		"approval_id": approvalID,
+		"approved":    approved,
+		"decided_by":  "user",
+		"reason":      reason,
+	}))
+	http.Redirect(w, r, "/approvals", http.StatusSeeOther)
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-s.renderTemplate(w, "Audit Explorer", auditTmpl, nil)
+	s.renderTemplate(w, "Audit Explorer", auditTmpl, nil)
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
-s.renderTemplate(w, "Settings", settingsTmpl, nil)
+	s.renderTemplate(w, "Settings", settingsTmpl, nil)
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
-flusher, ok := w.(http.Flusher)
-if !ok {
-http.Error(w, "SSE not supported", http.StatusInternalServerError)
-return
-}
-w.Header().Set("Content-Type", "text/event-stream")
-w.Header().Set("Cache-Control", "no-cache")
-w.Header().Set("Connection", "keep-alive")
-w.Header().Set("X-Accel-Buffering", "no")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
-ctx := r.Context()
-ticker := time.NewTicker(5 * time.Second)
-defer ticker.Stop()
+	ctx := r.Context()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-fmt.Fprintf(w, "data: {\"type\":\"heartbeat\"}\n\n")
-flusher.Flush()
+	fmt.Fprintf(w, "data: {\"type\":\"heartbeat\"}\n\n")
+	flusher.Flush()
 
-for {
-select {
-case <-ctx.Done():
-return
-case <-ticker.C:
-workers, _ := s.fetchRaw(ctx, "worker.list", map[string]bool{"active_only": true})
-approvals, _ := s.fetchRaw(ctx, "event.approvals.list", map[string]bool{"pending_only": true})
-payload, _ := json.Marshal(map[string]interface{}{
-"type":              "update",
-"active_workers":    workers,
-"pending_approvals": approvals,
-"ts":                time.Now().UTC().Format(time.RFC3339),
-})
-fmt.Fprintf(w, "data: %s\n\n", payload)
-flusher.Flush()
-}
-}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			workers, _ := s.fetchRaw(ctx, "worker.list", map[string]bool{"active_only": true})
+			approvals, _ := s.fetchRaw(ctx, "event.approvals.list", map[string]bool{"pending_only": true})
+			payload, _ := json.Marshal(map[string]interface{}{
+				"type":              "update",
+				"active_workers":    workers,
+				"pending_approvals": approvals,
+				"ts":                time.Now().UTC().Format(time.RFC3339),
+			})
+			fmt.Fprintf(w, "data: %s\n\n", payload)
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) fetchRaw(ctx context.Context, action string, req interface{}) (interface{}, error) {
-var payload json.RawMessage
-if req != nil {
-payload, _ = json.Marshal(req)
-}
-resp, err := s.apiClient.Call(ctx, action, payload)
-if err != nil || resp == nil || !resp.Success {
-return nil, err
-}
-var out interface{}
-json.Unmarshal(resp.Data, &out) //nolint:errcheck
-return out, nil
+	var payload json.RawMessage
+	if req != nil {
+		payload, _ = json.Marshal(req)
+	}
+	resp, err := s.apiClient.Call(ctx, action, payload)
+	if err != nil || resp == nil || !resp.Success {
+		return nil, err
+	}
+	var out interface{}
+	json.Unmarshal(resp.Data, &out) //nolint:errcheck
+	return out, nil
 }
 
 func (s *Server) renderTemplate(w http.ResponseWriter, title, tmplStr string, data map[string]interface{}) {
-if data == nil {
-data = make(map[string]interface{})
-}
-data["Title"] = title
-tmpl, err := template.New("page").Funcs(s.funcMap).Parse(tmplStr)
-if err != nil {
-http.Error(w, "template parse error: "+err.Error(), http.StatusInternalServerError)
-return
-}
-var sb strings.Builder
-if err := tmpl.Execute(&sb, data); err != nil {
-http.Error(w, "template exec error: "+err.Error(), http.StatusInternalServerError)
-return
-}
-w.Header().Set("Content-Type", "text/html; charset=utf-8")
-fmt.Fprint(w, pageWrap(title, sb.String()))
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	data["Title"] = title
+	tmpl, err := template.New("page").Funcs(s.funcMap).Parse(tmplStr)
+	if err != nil {
+		http.Error(w, "template parse error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var sb strings.Builder
+	if err := tmpl.Execute(&sb, data); err != nil {
+		http.Error(w, "template exec error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, pageWrap(title, sb.String()))
 }
 
 func mustMarshal(v interface{}) json.RawMessage {
-b, _ := json.Marshal(v)
-return b
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // pageWrap renders a full HTML page with shared chrome around the body content.
 func pageWrap(title, body string) string {
-return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">` +
-`<meta name="viewport" content="width=device-width,initial-scale=1">` +
-`<title>` + template.HTMLEscapeString(title) + ` — AegisClaw</title>` +
-`<style>` + dashboardCSS + `</style></head><body>` +
-dashboardNav + `<main>` + body + `</main>` + dashboardSSEScript +
-`</body></html>`
+	return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">` +
+		`<meta name="viewport" content="width=device-width,initial-scale=1">` +
+		`<title>` + template.HTMLEscapeString(title) + ` — AegisClaw</title>` +
+		`<style>` + dashboardCSS + `</style></head><body>` +
+		dashboardNav + `<main>` + body + `</main>` + dashboardSSEScript +
+		`</body></html>`
 }
 
 const dashboardCSS = `

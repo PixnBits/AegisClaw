@@ -24,6 +24,11 @@ type spawnWorkerParams struct {
 	TaskID          string   `json:"task_id,omitempty"`
 }
 
+// maxTimeoutMultiplier is the hard cap on per-worker timeout expressed as a
+// multiple of the configured default. Prevents runaway workers from consuming
+// resources for an unbounded duration.
+const maxTimeoutMultiplier = 3
+
 // spawnWorker creates, starts, and runs a Worker VM for the given subtask.
 // It blocks until the Worker completes (or times out), then returns the result.
 // The VM is always destroyed on exit (ephemeral).
@@ -43,8 +48,8 @@ func spawnWorker(ctx context.Context, env *runtimeEnv, p spawnWorkerParams) (str
 	if timeoutMins <= 0 {
 		timeoutMins = worker.RoleDefaultTimeoutMins(role)
 	}
-	if env.Config != nil && env.Config.Worker.DefaultTimeoutMins > 0 && timeoutMins > env.Config.Worker.DefaultTimeoutMins*3 {
-		timeoutMins = env.Config.Worker.DefaultTimeoutMins * 3 // hard cap at 3× default
+	if env.Config != nil && env.Config.Worker.DefaultTimeoutMins > 0 && timeoutMins > env.Config.Worker.DefaultTimeoutMins*maxTimeoutMultiplier {
+		timeoutMins = env.Config.Worker.DefaultTimeoutMins * maxTimeoutMultiplier
 	}
 
 	// Resource guard: cap on concurrent workers.
@@ -212,7 +217,8 @@ func spawnWorker(ctx context.Context, env *runtimeEnv, p spawnWorkerParams) (str
 		case "tool_call":
 			toolResult, toolErr := workerRegistry.Execute(workerCtx, chatResp.Tool, chatResp.Args)
 			if toolErr != nil {
-				toolResult = fmt.Sprintf("Error: %v", toolErr)
+				// Sanitize: only expose the error category, not internal details.
+				toolResult = fmt.Sprintf("Tool %q returned an error. Check arguments and try again.", chatResp.Tool)
 			}
 			callContent := fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", chatResp.Tool, chatResp.Args)
 			msgs = append(msgs,
