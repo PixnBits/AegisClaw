@@ -533,6 +533,15 @@ Success between phases emphasizes functionality first, followed immediately by v
 - STRIDE threat modeling framework
 - NIST SSDF (Secure Software Development Framework)
 
+### Agentic Evolution Documents
+The following documents describe the planned evolution of AegisClaw from a single ReAct agent into a full hierarchical multi-agent platform:
+- `docs/agentic-evolution.md` — Vision, hierarchical architecture, memory, and async primitives
+- `docs/agent-prompts.md` — Orchestrator and Worker LLM prompts
+- `docs/event-bus-and-async.md` — Event Bus, timers, and signal delivery
+- `docs/memory-store.md` — Tiered persistent memory system with semantic search
+- `docs/web-dashboard.md` — Local control-plane web UI (HTMX + Go)
+- `docs/implementation-plan.md` — Phased delivery plan (Phase 0–5)
+
 **Living Document Note**  
 This PRD is a living document. Updates and improvements to the PRD itself will be proposed and reviewed through the Governance Court.
 

@@ -603,8 +603,12 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 
 // ChatMessagePayload is received from the daemon for D2 (main-agent sandbox).
 type ChatMessagePayload struct {
-	Messages []ChatMsg `json:"messages"`
-	Model    string    `json:"model"`
+	Messages       []ChatMsg `json:"messages"`
+	Model          string    `json:"model"`
+	// StructuredOutput, when true, instructs the agent VM to enforce JSON-format
+	// responses from Ollama and validate tool-call JSON before returning.
+	// This is the Phase 0 structured output enforcement mechanism.
+	StructuredOutput bool `json:"structured_output,omitempty"`
 }
 
 // ChatMsg represents a single message in the conversation.
@@ -628,6 +632,12 @@ type ChatResponse struct {
 const (
 	reactMaxToolCalls = 10
 	ollamaTimeout     = 120 * time.Second
+
+	// structuredOutputCorrectionPrompt is sent to the model as a second-chance
+	// prompt when it fails to return valid JSON in structured-output mode.
+	structuredOutputCorrectionPrompt = `Your previous response was not valid JSON. ` +
+		`Respond ONLY with a JSON object: ` +
+		`{"status":"final","content":"<your answer>"} OR {"status":"tool_call","tool":"<name>","args":{...}}`
 )
 
 // toolCallMarkers lists fence markers in priority order. Plain "```" is last
@@ -735,6 +745,15 @@ func isProposalTool(name string) bool {
 // call back with the result appended) or a "final" response with the
 // assistant's text.  The outer ReAct loop driver lives in the daemon
 // (makeChatMessageHandler).
+//
+// When payload.StructuredOutput is true (Phase 0 enforcement), the agent
+// calls Ollama with format="json" and expects a response of the form:
+//
+//	{"status":"tool_call","tool":"<name>","args":{…}}
+//	{"status":"final","content":"<text>"}
+//
+// If the model returns invalid or missing JSON in structured mode, the
+// response is retried once with an explicit correction prompt.
 func handleChatMessage(ctx context.Context, req *Request) *Response {
 	var payload ChatMessagePayload
 	if err := json.Unmarshal(req.Payload, &payload); err != nil {
@@ -754,6 +773,10 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 
 	callCtx, cancel := context.WithTimeout(ctx, ollamaTimeout)
 	defer cancel()
+
+	if payload.StructuredOutput {
+		return handleChatMessageStructured(callCtx, req.ID, payload.Model, ollamaMsgs)
+	}
 
 	content, err := callOllamaViaProxy(callCtx, payload.Model, ollamaMsgs, "", nil)
 	if err != nil {
@@ -780,6 +803,68 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 	}
 	data, _ := json.Marshal(chatResp)
 	return &Response{ID: req.ID, Success: true, Data: data}
+}
+
+// structuredChatReply is the JSON schema Ollama is asked to produce when
+// StructuredOutput is enabled.
+type structuredChatReply struct {
+	Status  string          `json:"status"`           // "final" | "tool_call"
+	Content string          `json:"content,omitempty"` // when status=="final"
+	Tool    string          `json:"tool,omitempty"`   // when status=="tool_call"
+	Args    json.RawMessage `json:"args,omitempty"`   // when status=="tool_call"
+}
+
+// handleChatMessageStructured drives the ReAct step with Ollama JSON mode
+// (format="json") to achieve deterministic tool-call parsing.  On the first
+// call the model is asked to produce a structuredChatReply; if parsing fails
+// we retry once with an explicit correction prompt before giving up.
+func handleChatMessageStructured(ctx context.Context, reqID, model string, msgs []map[string]string) *Response {
+	const maxAttempts = 2
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		content, err := callOllamaViaProxy(ctx, model, msgs, "json", nil)
+		if err != nil {
+			return errorResponse(reqID, fmt.Sprintf("ollama error: %v", err))
+		}
+
+		content = strings.TrimSpace(content)
+
+		var reply structuredChatReply
+		if jsonErr := json.Unmarshal([]byte(content), &reply); jsonErr == nil && reply.Status != "" {
+			switch reply.Status {
+			case "tool_call":
+				argsStr := "{}"
+				if len(reply.Args) > 0 {
+					argsStr = string(reply.Args)
+				}
+				chatResp := ChatResponse{
+					Status: "tool_call",
+					Tool:   reply.Tool,
+					Args:   argsStr,
+				}
+				data, _ := json.Marshal(chatResp)
+				return &Response{ID: reqID, Success: true, Data: data}
+			case "final":
+				chatResp := ChatResponse{
+					Status:  "final",
+					Role:    "assistant",
+					Content: reply.Content,
+				}
+				data, _ := json.Marshal(chatResp)
+				return &Response{ID: reqID, Success: true, Data: data}
+			}
+		}
+
+		// JSON was invalid or status field missing — add a correction prompt
+		// for the next attempt.
+		if attempt < maxAttempts-1 {
+			msgs = append(msgs, map[string]string{
+				"role":    "user",
+				"content": structuredOutputCorrectionPrompt,
+			})
+		}
+	}
+
+	return errorResponse(reqID, "structured output enforcement: model did not return valid JSON after retries")
 }
 
 // buildOllamaMsgs converts ChatMsg slice into the format Ollama expects.
