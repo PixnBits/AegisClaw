@@ -90,6 +90,16 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		model := env.Config.Ollama.DefaultModel
 		systemPrompt := buildDaemonSystemPrompt(env)
 
+		// Phase 1: Auto-inject a compact memory summary at the top of every
+		// new conversation turn so the agent has immediate context from prior
+		// sessions.  Only retrieve on the first turn (empty history) to avoid
+		// ballooning the context on subsequent turns.
+		if len(req.History) == 0 && env.MemoryStore != nil {
+			if summary := buildMemorySummary(env, req.Input); summary != "" {
+				systemPrompt += "\n\nRELEVANT MEMORY CONTEXT (from prior sessions):\n" + summary + "\n"
+			}
+		}
+
 		// Seed conversation with system prompt + prior history + new user turn.
 		msgs := make([]agentChatMsg, 0, len(req.History)+2)
 		msgs = append(msgs, agentChatMsg{Role: "system", Content: systemPrompt})
@@ -541,6 +551,9 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	// Explicit: conversation is the default mode.
 	b.WriteString("Most of the time, just talk to the user normally. Answer questions, explain things, and be helpful.\n\n")
 
+	// Memory-first rule (Phase 1).
+	b.WriteString("MEMORY-FIRST RULE: At the start of every multi-step task (research, code change, recurring summary), call `retrieve_memory` with relevant keywords to check for prior context. Store key decisions, results, and task state via `store_memory`. This ensures continuity across sessions and wakeups.\n\n")
+
 	// Tool-use gating — only act when asked.
 	b.WriteString("You have access to tools for managing skills and proposals. Only use a tool when the user asks you to DO something (list skills, create a proposal, check status, etc.). Do NOT call a tool for greetings, questions, or conversation.\n\n")
 
@@ -568,6 +581,11 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"snapshot.create\" — create a Firecracker snapshot of the running agent VM. args: {\"label\": \"agent-baseline\"}\n")
 	b.WriteString("- \"snapshot.list\" — list all stored agent VM snapshots. args: {}\n")
 	b.WriteString("- \"snapshot.restore\" — restore the agent VM from a named snapshot. args: {\"label\": \"agent-baseline\"}\n")
+	b.WriteString("- \"store_memory\" — store a memory entry for long-term persistence. args: {\"key\": \"...\", \"value\": \"...\", \"tags\": [...], \"ttl_tier\": \"90d\", \"task_id\": \"...\"}\n")
+	b.WriteString("- \"retrieve_memory\" — retrieve memories matching a query (semantic + keyword). args: {\"query\": \"...\", \"k\": 5, \"task_id\": \"...\"}\n")
+	b.WriteString("- \"compact_memory\" — compact memories to reduce storage (tier transition). args: {\"task_id\": \"...\", \"target_tier\": \"180d\"}\n")
+	b.WriteString("- \"delete_memory\" — GDPR-style delete of matching memories. args: {\"query\": \"...\"}\n")
+	b.WriteString("- \"list_memories\" — list memory entries with optional tier filter. args: {\"tier\": \"90d\"}\n")
 
 	// Proposal drafting instructions: tell the agent how to build a court-ready draft
 	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")
@@ -608,4 +626,28 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- If you cannot help with something, say so honestly.\n")
 
 	return b.String()
+}
+
+// buildMemorySummary retrieves the top-k memories relevant to the user's input
+// and returns them formatted for injection into the system prompt.  Returns an
+// empty string if no memories are found or the store is unavailable.
+func buildMemorySummary(env *runtimeEnv, query string) string {
+	if env.MemoryStore == nil {
+		return ""
+	}
+	const summaryK = 5
+	results, err := env.MemoryStore.Retrieve(query, summaryK, "")
+	if err != nil || len(results) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, e := range results {
+		tags := strings.Join(e.Tags, ",")
+		if tags != "" {
+			tags = " [" + tags + "]"
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s%s: %s",
+			e.TTLTier, e.Key, tags, truncate(e.Value, 300)))
+	}
+	return strings.Join(lines, "\n")
 }
