@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
@@ -576,6 +577,234 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 					s.MemoryID[:8], truncate(s.Key, 30), s.TTLTier, tags, s.Version))
 			}
 			return fmt.Sprintf("Memories (%d):\n%s", len(summaries), strings.Join(lines, "\n")), nil
+		})
+
+	// ── Event Bus tools ───────────────────────────────────────────────────────
+
+	reg.Register("set_timer",
+		"Schedule an async timer. Args: {name, trigger_at (ISO8601 for one-shot), cron (for recurring), payload, task_id}. Returns timer_id.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				Name      string          `json:"name"`
+				TriggerAt string          `json:"trigger_at"` // ISO8601 for one-shot
+				Cron      string          `json:"cron"`
+				Payload   json.RawMessage `json:"payload"`
+				TaskID    string          `json:"task_id"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				return "", fmt.Errorf("invalid set_timer args: %w", err)
+			}
+			if params.Name == "" {
+				return "", fmt.Errorf("set_timer requires 'name'")
+			}
+
+			p := eventbus.SetTimerParams{
+				Name:    params.Name,
+				Cron:    params.Cron,
+				Payload: params.Payload,
+				TaskID:  params.TaskID,
+				Owner:   "agent",
+			}
+			if params.TriggerAt != "" {
+				t, err := time.Parse(time.RFC3339, params.TriggerAt)
+				if err != nil {
+					return "", fmt.Errorf("trigger_at must be RFC3339: %w", err)
+				}
+				p.TriggerAt = &t
+			}
+
+			timer, err := env.EventBus.SetTimer(p)
+			if err != nil {
+				return "", fmt.Errorf("set_timer: %w", err)
+			}
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"timer_id": timer.TimerID, "name": params.Name, "cron": params.Cron,
+			})
+			act := kernel.NewAction(kernel.ActionEventTimerSet, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+			nextDesc := "N/A"
+			if timer.NextFireAt != nil {
+				nextDesc = timer.NextFireAt.Format(time.RFC3339)
+			} else if timer.TriggerAt != nil {
+				nextDesc = timer.TriggerAt.Format(time.RFC3339)
+			}
+			return fmt.Sprintf("Timer set.\n  ID:      %s\n  Name:    %s\n  Next:    %s",
+				timer.TimerID, timer.Name, nextDesc), nil
+		})
+
+	reg.Register("cancel_timer",
+		"Cancel a scheduled timer. Args: {timer_id}. Returns confirmation.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				TimerID string `json:"timer_id"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.TimerID = strings.TrimSpace(args)
+			}
+			if params.TimerID == "" {
+				return "", fmt.Errorf("cancel_timer requires 'timer_id'")
+			}
+			ok, err := env.EventBus.CancelTimer(params.TimerID)
+			if err != nil {
+				return "", fmt.Errorf("cancel_timer: %w", err)
+			}
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"timer_id": params.TimerID, "cancelled": ok,
+			})
+			act := kernel.NewAction(kernel.ActionEventTimerCancel, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+			if !ok {
+				return fmt.Sprintf("Timer %s was not found or already terminal.", params.TimerID), nil
+			}
+			return fmt.Sprintf("Timer %s cancelled.", params.TimerID), nil
+		})
+
+	reg.Register("list_pending_async",
+		"List pending async items: active timers, subscriptions, and pending approvals. Args: {} or {type: 'timers'|'subscriptions'|'approvals'}.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				Type string `json:"type"`
+			}
+			json.Unmarshal([]byte(args), &params) //nolint:errcheck
+
+			var b strings.Builder
+			if params.Type == "" || params.Type == "timers" {
+				timers := env.EventBus.ListTimers(eventbus.TimerActive)
+				b.WriteString(fmt.Sprintf("Active Timers (%d):\n", len(timers)))
+				for _, t := range timers {
+					next := "N/A"
+					if t.NextFireAt != nil {
+						next = t.NextFireAt.Format(time.RFC3339)
+					} else if t.TriggerAt != nil {
+						next = t.TriggerAt.Format(time.RFC3339)
+					}
+					b.WriteString(fmt.Sprintf("  [%s]  %-24s  next=%-25s  task=%s\n",
+						t.TimerID, t.Name, next, t.TaskID))
+				}
+			}
+			if params.Type == "" || params.Type == "subscriptions" {
+				subs := env.EventBus.ListSubscriptions(true)
+				b.WriteString(fmt.Sprintf("Active Subscriptions (%d):\n", len(subs)))
+				for _, s := range subs {
+					b.WriteString(fmt.Sprintf("  [%s]  source=%-10s  task=%s  received=%d\n",
+						s.SubscriptionID, s.Source, s.TaskID, s.ReceivedCount))
+				}
+			}
+			if params.Type == "" || params.Type == "approvals" {
+				approvals := env.EventBus.ListPendingApprovals()
+				b.WriteString(fmt.Sprintf("Pending Approvals (%d):\n", len(approvals)))
+				for _, a := range approvals {
+					b.WriteString(fmt.Sprintf("  [%s]  %s  risk=%-6s  task=%s\n",
+						a.ApprovalID, truncate(a.Title, 40), a.RiskLevel, a.TaskID))
+				}
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
+		})
+
+	reg.Register("subscribe_signal",
+		"Subscribe to signals from an external source. Args: {source (email|calendar|file|git|webhook|custom), filter, task_id}. Returns subscription_id.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				Source string          `json:"source"`
+				Filter json.RawMessage `json:"filter"`
+				TaskID string          `json:"task_id"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				return "", fmt.Errorf("invalid subscribe_signal args: %w", err)
+			}
+			if params.Source == "" {
+				return "", fmt.Errorf("subscribe_signal requires 'source'")
+			}
+			sub, err := env.EventBus.Subscribe(
+				eventbus.SignalSource(params.Source), params.Filter, params.TaskID, "agent",
+			)
+			if err != nil {
+				return "", fmt.Errorf("subscribe_signal: %w", err)
+			}
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"subscription_id": sub.SubscriptionID, "source": params.Source, "task_id": params.TaskID,
+			})
+			act := kernel.NewAction(kernel.ActionEventSubscribe, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+			return fmt.Sprintf("Subscribed to '%s' signals.\n  Subscription ID: %s",
+				params.Source, sub.SubscriptionID), nil
+		})
+
+	reg.Register("unsubscribe_signal",
+		"Deactivate a signal subscription. Args: {subscription_id}. Returns confirmation.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				SubscriptionID string `json:"subscription_id"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.SubscriptionID = strings.TrimSpace(args)
+			}
+			if params.SubscriptionID == "" {
+				return "", fmt.Errorf("unsubscribe_signal requires 'subscription_id'")
+			}
+			ok, err := env.EventBus.Unsubscribe(params.SubscriptionID)
+			if err != nil {
+				return "", fmt.Errorf("unsubscribe_signal: %w", err)
+			}
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"subscription_id": params.SubscriptionID, "unsubscribed": ok,
+			})
+			act := kernel.NewAction(kernel.ActionEventUnsubscribe, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+			if !ok {
+				return fmt.Sprintf("Subscription %s not found or already inactive.", params.SubscriptionID), nil
+			}
+			return fmt.Sprintf("Subscription %s deactivated.", params.SubscriptionID), nil
+		})
+
+	reg.Register("request_human_approval",
+		"Request human approval for a high-risk operation. Args: {title, description, risk_level (low|medium|high), payload, task_id, expires_in_hours}. Returns approval_id and waits.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				Title          string          `json:"title"`
+				Description    string          `json:"description"`
+				RiskLevel      string          `json:"risk_level"`
+				Payload        json.RawMessage `json:"payload"`
+				TaskID         string          `json:"task_id"`
+				ExpiresInHours float64         `json:"expires_in_hours"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				return "", fmt.Errorf("invalid request_human_approval args: %w", err)
+			}
+			if params.Title == "" {
+				return "", fmt.Errorf("request_human_approval requires 'title'")
+			}
+			if params.RiskLevel == "" {
+				params.RiskLevel = "medium"
+			}
+			var expiresIn time.Duration
+			if params.ExpiresInHours > 0 {
+				expiresIn = time.Duration(params.ExpiresInHours * float64(time.Hour))
+			}
+			a, err := env.EventBus.RequestApproval(
+				params.Title, params.Description, params.RiskLevel,
+				"agent", params.TaskID, params.Payload, expiresIn,
+			)
+			if err != nil {
+				return "", fmt.Errorf("request_human_approval: %w", err)
+			}
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"approval_id": a.ApprovalID, "title": params.Title, "risk_level": params.RiskLevel,
+			})
+			act := kernel.NewAction(kernel.ActionApprovalRequest, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+
+			// Store in memory so the agent can reference it.
+			if env.MemoryStore != nil {
+				env.MemoryStore.Store(&memory.MemoryEntry{ //nolint:errcheck
+					Key:    "approval:" + a.ApprovalID,
+					Value:  fmt.Sprintf("Approval requested: %s (risk=%s). Use 'aegisclaw event approvals' to respond.", params.Title, params.RiskLevel),
+					Tags:   []string{"approval", "pending"},
+					TaskID: params.TaskID,
+				})
+			}
+			return fmt.Sprintf("Approval request submitted.\n  ID:        %s\n  Title:     %s\n  Risk:      %s\n  Status:    pending\n\nThe request will appear in the dashboard and CLI (`aegisclaw event approvals list`). The operation will not proceed until a human approves it.",
+				a.ApprovalID, a.Title, a.RiskLevel), nil
 		})
 
 	return reg

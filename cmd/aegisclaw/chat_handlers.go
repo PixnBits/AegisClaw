@@ -100,6 +100,13 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			}
 		}
 
+		// Phase 2: Inject pending async items summary on the first turn.
+		if len(req.History) == 0 && env.EventBus != nil {
+			if pending := env.EventBus.PendingSummary(); pending != "" {
+				systemPrompt += "\n\nPENDING ASYNC ITEMS: " + pending + "\nUse `list_pending_async` to see details.\n"
+			}
+		}
+
 		// Seed conversation with system prompt + prior history + new user turn.
 		msgs := make([]agentChatMsg, 0, len(req.History)+2)
 		msgs = append(msgs, agentChatMsg{Role: "system", Content: systemPrompt})
@@ -554,6 +561,15 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	// Memory-first rule (Phase 1).
 	b.WriteString("MEMORY-FIRST RULE: At the start of every multi-step task (research, code change, recurring summary), call `retrieve_memory` with relevant keywords to check for prior context. Store key decisions, results, and task state via `store_memory`. This ensures continuity across sessions and wakeups.\n\n")
 
+	// Async rules (Phase 2).
+	b.WriteString("ASYNC RULES (timers and signals):\n")
+	b.WriteString("1. Use `set_timer` to schedule future work (e.g., daily summaries, follow-ups, reminders). Provide a descriptive name and a task_id so wakeup context can be retrieved.\n")
+	b.WriteString("2. Use `subscribe_signal` to listen for external events (email reply, calendar, git push).\n")
+	b.WriteString("3. Use `list_pending_async` to check what timers, subscriptions, and approvals are currently active before creating duplicates.\n")
+	b.WriteString("4. Use `request_human_approval` for any action that is irreversible or high-risk (deletes, payments, deployments). NEVER proceed with high-risk actions without approval.\n")
+	b.WriteString("5. Store task context in memory (task_id) before scheduling async work so the agent can resume seamlessly on wakeup.\n")
+	b.WriteString("6. Always cancel timers and unsubscribe signals once the associated task completes.\n\n")
+
 	// Tool-use gating — only act when asked.
 	b.WriteString("You have access to tools for managing skills and proposals. Only use a tool when the user asks you to DO something (list skills, create a proposal, check status, etc.). Do NOT call a tool for greetings, questions, or conversation.\n\n")
 
@@ -586,6 +602,14 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"compact_memory\" — compact memories to reduce storage (tier transition). args: {\"task_id\": \"...\", \"target_tier\": \"180d\"}\n")
 	b.WriteString("- \"delete_memory\" — GDPR-style delete of matching memories. args: {\"query\": \"...\"}\n")
 	b.WriteString("- \"list_memories\" — list memory entries with optional tier filter. args: {\"tier\": \"90d\"}\n")
+
+	// Phase 2: Event bus tools.
+	b.WriteString("- \"set_timer\" — schedule an async wakeup (one-shot or cron). args: {\"name\": \"...\", \"trigger_at\": \"2026-01-01T08:00:00Z\", \"payload\": {}} or {\"name\": \"...\", \"cron\": \"@daily\", \"payload\": {}}\n")
+	b.WriteString("- \"cancel_timer\" — cancel a scheduled timer. args: {\"timer_id\": \"...\"}\n")
+	b.WriteString("- \"list_pending_async\" — list active timers, subscriptions, and pending approvals. args: {} or {\"type\": \"timers|subscriptions|approvals\"}\n")
+	b.WriteString("- \"subscribe_signal\" — subscribe to signals from email/calendar/git/webhook. args: {\"source\": \"email\", \"task_id\": \"...\"}\n")
+	b.WriteString("- \"unsubscribe_signal\" — deactivate a signal subscription. args: {\"subscription_id\": \"...\"}\n")
+	b.WriteString("- \"request_human_approval\" — request human sign-off for a high-risk action. args: {\"title\": \"...\", \"description\": \"...\", \"risk_level\": \"high\", \"task_id\": \"...\"}\n")
 
 	// Proposal drafting instructions: tell the agent how to build a court-ready draft
 	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")

@@ -12,6 +12,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/court"
+	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/memory"
@@ -28,6 +29,7 @@ var (
 	proposalInst    *proposal.Store
 	compositionInst *composition.Store
 	memoryInst      *memory.Store
+	eventBusInst    *eventbus.Bus
 	runtimeInitErr  error
 )
 
@@ -40,6 +42,7 @@ type runtimeEnv struct {
 	ProposalStore    *proposal.Store
 	CompositionStore *composition.Store
 	MemoryStore      *memory.Store
+	EventBus         *eventbus.Bus
 	Court            *court.Engine
 	LLMProxy         *llm.OllamaProxy
 	SafeMode         atomic.Bool
@@ -112,6 +115,15 @@ func initRuntime() (*runtimeEnv, error) {
 			MaxSizeMB:  cfg.Memory.MaxSizeMB,
 			DefaultTTL: ttl,
 		}, memIdentity)
+		if runtimeInitErr != nil {
+			return
+		}
+		// Event Bus: persistent timer/subscription/approval store.
+		eventBusInst, runtimeInitErr = eventbus.New(eventbus.Config{
+			Dir:              cfg.EventBus.Dir,
+			MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
+			MaxSubscriptions: cfg.EventBus.MaxSubscriptions,
+		})
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -126,6 +138,7 @@ func initRuntime() (*runtimeEnv, error) {
 		ProposalStore:    proposalInst,
 		CompositionStore: compositionInst,
 		MemoryStore:      memoryInst,
+		EventBus:         eventBusInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 	}, nil
 }
