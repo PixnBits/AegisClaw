@@ -151,6 +151,7 @@ func init() {
 	rootCmd.AddCommand(selfCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(memoryCmd)
+	rootCmd.AddCommand(eventCmd)
 
 	// skill subcommands: add, list, revoke, info
 	skillCmd.AddCommand(skillAddCmd)
@@ -168,6 +169,14 @@ func init() {
 	memoryCmd.AddCommand(memoryListCmd)
 	memoryCmd.AddCommand(memoryCompactCmd)
 	memoryCmd.AddCommand(memoryDeleteCmd)
+
+	// event subcommands: timers, signals, approvals [list/approve/reject]
+	eventCmd.AddCommand(eventTimersCmd)
+	eventCmd.AddCommand(eventSignalsCmd)
+	eventCmd.AddCommand(eventApprovalsCmd)
+	eventApprovalsCmd.AddCommand(eventApprovalsListCmd)
+	eventApprovalsCmd.AddCommand(eventApprovalsApproveCmd)
+	eventApprovalsCmd.AddCommand(eventApprovalsRejectCmd)
 
 	// start flags
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")

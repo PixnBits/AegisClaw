@@ -94,6 +94,15 @@ type Config struct {
 		// in addition to the daily background schedule. Defaults to false.
 		CompactOnStartup bool `yaml:"compact_on_startup" mapstructure:"compact_on_startup"`
 	} `yaml:"memory" mapstructure:"memory"`
+	EventBus struct {
+		// Dir is where event bus state (timers, subscriptions, approvals) is stored.
+		// Defaults to ~/.local/share/aegisclaw/eventbus.
+		Dir string `yaml:"dir" mapstructure:"dir"`
+		// MaxPendingTimers is the hard cap on active timers. Defaults to 20.
+		MaxPendingTimers int `yaml:"max_pending_timers" mapstructure:"max_pending_timers"`
+		// MaxSubscriptions is the hard cap on active subscriptions. Defaults to 20.
+		MaxSubscriptions int `yaml:"max_subscriptions" mapstructure:"max_subscriptions"`
+	} `yaml:"eventbus" mapstructure:"eventbus"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -214,6 +223,15 @@ func DefaultConfig() Config {
 			DefaultTTL:       "90d",
 			CompactOnStartup: false,
 		},
+		EventBus: struct {
+			Dir              string `yaml:"dir" mapstructure:"dir"`
+			MaxPendingTimers int    `yaml:"max_pending_timers" mapstructure:"max_pending_timers"`
+			MaxSubscriptions int    `yaml:"max_subscriptions" mapstructure:"max_subscriptions"`
+		}{
+			Dir:              filepath.Join(home, ".local", "share", "aegisclaw", "eventbus"),
+			MaxPendingTimers: 20,
+			MaxSubscriptions: 20,
+		},
 	}
 }
 
@@ -271,6 +289,9 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("memory.max_size_mb", defaults.Memory.MaxSizeMB)
 	viper.SetDefault("memory.default_ttl", defaults.Memory.DefaultTTL)
 	viper.SetDefault("memory.compact_on_startup", defaults.Memory.CompactOnStartup)
+	viper.SetDefault("eventbus.dir", defaults.EventBus.Dir)
+	viper.SetDefault("eventbus.max_pending_timers", defaults.EventBus.MaxPendingTimers)
+	viper.SetDefault("eventbus.max_subscriptions", defaults.EventBus.MaxSubscriptions)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -335,6 +356,7 @@ func validateConfig(config *Config) error {
 		"ollama.model_dir":           config.Ollama.ModelDir,
 		"snapshot.dir":               config.Snapshot.Dir,
 		"memory.dir":                 config.Memory.Dir,
+		"eventbus.dir":               config.EventBus.Dir,
 	}
 
 	for name, path := range paths {

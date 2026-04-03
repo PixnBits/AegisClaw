@@ -112,6 +112,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// It runs once immediately if compact_on_startup is set, then daily.
 	startMemoryCompactionDaemon(cmd.Context(), env)
 
+	// Phase 2: Start the background event bus timer daemon.
+	// Fires due timers and dispatches wakeup events.
+	startEventBusDaemon(cmd.Context(), env)
+
 	// Create the court engine once and share it across handlers so session
 	// state persists between review and vote calls.
 	courtEngine, err := initCourtEngine(env, toolRegistry)
@@ -146,6 +150,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("composition.rollback", makeCompositionRollbackHandler(env))
 	apiSrv.Handle("composition.history", makeCompositionHistoryHandler(env))
 	apiSrv.Handle("composition.health", makeCompositionHealthHandler(env))
+	// Phase 2: Event Bus / Approval handlers.
+	apiSrv.Handle("event.approvals.list", makeApprovalsListHandler(env))
+	apiSrv.Handle("event.approvals.decide", makeApprovalsDecideHandler(env))
+	apiSrv.Handle("event.timers.list", makeTimersListHandler(env))
+	apiSrv.Handle("event.signals.list", makeSignalsListHandler(env))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)

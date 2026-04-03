@@ -52,6 +52,20 @@ const (
 	ActionMemoryDelete ActionType = "memory.delete"
 	// ActionMemoryCompact is logged when the Memory Store compaction daemon runs.
 	ActionMemoryCompact ActionType = "memory.compact"
+	// ActionEventTimerSet is logged when an agent creates a timer.
+	ActionEventTimerSet ActionType = "event.timer.set"
+	// ActionEventTimerCancel is logged when a timer is cancelled.
+	ActionEventTimerCancel ActionType = "event.timer.cancel"
+	// ActionEventTimerFired is logged by the timer daemon when a timer fires.
+	ActionEventTimerFired ActionType = "event.timer.fired"
+	// ActionEventSubscribe is logged when an agent registers a signal subscription.
+	ActionEventSubscribe ActionType = "event.subscribe"
+	// ActionEventUnsubscribe is logged when an agent removes a signal subscription.
+	ActionEventUnsubscribe ActionType = "event.unsubscribe"
+	// ActionApprovalRequest is logged when an agent requests human approval.
+	ActionApprovalRequest ActionType = "approval.request"
+	// ActionApprovalDecide is logged when a human approves or rejects a request.
+	ActionApprovalDecide ActionType = "approval.decide"
 	// ActionSystemComponentActivate is logged when a core system microVM
 	// (e.g. AegisHub) is launched at daemon startup. These are distinct from
 	// skill activations which go through user-initiated proposals.
@@ -94,6 +108,13 @@ var validActionTypes = map[ActionType]bool{
 	ActionMemoryRetrieve:          true,
 	ActionMemoryDelete:            true,
 	ActionMemoryCompact:           true,
+	ActionEventTimerSet:           true,
+	ActionEventTimerCancel:        true,
+	ActionEventTimerFired:         true,
+	ActionEventSubscribe:          true,
+	ActionEventUnsubscribe:        true,
+	ActionApprovalRequest:         true,
+	ActionApprovalDecide:          true,
 	ActionSystemComponentActivate: true,
 }
 
