@@ -217,7 +217,7 @@ func DefaultConfig() Config {
 			TimeoutSecs:  300,
 			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "model-registry.json"),
 			ModelDir:     filepath.Join(home, ".local", "share", "aegisclaw", "models"),
-			DefaultModel: "llama3.2:3b",
+			DefaultModel: "gemma4:26b",
 		},
 		Daemon: struct {
 			SocketPath string `yaml:"socket_path" mapstructure:"socket_path"`
