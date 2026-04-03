@@ -150,14 +150,20 @@ func (s *Server) handleAsync(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	var memories interface{}
+	var err error
 	if query != "" {
-		memories, _ = s.fetchRaw(r.Context(), "memory.search", map[string]interface{}{"query": query, "k": 20})
+		memories, err = s.fetchRaw(r.Context(), "memory.search", map[string]interface{}{"query": query, "k": 20})
 	} else {
-		memories, _ = s.fetchRaw(r.Context(), "memory.list", map[string]interface{}{"limit": 50})
+		memories, err = s.fetchRaw(r.Context(), "memory.list", map[string]interface{}{"limit": 50})
+	}
+	memErr := ""
+	if err != nil {
+		memErr = err.Error()
 	}
 	s.renderTemplate(w, "Memory Vault", memoryTmpl, map[string]interface{}{
 		"Memories": memories,
 		"Query":    query,
+		"Error":    memErr,
 	})
 }
 
@@ -302,8 +308,17 @@ func (s *Server) fetchRaw(ctx context.Context, action string, req interface{}) (
 		payload, _ = json.Marshal(req)
 	}
 	resp, err := s.apiClient.Call(ctx, action, payload)
-	if err != nil || resp == nil || !resp.Success {
+	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("empty response for action: %s", action)
+	}
+	if !resp.Success {
+		if resp.Error != "" {
+			return nil, fmt.Errorf("%s", resp.Error)
+		}
+		return nil, fmt.Errorf("action failed: %s", action)
 	}
 	var out interface{}
 	json.Unmarshal(resp.Data, &out) //nolint:errcheck
@@ -504,7 +519,9 @@ const memoryTmpl = `
 </form>
 <div class="section">
   <div class="section-header">Memory Entries{{if .Query}} &mdash; searching: &#8220;{{.Query}}&#8221;{{end}}</div>
-  {{if .Memories}}
+  {{if .Error}}
+  <p class="empty" style="color:#f85149">Failed to load memories: {{.Error}}</p>
+  {{else if .Memories}}
   <table>
     <thead><tr><th>Key</th><th>Value</th><th>TTL</th></tr></thead>
     <tbody>
