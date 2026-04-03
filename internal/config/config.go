@@ -77,6 +77,23 @@ type Config struct {
 		// Defaults to ~/.local/share/aegisclaw/snapshots.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"snapshot" mapstructure:"snapshot"`
+	Memory struct {
+		// Dir is where the encrypted Memory Store vault file is stored.
+		// Defaults to ~/.local/share/aegisclaw/memory.
+		Dir string `yaml:"dir" mapstructure:"dir"`
+		// EmbeddingModel is the Ollama model used for semantic embeddings.
+		// Defaults to nomic-embed-text.
+		EmbeddingModel string `yaml:"embedding_model" mapstructure:"embedding_model"`
+		// MaxSizeMB is the hard cap on memory store size in mebibytes.
+		// Defaults to 2048 (2 GiB).
+		MaxSizeMB int64 `yaml:"max_size_mb" mapstructure:"max_size_mb"`
+		// DefaultTTL is the TTL tier applied to new memories when not specified.
+		// Defaults to "90d".
+		DefaultTTL string `yaml:"default_ttl" mapstructure:"default_ttl"`
+		// CompactOnStartup runs the compaction daemon once at daemon startup
+		// in addition to the daily background schedule. Defaults to false.
+		CompactOnStartup bool `yaml:"compact_on_startup" mapstructure:"compact_on_startup"`
+	} `yaml:"memory" mapstructure:"memory"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -184,6 +201,19 @@ func DefaultConfig() Config {
 		}{
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "snapshots"),
 		},
+		Memory: struct {
+			Dir              string `yaml:"dir" mapstructure:"dir"`
+			EmbeddingModel   string `yaml:"embedding_model" mapstructure:"embedding_model"`
+			MaxSizeMB        int64  `yaml:"max_size_mb" mapstructure:"max_size_mb"`
+			DefaultTTL       string `yaml:"default_ttl" mapstructure:"default_ttl"`
+			CompactOnStartup bool   `yaml:"compact_on_startup" mapstructure:"compact_on_startup"`
+		}{
+			Dir:              filepath.Join(home, ".local", "share", "aegisclaw", "memory"),
+			EmbeddingModel:   "nomic-embed-text",
+			MaxSizeMB:        2048,
+			DefaultTTL:       "90d",
+			CompactOnStartup: false,
+		},
 	}
 }
 
@@ -236,6 +266,11 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("agent.rootfs_path", defaults.Agent.RootfsPath)
 	viper.SetDefault("agent.structured_output", defaults.Agent.StructuredOutput)
 	viper.SetDefault("snapshot.dir", defaults.Snapshot.Dir)
+	viper.SetDefault("memory.dir", defaults.Memory.Dir)
+	viper.SetDefault("memory.embedding_model", defaults.Memory.EmbeddingModel)
+	viper.SetDefault("memory.max_size_mb", defaults.Memory.MaxSizeMB)
+	viper.SetDefault("memory.default_ttl", defaults.Memory.DefaultTTL)
+	viper.SetDefault("memory.compact_on_startup", defaults.Memory.CompactOnStartup)
 
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -299,6 +334,7 @@ func validateConfig(config *Config) error {
 		"ollama.registry_path":       config.Ollama.RegistryPath,
 		"ollama.model_dir":           config.Ollama.ModelDir,
 		"snapshot.dir":               config.Snapshot.Dir,
+		"memory.dir":                 config.Memory.Dir,
 	}
 
 	for name, path := range paths {

@@ -139,7 +139,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&globalDryRun, "dry-run", false, "Simulate action without making changes")
 	rootCmd.PersistentFlags().BoolVar(&globalForce, "force", false, "Skip confirmations (logged in audit trail)")
 
-	// Core Commands (CLI spec §2): init, start, stop, status, chat, skill, audit, secrets, self, version
+	// Core Commands (CLI spec §2): init, start, stop, status, chat, skill, audit, secrets, self, version, memory
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(stopDaemonCmd)
@@ -150,6 +150,7 @@ func init() {
 	rootCmd.AddCommand(secretsCmd)
 	rootCmd.AddCommand(selfCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(memoryCmd)
 
 	// skill subcommands: add, list, revoke, info
 	skillCmd.AddCommand(skillAddCmd)
@@ -161,6 +162,12 @@ func init() {
 	auditCmd.AddCommand(auditLogCmd)
 	auditCmd.AddCommand(auditWhyCmd)
 	auditCmd.AddCommand(auditVerifyCmd)
+
+	// memory subcommands: search, list, compact, delete
+	memoryCmd.AddCommand(memorySearchCmd)
+	memoryCmd.AddCommand(memoryListCmd)
+	memoryCmd.AddCommand(memoryCompactCmd)
+	memoryCmd.AddCommand(memoryDeleteCmd)
 
 	// start flags
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")

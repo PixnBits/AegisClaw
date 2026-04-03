@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/google/uuid"
 )
@@ -408,6 +410,172 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			env.agentVMMu.Unlock()
 
 			return fmt.Sprintf("Agent VM restored from snapshot %q.\n  New VM ID: %s", params.Label, newVMID), nil
+		})
+
+	// ── Memory Store tools ────────────────────────────────────────────────────
+
+	reg.Register("store_memory",
+		"Store a memory entry persistently. Args: {key, value, tags[], ttl_tier, security_level, task_id}. Returns memory_id.",
+		func(ctx context.Context, args string) (string, error) {
+			var params struct {
+				Key           string   `json:"key"`
+				Value         string   `json:"value"`
+				Tags          []string `json:"tags"`
+				TTLTier       string   `json:"ttl_tier"`
+				SecurityLevel string   `json:"security_level"`
+				TaskID        string   `json:"task_id"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				return "", fmt.Errorf("invalid store_memory args: %w", err)
+			}
+			if params.Key == "" {
+				return "", fmt.Errorf("store_memory requires 'key'")
+			}
+			if params.Value == "" {
+				return "", fmt.Errorf("store_memory requires 'value'")
+			}
+			entry := &memory.MemoryEntry{
+				Key:    params.Key,
+				Value:  params.Value,
+				Tags:   params.Tags,
+				TaskID: params.TaskID,
+			}
+			if params.TTLTier != "" {
+				entry.TTLTier = memory.TTLTier(params.TTLTier)
+			}
+			if params.SecurityLevel != "" {
+				entry.SecurityLevel = memory.SecurityLevel(params.SecurityLevel)
+			}
+			memID, err := env.MemoryStore.Store(entry)
+			if err != nil {
+				return "", fmt.Errorf("store_memory: %w", err)
+			}
+			// Audit-log the store operation.
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"memory_id": memID, "key": params.Key, "ttl_tier": params.TTLTier,
+			})
+			act := kernel.NewAction(kernel.ActionMemoryStore, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+			return fmt.Sprintf("Memory stored. ID: %s", memID), nil
+		})
+
+	reg.Register("retrieve_memory",
+		"Retrieve memories matching a query. Args: {query, k, task_id}. Returns matching memories.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				Query  string `json:"query"`
+				K      int    `json:"k"`
+				TaskID string `json:"task_id"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				// Allow bare query string.
+				params.Query = strings.TrimSpace(args)
+			}
+			if params.K <= 0 {
+				params.K = 5
+			}
+			results, err := env.MemoryStore.Retrieve(params.Query, params.K, params.TaskID)
+			if err != nil {
+				return "", fmt.Errorf("retrieve_memory: %w", err)
+			}
+			// Audit-log.
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"query": params.Query, "k": params.K, "results": len(results),
+			})
+			act := kernel.NewAction(kernel.ActionMemoryRetrieve, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+			if len(results) == 0 {
+				return fmt.Sprintf("No memories found for %q.", params.Query), nil
+			}
+			var lines []string
+			for _, e := range results {
+				tags := strings.Join(e.Tags, ",")
+				if tags == "" {
+					tags = "-"
+				}
+				lines = append(lines, fmt.Sprintf("[%s] %s (tier=%s tags=%s)\n  %s",
+					e.MemoryID[:8], e.Key, e.TTLTier, tags,
+					truncate(e.Value, 200)))
+			}
+			return strings.Join(lines, "\n---\n"), nil
+		})
+
+	reg.Register("compact_memory",
+		"Compact memories to reduce storage (tier transition). Args: {task_id, target_tier}.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				TaskID     string `json:"task_id"`
+				TargetTier string `json:"target_tier"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.TaskID = strings.TrimSpace(args)
+			}
+			result, err := env.MemoryStore.Compact(params.TaskID, memory.TTLTier(params.TargetTier))
+			if err != nil {
+				return "", fmt.Errorf("compact_memory: %w", err)
+			}
+			// Audit-log.
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"examined": result.Examined, "compacted": result.Compacted,
+				"target_tier": params.TargetTier, "elapsed_ms": result.ElapsedTime.Milliseconds(),
+			})
+			act := kernel.NewAction(kernel.ActionMemoryCompact, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+			return fmt.Sprintf("Compaction complete.\n  Examined: %d\n  Compacted: %d\n  Duration: %s",
+				result.Examined, result.Compacted, result.ElapsedTime.Round(time.Millisecond)), nil
+		})
+
+	reg.Register("delete_memory",
+		"Delete (soft-delete) memories matching a query. GDPR right-to-forget. Args: {query}.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				Query string `json:"query"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.Query = strings.TrimSpace(args)
+			}
+			if params.Query == "" {
+				return "", fmt.Errorf("delete_memory requires 'query'")
+			}
+			n, err := env.MemoryStore.Delete(params.Query)
+			if err != nil {
+				return "", fmt.Errorf("delete_memory: %w", err)
+			}
+			// Audit-log.
+			auditPayload, _ := json.Marshal(map[string]interface{}{
+				"query": params.Query, "deleted": n,
+			})
+			act := kernel.NewAction(kernel.ActionMemoryDelete, "agent", auditPayload)
+			env.Kernel.SignAndLog(act) //nolint:errcheck
+			return fmt.Sprintf("Deleted %d memory entries matching %q.", n, params.Query), nil
+		})
+
+	reg.Register("list_memories",
+		"List memory entries (for inspection). Args: {tier} — optional TTL tier filter.",
+		func(_ context.Context, args string) (string, error) {
+			var params struct {
+				Tier string `json:"tier"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.Tier = strings.TrimSpace(args)
+			}
+			summaries, err := env.MemoryStore.List(memory.TTLTier(params.Tier))
+			if err != nil {
+				return "", fmt.Errorf("list_memories: %w", err)
+			}
+			if len(summaries) == 0 {
+				return "No memories found.", nil
+			}
+			var lines []string
+			for _, s := range summaries {
+				tags := strings.Join(s.Tags, ",")
+				if tags == "" {
+					tags = "-"
+				}
+				lines = append(lines, fmt.Sprintf("  %s  %-30s  tier=%-6s  tags=%s  v%d",
+					s.MemoryID[:8], truncate(s.Key, 30), s.TTLTier, tags, s.Version))
+			}
+			return fmt.Sprintf("Memories (%d):\n%s", len(summaries), strings.Join(lines, "\n")), nil
 		})
 
 	return reg

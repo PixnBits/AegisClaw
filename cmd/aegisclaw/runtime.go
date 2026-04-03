@@ -2,14 +2,19 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
+	"filippo.io/age"
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
+	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/google/uuid"
@@ -22,6 +27,7 @@ var (
 	registryInst    *sandbox.SkillRegistry
 	proposalInst    *proposal.Store
 	compositionInst *composition.Store
+	memoryInst      *memory.Store
 	runtimeInitErr  error
 )
 
@@ -33,6 +39,7 @@ type runtimeEnv struct {
 	Registry         *sandbox.SkillRegistry
 	ProposalStore    *proposal.Store
 	CompositionStore *composition.Store
+	MemoryStore      *memory.Store
 	Court            *court.Engine
 	LLMProxy         *llm.OllamaProxy
 	SafeMode         atomic.Bool
@@ -87,6 +94,24 @@ func initRuntime() (*runtimeEnv, error) {
 			return
 		}
 		compositionInst, runtimeInitErr = composition.NewStore(cfg.Composition.Dir)
+		if runtimeInitErr != nil {
+			return
+		}
+		// Memory Store: load or create the age identity from the memory directory.
+		memIdentity, memIDErr := loadOrCreateMemoryIdentity(cfg.Memory.Dir)
+		if memIDErr != nil {
+			runtimeInitErr = memIDErr
+			return
+		}
+		ttl := memory.TTLTier(cfg.Memory.DefaultTTL)
+		if ttl == "" {
+			ttl = memory.TTL90d
+		}
+		memoryInst, runtimeInitErr = memory.NewStore(memory.StoreConfig{
+			Dir:        cfg.Memory.Dir,
+			MaxSizeMB:  cfg.Memory.MaxSizeMB,
+			DefaultTTL: ttl,
+		}, memIdentity)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -100,8 +125,39 @@ func initRuntime() (*runtimeEnv, error) {
 		Registry:         registryInst,
 		ProposalStore:    proposalInst,
 		CompositionStore: compositionInst,
+		MemoryStore:      memoryInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 	}, nil
+}
+
+// loadOrCreateMemoryIdentity loads the age X25519 identity for the memory store
+// from <dir>/.memory-age-identity, creating a new one if it doesn't exist.
+// This is the same pattern used by the secrets vault.
+func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("create memory dir %s: %w", dir, err)
+	}
+	identityPath := filepath.Join(dir, ".memory-age-identity")
+	data, readErr := os.ReadFile(identityPath)
+	if readErr == nil {
+		id, err := age.ParseX25519Identity(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, fmt.Errorf("parse memory age identity: %w", err)
+		}
+		return id, nil
+	}
+	if !os.IsNotExist(readErr) {
+		return nil, fmt.Errorf("read memory age identity: %w", readErr)
+	}
+	// First time: generate and persist a new identity.
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		return nil, fmt.Errorf("generate memory age identity: %w", err)
+	}
+	if err := os.WriteFile(identityPath, []byte(id.String()+"\n"), 0600); err != nil {
+		return nil, fmt.Errorf("write memory age identity: %w", err)
+	}
+	return id, nil
 }
 
 // generateVMID produces a short, human-readable VM identifier with the given

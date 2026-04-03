@@ -108,6 +108,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// daemon-driven proposal updates between rounds.
 	toolRegistry := buildToolRegistry(env)
 
+	// Phase 1: Start the background memory compaction daemon.
+	// It runs once immediately if compact_on_startup is set, then daily.
+	startMemoryCompactionDaemon(cmd.Context(), env)
+
 	// Create the court engine once and share it across handlers so session
 	// state persists between review and vote calls.
 	courtEngine, err := initCourtEngine(env, toolRegistry)

@@ -44,6 +44,14 @@ const (
 	ActionSnapshotCreate ActionType = "snapshot.create"
 	// ActionSnapshotRestore is logged when a VM is restored from a snapshot.
 	ActionSnapshotRestore ActionType = "snapshot.restore"
+	// ActionMemoryStore is logged when an agent writes an entry to the Memory Store.
+	ActionMemoryStore ActionType = "memory.store"
+	// ActionMemoryRetrieve is logged when an agent queries the Memory Store.
+	ActionMemoryRetrieve ActionType = "memory.retrieve"
+	// ActionMemoryDelete is logged when entries are soft-deleted from the Memory Store.
+	ActionMemoryDelete ActionType = "memory.delete"
+	// ActionMemoryCompact is logged when the Memory Store compaction daemon runs.
+	ActionMemoryCompact ActionType = "memory.compact"
 	// ActionSystemComponentActivate is logged when a core system microVM
 	// (e.g. AegisHub) is launched at daemon startup. These are distinct from
 	// skill activations which go through user-initiated proposals.
@@ -82,6 +90,10 @@ var validActionTypes = map[ActionType]bool{
 	ActionLLMInfer:                true,
 	ActionSnapshotCreate:          true,
 	ActionSnapshotRestore:         true,
+	ActionMemoryStore:             true,
+	ActionMemoryRetrieve:          true,
+	ActionMemoryDelete:            true,
+	ActionMemoryCompact:           true,
 	ActionSystemComponentActivate: true,
 }
 
