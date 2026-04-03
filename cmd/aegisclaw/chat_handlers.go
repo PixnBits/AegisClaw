@@ -37,8 +37,8 @@ type agentVMResponse struct {
 // agentChatPayload is placed in agentVMRequest.Payload for chat.message requests.
 // It mirrors the guest-agent's ChatMessagePayload.
 type agentChatPayload struct {
-	Messages         []agentChatMsg `json:"messages"`
-	Model            string         `json:"model"`
+	Messages []agentChatMsg `json:"messages"`
+	Model    string         `json:"model"`
 	// StructuredOutput requests JSON-mode enforcement in the guest-agent (Phase 0).
 	// When true the guest-agent uses Ollama format=json and validates the response
 	// schema before returning.
@@ -89,6 +89,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 		model := env.Config.Ollama.DefaultModel
 		systemPrompt := buildDaemonSystemPrompt(env)
+		systemPrompt += buildMemoryStatusGuard(env)
 
 		// Phase 1: Auto-inject a compact memory summary at the top of every
 		// new conversation turn so the agent has immediate context from prior
@@ -128,6 +129,8 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			msgs = append(msgs, agentChatMsg{Role: "user", Content: req.Input})
 		}
 
+		memoryToolEvidence := false
+
 		for i := 0; i < reactMaxIterations; i++ {
 			payloadBytes, _ := json.Marshal(agentChatPayload{
 				Messages:         msgs,
@@ -160,9 +163,10 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 			switch chatResp.Status {
 			case "final":
+				finalContent := enforceMemoryTruth(chatResp.Content, env, memoryToolEvidence)
 				respData, _ := json.Marshal(api.ChatMessageResponse{
 					Role:    "assistant",
-					Content: chatResp.Content,
+					Content: finalContent,
 				})
 				return &api.Response{Success: true, Data: respData}
 
@@ -175,6 +179,9 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 					zap.String("tool", chatResp.Tool),
 					zap.Bool("success", toolErr == nil),
 				)
+				if isMemoryEvidenceFromTool(chatResp.Tool, toolResult, toolErr) {
+					memoryToolEvidence = true
+				}
 				// Append the assistant's tool-call turn and the tool result.
 				toolCallContent := fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", chatResp.Tool, chatResp.Args)
 				msgs = append(msgs,
@@ -655,6 +662,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("Rules:\n")
 	b.WriteString("- NEVER fabricate tool results or pretend you called a tool.\n")
 	b.WriteString("- NEVER write fake output like \"Status: approved\" or \"[Tool ... returned]\" yourself.\n")
+	b.WriteString("- NEVER claim that memories exist unless this turn includes explicit memory evidence (retrieved memory context or tool output).\n")
 	b.WriteString("- Never invent tools that are not listed above.\n")
 	b.WriteString("- If you need data you do not have, call the appropriate tool.\n")
 	b.WriteString("- If no tool can provide the information, say so honestly — do NOT make it up.\n")
@@ -685,4 +693,85 @@ func buildMemorySummary(env *runtimeEnv, query string) string {
 			e.TTLTier, e.Key, tags, truncate(e.Value, 300)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// buildMemoryStatusGuard returns a deterministic memory status note that is
+// injected into the system prompt to reduce memory hallucinations.
+func buildMemoryStatusGuard(env *runtimeEnv) string {
+	if env == nil || env.MemoryStore == nil {
+		return "\n\nMEMORY STORE STATUS: unavailable in this runtime. Do not claim persisted memories exist unless a memory tool call proves it.\n"
+	}
+	count := env.MemoryStore.Count()
+	if count == 0 {
+		return "\n\nMEMORY STORE STATUS: currently 0 persisted entries. If asked about saved memories, explicitly say none are currently stored.\n"
+	}
+	return fmt.Sprintf("\n\nMEMORY STORE STATUS: currently %d persisted entries. Verify specific memory claims with retrieve_memory or list_memories before asserting details.\n", count)
+}
+
+func isMemoryEvidenceFromTool(toolName, toolResult string, toolErr error) bool {
+	if toolErr != nil {
+		return false
+	}
+	if toolName != "retrieve_memory" && toolName != "list_memories" {
+		return false
+	}
+	l := strings.ToLower(toolResult)
+	if strings.Contains(l, "no memories found") || strings.Contains(l, "no memory entries") {
+		return false
+	}
+	if strings.Contains(l, "memory_id") || strings.Contains(l, "ttl_tier") || strings.Contains(l, "saved memories") {
+		return true
+	}
+	return strings.TrimSpace(toolResult) != ""
+}
+
+func enforceMemoryTruth(content string, env *runtimeEnv, memoryToolEvidence bool) string {
+	if env == nil || env.MemoryStore == nil {
+		return content
+	}
+
+	count := env.MemoryStore.Count()
+	l := strings.ToLower(content)
+	if !strings.Contains(l, "memor") {
+		return content
+	}
+
+	if memoryToolEvidence {
+		return content
+	}
+
+	if count == 0 {
+		negativeMarkers := []string{"no memory", "no memories", "do not have", "don't have", "none saved", "0 persisted"}
+		for _, m := range negativeMarkers {
+			if strings.Contains(l, m) {
+				return content
+			}
+		}
+
+		positiveMarkers := []string{"yes", "i have", "there is", "there are", "saved memory", "saved memories", "retrieved", "previous session"}
+		for _, m := range positiveMarkers {
+			if strings.Contains(l, m) {
+				return "No, I do not currently have any saved memories."
+			}
+		}
+		return content
+	}
+
+	// When memories exist but no memory-read tool was called this turn, enforce
+	// count-consistent answers and avoid fabricated specifics.
+	negativeMarkers := []string{"no memory", "no memories", "do not have", "don't have", "none saved", "0 persisted"}
+	for _, m := range negativeMarkers {
+		if strings.Contains(l, m) {
+			return fmt.Sprintf("Yes, there are currently %d saved memories. I need to run retrieve_memory or list_memories to provide specific entries.", count)
+		}
+	}
+
+	specificMarkers := []string{" key ", "query", "entry with", "title", "previous session", "retrieved", "memory id", "\""}
+	for _, m := range specificMarkers {
+		if strings.Contains(l, m) {
+			return fmt.Sprintf("Yes, there are currently %d saved memories. I need to run retrieve_memory or list_memories to provide specific entries.", count)
+		}
+	}
+
+	return content
 }

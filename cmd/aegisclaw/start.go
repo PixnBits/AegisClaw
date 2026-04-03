@@ -158,6 +158,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("event.approvals.decide", makeApprovalsDecideHandler(env))
 	apiSrv.Handle("event.timers.list", makeTimersListHandler(env))
 	apiSrv.Handle("event.signals.list", makeSignalsListHandler(env))
+	// Phase 1: Memory handlers for dashboard/API access.
+	apiSrv.Handle("memory.list", makeMemoryListHandler(env))
+	apiSrv.Handle("memory.search", makeMemorySearchHandler(env))
 	// Phase 3: Worker handlers.
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
