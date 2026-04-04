@@ -56,11 +56,12 @@ type agentChatMsg struct {
 // agentChatResponse is the ChatResponse returned inside agentVMResponse.Data.
 // Mirrors the guest-agent's ChatResponse type.
 type agentChatResponse struct {
-	Status  string `json:"status"`            // "final" | "tool_call"
-	Role    string `json:"role,omitempty"`    // present when status=="final"
-	Content string `json:"content,omitempty"` // present when status=="final"
-	Tool    string `json:"tool,omitempty"`    // present when status=="tool_call"
-	Args    string `json:"args,omitempty"`    // present when status=="tool_call"
+	Status   string `json:"status"`            // "final" | "tool_call"
+	Role     string `json:"role,omitempty"`    // present when status=="final"
+	Content  string `json:"content,omitempty"` // present when status=="final"
+	Thinking string `json:"thinking,omitempty"`
+	Tool     string `json:"tool,omitempty"` // present when status=="tool_call"
+	Args     string `json:"args,omitempty"` // present when status=="tool_call"
 }
 
 // makeChatMessageHandler returns an API handler that drives the full ReAct loop
@@ -84,6 +85,9 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		}
 		if env.ToolEvents == nil {
 			env.ToolEvents = NewToolEventBuffer(400)
+		}
+		if env.ThoughtEvents == nil {
+			env.ThoughtEvents = NewThoughtEventBuffer(600)
 		}
 
 		agentVMID, err := ensureAgentVM(ctx, env)
@@ -135,6 +139,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 		memoryToolEvidence := false
 		toolTrace := make([]map[string]interface{}, 0)
+		thinkingTrace := make([]map[string]interface{}, 0)
 
 		for i := 0; i < reactMaxIterations; i++ {
 			payloadBytes, _ := json.Marshal(agentChatPayload{
@@ -166,18 +171,40 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				return &api.Response{Error: "malformed agent chat response: " + err.Error()}
 			}
 
+			if thought := summarizeModelThinking(chatResp.Thinking); thought != "" {
+				summary := fmt.Sprintf("Model thinking step %d", i+1)
+				thinkingTrace = append(thinkingTrace, map[string]interface{}{
+					"phase":     "model_thinking",
+					"summary":   summary,
+					"details":   thought,
+					"timestamp": time.Now().UTC().Format(time.RFC3339),
+				})
+				env.ThoughtEvents.Record("model_thinking", "", summary, thought)
+			}
+
 			switch chatResp.Status {
 			case "final":
 				toolTraceJSON, _ := json.Marshal(toolTrace)
+				thinkingTraceJSON, _ := json.Marshal(thinkingTrace)
 				finalContent := enforceMemoryTruth(chatResp.Content, env, memoryToolEvidence)
 				respData, _ := json.Marshal(api.ChatMessageResponse{
 					Role:      "assistant",
 					Content:   finalContent,
 					ToolCalls: toolTraceJSON,
+					Thinking:  thinkingTraceJSON,
 				})
 				return &api.Response{Success: true, Data: respData}
 
 			case "tool_call":
+				reasoning := summarizeToolCallReasoning(chatResp.Thinking, chatResp.Content, chatResp.Tool)
+				thinkingTrace = append(thinkingTrace, map[string]interface{}{
+					"phase":     "tool_call",
+					"tool":      chatResp.Tool,
+					"summary":   "Decided to call tool: " + chatResp.Tool,
+					"details":   reasoning,
+					"timestamp": time.Now().UTC().Format(time.RFC3339),
+				})
+				env.ThoughtEvents.Record("tool_call", chatResp.Tool, "Decided to call tool: "+chatResp.Tool, reasoning)
 				started := time.Now()
 				if env.ToolEvents != nil {
 					env.ToolEvents.RecordStart(chatResp.Tool)
@@ -207,6 +234,19 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 					toolTrace[len(toolTrace)-1]["error"] = toolErr.Error()
 					toolResult = fmt.Sprintf("Error executing %s: %v", chatResp.Tool, toolErr)
 				}
+				resultSummary := "Tool call completed: " + chatResp.Tool
+				resultDetails := fmt.Sprintf("success=%t duration_ms=%d", toolErr == nil, duration.Milliseconds())
+				if toolErr != nil {
+					resultDetails += " error=" + toolErr.Error()
+				}
+				thinkingTrace = append(thinkingTrace, map[string]interface{}{
+					"phase":     "tool_result",
+					"tool":      chatResp.Tool,
+					"summary":   resultSummary,
+					"details":   resultDetails,
+					"timestamp": time.Now().UTC().Format(time.RFC3339),
+				})
+				env.ThoughtEvents.Record("tool_result", chatResp.Tool, resultSummary, resultDetails)
 				env.Logger.Info("tool executed via ReAct loop",
 					zap.String("tool", chatResp.Tool),
 					zap.Bool("success", toolErr == nil),
@@ -226,9 +266,16 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			}
 		}
 
+		limitTraceJSON, _ := json.Marshal([]map[string]interface{}{{
+			"phase":     "limit_reached",
+			"summary":   "Reached tool call limit",
+			"details":   "The model did not return a final answer before hitting the maximum number of tool calls.",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		}})
 		respData, _ := json.Marshal(api.ChatMessageResponse{
-			Role:    "assistant",
-			Content: "I reached the tool call limit without a final answer. Please try rephrasing your request.",
+			Role:     "assistant",
+			Content:  "I reached the tool call limit without a final answer. Please try rephrasing your request.",
+			Thinking: limitTraceJSON,
 		})
 		return &api.Response{Success: true, Data: respData}
 	}
@@ -252,6 +299,58 @@ func makeChatToolEventsHandler(env *runtimeEnv) api.Handler {
 		respData, _ := json.Marshal(env.ToolEvents.Recent(limit))
 		return &api.Response{Success: true, Data: respData}
 	}
+}
+
+// makeChatThoughtEventsHandler returns recent chat thought events for dashboard/UI consumers.
+func makeChatThoughtEventsHandler(env *runtimeEnv) api.Handler {
+	return func(_ context.Context, data json.RawMessage) *api.Response {
+		if env.ThoughtEvents == nil {
+			env.ThoughtEvents = NewThoughtEventBuffer(600)
+		}
+		limit := 30
+		if len(data) > 0 {
+			var req struct {
+				Limit int `json:"limit"`
+			}
+			if err := json.Unmarshal(data, &req); err == nil && req.Limit > 0 {
+				limit = req.Limit
+			}
+		}
+		respData, _ := json.Marshal(env.ThoughtEvents.Recent(limit))
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+func summarizeModelThinking(thinking string) string {
+	thinking = strings.TrimSpace(thinking)
+	if thinking == "" {
+		return ""
+	}
+	if len(thinking) > 3500 {
+		thinking = thinking[:3500] + "\n...[truncated]"
+	}
+	return thinking
+}
+
+func summarizeToolCallReasoning(thinking, content, toolName string) string {
+	if thought := summarizeModelThinking(thinking); thought != "" {
+		return thought
+	}
+
+	reasoning := strings.TrimSpace(content)
+	if reasoning == "" {
+		return "No explicit reasoning was returned. The agent selected this tool based on the conversation state."
+	}
+	if idx := strings.Index(reasoning, "```tool-call"); idx >= 0 {
+		reasoning = strings.TrimSpace(reasoning[:idx])
+	}
+	if len(reasoning) > 2500 {
+		reasoning = reasoning[:2500] + "\n...[truncated]"
+	}
+	if reasoning == "" {
+		return "Agent chose tool: " + toolName
+	}
+	return reasoning
 }
 
 // ensureAgentVM returns the running agent VM's ID, starting it lazily on first call (DC).

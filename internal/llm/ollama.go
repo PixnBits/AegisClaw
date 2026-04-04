@@ -41,8 +41,9 @@ type GenerateResponse struct {
 
 // ChatMessage represents a message in a chat conversation.
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role     string `json:"role"`
+	Content  string `json:"content"`
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // ChatRequest is the payload sent to the Ollama /api/chat endpoint.

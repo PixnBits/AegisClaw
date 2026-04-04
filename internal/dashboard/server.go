@@ -284,7 +284,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	ctx := r.Context()
-  ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	fmt.Fprintf(w, "data: {\"type\":\"heartbeat\"}\n\n")
@@ -298,11 +298,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			workers, _ := s.fetchRaw(ctx, "worker.list", map[string]bool{"active_only": true})
 			approvals, _ := s.fetchRaw(ctx, "event.approvals.list", map[string]bool{"pending_only": true})
 			toolEvents, _ := s.fetchRaw(ctx, "chat.tool_events", map[string]int{"limit": 40})
+			thoughtEvents, _ := s.fetchRaw(ctx, "chat.thought_events", map[string]int{"limit": 60})
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type":              "update",
 				"active_workers":    workers,
 				"pending_approvals": approvals,
 				"tool_events":       toolEvents,
+				"thought_events":    thoughtEvents,
 				"ts":                time.Now().UTC().Format(time.RFC3339),
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)
@@ -465,6 +467,14 @@ a.nav-link{color:#58a6ff}
 .tool-details{margin-top:.25rem}
 .tool-details summary{cursor:pointer;color:#9ec1e6}
 .tool-payload{white-space:pre-wrap;word-break:break-word;background:#0b1016;border:1px solid #2a323d;border-radius:6px;padding:.4rem .55rem;margin-top:.35rem;max-height:220px;overflow:auto}
+.thought-log{border:1px solid #4a3f24;background:#1d1710;border-radius:8px;padding:.5rem .65rem;font-size:.8rem}
+.thought-log-title{color:#f2d39b;font-weight:600;margin-bottom:.35rem}
+.thought-step{border-top:1px dashed #5b4a2a;padding-top:.35rem;margin-top:.35rem}
+.thought-step:first-of-type{border-top:none;margin-top:0;padding-top:0}
+.thought-summary{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.thought-phase{color:#f2cc60;font-weight:600}
+.thought-tool{color:#e6edf3}
+.thought-time{color:#8b949e}
 @media (max-width: 900px){
   #chat-sidebar{width:190px}
   .bubble{max-width:90%}
@@ -861,13 +871,75 @@ const chatTmpl = `
     return (v===undefined||v===null)?'':String(v);
   }
 
-  function appendAssistant(content,toolCalls){
+  function appendAssistant(content,toolCalls,thinkingTrace){
     var msgs=document.getElementById('chat-msgs');
     var row=document.createElement('div');
     row.className='msg msg-assistant';
 
     var stack=document.createElement('div');
     stack.className='assistant-stack';
+
+    if(Array.isArray(thinkingTrace) && thinkingTrace.length>0){
+      var tlog=document.createElement('div');
+      tlog.className='thought-log';
+      var ttitle=document.createElement('div');
+      ttitle.className='thought-log-title';
+      ttitle.textContent='Thinking trace';
+      tlog.appendChild(ttitle);
+      var hasThoughtSteps=false;
+
+      for(var j=0;j<thinkingTrace.length;j++){
+        var step=thinkingTrace[j]||{};
+        if(step.phase==='final'){
+          continue;
+        }
+        hasThoughtSteps=true;
+        var entry=document.createElement('div');
+        entry.className='thought-step';
+
+        var summary=document.createElement('div');
+        summary.className='thought-summary';
+
+        var phase=document.createElement('span');
+        phase.className='thought-phase';
+        phase.textContent=safeText(step.phase||'step');
+        summary.appendChild(phase);
+
+        if(step.tool){
+          var tool=document.createElement('span');
+          tool.className='thought-tool';
+          tool.textContent='tool: '+safeText(step.tool);
+          summary.appendChild(tool);
+        }
+
+        if(step.timestamp){
+          var ts=document.createElement('span');
+          ts.className='thought-time';
+          ts.textContent=new Date(step.timestamp).toLocaleTimeString();
+          summary.appendChild(ts);
+        }
+
+        entry.appendChild(summary);
+
+        var details=document.createElement('details');
+        details.className='tool-details';
+        var sum=document.createElement('summary');
+        sum.textContent=safeText(step.summary||'Details');
+        details.appendChild(sum);
+        if(step.details){
+          var pre=document.createElement('pre');
+          pre.className='tool-payload';
+          pre.textContent=safeText(step.details);
+          details.appendChild(pre);
+        }
+        entry.appendChild(details);
+        tlog.appendChild(entry);
+      }
+
+      if(hasThoughtSteps){
+        stack.appendChild(tlog);
+      }
+    }
 
     if(Array.isArray(toolCalls) && toolCalls.length>0){
       var log=document.createElement('div');
@@ -1022,7 +1094,7 @@ const chatTmpl = `
     for(var i=0;i<s.messages.length;i++){
       var msg=s.messages[i];
       if(msg.role==='user')appendMsg('user',msg.content);
-      else if(msg.role==='assistant')appendAssistant(msg.content,msg.tool_calls||[]);
+      else if(msg.role==='assistant')appendAssistant(msg.content,msg.tool_calls||[],msg.thinking_trace||[]);
       else if(msg.role==='error')appendMsg('error',msg.content);
     }
   }
@@ -1039,8 +1111,91 @@ const chatTmpl = `
   var typingDiv=null;
   var liveToolRow=null;
   var liveToolLog=null;
+  var liveThoughtRow=null;
+  var liveThoughtLog=null;
   var awaitingResponse=false;
   var lastToolEventIDSeen=0;
+  var lastThoughtEventIDSeen=0;
+
+  function ensureLiveThoughtLog(){
+    var msgs=document.getElementById('chat-msgs');
+    if(!liveThoughtRow){
+      liveThoughtRow=document.createElement('div');
+      liveThoughtRow.className='msg msg-assistant';
+      var stack=document.createElement('div');
+      stack.className='assistant-stack';
+      liveThoughtLog=document.createElement('div');
+      liveThoughtLog.className='thought-log';
+      var title=document.createElement('div');
+      title.className='thought-log-title';
+      title.textContent='Thinking (live)';
+      liveThoughtLog.appendChild(title);
+      stack.appendChild(liveThoughtLog);
+      liveThoughtRow.appendChild(stack);
+    }
+    if(!liveThoughtRow.parentNode){
+      msgs.appendChild(liveThoughtRow);
+    }
+    msgs.scrollTop=msgs.scrollHeight;
+  }
+
+  function clearLiveThoughtLog(){
+    if(liveThoughtRow){
+      liveThoughtRow.remove();
+    }
+    liveThoughtRow=null;
+    liveThoughtLog=null;
+  }
+
+  function appendLiveThoughtEvent(ev){
+	if(ev && ev.phase==='final'){
+	  return;
+	}
+    if(!liveThoughtLog)return;
+    var step=document.createElement('div');
+    step.className='thought-step';
+
+    var summary=document.createElement('div');
+    summary.className='thought-summary';
+
+    var phase=document.createElement('span');
+    phase.className='thought-phase';
+    phase.textContent=safeText(ev.phase||'step');
+    summary.appendChild(phase);
+
+    if(ev.tool){
+      var tool=document.createElement('span');
+      tool.className='thought-tool';
+      tool.textContent='tool: '+safeText(ev.tool);
+      summary.appendChild(tool);
+    }
+
+    if(ev.timestamp){
+      var ts=document.createElement('span');
+      ts.className='thought-time';
+      ts.textContent=new Date(ev.timestamp).toLocaleTimeString();
+      summary.appendChild(ts);
+    }
+    step.appendChild(summary);
+
+    var details=document.createElement('details');
+    details.className='tool-details';
+    var sum=document.createElement('summary');
+    sum.textContent=safeText(ev.summary||'Thought');
+    details.appendChild(sum);
+
+    if(ev.details){
+      var pre=document.createElement('pre');
+      pre.className='tool-payload';
+      pre.textContent=safeText(ev.details);
+      details.appendChild(pre);
+    }
+    step.appendChild(details);
+
+    liveThoughtLog.appendChild(step);
+    var msgs=document.getElementById('chat-msgs');
+    msgs.scrollTop=msgs.scrollHeight;
+  }
 
   function ensureLiveToolLog(){
     var msgs=document.getElementById('chat-msgs');
@@ -1073,6 +1228,9 @@ const chatTmpl = `
   }
 
   function appendLiveToolEvent(ev){
+	if(!liveToolLog){
+	  ensureLiveToolLog();
+	}
     if(!liveToolLog)return;
     var call=document.createElement('div');
     call.className='tool-call';
@@ -1185,7 +1343,7 @@ const chatTmpl = `
 
     setDisabled(true);
     awaitingResponse=true;
-    ensureLiveToolLog();
+    ensureLiveThoughtLog();
     showTyping();
     try{
       var res=await fetch('/chat/send',{
@@ -1195,6 +1353,7 @@ const chatTmpl = `
       });
       var data=await res.json();
       clearTyping();
+      clearLiveThoughtLog();
       clearLiveToolLog();
       awaitingResponse=false;
       if(data.error){
@@ -1206,8 +1365,9 @@ const chatTmpl = `
       }else{
         var content=data.content||'(empty response)';
         var toolCalls=Array.isArray(data.tool_calls)?data.tool_calls:[];
-        appendAssistant(content,toolCalls);
-        s.messages.push({role:'assistant',content:content,tool_calls:toolCalls});
+        var thinkingTrace=Array.isArray(data.thinking_trace)?data.thinking_trace:[];
+        appendAssistant(content,toolCalls,thinkingTrace);
+        s.messages.push({role:'assistant',content:content,tool_calls:toolCalls,thinking_trace:thinkingTrace});
         if(s.messages.length>MAX)s.messages=s.messages.slice(s.messages.length-MAX);
         s.updated_at=Date.now();
         saveSessions();
@@ -1215,6 +1375,7 @@ const chatTmpl = `
       }
     }catch(e){
       clearTyping();
+      clearLiveThoughtLog();
       clearLiveToolLog();
       awaitingResponse=false;
       appendMsg('error','Network error: '+e.message);
@@ -1231,20 +1392,35 @@ const chatTmpl = `
   });
 
   window.onSSEUpdate=function(d){
-    if(!d || !Array.isArray(d.tool_events) || d.tool_events.length===0){
+    if(!d){
       return;
     }
 
-    var newest=lastToolEventIDSeen;
-    for(var i=0;i<d.tool_events.length;i++){
-      var ev=d.tool_events[i]||{};
-      var id=Number(ev.id||0);
-      if(id>newest)newest=id;
-      if(!awaitingResponse)continue;
-      if(id<=lastToolEventIDSeen)continue;
-      appendLiveToolEvent(ev);
+    if(Array.isArray(d.tool_events) && d.tool_events.length>0){
+      var newestTool=lastToolEventIDSeen;
+      for(var i=0;i<d.tool_events.length;i++){
+        var ev=d.tool_events[i]||{};
+        var id=Number(ev.id||0);
+        if(id>newestTool)newestTool=id;
+        if(!awaitingResponse)continue;
+        if(id<=lastToolEventIDSeen)continue;
+        appendLiveToolEvent(ev);
+      }
+      lastToolEventIDSeen=newestTool;
     }
-    lastToolEventIDSeen=newest;
+
+    if(Array.isArray(d.thought_events) && d.thought_events.length>0){
+      var newestThought=lastThoughtEventIDSeen;
+      for(var j=0;j<d.thought_events.length;j++){
+        var tev=d.thought_events[j]||{};
+        var tid=Number(tev.id||0);
+        if(tid>newestThought)newestThought=tid;
+        if(!awaitingResponse)continue;
+        if(tid<=lastThoughtEventIDSeen)continue;
+        appendLiveThoughtEvent(tev);
+      }
+      lastThoughtEventIDSeen=newestThought;
+    }
   };
 
   loadSessions();
