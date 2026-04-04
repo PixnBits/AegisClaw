@@ -453,6 +453,31 @@ a.nav-link{color:#58a6ff}
 .msg-user .bubble{background:#1a3a6b;border:1px solid #2952a3;color:#e6edf3}
 .msg-assistant .bubble{background:#161b22;border:1px solid #30363d}
 .msg-error .bubble{background:#2d0f0f;border:1px solid #f85149;color:#f85149}
+.markdown-bubble{white-space:normal}
+.markdown-bubble p{margin:.45rem 0}
+.markdown-bubble p:first-child{margin-top:0}
+.markdown-bubble p:last-child{margin-bottom:0}
+.markdown-bubble h1,.markdown-bubble h2,.markdown-bubble h3{margin:.65rem 0 .35rem 0;line-height:1.35}
+.markdown-bubble h1{font-size:1.05rem}
+.markdown-bubble h2{font-size:1rem}
+.markdown-bubble h3{font-size:.95rem}
+.markdown-bubble hr{border:none;border-top:1px solid #2b3440;margin:.65rem 0}
+.markdown-bubble blockquote{margin:.55rem 0;padding:.25rem .75rem;border-left:3px solid #3a4a5e;background:#10161f;color:#c9d4e0}
+.markdown-bubble blockquote p{margin:.25rem 0}
+.markdown-bubble ul,.markdown-bubble ol{margin:.4rem 0 .45rem 1.2rem}
+.markdown-bubble li{margin:.2rem 0}
+.markdown-bubble ul.task-list{list-style:none;margin:.35rem 0 .45rem 0;padding-left:.1rem}
+.markdown-bubble li.task-item{display:flex;align-items:flex-start;gap:.45rem}
+.markdown-bubble li.task-item input{margin-top:.18rem;accent-color:#58a6ff}
+.markdown-bubble li.task-item span{display:inline-block}
+.markdown-bubble table{border-collapse:collapse;width:100%;margin:.55rem 0;background:#121821;border:1px solid #2b3440;border-radius:6px;overflow:hidden;display:block;overflow-x:auto}
+.markdown-bubble th,.markdown-bubble td{border:1px solid #2b3440;padding:.35rem .55rem;text-align:left;vertical-align:top;white-space:nowrap}
+.markdown-bubble th{background:#0f151d;color:#dce7f3;font-weight:600}
+.markdown-bubble pre{white-space:pre-wrap;word-break:break-word;background:#0b1016;border:1px solid #2a323d;border-radius:6px;padding:.5rem .6rem;margin:.5rem 0;overflow:auto}
+.markdown-bubble code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0f151d;border:1px solid #2a323d;border-radius:4px;padding:.08rem .28rem;font-size:.86em}
+.markdown-bubble pre code{background:transparent;border:none;padding:0}
+.markdown-bubble s{opacity:.9}
+.markdown-bubble a{color:#79c0ff;text-decoration:underline}
 .typing .bubble{color:#8b949e;font-style:italic}
 .assistant-stack{display:flex;flex-direction:column;gap:.45rem;max-width:80%}
 .tool-log{border:1px solid #2f3a47;background:#0f151d;border-radius:8px;padding:.5rem .65rem;font-size:.8rem}
@@ -871,6 +896,267 @@ const chatTmpl = `
     return (v===undefined||v===null)?'':String(v);
   }
 
+  function escapeHTML(s){
+    return String(s)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/\"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
+
+  function decodeEntities(s){
+    var ta=document.createElement('textarea');
+    ta.innerHTML=s;
+    return ta.value;
+  }
+
+  function sanitizeURL(raw){
+    var url=String(raw||'').trim();
+    if(!url)return '';
+    if(url[0]==='/' || url[0]==='#')return url;
+    try{
+      var parsed=new URL(url,window.location.origin);
+      var p=parsed.protocol.toLowerCase();
+      if(p==='http:'||p==='https:'||p==='mailto:')return parsed.href;
+      return '';
+    }catch(_){
+      return '';
+    }
+  }
+
+  function renderInlineMarkdownSafe(input){
+    // input is already escaped by renderMarkdownSafe; do not escape again.
+    var text=safeText(input);
+    var codeSpans=[];
+
+    text=text.replace(/\x60([^\x60]+)\x60/g,function(_,code){
+      codeSpans.push(code);
+      return '@@CODESPAN'+(codeSpans.length-1)+'@@';
+    });
+
+    text=text.replace(/\[([^\]]+)\]\(([^)]+)\)/g,function(_,label,url){
+      var decodedURL=decodeEntities(url);
+      var safeURL=sanitizeURL(decodedURL);
+      if(!safeURL){
+        return label+' ('+url+')';
+      }
+      return '<a href="'+escapeHTML(safeURL)+'" target="_blank" rel="noopener noreferrer">'+label+'</a>';
+    });
+
+    text=text.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    text=text.replace(/~~([^~]+)~~/g,'<s>$1</s>');
+    text=text.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g,'$1<em>$2</em>');
+
+    text=text.replace(/@@CODESPAN(\d+)@@/g,function(_,idx){
+      var i=parseInt(idx,10);
+      return '<code>'+codeSpans[i]+'</code>';
+    });
+
+    return text;
+  }
+
+  function renderMarkdownSafe(input){
+    var src=safeText(input).replace(/\r\n/g,'\n');
+    if(!src)return '';
+
+    var escaped=escapeHTML(src);
+    var codeBlocks=[];
+    escaped=escaped.replace(/\x60\x60\x60([a-zA-Z0-9_+-]+)?\n([\s\S]*?)\x60\x60\x60/g,function(_,lang,code){
+      codeBlocks.push('<pre><code>'+code+'</code></pre>');
+      return '@@CODEBLOCK'+(codeBlocks.length-1)+'@@';
+    });
+
+    var lines=escaped.split('\n');
+    var html=[];
+    var para=[];
+    var inUL=false;
+    var inOL=false;
+    var inTask=false;
+
+    function closeLists(){
+      if(inUL){html.push('</ul>');inUL=false;}
+      if(inOL){html.push('</ol>');inOL=false;}
+      if(inTask){html.push('</ul>');inTask=false;}
+    }
+    function flushPara(){
+      if(para.length===0)return;
+      html.push('<p>'+renderInlineMarkdownSafe(para.join('<br>'))+'</p>');
+      para=[];
+    }
+
+    function parseTableCells(line){
+      var t=line.trim();
+      if(t.indexOf('|')===-1)return null;
+      if(t[0]==='|')t=t.slice(1);
+      if(t[t.length-1]==='|')t=t.slice(0,-1);
+      var cells=t.split('|');
+      for(var ci=0;ci<cells.length;ci++){
+        cells[ci]=cells[ci].trim();
+      }
+      if(cells.length===0)return null;
+      return cells;
+    }
+
+    function parseAlignmentCell(cell){
+      var c=cell.trim();
+      if(!/^:?-{3,}:?$/.test(c))return null;
+      var left=c[0]===':';
+      var right=c[c.length-1]===':';
+      if(left&&right)return 'center';
+      if(right)return 'right';
+      return 'left';
+    }
+
+    function tryParseTable(startIdx){
+      if(startIdx+1>=lines.length)return null;
+      var header=parseTableCells(lines[startIdx]);
+      var alignCells=parseTableCells(lines[startIdx+1]);
+      if(!header||!alignCells)return null;
+      if(header.length!==alignCells.length)return null;
+
+      var aligns=[];
+      for(var ai=0;ai<alignCells.length;ai++){
+        var al=parseAlignmentCell(alignCells[ai]);
+        if(!al)return null;
+        aligns.push(al);
+      }
+
+      var rows=[];
+      var idx=startIdx+2;
+      while(idx<lines.length){
+        var ln=lines[idx];
+        if(!ln || !ln.trim())break;
+        if(/^@@CODEBLOCK\d+@@$/.test(ln.trim()))break;
+        var cells=parseTableCells(ln);
+        if(!cells || cells.length!==header.length)break;
+        rows.push(cells);
+        idx++;
+      }
+      if(rows.length===0)return null;
+
+      var table='<table><thead><tr>';
+      for(var hi=0;hi<header.length;hi++){
+        var hStyle=' style="text-align:'+aligns[hi]+'"';
+        table+='<th'+hStyle+'>'+renderInlineMarkdownSafe(header[hi])+'</th>';
+      }
+      table+='</tr></thead><tbody>';
+      for(var ri=0;ri<rows.length;ri++){
+        table+='<tr>';
+        for(var ti=0;ti<rows[ri].length;ti++){
+          var dStyle=' style="text-align:'+aligns[ti]+'"';
+          table+='<td'+dStyle+'>'+renderInlineMarkdownSafe(rows[ri][ti])+'</td>';
+        }
+        table+='</tr>';
+      }
+      table+='</tbody></table>';
+
+      return {html:table,nextIndex:idx-1};
+    }
+
+    for(var i=0;i<lines.length;i++){
+      var line=lines[i];
+      var trimmed=line.trim();
+
+      if(trimmed===''){
+        flushPara();
+        closeLists();
+        continue;
+      }
+
+      if(/^@@CODEBLOCK\d+@@$/.test(trimmed)){
+        flushPara();
+        closeLists();
+        html.push(trimmed);
+        continue;
+      }
+
+      var tableParsed=tryParseTable(i);
+      if(tableParsed){
+        flushPara();
+        closeLists();
+        html.push(tableParsed.html);
+        i=tableParsed.nextIndex;
+        continue;
+      }
+
+      var heading=trimmed.match(/^(#{1,3})\s+(.*)$/);
+      if(heading){
+        flushPara();
+        closeLists();
+        var level=heading[1].length;
+        html.push('<h'+level+'>'+renderInlineMarkdownSafe(heading[2])+'</h'+level+'>');
+        continue;
+      }
+
+      if(/^([-*_])\1\1+$/.test(trimmed.replace(/\s+/g,''))){
+        flushPara();
+        closeLists();
+        html.push('<hr>');
+        continue;
+      }
+
+      var bq=trimmed.match(/^&gt;\s?(.*)$/);
+      if(bq){
+        flushPara();
+        closeLists();
+        var quoteLines=[bq[1]];
+        while(i+1<lines.length){
+          var nextTrim=lines[i+1].trim();
+          var nextMatch=nextTrim.match(/^&gt;\s?(.*)$/);
+          if(!nextMatch)break;
+          quoteLines.push(nextMatch[1]);
+          i++;
+        }
+        html.push('<blockquote><p>'+renderInlineMarkdownSafe(quoteLines.join('<br>'))+'</p></blockquote>');
+        continue;
+      }
+
+      var task=trimmed.match(/^[-*]\s+\[([ xX])\]\s+(.*)$/);
+      if(task){
+        flushPara();
+        if(inUL){html.push('</ul>');inUL=false;}
+        if(inOL){html.push('</ol>');inOL=false;}
+        if(!inTask){html.push('<ul class="task-list">');inTask=true;}
+        var checked=(task[1].toLowerCase()==='x')?' checked':'';
+        html.push('<li class="task-item"><input type="checkbox" disabled'+checked+'><span>'+renderInlineMarkdownSafe(task[2])+'</span></li>');
+        continue;
+      }
+
+      var ul=trimmed.match(/^[-*]\s+(.*)$/);
+      if(ul){
+        flushPara();
+        if(inTask){html.push('</ul>');inTask=false;}
+        if(inOL){html.push('</ol>');inOL=false;}
+        if(!inUL){html.push('<ul>');inUL=true;}
+        html.push('<li>'+renderInlineMarkdownSafe(ul[1])+'</li>');
+        continue;
+      }
+
+      var ol=trimmed.match(/^\d+\.\s+(.*)$/);
+      if(ol){
+        flushPara();
+        if(inTask){html.push('</ul>');inTask=false;}
+        if(inUL){html.push('</ul>');inUL=false;}
+        if(!inOL){html.push('<ol>');inOL=true;}
+        html.push('<li>'+renderInlineMarkdownSafe(ol[1])+'</li>');
+        continue;
+      }
+
+      para.push(trimmed);
+    }
+
+    flushPara();
+    closeLists();
+
+    var out=html.join('');
+    out=out.replace(/@@CODEBLOCK(\d+)@@/g,function(_,idx){
+      var i=parseInt(idx,10);
+      return codeBlocks[i];
+    });
+    return out;
+  }
+
   function appendAssistant(content,toolCalls,thinkingTrace){
     var msgs=document.getElementById('chat-msgs');
     var row=document.createElement('div');
@@ -1007,8 +1293,8 @@ const chatTmpl = `
     }
 
     var bubble=document.createElement('div');
-    bubble.className='bubble';
-    bubble.textContent=safeText(content);
+    bubble.className='bubble markdown-bubble';
+    bubble.innerHTML=renderMarkdownSafe(content);
     stack.appendChild(bubble);
 
     row.appendChild(stack);
