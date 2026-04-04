@@ -579,7 +579,7 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 	proxyCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
-	raw, err := callOllamaViaProxy(proxyCtx, payload.Model, messages, "json", options)
+	raw, _, err := callOllamaViaProxy(proxyCtx, payload.Model, messages, "json", options)
 	if err != nil {
 		return errorResponse(req.ID, fmt.Sprintf("ollama proxy error: %v", err))
 	}
@@ -603,8 +603,8 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 
 // ChatMessagePayload is received from the daemon for D2 (main-agent sandbox).
 type ChatMessagePayload struct {
-	Messages       []ChatMsg `json:"messages"`
-	Model          string    `json:"model"`
+	Messages []ChatMsg `json:"messages"`
+	Model    string    `json:"model"`
 	// StructuredOutput, when true, instructs the agent VM to enforce JSON-format
 	// responses from Ollama and validate tool-call JSON before returning.
 	// This is the Phase 0 structured output enforcement mechanism.
@@ -622,11 +622,12 @@ type ChatMsg struct {
 // ChatResponse is the response from handleChatMessage.
 // Status is either "final" (done) or "tool_call" (agent wants a tool executed).
 type ChatResponse struct {
-	Status  string `json:"status"`            // "final" | "tool_call"
-	Role    string `json:"role,omitempty"`    // present when status=="final"
-	Content string `json:"content,omitempty"` // present when status=="final"
-	Tool    string `json:"tool,omitempty"`    // present when status=="tool_call"
-	Args    string `json:"args,omitempty"`    // present when status=="tool_call"
+	Status   string `json:"status"`            // "final" | "tool_call"
+	Role     string `json:"role,omitempty"`    // present when status=="final"
+	Content  string `json:"content,omitempty"` // present when status=="final"
+	Thinking string `json:"thinking,omitempty"`
+	Tool     string `json:"tool,omitempty"` // present when status=="tool_call"
+	Args     string `json:"args,omitempty"` // present when status=="tool_call"
 }
 
 const (
@@ -778,7 +779,7 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 		return handleChatMessageStructured(callCtx, req.ID, payload.Model, ollamaMsgs)
 	}
 
-	content, err := callOllamaViaProxy(callCtx, payload.Model, ollamaMsgs, "", nil)
+	content, thinking, err := callOllamaViaProxy(callCtx, payload.Model, ollamaMsgs, "", nil)
 	if err != nil {
 		return errorResponse(req.ID, fmt.Sprintf("ollama error: %v", err))
 	}
@@ -787,9 +788,10 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 	toolName, argsJSON, hasTool := parseAgentToolCall(content)
 	if hasTool {
 		chatResp := ChatResponse{
-			Status: "tool_call",
-			Tool:   toolName,
-			Args:   argsJSON,
+			Status:   "tool_call",
+			Thinking: strings.TrimSpace(thinking),
+			Tool:     toolName,
+			Args:     argsJSON,
 		}
 		data, _ := json.Marshal(chatResp)
 		return &Response{ID: req.ID, Success: true, Data: data}
@@ -797,9 +799,10 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 
 	// No tool call — return the final assistant response.
 	chatResp := ChatResponse{
-		Status:  "final",
-		Role:    "assistant",
-		Content: content,
+		Status:   "final",
+		Role:     "assistant",
+		Content:  content,
+		Thinking: strings.TrimSpace(thinking),
 	}
 	data, _ := json.Marshal(chatResp)
 	return &Response{ID: req.ID, Success: true, Data: data}
@@ -808,10 +811,10 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 // structuredChatReply is the JSON schema Ollama is asked to produce when
 // StructuredOutput is enabled.
 type structuredChatReply struct {
-	Status  string          `json:"status"`           // "final" | "tool_call"
+	Status  string          `json:"status"`            // "final" | "tool_call"
 	Content string          `json:"content,omitempty"` // when status=="final"
-	Tool    string          `json:"tool,omitempty"`   // when status=="tool_call"
-	Args    json.RawMessage `json:"args,omitempty"`   // when status=="tool_call"
+	Tool    string          `json:"tool,omitempty"`    // when status=="tool_call"
+	Args    json.RawMessage `json:"args,omitempty"`    // when status=="tool_call"
 }
 
 // handleChatMessageStructured drives the ReAct step with Ollama JSON mode
@@ -821,7 +824,7 @@ type structuredChatReply struct {
 func handleChatMessageStructured(ctx context.Context, reqID, model string, msgs []map[string]string) *Response {
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		content, err := callOllamaViaProxy(ctx, model, msgs, "json", nil)
+		content, _, err := callOllamaViaProxy(ctx, model, msgs, "json", nil)
 		if err != nil {
 			return errorResponse(reqID, fmt.Sprintf("ollama error: %v", err))
 		}
@@ -897,12 +900,12 @@ func buildOllamaMsgs(msgs []ChatMsg) []map[string]string {
 // over vsock (AF_VSOCK, host CID 2, port 1025).  The proxy validates the model
 // against the allowlist and proxies to the local Ollama service; this VM has no
 // network interface and cannot reach Ollama directly.
-func callOllamaViaProxy(ctx context.Context, model string, messages []map[string]string, format string, options map[string]interface{}) (string, error) {
+func callOllamaViaProxy(ctx context.Context, model string, messages []map[string]string, format string, options map[string]interface{}) (string, string, error) {
 	// Dial host (CID 2) on the well-known LLM proxy port.
 	const proxyPort = 1025
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
-		return "", fmt.Errorf("vsock socket: %w", err)
+		return "", "", fmt.Errorf("vsock socket: %w", err)
 	}
 
 	// Apply the context deadline as a socket-level timeout.
@@ -910,7 +913,7 @@ func callOllamaViaProxy(ctx context.Context, model string, messages []map[string
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			unix.Close(fd)
-			return "", fmt.Errorf("context already expired")
+			return "", "", fmt.Errorf("context already expired")
 		}
 		tv := unix.NsecToTimeval(remaining.Nanoseconds())
 		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
@@ -923,7 +926,7 @@ func callOllamaViaProxy(ctx context.Context, model string, messages []map[string
 	}
 	if err := unix.Connect(fd, sa); err != nil {
 		unix.Close(fd)
-		return "", fmt.Errorf("vsock connect to llm proxy: %w", err)
+		return "", "", fmt.Errorf("vsock connect to llm proxy: %w", err)
 	}
 
 	// Wrap the raw fd in a net.Conn for JSON encode/decode.
@@ -949,21 +952,22 @@ func callOllamaViaProxy(ctx context.Context, model string, messages []map[string
 	}
 
 	if err := json.NewEncoder(conn).Encode(proxyReq); err != nil {
-		return "", fmt.Errorf("send proxy request: %w", err)
+		return "", "", fmt.Errorf("send proxy request: %w", err)
 	}
 
 	var proxyResp struct {
 		RequestID string `json:"request_id"`
 		Content   string `json:"content,omitempty"`
+		Thinking  string `json:"thinking,omitempty"`
 		Error     string `json:"error,omitempty"`
 	}
 	if err := json.NewDecoder(conn).Decode(&proxyResp); err != nil {
-		return "", fmt.Errorf("read proxy response: %w", err)
+		return "", "", fmt.Errorf("read proxy response: %w", err)
 	}
 	if proxyResp.Error != "" {
-		return "", fmt.Errorf("llm proxy: %s", proxyResp.Error)
+		return "", "", fmt.Errorf("llm proxy: %s", proxyResp.Error)
 	}
-	return proxyResp.Content, nil
+	return proxyResp.Content, proxyResp.Thinking, nil
 }
 
 func readUptime() string {

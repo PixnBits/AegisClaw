@@ -40,6 +40,7 @@ type ProxyRequest struct {
 type ProxyResponse struct {
 	RequestID string `json:"request_id"`
 	Content   string `json:"content,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 
@@ -250,7 +251,8 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 
 	var ollamaResp struct {
 		Message struct {
-			Content string `json:"content"`
+			Content  string `json:"content"`
+			Thinking string `json:"thinking,omitempty"`
 		} `json:"message"`
 	}
 	if err := json.NewDecoder(httpResp.Body).Decode(&ollamaResp); err != nil {
@@ -271,5 +273,6 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 	return ProxyResponse{
 		RequestID: req.RequestID,
 		Content:   ollamaResp.Message.Content,
+		Thinking:  ollamaResp.Message.Thinking,
 	}
 }

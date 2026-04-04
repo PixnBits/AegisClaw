@@ -150,6 +150,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
 	apiSrv.Handle("chat.tool", makeChatToolExecHandler(env, toolRegistry))
 	apiSrv.Handle("chat.tool_events", makeChatToolEventsHandler(env))
+	apiSrv.Handle("chat.thought_events", makeChatThoughtEventsHandler(env))
 	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
 	// D10: Composition manifest handlers for versioned deployment and rollback.
 	apiSrv.Handle("composition.current", makeCompositionCurrentHandler(env))

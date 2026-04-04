@@ -78,6 +78,7 @@ type ChatMessageResponse struct {
 	Role      string          `json:"role"`
 	Content   string          `json:"content"`
 	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
+	Thinking  json.RawMessage `json:"thinking_trace,omitempty"`
 }
 
 // ChatSlashRequest carries the payload for the "chat.slash" action (D2).
