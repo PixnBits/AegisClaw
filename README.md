@@ -98,16 +98,26 @@ One-time setup — creates directory structure, Ed25519 keypair, and audit log:
 ./aegisclaw init
 ```
 
-### 3. Start the Daemon
+### 3. Build System VM Images (One-Time)
+
+The daemon requires dedicated rootfs images for AegisHub (IPC router) and the
+web portal microVM.
 
 ```bash
-sudo ./aegisclaw start &
+sudo ./scripts/build-rootfs.sh --target=aegishub
+sudo ./scripts/build-rootfs.sh --target=portal
+```
+
+### 4. Start the Daemon
+
+```bash
+sudo ./aegisclaw start &> aegisclaw.log
 ```
 
 > **Why sudo?** Firecracker requires root for KVM device access and network
 > namespace creation. On first run, `start` automatically downloads the
 > Firecracker kernel image and builds the Alpine rootfs template — no manual
-> download required.
+> download required. AegisHub and portal rootfs images are built in Step 3.
 
 Verify the daemon is up:
 
@@ -115,7 +125,13 @@ Verify the daemon is up:
 ./aegisclaw status
 ```
 
-### 4. Open Chat
+Open the web portal:
+
+```bash
+xdg-open http://127.0.0.1:7878
+```
+
+### 5. Open Chat
 
 ```bash
 ./aegisclaw chat
@@ -123,7 +139,7 @@ Verify the daemon is up:
 
 Type a message or `/help` for available commands.
 
-### 5. Create Your First Skill
+### 6. Create Your First Skill
 
 In chat, describe what you want:
 

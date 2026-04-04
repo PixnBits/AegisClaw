@@ -116,9 +116,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Fires due timers and dispatches wakeup events.
 	startEventBusDaemon(cmd.Context(), env)
 
-	// Phase 4: Start the local web dashboard if enabled.
-	startDashboard(cmd.Context(), env, apiSrv)
-
 	// Create the court engine once and share it across handlers so session
 	// state persists between review and vote calls.
 	courtEngine, err := initCourtEngine(env, toolRegistry)
@@ -172,6 +169,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
 	}
+
+	// Start the dashboard portal microVM and localhost edge proxy after API
+	// handlers are registered so portal requests can be serviced immediately.
+	startDashboard(cmd.Context(), env, apiSrv)
 
 	// Apply --safe flag: if set, enable safe mode and deactivate all
 	// active skills before accepting requests.
