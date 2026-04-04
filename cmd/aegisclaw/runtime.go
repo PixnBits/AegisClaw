@@ -62,6 +62,11 @@ type runtimeEnv struct {
 	// traffic routes through it for ACL enforcement and audit logging.
 	// The daemon registers it before starting any other VM.
 	AegisHubVMID string
+
+	// PortalVMID is the ID of the dashboard portal microVM. Protected by
+	// portalVMMu and lazily started when dashboard.enabled is true.
+	PortalVMID string
+	portalVMMu sync.Mutex
 }
 
 func initRuntime() (*runtimeEnv, error) {

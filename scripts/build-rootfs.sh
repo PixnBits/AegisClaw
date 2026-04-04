@@ -6,11 +6,13 @@ set -euo pipefail
 # Targets:
 #   (default / --target=guest)   guest-agent rootfs (sandbox VMs: agent, court, builder, skills)
 #   --target=aegishub             AegisHub system microVM rootfs (sole IPC router)
+#   --target=portal               Dashboard portal microVM rootfs
 #
 # Requirements: root privileges, e2fsprogs (mkfs.ext4, e2fsck, resize2fs)
 # Usage:
 #   sudo ./scripts/build-rootfs.sh [output-path]
 #   sudo ./scripts/build-rootfs.sh --target=aegishub [output-path]
+#   sudo ./scripts/build-rootfs.sh --target=portal [output-path]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -31,9 +33,9 @@ done
 
 # Validate target
 case "${TARGET}" in
-    guest|aegishub) ;;
+    guest|aegishub|portal) ;;
     *)
-        echo "ERROR: Unknown target '${TARGET}'. Valid targets: guest, aegishub"
+        echo "ERROR: Unknown target '${TARGET}'. Valid targets: guest, aegishub, portal"
         exit 1
         ;;
 esac
@@ -48,6 +50,15 @@ if [ "${TARGET}" = "aegishub" ]; then
     BINARY_SRC_PKG="./cmd/aegishub/"
     BINARY_DEST="/sbin/aegishub"
     HOSTNAME="aegisclaw-hub"
+elif [ "${TARGET}" = "portal" ]; then
+    DEFAULT_OUTPUT="/var/lib/aegisclaw/rootfs-templates/portal-rootfs.ext4"
+    ROOTFS_LABEL="aegisportal"
+    # Portal VM hosts only the web UI process and uses vsock for host RPC.
+    ROOTFS_SIZE_MB=96
+    BINARY_NAME="aegisportal"
+    BINARY_SRC_PKG="./cmd/aegisportal/"
+    BINARY_DEST="/sbin/aegisportal"
+    HOSTNAME="aegisclaw-portal"
 else
     DEFAULT_OUTPUT="/var/lib/aegisclaw/rootfs-templates/alpine.ext4"
     ROOTFS_LABEL="aegisclaw"
@@ -142,7 +153,7 @@ mount -o loop "${WORKDIR}/rootfs.ext4" "${MOUNTPOINT}"
 # ── Alpine base (for guest-agent target only) ─────────────────────────────────
 # The AegisHub rootfs is intentionally bare: only busybox + the aegishub binary.
 # No Alpine packages, no shell, no tools — minimal attack surface.
-if [ "${TARGET}" != "aegishub" ]; then
+if [ "${TARGET}" = "guest" ]; then
     # Install Alpine minimal root filesystem for sandbox VMs
     echo ">>> Installing Alpine base..."
     if command -v apk &>/dev/null; then
@@ -164,7 +175,7 @@ fi
 # Create essential directories
 echo ">>> Setting up filesystem structure..."
 mkdir -p "${MOUNTPOINT}"/{dev,proc,sys,tmp,run,sbin,etc}
-if [ "${TARGET}" != "aegishub" ]; then
+if [ "${TARGET}" = "guest" ]; then
     mkdir -p "${MOUNTPOINT}/workspace"
     mkdir -p "${MOUNTPOINT}/run/secrets"
 fi
@@ -182,7 +193,7 @@ echo "${HOSTNAME}" > "${MOUNTPOINT}/etc/hostname"
 
 # No resolv.conf for AegisHub: it has DefaultDeny network policy (vsock-only).
 # Other targets still need DNS for the guest agent's proxy lookups.
-if [ "${TARGET}" != "aegishub" ]; then
+if [ "${TARGET}" = "guest" ]; then
     cat > "${MOUNTPOINT}/etc/resolv.conf" << 'EOF'
 nameserver 10.0.0.1
 EOF
@@ -209,7 +220,7 @@ rm -rf "${MOUNTPOINT}"/usr/share/info 2>/dev/null || true
 # Set restrictive permissions
 chmod 755 "${MOUNTPOINT}"
 chmod 1777 "${MOUNTPOINT}/tmp"
-if [ "${TARGET}" != "aegishub" ]; then
+if [ "${TARGET}" = "guest" ]; then
     chmod 700 "${MOUNTPOINT}/run/secrets"
 fi
 
@@ -234,7 +245,7 @@ echo "Target:  ${TARGET}"
 echo "Output:  ${OUTPUT}"
 echo "Size:    ${FINAL_SIZE}"
 echo "Binary:  ${BINARY_DEST} (PID 1)"
-if [ "${TARGET}" != "aegishub" ]; then
+if [ "${TARGET}" = "guest" ]; then
     echo "Workspace: /workspace (separate drive)"
     echo "Secrets:   /run/secrets (tmpfs, never persisted)"
 fi
