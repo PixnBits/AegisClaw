@@ -496,6 +496,9 @@ a.nav-link{color:#58a6ff}
 .markdown-bubble a{color:#79c0ff;text-decoration:underline}
 .typing .bubble{color:#8b949e;font-style:italic}
 .assistant-stack{display:flex;flex-direction:column;gap:.45rem;max-width:80%}
+.assistant-meta{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.model-pill{font-size:.74rem;color:#dce7f3;background:#1b2330;border:1px solid #31405a;border-radius:999px;padding:.14rem .5rem}
+.assistant-model-inline{font-size:.78rem;color:#9ec1e6;margin-bottom:.35rem}
 .tool-log{border:1px solid #2f3a47;background:#0f151d;border-radius:8px;padding:.5rem .65rem;font-size:.8rem}
 .tool-log-title{color:#b5c6da;font-weight:600;margin-bottom:.35rem}
 .tool-call{border-top:1px dashed #2b3440;padding-top:.35rem;margin-top:.35rem}
@@ -512,9 +515,13 @@ a.nav-link{color:#58a6ff}
 .thought-log-title{color:#f2d39b;font-weight:600;margin-bottom:.35rem}
 .thought-step{border-top:1px dashed #5b4a2a;padding-top:.35rem;margin-top:.35rem}
 .thought-step:first-of-type{border-top:none;margin-top:0;padding-top:0}
+.thought-step--thinking{background:#111a0d;border-radius:4px;padding:.35rem .5rem;border-left:2px solid #52a04e;margin-top:.5rem}
+.thought-step--thinking .tool-payload{max-height:400px}
 .thought-summary{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
 .thought-phase{color:#f2cc60;font-weight:600}
+.thought-phase--thinking{color:#52a04e;font-weight:600}
 .thought-tool{color:#e6edf3}
+.thought-model{color:#9ec1e6;font-size:.74rem}
 .thought-time{color:#8b949e}
 @media (max-width: 900px){
   #chat-sidebar{width:190px}
@@ -1250,13 +1257,47 @@ const chatTmpl = `
     return out;
   }
 
-  function appendAssistant(content,toolCalls,thinkingTrace){
+  function appendAssistant(content,toolCalls,thinkingTrace,model){
     var msgs=document.getElementById('chat-msgs');
     var row=document.createElement('div');
     row.className='msg msg-assistant';
 
     var stack=document.createElement('div');
     stack.className='assistant-stack';
+
+    // Fallback inference in case top-level model is absent on older responses.
+    var effectiveModel='';
+    if(typeof model==='string' && model.trim()!==''){
+      effectiveModel=model.trim();
+    }
+    if(!effectiveModel && Array.isArray(thinkingTrace)){
+      for(var mi=0;mi<thinkingTrace.length;mi++){
+        var mstep=thinkingTrace[mi]||{};
+        if(typeof mstep.model==='string' && mstep.model.trim()!==''){
+          effectiveModel=mstep.model.trim();
+          break;
+        }
+      }
+    }
+    if(!effectiveModel && Array.isArray(toolCalls)){
+      for(var ti=0;ti<toolCalls.length;ti++){
+        var tstep=toolCalls[ti]||{};
+        if(typeof tstep.model==='string' && tstep.model.trim()!==''){
+          effectiveModel=tstep.model.trim();
+          break;
+        }
+      }
+    }
+
+    if(effectiveModel){
+      var meta=document.createElement('div');
+      meta.className='assistant-meta';
+      var pill=document.createElement('span');
+      pill.className='model-pill';
+      pill.textContent='model: '+safeText(effectiveModel);
+      meta.appendChild(pill);
+      stack.appendChild(meta);
+    }
 
     if(Array.isArray(thinkingTrace) && thinkingTrace.length>0){
       var tlog=document.createElement('div');
@@ -1273,16 +1314,24 @@ const chatTmpl = `
           continue;
         }
         hasThoughtSteps=true;
+        var isThinking=(step.phase==='model_thinking');
         var entry=document.createElement('div');
-        entry.className='thought-step';
+        entry.className='thought-step'+(isThinking?' thought-step--thinking':'');
 
         var summary=document.createElement('div');
         summary.className='thought-summary';
 
         var phase=document.createElement('span');
-        phase.className='thought-phase';
-        phase.textContent=safeText(step.phase||'step');
+        phase.className=isThinking?'thought-phase--thinking':'thought-phase';
+        phase.textContent=isThinking?'reasoning':safeText(step.phase||'step');
         summary.appendChild(phase);
+
+        if(step.model){
+          var smodel=document.createElement('span');
+          smodel.className='thought-model';
+          smodel.textContent='model: '+safeText(step.model);
+          summary.appendChild(smodel);
+        }
 
         if(step.tool){
           var tool=document.createElement('span');
@@ -1301,6 +1350,8 @@ const chatTmpl = `
         entry.appendChild(summary);
 
         var details=document.createElement('details');
+        // Auto-expand model reasoning so users see it without extra clicks.
+        if(isThinking)details.open=true;
         details.className='tool-details';
         var sum=document.createElement('summary');
         sum.textContent=safeText(step.summary||'Details');
@@ -1339,6 +1390,13 @@ const chatTmpl = `
         name.className='tool-name';
         name.textContent=safeText(tc.tool||'unknown');
         summary.appendChild(name);
+
+        if(tc.model){
+          var tmodel=document.createElement('span');
+          tmodel.className='thought-model';
+          tmodel.textContent='model: '+safeText(tc.model);
+          summary.appendChild(tmodel);
+        }
 
         var state=document.createElement('span');
         state.className=(tc.success===false)?'tool-state-fail':'tool-state-ok';
@@ -1387,7 +1445,11 @@ const chatTmpl = `
 
     var bubble=document.createElement('div');
     bubble.className='bubble markdown-bubble';
-    bubble.innerHTML=renderMarkdownSafe(content);
+    var rendered=renderMarkdownSafe(content);
+    if(effectiveModel){
+      rendered='<div class="assistant-model-inline">Model: '+safeText(effectiveModel)+'</div>'+rendered;
+    }
+    bubble.innerHTML=rendered;
     stack.appendChild(bubble);
 
     row.appendChild(stack);
@@ -1473,7 +1535,7 @@ const chatTmpl = `
     for(var i=0;i<s.messages.length;i++){
       var msg=s.messages[i];
       if(msg.role==='user')appendMsg('user',msg.content);
-      else if(msg.role==='assistant')appendAssistant(msg.content,msg.tool_calls||[],msg.thinking_trace||[]);
+      else if(msg.role==='assistant')appendAssistant(msg.content,msg.tool_calls||[],msg.thinking_trace||[],msg.model||'');
       else if(msg.role==='error')appendMsg('error',msg.content);
     }
   }
@@ -1531,15 +1593,16 @@ const chatTmpl = `
 	  return;
 	}
     if(!liveThoughtLog)return;
+    var isThinking=(ev.phase==='model_thinking');
     var step=document.createElement('div');
-    step.className='thought-step';
+    step.className='thought-step'+(isThinking?' thought-step--thinking':'');
 
     var summary=document.createElement('div');
     summary.className='thought-summary';
 
     var phase=document.createElement('span');
-    phase.className='thought-phase';
-    phase.textContent=safeText(ev.phase||'step');
+    phase.className=isThinking?'thought-phase--thinking':'thought-phase';
+    phase.textContent=isThinking?'reasoning':safeText(ev.phase||'step');
     summary.appendChild(phase);
 
     if(ev.tool){
@@ -1558,6 +1621,8 @@ const chatTmpl = `
     step.appendChild(summary);
 
     var details=document.createElement('details');
+    // Auto-expand model reasoning so users see it live without clicking.
+    if(isThinking)details.open=true;
     details.className='tool-details';
     var sum=document.createElement('summary');
     sum.textContent=safeText(ev.summary||'Thought');
@@ -1745,8 +1810,9 @@ const chatTmpl = `
         var content=data.content||'(empty response)';
         var toolCalls=Array.isArray(data.tool_calls)?data.tool_calls:[];
         var thinkingTrace=Array.isArray(data.thinking_trace)?data.thinking_trace:[];
-        appendAssistant(content,toolCalls,thinkingTrace);
-        s.messages.push({role:'assistant',content:content,tool_calls:toolCalls,thinking_trace:thinkingTrace});
+        var model=(typeof data.model==='string')?data.model:'';
+        appendAssistant(content,toolCalls,thinkingTrace,model);
+        s.messages.push({role:'assistant',content:content,model:model,tool_calls:toolCalls,thinking_trace:thinkingTrace});
         if(s.messages.length>MAX)s.messages=s.messages.slice(s.messages.length-MAX);
         s.updated_at=Date.now();
         saveSessions();

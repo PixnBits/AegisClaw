@@ -78,6 +78,7 @@ type ChatHistoryItem struct {
 type ChatMessageResponse struct {
 	Role      string          `json:"role"`
 	Content   string          `json:"content"`
+	Model     string          `json:"model,omitempty"`
 	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 	Thinking  json.RawMessage `json:"thinking_trace,omitempty"`
 }

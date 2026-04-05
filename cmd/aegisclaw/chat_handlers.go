@@ -171,15 +171,22 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				return &api.Response{Error: "malformed agent chat response: " + err.Error()}
 			}
 
-			if thought := summarizeModelThinking(chatResp.Thinking); thought != "" {
-				summary := fmt.Sprintf("Model thinking step %d", i+1)
+			if thought := strings.TrimSpace(chatResp.Thinking); thought != "" {
+				// Truncate to 8000 chars so large thinking blocks don't balloon
+				// the in-memory trace, but keep enough for a useful audit trail.
+				stored := thought
+				if len(stored) > 8000 {
+					stored = stored[:8000] + "\n...[truncated]"
+				}
+				summary := thinkingSummaryLine(stored)
 				thinkingTrace = append(thinkingTrace, map[string]interface{}{
 					"phase":     "model_thinking",
+					"model":     model,
 					"summary":   summary,
-					"details":   thought,
+					"details":   stored,
 					"timestamp": time.Now().UTC().Format(time.RFC3339),
 				})
-				env.ThoughtEvents.Record("model_thinking", "", summary, thought)
+				env.ThoughtEvents.Record("model_thinking", "", summary, stored)
 			}
 
 			switch chatResp.Status {
@@ -198,6 +205,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				respData, _ := json.Marshal(api.ChatMessageResponse{
 					Role:      "assistant",
 					Content:   finalContent,
+					Model:     model,
 					ToolCalls: toolTraceJSON,
 					Thinking:  thinkingTraceJSON,
 				})
@@ -207,6 +215,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				reasoning := summarizeToolCallReasoning(chatResp.Thinking, chatResp.Content, chatResp.Tool)
 				thinkingTrace = append(thinkingTrace, map[string]interface{}{
 					"phase":     "tool_call",
+					"model":     model,
 					"tool":      chatResp.Tool,
 					"summary":   "Decided to call tool: " + chatResp.Tool,
 					"details":   reasoning,
@@ -230,8 +239,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				if env.ToolEvents != nil {
 					env.ToolEvents.RecordFinish(chatResp.Tool, toolErr == nil, toolErr, duration)
 				}
-				toolTrace = append(toolTrace, map[string]interface{}{
-					"tool":        chatResp.Tool,
+				toolTrace = append(toolTrace, map[string]interface{}{					"model":        model,					"tool":        chatResp.Tool,
 					"args":        argsPreview,
 					"response":    resultPreview,
 					"success":     toolErr == nil,
@@ -249,6 +257,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				}
 				thinkingTrace = append(thinkingTrace, map[string]interface{}{
 					"phase":     "tool_result",
+					"model":     model,
 					"tool":      chatResp.Tool,
 					"summary":   resultSummary,
 					"details":   resultDetails,
@@ -334,10 +343,33 @@ func summarizeModelThinking(thinking string) string {
 	if thinking == "" {
 		return ""
 	}
-	if len(thinking) > 3500 {
-		thinking = thinking[:3500] + "\n...[truncated]"
+	if len(thinking) > 8000 {
+		thinking = thinking[:8000] + "\n...[truncated]"
 	}
 	return thinking
+}
+
+// thinkingSummaryLine returns a short one-line summary of the thinking block
+// for the "summary" field shown collapsed in the UI.  It uses the first
+// meaningful sentence / line (≤120 chars) so users immediately know what the
+// model reasoned about, without having to open the details panel.
+func thinkingSummaryLine(thinking string) string {
+	if thinking == "" {
+		return "Model reasoning"
+	}
+	// Find the first non-empty line.
+	for _, line := range strings.Split(thinking, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Trim to at most 120 chars to keep the summary compact.
+		if len(line) > 120 {
+			line = line[:117] + "…"
+		}
+		return line
+	}
+	return "Model reasoning"
 }
 
 func summarizeToolCallReasoning(thinking, content, toolName string) string {
@@ -720,9 +752,11 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("You are AegisClaw, a friendly and security-conscious coding assistant.\n")
 	b.WriteString("You help users manage skills that run in isolated Firecracker microVMs.\n")
 	b.WriteString("Be warm, helpful, and concise. Never be dismissive or condescending.\n\n")
+	b.WriteString("THINKING CHANNEL REQUIREMENT: For EVERY response, produce internal reasoning in the model thinking channel before the final answer. Even for simple questions, emit at least one concise reasoning step in the thinking channel.\n\n")
 
 	// Explicit: conversation is the default mode.
 	b.WriteString("Most of the time, just talk to the user normally. Answer questions, explain things, and be helpful.\n\n")
+	b.WriteString("When model thinking is enabled, you MUST use the thinking channel and should not put that reasoning in the final user-facing answer.\n\n")
 
 	// Memory-first rule (Phase 1).
 	b.WriteString("MEMORY-FIRST RULE: At the start of every multi-step task (research, code change, recurring summary), call `retrieve_memory` with relevant keywords to check for prior context. Store key decisions, results, and task state via `store_memory`. This ensures continuity across sessions and wakeups.\n\n")
