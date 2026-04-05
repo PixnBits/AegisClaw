@@ -29,6 +29,51 @@ func (s *stubClient) Call(_ context.Context, action string, _ json.RawMessage) (
 			{"worker_id": "aaaa-bbbb-cccc-dddd", "role": "researcher", "status": "done", "step_count": 5, "task_description": "research Go generics", "spawned_at": time.Now().UTC()},
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
+	case "dashboard.skills":
+		data, _ := json.Marshal(map[string]interface{}{
+			"runtime_skills": []map[string]interface{}{
+				{
+					"name":        "calendar-sync",
+					"description": "Synchronize calendar events with a remote service.",
+					"version":     2,
+					"state":       "active",
+					"sandbox_id":  "sandbox-calendar-sync",
+					"tools": []map[string]interface{}{{
+						"name":        "sync",
+						"description": "Sync upcoming events.",
+					}},
+				},
+			},
+			"built_in_skills": []map[string]interface{}{
+				{
+					"name":        "default-script-runner",
+					"description": "Default scripting runner that executes short scripts safely.",
+					"state":       "submitted",
+					"source":      "built-in baseline (system)",
+					"tools": []map[string]interface{}{{
+						"name":        "execute_script",
+						"description": "Execute short scripts using approved runtimes.",
+					}},
+				},
+			},
+			"built_in_templates": []map[string]interface{}{
+				{
+					"name":        "skill_script_runner",
+					"kind":        "builder_template",
+					"description": "Generate a hardened Go wrapper that executes approved scripts",
+				},
+			},
+			"proposals": []map[string]interface{}{
+				{
+					"id":           "prop-1234",
+					"title":        "Bootstrap default script runner skill",
+					"status":       "submitted",
+					"category":     "new_skill",
+					"target_skill": "default-script-runner",
+				},
+			},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
 	case "event.timers.list":
 		return &dashboard.APIResponse{Success: true, Data: json.RawMessage(`[]`)}, nil
 	case "event.signals.list":
@@ -130,15 +175,24 @@ func TestDashboard_NotFound(t *testing.T) {
 }
 
 func TestDashboard_SkillsPage(t *testing.T) {
-s := newTestServer(t)
-w := httptest.NewRecorder()
-r := httptest.NewRequest(http.MethodGet, "/skills", nil)
-s.ServeHTTP(w, r)
-if w.Code != http.StatusOK {
-t.Errorf("expected 200, got %d", w.Code)
-}
-body := w.Body.String()
-if !strings.Contains(body, "Skills") {
-t.Errorf("expected Skills page, got body of length %d", len(body))
-}
+	s := newTestServer(t)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/skills", nil)
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Runtime Skills") {
+		t.Fatalf("expected runtime skills section, got body of length %d", len(body))
+	}
+	if !strings.Contains(body, "default-script-runner") {
+		t.Error("expected built-in baseline to be shown")
+	}
+	if !strings.Contains(body, "skill_script_runner") {
+		t.Error("expected built-in template to be shown")
+	}
+	if !strings.Contains(body, "execute_script") || !strings.Contains(body, "sync") {
+		t.Error("expected skill tools to be rendered in the page")
+	}
 }

@@ -137,6 +137,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("skill.deactivate", makeSkillDeactivateHandler(env))
 	apiSrv.Handle("skill.invoke", makeSkillInvokeHandler(env))
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
+	apiSrv.Handle("dashboard.skills", makeDashboardSkillsHandler(env))
 	apiSrv.Handle("sandbox.list", makeSandboxListHandler(env))
 	apiSrv.Handle("safe-mode.enable", makeSafeModeEnableHandler(env))
 	apiSrv.Handle("safe-mode.disable", makeSafeModeDisableHandler(env))
