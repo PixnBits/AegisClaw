@@ -187,6 +187,14 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				toolTraceJSON, _ := json.Marshal(toolTrace)
 				thinkingTraceJSON, _ := json.Marshal(thinkingTrace)
 				finalContent := enforceMemoryTruth(chatResp.Content, env, memoryToolEvidence)
+				if strings.TrimSpace(finalContent) == "" {
+					env.Logger.Warn("agent returned empty final chat content",
+						zap.Int("iteration", i+1),
+						zap.Int("tool_calls", len(toolTrace)),
+						zap.Int("thinking_events", len(thinkingTrace)),
+					)
+					finalContent = synthesizeEmptyFinalMessage(toolTrace)
+				}
 				respData, _ := json.Marshal(api.ChatMessageResponse{
 					Role:      "assistant",
 					Content:   finalContent,
@@ -853,13 +861,13 @@ func buildMemorySummary(env *runtimeEnv, query string) string {
 // injected into the system prompt to reduce memory hallucinations.
 func buildMemoryStatusGuard(env *runtimeEnv) string {
 	if env == nil || env.MemoryStore == nil {
-		return "\n\nMEMORY STORE STATUS: unavailable in this runtime. Do not claim persisted memories exist unless a memory tool call proves it.\n"
+		return "\n\nMEMORY STORE STATUS: unavailable in this runtime. Do not invent or assume persisted memory content.\n"
 	}
 	count := env.MemoryStore.Count()
 	if count == 0 {
-		return "\n\nMEMORY STORE STATUS: currently 0 persisted entries. If asked about saved memories, explicitly say none are currently stored.\n"
+		return "\n\nMEMORY STORE STATUS: currently 0 persisted entries.\n"
 	}
-	return fmt.Sprintf("\n\nMEMORY STORE STATUS: currently %d persisted entries. Verify specific memory claims with retrieve_memory or list_memories before asserting details.\n", count)
+	return fmt.Sprintf("\n\nMEMORY STORE STATUS: currently %d persisted entries.\n", count)
 }
 
 func isMemoryEvidenceFromTool(toolName, toolResult string, toolErr error) bool {
@@ -905,7 +913,7 @@ func enforceMemoryTruth(content string, env *runtimeEnv, memoryToolEvidence bool
 		positiveMarkers := []string{"yes", "i have", "there is", "there are", "saved memory", "saved memories", "retrieved", "previous session"}
 		for _, m := range positiveMarkers {
 			if strings.Contains(l, m) {
-				return "No, I do not currently have any saved memories."
+				return "I do not currently have any saved memories."
 			}
 		}
 		return content
@@ -916,16 +924,32 @@ func enforceMemoryTruth(content string, env *runtimeEnv, memoryToolEvidence bool
 	negativeMarkers := []string{"no memory", "no memories", "do not have", "don't have", "none saved", "0 persisted"}
 	for _, m := range negativeMarkers {
 		if strings.Contains(l, m) {
-			return fmt.Sprintf("Yes, there are currently %d saved memories. I need to run retrieve_memory or list_memories to provide specific entries.", count)
+			return fmt.Sprintf("I currently have %d saved memories. I can look them up and share specific entries if you want.", count)
 		}
 	}
 
-	specificMarkers := []string{" key ", "query", "entry with", "title", "previous session", "retrieved", "memory id", "\""}
+	specificMarkers := []string{"entry with", "previous session", "retrieved", "memory id", "from memory"}
 	for _, m := range specificMarkers {
 		if strings.Contains(l, m) {
-			return fmt.Sprintf("Yes, there are currently %d saved memories. I need to run retrieve_memory or list_memories to provide specific entries.", count)
+			return fmt.Sprintf("I currently have %d saved memories. I can look them up and share specific entries if you want.", count)
 		}
 	}
 
 	return content
+}
+
+func synthesizeEmptyFinalMessage(toolTrace []map[string]interface{}) string {
+	if len(toolTrace) == 0 {
+		return "I completed your request, but my final response came back empty. Please ask again and I will respond directly."
+	}
+	last := toolTrace[len(toolTrace)-1]
+	toolName, _ := last["tool"].(string)
+	success, _ := last["success"].(bool)
+	if toolName == "" {
+		return "I completed your request, but my final response came back empty. Please ask me to summarize the latest result."
+	}
+	if success {
+		return fmt.Sprintf("I completed %q, but my final response came back empty. Ask me to summarize the result and I will share it.", toolName)
+	}
+	return fmt.Sprintf("I attempted %q, but my final response came back empty. Ask me to summarize the latest result and error details.", toolName)
 }
