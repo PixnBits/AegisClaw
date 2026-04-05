@@ -239,7 +239,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				if env.ToolEvents != nil {
 					env.ToolEvents.RecordFinish(chatResp.Tool, toolErr == nil, toolErr, duration)
 				}
-				toolTrace = append(toolTrace, map[string]interface{}{					"model":        model,					"tool":        chatResp.Tool,
+				toolTrace = append(toolTrace, map[string]interface{}{"model": model, "tool": chatResp.Tool,
 					"args":        argsPreview,
 					"response":    resultPreview,
 					"success":     toolErr == nil,
