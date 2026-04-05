@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 
 	"github.com/spf13/viper"
@@ -138,7 +139,7 @@ type Config struct {
 // Security: Defaults enforce isolation - Firecracker binaries in system paths,
 // rootfs templates in dedicated directory, audit logs in user space.
 func DefaultConfig() Config {
-	home, err := os.UserHomeDir()
+	home, err := resolveConfigHome()
 	if err != nil {
 		// Fallback to /tmp if home dir unavailable - not ideal but prevents panic
 		home = "/tmp"
@@ -286,6 +287,16 @@ func DefaultConfig() Config {
 	}
 }
 
+func resolveConfigHome() (string, error) {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		resolvedUser, err := user.Lookup(sudoUser)
+		if err == nil && resolvedUser.HomeDir != "" {
+			return resolvedUser.HomeDir, nil
+		}
+	}
+	return os.UserHomeDir()
+}
+
 // Load reads configuration from ~/.config/aegisclaw/config.yaml
 // Creates the config directory and file with defaults if they don't exist.
 // Security: Validates all paths are absolute and within expected directories.
@@ -384,7 +395,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 
 // getConfigDir returns the path to ~/.config/aegisclaw
 func getConfigDir() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := resolveConfigHome()
 	if err != nil {
 		return "", err
 	}
