@@ -1,14 +1,17 @@
 package sandbox
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -852,14 +855,10 @@ func (r *FirecrackerRuntime) SendToVM(ctx context.Context, id string, req interf
 				conn.SetDeadline(time.Now().Add(2 * time.Second))
 				_, writeErr := fmt.Fprintf(conn, "CONNECT %d\n", guestPort)
 				if writeErr == nil {
-					buf := make([]byte, 64)
-					n, readErr := conn.Read(buf)
+					reader, readErr := readVsockConnectHandshake(conn)
 					if readErr == nil {
-						resp := string(buf[:n])
-						if len(resp) >= 2 && resp[:2] == "OK" {
-							conn.SetDeadline(time.Time{}) // clear deadline for data exchange
-							return r.exchangeJSON(conn, id, req)
-						}
+						conn.SetDeadline(time.Time{}) // clear deadline for data exchange
+						return r.exchangeJSONWithReader(conn, reader, id, req)
 					}
 				}
 				conn.Close()
@@ -890,8 +889,12 @@ func (r *FirecrackerRuntime) SendToVM(ctx context.Context, id string, req interf
 
 // exchangeJSON writes a JSON request and reads a JSON response on conn.
 func (r *FirecrackerRuntime) exchangeJSON(conn net.Conn, id string, req interface{}) (json.RawMessage, error) {
+	return r.exchangeJSONWithReader(conn, conn, id, req)
+}
+
+func (r *FirecrackerRuntime) exchangeJSONWithReader(conn net.Conn, reader io.Reader, id string, req interface{}) (json.RawMessage, error) {
 	encoder := json.NewEncoder(conn)
-	decoder := json.NewDecoder(conn)
+	decoder := json.NewDecoder(reader)
 
 	if err := encoder.Encode(req); err != nil {
 		return nil, fmt.Errorf("failed to send request to VM %s: %w", id, err)
@@ -902,6 +905,18 @@ func (r *FirecrackerRuntime) exchangeJSON(conn net.Conn, id string, req interfac
 		return nil, fmt.Errorf("failed to read response from VM %s: %w", id, err)
 	}
 	return raw, nil
+}
+
+func readVsockConnectHandshake(conn net.Conn) (*bufio.Reader, error) {
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("vsock connect handshake read: %w", err)
+	}
+	if !strings.HasPrefix(line, "OK") {
+		return nil, fmt.Errorf("vsock connect rejected: %s", strings.TrimSpace(line))
+	}
+	return reader, nil
 }
 
 // detectCgroupVersion returns "2" for cgroups v2 and "1" for v1.

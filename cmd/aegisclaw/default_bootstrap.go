@@ -36,7 +36,7 @@ func ensureDefaultScriptRunnerActive(ctx context.Context, env *runtimeEnv) error
 		}
 	}
 
-	sandboxID := uuid.New().String()
+	sandboxID := generateVMID("skill")
 	spec := sandbox.SandboxSpec{
 		ID:   sandboxID,
 		Name: fmt.Sprintf("skill-%s", defaultScriptRunnerSkill),
@@ -64,9 +64,9 @@ func ensureDefaultScriptRunnerActive(ctx context.Context, env *runtimeEnv) error
 		return err
 	}
 
-	info, err := env.Runtime.Status(ctx, sandboxID)
-	if err != nil {
-		env.Logger.Warn("bootstrap: failed to read default script runner sandbox status", zap.Error(err))
+	info, statusErr := env.Runtime.Status(ctx, sandboxID)
+	if statusErr != nil {
+		env.Logger.Warn("bootstrap: failed to read default script runner sandbox status", zap.Error(statusErr))
 	}
 
 	entry, err := env.Registry.Register(defaultScriptRunnerSkill, sandboxID, map[string]string{
@@ -92,7 +92,7 @@ func ensureDefaultScriptRunnerActive(ctx context.Context, env *runtimeEnv) error
 		zap.String("skill", defaultScriptRunnerSkill),
 		zap.String("sandbox_id", sandboxID),
 	}
-	if err == nil {
+	if statusErr == nil {
 		fields = append(fields, zap.Int("pid", info.PID))
 	}
 	env.Logger.Info("bootstrap: default script runner activated", fields...)
