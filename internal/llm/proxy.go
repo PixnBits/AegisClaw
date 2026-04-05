@@ -214,7 +214,7 @@ func decodeOllamaChatBody(bodyBytes []byte) (string, string, error) {
 			Error     string `json:"error,omitempty"`
 			Thinking  string `json:"thinking,omitempty"`
 			Reasoning string `json:"reasoning,omitempty"`
-			Message struct {
+			Message   struct {
 				Content   string `json:"content"`
 				Thinking  string `json:"thinking,omitempty"`
 				Reasoning string `json:"reasoning,omitempty"`
@@ -290,7 +290,7 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 		"model": req.Model,
 		"messages": []map[string]string{
 			{
-				"role": "system",
+				"role":    "system",
 				"content": "Reasoning-only pass: provide concise internal reasoning in the thinking channel. Avoid long final output.",
 			},
 			{

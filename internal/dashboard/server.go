@@ -262,6 +262,10 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		"input":   req.Input,
 		"history": req.History,
 	})
+	if r.URL.Query().Get("stream") == "1" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
+		s.handleChatSendStream(w, r, payload)
+		return
+	}
 	resp, err := s.apiClient.Call(r.Context(), "chat.message", payload)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -277,6 +281,178 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write(resp.Data) //nolint:errcheck
+}
+
+func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, payload json.RawMessage) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	writeSSE := func(v interface{}) bool {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	ctx := r.Context()
+	lastToolID := s.latestEventID(ctx, "chat.tool_events", 60)
+	lastThoughtID := s.latestEventID(ctx, "chat.thought_events", 80)
+
+	if !writeSSE(map[string]interface{}{"type": "start", "ts": time.Now().UTC().Format(time.RFC3339)}) {
+		return
+	}
+
+	type callResult struct {
+		resp *APIResponse
+		err  error
+	}
+	callDone := make(chan callResult, 1)
+	go func() {
+		resp, err := s.apiClient.Call(ctx, "chat.message", payload)
+		callDone <- callResult{resp: resp, err: err}
+	}()
+
+	ticker := time.NewTicker(700 * time.Millisecond)
+	defer ticker.Stop()
+
+	sendNewEvents := func() bool {
+		toolEvents := s.fetchEventsSince(ctx, "chat.tool_events", 60, lastToolID)
+		for _, ev := range toolEvents {
+			if id := eventID(ev); id > lastToolID {
+				lastToolID = id
+			}
+			if !writeSSE(map[string]interface{}{"type": "tool_event", "event": ev}) {
+				return false
+			}
+		}
+		thoughtEvents := s.fetchEventsSince(ctx, "chat.thought_events", 80, lastThoughtID)
+		for _, ev := range thoughtEvents {
+			if id := eventID(ev); id > lastThoughtID {
+				lastThoughtID = id
+			}
+			if !writeSSE(map[string]interface{}{"type": "thought_event", "event": ev}) {
+				return false
+			}
+		}
+		return true
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !sendNewEvents() {
+				return
+			}
+		case out := <-callDone:
+			if !sendNewEvents() {
+				return
+			}
+			if out.err != nil {
+				writeSSE(map[string]interface{}{"type": "error", "error": out.err.Error()}) //nolint:errcheck
+				return
+			}
+			if out.resp == nil || !out.resp.Success {
+				errMsg := "unknown error"
+				if out.resp != nil && out.resp.Error != "" {
+					errMsg = out.resp.Error
+				}
+				writeSSE(map[string]interface{}{"type": "error", "error": errMsg}) //nolint:errcheck
+				return
+			}
+			var data interface{}
+			if len(out.resp.Data) > 0 {
+				if err := json.Unmarshal(out.resp.Data, &data); err != nil {
+					writeSSE(map[string]interface{}{"type": "error", "error": "invalid chat response JSON: " + err.Error()}) //nolint:errcheck
+					return
+				}
+			}
+			writeSSE(map[string]interface{}{"type": "final", "data": data}) //nolint:errcheck
+			return
+		}
+	}
+}
+
+func eventID(ev map[string]interface{}) int {
+	v, ok := ev["id"]
+	if !ok {
+		return 0
+	}
+	switch t := v.(type) {
+	case float64:
+		return int(t)
+	case float32:
+		return int(t)
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case int32:
+		return int(t)
+	case json.Number:
+		i, _ := t.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
+func (s *Server) latestEventID(ctx context.Context, action string, limit int) int {
+	raw, err := s.fetchRaw(ctx, action, map[string]int{"limit": limit})
+	if err != nil {
+		return 0
+	}
+	items := toEventMaps(raw)
+	maxID := 0
+	for _, ev := range items {
+		if id := eventID(ev); id > maxID {
+			maxID = id
+		}
+	}
+	return maxID
+}
+
+func (s *Server) fetchEventsSince(ctx context.Context, action string, limit int, lastID int) []map[string]interface{} {
+	raw, err := s.fetchRaw(ctx, action, map[string]int{"limit": limit})
+	if err != nil {
+		return nil
+	}
+	items := toEventMaps(raw)
+	out := make([]map[string]interface{}, 0, len(items))
+	for _, ev := range items {
+		if eventID(ev) > lastID {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func toEventMaps(raw interface{}) []map[string]interface{} {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(arr))
+	for _, it := range arr {
+		if m, ok := it.(map[string]interface{}); ok {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
@@ -1555,6 +1731,7 @@ const chatTmpl = `
   var liveThoughtRow=null;
   var liveThoughtLog=null;
   var awaitingResponse=false;
+  var activeChatStream=false;
   var lastToolEventIDSeen=0;
   var lastThoughtEventIDSeen=0;
 
@@ -1787,19 +1964,90 @@ const chatTmpl = `
 
     setDisabled(true);
     awaitingResponse=true;
+    activeChatStream=true;
     ensureLiveThoughtLog();
     showTyping();
     try{
-      var res=await fetch('/chat/send',{
+      var res=await fetch('/chat/send?stream=1',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:{'Content-Type':'application/json','Accept':'text/event-stream'},
         body:JSON.stringify({input:input,history:snapshot})
       });
-      var data=await res.json();
+
+      var data=null;
+      var ctype=(res.headers.get('content-type')||'').toLowerCase();
+      if(ctype.indexOf('text/event-stream')>=0 && res.body && res.body.getReader){
+        var reader=res.body.getReader();
+        var decoder=new TextDecoder();
+        var buf='';
+        var finalSeen=false;
+
+        var processFrame=function(frame){
+          if(!frame)return;
+          var lines=frame.split('\n');
+          var payload=[];
+          for(var li=0;li<lines.length;li++){
+            var line=lines[li];
+            if(line.indexOf('data:')===0){
+              payload.push(line.slice(5).trim());
+            }
+          }
+          if(payload.length===0)return;
+          var ev=null;
+          try{ev=JSON.parse(payload.join('\n'));}catch(_){return;}
+
+          if(ev.type==='tool_event' && ev.event){
+            var tid=Number(ev.event.id||0);
+            if(tid>lastToolEventIDSeen){
+              appendLiveToolEvent(ev.event);
+              lastToolEventIDSeen=tid;
+            }
+            return;
+          }
+          if(ev.type==='thought_event' && ev.event){
+            var hid=Number(ev.event.id||0);
+            if(hid>lastThoughtEventIDSeen){
+              appendLiveThoughtEvent(ev.event);
+              lastThoughtEventIDSeen=hid;
+            }
+            return;
+          }
+          if(ev.type==='error'){
+            throw new Error(ev.error||'stream error');
+          }
+          if(ev.type==='final'){
+            data=ev.data||{};
+            finalSeen=true;
+          }
+        };
+
+        while(true){
+          var part=await reader.read();
+          if(part.done)break;
+          buf+=decoder.decode(part.value,{stream:true});
+          var cut=buf.indexOf('\n\n');
+          while(cut>=0){
+            var frame=buf.slice(0,cut);
+            buf=buf.slice(cut+2);
+            processFrame(frame);
+            cut=buf.indexOf('\n\n');
+          }
+        }
+        if(buf.trim()!==''){
+          processFrame(buf);
+        }
+        if(!finalSeen){
+          throw new Error('stream ended before final response');
+        }
+      }else{
+        data=await res.json();
+      }
+
       clearTyping();
       clearLiveThoughtLog();
       clearLiveToolLog();
       awaitingResponse=false;
+      activeChatStream=false;
       if(data.error){
         appendMsg('error','Error: '+data.error);
         s.messages.push({role:'error',content:'Error: '+data.error});
@@ -1823,6 +2071,7 @@ const chatTmpl = `
       clearLiveThoughtLog();
       clearLiveToolLog();
       awaitingResponse=false;
+      activeChatStream=false;
       appendMsg('error','Network error: '+e.message);
       s.messages.push({role:'error',content:'Network error: '+e.message});
       s.updated_at=Date.now();
@@ -1847,7 +2096,7 @@ const chatTmpl = `
         var ev=d.tool_events[i]||{};
         var id=Number(ev.id||0);
         if(id>newestTool)newestTool=id;
-        if(!awaitingResponse)continue;
+        if(!awaitingResponse || activeChatStream)continue;
         if(id<=lastToolEventIDSeen)continue;
         appendLiveToolEvent(ev);
       }
@@ -1860,7 +2109,7 @@ const chatTmpl = `
         var tev=d.thought_events[j]||{};
         var tid=Number(tev.id||0);
         if(tid>newestThought)newestThought=tid;
-        if(!awaitingResponse)continue;
+        if(!awaitingResponse || activeChatStream)continue;
         if(tid<=lastThoughtEventIDSeen)continue;
         appendLiveThoughtEvent(tev);
       }
