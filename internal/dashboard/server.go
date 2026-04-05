@@ -346,6 +346,11 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 			if !writeSSE(map[string]interface{}{"type": "thought_event", "event": ev}) {
 				return false
 			}
+			if strings.EqualFold(toString(ev["phase"]), "model_thinking") {
+				if !emitTextDeltas(ctx, writeSSE, "thought_delta", toString(ev["details"]), 90, 10*time.Millisecond) {
+					return false
+				}
+			}
 		}
 		return true
 	}
@@ -381,9 +386,55 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 					return
 				}
 			}
+			if m, ok := data.(map[string]interface{}); ok {
+				if !emitTextDeltas(ctx, writeSSE, "content_delta", toString(m["content"]), 90, 10*time.Millisecond) {
+					return
+				}
+			}
 			writeSSE(map[string]interface{}{"type": "final", "data": data}) //nolint:errcheck
 			return
 		}
+	}
+}
+
+func emitTextDeltas(ctx context.Context, writeSSE func(interface{}) bool, eventType, text string, chunkSize int, delay time.Duration) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	if chunkSize <= 0 {
+		chunkSize = 90
+	}
+	r := []rune(text)
+	for i := 0; i < len(r); i += chunkSize {
+		end := i + chunkSize
+		if end > len(r) {
+			end = len(r)
+		}
+		if !writeSSE(map[string]interface{}{"type": eventType, "delta": string(r[i:end])}) {
+			return false
+		}
+		if delay > 0 {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(delay):
+			}
+		}
+	}
+	return true
+}
+
+func toString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case json.Number:
+		return t.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", t)
 	}
 }
 
@@ -1726,6 +1777,9 @@ const chatTmpl = `
   }
 
   var typingDiv=null;
+  var streamContentText='';
+  var streamThoughtText='';
+  var liveThoughtDeltaPre=null;
   var liveToolRow=null;
   var liveToolLog=null;
   var liveThoughtRow=null;
@@ -1763,6 +1817,58 @@ const chatTmpl = `
     }
     liveThoughtRow=null;
     liveThoughtLog=null;
+    liveThoughtDeltaPre=null;
+    streamThoughtText='';
+  }
+
+  function ensureLiveThoughtDelta(){
+    ensureLiveThoughtLog();
+    if(!liveThoughtLog)return;
+    if(liveThoughtDeltaPre)return;
+
+    var step=document.createElement('div');
+    step.className='thought-step thought-step--thinking';
+
+    var summary=document.createElement('div');
+    summary.className='thought-summary';
+    var phase=document.createElement('span');
+    phase.className='thought-phase--thinking';
+    phase.textContent='reasoning';
+    summary.appendChild(phase);
+    step.appendChild(summary);
+
+    liveThoughtDeltaPre=document.createElement('pre');
+    liveThoughtDeltaPre.className='tool-payload';
+    liveThoughtDeltaPre.textContent='';
+    step.appendChild(liveThoughtDeltaPre);
+
+    liveThoughtLog.appendChild(step);
+  }
+
+  function appendStreamThoughtDelta(delta){
+    if(!delta)return;
+    ensureLiveThoughtDelta();
+    streamThoughtText+=delta;
+    if(liveThoughtDeltaPre){
+      liveThoughtDeltaPre.textContent=streamThoughtText;
+    }
+    var msgs=document.getElementById('chat-msgs');
+    msgs.scrollTop=msgs.scrollHeight;
+  }
+
+  function appendStreamContentDelta(delta){
+    if(!delta)return;
+    streamContentText+=delta;
+    if(!typingDiv){
+      typingDiv=appendMsg('typing','');
+    }
+    var bubble=typingDiv.querySelector('.bubble');
+    if(bubble){
+      bubble.style.fontStyle='normal';
+      bubble.textContent=streamContentText;
+    }
+    var msgs=document.getElementById('chat-msgs');
+    msgs.scrollTop=msgs.scrollHeight;
   }
 
   function appendLiveThoughtEvent(ev){
@@ -1965,6 +2071,8 @@ const chatTmpl = `
     setDisabled(true);
     awaitingResponse=true;
     activeChatStream=true;
+    streamContentText='';
+    streamThoughtText='';
     ensureLiveThoughtLog();
     showTyping();
     try{
@@ -2014,6 +2122,14 @@ const chatTmpl = `
           }
           if(ev.type==='error'){
             throw new Error(ev.error||'stream error');
+          }
+          if(ev.type==='thought_delta'){
+            appendStreamThoughtDelta(String(ev.delta||''));
+            return;
+          }
+          if(ev.type==='content_delta'){
+            appendStreamContentDelta(String(ev.delta||''));
+            return;
           }
           if(ev.type==='final'){
             data=ev.data||{};
