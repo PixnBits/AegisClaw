@@ -129,7 +129,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Resume any proposals that were stuck in submitted/in_review when the
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
-	bootstrapDefaultScriptRunner(cmd.Context(), env, courtEngine)
+	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))

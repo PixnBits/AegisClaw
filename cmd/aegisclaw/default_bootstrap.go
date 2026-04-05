@@ -3,100 +3,126 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 
-	"github.com/PixnBits/AegisClaw/internal/court"
-	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 const defaultScriptRunnerSkill = "default-script-runner"
 
-// bootstrapDefaultScriptRunner ensures there is at least one baseline proposal
-// for a generic scripting runner skill in default setups.
-func bootstrapDefaultScriptRunner(ctx context.Context, env *runtimeEnv, engine *court.Engine) {
-	if env == nil || env.ProposalStore == nil || engine == nil {
-		return
+// ensureDefaultScriptRunnerActive guarantees the built-in script runner exists
+// as an active sandboxed skill so script.run can execute without manual setup.
+func ensureDefaultScriptRunnerActive(ctx context.Context, env *runtimeEnv) error {
+	if env == nil {
+		return nil
 	}
 	if env.SafeMode.Load() {
-		return
-	}
-	if _, ok := env.Registry.Get(defaultScriptRunnerSkill); ok {
-		return
+		return nil
 	}
 
-	summaries, err := env.ProposalStore.List()
-	if err != nil {
-		env.Logger.Warn("bootstrap: list proposals failed", zap.Error(err))
-		return
-	}
-	for _, s := range summaries {
-		if s.TargetSkill == defaultScriptRunnerSkill {
-			switch s.Status {
-			case proposal.StatusRejected, proposal.StatusWithdrawn, proposal.StatusFailed:
-				continue
-			default:
-				return
+	if existing, ok := env.Registry.Get(defaultScriptRunnerSkill); ok && existing != nil && existing.State == sandbox.SkillStateActive {
+		info, err := env.Runtime.Status(ctx, existing.SandboxID)
+		if err == nil && info != nil && info.State == sandbox.StateRunning {
+			if err := waitForSandboxGuestReady(ctx, env, existing.SandboxID); err == nil {
+				return nil
 			}
 		}
-	}
-
-	spec := map[string]interface{}{
-		"name":        defaultScriptRunnerSkill,
-		"description": "Default scripting runner that executes short scripts in approved runtimes with strict time and output limits.",
-		"language":    "python",
-		"entry_point": "cmd/default-script-runner/main.go",
-		"tools": []map[string]string{
-			{
-				"name":          "execute_script",
-				"description":   "Execute short scripts using approved runtimes with timeout and output truncation.",
-				"input_schema":  "{}",
-				"output_schema": "{}",
-			},
-		},
-		"network_policy": map[string]interface{}{
-			"default_deny":      true,
-			"allowed_hosts":     []string{},
-			"allowed_ports":     []uint16{},
-			"allowed_protocols": []string{},
-		},
-		"persona_requirements": []string{"CISO", "SeniorCoder", "SecurityArchitect", "Tester", "UserAdvocate"},
-	}
-	specJSON, _ := json.Marshal(spec)
-
-	p, err := proposal.NewProposal(
-		"Bootstrap default script runner skill",
-		"Provide a baseline scripting capability so agents can execute short scripts using approved runtimes without custom per-scenario prompts.",
-		proposal.CategoryNewSkill,
-		"system",
-	)
-	if err != nil {
-		env.Logger.Warn("bootstrap: create proposal failed", zap.Error(err))
-		return
-	}
-	p.TargetSkill = defaultScriptRunnerSkill
-	p.Spec = specJSON
-	p.Risk = proposal.RiskMedium
-	p.NetworkPolicy = &proposal.ProposalNetworkPolicy{DefaultDeny: true}
-
-	if err := env.ProposalStore.Create(p); err != nil {
-		env.Logger.Warn("bootstrap: persist proposal failed", zap.Error(err))
-		return
-	}
-	if err := p.Transition(proposal.StatusSubmitted, "auto bootstrap", "system"); err != nil {
-		env.Logger.Warn("bootstrap: transition failed", zap.Error(err))
-		return
-	}
-	if err := env.ProposalStore.Update(p); err != nil {
-		env.Logger.Warn("bootstrap: update proposal failed", zap.Error(err))
-		return
-	}
-
-	env.Logger.Info("bootstrap: submitted default script runner proposal", zap.String("proposal_id", p.ID))
-	go func(proposalID string) {
-		if _, reviewErr := engine.Review(ctx, proposalID); reviewErr != nil {
-			env.Logger.Warn("bootstrap: court review failed", zap.String("proposal_id", proposalID), zap.Error(reviewErr))
-			return
+		if err := env.Registry.Deactivate(defaultScriptRunnerSkill); err != nil {
+			env.Logger.Warn("bootstrap: failed to deactivate stale default script runner entry", zap.Error(err))
 		}
-		env.Logger.Info("bootstrap: court review complete", zap.String("proposal_id", proposalID))
-	}(p.ID)
+	}
+
+	sandboxID := uuid.New().String()
+	spec := sandbox.SandboxSpec{
+		ID:   sandboxID,
+		Name: fmt.Sprintf("skill-%s", defaultScriptRunnerSkill),
+		Resources: sandbox.Resources{
+			VCPUs:    1,
+			MemoryMB: 256,
+		},
+		NetworkPolicy: sandbox.NetworkPolicy{NoNetwork: true, DefaultDeny: true},
+		RootfsPath:    env.Config.Rootfs.Template,
+	}
+
+	if err := env.Runtime.Create(ctx, spec); err != nil {
+		env.Logger.Warn("bootstrap: failed to create default script runner sandbox", zap.Error(err))
+		return err
+	}
+	if err := env.Runtime.Start(ctx, sandboxID); err != nil {
+		_ = env.Runtime.Delete(ctx, sandboxID)
+		env.Logger.Warn("bootstrap: failed to start default script runner sandbox", zap.Error(err))
+		return err
+	}
+	if err := waitForSandboxGuestReady(ctx, env, sandboxID); err != nil {
+		_ = env.Runtime.Stop(context.Background(), sandboxID)
+		_ = env.Runtime.Delete(context.Background(), sandboxID)
+		env.Logger.Warn("bootstrap: default script runner guest did not become ready", zap.Error(err))
+		return err
+	}
+
+	info, err := env.Runtime.Status(ctx, sandboxID)
+	if err != nil {
+		env.Logger.Warn("bootstrap: failed to read default script runner sandbox status", zap.Error(err))
+	}
+
+	entry, err := env.Registry.Register(defaultScriptRunnerSkill, sandboxID, map[string]string{
+		"sandbox_name": spec.Name,
+	})
+	if err != nil {
+		_ = env.Runtime.Stop(ctx, sandboxID)
+		_ = env.Runtime.Delete(ctx, sandboxID)
+		env.Logger.Warn("bootstrap: failed to register default script runner", zap.Error(err))
+		return err
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"skill_name": defaultScriptRunnerSkill,
+		"sandbox_id": sandboxID,
+		"version":    entry.Version,
+		"hash":       entry.MerkleHash,
+	})
+	action := kernel.NewAction(kernel.ActionSkillActivate, "system", payload)
+	_, _ = env.Kernel.SignAndLog(action)
+
+	fields := []zap.Field{
+		zap.String("skill", defaultScriptRunnerSkill),
+		zap.String("sandbox_id", sandboxID),
+	}
+	if err == nil {
+		fields = append(fields, zap.Int("pid", info.PID))
+	}
+	env.Logger.Info("bootstrap: default script runner activated", fields...)
+	return nil
+}
+
+func waitForSandboxGuestReady(ctx context.Context, env *runtimeEnv, sandboxID string) error {
+	if env == nil {
+		return fmt.Errorf("runtime environment is nil")
+	}
+	const (
+		attempts = 30
+		delay    = 500 * time.Millisecond
+	)
+	for attempt := 0; attempt < attempts; attempt++ {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := env.Runtime.SendToVM(pingCtx, sandboxID, map[string]interface{}{
+			"id":      uuid.New().String(),
+			"type":    "status",
+			"payload": map[string]interface{}{},
+		})
+		cancel()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return fmt.Errorf("guest-agent readiness check timed out for sandbox %s", sandboxID)
 }

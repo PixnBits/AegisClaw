@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -467,6 +468,13 @@ type ToolInvokeResult struct {
 	Output string `json:"output"`
 }
 
+type executeScriptPayload struct {
+	Language  string   `json:"language"`
+	Code      string   `json:"code"`
+	Args      []string `json:"args"`
+	TimeoutMS int      `json:"timeout_ms"`
+}
+
 func handleToolInvoke(req *Request) *Response {
 	var payload ToolInvokePayload
 	if err := json.Unmarshal(req.Payload, &payload); err != nil {
@@ -474,6 +482,10 @@ func handleToolInvoke(req *Request) *Response {
 	}
 	if payload.Tool == "" {
 		return errorResponse(req.ID, "tool name is required")
+	}
+
+	if payload.Tool == "execute_script" {
+		return handleExecuteScript(req.ID, payload.Args)
 	}
 
 	// Look for the tool as an executable under /workspace/tools/<name>.
@@ -507,6 +519,90 @@ func handleToolInvoke(req *Request) *Response {
 	}
 	data, _ := json.Marshal(result)
 	return &Response{ID: req.ID, Success: true, Data: data}
+}
+
+func handleExecuteScript(requestID, rawArgs string) *Response {
+	var payload executeScriptPayload
+	if err := json.Unmarshal([]byte(rawArgs), &payload); err != nil {
+		return errorResponse(requestID, fmt.Sprintf("invalid execute_script args: %v", err))
+	}
+
+	payload.Language = strings.ToLower(strings.TrimSpace(payload.Language))
+	if payload.Language == "" {
+		return errorResponse(requestID, "execute_script requires language")
+	}
+	if strings.TrimSpace(payload.Code) == "" {
+		return errorResponse(requestID, "execute_script requires non-empty code")
+	}
+
+	timeout := time.Duration(payload.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	if timeout > 60*time.Second {
+		timeout = 60 * time.Second
+	}
+
+	runtimeByLanguage := map[string][]string{
+		"python":     {"python3", "-c"},
+		"javascript": {"node", "-e"},
+		"bash":       {"bash", "-c"},
+		"sh":         {"sh", "-c"},
+	}
+	runtimeCmd, ok := runtimeByLanguage[payload.Language]
+	if !ok {
+		return errorResponse(requestID, fmt.Sprintf("unsupported script language %q", payload.Language))
+	}
+
+	cmdCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmdArgs := append([]string{}, runtimeCmd[1:]...)
+	cmdArgs = append(cmdArgs, payload.Code)
+	cmdArgs = append(cmdArgs, payload.Args...)
+	cmd := exec.CommandContext(cmdCtx, runtimeCmd[0], cmdArgs...)
+	cmd.Dir = workspaceDir
+	cmd.Env = []string{
+		"PATH=/usr/local/bin:/usr/bin:/bin",
+		"HOME=/workspace",
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	const maxOutputLen = 64 * 1024
+	truncate := func(s string) string {
+		if len(s) <= maxOutputLen {
+			return s
+		}
+		return s[:maxOutputLen] + "\n[output truncated]"
+	}
+	outText := strings.TrimSpace(truncate(stdout.String()))
+	errText := strings.TrimSpace(truncate(stderr.String()))
+
+	if cmdCtx.Err() == context.DeadlineExceeded {
+		return errorResponse(requestID, fmt.Sprintf("script timed out after %s", timeout))
+	}
+	if err != nil {
+		msg := fmt.Sprintf("script failed: %v", err)
+		if errText != "" {
+			msg += ": " + errText
+		}
+		return errorResponse(requestID, msg)
+	}
+
+	if outText == "" && errText != "" {
+		outText = errText
+	}
+	if outText == "" {
+		outText = "(no output)"
+	}
+
+	data, _ := json.Marshal(ToolInvokeResult{Output: outText})
+	return &Response{ID: requestID, Success: true, Data: data}
 }
 
 func errorResponse(id, msg string) *Response {

@@ -1,30 +1,26 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strings"
-	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
-	defaultScriptTimeout = 3 * time.Second
-	maxScriptTimeout     = 10 * time.Second
-	maxScriptSize        = 32 * 1024
-	maxScriptArgs        = 16
-	maxScriptArgLen      = 256
-	maxToolOutputBytes   = 4096
+	maxScriptSize   = 32 * 1024
+	maxScriptArgs   = 16
+	maxScriptArgLen = 256
 )
 
 var scriptRuntimeCommands = map[string][]string{
-	"python":     {"python3", "-c"},
-	"javascript": {"node", "-e"},
-	"bash":       {"bash", "-c"},
-	"sh":         {"sh", "-c"},
+	"python":     {"/usr/bin/python3", "-c"},
+	"javascript": {"/usr/bin/node", "-e"},
+	"bash":       {"/bin/bash", "-c"},
+	"sh":         {"/bin/sh", "-c"},
 }
 
 type runScriptParams struct {
@@ -63,64 +59,6 @@ func parseRunScriptParams(args string) (*runScriptParams, error) {
 	return &p, nil
 }
 
-func scriptTimeout(timeoutMS int) time.Duration {
-	if timeoutMS <= 0 {
-		return defaultScriptTimeout
-	}
-	d := time.Duration(timeoutMS) * time.Millisecond
-	if d > maxScriptTimeout {
-		return maxScriptTimeout
-	}
-	return d
-}
-
-func truncateOutput(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "\n...[truncated]"
-}
-
-func runScript(ctx context.Context, params *runScriptParams) (string, error) {
-	cmdSpec := scriptRuntimeCommands[params.Language]
-	timeout := scriptTimeout(params.TimeoutMS)
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	argv := []string{cmdSpec[1], params.Code}
-	argv = append(argv, params.Args...)
-	cmd := exec.CommandContext(runCtx, cmdSpec[0], argv...)
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	start := time.Now()
-	err := cmd.Run()
-	duration := time.Since(start)
-
-	outStr := truncateOutput(stdout.String(), maxToolOutputBytes)
-	errStr := truncateOutput(stderr.String(), maxToolOutputBytes)
-
-	result := map[string]interface{}{
-		"language":    params.Language,
-		"runtime":     cmdSpec[0],
-		"duration_ms": duration.Milliseconds(),
-		"stdout":      outStr,
-		"stderr":      errStr,
-	}
-	if runCtx.Err() == context.DeadlineExceeded {
-		result["timed_out"] = true
-	}
-
-	respJSON, _ := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return string(respJSON), fmt.Errorf("script execution failed: %w", err)
-	}
-	return string(respJSON), nil
-}
-
 func supportedScriptLanguages() []string {
 	langs := make([]string, 0, len(scriptRuntimeCommands))
 	for lang := range scriptRuntimeCommands {
@@ -128,4 +66,104 @@ func supportedScriptLanguages() []string {
 	}
 	sort.Strings(langs)
 	return langs
+}
+
+func runScriptInSandbox(ctx context.Context, env *runtimeEnv, params *runScriptParams) (string, error) {
+	if env == nil {
+		return "", fmt.Errorf("runtime environment is nil")
+	}
+	if err := ensureDefaultScriptRunnerActive(ctx, env); err != nil {
+		return "", fmt.Errorf("ensure built-in script runner: %w", err)
+	}
+
+	entry, ok := env.Registry.Get(defaultScriptRunnerSkill)
+	if !ok {
+		return "", fmt.Errorf("skill %q not found", defaultScriptRunnerSkill)
+	}
+
+	runtimeCmd, ok := scriptRuntimeCommands[params.Language]
+	if !ok {
+		return "", fmt.Errorf("unsupported script language %q", params.Language)
+	}
+	req, err := buildRunScriptExecRequest(params, runtimeCmd)
+	if err != nil {
+		return "", err
+	}
+
+	raw, err := env.Runtime.SendToVM(ctx, entry.SandboxID, req)
+	if err != nil {
+		return "", fmt.Errorf("exec in script runner sandbox: %w", err)
+	}
+
+	var resp struct {
+		Success bool            `json:"success"`
+		Error   string          `json:"error,omitempty"`
+		Data    json.RawMessage `json:"data,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("parse exec response: %w", err)
+	}
+	if !resp.Success {
+		return "", fmt.Errorf("script execution failed: %s", resp.Error)
+	}
+
+	var result struct {
+		ExitCode int    `json:"exit_code"`
+		Stdout   string `json:"stdout"`
+		Stderr   string `json:"stderr"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", fmt.Errorf("parse exec result: %w", err)
+	}
+	if result.ExitCode != 0 {
+		msg := strings.TrimSpace(result.Stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(result.Stdout)
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("exit code %d", result.ExitCode)
+		}
+		return "", fmt.Errorf("script exited with %d: %s", result.ExitCode, msg)
+	}
+	out := strings.TrimSpace(result.Stdout)
+	if out == "" {
+		out = strings.TrimSpace(result.Stderr)
+	}
+	if out == "" {
+		out = "(no output)"
+	}
+	return out, nil
+}
+
+func buildRunScriptExecRequest(params *runScriptParams, runtimeCmd []string) (map[string]interface{}, error) {
+	if params == nil {
+		return nil, fmt.Errorf("run script params are required")
+	}
+	if len(runtimeCmd) < 2 {
+		return nil, fmt.Errorf("runtime command is incomplete")
+	}
+
+	timeoutSecs := 5
+	if params.TimeoutMS > 0 {
+		timeoutSecs = (params.TimeoutMS + 999) / 1000
+	}
+	if timeoutSecs < 1 {
+		timeoutSecs = 1
+	}
+	if timeoutSecs > 60 {
+		timeoutSecs = 60
+	}
+
+	payload := map[string]interface{}{
+		"command":      runtimeCmd[0],
+		"args":         append(append([]string{}, runtimeCmd[1:]...), append([]string{params.Code}, params.Args...)...),
+		"dir":          "/workspace",
+		"timeout_secs": timeoutSecs,
+	}
+
+	return map[string]interface{}{
+		"id":      uuid.New().String(),
+		"type":    "exec",
+		"payload": payload,
+	}, nil
 }
