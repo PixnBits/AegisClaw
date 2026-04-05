@@ -396,7 +396,7 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			)
 		}
 
-		sandboxID := uuid.New().String()
+		sandboxID := generateVMID("skill")
 		spec := sandbox.SandboxSpec{
 			ID:   sandboxID,
 			Name: fmt.Sprintf("skill-%s", req.Name),

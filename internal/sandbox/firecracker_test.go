@@ -2,8 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildFirecrackerConfig_NoNetworkOmitsInterfaceAndIPArgs(t *testing.T) {
@@ -75,5 +78,41 @@ func TestSendToVM_FailsFastWhenSandboxNotRunning(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "is not running") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExchangeJSONWithReader_AllowsFragmentedVsockHandshake(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	go func() {
+		defer serverConn.Close()
+
+		_, _ = serverConn.Write([]byte("OK"))
+		time.Sleep(10 * time.Millisecond)
+		_, _ = serverConn.Write([]byte(" 1073741827\n"))
+
+		var req map[string]string
+		_ = json.NewDecoder(serverConn).Decode(&req)
+		_ = json.NewEncoder(serverConn).Encode(map[string]any{
+			"success": true,
+			"data":    map[string]any{"status": "ready"},
+		})
+	}()
+
+	reader, err := readVsockConnectHandshake(clientConn)
+	if err != nil {
+		t.Fatalf("read handshake: %v", err)
+	}
+
+	rt := &FirecrackerRuntime{}
+	raw, err := rt.exchangeJSONWithReader(clientConn, reader, "sb-1", map[string]string{"type": "status"})
+	if err != nil {
+		t.Fatalf("exchange json: %v", err)
+	}
+
+	if !strings.Contains(string(raw), "ready") {
+		t.Fatalf("unexpected response: %s", string(raw))
 	}
 }

@@ -128,7 +128,7 @@ func NewFirecrackerLauncher(runtime *sandbox.FirecrackerRuntime, cfg sandbox.Run
 // The sandbox has NO network interface; all LLM access goes through the
 // host-side OllamaProxy over vsock (no TAP device, no IP stack in the VM).
 func (fl *FirecrackerLauncher) LaunchReviewer(ctx context.Context, persona *Persona, model string) (string, error) {
-	sandboxID := uuid.New().String()
+	sandboxID := "reviewer-" + uuid.New().String()[:8]
 	// Sanitize model name for sandbox naming (colons are invalid in sandbox names).
 	safeName := strings.ReplaceAll(model, ":", "-")
 	spec := sandbox.SandboxSpec{

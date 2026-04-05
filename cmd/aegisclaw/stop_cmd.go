@@ -4,7 +4,9 @@ import (
 	"fmt"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
+	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 var stopDaemonCmd = &cobra.Command{
@@ -16,13 +18,7 @@ Always logs the shutdown event to the audit trail.`,
 }
 
 func runStopDaemon(cmd *cobra.Command, args []string) error {
-	env, err := initRuntime()
-	if err != nil {
-		return err
-	}
-	defer env.Logger.Sync()
-
-	client := api.NewClient(env.Config.Daemon.SocketPath)
+	client := api.NewClient(resolveDaemonSocketPath())
 	resp, err := client.Call(cmd.Context(), "kernel.shutdown", nil)
 	if err != nil {
 		return fmt.Errorf("failed to contact daemon: %w\n(Is the daemon running?)", err)
@@ -33,4 +29,14 @@ func runStopDaemon(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("AegisClaw daemon shutdown initiated.")
 	return nil
+}
+
+func resolveDaemonSocketPath() string {
+	const fallback = "/run/aegisclaw.sock"
+
+	cfg, err := config.Load(zap.NewNop())
+	if err != nil || cfg == nil || cfg.Daemon.SocketPath == "" {
+		return fallback
+	}
+	return cfg.Daemon.SocketPath
 }
