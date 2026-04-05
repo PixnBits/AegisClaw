@@ -26,7 +26,8 @@ const (
 	portalAPIVsockPort   = 1030
 	maxPortalPayload     = 2 * 1024 * 1024 // 2 MiB
 	portalDefaultTimeout = 30 * time.Second
-	portalChatTimeout    = 2 * time.Minute
+	// Chat calls can run longer with reasoning models and streamed UX.
+	portalChatTimeout = 10 * time.Minute
 )
 
 type portalBridgeRequest struct {
