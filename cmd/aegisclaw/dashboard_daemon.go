@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,8 @@ const (
 	portalGuestVsockPort = 18080
 	portalAPIVsockPort   = 1030
 	maxPortalPayload     = 2 * 1024 * 1024 // 2 MiB
+	portalDefaultTimeout = 30 * time.Second
+	portalChatTimeout    = 2 * time.Minute
 )
 
 type portalBridgeRequest struct {
@@ -134,7 +137,7 @@ func startPortalAPIBridge(ctx context.Context, env *runtimeEnv, apiSrv *api.Serv
 			if acceptErr != nil {
 				return
 			}
-			go handlePortalAPIBridgeConn(apiSrv, conn)
+			go handlePortalAPIBridgeConn(env, apiSrv, conn)
 		}
 	}()
 
@@ -142,9 +145,8 @@ func startPortalAPIBridge(ctx context.Context, env *runtimeEnv, apiSrv *api.Serv
 	return nil
 }
 
-func handlePortalAPIBridgeConn(apiSrv *api.Server, conn net.Conn) {
+func handlePortalAPIBridgeConn(env *runtimeEnv, apiSrv *api.Server, conn net.Conn) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	dec := json.NewDecoder(io.LimitReader(conn, maxPortalPayload))
 	enc := json.NewEncoder(conn)
@@ -154,21 +156,43 @@ func handlePortalAPIBridgeConn(apiSrv *api.Server, conn net.Conn) {
 		_ = enc.Encode(&dashboard.APIResponse{Error: "decode: " + err.Error()})
 		return
 	}
+	deadline := portalDefaultTimeout
+	if req.Action == "chat.message" || req.Action == "chat.summarize" {
+		deadline = portalChatTimeout
+	}
+	_ = conn.SetDeadline(time.Now().Add(deadline))
 	if strings.TrimSpace(req.Action) == "" {
 		_ = enc.Encode(&dashboard.APIResponse{Error: "action required"})
 		return
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if env != nil && env.Logger != nil {
+				env.Logger.Error("dashboard portal API bridge panic",
+					zap.String("action", req.Action),
+					zap.Any("panic", recovered),
+					zap.ByteString("stack", debug.Stack()),
+				)
+			}
+			_ = enc.Encode(&dashboard.APIResponse{Error: "internal bridge panic"})
+		}
+	}()
 
 	resp := apiSrv.CallDirect(context.Background(), req.Action, req.Payload)
 	if resp == nil {
 		_ = enc.Encode(&dashboard.APIResponse{Error: "unknown action: " + req.Action})
 		return
 	}
-	_ = enc.Encode(&dashboard.APIResponse{
+	if err := enc.Encode(&dashboard.APIResponse{
 		Success: resp.Success,
 		Error:   resp.Error,
 		Data:    resp.Data,
-	})
+	}); err != nil && env != nil && env.Logger != nil {
+		env.Logger.Warn("dashboard portal API bridge encode failed",
+			zap.String("action", req.Action),
+			zap.Error(err),
+		)
+	}
 }
 
 func startPortalEdgeProxy(ctx context.Context, env *runtimeEnv, vmID, addr string) error {

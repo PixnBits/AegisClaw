@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sync"
 
 	"go.uber.org/zap"
@@ -157,13 +158,25 @@ func (s *Server) Start() error {
 // Stop closes the listener and removes the socket file.
 // CallDirect invokes a registered handler directly without going through the
 // Unix socket. Used by the dashboard server (same process) to avoid a round trip.
-func (s *Server) CallDirect(ctx context.Context, action string, data json.RawMessage) *Response {
+func (s *Server) CallDirect(ctx context.Context, action string, data json.RawMessage) (resp *Response) {
 	s.mu.RLock()
 	h, ok := s.handlers[action]
 	s.mu.RUnlock()
 	if !ok {
 		return &Response{Error: "unknown action: " + action}
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if s.logger != nil {
+				s.logger.Error("API handler panic",
+					zap.String("action", action),
+					zap.Any("panic", recovered),
+					zap.ByteString("stack", debug.Stack()),
+				)
+			}
+			resp = &Response{Error: "internal handler panic"}
+		}
+	}()
 	return h(ctx, data)
 }
 
