@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -202,6 +203,140 @@ func (p *OllamaProxy) isModelAllowed(model string) bool {
 	return false
 }
 
+func decodeOllamaChatBody(bodyBytes []byte) (string, string, error) {
+	dec := json.NewDecoder(bytes.NewReader(bodyBytes))
+	var content strings.Builder
+	var thinking strings.Builder
+	decoded := 0
+
+	for {
+		var chunk struct {
+			Error     string `json:"error,omitempty"`
+			Thinking  string `json:"thinking,omitempty"`
+			Reasoning string `json:"reasoning,omitempty"`
+			Message struct {
+				Content   string `json:"content"`
+				Thinking  string `json:"thinking,omitempty"`
+				Reasoning string `json:"reasoning,omitempty"`
+			} `json:"message"`
+		}
+		err := dec.Decode(&chunk)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", "", err
+		}
+		decoded++
+		if strings.TrimSpace(chunk.Error) != "" {
+			return "", "", fmt.Errorf("ollama error: %s", chunk.Error)
+		}
+		if chunk.Message.Content != "" {
+			content.WriteString(chunk.Message.Content)
+		}
+		if chunk.Message.Thinking != "" {
+			thinking.WriteString(chunk.Message.Thinking)
+		}
+		if chunk.Message.Reasoning != "" {
+			thinking.WriteString(chunk.Message.Reasoning)
+		}
+		if chunk.Thinking != "" {
+			thinking.WriteString(chunk.Thinking)
+		}
+		if chunk.Reasoning != "" {
+			thinking.WriteString(chunk.Reasoning)
+		}
+	}
+
+	if decoded == 0 {
+		return "", "", fmt.Errorf("empty response body")
+	}
+
+	contentText := content.String()
+	thinkingText := strings.TrimSpace(thinking.String())
+
+	// Some models expose reasoning inline in content using think tags.
+	if thinkingText == "" {
+		lower := strings.ToLower(contentText)
+		start := strings.Index(lower, "<think>")
+		end := strings.Index(lower, "</think>")
+		if start >= 0 && end > start {
+			thinkingText = strings.TrimSpace(contentText[start+len("<think>") : end])
+			contentText = strings.TrimSpace(contentText[:start] + contentText[end+len("</think>"):])
+		}
+	}
+
+	return contentText, thinkingText, nil
+}
+
+func latestUserMessage(messages []map[string]string) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.EqualFold(strings.TrimSpace(messages[i]["role"]), "user") {
+			return strings.TrimSpace(messages[i]["content"])
+		}
+	}
+	return ""
+}
+
+func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
+	userMsg := latestUserMessage(req.Messages)
+	if userMsg == "" {
+		return "", nil
+	}
+
+	// Keep fallback compact to reduce latency: ask only for reasoning, not a
+	// full final answer, using the latest user request.
+	fallbackReq := map[string]interface{}{
+		"model": req.Model,
+		"messages": []map[string]string{
+			{
+				"role": "system",
+				"content": "Reasoning-only pass: provide concise internal reasoning in the thinking channel. Avoid long final output.",
+			},
+			{
+				"role":    "user",
+				"content": userMsg,
+			},
+		},
+		"stream": true,
+		"think":  "high",
+	}
+
+	body, err := json.Marshal(fallbackReq)
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.ollamaURL, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer httpResp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return "", err
+	}
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("fallback ollama http %d", httpResp.StatusCode)
+	}
+
+	_, thinking, err := decodeOllamaChatBody(bodyBytes)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(thinking), nil
+}
+
 func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyResponse {
 	// Enforce model allowlist — this is the primary security gate.
 	if !p.isModelAllowed(req.Model) {
@@ -217,10 +352,16 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 	}
 
 	// Build the Ollama /api/chat request.
+	// think:"high" requests stronger reasoning for models that support
+	// configurable thinking effort.
+	// For models without this support, Ollama may ignore the field.
+	// stream:true captures tokenized thinking/content chunks for models that
+	// emit reasoning only while streaming.
 	ollamaReq := map[string]interface{}{
 		"model":    req.Model,
 		"messages": req.Messages,
-		"stream":   false,
+		"stream":   true,
+		"think":    "high",
 	}
 	if req.Format != "" {
 		ollamaReq["format"] = req.Format
@@ -234,7 +375,9 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		return ProxyResponse{RequestID: req.RequestID, Error: "marshal: " + err.Error()}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	// Allow up to 5 minutes: thinking models may take longer for deep
+	// reasoning before producing their first output token.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.ollamaURL, bytes.NewReader(body))
@@ -248,31 +391,81 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		return ProxyResponse{RequestID: req.RequestID, Error: "ollama: " + err.Error()}
 	}
 	defer httpResp.Body.Close()
-
-	var ollamaResp struct {
-		Message struct {
-			Content  string `json:"content"`
-			Thinking string `json:"thinking,omitempty"`
-		} `json:"message"`
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return ProxyResponse{RequestID: req.RequestID, Error: "read response: " + err.Error()}
 	}
-	if err := json.NewDecoder(httpResp.Body).Decode(&ollamaResp); err != nil {
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		excerpt := strings.TrimSpace(string(bodyBytes))
+		if len(excerpt) > 800 {
+			excerpt = excerpt[:800] + "...[truncated]"
+		}
+		return ProxyResponse{RequestID: req.RequestID, Error: fmt.Sprintf("ollama http %d: %s", httpResp.StatusCode, excerpt)}
+	}
+
+	content, thinking, err := decodeOllamaChatBody(bodyBytes)
+	if err != nil {
 		return ProxyResponse{RequestID: req.RequestID, Error: "decode response: " + err.Error()}
+	}
+	if strings.TrimSpace(thinking) == "" {
+		bodyExcerpt := string(bodyBytes)
+		if len(bodyExcerpt) > 1200 {
+			bodyExcerpt = bodyExcerpt[:1200] + "...[truncated]"
+		}
+		msgPreview := make([]map[string]string, 0, 3)
+		for i, m := range req.Messages {
+			if i >= 3 {
+				break
+			}
+			contentPreview := strings.TrimSpace(m["content"])
+			if len(contentPreview) > 180 {
+				contentPreview = contentPreview[:180] + "...[truncated]"
+			}
+			msgPreview = append(msgPreview, map[string]string{
+				"role":    m["role"],
+				"content": contentPreview,
+			})
+		}
+		p.logger.Info("llm proxy: empty thinking in Ollama response",
+			zap.Int("message_count", len(req.Messages)),
+			zap.Any("message_preview", msgPreview),
+			zap.String("model", req.Model),
+			zap.ByteString("body", []byte(bodyExcerpt)),
+		)
+
+		fallbackThinking, fallbackErr := p.fetchFallbackThinking(req)
+		if fallbackErr != nil {
+			p.logger.Warn("llm proxy: fallback thinking request failed", zap.Error(fallbackErr), zap.String("model", req.Model))
+		} else if strings.TrimSpace(fallbackThinking) != "" {
+			thinking = fallbackThinking
+			p.logger.Info("llm proxy: recovered thinking via fallback request",
+				zap.String("model", req.Model),
+				zap.Int("thinking_chars", len(thinking)),
+			)
+		}
 	}
 
 	// Audit-log this inference call so every LLM invocation is in the
 	// tamper-evident chain, associated with the requesting VM.
-	payload, _ := json.Marshal(map[string]string{
-		"vm_id": vmID,
-		"model": req.Model,
+	// Include a capped excerpt of the model's thinking so the reasoning
+	// used by the agent is traceable in the audit trail.
+	thinkingExcerpt := thinking
+	if len(thinkingExcerpt) > 800 {
+		thinkingExcerpt = thinkingExcerpt[:800] + "...[truncated]"
+	}
+	auditPayload, _ := json.Marshal(map[string]interface{}{
+		"vm_id":    vmID,
+		"model":    req.Model,
+		"thinking": thinkingExcerpt,
 	})
-	action := kernel.NewAction(kernel.ActionLLMInfer, "llm-proxy", payload)
+	action := kernel.NewAction(kernel.ActionLLMInfer, "llm-proxy", auditPayload)
 	if _, err := p.kern.SignAndLog(action); err != nil {
 		p.logger.Warn("llm proxy: audit log failed", zap.Error(err))
 	}
 
 	return ProxyResponse{
 		RequestID: req.RequestID,
-		Content:   ollamaResp.Message.Content,
-		Thinking:  ollamaResp.Message.Thinking,
+		Content:   content,
+		Thinking:  thinking,
 	}
 }

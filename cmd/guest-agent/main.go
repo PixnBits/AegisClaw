@@ -728,7 +728,9 @@ type ChatResponse struct {
 
 const (
 	reactMaxToolCalls = 10
-	ollamaTimeout     = 120 * time.Second
+	// ollamaTimeout gives thinking models (e.g. qwen3, deepseek-r1) enough
+	// time to reason before producing their first output token.
+	ollamaTimeout = 300 * time.Second
 
 	// structuredOutputCorrectionPrompt is sent to the model as a second-chance
 	// prompt when it fails to return valid JSON in structured-output mode.
@@ -920,7 +922,7 @@ type structuredChatReply struct {
 func handleChatMessageStructured(ctx context.Context, reqID, model string, msgs []map[string]string) *Response {
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		content, _, err := callOllamaViaProxy(ctx, model, msgs, "json", nil)
+		content, thinking, err := callOllamaViaProxy(ctx, model, msgs, "json", nil)
 		if err != nil {
 			return errorResponse(reqID, fmt.Sprintf("ollama error: %v", err))
 		}
@@ -936,17 +938,19 @@ func handleChatMessageStructured(ctx context.Context, reqID, model string, msgs 
 					argsStr = string(reply.Args)
 				}
 				chatResp := ChatResponse{
-					Status: "tool_call",
-					Tool:   reply.Tool,
-					Args:   argsStr,
+					Status:   "tool_call",
+					Thinking: strings.TrimSpace(thinking),
+					Tool:     reply.Tool,
+					Args:     argsStr,
 				}
 				data, _ := json.Marshal(chatResp)
 				return &Response{ID: reqID, Success: true, Data: data}
 			case "final":
 				chatResp := ChatResponse{
-					Status:  "final",
-					Role:    "assistant",
-					Content: reply.Content,
+					Status:   "final",
+					Role:     "assistant",
+					Content:  reply.Content,
+					Thinking: strings.TrimSpace(thinking),
 				}
 				data, _ := json.Marshal(chatResp)
 				return &Response{ID: reqID, Success: true, Data: data}

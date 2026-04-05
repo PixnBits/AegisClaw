@@ -23,6 +23,7 @@ import (
 )
 
 var safeModeFlag bool
+var startModelFlag string
 
 // aegisHubRootfsEnvKey is the environment variable that overrides the default
 // AegisHub rootfs image path. During development and CI, set this to the
@@ -37,6 +38,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer env.Logger.Sync()
+
+	// --model flag overrides the configured default model for this session only.
+	// This allows starting the daemon with a specific model without editing config.
+	if startModelFlag != "" {
+		env.Config.Ollama.DefaultModel = startModelFlag
+		env.Logger.Info("Default model overridden via --model flag",
+			zap.String("model", startModelFlag))
+	}
 
 	// Provision Firecracker assets (vmlinux kernel, rootfs template) on first run.
 	fmt.Println("Checking Firecracker assets...")

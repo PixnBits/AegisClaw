@@ -191,4 +191,5 @@ func init() {
 	// start flags
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")
 	startCmd.Flags().BoolVar(&safeModeFlag, "safe", false, "Start in Safe Mode: minimal recovery environment, no skills, no Court, no LLM")
+	startCmd.Flags().StringVar(&startModelFlag, "model", "", "Override the default LLM model for this session (must be in the registry)")
 }
