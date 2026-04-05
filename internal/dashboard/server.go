@@ -205,11 +205,18 @@ func (s *Server) handleApprovalsDecide(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	proposals, _ := s.fetchRaw(r.Context(), "list_proposals", nil)
-	skills, _ := s.fetchRaw(r.Context(), "list_skills", nil)
+	catalog, err := s.fetchRaw(r.Context(), "dashboard.skills", nil)
+	catMap, _ := catalog.(map[string]interface{})
+	pageErr := ""
+	if err != nil {
+		pageErr = err.Error()
+	}
 	s.renderTemplate(w, "Skills & Proposals", skillsTmpl, map[string]interface{}{
-		"Proposals": proposals,
-		"Skills":    skills,
+		"RuntimeSkills":    catMap["runtime_skills"],
+		"BuiltInSkills":    catMap["built_in_skills"],
+		"BuiltInTemplates": catMap["built_in_templates"],
+		"Proposals":        catMap["proposals"],
+		"Error":            pageErr,
 	})
 }
 
@@ -423,10 +430,19 @@ tr:hover td{background:#161b22}
 .badge-failed{background:#6e1a1a;color:#f85149}
 .badge-pending{background:#633d00;color:#d29922}
 .badge-active{background:#1a7f37;color:#3fb950}
+.badge-approved,.badge-complete{background:#1a7f37;color:#3fb950}
+.badge-implementing,.badge-in_review{background:#0d419d;color:#58a6ff}
+.badge-draft,.badge-submitted,.badge-escalated{background:#633d00;color:#d29922}
+.badge-inactive,.badge-stopped,.badge-not_bootstrapped{background:#21262d;color:#8b949e}
+.badge-error,.badge-rejected{background:#6e1a1a;color:#f85149}
 .badge-fired,.badge-cancelled{background:#21262d;color:#8b949e}
 .empty{color:#8b949e;font-style:italic;padding:2rem;text-align:center}
 .section{background:#161b22;border:1px solid #30363d;border-radius:6px;margin-bottom:1.5rem;overflow:hidden}
 .section-header{padding:.75rem 1rem;border-bottom:1px solid #30363d;font-weight:600;font-size:.9rem;color:#e6edf3}
+.muted{color:#8b949e;font-size:.82rem}
+.tool-disclosure summary{cursor:pointer;color:#9ec1e6}
+.tool-disclosure ul{margin:.5rem 0 0 1rem;padding:0}
+.tool-disclosure li{margin:.2rem 0}
 button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:.3rem .75rem;cursor:pointer;font-size:.8rem}
 button:hover{background:#30363d}
 button.danger{background:#6e1a1a;border-color:#f85149;color:#f85149}
@@ -808,29 +824,105 @@ const overviewTmpl = `
 const skillsTmpl = `
 <h1>{{.Title}}</h1>
 <div class="section">
-  <div class="section-header">Active Skills</div>
-  {{if .Skills}}
+  <div class="section-header">Runtime Skills</div>
+  {{if .Error}}
+  <p class="empty" style="color:#f85149">Failed to load skills catalog: {{.Error}}</p>
+  {{else if .RuntimeSkills}}
   <table>
-    <thead><tr><th>Name</th><th>Version</th><th>Status</th></tr></thead>
+    <thead><tr><th>Name</th><th>Version</th><th>Status</th><th>Sandbox</th><th>Tools</th></tr></thead>
     <tbody>
-    {{range .Skills}}
+    {{range .RuntimeSkills}}
     <tr>
-      <td><strong>{{index . "name"}}</strong></td>
+      <td>
+        <strong>{{index . "name"}}</strong>
+        {{with index . "description"}}<div class="muted">{{.}}</div>{{end}}
+        {{with index . "proposal_id"}}<div class="muted">proposal {{.}}</div>{{end}}
+      </td>
       <td>{{index . "version"}}</td>
-      <td><span class="badge badge-active">active</span></td>
+      <td><span class="badge badge-{{index . "state"}}">{{index . "state"}}</span></td>
+      <td><code>{{truncate (index . "sandbox_id") 12}}</code></td>
+      <td>
+        {{if index . "tools"}}
+        <details class="tool-disclosure">
+          <summary>{{len (index . "tools")}} tools</summary>
+          <ul>
+            {{range index . "tools"}}
+            <li><strong>{{index . "name"}}</strong> {{index . "description"}}</li>
+            {{end}}
+          </ul>
+        </details>
+        {{else}}
+        <span class="muted">No tool metadata available</span>
+        {{end}}
+      </td>
     </tr>
     {{end}}
     </tbody>
   </table>
   {{else}}
-  <p class="empty">No skills activated yet. Use <code>aegisclaw skill add</code> to create one.</p>
+  <p class="empty">No runtime skills registered yet. Use <code>aegisclaw skill add</code> to create one.</p>
+  {{end}}
+</div>
+<div class="section">
+  <div class="section-header">Built-In Baselines</div>
+  {{if .BuiltInSkills}}
+  <table>
+    <thead><tr><th>Name</th><th>Status</th><th>Source</th><th>Tools</th></tr></thead>
+    <tbody>
+    {{range .BuiltInSkills}}
+    <tr>
+      <td>
+        <strong>{{index . "name"}}</strong>
+        {{with index . "description"}}<div class="muted">{{.}}</div>{{end}}
+      </td>
+      <td><span class="badge badge-{{index . "state"}}">{{index . "state"}}</span></td>
+      <td>{{index . "source"}}</td>
+      <td>
+        {{if index . "tools"}}
+        <details class="tool-disclosure">
+          <summary>{{len (index . "tools")}} tools</summary>
+          <ul>
+            {{range index . "tools"}}
+            <li><strong>{{index . "name"}}</strong> {{index . "description"}}</li>
+            {{end}}
+          </ul>
+        </details>
+        {{else}}
+        <span class="muted">No tool metadata available</span>
+        {{end}}
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No built-in baselines detected.</p>
+  {{end}}
+</div>
+<div class="section">
+  <div class="section-header">Built-In Templates</div>
+  {{if .BuiltInTemplates}}
+  <table>
+    <thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead>
+    <tbody>
+    {{range .BuiltInTemplates}}
+    <tr>
+      <td><strong>{{index . "name"}}</strong></td>
+      <td>{{index . "kind"}}</td>
+      <td>{{index . "description"}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No built-in templates found.</p>
   {{end}}
 </div>
 <div class="section">
   <div class="section-header">Proposals</div>
   {{if .Proposals}}
   <table>
-    <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Category</th></tr></thead>
+    <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Category</th><th>Target Skill</th></tr></thead>
     <tbody>
     {{range .Proposals}}
     <tr>
@@ -838,6 +930,7 @@ const skillsTmpl = `
       <td>{{truncate (index . "title") 60}}</td>
       <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
       <td>{{index . "category"}}</td>
+      <td>{{index . "target_skill"}}</td>
     </tr>
     {{end}}
     </tbody>
