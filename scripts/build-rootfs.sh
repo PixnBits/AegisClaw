@@ -162,6 +162,12 @@ if [ "${TARGET}" = "guest" ]; then
             --repository "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main" \
             --no-cache \
             alpine-base busybox
+
+        echo ">>> Installing guest scripting runtimes (python3, nodejs, bash)..."
+        apk add --root "${MOUNTPOINT}" \
+            --repository "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main" \
+            --no-cache \
+            python3 nodejs bash
     else
         # Download and extract Alpine minirootfs
         ARCH="x86_64"
@@ -169,6 +175,12 @@ if [ "${TARGET}" = "guest" ]; then
         echo "Downloading Alpine minirootfs from ${MINIROOTFS_URL}..."
         wget -q -O "${WORKDIR}/alpine-minirootfs.tar.gz" "${MINIROOTFS_URL}"
         tar xzf "${WORKDIR}/alpine-minirootfs.tar.gz" -C "${MOUNTPOINT}"
+
+        # Install runtimes inside the extracted Alpine rootfs so new installs
+        # can execute script.run for python/javascript/bash/sh immediately.
+        echo ">>> Installing guest scripting runtimes (python3, nodejs, bash)..."
+        cp /etc/resolv.conf "${MOUNTPOINT}/etc/resolv.conf"
+        chroot "${MOUNTPOINT}" /sbin/apk add --no-cache python3 nodejs bash
     fi
 fi
 

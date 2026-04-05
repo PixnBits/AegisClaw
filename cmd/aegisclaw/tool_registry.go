@@ -71,6 +71,11 @@ func (r *ToolRegistry) invokeSkillTool(ctx context.Context, skill, tool, argsJSO
 	if r.env.SafeMode.Load() {
 		return "", fmt.Errorf("safe mode is active: skill invocation blocked")
 	}
+	if skill == defaultScriptRunnerSkill {
+		if err := ensureDefaultScriptRunnerActive(ctx, r.env); err != nil {
+			return "", fmt.Errorf("ensure built-in script runner: %w", err)
+		}
+	}
 	entry, ok := r.env.Registry.Get(skill)
 	if !ok {
 		return "", fmt.Errorf("skill %q not found", skill)
@@ -383,7 +388,7 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			if err != nil {
 				return "", err
 			}
-			return runScript(ctx, params)
+			return runScriptInSandbox(ctx, env, params)
 		})
 
 	reg.Register("snapshot.create",

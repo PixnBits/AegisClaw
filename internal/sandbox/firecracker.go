@@ -820,11 +820,16 @@ func (r *FirecrackerRuntime) VsockCallbackPath(id string, port uint) (string, er
 func (r *FirecrackerRuntime) SendToVM(ctx context.Context, id string, req interface{}) (json.RawMessage, error) {
 	r.mu.RLock()
 	ms, exists := r.sandboxes[id]
+	if !exists {
+		r.mu.RUnlock()
+		return nil, fmt.Errorf("sandbox %s not found", id)
+	}
+	state := ms.info.State
 	guestIP := ms.info.GuestIP
 	r.mu.RUnlock()
 
-	if !exists {
-		return nil, fmt.Errorf("sandbox %s not found", id)
+	if state != StateRunning {
+		return nil, fmt.Errorf("sandbox %s is not running (state: %s)", id, state)
 	}
 
 	const guestPort = 1024
