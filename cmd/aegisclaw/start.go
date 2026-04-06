@@ -190,6 +190,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// handlers are registered so portal requests can be serviced immediately.
 	startDashboard(cmd.Context(), env, apiSrv)
 
+	// Start the multi-channel Gateway if enabled in config (Phase 2, Task 4).
+	// It must be started after the API server so that the RouteFunc can call
+	// chat.message via CallDirect.
+	startGateway(cmd.Context(), env, apiSrv)
+
 	// Apply --safe flag: if set, enable safe mode and deactivate all
 	// active skills before accepting requests.
 	if safeModeFlag {
