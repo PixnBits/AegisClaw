@@ -173,21 +173,16 @@ func parseSkillToolName(name string) (skill, tool string) {
 // and inline implementations for listing/activating resources.
 func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	reg := &ToolRegistry{env: env}
+	registerProposalTools(reg, env)
+	registerMemoryTools(reg, env)
+	registerEventBusTools(reg, env)
+	registerWorkerTools(reg, env)
+	registerSessionTools(reg, env, &reg)
+	registerRegistryTools(reg, env)
+	return reg
+}
 
-	// selfReg is assigned at the end of this function (after all tools are
-	// registered).  Tools that need to call other handlers (e.g. sessions_send
-	// needs the chat message handler which needs the tool registry itself)
-	// capture this pointer by reference.  Because tool handlers only execute
-	// at request time — after buildToolRegistry has returned — selfReg will
-	// always be non-nil when they run.
-	//
-	// The blank assignment below is intentional: it prevents "declared but not
-	// used" from the compiler while making the deferred assignment at the
-	// bottom of this function the canonical initialisation site.  Do not
-	// remove it or move the assignment before the Register calls.
-	var selfReg *ToolRegistry
-	_ = selfReg // captured by sessions_send and sessions_spawn closures below
-
+func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",
 		func(_ context.Context, args string) (string, error) {
@@ -508,9 +503,9 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 
 			return fmt.Sprintf("Agent VM restored from snapshot %q.\n  New VM ID: %s", params.Label, newVMID), nil
 		})
+}
 
-	// ── Memory Store tools ────────────────────────────────────────────────────
-
+func registerMemoryTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("store_memory",
 		"Store a memory entry persistently. Args: {key, value, tags[], ttl_tier, security_level, task_id}. Returns memory_id.",
 		func(ctx context.Context, args string) (string, error) {
@@ -674,9 +669,9 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			}
 			return fmt.Sprintf("Memories (%d):\n%s", len(summaries), strings.Join(lines, "\n")), nil
 		})
+}
 
-	// ── Event Bus tools ───────────────────────────────────────────────────────
-
+func registerEventBusTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("set_timer",
 		"Schedule an async timer. Args: {name, trigger_at (ISO8601 for one-shot), cron (for recurring), payload, task_id}. Returns timer_id.",
 		func(_ context.Context, args string) (string, error) {
@@ -902,9 +897,9 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			return fmt.Sprintf("Approval request submitted.\n  ID:        %s\n  Title:     %s\n  Risk:      %s\n  Status:    pending\n\nThe request will appear in the dashboard and CLI (`aegisclaw event approvals list`). The operation will not proceed until a human approves it.",
 				a.ApprovalID, a.Title, a.RiskLevel), nil
 		})
+}
 
-	// ── Worker tools (Phase 3) ────────────────────────────────────────────────
-
+func registerWorkerTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("spawn_worker",
 		"Spawn an ephemeral Worker agent for a focused subtask. Args: {task_description, role (researcher|coder|summarizer|custom), tools_granted (list), timeout_mins, task_id}. Blocks until complete; returns structured result.",
 		func(ctx context.Context, args string) (string, error) {
@@ -950,12 +945,12 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			}
 			return strings.TrimRight(b.String(), "\n"), nil
 		})
+}
 
-	// ── Session routing tools (Phase 1 – OpenClaw integration) ───────────────
-	// These tools mirror OpenClaw's session routing primitives.  They call the
-	// daemon-side session API handlers directly via env so they have access to
-	// the in-process session store without an extra round-trip over the socket.
-
+// registerSessionTools registers session routing tools.  selfRegPtr is a
+// pointer to the *ToolRegistry variable in the caller; closures dereference it
+// at call time so they always see the fully-constructed registry.
+func registerSessionTools(reg *ToolRegistry, env *runtimeEnv, selfRegPtr **ToolRegistry) {
 	reg.Register("sessions_list",
 		"List all active AegisClaw chat sessions. Args: {}. Returns session IDs, start times, and status.",
 		func(_ context.Context, _ string) (string, error) {
@@ -1042,7 +1037,7 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 				return "", fmt.Errorf("session store not available")
 			}
 			// Build and call the sessions.send handler directly.
-			sendHandler := makeSessionsSendHandler(env, selfReg)
+			sendHandler := makeSessionsSendHandler(env, *selfRegPtr)
 			reqBytes, _ := json.Marshal(map[string]string{
 				"session_id": p.SessionID,
 				"message":    p.Message,
@@ -1066,7 +1061,7 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	reg.Register("sessions_spawn",
 		"Spawn a new isolated chat session with an optional task description. Args: {\"task_description\": \"...\", \"config\": {...}}. Returns the new session_id.",
 		func(ctx context.Context, args string) (string, error) {
-			spawnHandler := makeSessionsSpawnHandler(env, selfReg)
+			spawnHandler := makeSessionsSpawnHandler(env, *selfRegPtr)
 			var rawArgs json.RawMessage
 			if strings.TrimSpace(args) == "" || args == "null" {
 				rawArgs = json.RawMessage(`{}`)
@@ -1088,12 +1083,9 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			sessionID, _ := out["session_id"].(string)
 			return fmt.Sprintf("New session spawned. session_id: %s", sessionID), nil
 		})
+}
 
-	// ── Registry tools (Phase 2 – OpenClaw integration) ──────────────────────
-	// Browse and import skills from the ClawHub-compatible registry.
-	// Imported skills are automatically submitted to the Governance Court for
-	// review before they can be activated.
-
+func registerRegistryTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("registry.list",
 		"List skills available in the ClawHub registry. Args: {}. Returns name, version, description for each skill.",
 		func(ctx context.Context, _ string) (string, error) {
@@ -1159,7 +1151,4 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 				spec.Name, spec.Description, spec.Tools,
 			), nil
 		})
-
-	selfReg = reg
-	return reg
 }
