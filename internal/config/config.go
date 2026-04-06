@@ -10,6 +10,25 @@ import (
 	"go.uber.org/zap"
 )
 
+// GatewayChannelConfig is the per-channel adapter configuration stored in
+// Config.Gateway.Channels.  It mirrors gateway.ChannelConfig so that the
+// config package does not need to import the gateway package.
+type GatewayChannelConfig struct {
+	// ID is the unique channel name (must match the Channel.ID() return value).
+	ID string `yaml:"id" mapstructure:"id"`
+	// Type identifies the adapter implementation: "webhook" is the only
+	// built-in type.  Other types require governed skill code.
+	Type string `yaml:"type" mapstructure:"type"`
+	// Enabled controls whether this channel is started.
+	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+	// Addr is the listen address for server-side channels (e.g. webhook).
+	Addr string `yaml:"addr" mapstructure:"addr"`
+	// Secret is a shared secret used to authenticate inbound requests.
+	Secret string `yaml:"secret" mapstructure:"secret"`
+	// Extra holds channel-specific key-value settings.
+	Extra map[string]string `yaml:"extra" mapstructure:"extra"`
+}
+
 // Config holds the application configuration loaded from ~/.config/aegisclaw/config.yaml
 // Security: All paths are validated to prevent directory traversal attacks.
 // Defaults are set to secure, isolated locations with no host filesystem access.
@@ -151,6 +170,19 @@ type Config struct {
 		// Enabled controls whether the multi-channel Gateway is started by the
 		// daemon.  Defaults to false.
 		Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+
+		// Channels lists the channel adapter configurations.  Each entry
+		// corresponds to one inbound source (e.g. a webhook listener).
+		// Channel type "webhook" is supported out of the box; additional types
+		// require governed skill code to provide the protocol adapter.
+		//
+		// Example YAML entry:
+		//   - id: my-hook
+		//     type: webhook
+		//     enabled: true
+		//     addr: "127.0.0.1:9000"
+		//     secret: "changeme"
+		Channels []GatewayChannelConfig `yaml:"channels" mapstructure:"channels"`
 	} `yaml:"gateway" mapstructure:"gateway"`
 	Registry struct {
 		// URL is the base URL of the ClawHub-compatible skill registry.
@@ -317,9 +349,11 @@ func DefaultConfig() Config {
 			Dir: filepath.Join(home, ".aegisclaw", "workspace"),
 		},
 		Gateway: struct {
-			Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+			Enabled  bool                   `yaml:"enabled" mapstructure:"enabled"`
+			Channels []GatewayChannelConfig `yaml:"channels" mapstructure:"channels"`
 		}{
-			Enabled: false,
+			Enabled:  false,
+			Channels: nil,
 		},
 		Registry: struct {
 			URL string `yaml:"url" mapstructure:"url"`
