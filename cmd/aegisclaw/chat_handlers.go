@@ -778,6 +778,27 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("Be warm, helpful, and concise. Never be dismissive or condescending.\n\n")
 	b.WriteString("THINKING CHANNEL REQUIREMENT: For EVERY response, produce internal reasoning in the model thinking channel before the final answer. Even for simple questions, emit at least one concise reasoning step in the thinking channel.\n\n")
 
+	// Workspace prompt injection (OpenClaw-inspired).
+	// SOUL.md customises guiding principles; AGENTS.md overrides identity;
+	// TOOLS.md injects tool preference hints.  All files are optional.
+	if env.Workspace != nil {
+		if env.Workspace.Soul != "" {
+			b.WriteString("WORKSPACE SOUL (user-defined guiding principles):\n")
+			b.WriteString(env.Workspace.Soul)
+			b.WriteString("\n\n")
+		}
+		if env.Workspace.Agents != "" {
+			b.WriteString("WORKSPACE AGENT PERSONA (user-defined identity overrides):\n")
+			b.WriteString(env.Workspace.Agents)
+			b.WriteString("\n\n")
+		}
+		if env.Workspace.Tools != "" {
+			b.WriteString("WORKSPACE TOOL HINTS (user-defined tool preferences):\n")
+			b.WriteString(env.Workspace.Tools)
+			b.WriteString("\n\n")
+		}
+	}
+
 	// Explicit: conversation is the default mode.
 	b.WriteString("Most of the time, just talk to the user normally. Answer questions, explain things, and be helpful.\n\n")
 	b.WriteString("When model thinking is enabled, you MUST use the thinking channel and should not put that reasoning in the final user-facing answer.\n\n")
@@ -848,6 +869,12 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"unsubscribe_signal\" — deactivate a signal subscription. args: {\"subscription_id\": \"...\"}\n")
 	b.WriteString("- \"worker_status\" — get status and result of a previously spawned worker. args: {\"worker_id\": \"...\"} or {} to list recent workers\n")
 	b.WriteString("- \"spawn_worker\" — delegate a focused subtask to an ephemeral Worker agent. args: {\"task_description\": \"...\", \"role\": \"researcher|coder|summarizer|custom\", \"tools_granted\": [...], \"timeout_mins\": 30, \"task_id\": \"...\"}\n")
+
+	// Phase 1 (OpenClaw): Session routing tools (stubs — full IPC routing coming).
+	b.WriteString("- \"sessions_list\" — list all active chat sessions. args: {}\n")
+	b.WriteString("- \"sessions_history\" — get message history for a session. args: {\"session_id\": \"...\", \"limit\": 50}\n")
+	b.WriteString("- \"sessions_send\" — send a message to another active session. args: {\"session_id\": \"...\", \"message\": \"...\"}\n")
+	b.WriteString("- \"sessions_spawn\" — spawn a new isolated session with optional agent config. args: {\"config\": {...}, \"task_description\": \"...\"}\n")
 
 	// Proposal drafting instructions: tell the agent how to build a court-ready draft
 	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")

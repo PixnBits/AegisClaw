@@ -64,8 +64,13 @@ type Pipeline struct {
 	// sbomDir, when non-empty, enables SBOM generation.  The sbom.json file is
 	// written to <sbomDir>/<proposalID>/ after a successful build.
 	sbomDir string
-	mu      sync.Mutex
-	runs    map[string]*PipelineResult
+	// workspaceSkillContext is the content of SKILL.md from the user's
+	// workspace directory.  When non-empty it is appended to the system prompt
+	// for each code-generation round so users can inject project-specific
+	// context without modifying Court-reviewed templates.
+	workspaceSkillContext string
+	mu                    sync.Mutex
+	runs                  map[string]*PipelineResult
 }
 
 // NewPipeline creates a Pipeline connecting all subsystems.
@@ -111,6 +116,16 @@ func NewPipeline(
 func (p *Pipeline) SetSBOMDir(dir string) {
 	p.mu.Lock()
 	p.sbomDir = dir
+	p.mu.Unlock()
+}
+
+// SetWorkspaceSkillContext sets the SKILL.md content from the user's workspace
+// directory.  When non-empty, it is appended to the code-generation system
+// prompt so project-specific context is available to the Builder without
+// modifying Court-reviewed templates.  Call this before Execute.
+func (p *Pipeline) SetWorkspaceSkillContext(ctx string) {
+	p.mu.Lock()
+	p.workspaceSkillContext = ctx
 	p.mu.Unlock()
 }
 
@@ -200,11 +215,12 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 	})
 
 	codeReq := &CodeGenRequest{
-		Spec:         *spec,
-		ExistingCode: existingCode,
-		Round:        1,
-		SystemPrompt: systemPrompt,
-		MaxTokens:    8192,
+		Spec:                  *spec,
+		ExistingCode:          existingCode,
+		Round:                 1,
+		SystemPrompt:          systemPrompt,
+		MaxTokens:             8192,
+		WorkspaceSkillContext: p.workspaceSkillContext,
 	}
 
 	codeResp, err := p.codeGen.Generate(builderInfo.ID, codeReq)

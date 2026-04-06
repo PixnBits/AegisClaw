@@ -936,5 +936,57 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			return strings.TrimRight(b.String(), "\n"), nil
 		})
 
+	// ── Session routing tools (Phase 1 – OpenClaw integration) ───────────────
+	// These tools mirror OpenClaw's session routing primitives and will be
+	// fully implemented in a future phase once sandboxed IPC routing is in
+	// place.  They are registered now so the agent can reason about them and
+	// so they appear in search_tools results.
+
+	reg.Register("sessions_list",
+		"List all active AegisClaw chat sessions. Args: {}. Returns session IDs, start times, and status.",
+		func(_ context.Context, _ string) (string, error) {
+			return "sessions_list: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+		})
+
+	reg.Register("sessions_history",
+		"Get the message history for a session. Args: {session_id, limit?}. Returns message log for the specified session.",
+		func(_ context.Context, args string) (string, error) {
+			var p struct {
+				SessionID string `json:"session_id"`
+			}
+			if err := json.Unmarshal([]byte(args), &p); err != nil {
+				return "", fmt.Errorf("invalid sessions_history args: %w", err)
+			}
+			if strings.TrimSpace(p.SessionID) == "" {
+				return "", fmt.Errorf("sessions_history requires 'session_id'")
+			}
+			return "sessions_history: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+		})
+
+	reg.Register("sessions_send",
+		"Send a message to another active session. Args: {session_id, message}. The target session processes the message asynchronously.",
+		func(_ context.Context, args string) (string, error) {
+			var p struct {
+				SessionID string `json:"session_id"`
+				Message   string `json:"message"`
+			}
+			if err := json.Unmarshal([]byte(args), &p); err != nil {
+				return "", fmt.Errorf("invalid sessions_send args: %w", err)
+			}
+			if strings.TrimSpace(p.SessionID) == "" {
+				return "", fmt.Errorf("sessions_send requires 'session_id'")
+			}
+			if strings.TrimSpace(p.Message) == "" {
+				return "", fmt.Errorf("sessions_send requires 'message'")
+			}
+			return "sessions_send: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+		})
+
+	reg.Register("sessions_spawn",
+		"Spawn a new isolated chat session with an optional agent config. Args: {config?, task_description?}. Returns the new session_id.",
+		func(_ context.Context, _ string) (string, error) {
+			return "sessions_spawn: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+		})
+
 	return reg
 }
