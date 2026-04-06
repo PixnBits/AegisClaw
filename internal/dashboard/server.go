@@ -56,6 +56,23 @@ func New(addr string, client APIClient) (*Server, error) {
 			return s[:n] + "…"
 		},
 		"join": strings.Join,
+		"toJSON": func(v interface{}) template.JS {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return template.JS("null")
+			}
+			return template.JS(b)
+		},
+		"len": func(v interface{}) int {
+			switch val := v.(type) {
+			case []interface{}:
+				return len(val)
+			case map[string]interface{}:
+				return len(val)
+			default:
+				return 0
+			}
+		},
 	}
 	s.registerRoutes()
 	return s, nil
@@ -92,6 +109,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/settings", s.handleSettings)
 	s.mux.HandleFunc("/chat", s.handleChat)
 	s.mux.HandleFunc("/chat/send", s.handleChatSend)
+	s.mux.HandleFunc("/canvas", s.handleCanvas)
 	s.mux.HandleFunc("/events", s.handleSSE)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -230,6 +248,21 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "Chat", chatTmpl, nil)
+}
+
+func (s *Server) handleCanvas(w http.ResponseWriter, r *http.Request) {
+	// Canvas provides a real-time visual workspace: active agents, live
+	// tool-call feed, and an agent interaction graph.  All data is served
+	// via the existing /events SSE stream so no additional server state is
+	// needed.
+	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
+	sandboxes, _ := s.fetchRaw(r.Context(), "sandbox.list", map[string]bool{"running_only": true})
+	skills, _ := s.fetchRaw(r.Context(), "skill.list", nil)
+	s.renderTemplate(w, "Canvas", canvasTmpl, map[string]interface{}{
+		"Workers":   workers,
+		"Sandboxes": sandboxes,
+		"Skills":    skills,
+	})
 }
 
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
@@ -556,6 +589,19 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "data: {\"type\":\"heartbeat\"}\n\n")
 	flusher.Flush()
 
+	// Per-connection cursors so each client only receives new events.
+	var lastToolEventID, lastWorkerEventID int64
+
+	writeSSEMsg := func(v interface{}) bool {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return false
+		}
+		_, werr := fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+		return werr == nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -565,6 +611,57 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			approvals, _ := s.fetchRaw(ctx, "event.approvals.list", map[string]bool{"pending_only": true})
 			toolEvents, _ := s.fetchRaw(ctx, "chat.tool_events", map[string]int{"limit": 40})
 			thoughtEvents, _ := s.fetchRaw(ctx, "chat.thought_events", map[string]int{"limit": 60})
+
+			// Emit individual tool_start/tool_end events for new tool events
+			// so Canvas and other subscribers can react without parsing the
+			// full update bundle.
+			if toolEvSlice, ok := toolEvents.([]interface{}); ok {
+				for _, raw := range toolEvSlice {
+					ev, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					id := int64(toFloat(ev["id"]))
+					if id <= lastToolEventID {
+						continue
+					}
+					lastToolEventID = id
+					evType := "tool_end"
+					if toString(ev["status"]) == "running" {
+						evType = "tool_start"
+					}
+					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
+						"type": evType,
+						"data": map[string]interface{}{
+							"tool":       toString(ev["tool"]),
+							"agent_id":   toString(ev["session_id"]),
+							"agent_name": toString(ev["session_id"]),
+							"error":      toString(ev["error"]),
+							"duration_ms": ev["duration_ms"],
+						},
+					})
+				}
+			}
+
+			// Emit worker_start/worker_stop events for new worker transitions.
+			if workerSlice, ok := workers.([]interface{}); ok {
+				for _, raw := range workerSlice {
+					wk, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					id := int64(toFloat(wk["created_at_unix"]))
+					if id <= lastWorkerEventID {
+						continue
+					}
+					lastWorkerEventID = id
+					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
+						"type": "worker_start",
+						"data": wk,
+					})
+				}
+			}
+
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type":              "update",
 				"active_workers":    workers,
@@ -577,6 +674,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// toFloat safely converts an interface{} to float64 (used for numeric ID comparisons).
+func toFloat(v interface{}) float64 {
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return 0
 }
 
 func (s *Server) fetchRaw(ctx context.Context, action string, req interface{}) (interface{}, error) {
@@ -801,6 +906,7 @@ const dashboardNav = `
   <a href="/audit">Audit</a>
   <a href="/settings">Settings</a>
   <a href="/chat">Chat</a>
+  <a href="/canvas">Canvas</a>
   <span id="sse-status">&#9679;</span>
 </nav>`
 
@@ -2270,5 +2376,242 @@ const chatTmpl = `
   renderActiveSession();
 
   document.getElementById('chat-input').focus();
+})();
+</script>`
+
+// canvasTmpl is the Canvas visual workspace page.
+// It shows active agents/workers as cards with their live tool-call feed,
+// and an ASCII-art agent graph that updates via SSE.
+const canvasTmpl = `
+<style>
+#canvas-wrap{display:flex;flex-direction:column;gap:1.5rem;padding:1rem 0}
+#canvas-header{display:flex;align-items:center;justify-content:space-between}
+#canvas-header h2{margin:0;font-size:1.1rem;color:#e6edf3}
+#canvas-stats{display:flex;gap:1rem;font-size:.85rem;color:#8b949e}
+#canvas-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem}
+.agent-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;display:flex;flex-direction:column;gap:.5rem}
+.agent-card-header{display:flex;align-items:center;justify-content:space-between}
+.agent-card-title{font-size:.9rem;font-weight:600;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+.agent-card-badge{font-size:.75rem;padding:.15rem .5rem;border-radius:12px;background:#21262d;color:#8b949e}
+.agent-card-badge.running{background:#1f4b2e;color:#3fb950}
+.agent-card-badge.idle{background:#21262d;color:#8b949e}
+.tool-feed{font-size:.8rem;color:#8b949e;background:#0d1117;border-radius:4px;padding:.5rem;min-height:60px;max-height:140px;overflow-y:auto;font-family:monospace}
+.tool-feed .tf-entry{padding:.15rem 0;border-bottom:1px dotted #21262d}
+.tool-feed .tf-entry:last-child{border-bottom:none}
+.tool-feed .tf-tool{color:#58a6ff}
+.tool-feed .tf-result{color:#3fb950}
+.tool-feed .tf-err{color:#f85149}
+.graph-section{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem}
+.graph-section h3{margin:0 0 .75rem;font-size:.9rem;color:#e6edf3}
+#canvas-graph{font-family:monospace;font-size:.8rem;color:#8b949e;white-space:pre;line-height:1.6;min-height:80px}
+#canvas-log{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:.75rem;font-size:.8rem;font-family:monospace;color:#8b949e;max-height:160px;overflow-y:auto}
+.cl-entry{padding:.1rem 0}
+.cl-ts{color:#6e7681}
+.cl-name{color:#58a6ff}
+.cl-tool{color:#d2a8ff}
+.cl-ok{color:#3fb950}
+.cl-err{color:#f85149}
+.empty-state{color:#6e7681;font-size:.85rem;text-align:center;padding:2rem 0}
+</style>
+<div id="canvas-wrap">
+  <div id="canvas-header">
+    <h2>&#127981; Canvas — Live Workspace</h2>
+    <div id="canvas-stats">
+      <span id="cs-agents">Agents</span>
+      <span id="cs-vms">VMs</span>
+      <span id="cs-skills">Skills</span>
+    </div>
+  </div>
+
+  <div id="canvas-grid"></div>
+
+  <div class="graph-section">
+    <h3>Agent Interaction Graph</h3>
+    <div id="canvas-graph">Loading…</div>
+  </div>
+
+  <div class="graph-section">
+    <h3>Live Tool-Call Log</h3>
+    <div id="canvas-log"></div>
+  </div>
+</div>
+<script>
+(function(){
+  // Seed initial data from server-side render.
+  var initialWorkers = {{if .Workers}}{{.Workers | toJSON}}{{else}}[]{{end}};
+  var initialSkills  = {{if .Skills}}{{.Skills | toJSON}}{{else}}[]{{end}};
+
+  // Agent state: map of agentId → {id, name, status, tools:[]}
+  var agents = {};
+
+  function agentID(w){
+    if(typeof w === 'object' && w !== null){
+      return w.id || w.worker_id || w.name || JSON.stringify(w);
+    }
+    return String(w);
+  }
+
+  function agentName(w){
+    if(typeof w === 'object' && w !== null){
+      return w.name || w.task_description || w.id || 'Agent';
+    }
+    return String(w);
+  }
+
+  function agentStatus(w){
+    if(typeof w === 'object' && w !== null){
+      return w.status || w.state || 'running';
+    }
+    return 'running';
+  }
+
+  // Initialise from server data.
+  (Array.isArray(initialWorkers)?initialWorkers:[]).forEach(function(w){
+    var id=agentID(w);
+    agents[id]={id:id,name:agentName(w),status:agentStatus(w),tools:[]};
+  });
+
+  function renderGrid(){
+    var grid=document.getElementById('canvas-grid');
+    var keys=Object.keys(agents);
+    if(keys.length===0){
+      grid.innerHTML='<p class="empty-state">No active agents. Start a chat or spawn a worker to see live activity here.</p>';
+      return;
+    }
+    grid.innerHTML='';
+    keys.forEach(function(id){
+      var a=agents[id];
+      var card=document.createElement('div');
+      card.className='agent-card';
+      card.id='ac-'+id.replace(/[^a-z0-9]/gi,'_');
+      var status=a.status||'idle';
+      card.innerHTML=
+        '<div class="agent-card-header">'+
+          '<span class="agent-card-title" title="'+escH(a.name)+'">'+escH(a.name)+'</span>'+
+          '<span class="agent-card-badge '+(status==='running'?'running':'idle')+'">'+escH(status)+'</span>'+
+        '</div>'+
+        '<div class="tool-feed" id="tf-'+escH(id.replace(/[^a-z0-9]/gi,'_'))+'">'+
+          (a.tools.length===0?'<span style="color:#6e7681">No tool calls yet…</span>':
+            a.tools.slice(-6).map(function(t){
+              return '<div class="tf-entry">'+
+                '<span class="tf-tool">'+escH(t.tool)+'</span>'+
+                (t.ok!==undefined?
+                  (t.ok?'<span class="tf-result"> ✓</span>':'<span class="tf-err"> ✗ '+escH(t.err||'')+'</span>')
+                :'')+
+              '</div>';
+            }).join('')
+          )+
+        '</div>';
+      grid.appendChild(card);
+    });
+  }
+
+  function renderGraph(){
+    var el=document.getElementById('canvas-graph');
+    var keys=Object.keys(agents);
+    if(keys.length===0){el.textContent='(no active agents)';return;}
+    var lines=['[host daemon]'];
+    keys.forEach(function(id){
+      var a=agents[id];
+      lines.push('  └─ '+a.name+' ('+( a.status||'idle')+')');
+    });
+    el.textContent=lines.join('\n');
+  }
+
+  function appendLog(ts,name,tool,ok,err){
+    var log=document.getElementById('canvas-log');
+    var d=document.createElement('div');
+    d.className='cl-entry';
+    d.innerHTML=
+      '<span class="cl-ts">'+escH(ts)+'</span> '+
+      '<span class="cl-name">'+escH(name)+'</span>'+
+      ' → <span class="cl-tool">'+escH(tool)+'</span> '+
+      (ok?'<span class="cl-ok">✓</span>':'<span class="cl-err">✗ '+escH(err||'')+'</span>');
+    log.appendChild(d);
+    log.scrollTop=log.scrollHeight;
+    // Keep log at most 120 entries.
+    while(log.children.length>120){log.removeChild(log.firstChild);}
+  }
+
+  function escH(s){
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── SSE listener ──────────────────────────────────────────────────────────
+  // The /events stream emits {type, data} objects.  We react to:
+  //   type=tool_start  — an agent started a tool call
+  //   type=tool_end    — an agent completed a tool call
+  //   type=worker_*    — worker lifecycle events
+  window.onSSEUpdate = function(msg){
+    var d=msg.data||{};
+    var ts=new Date().toLocaleTimeString();
+
+    if(msg.type==='tool_start'){
+      var id=d.agent_id||d.session_id||'host';
+      if(!agents[id]){agents[id]={id:id,name:d.agent_name||id,status:'running',tools:[]};}
+      agents[id].status='running';
+      agents[id].tools.push({tool:d.tool||d.name||'?',ok:undefined});
+      renderGrid();
+      renderGraph();
+      document.getElementById('cs-agents').textContent='Agents: '+Object.keys(agents).length;
+    }
+    else if(msg.type==='tool_end'){
+      var id=d.agent_id||d.session_id||'host';
+      if(agents[id]){
+        var last=agents[id].tools[agents[id].tools.length-1];
+        if(last&&last.tool===(d.tool||d.name||'?')){
+          last.ok=!d.error;
+          last.err=d.error||'';
+        }
+        agents[id].status='idle';
+        renderGrid();
+        renderGraph();
+      }
+      appendLog(ts,d.agent_name||id,d.tool||d.name||'?',!d.error,d.error||'');
+    }
+    else if(msg.type==='worker_start'){
+      var id=d.worker_id||d.id||'worker';
+      agents[id]={id:id,name:d.name||d.task_description||'Worker',status:'running',tools:[]};
+      renderGrid();renderGraph();
+      document.getElementById('cs-agents').textContent='Agents: '+Object.keys(agents).length;
+    }
+    else if(msg.type==='worker_end'||msg.type==='worker_stop'){
+      var id=d.worker_id||d.id||'worker';
+      if(agents[id]){agents[id].status='stopped';}
+      renderGrid();renderGraph();
+    }
+    else if(msg.type==='update'){
+      // Periodic batch tick — seed agents from tool_events for initial load.
+      var tevs=Array.isArray(msg.data&&msg.data.tool_events)?msg.data.tool_events:(Array.isArray(msg.tool_events)?msg.tool_events:[]);
+      tevs.forEach(function(ev){
+        var id=ev.session_id||ev.agent_id||'host';
+        if(!agents[id]){agents[id]={id:id,name:id,status:'idle',tools:[]};}
+        var found=false;
+        for(var i=0;i<agents[id].tools.length;i++){
+          if(agents[id].tools[i]._evid===ev.id){found=true;break;}
+        }
+        if(!found&&ev.tool){
+          agents[id].tools.push({_evid:ev.id,tool:ev.tool,ok:ev.status!=='error',err:ev.error||''});
+          if(agents[id].tools.length>20)agents[id].tools.shift();
+        }
+      });
+      // Update stats bar with live counts from update payload.
+      var wkrs=Array.isArray(msg.active_workers)?msg.active_workers:[];
+      document.getElementById('cs-agents').textContent='Agents: '+(Object.keys(agents).length||wkrs.length);
+      if(wkrs.length>0){
+        wkrs.forEach(function(w){
+          var wid=w.id||w.worker_id||w.name||JSON.stringify(w);
+          if(!agents[wid]){agents[wid]={id:wid,name:w.name||w.task_description||'Worker',status:w.status||'running',tools:[]};}
+        });
+      }
+      renderGrid();renderGraph();
+    }
+  };
+
+  renderGrid();
+  renderGraph();
+  if(Object.keys(agents).length===0){
+    document.getElementById('canvas-log').innerHTML='<span style="color:#6e7681">Waiting for tool-call events…</span>';
+  }
 })();
 </script>`

@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"context"
 	"testing"
 )
 
@@ -26,33 +25,15 @@ func TestNewOrchestrator_DefaultModeRequiresRuntime(t *testing.T) {
 	}
 }
 
-func TestNewOrchestrator_DockerStub(t *testing.T) {
-	orch, err := NewOrchestrator(IsolationDocker, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestNewOrchestrator_DockerUnsupported(t *testing.T) {
+	_, err := NewOrchestrator("docker", nil)
+	if err == nil {
+		t.Fatal("expected error for docker mode (not supported on this platform)")
 	}
-	if orch.Mode() != IsolationDocker {
-		t.Errorf("expected mode %q, got %q", IsolationDocker, orch.Mode())
-	}
+}
 
-	// All operations should return ErrDockerNotImplemented.
-	ctx := context.Background()
-	if _, err := orch.LaunchSandbox(ctx, SandboxSpec{}); err != ErrDockerNotImplemented {
-		t.Errorf("expected ErrDockerNotImplemented from LaunchSandbox, got %v", err)
-	}
-	if err := orch.StopSandbox(ctx, "x"); err != ErrDockerNotImplemented {
-		t.Errorf("expected ErrDockerNotImplemented from StopSandbox, got %v", err)
-	}
-	if err := orch.DeleteSandbox(ctx, "x"); err != ErrDockerNotImplemented {
-		t.Errorf("expected ErrDockerNotImplemented from DeleteSandbox, got %v", err)
-	}
-	if _, err := orch.SandboxStatus(ctx, "x"); err != ErrDockerNotImplemented {
-		t.Errorf("expected ErrDockerNotImplemented from SandboxStatus, got %v", err)
-	}
-	if _, err := orch.ListSandboxes(ctx); err != ErrDockerNotImplemented {
-		t.Errorf("expected ErrDockerNotImplemented from ListSandboxes, got %v", err)
-	}
-	if _, err := orch.SendToSandbox(ctx, "x", nil); err != ErrDockerNotImplemented {
-		t.Errorf("expected ErrDockerNotImplemented from SendToSandbox, got %v", err)
+func TestIsolationFirecrackerConstant(t *testing.T) {
+	if IsolationFirecracker != "firecracker" {
+		t.Errorf("expected IsolationFirecracker=%q, got %q", "firecracker", IsolationFirecracker)
 	}
 }
