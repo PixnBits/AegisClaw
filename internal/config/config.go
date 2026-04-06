@@ -31,6 +31,11 @@ type Config struct {
 		ChrootBase   string `yaml:"chroot_base" mapstructure:"chroot_base"`
 		KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
 		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
+		// IsolationMode selects the sandbox backend: "firecracker" (default,
+		// hardware-virtualised microVMs) or "docker" (OCI containers with
+		// seccomp/AppArmor — not yet fully implemented).
+		// See internal/sandbox.IsolationMode for valid values.
+		IsolationMode string `yaml:"isolation_mode" mapstructure:"isolation_mode"`
 	} `yaml:"sandbox" mapstructure:"sandbox"`
 	Proposal struct {
 		StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
@@ -142,6 +147,17 @@ type Config struct {
 		// Set to "" to disable workspace prompt injection entirely.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"workspace" mapstructure:"workspace"`
+	Gateway struct {
+		// Enabled controls whether the multi-channel Gateway is started by the
+		// daemon.  Defaults to false.
+		Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+	} `yaml:"gateway" mapstructure:"gateway"`
+	Registry struct {
+		// URL is the base URL of the ClawHub-compatible skill registry.
+		// Defaults to https://registry.clawhub.io.
+		// Set to "" to disable registry integration.
+		URL string `yaml:"url" mapstructure:"url"`
+	} `yaml:"registry" mapstructure:"registry"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -176,15 +192,17 @@ func DefaultConfig() Config {
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "audit"),
 		},
 		Sandbox: struct {
-			StateDir     string `yaml:"state_dir" mapstructure:"state_dir"`
-			ChrootBase   string `yaml:"chroot_base" mapstructure:"chroot_base"`
-			KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
-			RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
+			StateDir      string `yaml:"state_dir" mapstructure:"state_dir"`
+			ChrootBase    string `yaml:"chroot_base" mapstructure:"chroot_base"`
+			KernelImage   string `yaml:"kernel_image" mapstructure:"kernel_image"`
+			RegistryPath  string `yaml:"registry_path" mapstructure:"registry_path"`
+			IsolationMode string `yaml:"isolation_mode" mapstructure:"isolation_mode"`
 		}{
-			StateDir:     filepath.Join(home, ".local", "share", "aegisclaw", "sandboxes"),
-			ChrootBase:   filepath.Join(home, ".local", "share", "aegisclaw", "jailer"),
-			KernelImage:  "/var/lib/aegisclaw/vmlinux-5.10.225",
-			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "registry.json"),
+			StateDir:      filepath.Join(home, ".local", "share", "aegisclaw", "sandboxes"),
+			ChrootBase:    filepath.Join(home, ".local", "share", "aegisclaw", "jailer"),
+			KernelImage:   "/var/lib/aegisclaw/vmlinux-5.10.225",
+			RegistryPath:  filepath.Join(home, ".local", "share", "aegisclaw", "registry.json"),
+			IsolationMode: "firecracker",
 		},
 		Proposal: struct {
 			StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
@@ -298,6 +316,16 @@ func DefaultConfig() Config {
 		}{
 			Dir: filepath.Join(home, ".aegisclaw", "workspace"),
 		},
+		Gateway: struct {
+			Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+		}{
+			Enabled: false,
+		},
+		Registry: struct {
+			URL string `yaml:"url" mapstructure:"url"`
+		}{
+			URL: "https://registry.clawhub.io",
+		},
 	}
 }
 
@@ -342,6 +370,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("sandbox.chroot_base", defaults.Sandbox.ChrootBase)
 	viper.SetDefault("sandbox.kernel_image", defaults.Sandbox.KernelImage)
 	viper.SetDefault("sandbox.registry_path", defaults.Sandbox.RegistryPath)
+	viper.SetDefault("sandbox.isolation_mode", defaults.Sandbox.IsolationMode)
 	viper.SetDefault("proposal.store_dir", defaults.Proposal.StoreDir)
 	viper.SetDefault("court.persona_dir", defaults.Court.PersonaDir)
 	viper.SetDefault("court.session_dir", defaults.Court.SessionDir)
@@ -375,6 +404,8 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("dashboard.enabled", defaults.Dashboard.Enabled)
 	viper.SetDefault("dashboard.addr", defaults.Dashboard.Addr)
 	viper.SetDefault("workspace.dir", defaults.Workspace.Dir)
+	viper.SetDefault("gateway.enabled", defaults.Gateway.Enabled)
+	viper.SetDefault("registry.url", defaults.Registry.URL)
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Config file doesn't exist, write defaults
