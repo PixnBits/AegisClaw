@@ -64,8 +64,9 @@ type SkillDeactivateRequest struct {
 // The CLI sends user input and conversation history; the daemon handles LLM
 // interaction inside a sandboxed agent boundary.
 type ChatMessageRequest struct {
-	Input   string            `json:"input"`
-	History []ChatHistoryItem `json:"history,omitempty"`
+	Input    string            `json:"input"`
+	History  []ChatHistoryItem `json:"history,omitempty"`
+	StreamID string            `json:"stream_id,omitempty"`
 }
 
 // ChatHistoryItem is a single message in the conversation history.
