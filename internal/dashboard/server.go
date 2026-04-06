@@ -1913,6 +1913,7 @@ const chatTmpl = `
         m.textContent=new Date(s.updated_at).toLocaleString();
         item.appendChild(m);
         item.addEventListener('click',function(){
+          interruptActiveStreamForSessionSwitch(s.id);
           activeSessionId=s.id;
           renderSessionList();
           renderActiveSession();
@@ -1959,6 +1960,51 @@ const chatTmpl = `
   var activeChatStream=false;
   var lastToolEventIDSeen=0;
   var lastThoughtEventIDSeen=0;
+  var currentStreamController=null;
+  var currentStreamSessionId='';
+
+  function isAbortErr(e){
+    if(!e)return false;
+    if(e.name==='AbortError')return true;
+    var msg=String(e.message||'').toLowerCase();
+    return msg.indexOf('aborted')>=0 || msg.indexOf('aborterror')>=0;
+  }
+
+  function beginSessionStream(s){
+    var controller=new AbortController();
+    currentStreamController=controller;
+    currentStreamSessionId=(s&&s.id)?s.id:'';
+    awaitingResponse=true;
+    activeChatStream=true;
+    setDisabled(true);
+    return controller;
+  }
+
+  function finishSessionStream(s){
+    if(s && currentStreamSessionId===s.id){
+      currentStreamController=null;
+      currentStreamSessionId='';
+    }
+    awaitingResponse=false;
+    activeChatStream=false;
+    setDisabled(false);
+  }
+
+  function interruptActiveStreamForSessionSwitch(targetSessionID){
+    if(!awaitingResponse || !activeChatStream)return;
+    if(!currentStreamController)return;
+    if(targetSessionID && currentStreamSessionId===targetSessionID)return;
+
+    try{ currentStreamController.abort(); }catch(_){ }
+    currentStreamController=null;
+    currentStreamSessionId='';
+    clearTyping();
+    clearLiveThoughtLog();
+    clearLiveToolLog();
+    awaitingResponse=false;
+    activeChatStream=false;
+    setDisabled(false);
+  }
 
   function ensureLiveThoughtLog(){
     var msgs=document.getElementById('chat-msgs');
@@ -2307,26 +2353,25 @@ const chatTmpl = `
     if(awaitingResponse)return;
     if(!s || !s.pending_stream || !s.pending_stream.stream_id)return;
 
-    setDisabled(true);
-    awaitingResponse=true;
-    activeChatStream=true;
+    var streamController=beginSessionStream(s);
     streamContentText='';
     streamThoughtText='';
+    lastToolEventIDSeen=0;
+    lastThoughtEventIDSeen=0;
     ensureLiveThoughtLog();
     showTyping();
 
     try{
       var res=await fetch('/chat/send?stream=1&stream_id='+encodeURIComponent(s.pending_stream.stream_id),{
         method:'GET',
-        headers:{'Accept':'text/event-stream'}
+        headers:{'Accept':'text/event-stream'},
+        signal:streamController.signal
       });
       var data=await consumeChatSSE(res,s);
 
       clearTyping();
       clearLiveThoughtLog();
       clearLiveToolLog();
-      awaitingResponse=false;
-      activeChatStream=false;
       clearPendingStream(s);
 
       if(data.error){
@@ -2348,19 +2393,21 @@ const chatTmpl = `
         renderSessionList();
       }
     }catch(e){
+      if(isAbortErr(e)){
+        return;
+      }
       clearTyping();
       clearLiveThoughtLog();
       clearLiveToolLog();
-      awaitingResponse=false;
-      activeChatStream=false;
       // Keep pending stream so a reload can resume if the backend call is still running.
       appendMsg('error','Network error: '+e.message);
       s.messages.push({role:'error',content:'Network error: '+e.message});
       s.updated_at=Date.now();
       saveSessions();
       renderSessionList();
+    }finally{
+      finishSessionStream(s);
     }
-    setDisabled(false);
   }
 
   document.getElementById('chat-form').addEventListener('submit',function(e){
@@ -2404,9 +2451,7 @@ const chatTmpl = `
     saveSessions();
     renderSessionList();
 
-    setDisabled(true);
-    awaitingResponse=true;
-    activeChatStream=true;
+    var streamController=beginSessionStream(s);
     streamContentText='';
     streamThoughtText='';
 	lastToolEventIDSeen=0;
@@ -2420,6 +2465,7 @@ const chatTmpl = `
       var res=await fetch('/chat/send?stream=1',{
         method:'POST',
         headers:{'Content-Type':'application/json','Accept':'text/event-stream'},
+        signal:streamController.signal,
         body:JSON.stringify({input:input,history:snapshot,stream_id:(s.pending_stream&&s.pending_stream.stream_id)||''})
       });
 
@@ -2428,8 +2474,6 @@ const chatTmpl = `
       clearTyping();
       clearLiveThoughtLog();
       clearLiveToolLog();
-      awaitingResponse=false;
-      activeChatStream=false;
       clearPendingStream(s);
       if(data.error){
         appendMsg('error','Error: '+data.error);
@@ -2450,19 +2494,21 @@ const chatTmpl = `
         renderSessionList();
       }
     }catch(e){
+      if(isAbortErr(e)){
+        return;
+      }
       clearTyping();
       clearLiveThoughtLog();
       clearLiveToolLog();
-      awaitingResponse=false;
-      activeChatStream=false;
       // Keep pending stream so a page reload can reconnect and continue.
       appendMsg('error','Network error: '+e.message);
       s.messages.push({role:'error',content:'Network error: '+e.message});
       s.updated_at=Date.now();
       saveSessions();
       renderSessionList();
+    }finally{
+      finishSessionStream(s);
     }
-    setDisabled(false);
   }
 
   document.getElementById('new-session-btn').addEventListener('click',function(){
