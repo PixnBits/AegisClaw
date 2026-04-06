@@ -519,6 +519,24 @@ File: `cmd/aegisclaw/chat_handlers.go`, function `makeChatMessageHandler`
 
 ### D2-c: Delete DirectLauncher — **Resolved**
 
+## 12. Agentic Loop - Target State (D2-a resolved)
+
+This section tracks the target end-state once D2-a is fully resolved.
+
+- The full ReAct loop runs inside the Agent VM: LLM call, tool-call parsing,
+  tool execution request, tool result append, and final answer emission.
+- The daemon `chat.message` handler is a single forward-and-return path:
+  build prompt context, call the Agent VM once, return the final response.
+- Tool execution remains host-side in this phase, but every tool request is
+  initiated from the Agent VM over vsock and audited as a first-class action.
+- Intermediate reasoning and tool activity are streamed as events from the
+  Agent VM to daemon telemetry buffers so TUI and dashboard can render live
+  traces without daemon-side loop orchestration.
+
+The architecture above preserves the zero-trust boundary: untrusted model
+output and control decisions stay inside Firecracker isolation, while audited
+host-side capability handlers remain enforceable by policy and ACL gates.
+
 File: `internal/court/direct_launcher.go`
 
 `DirectLauncher` has been deleted. `FirecrackerLauncher` is the only supported court launcher. The daemon fails with a fatal error if KVM or the Firecracker binary is unavailable.
