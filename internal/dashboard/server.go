@@ -12,6 +12,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,24 @@ type Server struct {
 	apiClient APIClient
 	funcMap   template.FuncMap
 	mux       *http.ServeMux
+
+	chatMu      sync.Mutex
+	chatStreams map[string]*chatStreamState
+}
+
+type chatStreamState struct {
+	id           string
+	payload      json.RawMessage
+	startToolID  int
+	startThought int
+	startedAt    time.Time
+	lastAccess   time.Time
+
+	mu     sync.RWMutex
+	done   bool
+	resp   *APIResponse
+	err    error
+	doneCh chan struct{}
 }
 
 // APIClient abstracts daemon API calls for the dashboard.
@@ -38,9 +57,10 @@ type APIResponse struct {
 // New creates the dashboard server.
 func New(addr string, client APIClient) (*Server, error) {
 	s := &Server{
-		addr:      addr,
-		apiClient: client,
-		mux:       http.NewServeMux(),
+		addr:        addr,
+		apiClient:   client,
+		mux:         http.NewServeMux(),
+		chatStreams: make(map[string]*chatStreamState),
 	}
 	s.funcMap = template.FuncMap{
 		"fmtTime": func(t time.Time) string {
@@ -233,14 +253,32 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	streamMode := r.URL.Query().Get("stream") == "1" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
+	if !streamMode && r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+
+	if streamMode && r.Method == http.MethodGet {
+		streamID := strings.TrimSpace(r.URL.Query().Get("stream_id"))
+		if streamID == "" {
+			http.Error(w, "stream_id required", http.StatusBadRequest)
+			return
+		}
+		st, ok := s.getChatStream(streamID)
+		if !ok {
+			http.Error(w, "stream not found", http.StatusNotFound)
+			return
+		}
+		s.handleChatSendStream(w, r, st)
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, 512<<10) // 512 KB limit
 	var req struct {
-		Input   string `json:"input"`
-		History []struct {
+		Input    string `json:"input"`
+		StreamID string `json:"stream_id,omitempty"`
+		History  []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"history,omitempty"`
@@ -258,14 +296,18 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "input required"}) //nolint:errcheck
 		return
 	}
-	if r.URL.Query().Get("stream") == "1" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
-		streamID := fmt.Sprintf("chat-%d", time.Now().UnixNano())
+	if streamMode {
+		streamID := strings.TrimSpace(req.StreamID)
+		if streamID == "" {
+			streamID = fmt.Sprintf("chat-%d", time.Now().UnixNano())
+		}
 		payload := mustMarshal(map[string]interface{}{
 			"input":     req.Input,
 			"history":   req.History,
 			"stream_id": streamID,
 		})
-		s.handleChatSendStream(w, r, payload, streamID)
+		st, _ := s.ensureChatStream(streamID, payload)
+		s.handleChatSendStream(w, r, st)
 		return
 	}
 	payload := mustMarshal(map[string]interface{}{
@@ -289,7 +331,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	w.Write(resp.Data) //nolint:errcheck
 }
 
-func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, payload json.RawMessage, streamID string) {
+func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, st *chatStreamState) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -314,24 +356,19 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 	}
 
 	ctx := r.Context()
-	lastToolID := s.latestEventID(ctx, "chat.tool_events", 60)
-	lastThoughtID := s.latestEventID(ctx, "chat.thought_events", 80)
+	lastToolID := st.startToolID
+	lastThoughtID := st.startThought
 	emittedThinkingRunes := 0
 	emittedContentRunes := 0
 
-	if !writeSSE(map[string]interface{}{"type": "start", "ts": time.Now().UTC().Format(time.RFC3339)}) {
+	if !writeSSE(map[string]interface{}{
+		"type":      "start",
+		"ts":        time.Now().UTC().Format(time.RFC3339),
+		"stream_id": st.id,
+		"resumed":   true,
+	}) {
 		return
 	}
-
-	type callResult struct {
-		resp *APIResponse
-		err  error
-	}
-	callDone := make(chan callResult, 1)
-	go func() {
-		resp, err := s.apiClient.Call(ctx, "chat.message", payload)
-		callDone <- callResult{resp: resp, err: err}
-	}()
 
 	ticker := time.NewTicker(700 * time.Millisecond)
 	defer ticker.Stop()
@@ -346,8 +383,8 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 				return false
 			}
 		}
-		if streamID != "" {
-			progressRaw, err := s.fetchRaw(ctx, "chat.stream_progress", map[string]string{"stream_id": streamID})
+		if st.id != "" {
+			progressRaw, err := s.fetchRaw(ctx, "chat.stream_progress", map[string]string{"stream_id": st.id})
 			if err == nil {
 				if progress, ok := progressRaw.(map[string]interface{}); ok {
 					if !emitSnapshotDelta(writeSSE, "thought_delta", toString(progress["thinking"]), &emittedThinkingRunes) {
@@ -374,30 +411,36 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 	for {
 		select {
 		case <-ctx.Done():
+			s.touchChatStream(st.id)
 			return
 		case <-ticker.C:
 			if !sendNewEvents() {
 				return
 			}
-		case out := <-callDone:
+		case <-st.doneCh:
 			if !sendNewEvents() {
 				return
 			}
-			if out.err != nil {
-				writeSSE(map[string]interface{}{"type": "error", "error": out.err.Error()}) //nolint:errcheck
+			outResp, outErr := s.chatStreamResult(st.id)
+			if outErr != nil {
+				writeSSE(map[string]interface{}{"type": "error", "error": outErr.Error()}) //nolint:errcheck
 				return
 			}
-			if out.resp == nil || !out.resp.Success {
+			if outResp == nil {
+				writeSSE(map[string]interface{}{"type": "error", "error": "empty chat response"}) //nolint:errcheck
+				return
+			}
+			if !outResp.Success {
 				errMsg := "unknown error"
-				if out.resp != nil && out.resp.Error != "" {
-					errMsg = out.resp.Error
+				if outResp.Error != "" {
+					errMsg = outResp.Error
 				}
 				writeSSE(map[string]interface{}{"type": "error", "error": errMsg}) //nolint:errcheck
 				return
 			}
 			var data interface{}
-			if len(out.resp.Data) > 0 {
-				if err := json.Unmarshal(out.resp.Data, &data); err != nil {
+			if len(outResp.Data) > 0 {
+				if err := json.Unmarshal(outResp.Data, &data); err != nil {
 					writeSSE(map[string]interface{}{"type": "error", "error": "invalid chat response JSON: " + err.Error()}) //nolint:errcheck
 					return
 				}
@@ -409,6 +452,99 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 			}
 			writeSSE(map[string]interface{}{"type": "final", "data": data}) //nolint:errcheck
 			return
+		}
+	}
+}
+
+func (s *Server) ensureChatStream(streamID string, payload json.RawMessage) (*chatStreamState, bool) {
+	s.pruneChatStreams()
+	s.chatMu.Lock()
+	if st, ok := s.chatStreams[streamID]; ok {
+		st.lastAccess = time.Now()
+		s.chatMu.Unlock()
+		return st, true
+	}
+
+	st := &chatStreamState{
+		id:           streamID,
+		payload:      payload,
+		startToolID:  s.latestEventID(context.Background(), "chat.tool_events", 60),
+		startThought: s.latestEventID(context.Background(), "chat.thought_events", 80),
+		startedAt:    time.Now(),
+		lastAccess:   time.Now(),
+		doneCh:       make(chan struct{}),
+	}
+	s.chatStreams[streamID] = st
+	s.chatMu.Unlock()
+
+	go s.runChatStream(st)
+	return st, false
+}
+
+func (s *Server) runChatStream(st *chatStreamState) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+
+	resp, err := s.apiClient.Call(ctx, "chat.message", st.payload)
+	st.mu.Lock()
+	st.resp = resp
+	st.err = err
+	st.done = true
+	st.lastAccess = time.Now()
+	close(st.doneCh)
+	st.mu.Unlock()
+}
+
+func (s *Server) getChatStream(streamID string) (*chatStreamState, bool) {
+	s.pruneChatStreams()
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	st, ok := s.chatStreams[streamID]
+	if ok {
+		st.lastAccess = time.Now()
+	}
+	return st, ok
+}
+
+func (s *Server) touchChatStream(streamID string) {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	if st, ok := s.chatStreams[streamID]; ok {
+		st.lastAccess = time.Now()
+	}
+}
+
+func (s *Server) chatStreamResult(streamID string) (*APIResponse, error) {
+	s.chatMu.Lock()
+	st, ok := s.chatStreams[streamID]
+	s.chatMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("stream %q not found", streamID)
+	}
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	if !st.done {
+		return nil, fmt.Errorf("stream %q is still running", streamID)
+	}
+	return st.resp, st.err
+}
+
+func (s *Server) pruneChatStreams() {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	now := time.Now()
+	for id, st := range s.chatStreams {
+		st.mu.RLock()
+		done := st.done
+		st.mu.RUnlock()
+
+		age := now.Sub(st.lastAccess)
+		if done && age > 20*time.Minute {
+			delete(s.chatStreams, id)
+			continue
+		}
+		if !done && now.Sub(st.startedAt) > 15*time.Minute {
+			delete(s.chatStreams, id)
 		}
 	}
 }
@@ -1797,6 +1933,9 @@ const chatTmpl = `
       else if(msg.role==='assistant')appendAssistant(msg.content,msg.tool_calls||[],msg.thinking_trace||[],msg.model||'');
       else if(msg.role==='error')appendMsg('error',msg.content);
     }
+    if(s.pending_stream && s.pending_stream.stream_id && !awaitingResponse){
+      resumePendingStream(s);
+    }
   }
 
   function setDisabled(disabled){
@@ -2054,6 +2193,176 @@ const chatTmpl = `
     if(typingDiv){typingDiv.remove();typingDiv=null;}
   }
 
+  function normalizedHistory(s){
+    var snapshot=[];
+    for(var i=0;i<s.messages.length;i++){
+      if(s.messages[i].role==='user' || s.messages[i].role==='assistant'){
+        snapshot.push({role:s.messages[i].role,content:s.messages[i].content});
+      }
+    }
+    return snapshot;
+  }
+
+  function clearPendingStream(s){
+    if(!s)return;
+    if(s.pending_stream){
+      delete s.pending_stream;
+      s.updated_at=Date.now();
+      saveSessions();
+      renderSessionList();
+    }
+  }
+
+  async function consumeChatSSE(res,s){
+    var data=null;
+    var ctype=(res.headers.get('content-type')||'').toLowerCase();
+    if(ctype.indexOf('text/event-stream')>=0 && res.body && res.body.getReader){
+      var reader=res.body.getReader();
+      var decoder=new TextDecoder();
+      var buf='';
+      var finalSeen=false;
+
+      var processFrame=function(frame){
+        if(!frame)return;
+        var lines=frame.split('\n');
+        var payload=[];
+        for(var li=0;li<lines.length;li++){
+          var line=lines[li];
+          if(line.indexOf('data:')===0){
+            payload.push(line.slice(5).trim());
+          }
+        }
+        if(payload.length===0)return;
+        var ev=null;
+        try{ev=JSON.parse(payload.join('\n'));}catch(_){return;}
+
+        if(ev.type==='start' && ev.stream_id){
+          if(!s.pending_stream){
+            s.pending_stream={};
+          }
+          s.pending_stream.stream_id=String(ev.stream_id);
+          s.pending_stream.started_at=Date.now();
+          saveSessions();
+          renderSessionList();
+          return;
+        }
+        if(ev.type==='tool_event' && ev.event){
+          var tid=Number(ev.event.id||0);
+          if(tid>lastToolEventIDSeen){
+            appendLiveToolEvent(ev.event);
+            lastToolEventIDSeen=tid;
+          }
+          return;
+        }
+        if(ev.type==='thought_event' && ev.event){
+          var hid=Number(ev.event.id||0);
+          if(hid>lastThoughtEventIDSeen){
+            appendLiveThoughtEvent(ev.event);
+            lastThoughtEventIDSeen=hid;
+          }
+          return;
+        }
+        if(ev.type==='error'){
+          throw new Error(ev.error||'stream error');
+        }
+        if(ev.type==='thought_delta'){
+          appendStreamThoughtDelta(String(ev.delta||''));
+          return;
+        }
+        if(ev.type==='content_delta'){
+          appendStreamContentDelta(String(ev.delta||''));
+          return;
+        }
+        if(ev.type==='final'){
+          data=ev.data||{};
+          finalSeen=true;
+        }
+      };
+
+      while(true){
+        var part=await reader.read();
+        if(part.done)break;
+        buf+=decoder.decode(part.value,{stream:true});
+        var cut=buf.indexOf('\n\n');
+        while(cut>=0){
+          var frame=buf.slice(0,cut);
+          buf=buf.slice(cut+2);
+          processFrame(frame);
+          cut=buf.indexOf('\n\n');
+        }
+      }
+      if(buf.trim()!==''){
+        processFrame(buf);
+      }
+      if(!finalSeen){
+        throw new Error('stream ended before final response');
+      }
+    }else{
+      data=await res.json();
+    }
+    return data;
+  }
+
+  async function resumePendingStream(s){
+    if(awaitingResponse)return;
+    if(!s || !s.pending_stream || !s.pending_stream.stream_id)return;
+
+    setDisabled(true);
+    awaitingResponse=true;
+    activeChatStream=true;
+    streamContentText='';
+    streamThoughtText='';
+    ensureLiveThoughtLog();
+    showTyping();
+
+    try{
+      var res=await fetch('/chat/send?stream=1&stream_id='+encodeURIComponent(s.pending_stream.stream_id),{
+        method:'GET',
+        headers:{'Accept':'text/event-stream'}
+      });
+      var data=await consumeChatSSE(res,s);
+
+      clearTyping();
+      clearLiveThoughtLog();
+      clearLiveToolLog();
+      awaitingResponse=false;
+      activeChatStream=false;
+      clearPendingStream(s);
+
+      if(data.error){
+        appendMsg('error','Error: '+data.error);
+        s.messages.push({role:'error',content:'Error: '+data.error});
+        s.updated_at=Date.now();
+        saveSessions();
+        renderSessionList();
+      }else{
+        var content=data.content||'(empty response)';
+        var toolCalls=Array.isArray(data.tool_calls)?data.tool_calls:[];
+        var thinkingTrace=Array.isArray(data.thinking_trace)?data.thinking_trace:[];
+        var model=(typeof data.model==='string')?data.model:'';
+        appendAssistant(content,toolCalls,thinkingTrace,model);
+        s.messages.push({role:'assistant',content:content,model:model,tool_calls:toolCalls,thinking_trace:thinkingTrace});
+        if(s.messages.length>MAX)s.messages=s.messages.slice(s.messages.length-MAX);
+        s.updated_at=Date.now();
+        saveSessions();
+        renderSessionList();
+      }
+    }catch(e){
+      clearTyping();
+      clearLiveThoughtLog();
+      clearLiveToolLog();
+      awaitingResponse=false;
+      activeChatStream=false;
+      // Keep pending stream so a reload can resume if the backend call is still running.
+      appendMsg('error','Network error: '+e.message);
+      s.messages.push({role:'error',content:'Network error: '+e.message});
+      s.updated_at=Date.now();
+      saveSessions();
+      renderSessionList();
+    }
+    setDisabled(false);
+  }
+
   document.getElementById('chat-form').addEventListener('submit',function(e){
     e.preventDefault();
     var inp=document.getElementById('chat-input');
@@ -2083,12 +2392,7 @@ const chatTmpl = `
       s=getActiveSession();
     }
 
-    var snapshot=[];
-    for(var i=0;i<s.messages.length;i++){
-      if(s.messages[i].role==='user' || s.messages[i].role==='assistant'){
-        snapshot.push({role:s.messages[i].role,content:s.messages[i].content});
-      }
-    }
+    var snapshot=normalizedHistory(s);
 
     appendMsg('user',input);
     s.messages.push({role:'user',content:input});
@@ -2105,97 +2409,28 @@ const chatTmpl = `
     activeChatStream=true;
     streamContentText='';
     streamThoughtText='';
+	lastToolEventIDSeen=0;
+	lastThoughtEventIDSeen=0;
     ensureLiveThoughtLog();
     showTyping();
+    s.pending_stream={stream_id:'',input:input,started_at:Date.now()};
+    saveSessions();
+    renderSessionList();
     try{
       var res=await fetch('/chat/send?stream=1',{
         method:'POST',
         headers:{'Content-Type':'application/json','Accept':'text/event-stream'},
-        body:JSON.stringify({input:input,history:snapshot})
+        body:JSON.stringify({input:input,history:snapshot,stream_id:(s.pending_stream&&s.pending_stream.stream_id)||''})
       });
 
-      var data=null;
-      var ctype=(res.headers.get('content-type')||'').toLowerCase();
-      if(ctype.indexOf('text/event-stream')>=0 && res.body && res.body.getReader){
-        var reader=res.body.getReader();
-        var decoder=new TextDecoder();
-        var buf='';
-        var finalSeen=false;
-
-        var processFrame=function(frame){
-          if(!frame)return;
-          var lines=frame.split('\n');
-          var payload=[];
-          for(var li=0;li<lines.length;li++){
-            var line=lines[li];
-            if(line.indexOf('data:')===0){
-              payload.push(line.slice(5).trim());
-            }
-          }
-          if(payload.length===0)return;
-          var ev=null;
-          try{ev=JSON.parse(payload.join('\n'));}catch(_){return;}
-
-          if(ev.type==='tool_event' && ev.event){
-            var tid=Number(ev.event.id||0);
-            if(tid>lastToolEventIDSeen){
-              appendLiveToolEvent(ev.event);
-              lastToolEventIDSeen=tid;
-            }
-            return;
-          }
-          if(ev.type==='thought_event' && ev.event){
-            var hid=Number(ev.event.id||0);
-            if(hid>lastThoughtEventIDSeen){
-              appendLiveThoughtEvent(ev.event);
-              lastThoughtEventIDSeen=hid;
-            }
-            return;
-          }
-          if(ev.type==='error'){
-            throw new Error(ev.error||'stream error');
-          }
-          if(ev.type==='thought_delta'){
-            appendStreamThoughtDelta(String(ev.delta||''));
-            return;
-          }
-          if(ev.type==='content_delta'){
-            appendStreamContentDelta(String(ev.delta||''));
-            return;
-          }
-          if(ev.type==='final'){
-            data=ev.data||{};
-            finalSeen=true;
-          }
-        };
-
-        while(true){
-          var part=await reader.read();
-          if(part.done)break;
-          buf+=decoder.decode(part.value,{stream:true});
-          var cut=buf.indexOf('\n\n');
-          while(cut>=0){
-            var frame=buf.slice(0,cut);
-            buf=buf.slice(cut+2);
-            processFrame(frame);
-            cut=buf.indexOf('\n\n');
-          }
-        }
-        if(buf.trim()!==''){
-          processFrame(buf);
-        }
-        if(!finalSeen){
-          throw new Error('stream ended before final response');
-        }
-      }else{
-        data=await res.json();
-      }
+      var data=await consumeChatSSE(res,s);
 
       clearTyping();
       clearLiveThoughtLog();
       clearLiveToolLog();
       awaitingResponse=false;
       activeChatStream=false;
+      clearPendingStream(s);
       if(data.error){
         appendMsg('error','Error: '+data.error);
         s.messages.push({role:'error',content:'Error: '+data.error});
@@ -2220,6 +2455,7 @@ const chatTmpl = `
       clearLiveToolLog();
       awaitingResponse=false;
       activeChatStream=false;
+      // Keep pending stream so a page reload can reconnect and continue.
       appendMsg('error','Network error: '+e.message);
       s.messages.push({role:'error',content:'Network error: '+e.message});
       s.updated_at=Date.now();

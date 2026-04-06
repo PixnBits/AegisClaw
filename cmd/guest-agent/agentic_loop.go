@@ -17,6 +17,7 @@ const (
 	agenticMaxIterations   = 12
 	agenticTotalTimeout    = 10 * time.Minute
 	agenticPerCallTimeout  = 300 * time.Second
+	agenticStepRetryBudget = 3
 	agenticMaxContextChars = 300000
 	agenticMaxTraceArgsLen = 1000
 	agenticMaxTraceOutLen  = 3000
@@ -47,6 +48,7 @@ func runAgenticLoop(ctx context.Context, payload ChatMessagePayload) (*ChatRespo
 	msgs := append([]ChatMsg(nil), payload.Messages...)
 	toolTrace := make([]map[string]interface{}, 0)
 	thinkingTrace := make([]map[string]interface{}, 0)
+	transientStepRetries := 0
 
 	for i := 0; i < agenticMaxIterations; i++ {
 		if estimateContextChars(msgs) > agenticMaxContextChars {
@@ -57,8 +59,27 @@ func runAgenticLoop(ctx context.Context, payload ChatMessagePayload) (*ChatRespo
 		chatResp, err := runAgenticStep(stepCtx, payload.Model, payload.StreamID, payload.StructuredOutput, msgs)
 		stepCancel()
 		if err != nil {
+			if isRecoverableAgenticErr(err) && transientStepRetries < agenticStepRetryBudget {
+				transientStepRetries++
+				summary := fmt.Sprintf("transient LLM/network issue; retrying step (%d/%d)", transientStepRetries, agenticStepRetryBudget)
+				details := err.Error()
+				sendTraceEventToHost("transient_retry", "", summary, details)
+				thinkingTrace = append(thinkingTrace, map[string]interface{}{
+					"phase":     "transient_retry",
+					"summary":   summary,
+					"details":   details,
+					"timestamp": time.Now().UTC().Format(time.RFC3339),
+				})
+				select {
+				case <-loopCtx.Done():
+					return nil, loopCtx.Err()
+				case <-time.After(250 * time.Millisecond):
+				}
+				continue
+			}
 			return nil, err
 		}
+		transientStepRetries = 0
 
 		if thought := strings.TrimSpace(chatResp.Thinking); thought != "" {
 			summary := thought
@@ -207,7 +228,7 @@ func runAgenticStep(ctx context.Context, model, streamID string, structured bool
 }
 
 func callOllamaWithRetry(ctx context.Context, model, streamID string, messages []map[string]string, format string, options map[string]interface{}) (string, string, error) {
-	const maxAttempts = 2
+	const maxAttempts = 3
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		content, thinking, err := callOllamaViaProxy(ctx, model, streamID, messages, format, options)
@@ -239,6 +260,23 @@ func isRetryableProxyReadErr(err error) bool {
 		return true
 	}
 	if strings.Contains(msg, "read proxy response") && strings.Contains(msg, "vsock-proxy") {
+		return true
+	}
+	if strings.Contains(msg, "eof") || strings.Contains(msg, "timeout") || strings.Contains(msg, "connection reset") {
+		return true
+	}
+	return false
+}
+
+func isRecoverableAgenticErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "ollama error") && (strings.Contains(msg, "vsock") || strings.Contains(msg, "temporarily unavailable") || strings.Contains(msg, "timeout") || strings.Contains(msg, "eof") || strings.Contains(msg, "connection reset")) {
+		return true
+	}
+	if strings.Contains(msg, "host bridge") && (strings.Contains(msg, "vsock") || strings.Contains(msg, "temporarily unavailable") || strings.Contains(msg, "timeout") || strings.Contains(msg, "eof")) {
 		return true
 	}
 	return false
@@ -285,37 +323,63 @@ func sendTraceEventToHost(phase, toolName, summary, details string) {
 }
 
 func callHostBridge(ctx context.Context, req hostBridgeRequest, resp *hostBridgeResponse) error {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
-	if err != nil {
-		return fmt.Errorf("vsock socket: %w", err)
-	}
-
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			unix.Close(fd)
-			return fmt.Errorf("context already expired")
+	const maxAttempts = 3
+	var lastErr error
+	attemptOnce := func() error {
+		fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+		if err != nil {
+			return fmt.Errorf("vsock socket: %w", err)
 		}
-		tv := unix.NsecToTimeval(remaining.Nanoseconds())
-		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
-		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				unix.Close(fd)
+				return fmt.Errorf("context already expired")
+			}
+			tv := unix.NsecToTimeval(remaining.Nanoseconds())
+			_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
+			_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+		}
+
+		sa := &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: hostToolBridgePort}
+		if err := unix.Connect(fd, sa); err != nil {
+			unix.Close(fd)
+			return fmt.Errorf("vsock connect host bridge: %w", err)
+		}
+
+		file := os.NewFile(uintptr(fd), "vsock-host-bridge")
+		conn := &vsockConn{file: file}
+		defer conn.Close()
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = conn.SetDeadline(deadline)
+		}
+
+		if err := json.NewEncoder(conn).Encode(req); err != nil {
+			return fmt.Errorf("send host bridge request: %w", err)
+		}
+		if err := json.NewDecoder(conn).Decode(resp); err != nil {
+			return fmt.Errorf("read host bridge response: %w", err)
+		}
+		return nil
 	}
 
-	sa := &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: hostToolBridgePort}
-	if err := unix.Connect(fd, sa); err != nil {
-		unix.Close(fd)
-		return fmt.Errorf("vsock connect host bridge: %w", err)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = attemptOnce()
+		if lastErr == nil {
+			return nil
+		}
+		if !isRecoverableAgenticErr(lastErr) {
+			break
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(120 * time.Millisecond):
+		}
 	}
-
-	file := os.NewFile(uintptr(fd), "vsock-host-bridge")
-	conn := &vsockConn{file: file}
-	defer conn.Close()
-
-	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		return fmt.Errorf("send host bridge request: %w", err)
-	}
-	if err := json.NewDecoder(conn).Decode(resp); err != nil {
-		return fmt.Errorf("read host bridge response: %w", err)
-	}
-	return nil
+	return lastErr
 }
