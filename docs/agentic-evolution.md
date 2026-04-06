@@ -1,7 +1,7 @@
 # Agentic Evolution – Hierarchical Multi-Agent System with Persistent Agency
 
 **Document Status**: Draft v0.1  
-**Last Updated**: 2026-04-02  
+**Last Updated**: 2026-04-05  
 **Owner**: Project Lead (with Governance Court review required for changes)  
 **Related Documents**:  
 - `docs/PRD.md` (Vision, Security Principles, Governance Court, Skill Lifecycle)  
@@ -9,6 +9,13 @@
 - `docs/agent-prompts.md` (to be created – system prompts and few-shots)  
 
 This document defines the evolution of AegisClaw from a single ReAct agent to a **hierarchical multi-agent platform** with long-term memory, asynchronous signals/timers, tiered persistence, human-in-the-loop approvals, and a local web dashboard. All changes preserve the core **paranoid-by-design** principles: zero-trust isolation via Firecracker microVMs, mandatory Governance Court oversight for new capabilities or self-improvements, append-only Merkle-tree auditing, and local-first execution with Ollama.
+
+## Implementation Progress Snapshot (2026-04-05)
+
+- Main chat path now supports in-guest full-loop execution with host-side tool bridge.
+- Transient sandbox scripting now has first-class `script.exec` support.
+- Orchestrator foundations are now codified with a dedicated prompt asset at `config/agent-prompts/orchestrator.md` and a persisted state helper in `internal/agent/orchestrator.go`.
+- Existing worker, memory, and event-bus primitives remain the execution substrate for hierarchical delegation.
 
 ## Vision & Motivation
 
