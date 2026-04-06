@@ -673,7 +673,8 @@ func registerMemoryTools(reg *ToolRegistry, env *runtimeEnv) {
 
 func registerEventBusTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("set_timer",
-		"Schedule an async timer. Args: {name, trigger_at (ISO8601 for one-shot), cron (for recurring), payload, task_id}. Returns timer_id.",
+		"Schedule an async timer. Args: {name, trigger_at (ISO8601 for one-shot), cron (for recurring), payload, task_id}. Returns timer_id. "+
+			"Optional: include {task_description, role, timeout_mins, tools_granted} in payload to spawn an autonomous worker when the timer fires.",
 		func(_ context.Context, args string) (string, error) {
 			var params struct {
 				Name      string          `json:"name"`
