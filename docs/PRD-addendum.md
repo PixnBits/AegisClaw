@@ -1,5 +1,5 @@
 ### **Addendum: Enhancing AegisClaw with OpenClaw-Inspired Usability, Integrations, and Agent Flexibility**  
-**Version:** 1.0  
+**Version:** 1.1 (updated April 2026 — Firecracker-only per implementation decision)  
 **Date:** April 5, 2026  
 **Author:** Grok (based on comparative analysis of OpenClaw and AegisClaw feature/script-runner branch)  
 **Purpose:** Define requirements for AegisClaw to adopt the broad usability, multi-channel support, prompt-driven flexibility, and ecosystem benefits of OpenClaw—while preserving (and strengthening) AegisClaw’s core security, auditability, and zero-trust model.
@@ -8,7 +8,7 @@
 AegisClaw and OpenClaw are complementary local-first AI agent runtimes. OpenClaw excels in usability (20+ messaging channels, voice modes, Canvas UI, declarative workspaces), flexible prompt injection, mature multi-agent routing, and a rich tool/skill ecosystem. AegisClaw provides superior isolation (Firecracker microVMs), governed skill generation, mandatory AI review (Governance Court), security gates, and verifiable audit logging.
 
 **Key Alignment Decision:**  
-Direct Firecracker usage for skills and components will be migrated to **Docker Sandboxes** once robust Linux support is implemented. This maintains strong isolation (building on OpenClaw’s existing Docker sandbox model for non-main sessions) while simplifying cross-platform support, reducing KVM dependency, and enabling easier adoption of containerized tool execution. Firecracker may remain as an optional high-security mode.
+Direct Firecracker usage for skills and components will be migrated to **Docker Sandboxes** once robust Linux support is implemented. *Note (April 2026): Docker sandbox support is not available on Linux at this time; this migration is deferred indefinitely. Firecracker remains the only supported isolation backend.* This maintains strong isolation (building on OpenClaw’s existing Docker sandbox model for non-main sessions) while simplifying cross-platform support, reducing KVM dependency, and enabling easier adoption of containerized tool execution. Firecracker may remain as an optional high-security mode.
 
 The goal is **hybrid excellence**: AegisClaw gains OpenClaw’s user-facing breadth and developer experience **without weakening** its paranoid-by-design security invariants. New features must run as governed skills or components inside sandboxes (Docker or Firecracker), declare explicit capabilities, pass the Governance Court + security gates, and contribute to the append-only Merkle-tree audit log.
 

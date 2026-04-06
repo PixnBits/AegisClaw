@@ -130,3 +130,55 @@ func TestSkillNetworkPolicy_DefaultsSandboxNetworkPolicy(t *testing.T) {
 		t.Errorf("expected zero-value NetworkPolicy to have all fields false/empty: %+v", pol)
 	}
 }
+
+// TestSkillNetworkPolicy_NeverReturnsUnsafeZeroValue verifies that every code
+// path in skillNetworkPolicy returns either NoNetwork=true or DefaultDeny=true.
+// This prevents accidentally granting unrestricted network access.
+func TestSkillNetworkPolicy_NeverReturnsUnsafeZeroValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(*testing.T) *runtimeEnv
+	}{
+		{
+			name: "nil store",
+			setup: func(t *testing.T) *runtimeEnv {
+				return &runtimeEnv{ProposalStore: nil}
+			},
+		},
+		{
+			name: "empty store",
+			setup: func(t *testing.T) *runtimeEnv {
+				return &runtimeEnv{ProposalStore: testProposalStore(t)}
+			},
+		},
+		{
+			name: "no-network capability",
+			setup: func(t *testing.T) *runtimeEnv {
+				store := testProposalStore(t)
+				makeApprovedProposal(t, store, "s", &proposal.SkillCapabilities{Network: false}, nil)
+				return &runtimeEnv{ProposalStore: store}
+			},
+		},
+		{
+			name: "network capability with policy",
+			setup: func(t *testing.T) *runtimeEnv {
+				store := testProposalStore(t)
+				makeApprovedProposal(t, store, "s",
+					&proposal.SkillCapabilities{Network: true},
+					&proposal.ProposalNetworkPolicy{DefaultDeny: true, AllowedHosts: []string{"a.example.com"}},
+				)
+				return &runtimeEnv{ProposalStore: store}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := tc.setup(t)
+			pol := skillNetworkPolicy("s", env)
+			if !pol.NoNetwork && !pol.DefaultDeny {
+				t.Errorf("unsafe NetworkPolicy returned (NoNetwork=false, DefaultDeny=false): %+v", pol)
+			}
+		})
+	}
+}
