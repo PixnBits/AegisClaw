@@ -31,10 +31,10 @@ type Config struct {
 		ChrootBase   string `yaml:"chroot_base" mapstructure:"chroot_base"`
 		KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
 		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
-		// IsolationMode selects the sandbox backend: "firecracker" (default,
-		// hardware-virtualised microVMs) or "docker" (OCI containers with
-		// seccomp/AppArmor — not yet fully implemented).
-		// See internal/sandbox.IsolationMode for valid values.
+		// IsolationMode selects the sandbox backend.
+		// Only "firecracker" is supported on this platform (hardware-virtualised
+		// microVMs via Firecracker + jailer).  Any other value is rejected at
+		// daemon startup.  See internal/sandbox.IsolationMode for details.
 		IsolationMode string `yaml:"isolation_mode" mapstructure:"isolation_mode"`
 	} `yaml:"sandbox" mapstructure:"sandbox"`
 	Proposal struct {

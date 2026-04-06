@@ -110,10 +110,10 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	if isolationMode == "" {
 		isolationMode = "firecracker"
 	}
-	isoOK := isolationMode == "firecracker" || isolationMode == "docker"
+	isoOK := isolationMode == "firecracker"
 	isoDetail := isolationMode
-	if isolationMode == "docker" {
-		isoDetail += " (note: docker backend is not yet fully implemented)"
+	if !isoOK {
+		isoDetail += fmt.Sprintf(" (unsupported; only %q is supported on this platform)", "firecracker")
 	}
 	checks = append(checks, check{
 		label:  "isolation mode",

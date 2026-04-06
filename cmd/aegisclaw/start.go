@@ -398,6 +398,14 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 		}
 
 		sandboxID := generateVMID("skill")
+
+		// Phase 1 (OpenClaw integration) – capability enforcement.
+		// Look up the approved proposal for this skill and translate its
+		// declared Capabilities and NetworkPolicy into the SandboxSpec.
+		// The skill can only get network access if the Governance Court
+		// approved a proposal that explicitly declared Capabilities.Network.
+		netPolicy := skillNetworkPolicy(req.Name, env)
+
 		spec := sandbox.SandboxSpec{
 			ID:   sandboxID,
 			Name: fmt.Sprintf("skill-%s", req.Name),
@@ -405,10 +413,8 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 				VCPUs:    1,
 				MemoryMB: 256,
 			},
-			NetworkPolicy: sandbox.NetworkPolicy{
-				DefaultDeny: true,
-			},
-			RootfsPath: rootfsPath,
+			NetworkPolicy: netPolicy,
+			RootfsPath:    rootfsPath,
 		}
 
 		if err := env.Runtime.Create(ctx, spec); err != nil {
@@ -457,10 +463,12 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 		}
 
 		payload, _ := json.Marshal(map[string]interface{}{
-			"skill_name": req.Name,
-			"sandbox_id": sandboxID,
-			"version":    entry.Version,
-			"hash":       entry.MerkleHash,
+			"skill_name":     req.Name,
+			"sandbox_id":     sandboxID,
+			"version":        entry.Version,
+			"hash":           entry.MerkleHash,
+			"network":        netPolicy.AllowedHosts,
+			"no_network":     netPolicy.NoNetwork,
 		})
 		action := kernel.NewAction(kernel.ActionSkillActivate, "kernel", payload)
 		env.Kernel.SignAndLog(action)
@@ -796,4 +804,62 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 	env.Kernel.SignAndLog(launchAction) //nolint:errcheck
 
 	return hub, hubVMID, nil
+}
+
+// skillNetworkPolicy resolves the approved Governance Court NetworkPolicy for
+// the named skill into a sandbox.NetworkPolicy.
+//
+// The function walks the proposal store looking for an approved proposal whose
+// TargetSkill matches skillName.  If it finds one:
+//   - If Capabilities.Network is false (or Capabilities is nil), the sandbox
+//     boots with no network interface (NoNetwork=true, strongest isolation).
+//   - If Capabilities.Network is true, the proposal's NetworkPolicy is
+//     translated into sandbox.NetworkPolicy with DefaultDeny enforced.
+//
+// If no proposal is found, the sandbox defaults to no-network isolation —
+// the least-privilege default that every skill starts from.
+func skillNetworkPolicy(skillName string, env *runtimeEnv) sandbox.NetworkPolicy {
+	noNetwork := sandbox.NetworkPolicy{NoNetwork: true, DefaultDeny: true}
+
+	if env.ProposalStore == nil {
+		return noNetwork
+	}
+
+	summaries, err := env.ProposalStore.List()
+	if err != nil {
+		return noNetwork
+	}
+
+	for _, s := range summaries {
+		full, err := env.ProposalStore.Get(s.ID)
+		if err != nil || full == nil {
+			continue
+		}
+		if full.TargetSkill != skillName {
+			continue
+		}
+		if full.Status != proposal.StatusApproved && full.Status != proposal.StatusImplementing && full.Status != proposal.StatusComplete {
+			continue
+		}
+
+		// Found an approved/active proposal for this skill.
+		caps := full.Capabilities
+		if caps == nil || !caps.Network {
+			// No network capability declared — boot with no interface.
+			return noNetwork
+		}
+
+		// Network capability declared.  Build the sandbox NetworkPolicy from
+		// the proposal's NetworkPolicy, enforcing DefaultDeny as a hard invariant.
+		np := sandbox.NetworkPolicy{DefaultDeny: true}
+		if full.NetworkPolicy != nil {
+			np.AllowedHosts = full.NetworkPolicy.AllowedHosts
+			np.AllowedPorts = full.NetworkPolicy.AllowedPorts
+			np.AllowedProtocols = full.NetworkPolicy.AllowedProtocols
+		}
+		return np
+	}
+
+	// No matching approved proposal — default to no-network.
+	return noNetwork
 }
