@@ -109,8 +109,12 @@ func (o *firecrackerOrchestrator) LaunchSandbox(ctx context.Context, spec Sandbo
 		return "", fmt.Errorf("firecracker orchestrator: create: %w", err)
 	}
 	if err := o.rt.Start(ctx, spec.ID); err != nil {
-		// Best-effort cleanup.
-		_ = o.rt.Delete(ctx, spec.ID)
+		// Best-effort cleanup: delete the created-but-failed sandbox.
+		// Log the delete error as a wrapped note so the primary start error
+		// is still preserved for the caller.
+		if delErr := o.rt.Delete(ctx, spec.ID); delErr != nil {
+			return "", fmt.Errorf("firecracker orchestrator: start: %w (cleanup also failed: %v)", err, delErr)
+		}
 		return "", fmt.Errorf("firecracker orchestrator: start: %w", err)
 	}
 	return spec.ID, nil

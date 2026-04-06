@@ -80,7 +80,7 @@ func runOnboard(_ *cobra.Command, _ []string) error {
 	if runtime.GOOS == "linux" {
 		if _, err := os.Stat("/dev/kvm"); err != nil {
 			fmt.Println("  ✗  /dev/kvm not found — KVM is required for Firecracker")
-			fmt.Println("     Enable virtualisation in BIOS / run on a KVM-capable host")
+			fmt.Println("     Enable virtualization in BIOS / run on a KVM-capable host")
 			allPrereqsOK = false
 		} else {
 			fmt.Println("  ✓  /dev/kvm present")
@@ -90,7 +90,9 @@ func runOnboard(_ *cobra.Command, _ []string) error {
 	if !allPrereqsOK {
 		fmt.Println("\n  ⚠  Some prerequisites are missing.  AegisClaw may not function correctly.")
 		fmt.Println("     Continue anyway? (Ctrl-C to abort, Enter to continue)")
-		fmt.Scanln() //nolint:errcheck
+		if _, err := fmt.Scanln(); err != nil && err.Error() != "unexpected newline" {
+			return fmt.Errorf("onboard: reading prompt: %w", err)
+		}
 	}
 
 	// ── Step 2: Workspace directory ───────────────────────────────────────────
