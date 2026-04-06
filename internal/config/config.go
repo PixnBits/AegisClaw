@@ -133,6 +133,15 @@ type Config struct {
 		// Defaults to "127.0.0.1:7878".
 		Addr string `yaml:"addr" mapstructure:"addr"`
 	} `yaml:"dashboard" mapstructure:"dashboard"`
+	Workspace struct {
+		// Dir is the path to the optional workspace directory containing prompt
+		// injection files (AGENTS.md, SOUL.md, TOOLS.md, SKILL.md).
+		// When the directory exists, its contents are injected into the agent
+		// system prompt and, for SKILL.md, into skill build prompts.
+		// Defaults to ~/.aegisclaw/workspace.
+		// Set to "" to disable workspace prompt injection entirely.
+		Dir string `yaml:"dir" mapstructure:"dir"`
+	} `yaml:"workspace" mapstructure:"workspace"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -284,6 +293,11 @@ func DefaultConfig() Config {
 			Enabled: true,
 			Addr:    "127.0.0.1:7878",
 		},
+		Workspace: struct {
+			Dir string `yaml:"dir" mapstructure:"dir"`
+		}{
+			Dir: filepath.Join(home, ".aegisclaw", "workspace"),
+		},
 	}
 }
 
@@ -360,7 +374,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("worker.rootfs_path", defaults.Worker.RootfsPath)
 	viper.SetDefault("dashboard.enabled", defaults.Dashboard.Enabled)
 	viper.SetDefault("dashboard.addr", defaults.Dashboard.Addr)
-
+	viper.SetDefault("workspace.dir", defaults.Workspace.Dir)
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Config file doesn't exist, write defaults
