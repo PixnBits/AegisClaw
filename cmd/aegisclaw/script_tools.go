@@ -68,6 +68,9 @@ func parseRunScriptParams(args string) (*runScriptParams, error) {
 	if len(p.Code) > maxScriptSize {
 		return nil, fmt.Errorf("script too large (%d bytes, max %d)", len(p.Code), maxScriptSize)
 	}
+	if err := validateTransientScriptSafety(p.Language, p.Code); err != nil {
+		return nil, err
+	}
 	if len(p.Args) > maxScriptArgs {
 		return nil, fmt.Errorf("too many args (%d, max %d)", len(p.Args), maxScriptArgs)
 	}
@@ -97,6 +100,9 @@ func parseScriptExecParams(args string) (*scriptExecParams, error) {
 	if len(p.Source) > maxScriptSize {
 		return nil, fmt.Errorf("script too large (%d bytes, max %d)", len(p.Source), maxScriptSize)
 	}
+	if err := validateTransientScriptSafety(p.Language, p.Source); err != nil {
+		return nil, err
+	}
 	if p.TimeoutSeconds <= 0 {
 		p.TimeoutSeconds = 5
 	}
@@ -113,6 +119,25 @@ func supportedScriptLanguages() []string {
 	}
 	sort.Strings(langs)
 	return langs
+}
+
+func validateTransientScriptSafety(language, source string) error {
+	check := strings.ToLower(source)
+	disallowed := []string{
+		"rm -rf /",
+		"mkfs",
+		"shutdown",
+		"reboot",
+		":(){",
+		"curl | bash",
+		"wget | bash",
+	}
+	for _, token := range disallowed {
+		if strings.Contains(check, token) {
+			return fmt.Errorf("script.%s blocked by safety gate: disallowed pattern %q", language, token)
+		}
+	}
+	return nil
 }
 
 func runScriptInSandbox(ctx context.Context, env *runtimeEnv, params *runScriptParams) (string, error) {

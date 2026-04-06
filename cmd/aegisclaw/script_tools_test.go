@@ -125,3 +125,21 @@ func TestBuildRunScriptExecRequest_ClampsTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestParseScriptExecParams_Valid(t *testing.T) {
+	args := `{"language":"python","source":"print('ok')","timeout_seconds":3}`
+	p, err := parseScriptExecParams(args)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if p.Language != "python" || p.Source == "" || p.TimeoutSeconds != 3 {
+		t.Fatalf("unexpected parsed params: %#v", p)
+	}
+}
+
+func TestParseScriptExecParams_BlockedBySafetyGate(t *testing.T) {
+	args := `{"language":"bash","source":"rm -rf /","timeout_seconds":3}`
+	if _, err := parseScriptExecParams(args); err == nil {
+		t.Fatal("expected safety gate error for destructive pattern")
+	}
+}

@@ -497,19 +497,21 @@ This section lists the specific code changes implied by this architecture. Each 
 
 ### D2-a: Move ReAct loop into agent VM — **Open**
 
+### D2-a: Move ReAct loop into agent VM — **Resolved**
+
 File: `cmd/guest-agent/main.go`, function `handleChatMessage`
 
-Current behavior: Guest-agent makes one Ollama call per daemon round-trip, parses tool-call blocks, and returns either `{status:"tool_call"}` or `{status:"final"}`. The daemon drives the outer ReAct loop and executes tool handlers inline.
+Current behavior: `chat.message` supports `run_agentic_loop=true`, which executes the full multi-step ReAct cycle in the guest-agent VM: repeated Ollama calls, tool-call parsing, host tool execution via vsock bridge, tool-result appends, and final answer emission.
 
-Required behavior:
-1. Loop up to 10 times:
-   a. Call Ollama with current message list.
-   b. Parse response for `tool-call` block (same regex/JSON logic as `parseToolCalls` in `cmd/aegisclaw/chat.go`).
-   c. If tool-call found: send `tool.exec` via vsock, receive `tool.result`, append to messages, continue.
-   d. If no tool-call: return final content.
-2. Return `{"role": "assistant", "content": "<final>"}`.
-
-The guest-agent can send vsock messages back to the host using the existing vsock connection (the connection is bidirectional — the host sends requests and the guest sends responses, but the guest can also initiate `ipc.send` messages on the same or a separate vsock channel).
+Implemented behavior:
+1. Loop with bounded safeguards:
+   a. Max iterations: 12
+   b. Per-call timeout: 120s
+   c. Total loop timeout: 10m
+   d. Context-size guard to prevent runaway prompt growth
+2. Tool calls are executed from inside the VM over a host callback bridge (`tool.exec`), not from daemon loop orchestration.
+3. Guest-agent emits trace events (`trace.event`) during loop execution so daemon telemetry buffers can stream thought/tool progress.
+4. Final response returns structured traces (`tool_calls`, `thinking_trace`) along with assistant content.
 
 ### D2-b: Daemon chat.message handler — forward only — **Resolved**
 
@@ -566,7 +568,7 @@ File: `cmd/aegisclaw/chat_handlers.go`
 These rules take precedence over any convenience, testing, or performance argument:
 
 1. **The daemon never calls Ollama.** LLM inference happens only inside microVMs. The daemon forwards conversations to agent/reviewer VMs via vsock; the VMs call Ollama via the host-side LLM proxy.
-2. **The daemon never parses tool-call blocks.** The agent VM owns the ReAct loop. *(Interim exception: the court round updater's `extractToolCallFromContent` performs daemon-side tool extraction as a fallback for small LLMs that omit closing fences. This is tracked under D2-a and will be removed when the full ReAct loop moves into the agent VM.)*
+2. **The daemon never parses tool-call blocks in the main chat path.** The agent VM owns the ReAct loop. *(Current exception: the court round updater still contains a narrow fallback `extractToolCallFromContent` path for low-quality model outputs in court-update-only flows.)*
 3. **Firecracker is mandatory for all sandboxed components.** There are no process-level fallbacks in production code paths.
 4. **ACL is enforced at the message bus.** No tool handler is callable without passing the ACL check.
 5. **Integration tests use real microVMs and real Ollama.** No process-level substitutes or mocked LLM responses.
