@@ -391,6 +391,16 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			return runScriptInSandbox(ctx, env, params)
 		})
 
+	reg.Register("script.exec",
+		"Execute arbitrary code/script in an isolated Firecracker sandbox for transient work. args: {language, source, timeout_seconds, env?}. Permanent capabilities must use Governance Court.",
+		func(ctx context.Context, args string) (string, error) {
+			params, err := parseScriptExecParams(args)
+			if err != nil {
+				return "", err
+			}
+			return runScriptExecTool(ctx, env, params)
+		})
+
 	reg.Register("snapshot.create",
 		"Create a Firecracker snapshot (memory + VM state) of the running agent VM. args: {label}",
 		func(ctx context.Context, args string) (string, error) {

@@ -703,7 +703,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 
 	// Tool-use gating — only act when asked.
 	b.WriteString("You have access to tools for managing skills and proposals. Only use a tool when the user asks you to DO something (list skills, create a proposal, check status, etc.). Do NOT call a tool for greetings, questions, or conversation.\n\n")
-	b.WriteString("If the user asks for dynamic runtime data or a computed result not already available in context, call tools to obtain it. Use `script.run` for short, bounded computation or runtime inspection when no dedicated tool exists. Generate minimal code directly in the tool args, execute it, and then summarize results.\n\n")
+	b.WriteString("If the user asks for dynamic runtime data or a computed result not already available in context, call tools to obtain it. Use `script.exec` for transient sandboxed computation or runtime inspection when no dedicated tool exists. Generate minimal code directly in the tool args, execute it, and then summarize results.\n\n")
 
 	// Format with example.
 	b.WriteString("When you do need a tool, you MUST wrap it in triple-backtick fences with the language tag tool-call:\n\n")
@@ -727,6 +727,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"activate_skill\" — activate an approved skill. args: {\"name\": \"skill_name\"}\n")
 	b.WriteString("- \"search_tools\" — search all available tools by keyword. args: {\"query\": \"...\"}\n")
 	b.WriteString("- \"script.list_languages\" — list supported scripting runtimes. args: {}\n")
+	b.WriteString("- \"script.exec\" — execute arbitrary transient script/code in isolated Firecracker sandbox. args: {\"language\": \"python|javascript|bash|sh\", \"source\": \"...\", \"timeout_seconds\": 5, \"env\": {}}\n")
 	b.WriteString("- \"script.run\" — execute short script code with strict limits. args: {\"language\": \"python|javascript|bash|sh\", \"code\": \"...\", \"args\": [], \"timeout_ms\": 3000}\n")
 	b.WriteString("- \"snapshot.create\" — create a Firecracker snapshot of the running agent VM. args: {\"label\": \"agent-baseline\"}\n")
 	b.WriteString("- \"snapshot.list\" — list all stored agent VM snapshots. args: {}\n")
@@ -767,6 +768,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 
 	// Workflow.
 	b.WriteString("Skill lifecycle: create_draft → submit → (review) → activate_skill → invoke tool. Skills MUST be activated before their tools can be used.\n")
+	b.WriteString("Transient one-off work should use script.exec (no Court required). Permanent or reusable capabilities must go through proposal.create_draft → Court review → Builder deployment.\n")
 	b.WriteString("To check what skills exist and their current state, use list_skills. Only \"active\" skills can be invoked.\n\n")
 
 	// Escalation guidance.
