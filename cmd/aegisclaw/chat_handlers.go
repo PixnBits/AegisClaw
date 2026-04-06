@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/audit"
@@ -42,6 +41,8 @@ type agentChatPayload struct {
 	Messages []agentChatMsg `json:"messages"`
 	Model    string         `json:"model"`
 	StreamID string         `json:"stream_id,omitempty"`
+	// RunAgenticLoop tells the guest-agent to run the entire ReAct cycle in-VM.
+	RunAgenticLoop bool `json:"run_agentic_loop,omitempty"`
 	// StructuredOutput requests JSON-mode enforcement in the guest-agent (Phase 0).
 	// When true the guest-agent uses Ollama format=json and validates the response
 	// schema before returning.
@@ -58,12 +59,14 @@ type agentChatMsg struct {
 // agentChatResponse is the ChatResponse returned inside agentVMResponse.Data.
 // Mirrors the guest-agent's ChatResponse type.
 type agentChatResponse struct {
-	Status   string `json:"status"`            // "final" | "tool_call"
-	Role     string `json:"role,omitempty"`    // present when status=="final"
-	Content  string `json:"content,omitempty"` // present when status=="final"
-	Thinking string `json:"thinking,omitempty"`
-	Tool     string `json:"tool,omitempty"` // present when status=="tool_call"
-	Args     string `json:"args,omitempty"` // present when status=="tool_call"
+	Status        string          `json:"status"`            // "final" | "tool_call"
+	Role          string          `json:"role,omitempty"`    // present when status=="final"
+	Content       string          `json:"content,omitempty"` // present when status=="final"
+	Thinking      string          `json:"thinking,omitempty"`
+	Tool          string          `json:"tool,omitempty"` // present when status=="tool_call"
+	Args          string          `json:"args,omitempty"` // present when status=="tool_call"
+	ToolCalls     json.RawMessage `json:"tool_calls,omitempty"`
+	ThinkingTrace json.RawMessage `json:"thinking_trace,omitempty"`
 }
 
 // makeChatMessageHandler returns an API handler that drives the full ReAct loop
@@ -139,163 +142,56 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			msgs = append(msgs, agentChatMsg{Role: "user", Content: req.Input})
 		}
 
-		memoryToolEvidence := false
-		toolTrace := make([]map[string]interface{}, 0)
-		thinkingTrace := make([]map[string]interface{}, 0)
-
-		for i := 0; i < reactMaxIterations; i++ {
-			payloadBytes, _ := json.Marshal(agentChatPayload{
-				Messages:         msgs,
-				Model:            model,
-				StreamID:         req.StreamID,
-				StructuredOutput: env.Config.Agent.StructuredOutput,
-			})
-			vmReq := agentVMRequest{
-				ID:      uuid.New().String(),
-				Type:    "chat.message",
-				Payload: json.RawMessage(payloadBytes),
-			}
-
-			raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
-			if err != nil {
-				return &api.Response{Error: "agent VM error: " + err.Error()}
-			}
-
-			var vmResp agentVMResponse
-			if err := json.Unmarshal(raw, &vmResp); err != nil {
-				return &api.Response{Error: "malformed agent response: " + err.Error()}
-			}
-			if !vmResp.Success {
-				return &api.Response{Error: "agent error: " + vmResp.Error}
-			}
-
-			var chatResp agentChatResponse
-			if err := json.Unmarshal(vmResp.Data, &chatResp); err != nil {
-				return &api.Response{Error: "malformed agent chat response: " + err.Error()}
-			}
-
-			if thought := strings.TrimSpace(chatResp.Thinking); thought != "" {
-				// Truncate to 8000 chars so large thinking blocks don't balloon
-				// the in-memory trace, but keep enough for a useful audit trail.
-				stored := thought
-				if len(stored) > 8000 {
-					stored = stored[:8000] + "\n...[truncated]"
-				}
-				summary := thinkingSummaryLine(stored)
-				thinkingTrace = append(thinkingTrace, map[string]interface{}{
-					"phase":     "model_thinking",
-					"model":     model,
-					"summary":   summary,
-					"details":   stored,
-					"timestamp": time.Now().UTC().Format(time.RFC3339),
-				})
-				env.ThoughtEvents.Record("model_thinking", "", summary, stored)
-			}
-
-			switch chatResp.Status {
-			case "final":
-				toolTraceJSON, _ := json.Marshal(toolTrace)
-				thinkingTraceJSON, _ := json.Marshal(thinkingTrace)
-				finalContent := enforceMemoryTruth(chatResp.Content, env, memoryToolEvidence)
-				if strings.TrimSpace(finalContent) == "" {
-					env.Logger.Warn("agent returned empty final chat content",
-						zap.Int("iteration", i+1),
-						zap.Int("tool_calls", len(toolTrace)),
-						zap.Int("thinking_events", len(thinkingTrace)),
-					)
-					finalContent = synthesizeEmptyFinalMessage(toolTrace)
-				}
-				respData, _ := json.Marshal(api.ChatMessageResponse{
-					Role:      "assistant",
-					Content:   finalContent,
-					Model:     model,
-					ToolCalls: toolTraceJSON,
-					Thinking:  thinkingTraceJSON,
-				})
-				return &api.Response{Success: true, Data: respData}
-
-			case "tool_call":
-				reasoning := summarizeToolCallReasoning(chatResp.Thinking, chatResp.Content, chatResp.Tool)
-				thinkingTrace = append(thinkingTrace, map[string]interface{}{
-					"phase":     "tool_call",
-					"model":     model,
-					"tool":      chatResp.Tool,
-					"summary":   "Decided to call tool: " + chatResp.Tool,
-					"details":   reasoning,
-					"timestamp": time.Now().UTC().Format(time.RFC3339),
-				})
-				env.ThoughtEvents.Record("tool_call", chatResp.Tool, "Decided to call tool: "+chatResp.Tool, reasoning)
-				started := time.Now()
-				if env.ToolEvents != nil {
-					env.ToolEvents.RecordStart(chatResp.Tool)
-				}
-				toolResult, toolErr := toolRegistry.Execute(ctx, chatResp.Tool, chatResp.Args)
-				duration := time.Since(started)
-				argsPreview := chatResp.Args
-				if len(argsPreview) > 1000 {
-					argsPreview = argsPreview[:1000] + "\n...[args truncated]"
-				}
-				resultPreview := toolResult
-				if len(resultPreview) > 3000 {
-					resultPreview = resultPreview[:3000] + "\n...[response truncated]"
-				}
-				if env.ToolEvents != nil {
-					env.ToolEvents.RecordFinish(chatResp.Tool, toolErr == nil, toolErr, duration)
-				}
-				toolTrace = append(toolTrace, map[string]interface{}{"model": model, "tool": chatResp.Tool,
-					"args":        argsPreview,
-					"response":    resultPreview,
-					"success":     toolErr == nil,
-					"duration_ms": duration.Milliseconds(),
-					"timestamp":   time.Now().UTC().Format(time.RFC3339),
-				})
-				if toolErr != nil {
-					toolTrace[len(toolTrace)-1]["error"] = toolErr.Error()
-					toolResult = fmt.Sprintf("Error executing %s: %v", chatResp.Tool, toolErr)
-				}
-				resultSummary := "Tool call completed: " + chatResp.Tool
-				resultDetails := fmt.Sprintf("success=%t duration_ms=%d", toolErr == nil, duration.Milliseconds())
-				if toolErr != nil {
-					resultDetails += " error=" + toolErr.Error()
-				}
-				thinkingTrace = append(thinkingTrace, map[string]interface{}{
-					"phase":     "tool_result",
-					"model":     model,
-					"tool":      chatResp.Tool,
-					"summary":   resultSummary,
-					"details":   resultDetails,
-					"timestamp": time.Now().UTC().Format(time.RFC3339),
-				})
-				env.ThoughtEvents.Record("tool_result", chatResp.Tool, resultSummary, resultDetails)
-				env.Logger.Info("tool executed via ReAct loop",
-					zap.String("tool", chatResp.Tool),
-					zap.Bool("success", toolErr == nil),
-				)
-				if isMemoryEvidenceFromTool(chatResp.Tool, toolResult, toolErr) {
-					memoryToolEvidence = true
-				}
-				// Append the assistant's tool-call turn and the tool result.
-				toolCallContent := fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", chatResp.Tool, chatResp.Args)
-				msgs = append(msgs,
-					agentChatMsg{Role: "assistant", Content: toolCallContent},
-					agentChatMsg{Role: "tool", Name: chatResp.Tool, Content: toolResult},
-				)
-
-			default:
-				return &api.Response{Error: fmt.Sprintf("unexpected agent status: %q", chatResp.Status)}
-			}
+		if err := ensureAgentLoopBridge(env, agentVMID, toolRegistry); err != nil {
+			return &api.Response{Error: "agent tool bridge unavailable: " + err.Error()}
 		}
 
-		limitTraceJSON, _ := json.Marshal([]map[string]interface{}{{
-			"phase":     "limit_reached",
-			"summary":   "Reached tool call limit",
-			"details":   "The model did not return a final answer before hitting the maximum number of tool calls.",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-		}})
+		payloadBytes, _ := json.Marshal(agentChatPayload{
+			Messages:         msgs,
+			Model:            model,
+			StreamID:         req.StreamID,
+			RunAgenticLoop:   true,
+			StructuredOutput: env.Config.Agent.StructuredOutput,
+		})
+		vmReq := agentVMRequest{
+			ID:      uuid.New().String(),
+			Type:    "chat.message",
+			Payload: json.RawMessage(payloadBytes),
+		}
+
+		raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
+		if err != nil {
+			return &api.Response{Error: "agent VM error: " + err.Error()}
+		}
+
+		var vmResp agentVMResponse
+		if err := json.Unmarshal(raw, &vmResp); err != nil {
+			return &api.Response{Error: "malformed agent response: " + err.Error()}
+		}
+		if !vmResp.Success {
+			return &api.Response{Error: "agent error: " + vmResp.Error}
+		}
+
+		var chatResp agentChatResponse
+		if err := json.Unmarshal(vmResp.Data, &chatResp); err != nil {
+			return &api.Response{Error: "malformed agent chat response: " + err.Error()}
+		}
+		if chatResp.Status != "final" {
+			return &api.Response{Error: fmt.Sprintf("unexpected agent status: %q", chatResp.Status)}
+		}
+
+		memoryToolEvidence := traceContainsMemoryEvidence(chatResp.ToolCalls)
+		finalContent := enforceMemoryTruth(chatResp.Content, env, memoryToolEvidence)
+		if strings.TrimSpace(finalContent) == "" {
+			finalContent = "I was not able to produce a response. Please try again."
+		}
+
 		respData, _ := json.Marshal(api.ChatMessageResponse{
-			Role:     "assistant",
-			Content:  "I reached the tool call limit without a final answer. Please try rephrasing your request.",
-			Thinking: limitTraceJSON,
+			Role:      "assistant",
+			Content:   finalContent,
+			Model:     model,
+			ToolCalls: chatResp.ToolCalls,
+			Thinking:  chatResp.ThinkingTrace,
 		})
 		return &api.Response{Success: true, Data: respData}
 	}
@@ -435,6 +331,7 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 		// VM is gone — fall through to (re)create it.
 		env.Logger.Warn("agent VM is no longer running, restarting", zap.String("vm_id", env.AgentVMID))
 		env.LLMProxy.StopForVM(env.AgentVMID)
+		stopAgentLoopBridge(env.AgentVMID)
 		env.AgentVMID = ""
 	}
 
@@ -943,6 +840,31 @@ func isMemoryEvidenceFromTool(toolName, toolResult string, toolErr error) bool {
 		return true
 	}
 	return strings.TrimSpace(toolResult) != ""
+}
+
+func traceContainsMemoryEvidence(toolCalls json.RawMessage) bool {
+	if len(toolCalls) == 0 {
+		return false
+	}
+	var entries []map[string]interface{}
+	if err := json.Unmarshal(toolCalls, &entries); err != nil {
+		return false
+	}
+	for _, e := range entries {
+		tool, _ := e["tool"].(string)
+		if tool != "retrieve_memory" && tool != "list_memories" {
+			continue
+		}
+		success, hasSuccess := e["success"].(bool)
+		if hasSuccess && !success {
+			continue
+		}
+		response, _ := e["response"].(string)
+		if isMemoryEvidenceFromTool(tool, response, nil) {
+			return true
+		}
+	}
+	return false
 }
 
 func enforceMemoryTruth(content string, env *runtimeEnv, memoryToolEvidence bool) string {

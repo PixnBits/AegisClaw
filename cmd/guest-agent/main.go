@@ -702,6 +702,8 @@ type ChatMessagePayload struct {
 	Messages []ChatMsg `json:"messages"`
 	Model    string    `json:"model"`
 	StreamID string    `json:"stream_id,omitempty"`
+	// RunAgenticLoop enables full multi-step ReAct execution inside the agent VM.
+	RunAgenticLoop bool `json:"run_agentic_loop,omitempty"`
 	// StructuredOutput, when true, instructs the agent VM to enforce JSON-format
 	// responses from Ollama and validate tool-call JSON before returning.
 	// This is the Phase 0 structured output enforcement mechanism.
@@ -719,16 +721,17 @@ type ChatMsg struct {
 // ChatResponse is the response from handleChatMessage.
 // Status is either "final" (done) or "tool_call" (agent wants a tool executed).
 type ChatResponse struct {
-	Status   string `json:"status"`            // "final" | "tool_call"
-	Role     string `json:"role,omitempty"`    // present when status=="final"
-	Content  string `json:"content,omitempty"` // present when status=="final"
-	Thinking string `json:"thinking,omitempty"`
-	Tool     string `json:"tool,omitempty"` // present when status=="tool_call"
-	Args     string `json:"args,omitempty"` // present when status=="tool_call"
+	Status        string          `json:"status"`            // "final" | "tool_call"
+	Role          string          `json:"role,omitempty"`    // present when status=="final"
+	Content       string          `json:"content,omitempty"` // present when status=="final"
+	Thinking      string          `json:"thinking,omitempty"`
+	Tool          string          `json:"tool,omitempty"` // present when status=="tool_call"
+	Args          string          `json:"args,omitempty"` // present when status=="tool_call"
+	ToolCalls     json.RawMessage `json:"tool_calls,omitempty"`
+	ThinkingTrace json.RawMessage `json:"thinking_trace,omitempty"`
 }
 
 const (
-	reactMaxToolCalls = 10
 	// ollamaTimeout gives thinking models (e.g. qwen3, deepseek-r1) enough
 	// time to reason before producing their first output token.
 	ollamaTimeout = 300 * time.Second
@@ -865,6 +868,15 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 	}
 	if len(payload.Messages) == 0 {
 		return errorResponse(req.ID, "messages are required")
+	}
+
+	if payload.RunAgenticLoop {
+		resp, err := runAgenticLoop(ctx, payload)
+		if err != nil {
+			return errorResponse(req.ID, fmt.Sprintf("agentic loop error: %v", err))
+		}
+		data, _ := json.Marshal(resp)
+		return &Response{ID: req.ID, Success: true, Data: data}
 	}
 
 	// Build the Ollama-compatible message list (strip the Name field for
