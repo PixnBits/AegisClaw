@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1048,6 +1049,9 @@ func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []
 	file := os.NewFile(uintptr(fd), "vsock-proxy")
 	conn := &vsockConn{file: file}
 	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
 
 	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
 	proxyReq := struct {
@@ -1067,6 +1071,9 @@ func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []
 	}
 
 	if err := json.NewEncoder(conn).Encode(proxyReq); err != nil {
+		if isTemporaryVsockErr(err) {
+			return "", "", fmt.Errorf("send proxy request: transient vsock error: %w", err)
+		}
 		return "", "", fmt.Errorf("send proxy request: %w", err)
 	}
 
@@ -1076,13 +1083,37 @@ func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []
 		Thinking  string `json:"thinking,omitempty"`
 		Error     string `json:"error,omitempty"`
 	}
-	if err := json.NewDecoder(conn).Decode(&proxyResp); err != nil {
-		return "", "", fmt.Errorf("read proxy response: %w", err)
+	const maxDecodeAttempts = 4
+	for attempt := 1; attempt <= maxDecodeAttempts; attempt++ {
+		err := json.NewDecoder(conn).Decode(&proxyResp)
+		if err == nil {
+			break
+		}
+		if !isTemporaryVsockErr(err) || attempt == maxDecodeAttempts {
+			return "", "", fmt.Errorf("read proxy response: %w", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", "", fmt.Errorf("read proxy response: context canceled while retrying after transient vsock error: %w", err)
+		case <-time.After(150 * time.Millisecond):
+		}
 	}
 	if proxyResp.Error != "" {
 		return "", "", fmt.Errorf("llm proxy: %s", proxyResp.Error)
 	}
 	return proxyResp.Content, proxyResp.Thinking, nil
+}
+
+func isTemporaryVsockErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "resource temporarily unavailable")
 }
 
 func readUptime() string {

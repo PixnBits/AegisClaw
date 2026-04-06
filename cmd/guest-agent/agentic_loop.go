@@ -16,7 +16,7 @@ const (
 	hostToolBridgePort     = 1031
 	agenticMaxIterations   = 12
 	agenticTotalTimeout    = 10 * time.Minute
-	agenticPerCallTimeout  = 120 * time.Second
+	agenticPerCallTimeout  = 300 * time.Second
 	agenticMaxContextChars = 300000
 	agenticMaxTraceArgsLen = 1000
 	agenticMaxTraceOutLen  = 3000
@@ -79,12 +79,33 @@ func runAgenticLoop(ctx context.Context, payload ChatMessagePayload) (*ChatRespo
 
 		switch chatResp.Status {
 		case "final":
+			if strings.TrimSpace(chatResp.Content) == "" {
+				summary := "model returned an empty final response; requesting a concise retry"
+				details := "status=final content_len=0"
+				sendTraceEventToHost("model_empty_final", "", summary, details)
+				thinkingTrace = append(thinkingTrace, map[string]interface{}{
+					"phase":     "model_empty_final",
+					"summary":   summary,
+					"details":   details,
+					"timestamp": time.Now().UTC().Format(time.RFC3339),
+				})
+
+				// Some models occasionally emit an empty final answer despite valid
+				// reasoning. Nudge once and continue the loop rather than surfacing
+				// a useless blank reply to the user.
+				msgs = append(msgs, ChatMsg{
+					Role:    "user",
+					Content: "Your previous response was empty. Provide a short direct answer to the latest user request.",
+				})
+				continue
+			}
+
 			toolJSON, _ := json.Marshal(toolTrace)
 			thinkingJSON, _ := json.Marshal(thinkingTrace)
 			return &ChatResponse{
 				Status:        "final",
 				Role:          "assistant",
-				Content:       chatResp.Content,
+				Content:       strings.TrimSpace(chatResp.Content),
 				ToolCalls:     toolJSON,
 				ThinkingTrace: thinkingJSON,
 			}, nil
@@ -150,7 +171,7 @@ func runAgenticStep(ctx context.Context, model, streamID string, structured bool
 		const maxAttempts = 2
 		working := append([]map[string]string(nil), ollamaMsgs...)
 		for attempt := 0; attempt < maxAttempts; attempt++ {
-			content, thinking, err := callOllamaViaProxy(ctx, model, streamID, working, "json", nil)
+			content, thinking, err := callOllamaWithRetry(ctx, model, streamID, working, "json", nil)
 			if err != nil {
 				return nil, fmt.Errorf("ollama error: %w", err)
 			}
@@ -174,7 +195,7 @@ func runAgenticStep(ctx context.Context, model, streamID string, structured bool
 		return nil, fmt.Errorf("structured output enforcement: model did not return valid JSON after retries")
 	}
 
-	content, thinking, err := callOllamaViaProxy(ctx, model, streamID, ollamaMsgs, "", nil)
+	content, thinking, err := callOllamaWithRetry(ctx, model, streamID, ollamaMsgs, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("ollama error: %w", err)
 	}
@@ -183,6 +204,44 @@ func runAgenticStep(ctx context.Context, model, streamID string, structured bool
 		return &ChatResponse{Status: "tool_call", Tool: toolName, Args: argsJSON, Thinking: strings.TrimSpace(thinking)}, nil
 	}
 	return &ChatResponse{Status: "final", Role: "assistant", Content: content, Thinking: strings.TrimSpace(thinking)}, nil
+}
+
+func callOllamaWithRetry(ctx context.Context, model, streamID string, messages []map[string]string, format string, options map[string]interface{}) (string, string, error) {
+	const maxAttempts = 2
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		content, thinking, err := callOllamaViaProxy(ctx, model, streamID, messages, format, options)
+		if err == nil {
+			return content, thinking, nil
+		}
+		lastErr = err
+		if !isRetryableProxyReadErr(err) || attempt == maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", fmt.Errorf("%w", err)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return "", "", lastErr
+}
+
+func isRetryableProxyReadErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "resource temporarily unavailable") {
+		return true
+	}
+	if strings.Contains(msg, "context canceled while retrying after transient vsock error") {
+		return true
+	}
+	if strings.Contains(msg, "read proxy response") && strings.Contains(msg, "vsock-proxy") {
+		return true
+	}
+	return false
 }
 
 func estimateContextChars(msgs []ChatMsg) int {
