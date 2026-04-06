@@ -1167,7 +1167,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 					session.State, session.Verdict, session.Risk)
 			}
 		} else if err != nil {
-			result += fmt.Sprintf("\n\nCourt review could not be started automatically: %v\nRun manually: aegisclaw court review %s", err, p.ID)
+			result += fmt.Sprintf("\n\nCourt review could not be started automatically: %v\nRecovery: proposal remains in_review and will be auto-resumed on next daemon start (aegisclaw stop; aegisclaw start).\nUse proposal.status / proposal.reviews with ID %s to track progress.", err, p.ID)
 		}
 	}
 
@@ -1261,7 +1261,7 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 			result += fmt.Sprintf("\n\nCourt review completed.\n  State: %s\n  Verdict: %s\n  Risk: %.1f",
 				session.State, session.Verdict, session.RiskScore)
 		} else {
-			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRun manually: aegisclaw court review %s", reviewErr, p.ID)
+			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRecovery: proposal remains in_review and will be auto-resumed on next daemon start (aegisclaw stop; aegisclaw start).\nUse proposal.status / proposal.reviews with ID %s to track progress.", reviewErr, p.ID)
 		}
 	}
 
