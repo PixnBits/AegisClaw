@@ -125,7 +125,10 @@ func startPortalAPIBridge(ctx context.Context, env *runtimeEnv, apiSrv *api.Serv
 	if err != nil {
 		return fmt.Errorf("listen portal API callback %s: %w", listenPath, err)
 	}
-	_ = os.Chmod(listenPath, 0666)
+	if err := os.Chmod(listenPath, 0600); err != nil {
+		ln.Close() //nolint:errcheck
+		return fmt.Errorf("restrict portal API callback permissions %s: %w", listenPath, err)
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -179,7 +182,10 @@ func handlePortalAPIBridgeConn(env *runtimeEnv, apiSrv *api.Server, conn net.Con
 		}
 	}()
 
-	resp := apiSrv.CallDirect(context.Background(), req.Action, req.Payload)
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+
+	resp := apiSrv.CallDirect(ctx, req.Action, req.Payload)
 	if resp == nil {
 		_ = enc.Encode(&dashboard.APIResponse{Error: "unknown action: " + req.Action})
 		return

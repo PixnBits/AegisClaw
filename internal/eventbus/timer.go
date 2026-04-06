@@ -29,8 +29,8 @@ import (
 type TimerType string
 
 const (
-	TimerOneShot  TimerType = "one-shot"
-	TimerCron     TimerType = "cron"
+	TimerOneShot TimerType = "one-shot"
+	TimerCron    TimerType = "cron"
 )
 
 // TimerStatus tracks lifecycle state of a timer.
@@ -126,8 +126,8 @@ func (ts *timerStore) save() error {
 	return atomicWriteFile(ts.path, raw)
 }
 
-// set creates or overwrites a timer entry (locked by caller).
-// Takes a defensive copy so callers cannot mutate the stored state.
+// set creates or overwrites a timer entry.
+// It takes the lock and stores a defensive copy so callers cannot mutate persisted state.
 func (ts *timerStore) set(t *Timer) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -222,7 +222,7 @@ func NextCronTime(expr string, from time.Time) time.Time {
 		return time.Date(next.Year(), next.Month(), next.Day(), 0, 0, 0, 0, time.UTC)
 	case "@weekly":
 		// Advance to the next Monday (start of week). If today is Monday, go 7 days ahead.
-		days := (7 - int(from.Weekday())) % 7
+		days := (int(time.Monday) - int(from.Weekday()) + 7) % 7
 		if days == 0 {
 			days = 7
 		}
