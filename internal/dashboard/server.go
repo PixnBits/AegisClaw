@@ -258,14 +258,20 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "input required"}) //nolint:errcheck
 		return
 	}
+	if r.URL.Query().Get("stream") == "1" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
+		streamID := fmt.Sprintf("chat-%d", time.Now().UnixNano())
+		payload := mustMarshal(map[string]interface{}{
+			"input":     req.Input,
+			"history":   req.History,
+			"stream_id": streamID,
+		})
+		s.handleChatSendStream(w, r, payload, streamID)
+		return
+	}
 	payload := mustMarshal(map[string]interface{}{
 		"input":   req.Input,
 		"history": req.History,
 	})
-	if r.URL.Query().Get("stream") == "1" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
-		s.handleChatSendStream(w, r, payload)
-		return
-	}
 	resp, err := s.apiClient.Call(r.Context(), "chat.message", payload)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -283,7 +289,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	w.Write(resp.Data) //nolint:errcheck
 }
 
-func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, payload json.RawMessage) {
+func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, payload json.RawMessage, streamID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -310,6 +316,8 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 	ctx := r.Context()
 	lastToolID := s.latestEventID(ctx, "chat.tool_events", 60)
 	lastThoughtID := s.latestEventID(ctx, "chat.thought_events", 80)
+	emittedThinkingRunes := 0
+	emittedContentRunes := 0
 
 	if !writeSSE(map[string]interface{}{"type": "start", "ts": time.Now().UTC().Format(time.RFC3339)}) {
 		return
@@ -338,6 +346,19 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 				return false
 			}
 		}
+		if streamID != "" {
+			progressRaw, err := s.fetchRaw(ctx, "chat.stream_progress", map[string]string{"stream_id": streamID})
+			if err == nil {
+				if progress, ok := progressRaw.(map[string]interface{}); ok {
+					if !emitSnapshotDelta(writeSSE, "thought_delta", toString(progress["thinking"]), &emittedThinkingRunes) {
+						return false
+					}
+					if !emitSnapshotDelta(writeSSE, "content_delta", toString(progress["content"]), &emittedContentRunes) {
+						return false
+					}
+				}
+			}
+		}
 		thoughtEvents := s.fetchEventsSince(ctx, "chat.thought_events", 80, lastThoughtID)
 		for _, ev := range thoughtEvents {
 			if id := eventID(ev); id > lastThoughtID {
@@ -345,11 +366,6 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 			}
 			if !writeSSE(map[string]interface{}{"type": "thought_event", "event": ev}) {
 				return false
-			}
-			if strings.EqualFold(toString(ev["phase"]), "model_thinking") {
-				if !emitTextDeltas(ctx, writeSSE, "thought_delta", toString(ev["details"]), 90, 10*time.Millisecond) {
-					return false
-				}
 			}
 		}
 		return true
@@ -387,7 +403,7 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 				}
 			}
 			if m, ok := data.(map[string]interface{}); ok {
-				if !emitTextDeltas(ctx, writeSSE, "content_delta", toString(m["content"]), 90, 10*time.Millisecond) {
+				if !emitSnapshotDelta(writeSSE, "content_delta", toString(m["content"]), &emittedContentRunes) {
 					return
 				}
 			}
@@ -395,6 +411,22 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 	}
+}
+
+func emitSnapshotDelta(writeSSE func(interface{}) bool, eventType, text string, emittedRunes *int) bool {
+	r := []rune(text)
+	if emittedRunes == nil {
+		return true
+	}
+	if *emittedRunes >= len(r) {
+		return true
+	}
+	delta := string(r[*emittedRunes:])
+	*emittedRunes = len(r)
+	if strings.TrimSpace(delta) == "" && delta == "" {
+		return true
+	}
+	return writeSSE(map[string]interface{}{"type": eventType, "delta": delta})
 }
 
 func emitTextDeltas(ctx context.Context, writeSSE func(interface{}) bool, eventType, text string, chunkSize int, delay time.Duration) bool {

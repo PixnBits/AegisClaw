@@ -31,6 +31,7 @@ const MaxProxyPayloadBytes = 256 * 1024 // 256 KB
 // ProxyRequest is the vsock request from a guest agent to the host LLM proxy.
 type ProxyRequest struct {
 	RequestID string                 `json:"request_id"`
+	StreamID  string                 `json:"stream_id,omitempty"`
 	Model     string                 `json:"model"`
 	Messages  []map[string]string    `json:"messages"`
 	Format    string                 `json:"format,omitempty"`
@@ -43,6 +44,112 @@ type ProxyResponse struct {
 	Content   string `json:"content,omitempty"`
 	Thinking  string `json:"thinking,omitempty"`
 	Error     string `json:"error,omitempty"`
+}
+
+// ChatProgressSnapshot holds the current streamed state for an in-flight chat request.
+type ChatProgressSnapshot struct {
+	StreamID  string    `json:"stream_id"`
+	RequestID string    `json:"request_id,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	Thinking  string    `json:"thinking,omitempty"`
+	Content   string    `json:"content,omitempty"`
+	Done      bool      `json:"done,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+var chatProgressStore = struct {
+	mu    sync.RWMutex
+	items map[string]ChatProgressSnapshot
+}{
+	items: make(map[string]ChatProgressSnapshot),
+}
+
+const chatProgressRetention = 15 * time.Minute
+
+func trimChatProgressLocked(now time.Time) {
+	for streamID, snapshot := range chatProgressStore.items {
+		if now.Sub(snapshot.UpdatedAt) > chatProgressRetention {
+			delete(chatProgressStore.items, streamID)
+		}
+	}
+}
+
+func initChatProgress(streamID, requestID, model string) {
+	if strings.TrimSpace(streamID) == "" {
+		return
+	}
+	now := time.Now().UTC()
+	chatProgressStore.mu.Lock()
+	defer chatProgressStore.mu.Unlock()
+	trimChatProgressLocked(now)
+	chatProgressStore.items[streamID] = ChatProgressSnapshot{
+		StreamID:  streamID,
+		RequestID: requestID,
+		Model:     model,
+		UpdatedAt: now,
+	}
+}
+
+func appendChatProgress(streamID, thinkingDelta, contentDelta string) {
+	if strings.TrimSpace(streamID) == "" {
+		return
+	}
+	now := time.Now().UTC()
+	chatProgressStore.mu.Lock()
+	defer chatProgressStore.mu.Unlock()
+	trimChatProgressLocked(now)
+	snapshot := chatProgressStore.items[streamID]
+	if snapshot.StreamID == "" {
+		snapshot.StreamID = streamID
+	}
+	if thinkingDelta != "" {
+		snapshot.Thinking += thinkingDelta
+	}
+	if contentDelta != "" {
+		snapshot.Content += contentDelta
+	}
+	snapshot.UpdatedAt = now
+	chatProgressStore.items[streamID] = snapshot
+}
+
+func completeChatProgress(streamID string, content string, thinking string, err error) {
+	if strings.TrimSpace(streamID) == "" {
+		return
+	}
+	now := time.Now().UTC()
+	chatProgressStore.mu.Lock()
+	defer chatProgressStore.mu.Unlock()
+	trimChatProgressLocked(now)
+	snapshot := chatProgressStore.items[streamID]
+	if snapshot.StreamID == "" {
+		snapshot.StreamID = streamID
+	}
+	if content != "" {
+		snapshot.Content = content
+	}
+	if thinking != "" {
+		snapshot.Thinking = thinking
+	}
+	snapshot.Done = true
+	if err != nil {
+		snapshot.Error = err.Error()
+	}
+	snapshot.UpdatedAt = now
+	chatProgressStore.items[streamID] = snapshot
+}
+
+// GetChatProgress returns the latest progress snapshot for a stream ID.
+func GetChatProgress(streamID string) (ChatProgressSnapshot, bool) {
+	if strings.TrimSpace(streamID) == "" {
+		return ChatProgressSnapshot{}, false
+	}
+	now := time.Now().UTC()
+	chatProgressStore.mu.Lock()
+	defer chatProgressStore.mu.Unlock()
+	trimChatProgressLocked(now)
+	snapshot, ok := chatProgressStore.items[streamID]
+	return snapshot, ok
 }
 
 // OllamaProxy listens on per-VM vsock UDS paths and proxies LLM inference
@@ -203,8 +310,8 @@ func (p *OllamaProxy) isModelAllowed(model string) bool {
 	return false
 }
 
-func decodeOllamaChatBody(bodyBytes []byte) (string, string, error) {
-	dec := json.NewDecoder(bytes.NewReader(bodyBytes))
+func decodeOllamaChatBody(body io.Reader, onChunk func(contentDelta, thinkingDelta string)) (string, string, error) {
+	dec := json.NewDecoder(body)
 	var content strings.Builder
 	var thinking strings.Builder
 	decoded := 0
@@ -231,6 +338,17 @@ func decodeOllamaChatBody(bodyBytes []byte) (string, string, error) {
 		if strings.TrimSpace(chunk.Error) != "" {
 			return "", "", fmt.Errorf("ollama error: %s", chunk.Error)
 		}
+		contentDelta := chunk.Message.Content
+		thinkingDelta := chunk.Message.Thinking
+		if thinkingDelta == "" {
+			thinkingDelta = chunk.Message.Reasoning
+		}
+		if thinkingDelta == "" {
+			thinkingDelta = chunk.Thinking
+		}
+		if thinkingDelta == "" {
+			thinkingDelta = chunk.Reasoning
+		}
 		if chunk.Message.Content != "" {
 			content.WriteString(chunk.Message.Content)
 		}
@@ -245,6 +363,9 @@ func decodeOllamaChatBody(bodyBytes []byte) (string, string, error) {
 		}
 		if chunk.Reasoning != "" {
 			thinking.WriteString(chunk.Reasoning)
+		}
+		if onChunk != nil && (contentDelta != "" || thinkingDelta != "") {
+			onChunk(contentDelta, thinkingDelta)
 		}
 	}
 
@@ -330,7 +451,7 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 		return "", fmt.Errorf("fallback ollama http %d", httpResp.StatusCode)
 	}
 
-	_, thinking, err := decodeOllamaChatBody(bodyBytes)
+	_, thinking, err := decodeOllamaChatBody(bytes.NewReader(bodyBytes), nil)
 	if err != nil {
 		return "", err
 	}
@@ -338,6 +459,11 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 }
 
 func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyResponse {
+	initChatProgress(req.StreamID, req.RequestID, req.Model)
+	finalizeProgress := func(content string, thinking string, err error) {
+		completeChatProgress(req.StreamID, content, thinking, err)
+	}
+
 	// Enforce model allowlist — this is the primary security gate.
 	if !p.isModelAllowed(req.Model) {
 		p.logger.Warn("llm proxy: blocked disallowed model",
@@ -345,9 +471,11 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 			zap.String("model", req.Model),
 			zap.Any("allowlist", p.allowedModels),
 		)
+		err := fmt.Errorf("model %q is not in the approved allowlist", req.Model)
+		finalizeProgress("", "", err)
 		return ProxyResponse{
 			RequestID: req.RequestID,
-			Error:     fmt.Sprintf("model %q is not in the approved allowlist", req.Model),
+			Error:     err.Error(),
 		}
 	}
 
@@ -372,6 +500,7 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 
 	body, err := json.Marshal(ollamaReq)
 	if err != nil {
+		finalizeProgress("", "", fmt.Errorf("marshal: %w", err))
 		return ProxyResponse{RequestID: req.RequestID, Error: "marshal: " + err.Error()}
 	}
 
@@ -382,33 +511,42 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.ollamaURL, bytes.NewReader(body))
 	if err != nil {
+		finalizeProgress("", "", fmt.Errorf("build request: %w", err))
 		return ProxyResponse{RequestID: req.RequestID, Error: "build request: " + err.Error()}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
+		finalizeProgress("", "", fmt.Errorf("ollama: %w", err))
 		return ProxyResponse{RequestID: req.RequestID, Error: "ollama: " + err.Error()}
 	}
 	defer httpResp.Body.Close()
-	bodyBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return ProxyResponse{RequestID: req.RequestID, Error: "read response: " + err.Error()}
-	}
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		bodyBytes, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			finalizeProgress("", "", fmt.Errorf("read response: %w", err))
+			return ProxyResponse{RequestID: req.RequestID, Error: "read response: " + err.Error()}
+		}
 		excerpt := strings.TrimSpace(string(bodyBytes))
 		if len(excerpt) > 800 {
 			excerpt = excerpt[:800] + "...[truncated]"
 		}
+		err = fmt.Errorf("ollama http %d: %s", httpResp.StatusCode, excerpt)
+		finalizeProgress("", "", err)
 		return ProxyResponse{RequestID: req.RequestID, Error: fmt.Sprintf("ollama http %d: %s", httpResp.StatusCode, excerpt)}
 	}
 
-	content, thinking, err := decodeOllamaChatBody(bodyBytes)
+	var rawBody bytes.Buffer
+	content, thinking, err := decodeOllamaChatBody(io.TeeReader(httpResp.Body, &rawBody), func(contentDelta, thinkingDelta string) {
+		appendChatProgress(req.StreamID, thinkingDelta, contentDelta)
+	})
 	if err != nil {
+		finalizeProgress("", "", fmt.Errorf("decode response: %w", err))
 		return ProxyResponse{RequestID: req.RequestID, Error: "decode response: " + err.Error()}
 	}
 	if strings.TrimSpace(thinking) == "" {
-		bodyExcerpt := string(bodyBytes)
+		bodyExcerpt := rawBody.String()
 		if len(bodyExcerpt) > 1200 {
 			bodyExcerpt = bodyExcerpt[:1200] + "...[truncated]"
 		}
@@ -438,6 +576,7 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 			p.logger.Warn("llm proxy: fallback thinking request failed", zap.Error(fallbackErr), zap.String("model", req.Model))
 		} else if strings.TrimSpace(fallbackThinking) != "" {
 			thinking = fallbackThinking
+			appendChatProgress(req.StreamID, thinking, "")
 			p.logger.Info("llm proxy: recovered thinking via fallback request",
 				zap.String("model", req.Model),
 				zap.Int("thinking_chars", len(thinking)),
@@ -462,6 +601,8 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 	if _, err := p.kern.SignAndLog(action); err != nil {
 		p.logger.Warn("llm proxy: audit log failed", zap.Error(err))
 	}
+
+	finalizeProgress(content, thinking, nil)
 
 	return ProxyResponse{
 		RequestID: req.RequestID,

@@ -675,7 +675,7 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 	proxyCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
-	raw, _, err := callOllamaViaProxy(proxyCtx, payload.Model, messages, "json", options)
+	raw, _, err := callOllamaViaProxy(proxyCtx, payload.Model, "", messages, "json", options)
 	if err != nil {
 		return errorResponse(req.ID, fmt.Sprintf("ollama proxy error: %v", err))
 	}
@@ -701,6 +701,7 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 type ChatMessagePayload struct {
 	Messages []ChatMsg `json:"messages"`
 	Model    string    `json:"model"`
+	StreamID string    `json:"stream_id,omitempty"`
 	// StructuredOutput, when true, instructs the agent VM to enforce JSON-format
 	// responses from Ollama and validate tool-call JSON before returning.
 	// This is the Phase 0 structured output enforcement mechanism.
@@ -874,10 +875,10 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 	defer cancel()
 
 	if payload.StructuredOutput {
-		return handleChatMessageStructured(callCtx, req.ID, payload.Model, ollamaMsgs)
+		return handleChatMessageStructured(callCtx, req.ID, payload.Model, payload.StreamID, ollamaMsgs)
 	}
 
-	content, thinking, err := callOllamaViaProxy(callCtx, payload.Model, ollamaMsgs, "", nil)
+	content, thinking, err := callOllamaViaProxy(callCtx, payload.Model, payload.StreamID, ollamaMsgs, "", nil)
 	if err != nil {
 		return errorResponse(req.ID, fmt.Sprintf("ollama error: %v", err))
 	}
@@ -919,10 +920,10 @@ type structuredChatReply struct {
 // (format="json") to achieve deterministic tool-call parsing.  On the first
 // call the model is asked to produce a structuredChatReply; if parsing fails
 // we retry once with an explicit correction prompt before giving up.
-func handleChatMessageStructured(ctx context.Context, reqID, model string, msgs []map[string]string) *Response {
+func handleChatMessageStructured(ctx context.Context, reqID, model, streamID string, msgs []map[string]string) *Response {
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		content, thinking, err := callOllamaViaProxy(ctx, model, msgs, "json", nil)
+		content, thinking, err := callOllamaViaProxy(ctx, model, streamID, msgs, "json", nil)
 		if err != nil {
 			return errorResponse(reqID, fmt.Sprintf("ollama error: %v", err))
 		}
@@ -1000,7 +1001,7 @@ func buildOllamaMsgs(msgs []ChatMsg) []map[string]string {
 // over vsock (AF_VSOCK, host CID 2, port 1025).  The proxy validates the model
 // against the allowlist and proxies to the local Ollama service; this VM has no
 // network interface and cannot reach Ollama directly.
-func callOllamaViaProxy(ctx context.Context, model string, messages []map[string]string, format string, options map[string]interface{}) (string, string, error) {
+func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []map[string]string, format string, options map[string]interface{}) (string, string, error) {
 	// Dial host (CID 2) on the well-known LLM proxy port.
 	const proxyPort = 1025
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
@@ -1039,12 +1040,14 @@ func callOllamaViaProxy(ctx context.Context, model string, messages []map[string
 	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
 	proxyReq := struct {
 		RequestID string                 `json:"request_id"`
+		StreamID  string                 `json:"stream_id,omitempty"`
 		Model     string                 `json:"model"`
 		Messages  []map[string]string    `json:"messages"`
 		Format    string                 `json:"format,omitempty"`
 		Options   map[string]interface{} `json:"options,omitempty"`
 	}{
 		RequestID: reqID,
+		StreamID:  streamID,
 		Model:     model,
 		Messages:  messages,
 		Format:    format,

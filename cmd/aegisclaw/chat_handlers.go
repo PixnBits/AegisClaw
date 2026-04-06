@@ -11,6 +11,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/audit"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/tui"
 	"github.com/google/uuid"
@@ -40,6 +41,7 @@ type agentVMResponse struct {
 type agentChatPayload struct {
 	Messages []agentChatMsg `json:"messages"`
 	Model    string         `json:"model"`
+	StreamID string         `json:"stream_id,omitempty"`
 	// StructuredOutput requests JSON-mode enforcement in the guest-agent (Phase 0).
 	// When true the guest-agent uses Ollama format=json and validates the response
 	// schema before returning.
@@ -145,6 +147,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			payloadBytes, _ := json.Marshal(agentChatPayload{
 				Messages:         msgs,
 				Model:            model,
+				StreamID:         req.StreamID,
 				StructuredOutput: env.Config.Agent.StructuredOutput,
 			})
 			vmReq := agentVMRequest{
@@ -294,6 +297,27 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			Content:  "I reached the tool call limit without a final answer. Please try rephrasing your request.",
 			Thinking: limitTraceJSON,
 		})
+		return &api.Response{Success: true, Data: respData}
+	}
+}
+
+func makeChatStreamProgressHandler(_ *runtimeEnv) api.Handler {
+	return func(_ context.Context, data json.RawMessage) *api.Response {
+		var req struct {
+			StreamID string `json:"stream_id"`
+		}
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		if strings.TrimSpace(req.StreamID) == "" {
+			return &api.Response{Error: "stream_id is required"}
+		}
+		progress, ok := llm.GetChatProgress(req.StreamID)
+		if !ok {
+			respData, _ := json.Marshal(map[string]interface{}{"stream_id": req.StreamID})
+			return &api.Response{Success: true, Data: respData}
+		}
+		respData, _ := json.Marshal(progress)
 		return &api.Response{Success: true, Data: respData}
 	}
 }
