@@ -31,10 +31,10 @@ import (
 type Role string
 
 const (
-	RoleResearcher  Role = "researcher"
-	RoleCoder       Role = "coder"
-	RoleSummarizer  Role = "summarizer"
-	RoleCustom      Role = "custom"
+	RoleResearcher Role = "researcher"
+	RoleCoder      Role = "coder"
+	RoleSummarizer Role = "summarizer"
+	RoleCustom     Role = "custom"
 )
 
 // WorkerStatus reflects the lifecycle state of a Worker.
@@ -139,8 +139,8 @@ func (s *Store) save() error {
 func (s *Store) Upsert(w *WorkerRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := *w
-	s.data[cp.WorkerID] = &cp
+	cp := cloneWorkerRecord(w)
+	s.data[cp.WorkerID] = cp
 	return s.save()
 }
 
@@ -152,8 +152,7 @@ func (s *Store) Get(id string) (*WorkerRecord, bool) {
 	if !ok {
 		return nil, false
 	}
-	cp := *w
-	return &cp, true
+	return cloneWorkerRecord(w), true
 }
 
 // List returns all worker records sorted by spawn time (newest first if reverse=true).
@@ -165,8 +164,7 @@ func (s *Store) List(activeOnly bool) []*WorkerRecord {
 		if activeOnly && w.Status != StatusSpawning && w.Status != StatusRunning {
 			continue
 		}
-		cp := *w
-		out = append(out, &cp)
+		out = append(out, cloneWorkerRecord(w))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].SpawnedAt.After(out[j].SpawnedAt)
@@ -194,4 +192,19 @@ func atomicWriteFile(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func cloneWorkerRecord(w *WorkerRecord) *WorkerRecord {
+	if w == nil {
+		return nil
+	}
+	cp := *w
+	if w.ToolsGranted != nil {
+		cp.ToolsGranted = append([]string(nil), w.ToolsGranted...)
+	}
+	if w.FinishedAt != nil {
+		finishedAt := *w.FinishedAt
+		cp.FinishedAt = &finishedAt
+	}
+	return &cp
 }
