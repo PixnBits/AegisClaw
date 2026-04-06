@@ -108,6 +108,10 @@ func NewStore() *Store {
 // Open creates a new session record with the given id and sandbox VM ID.
 // If a session with that id already exists its SandboxID is updated and
 // the existing record is returned.  The session is placed in StatusIdle.
+//
+// When a previously closed session is re-opened (e.g. after the agent VM
+// restarts), its status is reset to StatusIdle so that new messages can be
+// appended and the session appears in listings again.
 func (s *Store) Open(id, sandboxID string) *Record {
 	if id == "" {
 		id = uuid.New().String()
@@ -121,6 +125,8 @@ func (s *Store) Open(id, sandboxID string) *Record {
 		if sandboxID != "" {
 			r.SandboxID = sandboxID
 		}
+		// Re-activating a closed session is intentional: it allows the same
+		// session_id to be reused after a VM restart without losing history.
 		if r.Status == StatusClosed {
 			r.Status = StatusIdle
 		}

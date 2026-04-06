@@ -180,8 +180,13 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	// capture this pointer by reference.  Because tool handlers only execute
 	// at request time — after buildToolRegistry has returned — selfReg will
 	// always be non-nil when they run.
+	//
+	// The blank assignment below is intentional: it prevents "declared but not
+	// used" from the compiler while making the deferred assignment at the
+	// bottom of this function the canonical initialisation site.  Do not
+	// remove it or move the assignment before the Register calls.
 	var selfReg *ToolRegistry
-	_ = selfReg // used later by sessions_send
+	_ = selfReg // captured by sessions_send and sessions_spawn closures below
 
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",

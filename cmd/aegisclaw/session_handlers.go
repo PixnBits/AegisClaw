@@ -110,6 +110,8 @@ func makeSessionsHistoryHandler(env *runtimeEnv) api.Handler {
 //	Request:    {"session_id": "...", "message": "..."}
 //	Response:   {"session_id": "...", "reply": "...", "ok": true}
 func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Handler {
+	// chatHandler is built once here, not per-request, so there is no
+	// per-call overhead from constructing the handler closure.
 	chatHandler := makeChatMessageHandler(env, toolRegistry)
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		var req struct {
