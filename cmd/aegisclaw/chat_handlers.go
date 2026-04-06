@@ -97,6 +97,24 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			return &api.Response{Error: "agent VM unavailable: " + err.Error()}
 		}
 
+		// Session tracking (Phase 1 – session routing tools).
+		// Determine the session ID for this request.  Prefer req.SessionID,
+		// fall back to StreamID, then generate a stable one for the lifetime
+		// of this VM.
+		sessionID := strings.TrimSpace(req.SessionID)
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(req.StreamID)
+		}
+		if sessionID == "" {
+			// Use the agent VM ID as a stable per-VM session key.
+			sessionID = agentVMID
+		}
+		if env.Sessions != nil {
+			env.Sessions.Open(sessionID, agentVMID)
+			env.Sessions.SetStatus(sessionID, "active")
+			env.Sessions.AppendMessage(sessionID, agentVMID, "user", req.Input)
+		}
+
 		model := env.Config.Ollama.DefaultModel
 		systemPrompt := buildDaemonSystemPrompt(env)
 		systemPrompt += buildMemoryStatusGuard(env)
@@ -212,6 +230,10 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 					ToolCalls: toolTraceJSON,
 					Thinking:  thinkingTraceJSON,
 				})
+				if env.Sessions != nil {
+					env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", finalContent)
+					env.Sessions.SetStatus(sessionID, "idle")
+				}
 				return &api.Response{Success: true, Data: respData}
 
 			case "tool_call":
@@ -292,11 +314,16 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			"details":   "The model did not return a final answer before hitting the maximum number of tool calls.",
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 		}})
+		limitContent := "I reached the tool call limit without a final answer. Please try rephrasing your request."
 		respData, _ := json.Marshal(api.ChatMessageResponse{
 			Role:     "assistant",
-			Content:  "I reached the tool call limit without a final answer. Please try rephrasing your request.",
+			Content:  limitContent,
 			Thinking: limitTraceJSON,
 		})
+		if env.Sessions != nil {
+			env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", limitContent)
+			env.Sessions.SetStatus(sessionID, "idle")
+		}
 		return &api.Response{Success: true, Data: respData}
 	}
 }
@@ -870,11 +897,11 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"worker_status\" — get status and result of a previously spawned worker. args: {\"worker_id\": \"...\"} or {} to list recent workers\n")
 	b.WriteString("- \"spawn_worker\" — delegate a focused subtask to an ephemeral Worker agent. args: {\"task_description\": \"...\", \"role\": \"researcher|coder|summarizer|custom\", \"tools_granted\": [...], \"timeout_mins\": 30, \"task_id\": \"...\"}\n")
 
-	// Phase 1 (OpenClaw): Session routing tools (stubs — full IPC routing coming).
-	b.WriteString("- \"sessions_list\" — list all active chat sessions. args: {}\n")
-	b.WriteString("- \"sessions_history\" — get message history for a session. args: {\"session_id\": \"...\", \"limit\": 50}\n")
-	b.WriteString("- \"sessions_send\" — send a message to another active session. args: {\"session_id\": \"...\", \"message\": \"...\"}\n")
-	b.WriteString("- \"sessions_spawn\" — spawn a new isolated session with optional agent config. args: {\"config\": {...}, \"task_description\": \"...\"}\n")
+	// Phase 1 (OpenClaw): Session routing tools — fully implemented.
+	b.WriteString("- \"sessions_list\" — list all active chat sessions (ID, status, message count, last active time). args: {}\n")
+	b.WriteString("- \"sessions_history\" — get the message history for a session. args: {\"session_id\": \"...\", \"limit\": 50}\n")
+	b.WriteString("- \"sessions_send\" — send a message to another active session and get the reply. args: {\"session_id\": \"...\", \"message\": \"...\"}\n")
+	b.WriteString("- \"sessions_spawn\" — spawn a new isolated session with an optional task description. Returns session_id. args: {\"task_description\": \"...\"}\n")
 
 	// Phase 2 (OpenClaw): Registry tools.
 	b.WriteString("- \"registry.list\" — list skills available in the ClawHub registry. args: {}\n")

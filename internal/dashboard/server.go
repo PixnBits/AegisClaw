@@ -620,6 +620,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			approvals, _ := s.fetchRaw(ctx, "event.approvals.list", map[string]bool{"pending_only": true})
 			toolEvents, _ := s.fetchRaw(ctx, "chat.tool_events", map[string]int{"limit": 40})
 			thoughtEvents, _ := s.fetchRaw(ctx, "chat.thought_events", map[string]int{"limit": 60})
+			sessionsList, _ := s.fetchRaw(ctx, "sessions.list", nil)
 
 			// Emit individual tool_start/tool_end events for new tool events
 			// so Canvas and other subscribers can react without parsing the
@@ -642,10 +643,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
 						"type": evType,
 						"data": map[string]interface{}{
-							"tool":       toString(ev["tool"]),
-							"agent_id":   toString(ev["session_id"]),
-							"agent_name": toString(ev["session_id"]),
-							"error":      toString(ev["error"]),
+							"tool":        toString(ev["tool"]),
+							"agent_id":    toString(ev["session_id"]),
+							"agent_name":  toString(ev["session_id"]),
+							"error":       toString(ev["error"]),
 							"duration_ms": ev["duration_ms"],
 						},
 					})
@@ -677,6 +678,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				"pending_approvals": approvals,
 				"tool_events":       toolEvents,
 				"thought_events":    thoughtEvents,
+				"sessions":          sessionsList,
 				"ts":                time.Now().UTC().Format(time.RFC3339),
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)

@@ -18,6 +18,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/PixnBits/AegisClaw/internal/workspace"
 	"github.com/google/uuid"
@@ -57,6 +58,12 @@ type runtimeEnv struct {
 	// (~/.aegisclaw/workspace by default). Fields are empty when the
 	// corresponding workspace files are absent or the directory doesn't exist.
 	Workspace *workspace.Content
+
+	// Sessions tracks all active and recent chat sessions for the session
+	// routing tools (sessions_list, sessions_history, sessions_send,
+	// sessions_spawn).  It is initialised once at daemon start and shared
+	// across all API handler goroutines.
+	Sessions *sessions.Store
 
 	// AgentVMID is the ID of the main agent microVM. Protected by agentVMMu.
 	// Set once by ensureAgentVM on the first chat.message request.
@@ -166,6 +173,7 @@ func initRuntime() (*runtimeEnv, error) {
 		ToolEvents:       NewToolEventBuffer(400),
 		ThoughtEvents:    NewThoughtEventBuffer(600),
 		Workspace:        loadWorkspace(cfg, logger),
+		Sessions:         sessions.NewStore(),
 	}, nil
 }
 
