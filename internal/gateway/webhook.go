@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,11 +33,11 @@ import (
 // This design keeps the webhook channel stateless — no persistent connection
 // is required between the client and the gateway.
 type HTTPWebhookChannel struct {
-	cfg       ChannelConfig
-	server    *http.Server
-	ready     chan struct{}
-	pending   map[string]chan string
-	pendingMu chan struct{} // acts as a mutex token
+	cfg     ChannelConfig
+	server  *http.Server
+	ready   chan struct{}
+	mu      sync.Mutex
+	pending map[string]chan string
 }
 
 // NewHTTPWebhookChannel creates a new HTTPWebhookChannel from cfg.
@@ -48,13 +49,10 @@ func NewHTTPWebhookChannel(cfg ChannelConfig) (*HTTPWebhookChannel, error) {
 	if _, _, err := net.SplitHostPort(cfg.Addr); err != nil {
 		return nil, fmt.Errorf("webhook channel %q: invalid addr %q: %w", cfg.ID, cfg.Addr, err)
 	}
-	mu := make(chan struct{}, 1)
-	mu <- struct{}{} // mutex token
 	return &HTTPWebhookChannel{
-		cfg:       cfg,
-		ready:     make(chan struct{}),
-		pending:   make(map[string]chan string),
-		pendingMu: mu,
+		cfg:     cfg,
+		ready:   make(chan struct{}),
+		pending: make(map[string]chan string),
 	}, nil
 }
 
@@ -139,9 +137,9 @@ func (w *HTTPWebhookChannel) Start(ctx context.Context, sink chan<- Message) err
 		replyCh := make(chan string, 1)
 
 		// Register pending reply.
-		<-w.pendingMu
+		w.mu.Lock()
 		w.pending[msgID] = replyCh
-		w.pendingMu <- struct{}{}
+		w.mu.Unlock()
 
 		meta := req.Metadata
 		if meta == nil {
@@ -161,9 +159,9 @@ func (w *HTTPWebhookChannel) Start(ctx context.Context, sink chan<- Message) err
 		select {
 		case sink <- msg:
 		case <-r.Context().Done():
-			<-w.pendingMu
+			w.mu.Lock()
 			delete(w.pending, msgID)
-			w.pendingMu <- struct{}{}
+			w.mu.Unlock()
 			http.Error(rw, "request cancelled", http.StatusRequestTimeout)
 			return
 		}
@@ -176,9 +174,9 @@ func (w *HTTPWebhookChannel) Start(ctx context.Context, sink chan<- Message) err
 		case <-r.Context().Done():
 		}
 
-		<-w.pendingMu
+		w.mu.Lock()
 		delete(w.pending, msgID)
-		w.pendingMu <- struct{}{}
+		w.mu.Unlock()
 
 		rw.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(rw).Encode(webhookResponse{Reply: replyText}) //nolint:errcheck
@@ -213,9 +211,9 @@ func (w *HTTPWebhookChannel) Send(_ context.Context, msg Message) error {
 	if replyID == "" {
 		return nil
 	}
-	<-w.pendingMu
+	w.mu.Lock()
 	ch, ok := w.pending[replyID]
-	w.pendingMu <- struct{}{}
+	w.mu.Unlock()
 	if !ok {
 		return nil // request already timed out
 	}

@@ -127,6 +127,9 @@ type Gateway struct {
 	route    RouteFunc
 	mu       sync.RWMutex
 	sink     chan Message
+	// errs receives non-fatal errors from channel goroutines.
+	// Buffered at 64 to avoid blocking channels that encounter errors.
+	errs chan error
 }
 
 // New creates a Gateway with the provided routing function.  Channels must be
@@ -136,7 +139,15 @@ func New(route RouteFunc) *Gateway {
 		channels: make(map[string]Channel),
 		route:    route,
 		sink:     make(chan Message, 256),
+		errs:     make(chan error, 64),
 	}
+}
+
+// Errors returns a read-only channel that receives non-fatal errors from
+// channel goroutines.  Callers that want to observe channel errors should
+// drain this channel in a separate goroutine.
+func (g *Gateway) Errors() <-chan error {
+	return g.errs
 }
 
 // Register adds a channel adapter to the Gateway.  It is safe to call before
@@ -175,8 +186,13 @@ func (g *Gateway) Start(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			if err := ch.Start(ctx, g.sink); err != nil && ctx.Err() == nil {
-				// Channel error during normal operation — log but keep routing.
-				_ = fmt.Errorf("gateway: channel %s: %w", ch.ID(), err)
+				// Channel error during normal operation.  We don't have a logger
+				// available here, so we surface it via the g.errs channel so
+				// callers or tests can inspect it.  Routing continues regardless.
+				select {
+				case g.errs <- fmt.Errorf("channel %s: %w", ch.ID(), err):
+				default:
+				}
 			}
 		}()
 	}
