@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
@@ -125,6 +126,10 @@ func startPortalAPIBridge(ctx context.Context, env *runtimeEnv, apiSrv *api.Serv
 	if err != nil {
 		return fmt.Errorf("listen portal API callback %s: %w", listenPath, err)
 	}
+	if err := setPortalBridgeSocketOwner(listenPath); err != nil {
+		ln.Close() //nolint:errcheck
+		return err
+	}
 	if err := os.Chmod(listenPath, 0600); err != nil {
 		ln.Close() //nolint:errcheck
 		return fmt.Errorf("restrict portal API callback permissions %s: %w", listenPath, err)
@@ -146,6 +151,22 @@ func startPortalAPIBridge(ctx context.Context, env *runtimeEnv, apiSrv *api.Serv
 	}()
 
 	env.Logger.Info("dashboard portal API bridge listening", zap.String("socket", listenPath), zap.Uint("port", portalAPIVsockPort))
+	return nil
+}
+
+func setPortalBridgeSocketOwner(listenPath string) error {
+	parent := filepath.Dir(listenPath)
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("stat portal API callback parent %s: %w", parent, err)
+	}
+	stat, ok := parentInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("read portal API callback parent owner %s: unsupported stat type", parent)
+	}
+	if err := os.Chown(listenPath, int(stat.Uid), int(stat.Gid)); err != nil {
+		return fmt.Errorf("set portal API callback ownership %s to %d:%d: %w", listenPath, stat.Uid, stat.Gid, err)
+	}
 	return nil
 }
 
