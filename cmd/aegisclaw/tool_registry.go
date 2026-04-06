@@ -174,6 +174,15 @@ func parseSkillToolName(name string) (skill, tool string) {
 func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	reg := &ToolRegistry{env: env}
 
+	// selfReg is assigned at the end of this function (after all tools are
+	// registered).  Tools that need to call other handlers (e.g. sessions_send
+	// needs the chat message handler which needs the tool registry itself)
+	// capture this pointer by reference.  Because tool handlers only execute
+	// at request time — after buildToolRegistry has returned — selfReg will
+	// always be non-nil when they run.
+	var selfReg *ToolRegistry
+	_ = selfReg // used later by sessions_send
+
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",
 		func(_ context.Context, args string) (string, error) {
@@ -938,22 +947,41 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 		})
 
 	// ── Session routing tools (Phase 1 – OpenClaw integration) ───────────────
-	// These tools mirror OpenClaw's session routing primitives and will be
-	// fully implemented in a future phase once sandboxed IPC routing is in
-	// place.  They are registered now so the agent can reason about them and
-	// so they appear in search_tools results.
+	// These tools mirror OpenClaw's session routing primitives.  They call the
+	// daemon-side session API handlers directly via env so they have access to
+	// the in-process session store without an extra round-trip over the socket.
 
 	reg.Register("sessions_list",
 		"List all active AegisClaw chat sessions. Args: {}. Returns session IDs, start times, and status.",
 		func(_ context.Context, _ string) (string, error) {
-			return "sessions_list: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+			if env.Sessions == nil {
+				return "No sessions tracked yet.", nil
+			}
+			all := env.Sessions.List()
+			if len(all) == 0 {
+				return "No active sessions.", nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("%-36s  %-8s  %-20s  msgs\n", "session_id", "status", "last_active"))
+			b.WriteString(strings.Repeat("-", 80) + "\n")
+			for _, r := range all {
+				msgs, _ := env.Sessions.History(r.ID, 0)
+				b.WriteString(fmt.Sprintf("%-36s  %-8s  %-20s  %d\n",
+					r.ID,
+					string(r.Status),
+					r.LastActiveAt.UTC().Format("2006-01-02 15:04:05"),
+					len(msgs),
+				))
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
 		})
 
 	reg.Register("sessions_history",
-		"Get the message history for a session. Args: {session_id, limit?}. Returns message log for the specified session.",
+		"Get the message history for a session. Args: {\"session_id\": \"...\", \"limit\": 50}. Returns the message log for the specified session.",
 		func(_ context.Context, args string) (string, error) {
 			var p struct {
 				SessionID string `json:"session_id"`
+				Limit     int    `json:"limit"`
 			}
 			if err := json.Unmarshal([]byte(args), &p); err != nil {
 				return "", fmt.Errorf("invalid sessions_history args: %w", err)
@@ -961,12 +989,35 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			if strings.TrimSpace(p.SessionID) == "" {
 				return "", fmt.Errorf("sessions_history requires 'session_id'")
 			}
-			return "sessions_history: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+			if env.Sessions == nil {
+				return "Session store not available.", nil
+			}
+			if p.Limit <= 0 {
+				p.Limit = 50
+			}
+			msgs, err := env.Sessions.History(p.SessionID, p.Limit)
+			if err != nil {
+				return "", err
+			}
+			if len(msgs) == 0 {
+				return fmt.Sprintf("No messages in session %s.", p.SessionID), nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("Session %s — %d message(s):\n\n", p.SessionID, len(msgs)))
+			for _, m := range msgs {
+				ts := m.Timestamp.UTC().Format("15:04:05")
+				content := m.Content
+				if len(content) > 200 {
+					content = content[:200] + "…"
+				}
+				b.WriteString(fmt.Sprintf("[%s] %s: %s\n", ts, strings.ToUpper(m.Role), content))
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
 		})
 
 	reg.Register("sessions_send",
-		"Send a message to another active session. Args: {session_id, message}. The target session processes the message asynchronously.",
-		func(_ context.Context, args string) (string, error) {
+		"Send a message to another active session and get the reply. Args: {\"session_id\": \"...\", \"message\": \"...\"}.",
+		func(ctx context.Context, args string) (string, error) {
 			var p struct {
 				SessionID string `json:"session_id"`
 				Message   string `json:"message"`
@@ -974,19 +1025,63 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			if err := json.Unmarshal([]byte(args), &p); err != nil {
 				return "", fmt.Errorf("invalid sessions_send args: %w", err)
 			}
-			if strings.TrimSpace(p.SessionID) == "" {
+			p.SessionID = strings.TrimSpace(p.SessionID)
+			p.Message = strings.TrimSpace(p.Message)
+			if p.SessionID == "" {
 				return "", fmt.Errorf("sessions_send requires 'session_id'")
 			}
-			if strings.TrimSpace(p.Message) == "" {
+			if p.Message == "" {
 				return "", fmt.Errorf("sessions_send requires 'message'")
 			}
-			return "sessions_send: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+			if env.Sessions == nil {
+				return "", fmt.Errorf("session store not available")
+			}
+			// Build and call the sessions.send handler directly.
+			sendHandler := makeSessionsSendHandler(env, selfReg)
+			reqBytes, _ := json.Marshal(map[string]string{
+				"session_id": p.SessionID,
+				"message":    p.Message,
+			})
+			resp := sendHandler(ctx, reqBytes)
+			if resp == nil || !resp.Success {
+				errMsg := "unknown error"
+				if resp != nil && resp.Error != "" {
+					errMsg = resp.Error
+				}
+				return "", fmt.Errorf("sessions_send failed: %s", errMsg)
+			}
+			var out map[string]interface{}
+			if err := json.Unmarshal(resp.Data, &out); err != nil {
+				return "", fmt.Errorf("parse reply: %w", err)
+			}
+			reply, _ := out["reply"].(string)
+			return fmt.Sprintf("[session:%s] %s", p.SessionID, reply), nil
 		})
 
 	reg.Register("sessions_spawn",
-		"Spawn a new isolated chat session with an optional agent config. Args: {config?, task_description?}. Returns the new session_id.",
-		func(_ context.Context, _ string) (string, error) {
-			return "sessions_spawn: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+		"Spawn a new isolated chat session with an optional task description. Args: {\"task_description\": \"...\", \"config\": {...}}. Returns the new session_id.",
+		func(ctx context.Context, args string) (string, error) {
+			spawnHandler := makeSessionsSpawnHandler(env, selfReg)
+			var rawArgs json.RawMessage
+			if strings.TrimSpace(args) == "" || args == "null" {
+				rawArgs = json.RawMessage(`{}`)
+			} else {
+				rawArgs = json.RawMessage(args)
+			}
+			resp := spawnHandler(ctx, rawArgs)
+			if resp == nil || !resp.Success {
+				errMsg := "unknown error"
+				if resp != nil && resp.Error != "" {
+					errMsg = resp.Error
+				}
+				return "", fmt.Errorf("sessions_spawn failed: %s", errMsg)
+			}
+			var out map[string]interface{}
+			if err := json.Unmarshal(resp.Data, &out); err != nil {
+				return "", fmt.Errorf("parse spawn response: %w", err)
+			}
+			sessionID, _ := out["session_id"].(string)
+			return fmt.Sprintf("New session spawned. session_id: %s", sessionID), nil
 		})
 
 	// ── Registry tools (Phase 2 – OpenClaw integration) ──────────────────────
@@ -1060,5 +1155,6 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			), nil
 		})
 
+	selfReg = reg
 	return reg
 }

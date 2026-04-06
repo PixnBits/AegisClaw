@@ -64,9 +64,14 @@ type SkillDeactivateRequest struct {
 // The CLI sends user input and conversation history; the daemon handles LLM
 // interaction inside a sandboxed agent boundary.
 type ChatMessageRequest struct {
-	Input    string            `json:"input"`
-	History  []ChatHistoryItem `json:"history,omitempty"`
-	StreamID string            `json:"stream_id,omitempty"`
+	Input     string            `json:"input"`
+	History   []ChatHistoryItem `json:"history,omitempty"`
+	StreamID  string            `json:"stream_id,omitempty"`
+	// SessionID is an optional stable identifier for this conversation.
+	// When provided it is used for session routing (sessions_list, sessions_history,
+	// sessions_send, sessions_spawn).  If empty the daemon uses StreamID as a
+	// best-effort session key.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // ChatHistoryItem is a single message in the conversation history.

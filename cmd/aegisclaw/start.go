@@ -176,6 +176,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Phase 3: Worker handlers.
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
+	// Phase 1 (OpenClaw integration): Session routing handlers.
+	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
+	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
+	apiSrv.Handle("sessions.send", makeSessionsSendHandler(env, toolRegistry))
+	apiSrv.Handle("sessions.spawn", makeSessionsSpawnHandler(env, toolRegistry))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
