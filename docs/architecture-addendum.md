@@ -1,8 +1,10 @@
 ### **Addendum: Hybrid Architecture Integration with OpenClaw-Inspired Features**  
-**Version:** 1.0  
+**Version:** 1.1 (updated April 2026 — Firecracker-only per implementation decision)  
 **Date:** April 5, 2026  
 **Author:** Grok (based on analysis of OpenClaw and AegisClaw `feature/script-runner` branch)  
-**Purpose:** Define the target architecture for AegisClaw to incorporate OpenClaw’s usability, multi-channel integrations, declarative workspaces, and agent flexibility while preserving AegisClaw’s paranoid-by-design security model. This addendum formalizes the migration path from direct Firecracker microVMs to Docker Sandboxes on Linux.
+**Purpose:** Define the target architecture for AegisClaw to incorporate OpenClaw’s usability, multi-channel integrations, declarative workspaces, and agent flexibility while preserving AegisClaw’s paranoid-by-design security model. Firecracker microVMs are the only supported isolation backend on Linux; Docker sandbox support has been removed from the roadmap pending platform availability.
+
+> **April 2026 Update**: All references to Docker Sandboxes as a migration target or primary backend below reflect the original draft intent. The implemented architecture uses Firecracker as the only supported backend via the `Orchestrator` interface (`internal/sandbox/orchestrator.go`). Docker migration is deferred indefinitely.
 
 #### **Strategic Architectural Vision**
 AegisClaw’s current architecture is centered on strict zero-trust isolation using Firecracker microVMs for every component (main agent, Governance Court reviewers, builder pipeline, and skills), mandatory AI governance, signed Merkle-tree audit logging, and capability-based execution. OpenClaw’s architecture, in contrast, uses a central **Gateway** control plane with WebSocket-based routing, the **Pi RPC runtime** for agent execution, workspace-based prompt injection, and optional Docker sandboxing for non-main sessions.
@@ -10,7 +12,7 @@ AegisClaw’s current architecture is centered on strict zero-trust isolation us
 The hybrid target architecture will:
 - Retain AegisClaw’s Governance Court, builder pipeline, audit log, and guest-agent as core security primitives.
 - Adopt OpenClaw-style usability layers (workspaces, multi-channel gateway, session routing, Canvas-like UI) as governed, sandboxed skills or components.
-- Migrate direct Firecracker usage to **Docker Sandboxes** on Linux (once mature), using Docker as the primary isolation backend for better cross-platform compatibility and reduced KVM dependency. Firecracker will remain available as an optional high-assurance mode.
+- Keep Firecracker microVMs as the primary and only currently supported isolation backend on Linux. The Sandbox Orchestrator interface (Phase 3) provides a clean abstraction that would allow alternative backends in the future, but no Docker migration is planned at this time.
 - Leverage the hardened **sandboxed script runner** (from `feature/script-runner`) as the unified execution engine for dynamic tools, scripts, and channel handlers.
 
 This results in a **layered, pluggable architecture**:

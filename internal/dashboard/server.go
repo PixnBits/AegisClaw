@@ -63,11 +63,20 @@ func New(addr string, client APIClient) (*Server, error) {
 			}
 			return template.JS(b)
 		},
+		// len counts items in slices or maps returned by fetchRaw (interface{}).
+		// Returns 0 for nil or unrecognised types rather than panicking.
 		"len": func(v interface{}) int {
+			if v == nil {
+				return 0
+			}
 			switch val := v.(type) {
 			case []interface{}:
 				return len(val)
 			case map[string]interface{}:
+				return len(val)
+			case []map[string]interface{}:
+				return len(val)
+			case string:
 				return len(val)
 			default:
 				return 0
