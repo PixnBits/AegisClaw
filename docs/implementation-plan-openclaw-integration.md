@@ -1,7 +1,7 @@
 ### **Implementation Plan: OpenClaw-Inspired Features in AegisClaw**  
 **Project:** AegisClaw (`clawful` branch)  
 **Goal:** Integrate usability, integrations, and flexibility from OpenClaw while preserving AegisClaw’s zero-trust security model (Governance Court, audit logging, sandboxed execution).  
-**Key Decision:** Migrate direct Firecracker orchestration to **Docker Sandboxes** as the primary isolation backend on Linux (Firecracker remains optional high-security mode).  
+**Key Decision:** Keep Firecracker microVMs as the primary isolation backend; Docker sandboxing is not available on the target Linux environment and is therefore omitted from this plan.
 **Reference Documents:**  
 - PRD Addendum: Enhancing AegisClaw with OpenClaw-Inspired Features  
 - Architecture Addendum: Hybrid Architecture Integration  
@@ -14,8 +14,8 @@
 - **OpenClaw**: Node.js/TS with central Gateway (`ws://127.0.0.1:18789`), Pi RPC runtime, workspace prompt files (`AGENTS.md`, `SOUL.md`, `TOOLS.md`, `SKILL.md`), optional Docker sandboxing (`Dockerfile.sandbox*`), multi-channel adapters, session routing tools, and ClawHub registry.
 - **Foundation to Leverage**: The hardened script runner, guest-agent, Governance Court, builder pipeline, and Merkle-tree audit log.
 
-All new features **must**:
-- Run inside a sandbox (Docker preferred, Firecracker fallback).
+- All new features **must**:
+- Run inside a sandbox (Firecracker microVMs are the required isolation backend).
 - Declare explicit capabilities.
 - Pass Governance Court review + SAST/SCA/secrets gates.
 - Log actions to the append-only signed audit log.
@@ -29,8 +29,8 @@ Focus: Workspace prompt injection + multi-agent routing + script runner formaliz
 **Phase 2: Integrations & Usability (4–8 weeks)**  
 Focus: Multi-channel gateway, voice, Canvas extensions, registry bridge.
 
-**Phase 3: Streaming, Polish & Docker Migration (4–6 weeks)**  
-Focus: Full interoperability + complete Docker sandbox transition.
+**Phase 3: Streaming & Polish (4–6 weeks)**
+Focus: Full interoperability, streaming semantics, and polish while retaining Firecracker as the isolation backend.
 
 #### **Detailed Implementation Tasks**
 
@@ -52,7 +52,7 @@ Focus: Full interoperability + complete Docker sandbox transition.
 3. **Formalize Sandboxed Script Runner**  
    - Make the script runner the default execution backend for dynamic tools/scripts.  
    - Enhance capability declaration in skill manifests (network, fs, devices, etc.).  
-   - **Where**: `internal/sandbox/` and `cmd/guest-agent/`. Ensure enforcement works for both Firecracker and future Docker.  
+   - **Where**: `internal/sandbox/` and `cmd/guest-agent/`. Ensure enforcement works for Firecracker.
    - Add support for safe host-device proxying (e.g., audio later).
 
 **Phase 2 – Multi-Channel & Advanced UX**
@@ -79,13 +79,12 @@ Focus: Full interoperability + complete Docker sandbox transition.
    - Extend `cmd/guest-agent` to support tool/block streaming and OpenClaw-style Pi RPC semantics.  
    - This enables easier porting of OpenClaw tools.
 
-8. **Sandbox Orchestrator & Docker Migration**  
-   - Abstract isolation behind a new `SandboxOrchestrator` (Docker primary on Linux, Firecracker fallback).  
-   - Reuse/adapt OpenClaw’s `Dockerfile.sandbox*` patterns for AegisClaw base images.  
-   - Add config flag: `--isolation=docker|firecracker`.  
-   - Update all orchestration code (Firecracker jailer calls → Docker equivalents with seccomp/AppArmor).  
-   - **Critical**: Maintain read-only rootfs, capability dropping, secrets proxy, and network policy enforcement in Docker mode.  
-   - **Where**: New or extended `internal/sandbox/orchestrator.go`; update `cmd/aegisclaw` and composition logic.
+8. **Sandbox Orchestrator (Firecracker-focused)**  
+   - Abstract isolation behind a `SandboxOrchestrator` interface while retaining Firecracker as the implemented backend.  
+   - Keep the code modular so alternative backends can be considered in the future if/when supported on the target platform.  
+   - Add config validation and helpful doctor messages rather than a Docker mode.  
+   - **Critical**: Maintain read-only rootfs, capability dropping, secrets proxy, and network policy enforcement for Firecracker.  
+   - **Where**: `internal/sandbox/orchestrator.go`; update `cmd/aegisclaw` and composition logic to use the orchestrator abstraction.
 
 9. **Onboarding & Polish**  
    - Implement `aegisclaw onboard` and `aegisclaw doctor`.  
@@ -98,17 +97,17 @@ Focus: Full interoperability + complete Docker sandbox transition.
 - **Testing**: Add unit + integration tests for new skills, sandbox transitions, and end-to-end flows. Use audit log verification.
 - **Configuration**: Extend existing `config/` with workspace paths and isolation mode.
 - **Dependencies**: Minimize new external deps. Prefer reusing AegisHub IPC and guest-agent.
-- **Migration Safety**: Keep existing Firecracker workflows working during transition. Add deprecation warnings for direct Firecracker usage.
+- **Migration Safety**: Keep existing Firecracker workflows working. Do not introduce a Docker-backed default or deprecation for Firecracker.
 - **Inspired by OpenClaw** (but adapt securely):
-  - Prompt injection model
-  - Session tools
-  - Docker sandbox patterns (`Dockerfile.sandbox`)
-  - Multi-channel design
+   - Prompt injection model
+   - Session tools
+   - (No Docker sandbox patterns are used in this plan)
+   - Multi-channel design
 
 #### **Success Criteria (Overall)**
 - Users can run a multi-channel assistant with voice/Canvas using governed skills and workspace prompts.
 - All features maintain or exceed current security (verified via audit logs and tests).
-- Docker sandbox is the default on Linux with Firecracker as opt-in.
+- Firecracker microVMs remain the supported and default isolation backend on Linux.
 - Onboarding feels as smooth as OpenClaw’s `openclaw onboard`.
 - Backward compatibility for existing skills and workflows.
 
@@ -116,7 +115,7 @@ Focus: Full interoperability + complete Docker sandbox transition.
 1. Start with Phase 1 in a feature branch (e.g., `feature/openclaw-hybrid`).
 2. Implement one small piece at a time (e.g., workspace parsing first).
 3. Run full Governance Court flow on every change.
-4. Test in both isolation modes.
+4. Test in the Firecracker environment.
 5. Update docs and the two addendums as you go.
 6. Use Copilot with this plan + the referenced addendums open.
 
