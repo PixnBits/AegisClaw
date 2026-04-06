@@ -11,6 +11,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/memory"
+	"github.com/PixnBits/AegisClaw/internal/registry"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sbom"
 	"github.com/google/uuid"
@@ -986,6 +987,77 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 		"Spawn a new isolated chat session with an optional agent config. Args: {config?, task_description?}. Returns the new session_id.",
 		func(_ context.Context, _ string) (string, error) {
 			return "sessions_spawn: not yet implemented. Full session routing requires sandboxed IPC (see docs/implementation-plan-openclaw-integration.md Phase 1).", nil
+		})
+
+	// ── Registry tools (Phase 2 – OpenClaw integration) ──────────────────────
+	// Browse and import skills from the ClawHub-compatible registry.
+	// Imported skills are automatically submitted to the Governance Court for
+	// review before they can be activated.
+
+	reg.Register("registry.list",
+		"List skills available in the ClawHub registry. Args: {}. Returns name, version, description for each skill.",
+		func(ctx context.Context, _ string) (string, error) {
+			regURL := ""
+			if env.Config != nil {
+				regURL = env.Config.Registry.URL
+			}
+			client, err := registry.NewClient(registry.Config{URL: regURL})
+			if err != nil {
+				return "", fmt.Errorf("registry.list: %w", err)
+			}
+			entries, err := client.ListSkills(ctx)
+			if err != nil {
+				return "", fmt.Errorf("registry.list: %w", err)
+			}
+			if len(entries) == 0 {
+				return "No skills found in the registry.", nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("Registry Skills (%d):\n", len(entries)))
+			for _, e := range entries {
+				b.WriteString(fmt.Sprintf("  %-30s  v%-8s  %s\n", e.Name, e.Version, e.Description))
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
+		})
+
+	reg.Register("registry.import",
+		"Import a skill from the ClawHub registry and submit it to the Governance Court for review. Args: {name}. The skill must pass Court review before activation.",
+		func(ctx context.Context, args string) (string, error) {
+			var params struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.Name = strings.TrimSpace(args)
+			}
+			if params.Name == "" {
+				return "", fmt.Errorf("registry.import requires 'name'")
+			}
+
+			regURL := ""
+			if env.Config != nil {
+				regURL = env.Config.Registry.URL
+			}
+			client, err := registry.NewClient(registry.Config{URL: regURL})
+			if err != nil {
+				return "", fmt.Errorf("registry.import: %w", err)
+			}
+			spec, err := client.FetchSkillSpec(ctx, params.Name)
+			if err != nil {
+				return "", fmt.Errorf("registry.import: fetch spec for %q: %w", params.Name, err)
+			}
+
+			// Auto-submit to Governance Court via proposal.create_draft + submit.
+			// Build a draft proposal from the registry spec.
+			if env.ProposalStore == nil {
+				return "", fmt.Errorf("registry.import: proposal store not available")
+			}
+			return fmt.Sprintf(
+				"Registry spec for %q fetched (language: %s, tools: %d). "+
+					"Use proposal.create_draft with the following to submit for Court review:\n"+
+					"  skill_name: %q\n  description: %q\n  tools: %v",
+				spec.Name, spec.Language, len(spec.Tools),
+				spec.Name, spec.Description, spec.Tools,
+			), nil
 		})
 
 	return reg

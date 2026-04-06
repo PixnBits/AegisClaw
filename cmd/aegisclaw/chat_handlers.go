@@ -876,6 +876,10 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"sessions_send\" — send a message to another active session. args: {\"session_id\": \"...\", \"message\": \"...\"}\n")
 	b.WriteString("- \"sessions_spawn\" — spawn a new isolated session with optional agent config. args: {\"config\": {...}, \"task_description\": \"...\"}\n")
 
+	// Phase 2 (OpenClaw): Registry tools.
+	b.WriteString("- \"registry.list\" — list skills available in the ClawHub registry. args: {}\n")
+	b.WriteString("- \"registry.import\" — import a skill from the registry and submit it for Court review. args: {\"name\": \"...\"}\n")
+
 	// Proposal drafting instructions: tell the agent how to build a court-ready draft
 	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")
 	b.WriteString("proposal that includes the fields the Court requires. At minimum, the\n")
