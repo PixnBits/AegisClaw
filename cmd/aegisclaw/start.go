@@ -148,6 +148,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
 	apiSrv.Handle("dashboard.skills", makeDashboardSkillsHandler(env))
 	apiSrv.Handle("sandbox.list", makeSandboxListHandler(env))
+	apiSrv.Handle("system.stats", makeSystemStatsHandler())
 	apiSrv.Handle("safe-mode.enable", makeSafeModeEnableHandler(env))
 	apiSrv.Handle("safe-mode.disable", makeSafeModeDisableHandler(env))
 	apiSrv.Handle("safe-mode.status", makeSafeModeStatusHandler(env))
@@ -473,12 +474,12 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 		}
 
 		payload, _ := json.Marshal(map[string]interface{}{
-			"skill_name":     req.Name,
-			"sandbox_id":     sandboxID,
-			"version":        entry.Version,
-			"hash":           entry.MerkleHash,
-			"network":        netPolicy.AllowedHosts,
-			"no_network":     netPolicy.NoNetwork,
+			"skill_name": req.Name,
+			"sandbox_id": sandboxID,
+			"version":    entry.Version,
+			"hash":       entry.MerkleHash,
+			"network":    netPolicy.AllowedHosts,
+			"no_network": netPolicy.NoNetwork,
 		})
 		action := kernel.NewAction(kernel.ActionSkillActivate, "kernel", payload)
 		env.Kernel.SignAndLog(action)
@@ -626,19 +627,26 @@ func makeSandboxListHandler(env *runtimeEnv) api.Handler {
 			return &api.Response{Error: "failed to list sandboxes: " + err.Error()}
 		}
 
+		uptime := procSystemUptimeSeconds()
 		rows := make([]map[string]interface{}, 0, len(items))
 		for _, sb := range items {
 			if req.RunningOnly && sb.State != sandbox.StateRunning {
 				continue
 			}
-			rows = append(rows, map[string]interface{}{
+			row := map[string]interface{}{
 				"id":         sb.Spec.ID,
 				"name":       sb.Spec.Name,
 				"state":      string(sb.State),
 				"vcpus":      sb.Spec.Resources.VCPUs,
 				"memory_mb":  sb.Spec.Resources.MemoryMB,
 				"started_at": sb.StartedAt,
-			})
+			}
+			if sb.PID > 0 {
+				rssKB := procRSSKB(sb.PID)
+				row["rss_mb"] = rssKB / 1024
+				row["cpu_avg_pct"] = fmt.Sprintf("%.1f", procCPUAvgPct(sb.PID, uptime))
+			}
+			rows = append(rows, row)
 		}
 
 		respData, _ := json.Marshal(rows)
