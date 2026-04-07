@@ -329,7 +329,8 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 512<<10) // 512 KB limit
 	var req struct {
-		Input   string `json:"input"`
+		Input     string `json:"input"`
+		SessionID string `json:"session_id,omitempty"`
 		History []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
@@ -351,16 +352,18 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("stream") == "1" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
 		streamID := fmt.Sprintf("chat-%d", time.Now().UnixNano())
 		payload := mustMarshal(map[string]interface{}{
-			"input":     req.Input,
-			"history":   req.History,
-			"stream_id": streamID,
+			"input":      req.Input,
+			"history":    req.History,
+			"session_id": req.SessionID,
+			"stream_id":  streamID,
 		})
 		s.handleChatSendStream(w, r, payload, streamID)
 		return
 	}
 	payload := mustMarshal(map[string]interface{}{
-		"input":   req.Input,
-		"history": req.History,
+		"input":      req.Input,
+		"history":    req.History,
+		"session_id": req.SessionID,
 	})
 	resp, err := s.apiClient.Call(r.Context(), "chat.message", payload)
 	w.Header().Set("Content-Type", "application/json")
@@ -2421,10 +2424,11 @@ const chatTmpl = `
     ensureLiveThoughtLog();
     showTyping();
     try{
+      var s=getActiveSession();
       var res=await fetch('/chat/send?stream=1',{
         method:'POST',
         headers:{'Content-Type':'application/json','Accept':'text/event-stream'},
-        body:JSON.stringify({input:input,history:snapshot})
+        body:JSON.stringify({input:input,history:snapshot,session_id:s?s.id:''})
       });
 
       var data=null;
