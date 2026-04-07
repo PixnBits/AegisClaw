@@ -20,7 +20,16 @@ Key features:
   and queryable via `audit log` / `audit why` / `audit verify`
 - **Versioned deployment** — composition manifests track every deployed skill
   version; unhealthy deployments roll back automatically
-- **Terminal UI (TUI)** — interactive ReAct-style chat is the primary interface
+- **Web portal + Terminal UI** — interactive chat and live tool-call visibility
+  at `http://127.0.0.1:7878`; TUI via `aegisclaw chat`
+- **Multi-channel gateway** — receive messages from webhooks, Discord bots,
+  Telegram, and other adapters; all routed through the same secured agent loop
+- **Workspace customisation** — drop `SOUL.md`, `AGENTS.md`, or `TOOLS.md`
+  files in `~/.aegisclaw/workspace/` to tailor the agent's personality and tools
+- **Hierarchical multi-agent** — spawn ephemeral Worker agents for research,
+  coding, or summarisation; coordinate via async timers and signals
+- **ClawHub registry bridge** — browse and import community skills; every
+  import is automatically submitted to the Governance Court before activation
 
 The main agent, Governance Court reviewers, the builder, and all skills run
 exclusively inside Firecracker microVMs. KVM is a hard requirement — the
@@ -141,7 +150,7 @@ Type a message or `/help` for available commands.
 
 ### 6. Create Your First Skill
 
-In chat, describe what you want:
+In chat, describe what you want in plain English:
 
 ```
 please add a skill that says hello to the user with a message appropriate
@@ -208,16 +217,49 @@ with Ed25519, and queryable via `aegisclaw audit log` / `audit why` / `audit ver
 
 ---
 
+## Integrations & Extensibility
+
+AegisClaw gains new capabilities through **skills** — everything goes through the
+Governance Court before running. Just ask the agent; it handles the proposal details.
+
+| Integration type | Example ask | What gets proposed |
+|---|---|---|
+| Messaging | "Add a Discord/Telegram/Slack skill" | Channel adapter with bot-token secret, platform API allowlist, send/receive tools |
+| Developer tools | "Add a GitHub skill" | API wrapper with token secret, `github.com` allowlist, PR/issue/review tools |
+| Shell automation | "Add a shell scripting tool" | Script runner, no network, `/workspace` sandbox, bash/python/node |
+| Voice | "Add voice interaction" | Host-audio proxy adapter, TTS model, wake-word tools |
+| Custom webhook | "Forward Slack alerts to me" | Webhook listener skill, inbound-only, event-filter tools |
+| Registry | "Install the time-greeter from ClawHub" | Imports and auto-submits to Court |
+
+---
+
+## Workspace Customisation
+
+Drop any of these optional files in `~/.aegisclaw/workspace/` to personalise the
+agent without a Court proposal:
+
+| File | Purpose |
+|---|---|
+| `SOUL.md` | Guiding principles and personality tweaks |
+| `AGENTS.md` | Identity overrides (name, role, tone) |
+| `TOOLS.md` | Tool preference hints (prefer certain skills) |
+| `<skill>.SKILL.md` | Per-skill usage notes injected at build time |
+
+---
+
 ## Project Structure
 
 | Path | Description |
 |---|---|
-| `cmd/aegisclaw` | Host CLI + TUI entrypoint and daemon |
+| `cmd/aegisclaw` | Host CLI, TUI, daemon, and gateway entrypoint |
 | `cmd/guest-agent` | Agent binary that runs inside Firecracker VMs |
 | `internal/` | Core packages (kernel, court, builder, sandbox, audit, composition) |
 | `internal/builder/securitygate/` | SAST, SCA, secrets, policy-as-code gates |
 | `internal/composition/` | Versioned deployment manifests with rollback |
+| `internal/gateway/` | Multi-channel gateway (webhook, Discord, Telegram adapters) |
 | `internal/provision/` | Automatic Firecracker kernel + rootfs provisioning |
+| `internal/worker/` | Ephemeral Worker agent management |
+| `internal/registry/` | ClawHub registry bridge |
 | `docs/` | Living specs, roadmap, and tutorials |
 | `adrs/` | Architecture Decision Records |
 

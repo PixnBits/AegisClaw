@@ -127,17 +127,21 @@ in en-US
 ```
 
 The main agent will:
-1. **Parse your intent** — understand you want a new skill
-2. **Gather details** — ask clarifying questions if needed
-3. **Create a draft proposal** with a `SkillSpec` including:
-   - Skill name: `time-of-day-greeter`
-   - Tool: `greet` — returns a locale-aware, DST-respecting greeting
-   - Risk assessment: low (no network, no secrets, no privileged ops)
-4. **Submit for Court review** — transitions the proposal to `submitted`
+1. **Recognise the intent** — any "add", "integrate", "automate", or "connect to"
+   request is handled as a skill proposal, not a generic AI question
+2. **Reason through technical details** — tools, network policy, secrets needed,
+   tests, security considerations — WITHOUT asking you to specify them
+3. **Create a draft proposal** via `proposal.create_draft` with all required fields
+4. **Summarise the draft** in plain language and explain next steps
+5. Optionally **auto-submit** if you say "looks good, go ahead"
+
+> **You should never need to say "no, I meant create a proposal for..."**
+> The agent knows it is AegisClaw and that `add a skill for X` means
+> `call proposal.create_draft with a complete technical spec for X`.
 
 ### What the agent creates behind the scenes
 
-The agent calls `create_draft` with fields like:
+The agent calls `proposal.create_draft` with fields like:
 
 ```json
 {
@@ -412,6 +416,70 @@ Check the failure details and revise the proposal. Common blockers:
 - Weak crypto → use `crypto/sha256` or stronger
 - Host filesystem access → use `/workspace` only
 - Undeclared network access → add `--allowed-host` flags
+
+---
+
+## Bonus: Requesting a Complex Integration
+
+The same flow works for much more complex skills. The agent thinks through the
+technical details for you — you just describe what you want.
+
+### Example: Discord integration
+
+In chat:
+
+```
+Can you add a skill for interacting over Discord?
+```
+
+The agent recognises this as a messaging-channel skill request and creates a
+draft proposal that includes:
+
+- **skill_name**: `discord-gateway`
+- **tools**:
+  - `send_message` — send a message to a channel or DM, args: `{channel_id, content}`
+  - `list_channels` — list accessible channels in a guild, args: `{guild_id}`
+  - `handle_webhook` — receive and process inbound Discord webhook events
+- **dependencies**: Discord Bot API v10 (`discord.com/api/v10`)
+- **secrets**: `DISCORD_BOT_TOKEN` (stored in AegisClaw vault, injected at runtime, never in code)
+- **network_policy**: HTTPS egress to `discord.com:443` only
+- **risk_assessment**: medium — network egress + external-platform token; mitigated by per-skill
+  microVM isolation, token never in LLM context, rate-limit enforcement in skill code
+- **security_considerations**: token rotated via `aegisclaw secrets rotate`, webhook signature
+  verification on inbound events, no ability to broadcast to channels not in allowlist
+- **tests**: unit test for `send_message` with mock HTTP, integration test checks
+  `DISCORD_BOT_TOKEN` is present before invoking, error coverage for 429 rate-limit
+
+You review the draft, submit it, and the Governance Court evaluates the network
+exposure and token handling before allowing the build.
+
+> **Note:** The gateway must also be enabled in config (`gateway.enabled: true`,
+> `gateway.channels` entry with `type: discord`) for the bot to receive inbound
+> messages. The skill itself handles outbound calls; the gateway handles inbound routing.
+
+### Example: GitHub skill
+
+```
+Add a skill so I can create GitHub PRs and comment on issues
+```
+
+Agent produces a proposal with:
+- Tools: `create_pr`, `comment_on_issue`, `list_open_prs`, `merge_pr`
+- Secret: `GITHUB_TOKEN`
+- Network: `api.github.com:443`
+- Risk: medium (write access to repos); CISO persona will verify least-privilege token scope
+
+### Example: Shell automation
+
+```
+Can you add a tool so I can run shell scripts safely?
+```
+
+Agent produces a low-risk proposal:
+- Tools: `run_script` (args: `{language, code, timeout_ms}`)
+- Network: none — fully isolated
+- Secrets: none
+- Risk: low; sandboxed in Firecracker with `/workspace` read-write, no host FS access
 
 ---
 
