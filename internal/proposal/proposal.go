@@ -145,6 +145,32 @@ type ProposalNetworkPolicy struct {
 	AllowedProtocols []string `json:"allowed_protocols,omitempty"`
 }
 
+// SkillCapabilities declares the sandbox capabilities a skill requires.
+// These are reviewed by the Governance Court and enforced at the sandbox
+// level (Firecracker rootfs / Docker seccomp+AppArmor).
+// Inspired by the OpenClaw capability model; aligned with AegisClaw's
+// zero-trust isolation principles.
+type SkillCapabilities struct {
+	// Network declares that the skill needs outbound network access.
+	// If true, a NetworkPolicy must also be provided.
+	Network bool `json:"network,omitempty"`
+	// FilesystemWrite declares that the skill writes to the host workspace
+	// (mounted read-write overlay). Read-only access is always available;
+	// write access must be explicitly declared and Court-approved.
+	FilesystemWrite bool `json:"filesystem_write,omitempty"`
+	// HostDevices lists host device paths the skill needs proxied access to
+	// (e.g. "/dev/snd" for audio, "/dev/video0" for camera). Each entry is
+	// reviewed by the CISO persona during Court review.
+	HostDevices []string `json:"host_devices,omitempty"`
+	// Secrets lists the secret reference names the skill reads at runtime.
+	// Mirrors Proposal.SecretsRefs but scoped to capabilities for clarity.
+	Secrets []string `json:"secrets,omitempty"`
+	// CanAccessOtherSessions permits this skill to call sessions_send /
+	// sessions_history targeting other AegisClaw sessions. Requires explicit
+	// Court approval and is denied by default.
+	CanAccessOtherSessions bool `json:"can_access_other_sessions,omitempty"`
+}
+
 var proposalSecretRefRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]{0,127}$`)
 
 // Proposal represents a governance proposal that must pass through the Court
@@ -161,6 +187,11 @@ type Proposal struct {
 	Spec          json.RawMessage        `json:"spec,omitempty"`
 	SecretsRefs   []string               `json:"secrets_refs,omitempty"`
 	NetworkPolicy *ProposalNetworkPolicy `json:"network_policy,omitempty"`
+	// Capabilities declares the sandbox capabilities this skill requires.
+	// Populated by proposal.create_draft and reviewed by the Governance Court.
+	// Enforcement happens at sandbox launch time (Firecracker rootfs flags or
+	// Docker seccomp/AppArmor profiles).
+	Capabilities *SkillCapabilities `json:"capabilities,omitempty"`
 	Reviews       []Review               `json:"reviews,omitempty"`
 	History       []StatusChange         `json:"history"`
 	Round         int                    `json:"round"`

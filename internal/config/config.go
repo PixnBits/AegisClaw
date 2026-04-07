@@ -10,6 +10,25 @@ import (
 	"go.uber.org/zap"
 )
 
+// GatewayChannelConfig is the per-channel adapter configuration stored in
+// Config.Gateway.Channels.  It mirrors gateway.ChannelConfig so that the
+// config package does not need to import the gateway package.
+type GatewayChannelConfig struct {
+	// ID is the unique channel name (must match the Channel.ID() return value).
+	ID string `yaml:"id" mapstructure:"id"`
+	// Type identifies the adapter implementation: "webhook" is the only
+	// built-in type.  Other types require governed skill code.
+	Type string `yaml:"type" mapstructure:"type"`
+	// Enabled controls whether this channel is started.
+	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+	// Addr is the listen address for server-side channels (e.g. webhook).
+	Addr string `yaml:"addr" mapstructure:"addr"`
+	// Secret is a shared secret used to authenticate inbound requests.
+	Secret string `yaml:"secret" mapstructure:"secret"`
+	// Extra holds channel-specific key-value settings.
+	Extra map[string]string `yaml:"extra" mapstructure:"extra"`
+}
+
 // Config holds the application configuration loaded from ~/.config/aegisclaw/config.yaml
 // Security: All paths are validated to prevent directory traversal attacks.
 // Defaults are set to secure, isolated locations with no host filesystem access.
@@ -31,6 +50,11 @@ type Config struct {
 		ChrootBase   string `yaml:"chroot_base" mapstructure:"chroot_base"`
 		KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
 		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
+		// IsolationMode selects the sandbox backend.
+		// Only "firecracker" is supported on this platform (hardware-virtualised
+		// microVMs via Firecracker + jailer).  Any other value is rejected at
+		// daemon startup.  See internal/sandbox.IsolationMode for details.
+		IsolationMode string `yaml:"isolation_mode" mapstructure:"isolation_mode"`
 	} `yaml:"sandbox" mapstructure:"sandbox"`
 	Proposal struct {
 		StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
@@ -133,6 +157,39 @@ type Config struct {
 		// Defaults to "127.0.0.1:7878".
 		Addr string `yaml:"addr" mapstructure:"addr"`
 	} `yaml:"dashboard" mapstructure:"dashboard"`
+	Workspace struct {
+		// Dir is the path to the optional workspace directory containing prompt
+		// injection files (AGENTS.md, SOUL.md, TOOLS.md, SKILL.md).
+		// When the directory exists, its contents are injected into the agent
+		// system prompt and, for SKILL.md, into skill build prompts.
+		// Defaults to ~/.aegisclaw/workspace.
+		// Set to "" to disable workspace prompt injection entirely.
+		Dir string `yaml:"dir" mapstructure:"dir"`
+	} `yaml:"workspace" mapstructure:"workspace"`
+	Gateway struct {
+		// Enabled controls whether the multi-channel Gateway is started by the
+		// daemon.  Defaults to false.
+		Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+
+		// Channels lists the channel adapter configurations.  Each entry
+		// corresponds to one inbound source (e.g. a webhook listener).
+		// Channel type "webhook" is supported out of the box; additional types
+		// require governed skill code to provide the protocol adapter.
+		//
+		// Example YAML entry:
+		//   - id: my-hook
+		//     type: webhook
+		//     enabled: true
+		//     addr: "127.0.0.1:9000"
+		//     secret: "changeme"
+		Channels []GatewayChannelConfig `yaml:"channels" mapstructure:"channels"`
+	} `yaml:"gateway" mapstructure:"gateway"`
+	Registry struct {
+		// URL is the base URL of the ClawHub-compatible skill registry.
+		// Defaults to https://registry.clawhub.io.
+		// Set to "" to disable registry integration.
+		URL string `yaml:"url" mapstructure:"url"`
+	} `yaml:"registry" mapstructure:"registry"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -167,15 +224,17 @@ func DefaultConfig() Config {
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "audit"),
 		},
 		Sandbox: struct {
-			StateDir     string `yaml:"state_dir" mapstructure:"state_dir"`
-			ChrootBase   string `yaml:"chroot_base" mapstructure:"chroot_base"`
-			KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
-			RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
+			StateDir      string `yaml:"state_dir" mapstructure:"state_dir"`
+			ChrootBase    string `yaml:"chroot_base" mapstructure:"chroot_base"`
+			KernelImage   string `yaml:"kernel_image" mapstructure:"kernel_image"`
+			RegistryPath  string `yaml:"registry_path" mapstructure:"registry_path"`
+			IsolationMode string `yaml:"isolation_mode" mapstructure:"isolation_mode"`
 		}{
-			StateDir:     filepath.Join(home, ".local", "share", "aegisclaw", "sandboxes"),
-			ChrootBase:   filepath.Join(home, ".local", "share", "aegisclaw", "jailer"),
-			KernelImage:  "/var/lib/aegisclaw/vmlinux-5.10.225",
-			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "registry.json"),
+			StateDir:      filepath.Join(home, ".local", "share", "aegisclaw", "sandboxes"),
+			ChrootBase:    filepath.Join(home, ".local", "share", "aegisclaw", "jailer"),
+			KernelImage:   "/var/lib/aegisclaw/vmlinux-5.10.225",
+			RegistryPath:  filepath.Join(home, ".local", "share", "aegisclaw", "registry.json"),
+			IsolationMode: "firecracker",
 		},
 		Proposal: struct {
 			StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
@@ -284,6 +343,23 @@ func DefaultConfig() Config {
 			Enabled: true,
 			Addr:    "127.0.0.1:7878",
 		},
+		Workspace: struct {
+			Dir string `yaml:"dir" mapstructure:"dir"`
+		}{
+			Dir: filepath.Join(home, ".aegisclaw", "workspace"),
+		},
+		Gateway: struct {
+			Enabled  bool                   `yaml:"enabled" mapstructure:"enabled"`
+			Channels []GatewayChannelConfig `yaml:"channels" mapstructure:"channels"`
+		}{
+			Enabled:  false,
+			Channels: nil,
+		},
+		Registry: struct {
+			URL string `yaml:"url" mapstructure:"url"`
+		}{
+			URL: "https://registry.clawhub.io",
+		},
 	}
 }
 
@@ -328,6 +404,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("sandbox.chroot_base", defaults.Sandbox.ChrootBase)
 	viper.SetDefault("sandbox.kernel_image", defaults.Sandbox.KernelImage)
 	viper.SetDefault("sandbox.registry_path", defaults.Sandbox.RegistryPath)
+	viper.SetDefault("sandbox.isolation_mode", defaults.Sandbox.IsolationMode)
 	viper.SetDefault("proposal.store_dir", defaults.Proposal.StoreDir)
 	viper.SetDefault("court.persona_dir", defaults.Court.PersonaDir)
 	viper.SetDefault("court.session_dir", defaults.Court.SessionDir)
@@ -360,7 +437,9 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("worker.rootfs_path", defaults.Worker.RootfsPath)
 	viper.SetDefault("dashboard.enabled", defaults.Dashboard.Enabled)
 	viper.SetDefault("dashboard.addr", defaults.Dashboard.Addr)
-
+	viper.SetDefault("workspace.dir", defaults.Workspace.Dir)
+	viper.SetDefault("gateway.enabled", defaults.Gateway.Enabled)
+	viper.SetDefault("registry.url", defaults.Registry.URL)
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Config file doesn't exist, write defaults

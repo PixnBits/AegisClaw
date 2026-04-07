@@ -389,7 +389,7 @@ func probeOllama(endpoint string) ([]string, error) {
 		return nil, fmt.Errorf("Ollama returned HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // 512 KiB cap
 	if err != nil {
 		return nil, fmt.Errorf("read Ollama response: %w", err)
 	}

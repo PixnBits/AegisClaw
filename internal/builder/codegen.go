@@ -115,6 +115,11 @@ type CodeGenRequest struct {
 	Round        int               `json:"round"`
 	SystemPrompt string            `json:"system_prompt"`
 	MaxTokens    int               `json:"max_tokens"`
+	// WorkspaceSkillContext is the content of the workspace SKILL.md file,
+	// injected into the system prompt when present.  This allows users to
+	// provide project-specific context for skill code generation without
+	// modifying Court-reviewed prompts.
+	WorkspaceSkillContext string `json:"workspace_skill_context,omitempty"`
 }
 
 // CodeGenResponse contains the generated code files.
@@ -235,6 +240,13 @@ func (cg *CodeGenerator) Generate(builderID string, req *CodeGenRequest) (*CodeG
 		req.SystemPrompt, _ = tmpl.Format(map[string]string{
 			"skill_spec": string(specJSON),
 		})
+	}
+
+	// Append workspace SKILL.md context to the system prompt when present.
+	// This allows users to inject project-specific context for code generation
+	// without touching Court-reviewed templates.
+	if req.WorkspaceSkillContext != "" {
+		req.SystemPrompt += "\n\nWORKSPACE SKILL CONTEXT (user-provided; review for relevance):\n" + req.WorkspaceSkillContext
 	}
 
 	// Marshal the request

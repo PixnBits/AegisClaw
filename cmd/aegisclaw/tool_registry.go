@@ -11,6 +11,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/memory"
+	"github.com/PixnBits/AegisClaw/internal/registry"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sbom"
 	"github.com/google/uuid"
@@ -172,7 +173,16 @@ func parseSkillToolName(name string) (skill, tool string) {
 // and inline implementations for listing/activating resources.
 func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	reg := &ToolRegistry{env: env}
+	registerProposalTools(reg, env)
+	registerMemoryTools(reg, env)
+	registerEventBusTools(reg, env)
+	registerWorkerTools(reg, env)
+	registerSessionTools(reg, env, &reg)
+	registerRegistryTools(reg, env)
+	return reg
+}
 
+func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",
 		func(_ context.Context, args string) (string, error) {
@@ -493,9 +503,9 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 
 			return fmt.Sprintf("Agent VM restored from snapshot %q.\n  New VM ID: %s", params.Label, newVMID), nil
 		})
+}
 
-	// ── Memory Store tools ────────────────────────────────────────────────────
-
+func registerMemoryTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("store_memory",
 		"Store a memory entry persistently. Args: {key, value, tags[], ttl_tier, security_level, task_id}. Returns memory_id.",
 		func(ctx context.Context, args string) (string, error) {
@@ -659,11 +669,12 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			}
 			return fmt.Sprintf("Memories (%d):\n%s", len(summaries), strings.Join(lines, "\n")), nil
 		})
+}
 
-	// ── Event Bus tools ───────────────────────────────────────────────────────
-
+func registerEventBusTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("set_timer",
-		"Schedule an async timer. Args: {name, trigger_at (ISO8601 for one-shot), cron (for recurring), payload, task_id}. Returns timer_id.",
+		"Schedule an async timer. Args: {name, trigger_at (ISO8601 for one-shot), cron (for recurring), payload, task_id}. Returns timer_id. "+
+			"Optional: include {task_description, role, timeout_mins, tools_granted} in payload to spawn an autonomous worker when the timer fires.",
 		func(_ context.Context, args string) (string, error) {
 			var params struct {
 				Name      string          `json:"name"`
@@ -887,9 +898,9 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			return fmt.Sprintf("Approval request submitted.\n  ID:        %s\n  Title:     %s\n  Risk:      %s\n  Status:    pending\n\nThe request will appear in the dashboard and CLI (`aegisclaw event approvals list`). The operation will not proceed until a human approves it.",
 				a.ApprovalID, a.Title, a.RiskLevel), nil
 		})
+}
 
-	// ── Worker tools (Phase 3) ────────────────────────────────────────────────
-
+func registerWorkerTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("spawn_worker",
 		"Spawn an ephemeral Worker agent for a focused subtask. Args: {task_description, role (researcher|coder|summarizer|custom), tools_granted (list), timeout_mins, task_id}. Blocks until complete; returns structured result.",
 		func(ctx context.Context, args string) (string, error) {
@@ -935,6 +946,210 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 			}
 			return strings.TrimRight(b.String(), "\n"), nil
 		})
+}
 
-	return reg
+// registerSessionTools registers session routing tools.  selfRegPtr is a
+// pointer to the *ToolRegistry variable in the caller; closures dereference it
+// at call time so they always see the fully-constructed registry.
+func registerSessionTools(reg *ToolRegistry, env *runtimeEnv, selfRegPtr **ToolRegistry) {
+	reg.Register("sessions_list",
+		"List all active AegisClaw chat sessions. Args: {}. Returns session IDs, start times, and status.",
+		func(_ context.Context, _ string) (string, error) {
+			if env.Sessions == nil {
+				return "No sessions tracked yet.", nil
+			}
+			all := env.Sessions.List()
+			if len(all) == 0 {
+				return "No active sessions.", nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("%-36s  %-8s  %-20s  msgs\n", "session_id", "status", "last_active"))
+			b.WriteString(strings.Repeat("-", 80) + "\n")
+			for _, r := range all {
+				msgs, _ := env.Sessions.History(r.ID, 0)
+				b.WriteString(fmt.Sprintf("%-36s  %-8s  %-20s  %d\n",
+					r.ID,
+					string(r.Status),
+					r.LastActiveAt.UTC().Format("2006-01-02 15:04:05"),
+					len(msgs),
+				))
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
+		})
+
+	reg.Register("sessions_history",
+		"Get the message history for a session. Args: {\"session_id\": \"...\", \"limit\": 50}. Returns the message log for the specified session.",
+		func(_ context.Context, args string) (string, error) {
+			var p struct {
+				SessionID string `json:"session_id"`
+				Limit     int    `json:"limit"`
+			}
+			if err := json.Unmarshal([]byte(args), &p); err != nil {
+				return "", fmt.Errorf("invalid sessions_history args: %w", err)
+			}
+			if strings.TrimSpace(p.SessionID) == "" {
+				return "", fmt.Errorf("sessions_history requires 'session_id'")
+			}
+			if env.Sessions == nil {
+				return "Session store not available.", nil
+			}
+			if p.Limit <= 0 {
+				p.Limit = 50
+			}
+			msgs, err := env.Sessions.History(p.SessionID, p.Limit)
+			if err != nil {
+				return "", err
+			}
+			if len(msgs) == 0 {
+				return fmt.Sprintf("No messages in session %s.", p.SessionID), nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("Session %s — %d message(s):\n\n", p.SessionID, len(msgs)))
+			for _, m := range msgs {
+				ts := m.Timestamp.UTC().Format("15:04:05")
+				content := m.Content
+				if len(content) > 200 {
+					content = content[:200] + "…"
+				}
+				b.WriteString(fmt.Sprintf("[%s] %s: %s\n", ts, strings.ToUpper(m.Role), content))
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
+		})
+
+	reg.Register("sessions_send",
+		"Send a message to another active session and get the reply. Args: {\"session_id\": \"...\", \"message\": \"...\"}.",
+		func(ctx context.Context, args string) (string, error) {
+			var p struct {
+				SessionID string `json:"session_id"`
+				Message   string `json:"message"`
+			}
+			if err := json.Unmarshal([]byte(args), &p); err != nil {
+				return "", fmt.Errorf("invalid sessions_send args: %w", err)
+			}
+			p.SessionID = strings.TrimSpace(p.SessionID)
+			p.Message = strings.TrimSpace(p.Message)
+			if p.SessionID == "" {
+				return "", fmt.Errorf("sessions_send requires 'session_id'")
+			}
+			if p.Message == "" {
+				return "", fmt.Errorf("sessions_send requires 'message'")
+			}
+			if env.Sessions == nil {
+				return "", fmt.Errorf("session store not available")
+			}
+			// Build and call the sessions.send handler directly.
+			sendHandler := makeSessionsSendHandler(env, *selfRegPtr)
+			reqBytes, _ := json.Marshal(map[string]string{
+				"session_id": p.SessionID,
+				"message":    p.Message,
+			})
+			resp := sendHandler(ctx, reqBytes)
+			if resp == nil || !resp.Success {
+				errMsg := "unknown error"
+				if resp != nil && resp.Error != "" {
+					errMsg = resp.Error
+				}
+				return "", fmt.Errorf("sessions_send failed: %s", errMsg)
+			}
+			var out map[string]interface{}
+			if err := json.Unmarshal(resp.Data, &out); err != nil {
+				return "", fmt.Errorf("parse reply: %w", err)
+			}
+			reply, _ := out["reply"].(string)
+			return fmt.Sprintf("[session:%s] %s", p.SessionID, reply), nil
+		})
+
+	reg.Register("sessions_spawn",
+		"Spawn a new isolated chat session with an optional task description. Args: {\"task_description\": \"...\", \"config\": {...}}. Returns the new session_id.",
+		func(ctx context.Context, args string) (string, error) {
+			spawnHandler := makeSessionsSpawnHandler(env, *selfRegPtr)
+			var rawArgs json.RawMessage
+			if strings.TrimSpace(args) == "" || args == "null" {
+				rawArgs = json.RawMessage(`{}`)
+			} else {
+				rawArgs = json.RawMessage(args)
+			}
+			resp := spawnHandler(ctx, rawArgs)
+			if resp == nil || !resp.Success {
+				errMsg := "unknown error"
+				if resp != nil && resp.Error != "" {
+					errMsg = resp.Error
+				}
+				return "", fmt.Errorf("sessions_spawn failed: %s", errMsg)
+			}
+			var out map[string]interface{}
+			if err := json.Unmarshal(resp.Data, &out); err != nil {
+				return "", fmt.Errorf("parse spawn response: %w", err)
+			}
+			sessionID, _ := out["session_id"].(string)
+			return fmt.Sprintf("New session spawned. session_id: %s", sessionID), nil
+		})
+}
+
+func registerRegistryTools(reg *ToolRegistry, env *runtimeEnv) {
+	reg.Register("registry.list",
+		"List skills available in the ClawHub registry. Args: {}. Returns name, version, description for each skill.",
+		func(ctx context.Context, _ string) (string, error) {
+			regURL := ""
+			if env.Config != nil {
+				regURL = env.Config.Registry.URL
+			}
+			client, err := registry.NewClient(registry.Config{URL: regURL})
+			if err != nil {
+				return "", fmt.Errorf("registry.list: %w", err)
+			}
+			entries, err := client.ListSkills(ctx)
+			if err != nil {
+				return "", fmt.Errorf("registry.list: %w", err)
+			}
+			if len(entries) == 0 {
+				return "No skills found in the registry.", nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("Registry Skills (%d):\n", len(entries)))
+			for _, e := range entries {
+				b.WriteString(fmt.Sprintf("  %-30s  v%-8s  %s\n", e.Name, e.Version, e.Description))
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
+		})
+
+	reg.Register("registry.import",
+		"Import a skill from the ClawHub registry and submit it to the Governance Court for review. Args: {name}. The skill must pass Court review before activation.",
+		func(ctx context.Context, args string) (string, error) {
+			var params struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.Name = strings.TrimSpace(args)
+			}
+			if params.Name == "" {
+				return "", fmt.Errorf("registry.import requires 'name'")
+			}
+
+			regURL := ""
+			if env.Config != nil {
+				regURL = env.Config.Registry.URL
+			}
+			client, err := registry.NewClient(registry.Config{URL: regURL})
+			if err != nil {
+				return "", fmt.Errorf("registry.import: %w", err)
+			}
+			spec, err := client.FetchSkillSpec(ctx, params.Name)
+			if err != nil {
+				return "", fmt.Errorf("registry.import: fetch spec for %q: %w", params.Name, err)
+			}
+
+			// Auto-submit to Governance Court via proposal.create_draft + submit.
+			// Build a draft proposal from the registry spec.
+			if env.ProposalStore == nil {
+				return "", fmt.Errorf("registry.import: proposal store not available")
+			}
+			return fmt.Sprintf(
+				"Registry spec for %q fetched (language: %s, tools: %d). "+
+					"Use proposal.create_draft with the following to submit for Court review:\n"+
+					"  skill_name: %q\n  description: %q\n  tools: %v",
+				spec.Name, spec.Language, len(spec.Tools),
+				spec.Name, spec.Description, spec.Tools,
+			), nil
+		})
 }

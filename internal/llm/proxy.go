@@ -28,6 +28,15 @@ const OllamaProxyVsockPort = 1025
 // exhaustion on the host.
 const MaxProxyPayloadBytes = 256 * 1024 // 256 KB
 
+// maxOllamaResponseBytes is the cap applied when reading raw Ollama HTTP
+// responses (error bodies and thinking-fallback bodies).  Ollama response
+// bodies for chat completions are read incrementally via streaming; this cap
+// only applies to the non-streaming paths (error responses and the thinking
+// fallback endpoint which buffers the full response before parsing).
+// 8 MiB is generous enough for any realistic model reasoning output while
+// preventing an OOM from a misbehaving local Ollama instance.
+const maxOllamaResponseBytes = 8 * 1024 * 1024 // 8 MiB
+
 // ProxyRequest is the vsock request from a guest agent to the host LLM proxy.
 type ProxyRequest struct {
 	RequestID string                 `json:"request_id"`
@@ -443,7 +452,7 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 	}
 	defer httpResp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(httpResp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(httpResp.Body, maxOllamaResponseBytes))
 	if err != nil {
 		return "", err
 	}

@@ -147,7 +147,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("skill.invoke", makeSkillInvokeHandler(env))
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
 	apiSrv.Handle("dashboard.skills", makeDashboardSkillsHandler(env))
+	apiSrv.Handle("dashboard.proposal", makeDashboardProposalHandler(env))
 	apiSrv.Handle("sandbox.list", makeSandboxListHandler(env))
+	apiSrv.Handle("system.stats", makeSystemStatsHandler())
 	apiSrv.Handle("safe-mode.enable", makeSafeModeEnableHandler(env))
 	apiSrv.Handle("safe-mode.disable", makeSafeModeDisableHandler(env))
 	apiSrv.Handle("safe-mode.status", makeSafeModeStatusHandler(env))
@@ -176,6 +178,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Phase 3: Worker handlers.
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
+	// Phase 1 (OpenClaw integration): Session routing handlers.
+	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
+	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
+	apiSrv.Handle("sessions.send", makeSessionsSendHandler(env, toolRegistry))
+	apiSrv.Handle("sessions.spawn", makeSessionsSpawnHandler(env, toolRegistry))
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
@@ -184,6 +191,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Start the dashboard portal microVM and localhost edge proxy after API
 	// handlers are registered so portal requests can be serviced immediately.
 	startDashboard(cmd.Context(), env, apiSrv)
+
+	// Start the multi-channel Gateway if enabled in config (Phase 2, Task 4).
+	// It must be started after the API server so that the RouteFunc can call
+	// chat.message via CallDirect.
+	startGateway(cmd.Context(), env, apiSrv)
 
 	// Apply --safe flag: if set, enable safe mode and deactivate all
 	// active skills before accepting requests.
@@ -398,6 +410,14 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 		}
 
 		sandboxID := generateVMID("skill")
+
+		// Phase 1 (OpenClaw integration) – capability enforcement.
+		// Look up the approved proposal for this skill and translate its
+		// declared Capabilities and NetworkPolicy into the SandboxSpec.
+		// The skill can only get network access if the Governance Court
+		// approved a proposal that explicitly declared Capabilities.Network.
+		netPolicy := skillNetworkPolicy(req.Name, env)
+
 		spec := sandbox.SandboxSpec{
 			ID:   sandboxID,
 			Name: fmt.Sprintf("skill-%s", req.Name),
@@ -405,10 +425,8 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 				VCPUs:    1,
 				MemoryMB: 256,
 			},
-			NetworkPolicy: sandbox.NetworkPolicy{
-				DefaultDeny: true,
-			},
-			RootfsPath: rootfsPath,
+			NetworkPolicy: netPolicy,
+			RootfsPath:    rootfsPath,
 		}
 
 		if err := env.Runtime.Create(ctx, spec); err != nil {
@@ -461,6 +479,8 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			"sandbox_id": sandboxID,
 			"version":    entry.Version,
 			"hash":       entry.MerkleHash,
+			"network":    netPolicy.AllowedHosts,
+			"no_network": netPolicy.NoNetwork,
 		})
 		action := kernel.NewAction(kernel.ActionSkillActivate, "kernel", payload)
 		env.Kernel.SignAndLog(action)
@@ -608,19 +628,26 @@ func makeSandboxListHandler(env *runtimeEnv) api.Handler {
 			return &api.Response{Error: "failed to list sandboxes: " + err.Error()}
 		}
 
+		uptime := procSystemUptimeSeconds()
 		rows := make([]map[string]interface{}, 0, len(items))
 		for _, sb := range items {
 			if req.RunningOnly && sb.State != sandbox.StateRunning {
 				continue
 			}
-			rows = append(rows, map[string]interface{}{
+			row := map[string]interface{}{
 				"id":         sb.Spec.ID,
 				"name":       sb.Spec.Name,
 				"state":      string(sb.State),
 				"vcpus":      sb.Spec.Resources.VCPUs,
 				"memory_mb":  sb.Spec.Resources.MemoryMB,
 				"started_at": sb.StartedAt,
-			})
+			}
+			if sb.PID > 0 {
+				rssKB := procRSSKB(sb.PID)
+				row["rss_mb"] = rssKB / 1024
+				row["cpu_avg_pct"] = fmt.Sprintf("%.1f", procCPUAvgPct(sb.PID, uptime))
+			}
+			rows = append(rows, row)
 		}
 
 		respData, _ := json.Marshal(rows)
@@ -796,4 +823,62 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 	env.Kernel.SignAndLog(launchAction) //nolint:errcheck
 
 	return hub, hubVMID, nil
+}
+
+// skillNetworkPolicy resolves the approved Governance Court NetworkPolicy for
+// the named skill into a sandbox.NetworkPolicy.
+//
+// The function walks the proposal store looking for an approved proposal whose
+// TargetSkill matches skillName.  If it finds one:
+//   - If Capabilities.Network is false (or Capabilities is nil), the sandbox
+//     boots with no network interface (NoNetwork=true, strongest isolation).
+//   - If Capabilities.Network is true, the proposal's NetworkPolicy is
+//     translated into sandbox.NetworkPolicy with DefaultDeny enforced.
+//
+// If no proposal is found, the sandbox defaults to no-network isolation —
+// the least-privilege default that every skill starts from.
+func skillNetworkPolicy(skillName string, env *runtimeEnv) sandbox.NetworkPolicy {
+	noNetwork := sandbox.NetworkPolicy{NoNetwork: true, DefaultDeny: true}
+
+	if env.ProposalStore == nil {
+		return noNetwork
+	}
+
+	summaries, err := env.ProposalStore.List()
+	if err != nil {
+		return noNetwork
+	}
+
+	for _, s := range summaries {
+		full, err := env.ProposalStore.Get(s.ID)
+		if err != nil || full == nil {
+			continue
+		}
+		if full.TargetSkill != skillName {
+			continue
+		}
+		if full.Status != proposal.StatusApproved && full.Status != proposal.StatusImplementing && full.Status != proposal.StatusComplete {
+			continue
+		}
+
+		// Found an approved/active proposal for this skill.
+		caps := full.Capabilities
+		if caps == nil || !caps.Network {
+			// No network capability declared — boot with no interface.
+			return noNetwork
+		}
+
+		// Network capability declared.  Build the sandbox NetworkPolicy from
+		// the proposal's NetworkPolicy, enforcing DefaultDeny as a hard invariant.
+		np := sandbox.NetworkPolicy{DefaultDeny: true}
+		if full.NetworkPolicy != nil {
+			np.AllowedHosts = full.NetworkPolicy.AllowedHosts
+			np.AllowedPorts = full.NetworkPolicy.AllowedPorts
+			np.AllowedProtocols = full.NetworkPolicy.AllowedProtocols
+		}
+		return np
+	}
+
+	// No matching approved proposal — default to no-network.
+	return noNetwork
 }

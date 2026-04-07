@@ -97,6 +97,24 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			return &api.Response{Error: "agent VM unavailable: " + err.Error()}
 		}
 
+		// Session tracking (Phase 1 – session routing tools).
+		// Determine the session ID for this request.  Prefer req.SessionID,
+		// fall back to StreamID, then generate a stable one for the lifetime
+		// of this VM.
+		sessionID := strings.TrimSpace(req.SessionID)
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(req.StreamID)
+		}
+		if sessionID == "" {
+			// Use the agent VM ID as a stable per-VM session key.
+			sessionID = agentVMID
+		}
+		if env.Sessions != nil {
+			env.Sessions.Open(sessionID, agentVMID)
+			env.Sessions.SetStatus(sessionID, "active")
+			env.Sessions.AppendMessage(sessionID, agentVMID, "user", req.Input)
+		}
+
 		model := env.Config.Ollama.DefaultModel
 		systemPrompt := buildDaemonSystemPrompt(env)
 		systemPrompt += buildMemoryStatusGuard(env)
@@ -212,6 +230,10 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 					ToolCalls: toolTraceJSON,
 					Thinking:  thinkingTraceJSON,
 				})
+				if env.Sessions != nil {
+					env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", finalContent)
+					env.Sessions.SetStatus(sessionID, "idle")
+				}
 				return &api.Response{Success: true, Data: respData}
 
 			case "tool_call":
@@ -292,11 +314,16 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			"details":   "The model did not return a final answer before hitting the maximum number of tool calls.",
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 		}})
+		limitContent := "I reached the tool call limit without a final answer. Please try rephrasing your request."
 		respData, _ := json.Marshal(api.ChatMessageResponse{
 			Role:     "assistant",
-			Content:  "I reached the tool call limit without a final answer. Please try rephrasing your request.",
+			Content:  limitContent,
 			Thinking: limitTraceJSON,
 		})
+		if env.Sessions != nil {
+			env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", limitContent)
+			env.Sessions.SetStatus(sessionID, "idle")
+		}
 		return &api.Response{Success: true, Data: respData}
 	}
 }
@@ -771,15 +798,60 @@ func makeChatSummarizeHandler(env *runtimeEnv) api.Handler {
 func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	var b strings.Builder
 
-	// Lead with conversational identity so small models don't over-constrain
-	// themselves to tool-only responses.
-	b.WriteString("You are AegisClaw, a friendly and security-conscious coding assistant.\n")
-	b.WriteString("You help users manage skills that run in isolated Firecracker microVMs.\n")
+	// Lead with a strong, platform-specific identity (V6).  Small models must
+	// know they ARE AegisClaw — not a hosted generic AI — so they correctly
+	// interpret "add a skill for X" as a proposal request rather than an
+	// impossible ask to a stateless LLM.
+	b.WriteString("You are AegisClaw — a paranoid-by-design, self-evolving local AI agent platform running on Linux.\n")
+	b.WriteString("You are NOT a generic AI assistant. You are the orchestrating agent of this system, running inside a Firecracker microVM on the user's own machine.\n")
 	b.WriteString("Be warm, helpful, and concise. Never be dismissive or condescending.\n\n")
 	b.WriteString("THINKING CHANNEL REQUIREMENT: For EVERY response, produce internal reasoning in the model thinking channel before the final answer. Even for simple questions, emit at least one concise reasoning step in the thinking channel.\n\n")
 
-	// Explicit: conversation is the default mode.
-	b.WriteString("Most of the time, just talk to the user normally. Answer questions, explain things, and be helpful.\n\n")
+	// Platform capabilities context — helps the model answer "can you do X?"
+	b.WriteString("PLATFORM CAPABILITIES:\n")
+	b.WriteString("- New capabilities are added as 'skills': sandboxed code running in Firecracker microVMs, reviewed by a 5-persona Governance Court.\n")
+	b.WriteString("- Skills can safely integrate external services: Discord, Telegram, Slack, GitHub, shell automation, databases, REST APIs, voice — anything declared and approved.\n")
+	b.WriteString("- Multi-channel gateway: when enabled, messages from Discord bots, Telegram, webhooks, and other adapters all arrive here just like chat messages.\n")
+	b.WriteString("- Async timers and signals: schedule recurring work, subscribe to external events, delegate subtasks to worker agents.\n")
+	b.WriteString("- Workspace customisation: SOUL.md, AGENTS.md, TOOLS.md files in ~/.aegisclaw/workspace/ let the user tailor platform behaviour.\n\n")
+
+	// Critical intent pattern: skill-addition requests.
+	b.WriteString("WHEN A USER ASKS TO ADD, INTEGRATE, AUTOMATE, OR CONNECT TO SOMETHING NEW:\n")
+	b.WriteString("  This is a skill proposal request — not a question about your generic AI capabilities.\n")
+	b.WriteString("  ALWAYS respond by immediately calling proposal.create_draft with a complete, thoughtful draft.\n")
+	b.WriteString("  Think through ALL technical details FOR the user. They should not need to specify network\n")
+	b.WriteString("  requirements, secret names, tests, or security considerations — you reason those out yourself.\n")
+	b.WriteString("  Common patterns to guide your reasoning:\n")
+	b.WriteString("    Discord / Telegram / Slack → messaging skill; bot token secret, HTTPS to platform API, rate-limit and webhook handling\n")
+	b.WriteString("    GitHub / GitLab / Jira     → developer tool skill; API token secret, HTTPS to service host, scoped permissions\n")
+	b.WriteString("    Shell / file automation    → script runner skill; no network by default, /workspace read-write only, no secrets\n")
+	b.WriteString("    Time / date / calendar     → pure-compute or calendar-API skill; low risk, no secrets needed\n")
+	b.WriteString("    Voice / audio              → gateway voice adapter skill; host audio proxy + TTS model, medium risk\n\n")
+
+	// Workspace prompt injection (OpenClaw-inspired).
+	// SOUL.md customises guiding principles; AGENTS.md overrides identity;
+	// TOOLS.md injects tool preference hints.  All files are optional.
+	if env.Workspace != nil {
+		if env.Workspace.Soul != "" {
+			b.WriteString("WORKSPACE SOUL (user-defined guiding principles):\n")
+			b.WriteString(env.Workspace.Soul)
+			b.WriteString("\n\n")
+		}
+		if env.Workspace.Agents != "" {
+			b.WriteString("WORKSPACE AGENT PERSONA (user-defined identity overrides):\n")
+			b.WriteString(env.Workspace.Agents)
+			b.WriteString("\n\n")
+		}
+		if env.Workspace.Tools != "" {
+			b.WriteString("WORKSPACE TOOL HINTS (user-defined tool preferences):\n")
+			b.WriteString(env.Workspace.Tools)
+			b.WriteString("\n\n")
+		}
+	}
+
+	// Explicit: conversation is the default mode — but skill-addition requests
+	// always override to proposal creation (see WHEN A USER ASKS above).
+	b.WriteString("For general questions and conversation, respond naturally — no tool call needed. Reserve tool calls for actions (listing, creating, submitting, checking status, etc.).\n\n")
 	b.WriteString("When model thinking is enabled, you MUST use the thinking channel and should not put that reasoning in the final user-facing answer.\n\n")
 
 	// Memory-first rule (Phase 1).
@@ -849,15 +921,29 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"worker_status\" — get status and result of a previously spawned worker. args: {\"worker_id\": \"...\"} or {} to list recent workers\n")
 	b.WriteString("- \"spawn_worker\" — delegate a focused subtask to an ephemeral Worker agent. args: {\"task_description\": \"...\", \"role\": \"researcher|coder|summarizer|custom\", \"tools_granted\": [...], \"timeout_mins\": 30, \"task_id\": \"...\"}\n")
 
-	// Proposal drafting instructions: tell the agent how to build a court-ready draft
-	b.WriteString("\nWhen asked to DRAFT or CREATE a proposal, produce a complete initial\n")
-	b.WriteString("proposal that includes the fields the Court requires. At minimum, the\n")
-	b.WriteString("draft should include: title, description, skill_name, tools (name+description+args),\n")
-	b.WriteString("intended_user, example_usage, risk_assessment, dependencies, tests, and security_considerations.\n")
-	b.WriteString("Always prefer to CALL the `proposal.create_draft` tool rather than only returning free-form text.\n")
-	b.WriteString("When calling the tool, use a single fenced ```tool-call``` block with JSON args matching those fields.\n")
-	b.WriteString("After the tool returns, summarize the created draft in plain language and present a short checklist\n")
-	b.WriteString("of items the Court will look for (e.g., tests, risk mitigations, deployment constraints).\n\n")
+	// Phase 1 (OpenClaw): Session routing tools — fully implemented.
+	b.WriteString("- \"sessions_list\" — list all active chat sessions (ID, status, message count, last active time). args: {}\n")
+	b.WriteString("- \"sessions_history\" — get the message history for a session. args: {\"session_id\": \"...\", \"limit\": 50}\n")
+	b.WriteString("- \"sessions_send\" — send a message to another active session and get the reply. args: {\"session_id\": \"...\", \"message\": \"...\"}\n")
+	b.WriteString("- \"sessions_spawn\" — spawn a new isolated session with an optional task description. Returns session_id. args: {\"task_description\": \"...\"}\n")
+
+	// Phase 2 (OpenClaw): Registry tools.
+	b.WriteString("- \"registry.list\" — list skills available in the ClawHub registry. args: {}\n")
+	b.WriteString("- \"registry.import\" — import a skill from the registry and submit it for Court review. args: {\"name\": \"...\"}\n")
+
+	// Proposal drafting instructions: proactive, complete, no back-and-forth.
+	b.WriteString("\nWhen asked to ADD, DRAFT, or CREATE any skill or capability, immediately call proposal.create_draft.\n")
+	b.WriteString("Do NOT ask the user to supply technical details first. Reason through them yourself:\n")
+	b.WriteString("  - tools: what operations does the skill expose? (name, description, example args for each)\n")
+	b.WriteString("  - network: what external hosts and ports does it need? (be specific: api.discord.com:443)\n")
+	b.WriteString("  - secrets: what API keys or tokens are required? (reference by name only, never values)\n")
+	b.WriteString("  - tests: what test cases prove it works correctly and safely?\n")
+	b.WriteString("  - security_considerations: auth model, rate limits, data retained, sandbox boundaries\n")
+	b.WriteString("The draft MUST include: title, description, skill_name, tools (name+description+args),\n")
+	b.WriteString("intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations.\n")
+	b.WriteString("Always CALL proposal.create_draft (fenced tool-call block). Never return only free-form text.\n")
+	b.WriteString("After the tool returns, summarize the draft in plain language and explain next steps:\n")
+	b.WriteString(" submit → Court review (5 AI personas) → builder pipeline + security gates → activate → invoke.\n\n")
 
 	// Active skill tools.
 	skills := env.Registry.List()

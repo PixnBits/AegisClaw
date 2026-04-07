@@ -56,6 +56,32 @@ func New(addr string, client APIClient) (*Server, error) {
 			return s[:n] + "…"
 		},
 		"join": strings.Join,
+		"toJSON": func(v interface{}) template.JS {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return template.JS("null")
+			}
+			return template.JS(b)
+		},
+		// len counts items in slices or maps returned by fetchRaw (interface{}).
+		// Returns 0 for nil or unrecognised types rather than panicking.
+		"len": func(v interface{}) int {
+			if v == nil {
+				return 0
+			}
+			switch val := v.(type) {
+			case []interface{}:
+				return len(val)
+			case map[string]interface{}:
+				return len(val)
+			case []map[string]interface{}:
+				return len(val)
+			case string:
+				return len(val)
+			default:
+				return 0
+			}
+		},
 	}
 	s.registerRoutes()
 	return s, nil
@@ -89,9 +115,11 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/approvals/decide", s.handleApprovalsDecide)
 	s.mux.HandleFunc("/audit", s.handleAudit)
 	s.mux.HandleFunc("/skills", s.handleSkills)
+	s.mux.HandleFunc("/skills/proposals/", s.handleSkillProposal)
 	s.mux.HandleFunc("/settings", s.handleSettings)
 	s.mux.HandleFunc("/chat", s.handleChat)
 	s.mux.HandleFunc("/chat/send", s.handleChatSend)
+	s.mux.HandleFunc("/canvas", s.handleCanvas)
 	s.mux.HandleFunc("/events", s.handleSSE)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -110,12 +138,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	timers, _ := s.fetchRaw(r.Context(), "event.timers.list", nil)
 	sandboxes, _ := s.fetchRaw(r.Context(), "sandbox.list", map[string]bool{"running_only": true})
 	memories, _ := s.fetchRaw(r.Context(), "memory.list", map[string]interface{}{"limit": 1, "count_only": true})
+	sysStats, _ := s.fetchRaw(r.Context(), "system.stats", nil)
 
 	workerCount := countItems(workers)
 	approvalCount := countItems(approvals)
 	timerCount := countItems(timers)
 	runningVMCount := countItems(sandboxes)
-	runningVMVCPUs, runningVMMemoryMB := sandboxResourceTotals(sandboxes)
+	runningVMVCPUs, runningVMMemoryMB, runningVMRSSMB := sandboxResourceTotals(sandboxes)
 
 	var memCount int
 	if m, ok := memories.(map[string]interface{}); ok {
@@ -123,6 +152,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			memCount = int(c)
 		}
 	}
+
+	var hostRAMTotalMB, hostRAMUsedMB int64
+	var hostRAMPct int
+	var hostLoadAvg1 float64
+	if m, ok := sysStats.(map[string]interface{}); ok {
+		hostRAMTotalMB = int64(toFloat(m["host_ram_total_mb"]))
+		hostRAMUsedMB = int64(toFloat(m["host_ram_used_mb"]))
+		hostRAMPct = int(toFloat(m["host_ram_pct"]))
+		hostLoadAvg1 = toFloat(m["host_load_avg_1"])
+	}
+	hostRAMLabel := fmt.Sprintf("%s / %s", fmtDashMB(hostRAMUsedMB), fmtDashMB(hostRAMTotalMB))
+	hostLoadLabel := fmt.Sprintf("%.2f", hostLoadAvg1)
 
 	s.renderTemplate(w, "Overview", overviewTmpl, map[string]interface{}{
 		"WorkerCount":       workerCount,
@@ -132,9 +173,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"RunningVMCount":    runningVMCount,
 		"RunningVMVCPUs":    runningVMVCPUs,
 		"RunningVMMemoryMB": runningVMMemoryMB,
+		"RunningVMRSSMB":    runningVMRSSMB,
 		"RunningVMs":        sandboxes,
 		"Workers":           workers,
 		"Approvals":         approvals,
+		"HostRAMLabel":      hostRAMLabel,
+		"HostRAMPct":        hostRAMPct,
+		"HostLoadLabel":     hostLoadLabel,
 	})
 }
 
@@ -220,6 +265,36 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleSkillProposal(w http.ResponseWriter, r *http.Request) {
+	prefix := "/skills/proposals/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, prefix))
+	if id == "" {
+		http.Redirect(w, r, "/skills", http.StatusSeeOther)
+		return
+	}
+
+	detail, err := s.fetchRaw(r.Context(), "dashboard.proposal", map[string]string{"id": id})
+	detailMap, _ := detail.(map[string]interface{})
+	pageErr := ""
+	if err != nil {
+		pageErr = err.Error()
+	}
+
+	s.renderTemplate(w, "Proposal Details", proposalDetailTmpl, map[string]interface{}{
+		"ProposalID":           id,
+		"Proposal":             detailMap["proposal"],
+		"ReviewStatus":         detailMap["review_status"],
+		"CurrentRoundFeedback": detailMap["current_round_feedback"],
+		"PreviousRounds":       detailMap["previous_rounds"],
+		"RevisionHistory":      detailMap["revision_history"],
+		"Error":                pageErr,
+	})
+}
+
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "Audit Explorer", auditTmpl, nil)
 }
@@ -232,6 +307,21 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "Chat", chatTmpl, nil)
 }
 
+func (s *Server) handleCanvas(w http.ResponseWriter, r *http.Request) {
+	// Canvas provides a real-time visual workspace: active agents, live
+	// tool-call feed, and an agent interaction graph.  All data is served
+	// via the existing /events SSE stream so no additional server state is
+	// needed.
+	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
+	sandboxes, _ := s.fetchRaw(r.Context(), "sandbox.list", map[string]bool{"running_only": true})
+	skills, _ := s.fetchRaw(r.Context(), "skill.list", nil)
+	s.renderTemplate(w, "Canvas", canvasTmpl, map[string]interface{}{
+		"Workers":   workers,
+		"Sandboxes": sandboxes,
+		"Skills":    skills,
+	})
+}
+
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -239,7 +329,8 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 512<<10) // 512 KB limit
 	var req struct {
-		Input   string `json:"input"`
+		Input     string `json:"input"`
+		SessionID string `json:"session_id,omitempty"`
 		History []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
@@ -261,16 +352,18 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("stream") == "1" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
 		streamID := fmt.Sprintf("chat-%d", time.Now().UnixNano())
 		payload := mustMarshal(map[string]interface{}{
-			"input":     req.Input,
-			"history":   req.History,
-			"stream_id": streamID,
+			"input":      req.Input,
+			"history":    req.History,
+			"session_id": req.SessionID,
+			"stream_id":  streamID,
 		})
 		s.handleChatSendStream(w, r, payload, streamID)
 		return
 	}
 	payload := mustMarshal(map[string]interface{}{
-		"input":   req.Input,
-		"history": req.History,
+		"input":      req.Input,
+		"history":    req.History,
+		"session_id": req.SessionID,
 	})
 	resp, err := s.apiClient.Call(r.Context(), "chat.message", payload)
 	w.Header().Set("Content-Type", "application/json")
@@ -556,6 +649,19 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "data: {\"type\":\"heartbeat\"}\n\n")
 	flusher.Flush()
 
+	// Per-connection cursors so each client only receives new events.
+	var lastToolEventID, lastWorkerEventID int64
+
+	writeSSEMsg := func(v interface{}) bool {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return false
+		}
+		_, werr := fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+		return werr == nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -565,18 +671,79 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			approvals, _ := s.fetchRaw(ctx, "event.approvals.list", map[string]bool{"pending_only": true})
 			toolEvents, _ := s.fetchRaw(ctx, "chat.tool_events", map[string]int{"limit": 40})
 			thoughtEvents, _ := s.fetchRaw(ctx, "chat.thought_events", map[string]int{"limit": 60})
+			sessionsList, _ := s.fetchRaw(ctx, "sessions.list", nil)
+
+			// Emit individual tool_start/tool_end events for new tool events
+			// so Canvas and other subscribers can react without parsing the
+			// full update bundle.
+			if toolEvSlice, ok := toolEvents.([]interface{}); ok {
+				for _, raw := range toolEvSlice {
+					ev, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					id := int64(toFloat(ev["id"]))
+					if id <= lastToolEventID {
+						continue
+					}
+					lastToolEventID = id
+					evType := "tool_end"
+					if toString(ev["status"]) == "running" {
+						evType = "tool_start"
+					}
+					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
+						"type": evType,
+						"data": map[string]interface{}{
+							"tool":        toString(ev["tool"]),
+							"agent_id":    toString(ev["session_id"]),
+							"agent_name":  toString(ev["session_id"]),
+							"error":       toString(ev["error"]),
+							"duration_ms": ev["duration_ms"],
+						},
+					})
+				}
+			}
+
+			// Emit worker_start/worker_stop events for new worker transitions.
+			if workerSlice, ok := workers.([]interface{}); ok {
+				for _, raw := range workerSlice {
+					wk, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					id := int64(toFloat(wk["created_at_unix"]))
+					if id <= lastWorkerEventID {
+						continue
+					}
+					lastWorkerEventID = id
+					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
+						"type": "worker_start",
+						"data": wk,
+					})
+				}
+			}
+
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type":              "update",
 				"active_workers":    workers,
 				"pending_approvals": approvals,
 				"tool_events":       toolEvents,
 				"thought_events":    thoughtEvents,
+				"sessions":          sessionsList,
 				"ts":                time.Now().UTC().Format(time.RFC3339),
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)
 			flusher.Flush()
 		}
 	}
+}
+
+// toFloat safely converts an interface{} to float64 (used for numeric ID comparisons).
+func toFloat(v interface{}) float64 {
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return 0
 }
 
 func (s *Server) fetchRaw(ctx context.Context, action string, req interface{}) (interface{}, error) {
@@ -637,13 +804,13 @@ func countItems(v interface{}) int {
 	return 0
 }
 
-func sandboxResourceTotals(v interface{}) (vcpus int64, memoryMB int64) {
+func sandboxResourceTotals(v interface{}) (vcpus int64, memoryMB int64, rssMB int64) {
 	if v == nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	list, ok := v.([]interface{})
 	if !ok {
-		return 0, 0
+		return 0, 0, 0
 	}
 	for _, raw := range list {
 		m, ok := raw.(map[string]interface{})
@@ -656,8 +823,19 @@ func sandboxResourceTotals(v interface{}) (vcpus int64, memoryMB int64) {
 		if mem, ok := m["memory_mb"].(float64); ok {
 			memoryMB += int64(mem)
 		}
+		if rss, ok := m["rss_mb"].(float64); ok {
+			rssMB += int64(rss)
+		}
 	}
-	return vcpus, memoryMB
+	return vcpus, memoryMB, rssMB
+}
+
+// fmtDashMB formats a megabyte count as "X.X GB" (when ≥ 1024) or "X MB".
+func fmtDashMB(mb int64) string {
+	if mb >= 1024 {
+		return fmt.Sprintf("%.1f GB", float64(mb)/1024)
+	}
+	return fmt.Sprintf("%d MB", mb)
 }
 
 // pageWrap renders a full HTML page with shared chrome around the body content.
@@ -793,6 +971,8 @@ const dashboardNav = `
 <nav>
   <span class="logo">&#128737; AegisClaw</span>
   <a href="/">Overview</a>
+  <a href="/canvas">Canvas</a>
+  <a href="/chat">Chat</a>
   <a href="/agents">Agents</a>
   <a href="/skills">Skills</a>
   <a href="/async">Async Hub</a>
@@ -800,7 +980,6 @@ const dashboardNav = `
   <a href="/approvals">Approvals</a>
   <a href="/audit">Audit</a>
   <a href="/settings">Settings</a>
-  <a href="/chat">Chat</a>
   <span id="sse-status">&#9679;</span>
 </nav>`
 
@@ -1023,15 +1202,29 @@ const overviewTmpl = `
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
     <div style="font-size:2rem;font-weight:700;color:#79c0ff">{{.RunningVMMemoryMB}} MB</div>
-    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Allocated VM Memory</div>
+    {{if .RunningVMRSSMB}}<div style="font-size:.8rem;color:#e8916a;margin-top:.15rem">{{.RunningVMRSSMB}} MB actual RSS</div>{{end}}
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.15rem">Allocated VM Memory</div>
   </div>
+{{if .HostRAMLabel}}
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:1.5rem;font-weight:700;color:#e8916a">{{.HostRAMLabel}}</div>
+    <div style="height:6px;border-radius:3px;background:#30363d;margin:.5rem 0">
+      <div style="height:100%;border-radius:3px;background:#e8916a;width:{{.HostRAMPct}}%"></div>
+    </div>
+    <div style="font-size:.85rem;color:#8b949e">Host RAM ({{.HostRAMPct}}%)</div>
+  </div>
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#d2a8ff">{{.HostLoadLabel}}</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">CPU Load Avg (1m)</div>
+  </div>
+{{end}}
 </div>
 
 {{if .RunningVMs}}
 <div class="section">
   <div class="section-header">Running MicroVMs</div>
   <table>
-    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>vCPUs</th><th>Memory</th></tr></thead>
+    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>vCPUs</th><th>Alloc Mem</th><th>RSS</th><th>CPU avg</th></tr></thead>
     <tbody>
     {{range .RunningVMs}}
     <tr>
@@ -1040,6 +1233,8 @@ const overviewTmpl = `
       <td><span class="badge badge-running">{{index . "state"}}</span></td>
       <td>{{index . "vcpus"}}</td>
       <td>{{index . "memory_mb"}} MB</td>
+      <td>{{if index . "rss_mb"}}{{index . "rss_mb"}} MB{{else}}-{{end}}</td>
+      <td>{{if index . "cpu_avg_pct"}}{{index . "cpu_avg_pct"}}%{{else}}-{{end}}</td>
     </tr>
     {{end}}
     </tbody>
@@ -1188,7 +1383,7 @@ const skillsTmpl = `
   <div class="section-header">Proposals</div>
   {{if .Proposals}}
   <table>
-    <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Category</th><th>Target Skill</th></tr></thead>
+    <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Category</th><th>Target Skill</th><th>Details</th></tr></thead>
     <tbody>
     {{range .Proposals}}
     <tr>
@@ -1197,6 +1392,7 @@ const skillsTmpl = `
       <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
       <td>{{index . "category"}}</td>
       <td>{{index . "target_skill"}}</td>
+      <td><a href="/skills/proposals/{{index . "id"}}" class="nav-link">View details</a></td>
     </tr>
     {{end}}
     </tbody>
@@ -1205,6 +1401,126 @@ const skillsTmpl = `
   <p class="empty">No proposals yet. Submit a skill proposal via <code>aegisclaw skill add</code>.</p>
   {{end}}
 </div>`
+
+const proposalDetailTmpl = `
+<h1>{{.Title}}</h1>
+<div class="section">
+  <div class="section-header">Summary</div>
+  {{if .Error}}
+  <p class="empty" style="color:#f85149">Failed to load proposal {{.ProposalID}}: {{.Error}}</p>
+  {{else if .Proposal}}
+  <div style="padding:1rem">
+    <p style="margin-bottom:.4rem"><a href="/skills" class="nav-link">&larr; Back to Skills</a></p>
+    <h2 style="font-size:1.15rem;margin-bottom:.6rem">{{index .Proposal "title"}}</h2>
+    <p style="color:#8b949e;margin-bottom:1rem">{{index .Proposal "description"}}</p>
+    <table style="width:auto">
+      <tr><th style="width:220px">Proposal ID</th><td><code>{{index .Proposal "id"}}</code></td></tr>
+      <tr><th>Status</th><td><span class="badge badge-{{index .Proposal "status"}}">{{index .Proposal "status"}}</span></td></tr>
+      <tr><th>Category</th><td>{{index .Proposal "category"}}</td></tr>
+      <tr><th>Risk</th><td>{{index .Proposal "risk"}}</td></tr>
+      <tr><th>Round</th><td>{{index .Proposal "round"}}</td></tr>
+      <tr><th>Version</th><td>{{index .Proposal "version"}}</td></tr>
+      <tr><th>Author</th><td>{{index .Proposal "author"}}</td></tr>
+      <tr><th>Target Skill</th><td>{{index .Proposal "target_skill"}}</td></tr>
+      <tr><th>Created</th><td>{{index .Proposal "created_at"}}</td></tr>
+      <tr><th>Updated</th><td>{{index .Proposal "updated_at"}}</td></tr>
+    </table>
+  </div>
+  {{else}}
+  <p class="empty">Proposal not found.</p>
+  {{end}}
+</div>
+
+{{if .Proposal}}
+<div class="section">
+  <div class="section-header">Current Review Status</div>
+  <div style="padding:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.75rem">
+    <div><div class="muted">Current Round</div><strong>{{index .ReviewStatus "current_round"}}</strong></div>
+    <div><div class="muted">Reviews This Round</div><strong>{{index .ReviewStatus "current_count"}}</strong></div>
+    <div><div class="muted">Pending Reviews</div><strong>{{index .ReviewStatus "pending_reviews"}}</strong></div>
+    <div><div class="muted">Approvals</div><strong>{{index .ReviewStatus "approval_count"}}</strong></div>
+    <div><div class="muted">Rejects</div><strong>{{index .ReviewStatus "reject_count"}}</strong></div>
+    <div><div class="muted">Asks</div><strong>{{index .ReviewStatus "ask_count"}}</strong></div>
+    <div><div class="muted">Abstains</div><strong>{{index .ReviewStatus "abstain_count"}}</strong></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header">Feedback in Current Round</div>
+  {{if .CurrentRoundFeedback}}
+  <table>
+    <thead><tr><th>Persona</th><th>Verdict</th><th>Risk Score</th><th>Comments</th><th>Questions</th><th>Timestamp</th></tr></thead>
+    <tbody>
+    {{range .CurrentRoundFeedback}}
+    <tr>
+      <td>{{index . "persona"}}</td>
+      <td><span class="badge">{{index . "verdict"}}</span></td>
+      <td>{{index . "risk_score"}}</td>
+      <td>{{index . "comments"}}</td>
+      <td>
+        {{if index . "questions"}}
+          {{range index . "questions"}}<div>{{.}}</div>{{end}}
+        {{else}}<span class="muted">None</span>{{end}}
+      </td>
+      <td>{{index . "timestamp"}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No review feedback has been recorded for the current round.</p>
+  {{end}}
+</div>
+
+<div class="section">
+  <div class="section-header">Feedback in Previous Rounds</div>
+  {{if .PreviousRounds}}
+  {{range .PreviousRounds}}
+  <div style="padding:1rem;border-bottom:1px solid #21262d">
+    <h3 style="font-size:1rem;margin-bottom:.6rem">Round {{index . "round"}}</h3>
+    <table>
+      <thead><tr><th>Persona</th><th>Verdict</th><th>Risk Score</th><th>Comments</th><th>Timestamp</th></tr></thead>
+      <tbody>
+      {{range index . "reviews"}}
+      <tr>
+        <td>{{index . "persona"}}</td>
+        <td><span class="badge">{{index . "verdict"}}</span></td>
+        <td>{{index . "risk_score"}}</td>
+        <td>{{index . "comments"}}</td>
+        <td>{{index . "timestamp"}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{else}}
+  <p class="empty">No feedback from previous rounds.</p>
+  {{end}}
+</div>
+
+<div class="section">
+  <div class="section-header">Revision & Status History</div>
+  {{if .RevisionHistory}}
+  <table>
+    <thead><tr><th>Timestamp</th><th>Actor</th><th>From</th><th>To</th><th>Reason</th></tr></thead>
+    <tbody>
+    {{range .RevisionHistory}}
+    <tr>
+      <td>{{index . "timestamp"}}</td>
+      <td>{{index . "actor"}}</td>
+      <td>{{index . "from"}}</td>
+      <td>{{index . "to"}}</td>
+      <td>{{index . "reason"}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No revision history available.</p>
+  {{end}}
+</div>
+{{end}}`
 
 const chatTmpl = `
 <div id="chat-wrap">
@@ -2108,10 +2424,11 @@ const chatTmpl = `
     ensureLiveThoughtLog();
     showTyping();
     try{
+      var s=getActiveSession();
       var res=await fetch('/chat/send?stream=1',{
         method:'POST',
         headers:{'Content-Type':'application/json','Accept':'text/event-stream'},
-        body:JSON.stringify({input:input,history:snapshot})
+        body:JSON.stringify({input:input,history:snapshot,session_id:s?s.id:''})
       });
 
       var data=null;
@@ -2270,5 +2587,242 @@ const chatTmpl = `
   renderActiveSession();
 
   document.getElementById('chat-input').focus();
+})();
+</script>`
+
+// canvasTmpl is the Canvas visual workspace page.
+// It shows active agents/workers as cards with their live tool-call feed,
+// and an ASCII-art agent graph that updates via SSE.
+const canvasTmpl = `
+<style>
+#canvas-wrap{display:flex;flex-direction:column;gap:1.5rem;padding:1rem 0}
+#canvas-header{display:flex;align-items:center;justify-content:space-between}
+#canvas-header h2{margin:0;font-size:1.1rem;color:#e6edf3}
+#canvas-stats{display:flex;gap:1rem;font-size:.85rem;color:#8b949e}
+#canvas-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem}
+.agent-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;display:flex;flex-direction:column;gap:.5rem}
+.agent-card-header{display:flex;align-items:center;justify-content:space-between}
+.agent-card-title{font-size:.9rem;font-weight:600;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+.agent-card-badge{font-size:.75rem;padding:.15rem .5rem;border-radius:12px;background:#21262d;color:#8b949e}
+.agent-card-badge.running{background:#1f4b2e;color:#3fb950}
+.agent-card-badge.idle{background:#21262d;color:#8b949e}
+.tool-feed{font-size:.8rem;color:#8b949e;background:#0d1117;border-radius:4px;padding:.5rem;min-height:60px;max-height:140px;overflow-y:auto;font-family:monospace}
+.tool-feed .tf-entry{padding:.15rem 0;border-bottom:1px dotted #21262d}
+.tool-feed .tf-entry:last-child{border-bottom:none}
+.tool-feed .tf-tool{color:#58a6ff}
+.tool-feed .tf-result{color:#3fb950}
+.tool-feed .tf-err{color:#f85149}
+.graph-section{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem}
+.graph-section h3{margin:0 0 .75rem;font-size:.9rem;color:#e6edf3}
+#canvas-graph{font-family:monospace;font-size:.8rem;color:#8b949e;white-space:pre;line-height:1.6;min-height:80px}
+#canvas-log{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:.75rem;font-size:.8rem;font-family:monospace;color:#8b949e;max-height:160px;overflow-y:auto}
+.cl-entry{padding:.1rem 0}
+.cl-ts{color:#6e7681}
+.cl-name{color:#58a6ff}
+.cl-tool{color:#d2a8ff}
+.cl-ok{color:#3fb950}
+.cl-err{color:#f85149}
+.empty-state{color:#6e7681;font-size:.85rem;text-align:center;padding:2rem 0}
+</style>
+<div id="canvas-wrap">
+  <div id="canvas-header">
+    <h2>&#127981; Canvas — Live Workspace</h2>
+    <div id="canvas-stats">
+      <span id="cs-agents">Agents</span>
+      <span id="cs-vms">VMs</span>
+      <span id="cs-skills">Skills</span>
+    </div>
+  </div>
+
+  <div id="canvas-grid"></div>
+
+  <div class="graph-section">
+    <h3>Agent Interaction Graph</h3>
+    <div id="canvas-graph">Loading…</div>
+  </div>
+
+  <div class="graph-section">
+    <h3>Live Tool-Call Log</h3>
+    <div id="canvas-log"></div>
+  </div>
+</div>
+<script>
+(function(){
+  // Seed initial data from server-side render.
+  var initialWorkers = {{if .Workers}}{{.Workers | toJSON}}{{else}}[]{{end}};
+  var initialSkills  = {{if .Skills}}{{.Skills | toJSON}}{{else}}[]{{end}};
+
+  // Agent state: map of agentId → {id, name, status, tools:[]}
+  var agents = {};
+
+  function agentID(w){
+    if(typeof w === 'object' && w !== null){
+      return w.id || w.worker_id || w.name || JSON.stringify(w);
+    }
+    return String(w);
+  }
+
+  function agentName(w){
+    if(typeof w === 'object' && w !== null){
+      return w.name || w.task_description || w.id || 'Agent';
+    }
+    return String(w);
+  }
+
+  function agentStatus(w){
+    if(typeof w === 'object' && w !== null){
+      return w.status || w.state || 'running';
+    }
+    return 'running';
+  }
+
+  // Initialise from server data.
+  (Array.isArray(initialWorkers)?initialWorkers:[]).forEach(function(w){
+    var id=agentID(w);
+    agents[id]={id:id,name:agentName(w),status:agentStatus(w),tools:[]};
+  });
+
+  function renderGrid(){
+    var grid=document.getElementById('canvas-grid');
+    var keys=Object.keys(agents);
+    if(keys.length===0){
+      grid.innerHTML='<p class="empty-state">No active agents. Start a chat or spawn a worker to see live activity here.</p>';
+      return;
+    }
+    grid.innerHTML='';
+    keys.forEach(function(id){
+      var a=agents[id];
+      var card=document.createElement('div');
+      card.className='agent-card';
+      card.id='ac-'+id.replace(/[^a-z0-9]/gi,'_');
+      var status=a.status||'idle';
+      card.innerHTML=
+        '<div class="agent-card-header">'+
+          '<span class="agent-card-title" title="'+escH(a.name)+'">'+escH(a.name)+'</span>'+
+          '<span class="agent-card-badge '+(status==='running'?'running':'idle')+'">'+escH(status)+'</span>'+
+        '</div>'+
+        '<div class="tool-feed" id="tf-'+escH(id.replace(/[^a-z0-9]/gi,'_'))+'">'+
+          (a.tools.length===0?'<span style="color:#6e7681">No tool calls yet…</span>':
+            a.tools.slice(-6).map(function(t){
+              return '<div class="tf-entry">'+
+                '<span class="tf-tool">'+escH(t.tool)+'</span>'+
+                (t.ok!==undefined?
+                  (t.ok?'<span class="tf-result"> ✓</span>':'<span class="tf-err"> ✗ '+escH(t.err||'')+'</span>')
+                :'')+
+              '</div>';
+            }).join('')
+          )+
+        '</div>';
+      grid.appendChild(card);
+    });
+  }
+
+  function renderGraph(){
+    var el=document.getElementById('canvas-graph');
+    var keys=Object.keys(agents);
+    if(keys.length===0){el.textContent='(no active agents)';return;}
+    var lines=['[host daemon]'];
+    keys.forEach(function(id){
+      var a=agents[id];
+      lines.push('  └─ '+a.name+' ('+( a.status||'idle')+')');
+    });
+    el.textContent=lines.join('\n');
+  }
+
+  function appendLog(ts,name,tool,ok,err){
+    var log=document.getElementById('canvas-log');
+    var d=document.createElement('div');
+    d.className='cl-entry';
+    d.innerHTML=
+      '<span class="cl-ts">'+escH(ts)+'</span> '+
+      '<span class="cl-name">'+escH(name)+'</span>'+
+      ' → <span class="cl-tool">'+escH(tool)+'</span> '+
+      (ok?'<span class="cl-ok">✓</span>':'<span class="cl-err">✗ '+escH(err||'')+'</span>');
+    log.appendChild(d);
+    log.scrollTop=log.scrollHeight;
+    // Keep log at most 120 entries.
+    while(log.children.length>120){log.removeChild(log.firstChild);}
+  }
+
+  function escH(s){
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── SSE listener ──────────────────────────────────────────────────────────
+  // The /events stream emits {type, data} objects.  We react to:
+  //   type=tool_start  — an agent started a tool call
+  //   type=tool_end    — an agent completed a tool call
+  //   type=worker_*    — worker lifecycle events
+  window.onSSEUpdate = function(msg){
+    var d=msg.data||{};
+    var ts=new Date().toLocaleTimeString();
+
+    if(msg.type==='tool_start'){
+      var id=d.agent_id||d.session_id||'host';
+      if(!agents[id]){agents[id]={id:id,name:d.agent_name||id,status:'running',tools:[]};}
+      agents[id].status='running';
+      agents[id].tools.push({tool:d.tool||d.name||'?',ok:undefined});
+      renderGrid();
+      renderGraph();
+      document.getElementById('cs-agents').textContent='Agents: '+Object.keys(agents).length;
+    }
+    else if(msg.type==='tool_end'){
+      var id=d.agent_id||d.session_id||'host';
+      if(agents[id]){
+        var last=agents[id].tools[agents[id].tools.length-1];
+        if(last&&last.tool===(d.tool||d.name||'?')){
+          last.ok=!d.error;
+          last.err=d.error||'';
+        }
+        agents[id].status='idle';
+        renderGrid();
+        renderGraph();
+      }
+      appendLog(ts,d.agent_name||id,d.tool||d.name||'?',!d.error,d.error||'');
+    }
+    else if(msg.type==='worker_start'){
+      var id=d.worker_id||d.id||'worker';
+      agents[id]={id:id,name:d.name||d.task_description||'Worker',status:'running',tools:[]};
+      renderGrid();renderGraph();
+      document.getElementById('cs-agents').textContent='Agents: '+Object.keys(agents).length;
+    }
+    else if(msg.type==='worker_end'||msg.type==='worker_stop'){
+      var id=d.worker_id||d.id||'worker';
+      if(agents[id]){agents[id].status='stopped';}
+      renderGrid();renderGraph();
+    }
+    else if(msg.type==='update'){
+      // Periodic batch tick — seed agents from tool_events for initial load.
+      var tevs=Array.isArray(msg.data&&msg.data.tool_events)?msg.data.tool_events:(Array.isArray(msg.tool_events)?msg.tool_events:[]);
+      tevs.forEach(function(ev){
+        var id=ev.session_id||ev.agent_id||'host';
+        if(!agents[id]){agents[id]={id:id,name:id,status:'idle',tools:[]};}
+        var found=false;
+        for(var i=0;i<agents[id].tools.length;i++){
+          if(agents[id].tools[i]._evid===ev.id){found=true;break;}
+        }
+        if(!found&&ev.tool){
+          agents[id].tools.push({_evid:ev.id,tool:ev.tool,ok:ev.status!=='error',err:ev.error||''});
+          if(agents[id].tools.length>20)agents[id].tools.shift();
+        }
+      });
+      // Update stats bar with live counts from update payload.
+      var wkrs=Array.isArray(msg.active_workers)?msg.active_workers:[];
+      document.getElementById('cs-agents').textContent='Agents: '+(Object.keys(agents).length||wkrs.length);
+      if(wkrs.length>0){
+        wkrs.forEach(function(w){
+          var wid=w.id||w.worker_id||w.name||JSON.stringify(w);
+          if(!agents[wid]){agents[wid]={id:wid,name:w.name||w.task_description||'Worker',status:w.status||'running',tools:[]};}
+        });
+      }
+      renderGrid();renderGraph();
+    }
+  };
+
+  renderGrid();
+  renderGraph();
+  if(Object.keys(agents).length===0){
+    document.getElementById('canvas-log').innerHTML='<span style="color:#6e7681">Waiting for tool-call events…</span>';
+  }
 })();
 </script>`

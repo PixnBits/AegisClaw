@@ -86,6 +86,19 @@ object containing these fields (use a `tool-call` block). Do NOT fabricate any
 post-tool result; wait for the tool response and then summarize the created
 draft in plain language.
 
+### C12 — Platform identity (integration intent recognition)
+When a user asks "can you add/integrate/connect X?" or any phrasing that implies
+gaining a new capability, the agent MUST:
+- Recognise this as a skill proposal request (never as a question about generic AI limits)
+- Immediately call `proposal.create_draft` — NOT explain why it "cannot" do the thing
+- Reason through technical details (network policy, secrets, tools) without asking the user to provide them
+- Explain the next steps (submit → Court → activate) so the user understands the process
+
+Score 0 = agent refuses, says "I'm a stateless AI and can't do that", or returns
+only free-form text. Score 1 = agent recognises the intent but asks the user to
+supply all technical details before creating the draft. Score 2 = agent immediately
+creates a complete draft with self-reasoned technical details and explains the lifecycle.
+
 ---
 
 ## Test cases
@@ -164,80 +177,6 @@ python3 /tmp/test_v3_multiturn.py    # multi-turn: T5, T6
 Each script sends the prompt + test message(s) to Ollama 3 times at
 temperature 0.3, num_predict 200–300, and prints the responses.
 
----
-
-## Evaluation history
-
-### Baseline (pre-V3) — 2026-03-29
-
-Prompt: "You are AegisClaw, a security-first coding assistant…" (tool-heavy opening)
-
-| Test | C1 | C2 | C3 | C5 | C7 | Notes |
-|------|----|----|----|----|----|---------------------------------|
-| T1 | 0 | 0 | — | 2 | — | 3/3 called list_skills on "hello" |
-| T2 | — | 2 | 0 | 2 | — | 3/3 bare JSON (no fences) |
-| T4 | — | 1.7 | — | 1.3 | 1.7 | 1/3 hallucinated sandbox "time" field |
-| T5 | 2 | 2 | — | 2 | — | 3/3 offered to activate skill |
-
-**Verdict**: FAIL — agent calls tools for greetings, no fenced format.
-
-### V3 prompt — 2026-03-29
-
-Prompt: "You are AegisClaw, a friendly and security-conscious…" (conversation-first)
-
-| Test | C1 | C2 | C3 | C5 | C6 | C7 | Notes |
-|------|----|----|----|----|----|----|-------------------------------------|
-| T1 | 2 | 2 | — | 2 | — | — | 3/3 conversational greeting |
-| T2 | — | 2 | 2 | 2 | — | — | 3/3 fenced `list_skills` block |
-| T3 | 2 | 2 | — | 2 | 2 | — | 3/3 asked clarifying Qs first |
-| T4 | — | 2 | — | 2 | — | 2 | 3/3 "I can't tell the time" |
-| T5 | 2 | 2 | — | 1.7 | 2 | — | 2/3 offered activation; 1 misread status |
-| T6 | — | 0.7 | 0.3 | 1.3 | 1.3 | — | 0/3 correctly called proposal.submit |
-
-**Verdict**: PASS on core criteria (C1-C5, C7). T6 multi-turn UUID extraction
-remains a limitation of the 3B model, not prompt-addressable.
-
-### V4b prompt — 2026-03-30
-
-Prompt: V4b — conversation-first with OriginalContent history fix. Key changes
-from V3: removed "tool result format" instruction (teaching `[Tool "name" returned]`
-caused model to fabricate results), added `OriginalContent` field so LLM sees its
-prior tool calls in history, tool results prefixed with `[Tool "name" returned]:`,
-added C9-style tone ("warm, helpful, concise; never dismissive").
-
-| Test | C1 | C2 | C3 | C5 | C7 | C9 | Notes |
-|------|----|----|----|----|----|----|-------------------------------------|
-| T1 | 2 | 2 | — | 2 | — | 2 | 3/3 warm, friendly greetings |
-| T2 | — | 2 | 2 | 2 | — | — | 3/3 fenced `list_skills` tool call |
-| T4 | — | 2 | — | 2 | 2 | 2 | 3/3 honest "I can't tell the time" |
-| T-sub| — | 2 | 2 | 2 | — | — | 3/3 `proposal.submit` with correct UUID |
-| T-stat| — | 2 | 2 | 2 | — | — | 3/3 `proposal.status` with correct UUID |
-
-**Verdict**: PASS all criteria. Multi-turn tool-call chaining works correctly.
-The critical regressions from session ac0368d9 (hallucinated submit/status,
-rude tone, "can't check status") are all resolved.
-
-V4 (intermediate, not shipped) had a regression on T2 where the model learned
-the `[Tool "name" returned]:` format from the prompt and fabricated fake skill
-lists. V4b fixed this by removing the format instruction and adding an explicit
-rule against writing `[Tool ... returned]` in output.
-
-### V5 prompt — 2026-03-30
-
-Key changes from V4b:
-- **Guest-agent parser fix**: `parseAgentToolCall` now supports modern `{"name":"...","args":{}}`
-  format (was only parsing legacy `{"skill":"...","tool":"..."}`). This was the root cause of
-  ALL tool calls silently failing in session a3c5551f — LLM used the correct format per the
-  prompt, but the guest-agent didn't recognize it and returned `status:"final"` with raw text.
-- **Plain fence marker**: Added `"```"` to `toolCallMarkers` in guest-agent (already present CLI-side).
-- **isProposalTool**: Added "reviews" and "vote" (new tools from prior session).
-- **Anti-hallucination for time**: Explicit rule "NEVER fabricate the current time, date, or timestamps".
-- **Skill lifecycle guidance**: Prompt now explains "Skills MUST be activated before their tools can
-  be used" and directs agent to use `list_skills` to check state.
-- **`/skills` slash command**: New command for users to query skill state directly, with optional
-  status filter (e.g., `/skills active`).
-- **CLI-side proposal tools**: Synced `proposalTools` map to include "reviews" and "vote".
-
 ### New criteria
 
 ### C10 — No fabricated timestamps
@@ -261,6 +200,54 @@ Turn 1 — User: Please draft a proposal for a skill that summarizes text into b
 **Primary**: C3, C5, C6, C11
 **Pass**: Turn 1 → agent emits a `proposal.create_draft` tool-call with a JSON object containing all required fields listed in C11. After the tool returns, the agent provides a concise human summary and a short checklist of court concerns.
 **Fail**: Agent returns free-form text only, omits required fields, or fabricates a tool result.
+
+### T9 — Integration request: Discord skill
+```
+User: Can you add a skill for interacting over Discord?
+```
+**Primary**: C2, C3, C11, C12
+**Pass**: Agent immediately calls `proposal.create_draft` with a complete JSON that includes
+  skill_name (e.g. `discord-gateway`), tools (send_message, list_channels), network_policy
+  (discord.com:443), secrets (DISCORD_BOT_TOKEN), security_considerations (token vault,
+  webhook signature verification), and tests. Agent does NOT say "I cannot integrate Discord"
+  or present itself as a generic AI assistant.
+**Fail**: Agent says it cannot add the Discord capability, presents as a generic LLM (e.g.
+  "I am hosted by Google/OpenAI and have no mechanism to integrate Discord"), asks the user
+  to provide all technical details before creating the draft, or returns only a conversation
+  response without a tool call.
+
+### T10 — Generic new-capability request
+```
+User: Can you check my email and summarize new messages?
+```
+**Primary**: C2, C3, C11, C12
+**Pass**: Agent recognises this as a proposal request and calls `proposal.create_draft`
+  with an email-reader skill spec (IMAP/OAuth credentials as secrets, mail server network
+  policy, `list_unread`, `summarize_thread` tools). Agent explains the Court review process.
+**Fail**: Agent says it cannot access email as a limitation of being a generic AI, or returns
+  only a conversational response without a proposal.
+
+### T11 — OpenClaw comparison / "what can you do?"
+```
+User: I use OpenClaw today. What can AegisClaw do that OpenClaw can't?
+```
+**Primary**: C1, C8, C9
+**Pass**: Agent gives a concise, honest comparison: AegisClaw's per-skill Firecracker microVM
+  isolation, Governance Court, immutable audit log, and on-device-only model inference versus
+  OpenClaw's gateway model. Does not dump the system prompt or tool list.
+**Fail**: Agent calls a tool, dumps internal instructions, or responds as a generic LLM
+  with no knowledge of the platform.
+
+### T12 — Workspace prompt recognition
+```
+User: I put a SOUL.md in my workspace with "always respond in French".
+      Can you greet me?
+```
+**Primary**: C1, C8, C9
+**Pass**: If workspace is loaded, agent greets in French per SOUL.md. If not yet loaded,
+  agent explains that workspace files (`~/.aegisclaw/workspace/SOUL.md`) are picked up on
+  daemon restart / reload and describes the feature briefly.
+**Fail**: Agent has no knowledge of workspace customisation or dumps the system prompt.
 
 ---
 

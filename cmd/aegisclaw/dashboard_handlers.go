@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/builder"
@@ -41,6 +43,31 @@ type dashboardSkillsPayload struct {
 	BuiltInSkills    []dashboardSkillInfo       `json:"built_in_skills"`
 	BuiltInTemplates []dashboardTemplateInfo    `json:"built_in_templates"`
 	Proposals        []proposal.ProposalSummary `json:"proposals"`
+}
+
+type proposalRoundFeedback struct {
+	Round   int               `json:"round"`
+	Reviews []proposal.Review `json:"reviews"`
+}
+
+type dashboardReviewStatus struct {
+	Status         string `json:"status"`
+	CurrentRound   int    `json:"current_round"`
+	CurrentCount   int    `json:"current_count"`
+	TotalReviews   int    `json:"total_reviews"`
+	PendingReviews int    `json:"pending_reviews"`
+	ApprovalCount  int    `json:"approval_count"`
+	RejectCount    int    `json:"reject_count"`
+	AskCount       int    `json:"ask_count"`
+	AbstainCount   int    `json:"abstain_count"`
+}
+
+type dashboardProposalDetailPayload struct {
+	Proposal             *proposal.Proposal      `json:"proposal"`
+	ReviewStatus         dashboardReviewStatus   `json:"review_status"`
+	CurrentRoundFeedback []proposal.Review       `json:"current_round_feedback"`
+	PreviousRounds       []proposalRoundFeedback `json:"previous_rounds"`
+	RevisionHistory      []proposal.StatusChange `json:"revision_history"`
 }
 
 type skillProposalDetails struct {
@@ -110,6 +137,97 @@ func makeDashboardSkillsHandler(env *runtimeEnv) api.Handler {
 			BuiltInSkills:    []dashboardSkillInfo{builtInSkill},
 			BuiltInTemplates: builtInTemplates,
 			Proposals:        proposals,
+		})
+		return &api.Response{Success: true, Data: payload}
+	}
+}
+
+func makeDashboardProposalHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		_ = ctx
+		if env.ProposalStore == nil {
+			return &api.Response{Error: "proposal store is unavailable"}
+		}
+
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		req.ID = strings.TrimSpace(req.ID)
+		if req.ID == "" {
+			return &api.Response{Error: "proposal id is required"}
+		}
+
+		p, err := env.ProposalStore.Get(req.ID)
+		if err != nil {
+			return &api.Response{Error: fmt.Sprintf("failed to load proposal %s: %v", req.ID, err)}
+		}
+
+		current := make([]proposal.Review, 0)
+		previousByRound := make(map[int][]proposal.Review)
+		status := dashboardReviewStatus{
+			Status:       string(p.Status),
+			CurrentRound: p.Round,
+			TotalReviews: len(p.Reviews),
+		}
+
+		for _, review := range p.Reviews {
+			if review.Round == p.Round {
+				current = append(current, review)
+				switch review.Verdict {
+				case proposal.VerdictApprove:
+					status.ApprovalCount++
+				case proposal.VerdictReject:
+					status.RejectCount++
+				case proposal.VerdictAsk:
+					status.AskCount++
+				case proposal.VerdictAbstain:
+					status.AbstainCount++
+				}
+				continue
+			}
+			previousByRound[review.Round] = append(previousByRound[review.Round], review)
+		}
+
+		sort.Slice(current, func(i, j int) bool {
+			return current[i].Timestamp.Before(current[j].Timestamp)
+		})
+		status.CurrentCount = len(current)
+		if p.Round > 0 {
+			status.PendingReviews = 5 - len(current)
+			if status.PendingReviews < 0 {
+				status.PendingReviews = 0
+			}
+		}
+
+		rounds := make([]int, 0, len(previousByRound))
+		for round := range previousByRound {
+			rounds = append(rounds, round)
+		}
+		sort.Sort(sort.Reverse(sort.IntSlice(rounds)))
+
+		previous := make([]proposalRoundFeedback, 0, len(rounds))
+		for _, round := range rounds {
+			reviews := previousByRound[round]
+			sort.Slice(reviews, func(i, j int) bool {
+				return reviews[i].Timestamp.Before(reviews[j].Timestamp)
+			})
+			previous = append(previous, proposalRoundFeedback{Round: round, Reviews: reviews})
+		}
+
+		history := append([]proposal.StatusChange(nil), p.History...)
+		sort.Slice(history, func(i, j int) bool {
+			return history[i].Timestamp.After(history[j].Timestamp)
+		})
+
+		payload, _ := json.Marshal(dashboardProposalDetailPayload{
+			Proposal:             p,
+			ReviewStatus:         status,
+			CurrentRoundFeedback: current,
+			PreviousRounds:       previous,
+			RevisionHistory:      history,
 		})
 		return &api.Response{Success: true, Data: payload}
 	}

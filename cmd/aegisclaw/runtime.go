@@ -18,7 +18,9 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/worker"
+	"github.com/PixnBits/AegisClaw/internal/workspace"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -51,6 +53,17 @@ type runtimeEnv struct {
 	ToolEvents       *ToolEventBuffer
 	ThoughtEvents    *ThoughtEventBuffer
 	SafeMode         atomic.Bool
+
+	// Workspace holds content loaded from the user's workspace directory
+	// (~/.aegisclaw/workspace by default). Fields are empty when the
+	// corresponding workspace files are absent or the directory doesn't exist.
+	Workspace *workspace.Content
+
+	// Sessions tracks all active and recent chat sessions for the session
+	// routing tools (sessions_list, sessions_history, sessions_send,
+	// sessions_spawn).  It is initialised once at daemon start and shared
+	// across all API handler goroutines.
+	Sessions *sessions.Store
 
 	// AgentVMID is the ID of the main agent microVM. Protected by agentVMMu.
 	// Set once by ensureAgentVM on the first chat.message request.
@@ -159,7 +172,35 @@ func initRuntime() (*runtimeEnv, error) {
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 		ToolEvents:       NewToolEventBuffer(400),
 		ThoughtEvents:    NewThoughtEventBuffer(600),
+		Workspace:        loadWorkspace(cfg, logger),
+		Sessions:         sessions.NewStore(),
 	}, nil
+}
+
+// loadWorkspace loads workspace prompt files from cfg.Workspace.Dir.
+// Errors are logged and a non-nil empty Content is returned so the daemon
+// continues to function without workspace content.
+func loadWorkspace(cfg *config.Config, logger *zap.Logger) *workspace.Content {
+	dir := cfg.Workspace.Dir
+	if dir == "" {
+		return &workspace.Content{}
+	}
+	c, err := workspace.Load(dir)
+	if err != nil {
+		logger.Warn("workspace load failed; continuing without workspace content",
+			zap.String("dir", dir), zap.Error(err))
+		return &workspace.Content{}
+	}
+	if !c.IsEmpty() {
+		logger.Info("workspace content loaded",
+			zap.String("dir", dir),
+			zap.Bool("agents", c.Agents != ""),
+			zap.Bool("soul", c.Soul != ""),
+			zap.Bool("tools", c.Tools != ""),
+			zap.Bool("skill", c.Skill != ""),
+		)
+	}
+	return c
 }
 
 // loadOrCreateMemoryIdentity loads the age X25519 identity for the memory store
