@@ -115,6 +115,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/approvals/decide", s.handleApprovalsDecide)
 	s.mux.HandleFunc("/audit", s.handleAudit)
 	s.mux.HandleFunc("/skills", s.handleSkills)
+	s.mux.HandleFunc("/skills/proposals/", s.handleSkillProposal)
 	s.mux.HandleFunc("/settings", s.handleSettings)
 	s.mux.HandleFunc("/chat", s.handleChat)
 	s.mux.HandleFunc("/chat/send", s.handleChatSend)
@@ -261,6 +262,36 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		"BuiltInTemplates": catMap["built_in_templates"],
 		"Proposals":        catMap["proposals"],
 		"Error":            pageErr,
+	})
+}
+
+func (s *Server) handleSkillProposal(w http.ResponseWriter, r *http.Request) {
+	prefix := "/skills/proposals/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, prefix))
+	if id == "" {
+		http.Redirect(w, r, "/skills", http.StatusSeeOther)
+		return
+	}
+
+	detail, err := s.fetchRaw(r.Context(), "dashboard.proposal", map[string]string{"id": id})
+	detailMap, _ := detail.(map[string]interface{})
+	pageErr := ""
+	if err != nil {
+		pageErr = err.Error()
+	}
+
+	s.renderTemplate(w, "Proposal Details", proposalDetailTmpl, map[string]interface{}{
+		"ProposalID":           id,
+		"Proposal":             detailMap["proposal"],
+		"ReviewStatus":         detailMap["review_status"],
+		"CurrentRoundFeedback": detailMap["current_round_feedback"],
+		"PreviousRounds":       detailMap["previous_rounds"],
+		"RevisionHistory":      detailMap["revision_history"],
+		"Error":                pageErr,
 	})
 }
 
@@ -1349,7 +1380,7 @@ const skillsTmpl = `
   <div class="section-header">Proposals</div>
   {{if .Proposals}}
   <table>
-    <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Category</th><th>Target Skill</th></tr></thead>
+    <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Category</th><th>Target Skill</th><th>Details</th></tr></thead>
     <tbody>
     {{range .Proposals}}
     <tr>
@@ -1358,6 +1389,7 @@ const skillsTmpl = `
       <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
       <td>{{index . "category"}}</td>
       <td>{{index . "target_skill"}}</td>
+      <td><a href="/skills/proposals/{{index . "id"}}" class="nav-link">View details</a></td>
     </tr>
     {{end}}
     </tbody>
@@ -1366,6 +1398,126 @@ const skillsTmpl = `
   <p class="empty">No proposals yet. Submit a skill proposal via <code>aegisclaw skill add</code>.</p>
   {{end}}
 </div>`
+
+const proposalDetailTmpl = `
+<h1>{{.Title}}</h1>
+<div class="section">
+  <div class="section-header">Summary</div>
+  {{if .Error}}
+  <p class="empty" style="color:#f85149">Failed to load proposal {{.ProposalID}}: {{.Error}}</p>
+  {{else if .Proposal}}
+  <div style="padding:1rem">
+    <p style="margin-bottom:.4rem"><a href="/skills" class="nav-link">&larr; Back to Skills</a></p>
+    <h2 style="font-size:1.15rem;margin-bottom:.6rem">{{index .Proposal "title"}}</h2>
+    <p style="color:#8b949e;margin-bottom:1rem">{{index .Proposal "description"}}</p>
+    <table style="width:auto">
+      <tr><th style="width:220px">Proposal ID</th><td><code>{{index .Proposal "id"}}</code></td></tr>
+      <tr><th>Status</th><td><span class="badge badge-{{index .Proposal "status"}}">{{index .Proposal "status"}}</span></td></tr>
+      <tr><th>Category</th><td>{{index .Proposal "category"}}</td></tr>
+      <tr><th>Risk</th><td>{{index .Proposal "risk"}}</td></tr>
+      <tr><th>Round</th><td>{{index .Proposal "round"}}</td></tr>
+      <tr><th>Version</th><td>{{index .Proposal "version"}}</td></tr>
+      <tr><th>Author</th><td>{{index .Proposal "author"}}</td></tr>
+      <tr><th>Target Skill</th><td>{{index .Proposal "target_skill"}}</td></tr>
+      <tr><th>Created</th><td>{{index .Proposal "created_at"}}</td></tr>
+      <tr><th>Updated</th><td>{{index .Proposal "updated_at"}}</td></tr>
+    </table>
+  </div>
+  {{else}}
+  <p class="empty">Proposal not found.</p>
+  {{end}}
+</div>
+
+{{if .Proposal}}
+<div class="section">
+  <div class="section-header">Current Review Status</div>
+  <div style="padding:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.75rem">
+    <div><div class="muted">Current Round</div><strong>{{index .ReviewStatus "current_round"}}</strong></div>
+    <div><div class="muted">Reviews This Round</div><strong>{{index .ReviewStatus "current_count"}}</strong></div>
+    <div><div class="muted">Pending Reviews</div><strong>{{index .ReviewStatus "pending_reviews"}}</strong></div>
+    <div><div class="muted">Approvals</div><strong>{{index .ReviewStatus "approval_count"}}</strong></div>
+    <div><div class="muted">Rejects</div><strong>{{index .ReviewStatus "reject_count"}}</strong></div>
+    <div><div class="muted">Asks</div><strong>{{index .ReviewStatus "ask_count"}}</strong></div>
+    <div><div class="muted">Abstains</div><strong>{{index .ReviewStatus "abstain_count"}}</strong></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header">Feedback in Current Round</div>
+  {{if .CurrentRoundFeedback}}
+  <table>
+    <thead><tr><th>Persona</th><th>Verdict</th><th>Risk Score</th><th>Comments</th><th>Questions</th><th>Timestamp</th></tr></thead>
+    <tbody>
+    {{range .CurrentRoundFeedback}}
+    <tr>
+      <td>{{index . "persona"}}</td>
+      <td><span class="badge">{{index . "verdict"}}</span></td>
+      <td>{{index . "risk_score"}}</td>
+      <td>{{index . "comments"}}</td>
+      <td>
+        {{if index . "questions"}}
+          {{range index . "questions"}}<div>{{.}}</div>{{end}}
+        {{else}}<span class="muted">None</span>{{end}}
+      </td>
+      <td>{{index . "timestamp"}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No review feedback has been recorded for the current round.</p>
+  {{end}}
+</div>
+
+<div class="section">
+  <div class="section-header">Feedback in Previous Rounds</div>
+  {{if .PreviousRounds}}
+  {{range .PreviousRounds}}
+  <div style="padding:1rem;border-bottom:1px solid #21262d">
+    <h3 style="font-size:1rem;margin-bottom:.6rem">Round {{index . "round"}}</h3>
+    <table>
+      <thead><tr><th>Persona</th><th>Verdict</th><th>Risk Score</th><th>Comments</th><th>Timestamp</th></tr></thead>
+      <tbody>
+      {{range index . "reviews"}}
+      <tr>
+        <td>{{index . "persona"}}</td>
+        <td><span class="badge">{{index . "verdict"}}</span></td>
+        <td>{{index . "risk_score"}}</td>
+        <td>{{index . "comments"}}</td>
+        <td>{{index . "timestamp"}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{else}}
+  <p class="empty">No feedback from previous rounds.</p>
+  {{end}}
+</div>
+
+<div class="section">
+  <div class="section-header">Revision & Status History</div>
+  {{if .RevisionHistory}}
+  <table>
+    <thead><tr><th>Timestamp</th><th>Actor</th><th>From</th><th>To</th><th>Reason</th></tr></thead>
+    <tbody>
+    {{range .RevisionHistory}}
+    <tr>
+      <td>{{index . "timestamp"}}</td>
+      <td>{{index . "actor"}}</td>
+      <td>{{index . "from"}}</td>
+      <td>{{index . "to"}}</td>
+      <td>{{index . "reason"}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No revision history available.</p>
+  {{end}}
+</div>
+{{end}}`
 
 const chatTmpl = `
 <div id="chat-wrap">
