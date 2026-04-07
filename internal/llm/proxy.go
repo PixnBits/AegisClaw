@@ -507,44 +507,61 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		ollamaReq["options"] = req.Options
 	}
 
-	body, err := json.Marshal(ollamaReq)
-	if err != nil {
-		finalizeProgress("", "", fmt.Errorf("marshal: %w", err))
-		return ProxyResponse{RequestID: req.RequestID, Error: "marshal: " + err.Error()}
-	}
-
 	// Allow up to 5 minutes: thinking models may take longer for deep
 	// reasoning before producing their first output token.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.ollamaURL, bytes.NewReader(body))
-	if err != nil {
-		finalizeProgress("", "", fmt.Errorf("build request: %w", err))
-		return ProxyResponse{RequestID: req.RequestID, Error: "build request: " + err.Error()}
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	var httpResp *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		body, err := json.Marshal(ollamaReq)
+		if err != nil {
+			finalizeProgress("", "", fmt.Errorf("marshal: %w", err))
+			return ProxyResponse{RequestID: req.RequestID, Error: "marshal: " + err.Error()}
+		}
 
-	httpResp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		finalizeProgress("", "", fmt.Errorf("ollama: %w", err))
-		return ProxyResponse{RequestID: req.RequestID, Error: "ollama: " + err.Error()}
-	}
-	defer httpResp.Body.Close()
-	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, err := io.ReadAll(io.LimitReader(httpResp.Body, maxOllamaResponseBytes))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", p.ollamaURL, bytes.NewReader(body))
+		if err != nil {
+			finalizeProgress("", "", fmt.Errorf("build request: %w", err))
+			return ProxyResponse{RequestID: req.RequestID, Error: "build request: " + err.Error()}
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		httpResp, err = http.DefaultClient.Do(httpReq)
+		if err != nil {
+			finalizeProgress("", "", fmt.Errorf("ollama: %w", err))
+			return ProxyResponse{RequestID: req.RequestID, Error: "ollama: " + err.Error()}
+		}
+
+		if httpResp.StatusCode >= http.StatusOK && httpResp.StatusCode < http.StatusMultipleChoices {
+			break
+		}
+
+		bodyBytes, err := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
 		if err != nil {
 			finalizeProgress("", "", fmt.Errorf("read response: %w", err))
 			return ProxyResponse{RequestID: req.RequestID, Error: "read response: " + err.Error()}
 		}
+
 		excerpt := strings.TrimSpace(string(bodyBytes))
 		if len(excerpt) > 800 {
 			excerpt = excerpt[:800] + "...[truncated]"
 		}
+
+		if attempt == 0 && httpResp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(excerpt), "does not support thinking") {
+			delete(ollamaReq, "think")
+			p.logger.Info("llm proxy: retrying request without think parameter",
+				zap.String("model", req.Model),
+			)
+			continue
+		}
+
 		err = fmt.Errorf("ollama http %d: %s", httpResp.StatusCode, excerpt)
 		finalizeProgress("", "", err)
 		return ProxyResponse{RequestID: req.RequestID, Error: fmt.Sprintf("ollama http %d: %s", httpResp.StatusCode, excerpt)}
 	}
+	defer httpResp.Body.Close()
 
 	var rawBody bytes.Buffer
 	content, thinking, err := decodeOllamaChatBody(io.TeeReader(httpResp.Body, &rawBody), func(contentDelta, thinkingDelta string) {
