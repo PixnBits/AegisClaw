@@ -399,35 +399,57 @@ func decodeOllamaChatBody(body io.Reader, onChunk func(contentDelta, thinkingDel
 	return contentText, thinkingText, nil
 }
 
-func latestUserMessage(messages []map[string]string) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if strings.EqualFold(strings.TrimSpace(messages[i]["role"]), "user") {
-			return strings.TrimSpace(messages[i]["content"])
+func fallbackThinkingMessages(messages []map[string]string) []map[string]string {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	// Preserve platform identity and current task context by keeping the first
+	// system message (if any) plus a short tail of recent turns.
+	var out []map[string]string
+	for _, m := range messages {
+		if strings.EqualFold(strings.TrimSpace(m["role"]), "system") {
+			out = append(out, map[string]string{
+				"role":    "system",
+				"content": m["content"],
+			})
+			break
 		}
 	}
-	return ""
+
+	const tailMessages = 8
+	start := len(messages) - tailMessages
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(messages); i++ {
+		role := strings.TrimSpace(messages[i]["role"])
+		if role == "" || strings.EqualFold(role, "system") {
+			continue
+		}
+		out = append(out, map[string]string{
+			"role":    role,
+			"content": messages[i]["content"],
+		})
+	}
+
+	return out
 }
 
 func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
-	userMsg := latestUserMessage(req.Messages)
-	if userMsg == "" {
+	fallbackMsgs := fallbackThinkingMessages(req.Messages)
+	if len(fallbackMsgs) == 0 {
 		return "", nil
 	}
 
-	// Keep fallback compact to reduce latency: ask only for reasoning, not a
-	// full final answer, using the latest user request.
+	// Keep fallback compact to reduce latency: ask for reasoning only, but keep
+	// the same system identity and recent dialogue context.
 	fallbackReq := map[string]interface{}{
 		"model": req.Model,
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": "Reasoning-only pass: provide concise internal reasoning in the thinking channel. Avoid long final output.",
-			},
-			{
-				"role":    "user",
-				"content": userMsg,
-			},
-		},
+		"messages": append(fallbackMsgs, map[string]string{
+			"role":    "user",
+			"content": "Reasoning-only pass: provide concise internal reasoning in the thinking channel. Avoid long final output.",
+		}),
 		"stream": true,
 		"think":  "high",
 	}

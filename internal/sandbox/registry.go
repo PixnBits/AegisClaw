@@ -77,7 +77,11 @@ func NewSkillRegistry(path string) (*SkillRegistry, error) {
 	}
 
 	if err := r.verifyIntegrity(); err != nil {
-		return nil, fmt.Errorf("registry integrity check failed: %w", err)
+		// Attempt to repair the registry by recalculating the root hash.
+		// This handles cases where the hash is stale (e.g., after a crash).
+		if repairErr := r.repairIntegrity(); repairErr != nil {
+			return nil, fmt.Errorf("registry integrity check failed: %w, repair also failed: %w", err, repairErr)
+		}
 	}
 
 	return r, nil
@@ -209,6 +213,22 @@ func (r *SkillRegistry) verifyIntegrity() error {
 		return fmt.Errorf("root hash mismatch: stored=%s computed=%s", r.snapshot.RootHash, expected)
 	}
 	return nil
+}
+
+// repairIntegrity recalculates and re-persists the root hash if it's mismatched.
+// This is used for recovery when the registry file becomes corrupted or stale.
+func (r *SkillRegistry) repairIntegrity() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Recalculate the expected root hash based on current skills.
+	expected := computeRootHash(r.snapshot.Skills)
+	if r.snapshot.RootHash == expected {
+		return nil // Hash is already correct.
+	}
+
+	// Update and re-persist.
+	return r.persistLocked()
 }
 
 func (r *SkillRegistry) persistLocked() error {
