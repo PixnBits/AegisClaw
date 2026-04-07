@@ -491,7 +491,7 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 	// Build the Ollama /api/chat request.
 	// think:"high" requests stronger reasoning for models that support
 	// configurable thinking effort.
-	// For models without this support, Ollama may ignore the field.
+	// Some Ollama models reject this field; handle that with a retry below.
 	// stream:true captures tokenized thinking/content chunks for models that
 	// emit reasoning only while streaming.
 	ollamaReq := map[string]interface{}{
