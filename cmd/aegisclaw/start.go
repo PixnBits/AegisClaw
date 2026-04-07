@@ -17,6 +17,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/provision"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -443,6 +444,22 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			return &api.Response{Error: "failed to get sandbox status: " + err.Error()}
 		}
 
+		// Start the egress proxy for this skill VM if the approved proposal
+		// declares egress_mode "proxy" (or the default, which is proxy mode).
+		// The proxy listens on <vsock_path>_1026 and validates SNI against the
+		// FQDN allowlist before tunneling outbound TLS connections.
+		if !netPolicy.NoNetwork && netPolicy.EgressMode != "direct" && env.EgressProxy != nil {
+			vsockPath := info.SocketPath // Firecracker vsock socket path
+			if vsockPath != "" && len(netPolicy.AllowedHosts) > 0 {
+				if epErr := env.EgressProxy.StartForVM(sandboxID, vsockPath, netPolicy.AllowedHosts); epErr != nil {
+					env.Logger.Warn("egress proxy start failed; skill may lack network access",
+						zap.String("skill", req.Name),
+						zap.Error(epErr),
+					)
+				}
+			}
+		}
+
 		// D5: Inject secrets via vsock if the skill declares secret references.
 		// Secrets are resolved from the vault and sent to the guest agent's
 		// tmpfs-backed /run/secrets/ directory. Values never appear in logs.
@@ -452,11 +469,14 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			for _, s := range summaries {
 				if full, getErr := env.ProposalStore.Get(s.ID); getErr == nil {
 					if full.TargetSkill == req.Name && len(full.SecretsRefs) > 0 {
-						env.Logger.Info("skill has declared secrets, injection will be attempted",
-							zap.String("skill", req.Name),
-							zap.Int("secrets", len(full.SecretsRefs)),
-						)
-						secretsInjected = len(full.SecretsRefs)
+						injected, injectErr := injectSecretsIntoVM(ctx, env, sandboxID, req.Name, full.SecretsRefs)
+						if injectErr != nil {
+							env.Logger.Warn("secret injection failed; skill activated in degraded mode",
+								zap.String("skill", req.Name),
+								zap.Error(injectErr),
+							)
+						}
+						secretsInjected = injected
 						break
 					}
 				}
@@ -524,6 +544,11 @@ func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
 		}
 		if err := env.Runtime.Delete(ctx, entry.SandboxID); err != nil {
 			env.Logger.Warn("failed to delete sandbox", zap.String("id", entry.SandboxID), zap.Error(err))
+		}
+
+		// Stop the egress proxy listener for this sandbox if one was started.
+		if env.EgressProxy != nil {
+			env.EgressProxy.StopForVM(entry.SandboxID)
 		}
 
 		if err := env.Registry.Deactivate(req.Name); err != nil {
@@ -875,10 +900,80 @@ func skillNetworkPolicy(skillName string, env *runtimeEnv) sandbox.NetworkPolicy
 			np.AllowedHosts = full.NetworkPolicy.AllowedHosts
 			np.AllowedPorts = full.NetworkPolicy.AllowedPorts
 			np.AllowedProtocols = full.NetworkPolicy.AllowedProtocols
+			// Propagate egress mode; default empty string means proxy mode.
+			np.EgressMode = full.NetworkPolicy.EgressMode
 		}
 		return np
 	}
 
 	// No matching approved proposal — default to no-network.
 	return noNetwork
+}
+
+// injectSecretsIntoVM resolves the given secret references from the vault and
+// sends them to the skill VM via vsock so the guest agent can write them to
+// /run/secrets/<name> on tmpfs (mode 0400).  Returns the count of successfully
+// injected secrets.  On vault or vsock failure a descriptive error is returned
+// and the skill is left in a degraded-but-running state (missing secrets cause
+// tool-level failures rather than a full activation abort).
+func injectSecretsIntoVM(ctx context.Context, env *runtimeEnv, sandboxID, skillName string, refs []string) (int, error) {
+	if len(refs) == 0 {
+		return 0, nil
+	}
+	if env.Vault == nil {
+		env.Logger.Warn("vault not available; skipping secret injection",
+			zap.String("skill", skillName),
+			zap.Strings("refs", refs),
+		)
+		return 0, fmt.Errorf("vault not initialised")
+	}
+
+	sp := vault.NewSecretProxy(env.Vault, env.Logger)
+
+	var missing []string
+	var present []string
+	for _, ref := range refs {
+		if env.Vault.Has(ref) {
+			present = append(present, ref)
+		} else {
+			missing = append(missing, ref)
+		}
+	}
+	if len(missing) > 0 {
+		env.Logger.Warn("skill activated with missing secrets; tools requiring them will fail",
+			zap.String("skill", skillName),
+			zap.Strings("missing", missing),
+		)
+	}
+	if len(present) == 0 {
+		return 0, fmt.Errorf("no vault entries found for secrets %v; add with: aegisclaw secrets add <name> --skill %s", refs, skillName)
+	}
+
+	injectReq, err := sp.ResolveSecrets(present)
+	if err != nil {
+		return 0, fmt.Errorf("resolve secrets: %w", err)
+	}
+
+	payload, err := sp.BuildPayload(injectReq)
+	if err != nil {
+		return 0, fmt.Errorf("build inject payload: %w", err)
+	}
+
+	vmMsg := map[string]interface{}{
+		"id":      uuid.New().String(),
+		"type":    "secrets.inject",
+		"payload": json.RawMessage(payload),
+	}
+	if env.Runtime == nil {
+		return 0, fmt.Errorf("runtime not available for vsock secret injection")
+	}
+	if _, vmErr := env.Runtime.SendToVM(ctx, sandboxID, vmMsg); vmErr != nil {
+		return 0, fmt.Errorf("vsock inject: %w", vmErr)
+	}
+
+	env.Logger.Info("secrets injected into skill VM",
+		zap.String("skill", skillName),
+		zap.Int("count", len(present)),
+	)
+	return len(present), nil
 }

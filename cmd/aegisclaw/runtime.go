@@ -19,6 +19,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
+	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/PixnBits/AegisClaw/internal/workspace"
 	"github.com/google/uuid"
@@ -34,6 +35,7 @@ var (
 	memoryInst      *memory.Store
 	eventBusInst    *eventbus.Bus
 	workerStoreInst *worker.Store
+	vaultInst       *vault.Vault
 	runtimeInitErr  error
 )
 
@@ -53,6 +55,16 @@ type runtimeEnv struct {
 	ToolEvents       *ToolEventBuffer
 	ThoughtEvents    *ThoughtEventBuffer
 	SafeMode         atomic.Bool
+
+	// Vault holds the age-encrypted secret store.  Opened once at daemon
+	// startup; nil only if the vault directory could not be initialised
+	// (daemon logs a warning and continues in degraded mode without secret
+	// injection).
+	Vault *vault.Vault
+
+	// EgressProxy is the per-VM SNI-validating TCP tunnel proxy.  Started for
+	// each skill VM whose approved proposal declares egress_mode "proxy".
+	EgressProxy *llm.EgressProxy
 
 	// Workspace holds content loaded from the user's workspace directory
 	// (~/.aegisclaw/workspace by default). Fields are empty when the
@@ -153,6 +165,12 @@ func initRuntime() (*runtimeEnv, error) {
 		}
 		// Worker Store: persist worker lifecycle records.
 		workerStoreInst, runtimeInitErr = worker.NewStore(cfg.Worker.Dir)
+		if runtimeInitErr != nil {
+			return
+		}
+		// Vault: open the age-encrypted secret store once at daemon startup.
+		// The private key is derived from the kernel's Ed25519 identity.
+		vaultInst, runtimeInitErr = vault.NewVault(cfg.Vault.Dir, kern.PrivateKeyBytes(), logger)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -169,6 +187,8 @@ func initRuntime() (*runtimeEnv, error) {
 		MemoryStore:      memoryInst,
 		EventBus:         eventBusInst,
 		WorkerStore:      workerStoreInst,
+		Vault:            vaultInst,
+		EgressProxy:      llm.NewEgressProxy(logger),
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 		ToolEvents:       NewToolEventBuffer(400),
 		ThoughtEvents:    NewThoughtEventBuffer(600),

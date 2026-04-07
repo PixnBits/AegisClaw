@@ -40,6 +40,11 @@ type NetworkPolicy struct {
 	AllowedHosts     []string `json:"allowed_hosts,omitempty"`
 	AllowedPorts     []uint16 `json:"allowed_ports,omitempty"`
 	AllowedProtocols []string `json:"allowed_protocols,omitempty"`
+	// EgressMode controls how outbound traffic is enforced.
+	// "proxy" (default) routes traffic through the host-side egress proxy which
+	// validates SNI before splicing — strongly preferred for HTTPS/WSS skills.
+	// "direct" uses the existing nftables IP/CIDR rules for static destinations.
+	EgressMode string `json:"egress_mode,omitempty"`
 }
 
 // SandboxSpec defines the desired state of a Firecracker sandbox.
@@ -72,6 +77,13 @@ type SandboxInfo struct {
 
 var nameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
 var secretRefRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]{0,127}$`)
+
+// validHostnameRegex matches a syntactically valid DNS hostname or FQDN.
+// Each label: 1-63 chars of letters/digits/hyphens, not starting or ending
+// with a hyphen.  Wildcards and empty labels are rejected.
+var validHostnameRegex = regexp.MustCompile(
+	`^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$`,
+)
 
 // Validate checks that the SandboxSpec has all required fields with safe values.
 func (s *SandboxSpec) Validate() error {
@@ -117,10 +129,20 @@ func (s *SandboxSpec) Validate() error {
 }
 
 func validateNetworkPolicy(np *NetworkPolicy) error {
+	proxyMode := np.EgressMode == "" || np.EgressMode == "proxy"
 	for _, host := range np.AllowedHosts {
-		if net.ParseIP(host) == nil {
-			if _, _, err := net.ParseCIDR(host); err != nil {
-				return fmt.Errorf("invalid allowed host (must be IP or CIDR): %q", host)
+		if proxyMode {
+			// In proxy mode, FQDNs (and IPs/CIDRs) are all valid; the egress
+			// proxy enforces the list via SNI matching at connect time.
+			if !isValidFQDNOrIP(host) {
+				return fmt.Errorf("invalid allowed host %q: must be a valid FQDN, IP, or CIDR", host)
+			}
+		} else {
+			// Direct mode: must be IP or CIDR so nftables rules can be applied.
+			if net.ParseIP(host) == nil {
+				if _, _, err := net.ParseCIDR(host); err != nil {
+					return fmt.Errorf("invalid allowed host (must be IP or CIDR in direct mode): %q", host)
+				}
 			}
 		}
 	}
@@ -131,7 +153,32 @@ func validateNetworkPolicy(np *NetworkPolicy) error {
 			return fmt.Errorf("unsupported protocol %q (allowed: tcp, udp, icmp)", proto)
 		}
 	}
+	switch np.EgressMode {
+	case "", "proxy", "direct":
+	default:
+		return fmt.Errorf("unsupported egress_mode %q (allowed: proxy, direct)", np.EgressMode)
+	}
 	return nil
+}
+
+// isValidFQDNOrIP returns true if s is a valid IPv4/IPv6 address, CIDR, or a
+// syntactically valid hostname (FQDN or single label).  It does not perform
+// DNS resolution — the check is purely syntactic.
+func isValidFQDNOrIP(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Accept plain IPs and CIDRs.
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	if _, _, err := net.ParseCIDR(s); err == nil {
+		return true
+	}
+	// Validate as a hostname: labels separated by dots, each label is
+	// letters/digits/hyphens, not starting or ending with a hyphen.
+	// Wildcards like "*.example.com" are explicitly rejected; use exact FQDNs.
+	return validHostnameRegex.MatchString(s)
 }
 
 // RuntimeConfig holds paths and settings for the Firecracker runtime.

@@ -143,6 +143,13 @@ type ProposalNetworkPolicy struct {
 	AllowedHosts     []string `json:"allowed_hosts,omitempty"`
 	AllowedPorts     []uint16 `json:"allowed_ports,omitempty"`
 	AllowedProtocols []string `json:"allowed_protocols,omitempty"`
+	// EgressMode controls how outbound traffic is enforced.
+	// "proxy" (default) routes traffic through the host-side egress proxy which
+	// validates SNI against AllowedHosts before splicing; this is strongly
+	// preferred for HTTPS/WSS skills because it works with any CDN or dynamic IP.
+	// "direct" falls back to nftables IP/CIDR rules for skills that truly need
+	// raw TCP/UDP with static destinations.
+	EgressMode string `json:"egress_mode,omitempty"`
 }
 
 // SkillCapabilities declares the sandbox capabilities a skill requires.
@@ -297,6 +304,11 @@ func (p *Proposal) Validate() error {
 			default:
 				return fmt.Errorf("unsupported network protocol %q", proto)
 			}
+		}
+		switch p.NetworkPolicy.EgressMode {
+		case "", "proxy", "direct":
+		default:
+			return fmt.Errorf("unsupported egress_mode %q (allowed: proxy, direct)", p.NetworkPolicy.EgressMode)
 		}
 	}
 	return nil
