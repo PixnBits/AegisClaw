@@ -137,12 +137,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	timers, _ := s.fetchRaw(r.Context(), "event.timers.list", nil)
 	sandboxes, _ := s.fetchRaw(r.Context(), "sandbox.list", map[string]bool{"running_only": true})
 	memories, _ := s.fetchRaw(r.Context(), "memory.list", map[string]interface{}{"limit": 1, "count_only": true})
+	sysStats, _ := s.fetchRaw(r.Context(), "system.stats", nil)
 
 	workerCount := countItems(workers)
 	approvalCount := countItems(approvals)
 	timerCount := countItems(timers)
 	runningVMCount := countItems(sandboxes)
-	runningVMVCPUs, runningVMMemoryMB := sandboxResourceTotals(sandboxes)
+	runningVMVCPUs, runningVMMemoryMB, runningVMRSSMB := sandboxResourceTotals(sandboxes)
 
 	var memCount int
 	if m, ok := memories.(map[string]interface{}); ok {
@@ -150,6 +151,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			memCount = int(c)
 		}
 	}
+
+	var hostRAMTotalMB, hostRAMUsedMB int64
+	var hostRAMPct int
+	var hostLoadAvg1 float64
+	if m, ok := sysStats.(map[string]interface{}); ok {
+		hostRAMTotalMB = int64(toFloat(m["host_ram_total_mb"]))
+		hostRAMUsedMB = int64(toFloat(m["host_ram_used_mb"]))
+		hostRAMPct = int(toFloat(m["host_ram_pct"]))
+		hostLoadAvg1 = toFloat(m["host_load_avg_1"])
+	}
+	hostRAMLabel := fmt.Sprintf("%s / %s", fmtDashMB(hostRAMUsedMB), fmtDashMB(hostRAMTotalMB))
+	hostLoadLabel := fmt.Sprintf("%.2f", hostLoadAvg1)
 
 	s.renderTemplate(w, "Overview", overviewTmpl, map[string]interface{}{
 		"WorkerCount":       workerCount,
@@ -159,9 +172,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"RunningVMCount":    runningVMCount,
 		"RunningVMVCPUs":    runningVMVCPUs,
 		"RunningVMMemoryMB": runningVMMemoryMB,
+		"RunningVMRSSMB":    runningVMRSSMB,
 		"RunningVMs":        sandboxes,
 		"Workers":           workers,
 		"Approvals":         approvals,
+		"HostRAMLabel":      hostRAMLabel,
+		"HostRAMPct":        hostRAMPct,
+		"HostLoadLabel":     hostLoadLabel,
 	})
 }
 
@@ -753,13 +770,13 @@ func countItems(v interface{}) int {
 	return 0
 }
 
-func sandboxResourceTotals(v interface{}) (vcpus int64, memoryMB int64) {
+func sandboxResourceTotals(v interface{}) (vcpus int64, memoryMB int64, rssMB int64) {
 	if v == nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	list, ok := v.([]interface{})
 	if !ok {
-		return 0, 0
+		return 0, 0, 0
 	}
 	for _, raw := range list {
 		m, ok := raw.(map[string]interface{})
@@ -772,8 +789,19 @@ func sandboxResourceTotals(v interface{}) (vcpus int64, memoryMB int64) {
 		if mem, ok := m["memory_mb"].(float64); ok {
 			memoryMB += int64(mem)
 		}
+		if rss, ok := m["rss_mb"].(float64); ok {
+			rssMB += int64(rss)
+		}
 	}
-	return vcpus, memoryMB
+	return vcpus, memoryMB, rssMB
+}
+
+// fmtDashMB formats a megabyte count as "X.X GB" (when ≥ 1024) or "X MB".
+func fmtDashMB(mb int64) string {
+	if mb >= 1024 {
+		return fmt.Sprintf("%.1f GB", float64(mb)/1024)
+	}
+	return fmt.Sprintf("%d MB", mb)
 }
 
 // pageWrap renders a full HTML page with shared chrome around the body content.
@@ -909,6 +937,8 @@ const dashboardNav = `
 <nav>
   <span class="logo">&#128737; AegisClaw</span>
   <a href="/">Overview</a>
+  <a href="/canvas">Canvas</a>
+  <a href="/chat">Chat</a>
   <a href="/agents">Agents</a>
   <a href="/skills">Skills</a>
   <a href="/async">Async Hub</a>
@@ -916,8 +946,6 @@ const dashboardNav = `
   <a href="/approvals">Approvals</a>
   <a href="/audit">Audit</a>
   <a href="/settings">Settings</a>
-  <a href="/chat">Chat</a>
-  <a href="/canvas">Canvas</a>
   <span id="sse-status">&#9679;</span>
 </nav>`
 
@@ -1140,15 +1168,29 @@ const overviewTmpl = `
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
     <div style="font-size:2rem;font-weight:700;color:#79c0ff">{{.RunningVMMemoryMB}} MB</div>
-    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Allocated VM Memory</div>
+    {{if .RunningVMRSSMB}}<div style="font-size:.8rem;color:#e8916a;margin-top:.15rem">{{.RunningVMRSSMB}} MB actual RSS</div>{{end}}
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.15rem">Allocated VM Memory</div>
   </div>
+{{if .HostRAMLabel}}
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:1.5rem;font-weight:700;color:#e8916a">{{.HostRAMLabel}}</div>
+    <div style="height:6px;border-radius:3px;background:#30363d;margin:.5rem 0">
+      <div style="height:100%;border-radius:3px;background:#e8916a;width:{{.HostRAMPct}}%"></div>
+    </div>
+    <div style="font-size:.85rem;color:#8b949e">Host RAM ({{.HostRAMPct}}%)</div>
+  </div>
+  <div class="section" style="padding:1.25rem;text-align:center">
+    <div style="font-size:2rem;font-weight:700;color:#d2a8ff">{{.HostLoadLabel}}</div>
+    <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">CPU Load Avg (1m)</div>
+  </div>
+{{end}}
 </div>
 
 {{if .RunningVMs}}
 <div class="section">
   <div class="section-header">Running MicroVMs</div>
   <table>
-    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>vCPUs</th><th>Memory</th></tr></thead>
+    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>vCPUs</th><th>Alloc Mem</th><th>RSS</th><th>CPU avg</th></tr></thead>
     <tbody>
     {{range .RunningVMs}}
     <tr>
@@ -1157,6 +1199,8 @@ const overviewTmpl = `
       <td><span class="badge badge-running">{{index . "state"}}</span></td>
       <td>{{index . "vcpus"}}</td>
       <td>{{index . "memory_mb"}} MB</td>
+      <td>{{if index . "rss_mb"}}{{index . "rss_mb"}} MB{{else}}-{{end}}</td>
+      <td>{{if index . "cpu_avg_pct"}}{{index . "cpu_avg_pct"}}%{{else}}-{{end}}</td>
     </tr>
     {{end}}
     </tbody>
