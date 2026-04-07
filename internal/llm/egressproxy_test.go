@@ -98,11 +98,9 @@ func TestEgressProxy_AllowedHost(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
 	// Start a simple echo TLS server to act as the upstream.
-	upstream, err := startEchoTLSServer(t)
-	if err != nil {
+	if _, err := startEchoTLSServer(t); err != nil {
 		t.Skipf("could not start echo TLS server: %v", err)
 	}
-	upstreamHost, _, _ := net.SplitHostPort(upstream.Addr().String())
 
 	ep := NewEgressProxy(logger)
 
@@ -125,15 +123,13 @@ func TestEgressProxy_AllowedHost(t *testing.T) {
 	if isHostAllowed("", allowed) {
 		t.Error("expected empty host to be denied")
 	}
-	// Case insensitivity (policy stored lowercase, input also lowercased in handleConn).
-	if !isHostAllowed("allowed.example.com", []string{"ALLOWED.EXAMPLE.COM"}) {
-		// Note: policies are stored lowercase, but let's document the expected behavior.
-		// isHostAllowed is case-sensitive on the stored slice; StartForVM normalizes to lower.
-		// This test validates that when both are lowercase it works.
+	// StartForVM normalises the allowlist to lowercase; verify round-trip with
+	// a pre-normalised list.
+	if !isHostAllowed("allowed.example.com", []string{"allowed.example.com"}) {
+		t.Error("expected lowercase match to succeed")
 	}
 
 	ep.Stop()
-	_ = upstreamHost
 }
 
 // TestEgressProxy_DeniedHost verifies that isHostAllowed denies hosts not in the list.

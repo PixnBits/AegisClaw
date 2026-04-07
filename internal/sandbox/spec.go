@@ -81,9 +81,15 @@ var secretRefRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]{0,127}$`)
 // validHostnameRegex matches a syntactically valid DNS hostname or FQDN.
 // Each label: 1-63 chars of letters/digits/hyphens, not starting or ending
 // with a hyphen.  Wildcards and empty labels are rejected.
-var validHostnameRegex = regexp.MustCompile(
-	`^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$`,
-)
+//
+// Pattern structure:
+//   - (?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*  — zero or more
+//     dot-separated labels each 1-63 chars (no leading/trailing hyphen)
+//   - [a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$  — final label (same rules)
+const hostnamePatternFull = `^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*` +
+	`[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$`
+
+var validHostnameRegex = regexp.MustCompile(hostnamePatternFull)
 
 // Validate checks that the SandboxSpec has all required fields with safe values.
 func (s *SandboxSpec) Validate() error {

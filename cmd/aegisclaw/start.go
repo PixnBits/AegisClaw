@@ -448,7 +448,7 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 		// declares egress_mode "proxy" (or the default, which is proxy mode).
 		// The proxy listens on <vsock_path>_1026 and validates SNI against the
 		// FQDN allowlist before tunneling outbound TLS connections.
-		if !netPolicy.NoNetwork && netPolicy.EgressMode != "direct" && env.EgressProxy != nil {
+		if !netPolicy.NoNetwork && (netPolicy.EgressMode == "" || netPolicy.EgressMode == "proxy") && env.EgressProxy != nil {
 			vsockPath := info.SocketPath // Firecracker vsock socket path
 			if vsockPath != "" && len(netPolicy.AllowedHosts) > 0 {
 				if epErr := env.EgressProxy.StartForVM(sandboxID, vsockPath, netPolicy.AllowedHosts); epErr != nil {

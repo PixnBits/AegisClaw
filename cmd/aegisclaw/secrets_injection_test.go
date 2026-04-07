@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"testing"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
@@ -253,13 +254,5 @@ func TestInjectSecretsIntoVM_SecretPresentNoRuntime(t *testing.T) {
 
 // contains is a helper for substring checks in error messages.
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		func() bool {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
-			return false
-		}())
+	return strings.Contains(s, substr)
 }
