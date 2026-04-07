@@ -74,6 +74,66 @@ func (s *stubClient) Call(_ context.Context, action string, _ json.RawMessage) (
 			},
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
+	case "dashboard.proposal":
+		data, _ := json.Marshal(map[string]interface{}{
+			"proposal": map[string]interface{}{
+				"id":           "prop-1234",
+				"title":        "Bootstrap default script runner skill",
+				"description":  "Create a safe baseline runner for script execution.",
+				"status":       "in_review",
+				"category":     "new_skill",
+				"risk":         "medium",
+				"author":       "operator",
+				"target_skill": "default-script-runner",
+				"round":        2,
+				"version":      5,
+				"created_at":   "2026-04-01T12:00:00Z",
+				"updated_at":   "2026-04-06T10:30:00Z",
+			},
+			"review_status": map[string]interface{}{
+				"current_round":   2,
+				"current_count":   2,
+				"pending_reviews": 3,
+				"approval_count":  1,
+				"reject_count":    0,
+				"ask_count":       1,
+				"abstain_count":   0,
+			},
+			"current_round_feedback": []map[string]interface{}{
+				{
+					"persona":    "security_architect",
+					"verdict":    "ask",
+					"risk_score": 4.2,
+					"comments":   "Clarify network policy defaults.",
+					"questions":  []string{"Will DNS be allowed?"},
+					"timestamp":  "2026-04-06T10:25:00Z",
+				},
+			},
+			"previous_rounds": []map[string]interface{}{
+				{
+					"round": 1,
+					"reviews": []map[string]interface{}{
+						{
+							"persona":    "systems_engineer",
+							"verdict":    "approve",
+							"risk_score": 2.1,
+							"comments":   "Looks good with timeout caps.",
+							"timestamp":  "2026-04-05T09:00:00Z",
+						},
+					},
+				},
+			},
+			"revision_history": []map[string]interface{}{
+				{
+					"from":      "draft",
+					"to":        "submitted",
+					"reason":    "submitted for court review",
+					"actor":     "operator",
+					"timestamp": "2026-04-02T08:30:00Z",
+				},
+			},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
 	case "event.timers.list":
 		return &dashboard.APIResponse{Success: true, Data: json.RawMessage(`[]`)}, nil
 	case "event.signals.list":
@@ -194,5 +254,28 @@ func TestDashboard_SkillsPage(t *testing.T) {
 	}
 	if !strings.Contains(body, "execute_script") || !strings.Contains(body, "sync") {
 		t.Error("expected skill tools to be rendered in the page")
+	}
+	if !strings.Contains(body, "/skills/proposals/prop-1234") {
+		t.Error("expected proposal details link to be rendered")
+	}
+}
+
+func TestDashboard_ProposalDetailsPage(t *testing.T) {
+	s := newTestServer(t)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/skills/proposals/prop-1234", nil)
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Feedback in Current Round") {
+		t.Error("expected current round feedback section")
+	}
+	if !strings.Contains(body, "Feedback in Previous Rounds") {
+		t.Error("expected previous rounds feedback section")
+	}
+	if !strings.Contains(body, "Revision & Status History") {
+		t.Error("expected revision history section")
 	}
 }
