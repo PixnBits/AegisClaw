@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -310,8 +311,49 @@ func (p *Proposal) Validate() error {
 		default:
 			return fmt.Errorf("unsupported egress_mode %q (allowed: proxy, direct)", p.NetworkPolicy.EgressMode)
 		}
+		for i, host := range p.NetworkPolicy.AllowedHosts {
+			if err := validateAllowedHost(host); err != nil {
+				return fmt.Errorf("allowed_hosts[%d] %q: %w", i, host, err)
+			}
+		}
 	}
 	return nil
+}
+
+// validateAllowedHost rejects overly broad or clearly invalid FQDN entries.
+// We allow plain hostnames, FQDNs, and CIDRs but reject wildcards, the
+// all-zeros broadcast address, and the any-address routes.
+func validateAllowedHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("empty host not allowed")
+	}
+	// Reject wildcard-only patterns that would bypass the allowlist.
+	if host == "*" || host == "**" {
+		return fmt.Errorf("wildcard hosts are not allowed; specify exact FQDNs")
+	}
+	// Leading wildcards (*.example.com) are intentionally not supported in
+	// the proxy mode SNI check; reject them here to surface the issue early.
+	if strings.HasPrefix(host, "*.") || strings.HasPrefix(host, "**") {
+		return fmt.Errorf("wildcard prefix %q is not supported; list each subdomain explicitly", host)
+	}
+	// Reject well-known overly broad CIDRs.
+	switch host {
+	case "0.0.0.0/0", "::/0", "0.0.0.0", "::":
+		return fmt.Errorf("any-address entry %q grants unrestricted network access and is not allowed", host)
+	}
+	return nil
+}
+
+// IsApproved reports whether the proposal has reached an effectively-approved
+// state, i.e. it has been approved by the Court and is in the
+// approved/implementing/complete lifecycle stages.  Use this instead of
+// manually comparing against all three statuses.
+func (p *Proposal) IsApproved() bool {
+	switch p.Status {
+	case StatusApproved, StatusImplementing, StatusComplete:
+		return true
+	}
+	return false
 }
 
 // Transition moves the proposal to a new status if the transition is allowed.

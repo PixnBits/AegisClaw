@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -192,7 +193,8 @@ func TestInjectSecretsIntoVM_NoRefs(t *testing.T) {
 	env := &runtimeEnv{
 		Logger: zap.NewNop(),
 	}
-	n, err := injectSecretsIntoVM(nil, env, "sandbox-1", "my-skill", nil)
+	// Use doInjectSecrets directly; sender is never called for empty refs.
+	n, err := doInjectSecrets(nil, env, "sandbox-1", "my-skill", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,7 +209,8 @@ func TestInjectSecretsIntoVM_NilVault(t *testing.T) {
 		Logger: zap.NewNop(),
 		Vault:  nil,
 	}
-	_, err := injectSecretsIntoVM(nil, env, "sandbox-1", "my-skill", []string{"MY_SECRET"})
+	// sender is never called when the vault is nil.
+	_, err := doInjectSecrets(nil, env, "sandbox-1", "my-skill", []string{"MY_SECRET"}, nil)
 	if err == nil {
 		t.Fatal("expected error when vault is nil")
 	}
@@ -224,7 +227,8 @@ func TestInjectSecretsIntoVM_MissingSecret(t *testing.T) {
 		Vault:  v,
 	}
 
-	_, err := injectSecretsIntoVM(nil, env, "sandbox-1", "my-skill", []string{"MY_SECRET"})
+	// sender is never called when all secrets are missing from vault.
+	_, err := doInjectSecrets(nil, env, "sandbox-1", "my-skill", []string{"MY_SECRET"}, nil)
 	if err == nil {
 		t.Fatal("expected error for missing secret")
 	}
@@ -233,9 +237,8 @@ func TestInjectSecretsIntoVM_MissingSecret(t *testing.T) {
 	}
 }
 
-// TestInjectSecretsIntoVM_SecretPresentNoRuntime verifies that when secrets
-// are present in the vault but the runtime is nil (no VM to inject into), an
-// error is returned from the vsock call rather than silently failing.
+// TestInjectSecretsIntoVM_SecretPresentNoRuntime verifies that the public
+// wrapper returns an error when the Runtime field is nil.
 func TestInjectSecretsIntoVM_SecretPresentNoRuntime(t *testing.T) {
 	v, _ := makeTestVault(t)
 	if err := v.Add("API_KEY", "my-skill", []byte("secret-value")); err != nil {
@@ -245,13 +248,90 @@ func TestInjectSecretsIntoVM_SecretPresentNoRuntime(t *testing.T) {
 	env := &runtimeEnv{
 		Logger:  zap.NewNop(),
 		Vault:   v,
-		Runtime: nil, // no runtime
+		Runtime: nil, // no runtime — public wrapper must catch this
 	}
 
 	_, err := injectSecretsIntoVM(nil, env, "sandbox-1", "my-skill", []string{"API_KEY"})
-	// Without a runtime, SendToVM will panic or error; we expect a non-nil error.
 	if err == nil {
 		t.Fatal("expected error when runtime is nil")
+	}
+	if !contains(err.Error(), "runtime not available") {
+		t.Errorf("expected 'runtime not available' message, got: %v", err)
+	}
+}
+
+// TestDoInjectSecrets_RoundTrip is the full secrets-injection round-trip test
+// using a mock vmSendFunc.  It verifies that:
+//   - secrets present in the vault are resolved and sent to the VM
+//   - the vsock payload contains a "secrets.inject" type message
+//   - the correct sandbox ID is passed to the sender
+//   - the returned count matches the number of secrets injected
+func TestDoInjectSecrets_RoundTrip(t *testing.T) {
+	v, _ := makeTestVault(t)
+	if err := v.Add("BOT_TOKEN", "discord-skill", []byte("tok-abc")); err != nil {
+		t.Fatalf("Add BOT_TOKEN: %v", err)
+	}
+	if err := v.Add("GUILD_ID", "discord-skill", []byte("gid-xyz")); err != nil {
+		t.Fatalf("Add GUILD_ID: %v", err)
+	}
+
+	env := &runtimeEnv{
+		Logger: zap.NewNop(),
+		Vault:  v,
+	}
+
+	var capturedID string
+	var capturedMsg map[string]interface{}
+
+	mockSender := vmSendFunc(func(_ context.Context, sandboxID string, req interface{}) (json.RawMessage, error) {
+		capturedID = sandboxID
+		// Marshal + unmarshal so we can inspect the message fields.
+		raw, _ := json.Marshal(req)
+		_ = json.Unmarshal(raw, &capturedMsg)
+		// Return a success response matching the guest-agent's ack format.
+		ack, _ := json.Marshal(map[string]interface{}{"success": true})
+		return json.RawMessage(ack), nil
+	})
+
+	n, err := doInjectSecrets(context.Background(), env, "vm-sandbox-99", "discord-skill",
+		[]string{"BOT_TOKEN", "GUILD_ID"}, mockSender)
+	if err != nil {
+		t.Fatalf("doInjectSecrets returned error: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("expected 2 secrets injected, got %d", n)
+	}
+	if capturedID != "vm-sandbox-99" {
+		t.Errorf("expected sandbox ID vm-sandbox-99, got %q", capturedID)
+	}
+	if capturedMsg["type"] != "secrets.inject" {
+		t.Errorf("expected message type 'secrets.inject', got %q", capturedMsg["type"])
+	}
+}
+
+// TestDoInjectSecrets_SendFailure verifies that a sender error is propagated.
+func TestDoInjectSecrets_SendFailure(t *testing.T) {
+	v, _ := makeTestVault(t)
+	if err := v.Add("MY_TOKEN", "my-skill", []byte("tok-123")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	env := &runtimeEnv{
+		Logger: zap.NewNop(),
+		Vault:  v,
+	}
+
+	failSender := vmSendFunc(func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
+		return nil, fmt.Errorf("vsock connection refused")
+	})
+
+	_, err := doInjectSecrets(context.Background(), env, "sb-1", "my-skill",
+		[]string{"MY_TOKEN"}, failSender)
+	if err == nil {
+		t.Fatal("expected error when sender fails")
+	}
+	if !contains(err.Error(), "vsock inject") {
+		t.Errorf("expected vsock inject error, got: %v", err)
 	}
 }
 

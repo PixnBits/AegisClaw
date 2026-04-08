@@ -387,3 +387,76 @@ func TestWithdrawal(t *testing.T) {
 		t.Error("expected error transitioning from withdrawn")
 	}
 }
+
+func TestIsApproved(t *testing.T) {
+approved := []Status{StatusApproved, StatusImplementing, StatusComplete}
+notApproved := []Status{StatusDraft, StatusSubmitted, StatusInReview, StatusRejected, StatusEscalated, StatusFailed, StatusWithdrawn}
+
+p, _ := NewProposal("T", "D", CategoryNewSkill, "admin")
+for _, s := range approved {
+p.Status = s
+if !p.IsApproved() {
+t.Errorf("expected IsApproved()=true for status %q", s)
+}
+}
+for _, s := range notApproved {
+p.Status = s
+if p.IsApproved() {
+t.Errorf("expected IsApproved()=false for status %q", s)
+}
+}
+}
+
+func TestValidateAllowedHost(t *testing.T) {
+valid := []string{
+"api.discord.com",
+"gateway.discord.gg",
+"192.168.1.1",
+"10.0.0.0/8",
+"localhost",
+}
+invalid := []string{
+"",
+"*",
+"**",
+"*.example.com",
+"**.example.com",
+"0.0.0.0/0",
+"::/0",
+"0.0.0.0",
+"::",
+}
+
+for _, h := range valid {
+if err := validateAllowedHost(h); err != nil {
+t.Errorf("validateAllowedHost(%q) should be valid, got: %v", h, err)
+}
+}
+for _, h := range invalid {
+if err := validateAllowedHost(h); err == nil {
+t.Errorf("validateAllowedHost(%q) should be invalid, got nil", h)
+}
+}
+}
+
+func TestValidate_AllowedHostsRejected(t *testing.T) {
+p, _ := NewProposal("T", "D", CategoryNewSkill, "admin")
+p.NetworkPolicy = &ProposalNetworkPolicy{
+DefaultDeny:  true,
+AllowedHosts: []string{"*.example.com"},
+}
+if err := p.Validate(); err == nil {
+t.Error("expected Validate() to reject wildcard allowed_hosts")
+}
+}
+
+func TestValidate_BroadCIDRRejected(t *testing.T) {
+p, _ := NewProposal("T", "D", CategoryNewSkill, "admin")
+p.NetworkPolicy = &ProposalNetworkPolicy{
+DefaultDeny:  true,
+AllowedHosts: []string{"0.0.0.0/0"},
+}
+if err := p.Validate(); err == nil {
+t.Error("expected Validate() to reject 0.0.0.0/0 in allowed_hosts")
+}
+}

@@ -546,9 +546,11 @@ type limitWriter struct {
 func (lw *limitWriter) Write(p []byte) (int, error) {
 	remaining := lw.limit - lw.w.Len()
 	if remaining <= 0 {
-		return len(p), nil // silently discard excess
+		log.Printf("limitWriter: output truncated at %d bytes; discarding %d further bytes", lw.limit, len(p))
+		return len(p), nil // discard excess; caller sees full write length to avoid short-write errors
 	}
 	if len(p) > remaining {
+		log.Printf("limitWriter: output approaching limit (%d bytes); truncating write of %d bytes", lw.limit, len(p))
 		p = p[:remaining]
 	}
 	return lw.w.Write(p)

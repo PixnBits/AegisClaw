@@ -892,7 +892,7 @@ func skillNetworkPolicy(skillName string, env *runtimeEnv) sandbox.NetworkPolicy
 		if full.TargetSkill != skillName {
 			continue
 		}
-		if full.Status != proposal.StatusApproved && full.Status != proposal.StatusImplementing && full.Status != proposal.StatusComplete {
+		if !full.IsApproved() {
 			continue
 		}
 
@@ -926,7 +926,26 @@ func skillNetworkPolicy(skillName string, env *runtimeEnv) sandbox.NetworkPolicy
 // injected secrets.  On vault or vsock failure a descriptive error is returned
 // and the skill is left in a degraded-but-running state (missing secrets cause
 // tool-level failures rather than a full activation abort).
+// vmSendFunc is the signature used to send a JSON message to a running VM
+// over vsock.  Extracted as a type to enable dependency injection in tests
+// without exposing a broad interface or polluting runtimeEnv with test helpers.
+type vmSendFunc func(ctx context.Context, sandboxID string, req interface{}) (json.RawMessage, error)
+
+// injectSecretsIntoVM fetches every secret in refs from the vault, assembles a
+// secrets.inject vsock payload, and delivers it to the skill VM identified by
+// sandboxID.  It calls sender to perform the actual vsock dispatch.
+// Use injectSecretsIntoVM (the higher-level wrapper) in production code;
+// call doInjectSecrets directly in tests to supply a mock sender.
 func injectSecretsIntoVM(ctx context.Context, env *runtimeEnv, sandboxID, skillName string, refs []string) (int, error) {
+	if env.Runtime == nil {
+		return 0, fmt.Errorf("runtime not available for vsock secret injection")
+	}
+	return doInjectSecrets(ctx, env, sandboxID, skillName, refs, env.Runtime.SendToVM)
+}
+
+// doInjectSecrets is the testable core of secret injection; sender is called
+// to dispatch the vsock message to the VM.
+func doInjectSecrets(ctx context.Context, env *runtimeEnv, sandboxID, skillName string, refs []string, sender vmSendFunc) (int, error) {
 	if len(refs) == 0 {
 		return 0, nil
 	}
@@ -976,10 +995,7 @@ func injectSecretsIntoVM(ctx context.Context, env *runtimeEnv, sandboxID, skillN
 		"type":    "secrets.inject",
 		"payload": json.RawMessage(payload),
 	}
-	if env.Runtime == nil {
-		return 0, fmt.Errorf("runtime not available for vsock secret injection")
-	}
-	if _, vmErr := env.Runtime.SendToVM(ctx, sandboxID, vmMsg); vmErr != nil {
+	if _, vmErr := sender(ctx, sandboxID, vmMsg); vmErr != nil {
 		return 0, fmt.Errorf("vsock inject: %w", vmErr)
 	}
 

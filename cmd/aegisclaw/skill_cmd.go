@@ -591,7 +591,7 @@ func checkSecretsBeforeActivate(skillName string, env *runtimeEnv) error {
 		if full.TargetSkill != skillName {
 			continue
 		}
-		if full.Status != proposal.StatusApproved && full.Status != proposal.StatusImplementing && full.Status != proposal.StatusComplete {
+		if !full.IsApproved() {
 			continue
 		}
 		secretsRefs = full.SecretsRefs

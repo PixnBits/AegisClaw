@@ -291,7 +291,7 @@ func (v *Vault) decrypt(ciphertext []byte) ([]byte, error) {
 	}
 	// If we read exactly maxSecretBytes, the secret may have been silently
 	// truncated by LimitReader — treat this as a corrupt vault file.
-	if int64(len(plaintext)) >= maxSecretBytes {
+	if int64(len(plaintext)) == maxSecretBytes {
 		return nil, fmt.Errorf("secret exceeds maximum size (%d bytes); vault file may be corrupt", maxSecretBytes)
 	}
 	return plaintext, nil
