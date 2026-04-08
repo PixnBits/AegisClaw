@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/vault"
 	"go.uber.org/zap"
 )
@@ -255,4 +258,35 @@ func TestInjectSecretsIntoVM_SecretPresentNoRuntime(t *testing.T) {
 // contains is a helper for substring checks in error messages.
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
+}
+
+// TestSecretsRefreshHandler_SkillNotActive verifies the refresh handler returns an error
+// when the skill is not currently active in the registry.
+func TestSecretsRefreshHandler_SkillNotActive(t *testing.T) {
+	v, _ := makeTestVault(t)
+	store := testProposalStore(t)
+	cfg := &config.Config{}
+	cfg.Vault.Dir = t.TempDir()
+	reg, err := sandbox.NewSkillRegistry(t.TempDir() + "/registry.json")
+	if err != nil {
+		t.Fatalf("NewSkillRegistry: %v", err)
+	}
+
+	env := &runtimeEnv{
+		Logger:        zap.NewNop(),
+		Config:        cfg,
+		Vault:         v,
+		ProposalStore: store,
+		Registry:      reg,
+	}
+
+	handler := makeSecretsRefreshHandler(env)
+	reqData, _ := json.Marshal(map[string]string{"name": "nonexistent-skill"})
+	resp := handler(context.Background(), reqData)
+	if resp.Error == "" {
+		t.Fatal("expected error for non-active skill, got success")
+	}
+	if !strings.Contains(resp.Error, "not currently active") {
+		t.Errorf("unexpected error message: %q", resp.Error)
+	}
 }

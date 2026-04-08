@@ -147,6 +147,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("skill.deactivate", makeSkillDeactivateHandler(env))
 	apiSrv.Handle("skill.invoke", makeSkillInvokeHandler(env))
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
+	apiSrv.Handle("skill.secrets.refresh", makeSecretsRefreshHandler(env))
 	apiSrv.Handle("dashboard.skills", makeDashboardSkillsHandler(env))
 	apiSrv.Handle("dashboard.proposal", makeDashboardProposalHandler(env))
 	apiSrv.Handle("sandbox.list", makeSandboxListHandler(env))
@@ -448,9 +449,18 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 		// declares egress_mode "proxy" (or the default, which is proxy mode).
 		// The proxy listens on <vsock_path>_1026 and validates SNI against the
 		// FQDN allowlist before tunneling outbound TLS connections.
+		// NOTE: VsockPath (vsock.sock) is the vsock device socket, distinct from
+		// info.SocketPath (firecracker.sock, the Firecracker API socket).
+		// Firecracker delivers guest-initiated connections to host port 1026 at
+		// <vsock_base_path>_1026; EgressProxy.StartForVM appends "_1026".
 		if !netPolicy.NoNetwork && (netPolicy.EgressMode == "" || netPolicy.EgressMode == "proxy") && env.EgressProxy != nil {
-			vsockPath := info.SocketPath // Firecracker vsock socket path
-			if vsockPath != "" && len(netPolicy.AllowedHosts) > 0 {
+			vsockPath, vsErr := env.Runtime.VsockPath(sandboxID)
+			if vsErr != nil {
+				env.Logger.Warn("could not determine vsock path for egress proxy; skill may lack network access",
+					zap.String("skill", req.Name),
+					zap.Error(vsErr),
+				)
+			} else if len(netPolicy.AllowedHosts) > 0 {
 				if epErr := env.EgressProxy.StartForVM(sandboxID, vsockPath, netPolicy.AllowedHosts); epErr != nil {
 					env.Logger.Warn("egress proxy start failed; skill may lack network access",
 						zap.String("skill", req.Name),
@@ -953,6 +963,8 @@ func injectSecretsIntoVM(ctx context.Context, env *runtimeEnv, sandboxID, skillN
 	if err != nil {
 		return 0, fmt.Errorf("resolve secrets: %w", err)
 	}
+	// Zero plaintext when we are done regardless of send outcome.
+	defer injectReq.Zero()
 
 	payload, err := sp.BuildPayload(injectReq)
 	if err != nil {
@@ -976,4 +988,63 @@ func injectSecretsIntoVM(ctx context.Context, env *runtimeEnv, sandboxID, skillN
 		zap.Int("count", len(present)),
 	)
 	return len(present), nil
+}
+
+// secretsRefreshRequest is the payload for skill.secrets.refresh.
+type secretsRefreshRequest struct {
+Name string `json:"name"` // skill name
+}
+
+// makeSecretsRefreshHandler returns a handler that re-injects the vault secrets
+// for a currently-active skill VM without requiring a full deactivate/activate
+// cycle.  This is the runtime complement to "aegisclaw secrets rotate": after
+// rotating a secret in the vault the operator calls this endpoint (or the CLI
+// wrapper) to push the new value to the running VM's /run/secrets/<name>.
+func makeSecretsRefreshHandler(env *runtimeEnv) api.Handler {
+return func(ctx context.Context, data json.RawMessage) *api.Response {
+var req secretsRefreshRequest
+if err := json.Unmarshal(data, &req); err != nil {
+return &api.Response{Error: "invalid request: " + err.Error()}
+}
+if req.Name == "" {
+return &api.Response{Error: "skill name is required"}
+}
+
+entry, ok := env.Registry.Get(req.Name)
+if !ok || entry.State != sandbox.SkillStateActive {
+return &api.Response{Error: fmt.Sprintf("skill %q is not currently active", req.Name)}
+}
+
+// Find the approved proposal to get the secrets refs.
+summaries, pErr := env.ProposalStore.List()
+if pErr != nil {
+return &api.Response{Error: "failed to list proposals: " + pErr.Error()}
+}
+var refs []string
+for _, s := range summaries {
+full, getErr := env.ProposalStore.Get(s.ID)
+if getErr == nil && full.TargetSkill == req.Name && len(full.SecretsRefs) > 0 {
+refs = full.SecretsRefs
+break
+}
+}
+if len(refs) == 0 {
+return &api.Response{Error: fmt.Sprintf("no secrets declared for skill %q", req.Name)}
+}
+
+injected, err := injectSecretsIntoVM(ctx, env, entry.SandboxID, req.Name, refs)
+if err != nil {
+return &api.Response{Error: "secrets refresh failed: " + err.Error()}
+}
+
+env.Logger.Info("secrets refreshed in running skill VM",
+zap.String("skill", req.Name),
+zap.Int("count", injected),
+)
+respData, _ := json.Marshal(map[string]interface{}{
+"skill":    req.Name,
+"injected": injected,
+})
+return &api.Response{Success: true, Data: respData}
+}
 }

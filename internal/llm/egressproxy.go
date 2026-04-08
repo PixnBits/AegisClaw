@@ -23,6 +23,11 @@ const EgressProxyVsockPort = 1026
 // the real upstream destination after SNI validation passes.
 const egressDialTimeout = 15 * time.Second
 
+// maxTLSRecordLen is the maximum TLS record body length per RFC 5246 §6.2.
+// A ClientHello will never exceed this size; anything larger indicates a
+// malformed or malicious input and is rejected immediately.
+const maxTLSRecordLen = 16384
+
 // egressTLSReadTimeout is the maximum time to wait when peeking TLS bytes for
 // SNI extraction.  If the guest does not send a ClientHello within this window
 // the connection is dropped.
@@ -253,7 +258,7 @@ func peekSNI(r net.Conn) (raw []byte, sni string, err error) {
 	}
 
 	recordLen := int(binary.BigEndian.Uint16(hdr[3:5]))
-	if recordLen < 4 || recordLen > 16384 {
+	if recordLen < 4 || recordLen > maxTLSRecordLen {
 		return nil, "", fmt.Errorf("TLS record length out of range: %d", recordLen)
 	}
 

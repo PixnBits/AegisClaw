@@ -17,6 +17,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// maxSecretBytes is an upper bound on a single secret's plaintext size.
+// Secrets larger than this are rejected to prevent runaway memory on
+// corrupt/tampered vault files.
+const maxSecretBytes = 1 * 1024 * 1024 // 1 MiB
+
 var secretNameRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]{0,127}$`)
 
 // SecretEntry stores metadata about a secret (never the plaintext value).
@@ -280,9 +285,14 @@ func (v *Vault) decrypt(ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("age decrypt: %w", err)
 	}
-	plaintext, err := io.ReadAll(r)
+	plaintext, err := io.ReadAll(io.LimitReader(r, maxSecretBytes))
 	if err != nil {
 		return nil, fmt.Errorf("age decrypt read: %w", err)
+	}
+	// If we read exactly maxSecretBytes, the secret may have been silently
+	// truncated by LimitReader — treat this as a corrupt vault file.
+	if int64(len(plaintext)) >= maxSecretBytes {
+		return nil, fmt.Errorf("secret exceeds maximum size (%d bytes); vault file may be corrupt", maxSecretBytes)
 	}
 	return plaintext, nil
 }

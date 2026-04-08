@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/spf13/cobra"
@@ -52,15 +54,28 @@ The old value is overwritten and the rotation is logged to the audit trail.`,
 	RunE: runSecretsRotate,
 }
 
+var secretsRefreshCmd = &cobra.Command{
+	Use:   "refresh",
+	Short: "Re-inject secrets into a running skill VM after rotation",
+	Long: `Pushes updated vault secrets to an already-active skill VM via vsock
+without a full deactivate/activate cycle.  Run this after "secrets rotate"
+to make the new value available to the running skill immediately.`,
+	RunE: runSecretsRefresh,
+}
+
 func init() {
 	secretsCmd.AddCommand(secretsAddCmd)
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsRotateCmd)
+	secretsCmd.AddCommand(secretsRefreshCmd)
 
 	secretsAddCmd.Flags().StringVar(&secretsSkillID, "skill", "", "Skill name to associate with the secret")
 	secretsAddCmd.MarkFlagRequired("skill")
 
 	secretsRotateCmd.Flags().StringVar(&secretsSkillID, "skill", "", "Skill name to associate with the rotated secret")
+
+	secretsRefreshCmd.Flags().StringVar(&secretsSkillID, "skill", "", "Skill name whose running VM should receive refreshed secrets")
+	secretsRefreshCmd.MarkFlagRequired("skill")
 }
 
 // readSecretFromTerminal reads a secret from terminal without echoing.
@@ -212,4 +227,35 @@ func runSecretsRotate(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Secret %q rotated for skill %q\n", name, skillID)
 	return nil
+}
+
+func runSecretsRefresh(cmd *cobra.Command, args []string) error {
+if secretsSkillID == "" {
+return fmt.Errorf("--skill flag is required")
+}
+
+env, err := initRuntime()
+if err != nil {
+return err
+}
+
+client := api.NewClient(env.Config.Daemon.SocketPath)
+reqData, _ := json.Marshal(map[string]string{"name": secretsSkillID})
+resp, err := client.Call(cmd.Context(), "skill.secrets.refresh", json.RawMessage(reqData))
+if err != nil {
+return fmt.Errorf("daemon call failed: %w\n  (Is the daemon running? Start with: sudo aegisclaw start)", err)
+}
+if resp.Error != "" {
+return fmt.Errorf("secrets refresh failed: %s", resp.Error)
+}
+
+// Parse response to report injected count.
+var result struct {
+Injected int `json:"injected"`
+}
+if resp.Data != nil {
+_ = json.Unmarshal(resp.Data, &result)
+}
+fmt.Printf("Refreshed %d secret(s) in running skill VM %q\n", result.Injected, secretsSkillID)
+return nil
 }

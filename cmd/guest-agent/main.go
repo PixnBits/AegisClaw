@@ -205,7 +205,11 @@ func dispatch(ctx context.Context, req *Request) *Response {
 		return handleFileList(req)
 	case "status":
 		return handleStatus(req)
-	case "secrets.inject":
+	case "secrets.inject", "secrets.refresh":
+		// Both inject and refresh use the same handler: write/overwrite files
+		// in /run/secrets/<name> on tmpfs.  refresh is the idempotent variant
+		// used after a rotation so running skill code picks up the new value
+		// on its next /run/secrets/<name> read without a full VM restart.
 		return handleSecretsInject(req)
 	case "tool.invoke":
 		return handleToolInvoke(req)
@@ -484,41 +488,70 @@ func handleToolInvoke(req *Request) *Response {
 		return errorResponse(req.ID, "tool name is required")
 	}
 
+	// Prevent path traversal: tool names must not contain separators or ".."
+	// even though we are already inside a Firecracker-isolated rootfs.
+	if strings.ContainsAny(payload.Tool, "/\\") || strings.Contains(payload.Tool, "..") {
+		return errorResponse(req.ID, fmt.Sprintf("invalid tool name: %q", payload.Tool))
+	}
+
 	if payload.Tool == "execute_script" {
 		return handleExecuteScript(req.ID, payload.Args)
 	}
 
 	// Look for the tool as an executable under /workspace/tools/<name>.
 	toolPath := filepath.Join(workspaceDir, "tools", payload.Tool)
+	// Guard against any residual traversal after Clean (defence-in-depth).
+	if !isUnderWorkspace(toolPath) {
+		return errorResponse(req.ID, fmt.Sprintf("tool path escapes workspace: %q", payload.Tool))
+	}
 	if _, err := os.Stat(toolPath); err == nil {
-		// Execute the tool binary/script
-		cmd := exec.Command(toolPath)
+		// Execute the tool binary/script; cap combined output to maxPayloadLen.
+		var outBuf, errBuf bytes.Buffer
+		var cmd *exec.Cmd
 		if payload.Args != "" {
 			cmd = exec.Command(toolPath, payload.Args)
+		} else {
+			cmd = exec.Command(toolPath)
 		}
 		cmd.Dir = workspaceDir
 		cmd.Env = []string{
 			"PATH=/usr/local/bin:/usr/bin:/bin",
 			"HOME=/workspace",
 		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return errorResponse(req.ID, fmt.Sprintf("tool %q failed: %v (%s)", payload.Tool, err, string(out)))
+		cmd.Stdout = &limitWriter{w: &outBuf, limit: maxPayloadLen}
+		cmd.Stderr = &limitWriter{w: &errBuf, limit: maxPayloadLen}
+		if err := cmd.Run(); err != nil {
+			combined := strings.TrimSpace(outBuf.String())
+			if e := strings.TrimSpace(errBuf.String()); e != "" {
+				combined += "\n" + e
+			}
+			return errorResponse(req.ID, fmt.Sprintf("tool %q failed: %v (%s)", payload.Tool, err, combined))
 		}
-		result := ToolInvokeResult{Output: strings.TrimSpace(string(out))}
+		result := ToolInvokeResult{Output: strings.TrimSpace(outBuf.String())}
 		data, _ := json.Marshal(result)
 		return &Response{ID: req.ID, Success: true, Data: data}
 	}
 
-	// No deployed tool binary — return a placeholder so the demo flow is
-	// visible.  The builder pipeline (step 6) will eventually deploy real
-	// tool binaries into /workspace/tools/.
-	log.Printf("tool.invoke: tool %q not found at %s, returning stub", payload.Tool, toolPath)
-	result := ToolInvokeResult{
-		Output: fmt.Sprintf("[stub] Tool %q invoked.  Deploy skill code to /workspace/tools/ via the builder pipeline.", payload.Tool),
+	// No deployed tool binary — return a not-found error so callers can
+	// distinguish a missing tool from a successful empty result.
+	return errorResponse(req.ID, fmt.Sprintf("tool %q not found; deploy via the builder pipeline to /workspace/tools/", payload.Tool))
+}
+
+// limitWriter is an io.Writer that caps total bytes written at limit.
+type limitWriter struct {
+	w     *bytes.Buffer
+	limit int
+}
+
+func (lw *limitWriter) Write(p []byte) (int, error) {
+	remaining := lw.limit - lw.w.Len()
+	if remaining <= 0 {
+		return len(p), nil // silently discard excess
 	}
-	data, _ := json.Marshal(result)
-	return &Response{ID: req.ID, Success: true, Data: data}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	return lw.w.Write(p)
 }
 
 func handleExecuteScript(requestID, rawArgs string) *Response {

@@ -19,6 +19,25 @@ type SecretInjectRequest struct {
 	Secrets []SecretInjection `json:"secrets"`
 }
 
+// Zero attempts to overwrite all plaintext secret values in-place with null
+// bytes as a best-effort defence-in-depth measure.  Note: converting
+// r.Secrets[i].Value back to []byte always creates a copy of the backing
+// array (Go strings are immutable), so this does NOT guarantee the original
+// bytes are cleared — the GC may or may not reclaim the original allocation
+// before this function is called.  Nevertheless, calling Zero() after vsock
+// transport closes the window between transmission and the next GC cycle,
+// which is sufficient for most threat models that are already defended by
+// Firecracker isolation and age-encrypted at-rest storage.
+func (r *SecretInjectRequest) Zero() {
+	for i := range r.Secrets {
+		b := []byte(r.Secrets[i].Value)
+		for j := range b {
+			b[j] = 0
+		}
+		r.Secrets[i].Value = ""
+	}
+}
+
 // SecretInjectResponse is the guest agent's acknowledgment.
 type SecretInjectResponse struct {
 	Injected int    `json:"injected"`
@@ -35,9 +54,13 @@ type SecretProxy struct {
 }
 
 // NewSecretProxy creates a proxy that reads secrets from the given vault.
-func NewSecretProxy(vault *Vault, logger *zap.Logger) *SecretProxy {
+// vault must not be nil.
+func NewSecretProxy(v *Vault, logger *zap.Logger) *SecretProxy {
+	if v == nil {
+		panic("vault: NewSecretProxy called with nil vault")
+	}
 	return &SecretProxy{
-		vault:  vault,
+		vault:  v,
 		logger: logger,
 	}
 }
@@ -59,6 +82,11 @@ func (sp *SecretProxy) ResolveSecrets(refs []string) (*SecretInjectRequest, erro
 			Name:  name,
 			Value: string(plaintext),
 		})
+		// Best-effort: zero the decrypted byte slice returned by vault.Get.
+		// The string copy above still exists in memory until GC; see Zero().
+		for j := range plaintext {
+			plaintext[j] = 0
+		}
 		sp.logger.Debug("secret resolved for injection", zap.String("name", name))
 	}
 

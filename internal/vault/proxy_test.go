@@ -103,3 +103,29 @@ func TestSecretProxy_BuildPayload(t *testing.T) {
 		t.Fatalf("unexpected secret: %+v", parsed.Secrets[0])
 	}
 }
+
+// TestSecretInjectRequest_Zero verifies that Zero() wipes all plaintext values.
+func TestSecretInjectRequest_Zero(t *testing.T) {
+req := &SecretInjectRequest{
+Secrets: []SecretInjection{
+{Name: "A", Value: "secret-alpha"},
+{Name: "B", Value: "secret-beta"},
+},
+}
+req.Zero()
+for _, s := range req.Secrets {
+if s.Value != "" {
+t.Errorf("expected Value to be empty after Zero(), got %q for %q", s.Value, s.Name)
+}
+}
+}
+
+// TestNewSecretProxy_NilVaultPanics verifies the nil guard on NewSecretProxy.
+func TestNewSecretProxy_NilVaultPanics(t *testing.T) {
+defer func() {
+if r := recover(); r == nil {
+t.Fatal("expected panic for nil vault, got none")
+}
+}()
+NewSecretProxy(nil, nil)
+}
