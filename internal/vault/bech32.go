@@ -10,7 +10,7 @@ const bech32Charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 
 // bech32Encode encodes data with the given human-readable part and returns
 // a lowercase bech32 string.
-func bech32Encode(hrp string, data []byte) (string, error) {
+func bech32Encode(hrp string, data []byte) string {
 	conv := bech32To5Bits(data)
 
 	// Build the checksum over: expandedHRP || conv || 6×0
@@ -30,7 +30,7 @@ func bech32Encode(hrp string, data []byte) (string, error) {
 	for i := 5; i >= 0; i-- {
 		b.WriteByte(bech32Charset[(pm>>(uint(i)*5))&31])
 	}
-	return b.String(), nil
+	return b.String()
 }
 
 // bech32To5Bits converts a byte slice from 8-bit to 5-bit groups (with padding).

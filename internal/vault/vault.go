@@ -337,10 +337,8 @@ func deriveAgeIdentity(privateKey ed25519.PrivateKey) (*age.X25519Identity, erro
 	if _, err := io.ReadFull(r, scalar); err != nil {
 		return nil, fmt.Errorf("hkdf derive age scalar: %w", err)
 	}
-	encoded, err := bech32Encode("age-secret-key-", scalar)
-	if err != nil {
-		return nil, fmt.Errorf("bech32 encode age identity: %w", err)
-	}
+	encoded := bech32Encode("age-secret-key-", scalar)
+	// age.ParseX25519Identity requires the uppercase form (AGE-SECRET-KEY-1...).
 	return age.ParseX25519Identity(strings.ToUpper(encoded))
 }
 
