@@ -933,6 +933,23 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"registry.list\" — list skills available in the ClawHub registry. args: {}\n")
 	b.WriteString("- \"registry.import\" — import a skill from the registry and submit it for Court review. args: {\"name\": \"...\"}\n")
 
+	// PR 19 guidance: explicit proposal contract for network + secrets.
+	b.WriteString("\nPROPOSAL CONTRACT FOR NETWORK + SECRETS (STRICT):\n")
+	b.WriteString("When proposing a networked skill, include these JSON fields in proposal.create_draft args:\n")
+	b.WriteString("  capabilities: { network: true, secrets: [\"SECRET_NAME\", ...] }\n")
+	b.WriteString("  secret_refs: [\"SECRET_NAME\", ...] // same names as capabilities.secrets\n")
+	b.WriteString("  network_policy: {\n")
+	b.WriteString("    default_deny: true,\n")
+	b.WriteString("    allowed_hosts: [\"api.example.com\", \"gateway.example.com\"],\n")
+	b.WriteString("    allowed_ports: [443],\n")
+	b.WriteString("    allowed_protocols: [\"tcp\"],\n")
+	b.WriteString("    egress_mode: \"proxy\"\n")
+	b.WriteString("  }\n")
+	b.WriteString("Rules: no wildcards, no 0.0.0.0/0, no ::/0, no secret values in any proposal field.\n")
+	b.WriteString("If a user asks for Discord/Telegram/GitHub/Slack integrations, infer exact FQDNs used by the client library and keep the host list minimal.\n")
+	b.WriteString("Secrets are write-only in operator UX: users can add/update/list names, never read secret values.\n")
+	b.WriteString("Never ask users to paste secret values into chat; direct them to CLI secure prompt commands only.\n")
+
 	// Proposal drafting instructions: proactive, complete, no back-and-forth.
 	b.WriteString("\nWhen asked to ADD, DRAFT, or CREATE any skill or capability, immediately call proposal.create_draft.\n")
 	b.WriteString("Do NOT ask the user to supply technical details first. Reason through them yourself:\n")
