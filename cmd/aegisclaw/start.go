@@ -139,6 +139,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
+	ensureReviewSkillsRegistered(cmd.Context(), env)
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))
@@ -178,6 +179,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Phase 3: Worker handlers.
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
+	// Built-in periodic security review framework (on-demand trigger).
+	apiSrv.Handle("review.run", makeReviewRunHandler(env))
 	// Phase 1 (OpenClaw integration): Session routing handlers.
 	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
 	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))

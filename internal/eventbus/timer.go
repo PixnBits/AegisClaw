@@ -236,6 +236,17 @@ func NextCronTime(expr string, from time.Time) time.Time {
 			y++
 		}
 		return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+	case "@quarterly":
+		// Advance to the first day of the next calendar quarter.
+		y, m, _ := from.Date()
+		// Quarter boundaries are months 1, 4, 7, 10.
+		// Find the start of the next quarter.
+		nextQMonth := ((int(m)-1)/3+1)*3 + 1
+		if nextQMonth > 12 {
+			nextQMonth -= 12
+			y++
+		}
+		return time.Date(y, time.Month(nextQMonth), 1, 0, 0, 0, 0, time.UTC)
 	}
 	// Try "*/N * * * *" style (every N minutes).
 	if strings.HasPrefix(expr, "*/") {
