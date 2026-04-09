@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
@@ -190,7 +191,7 @@ func runReviewRun(cmd *cobra.Command, args []string) error {
 // worker directly in the current process.  Used when the daemon is offline.
 func triggerReviewDirectly(ctx context.Context, env *runtimeEnv, name string) error {
 	if env.Runtime == nil {
-		return fmt.Errorf("Firecracker runtime not available; start the daemon with 'aegisclaw start' and use 'aegisclaw review run %s'", name)
+		return fmt.Errorf("firecracker runtime not available; start the daemon with 'aegisclaw start' and use 'aegisclaw review run %s'", name)
 	}
 
 	// Find the task description for the named skill.
@@ -251,7 +252,7 @@ func runReviewDisable(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Disable review skill %q? This will cancel its cron timer and log the action. [y/N] ", name)
 		var confirm string
 		fmt.Scanln(&confirm)
-		if confirm != "y" && confirm != "yes" && confirm != "Y" {
+		if strings.ToLower(confirm) != "y" && strings.ToLower(confirm) != "yes" {
 			fmt.Println("Cancelled.")
 			return nil
 		}

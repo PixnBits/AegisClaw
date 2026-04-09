@@ -238,10 +238,11 @@ func NextCronTime(expr string, from time.Time) time.Time {
 		return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
 	case "@quarterly":
 		// Advance to the first day of the next calendar quarter.
+		// Quarter boundaries are months January (1), April (4), July (7), October (10).
+		// Formula: current quarter index = (month-1)/3 (integer division, 0-based).
+		// Next quarter start month = ((currentQuarterIndex + 1) * 3) + 1.
 		y, m, _ := from.Date()
-		// Quarter boundaries are months 1, 4, 7, 10.
-		// Find the start of the next quarter.
-		nextQMonth := ((int(m)-1)/3+1)*3 + 1
+		nextQMonth := nextQuarterStartMonth(int(m))
 		if nextQMonth > 12 {
 			nextQMonth -= 12
 			y++
@@ -272,6 +273,17 @@ func NextCronTime(expr string, from time.Time) time.Time {
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
+
+// nextQuarterStartMonth returns the month number (1–12) of the first month of
+// the calendar quarter that follows the quarter containing monthNum.
+// Quarter boundaries: Q1→Jan(1), Q2→Apr(4), Q3→Jul(7), Q4→Oct(10).
+// The returned value may be 13, which the caller should normalise by
+// subtracting 12 and incrementing the year.
+func nextQuarterStartMonth(monthNum int) int {
+	// (monthNum-1)/3 gives the 0-based current quarter index (0..3).
+	// Multiplying the next index by 3 and adding 1 gives the 1-based start month.
+	return ((monthNum-1)/3+1)*3 + 1
+}
 
 // atomicWriteFile writes data to path atomically via a temp-file rename.
 func atomicWriteFile(path string, data []byte) error {

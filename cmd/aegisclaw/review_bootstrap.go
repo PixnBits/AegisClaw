@@ -157,10 +157,9 @@ func ensureReviewSkillsRegistered(ctx context.Context, env *runtimeEnv) {
 }
 
 // registerOneReviewSkill registers a single review skill and ensures its cron
-// timer exists.
-func registerOneReviewSkill(ctx context.Context, env *runtimeEnv, d reviewSkillDef) {
-	_ = ctx // reserved for future use
-
+// timer exists.  ctx is accepted for forward compatibility (e.g., cancellation
+// support for future async registration steps).
+func registerOneReviewSkill(_ context.Context, env *runtimeEnv, d reviewSkillDef) {
 	// 1. Register in the skill registry (no-op if already present).
 	meta := map[string]string{
 		reviewMetadataKeyType:        reviewMetadataValueBuiltIn,
