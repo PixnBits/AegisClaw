@@ -66,10 +66,15 @@ func TestNewVault_PersistentIdentity(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	key := testKey(t)
 
-	// First init creates identity
+	// First init derives identity from key
 	v1, err := NewVault(storeDir, key, logger)
 	if err != nil {
 		t.Fatalf("first NewVault failed: %v", err)
+	}
+
+	// No .age-identity file should be written; the identity is derived on demand.
+	if _, err := os.Stat(filepath.Join(storeDir, ".age-identity")); !os.IsNotExist(err) {
+		t.Fatal("expected no .age-identity file with HKDF derivation")
 	}
 
 	// Add a secret
@@ -77,7 +82,7 @@ func TestNewVault_PersistentIdentity(t *testing.T) {
 		t.Fatalf("Add failed: %v", err)
 	}
 
-	// Second init reuses identity — must be able to decrypt
+	// Second init re-derives the same identity from the same key — must decrypt.
 	v2, err := NewVault(storeDir, key, logger)
 	if err != nil {
 		t.Fatalf("second NewVault failed: %v", err)
@@ -89,6 +94,59 @@ func TestNewVault_PersistentIdentity(t *testing.T) {
 	}
 	if string(data) != "hello" {
 		t.Fatalf("expected %q, got %q", "hello", string(data))
+	}
+}
+
+// TestNewVault_DerivedIdentity_Deterministic verifies that two vaults opened
+// with the same Ed25519 key (even in different directories) derive identical
+// age encryption identities.
+func TestNewVault_DerivedIdentity_Deterministic(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	logger := zaptest.NewLogger(t)
+	key := testKey(t)
+
+	v1, err := NewVault(dir1, key, logger)
+	if err != nil {
+		t.Fatalf("NewVault dir1 failed: %v", err)
+	}
+	v2, err := NewVault(dir2, key, logger)
+	if err != nil {
+		t.Fatalf("NewVault dir2 failed: %v", err)
+	}
+
+	pub1 := v1.identity.Recipient().String()
+	pub2 := v2.identity.Recipient().String()
+	if pub1 != pub2 {
+		t.Fatalf("same key → different recipients: %q vs %q", pub1, pub2)
+	}
+}
+
+// TestNewVault_CrossKeyIsolation verifies that a vault opened with a different
+// Ed25519 key cannot decrypt secrets stored by the original key.
+func TestNewVault_CrossKeyIsolation(t *testing.T) {
+	dir := t.TempDir()
+	logger := zaptest.NewLogger(t)
+	keyA := testKey(t)
+	keyB := testKey(t)
+
+	vA, err := NewVault(dir, keyA, logger)
+	if err != nil {
+		t.Fatalf("NewVault keyA failed: %v", err)
+	}
+	if err := vA.Add("secret", "skill-1", []byte("sensitive")); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Open same directory with a different key.
+	vB, err := NewVault(dir, keyB, logger)
+	if err != nil {
+		t.Fatalf("NewVault keyB failed: %v", err)
+	}
+
+	_, err = vB.Get("secret")
+	if err == nil {
+		t.Fatal("expected decryption to fail with a different key")
 	}
 }
 

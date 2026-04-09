@@ -3,6 +3,7 @@ package vault
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"filippo.io/age"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/hkdf"
 )
 
 // maxSecretBytes is an upper bound on a single secret's plaintext size.
@@ -46,7 +48,9 @@ type Vault struct {
 }
 
 // NewVault creates a Vault at the given directory using the kernel's Ed25519 key.
-// The Ed25519 key is used to derive an age X25519 identity for encryption.
+// The age X25519 encryption identity is derived deterministically from the
+// Ed25519 private key via HKDF-SHA256, so no separate identity file is written
+// to disk.  The vault can always be recovered from the Ed25519 key alone.
 func NewVault(storeDir string, privateKey ed25519.PrivateKey, logger *zap.Logger) (*Vault, error) {
 	if storeDir == "" {
 		return nil, fmt.Errorf("store directory is required")
@@ -59,28 +63,9 @@ func NewVault(storeDir string, privateKey ed25519.PrivateKey, logger *zap.Logger
 		return nil, fmt.Errorf("failed to create vault directory %s: %w", storeDir, err)
 	}
 
-	// Derive age identity from Ed25519 private key seed
-	identity, err := age.GenerateX25519Identity()
+	identity, err := deriveAgeIdentity(privateKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate age identity: %w", err)
-	}
-
-	// Load or create persistent age identity
-	identityPath := filepath.Join(storeDir, ".age-identity")
-	identityData, readErr := os.ReadFile(identityPath)
-	if readErr == nil {
-		parsed, parseErr := age.ParseX25519Identity(strings.TrimSpace(string(identityData)))
-		if parseErr != nil {
-			return nil, fmt.Errorf("failed to parse stored age identity: %w", parseErr)
-		}
-		identity = parsed
-	} else if os.IsNotExist(readErr) {
-		// First time: store the identity
-		if writeErr := os.WriteFile(identityPath, []byte(identity.String()+"\n"), 0600); writeErr != nil {
-			return nil, fmt.Errorf("failed to write age identity: %w", writeErr)
-		}
-	} else {
-		return nil, fmt.Errorf("failed to read age identity: %w", readErr)
+		return nil, fmt.Errorf("failed to derive age identity: %w", err)
 	}
 
 	recipient := identity.Recipient()
@@ -338,6 +323,25 @@ func (v *Vault) saveEntries() error {
 
 	indexPath := filepath.Join(v.storeDir, "index.json")
 	return os.WriteFile(indexPath, data, 0600)
+}
+
+// deriveAgeIdentity derives a deterministic age X25519 encryption identity from
+// an Ed25519 private key using HKDF-SHA256.  Binding the vault key to the
+// kernel's existing Ed25519 key means no separate identity file is required:
+// vault contents are always recoverable as long as the Ed25519 key is intact.
+// The info label domain-separates this derivation and encodes a version so
+// future key-derivation changes can be detected.
+func deriveAgeIdentity(privateKey ed25519.PrivateKey) (*age.X25519Identity, error) {
+	r := hkdf.New(sha256.New, privateKey.Seed(), nil, []byte("aegisclaw-vault-age-identity-v1"))
+	scalar := make([]byte, 32)
+	if _, err := io.ReadFull(r, scalar); err != nil {
+		return nil, fmt.Errorf("hkdf derive age scalar: %w", err)
+	}
+	encoded, err := bech32Encode("age-secret-key-", scalar)
+	if err != nil {
+		return nil, fmt.Errorf("bech32 encode age identity: %w", err)
+	}
+	return age.ParseX25519Identity(strings.ToUpper(encoded))
 }
 
 // validateSecretName checks that a secret name is valid.
