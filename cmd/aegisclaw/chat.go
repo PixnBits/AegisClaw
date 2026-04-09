@@ -724,6 +724,19 @@ func resolveProposalID(env *runtimeEnv, idOrPrefix string) (string, error) {
 	return env.ProposalStore.ResolveID(idOrPrefix)
 }
 
+// resolveEgressMode returns the egress mode to use for a network policy.
+// The precedence is: explicit override > existing value > "proxy" (safe default).
+// Pass existingMode="" and override=nil when creating a fresh policy.
+func resolveEgressMode(existingMode string, override *string) string {
+	if override != nil {
+		return *override
+	}
+	if existingMode != "" {
+		return existingMode
+	}
+	return "proxy"
+}
+
 // handleProposalCreateDraft creates a new draft proposal from LLM-collected fields.
 func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error) {
 	var args struct {
@@ -781,9 +794,13 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 
 	needsNetwork := len(args.AllowedHosts) > 0
 	// Resolve egress mode: default to "proxy" for new network skills.
-	egressMode := args.EgressMode
-	if egressMode == "" && needsNetwork {
-		egressMode = "proxy"
+	var egressOverride *string
+	if args.EgressMode != "" {
+		egressOverride = &args.EgressMode
+	}
+	egressMode := ""
+	if needsNetwork {
+		egressMode = resolveEgressMode("", egressOverride)
 	}
 
 	result := &wizard.WizardResult{
@@ -1011,18 +1028,11 @@ func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error)
 			if p.NetworkPolicy != nil {
 				existingMode = p.NetworkPolicy.EgressMode
 			}
-			egressMode := existingMode
-			if egressMode == "" {
-				egressMode = "proxy" // default for new/updated network skills
-			}
-			if args.EgressMode != nil {
-				egressMode = *args.EgressMode
-			}
 			p.NetworkPolicy = &proposal.ProposalNetworkPolicy{
 				DefaultDeny:  true,
 				AllowedHosts: result.AllowedHosts,
 				AllowedPorts: ports,
-				EgressMode:   egressMode,
+				EgressMode:   resolveEgressMode(existingMode, args.EgressMode),
 			}
 		}
 	} else if args.EgressMode != nil && p.NetworkPolicy != nil {

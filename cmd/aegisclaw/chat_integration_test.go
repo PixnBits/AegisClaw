@@ -920,3 +920,28 @@ func extractIDFromResult(t *testing.T, result string) string {
 	t.Fatalf("no 'ID:' line found in result:\n%s", result)
 	return ""
 }
+
+func TestResolveEgressMode(t *testing.T) {
+proxy := "proxy"
+direct := "direct"
+
+tests := []struct {
+existing string
+override *string
+want     string
+}{
+{"", nil, "proxy"},          // no existing, no override → default proxy
+{"proxy", nil, "proxy"},     // existing proxy preserved
+{"direct", nil, "direct"},   // existing direct preserved
+{"", &proxy, "proxy"},       // explicit proxy override
+{"", &direct, "direct"},     // explicit direct override
+{"proxy", &direct, "direct"},// override wins over existing
+{"direct", &proxy, "proxy"}, // override wins over existing
+}
+for _, tc := range tests {
+got := resolveEgressMode(tc.existing, tc.override)
+if got != tc.want {
+t.Errorf("resolveEgressMode(%q, %v) = %q, want %q", tc.existing, tc.override, got, tc.want)
+}
+}
+}

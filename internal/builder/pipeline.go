@@ -141,7 +141,7 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 	if err := spec.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid skill spec: %w", err)
 	}
-	if prop.Status != proposal.StatusApproved && prop.Status != proposal.StatusImplementing {
+	if !prop.IsApproved() {
 		return nil, fmt.Errorf("proposal must be approved or implementing, got %s", prop.Status)
 	}
 
