@@ -11,6 +11,9 @@ import (
 	"go.uber.org/zap"
 )
 
+// vaultTimeFormat is the display format used for secret metadata timestamps.
+const vaultTimeFormat = "2006-01-02 15:04"
+
 // makeVaultSecretAddHandler returns a handler for the "vault.secret.add" action.
 // The daemon owns all vault writes; the CLI sends the plaintext over the local
 // Unix socket and the daemon encrypts it before writing to disk.
@@ -191,8 +194,8 @@ func toVaultSecretEntries(rawEntries interface{}) []api.VaultSecretEntry {
 		out[i] = api.VaultSecretEntry{
 			Name:      e.Name,
 			SkillID:   e.SkillID,
-			CreatedAt: e.CreatedAt.Format("2006-01-02 15:04"),
-			UpdatedAt: e.UpdatedAt.Format("2006-01-02 15:04"),
+			CreatedAt: e.CreatedAt.Format(vaultTimeFormat),
+			UpdatedAt: e.UpdatedAt.Format(vaultTimeFormat),
 			Size:      e.Size,
 		}
 	}

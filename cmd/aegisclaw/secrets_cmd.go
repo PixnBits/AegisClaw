@@ -204,32 +204,27 @@ func runSecretsRotate(cmd *cobra.Command, args []string) error {
 }
 
 func runSecretsRefresh(cmd *cobra.Command, args []string) error {
-if secretsSkillID == "" {
-return fmt.Errorf("--skill flag is required")
-}
+	if secretsSkillID == "" {
+		return fmt.Errorf("--skill flag is required")
+	}
 
-env, err := initRuntime()
-if err != nil {
-return err
-}
+	client := api.NewClient(resolveDaemonSocketPath())
+	reqData, _ := json.Marshal(map[string]string{"name": secretsSkillID})
+	resp, err := client.Call(cmd.Context(), "skill.secrets.refresh", json.RawMessage(reqData))
+	if err != nil {
+		return fmt.Errorf("daemon call failed: %w\n  (Is the daemon running? Start with: sudo aegisclaw start)", err)
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("secrets refresh failed: %s", resp.Error)
+	}
 
-client := api.NewClient(env.Config.Daemon.SocketPath)
-reqData, _ := json.Marshal(map[string]string{"name": secretsSkillID})
-resp, err := client.Call(cmd.Context(), "skill.secrets.refresh", json.RawMessage(reqData))
-if err != nil {
-return fmt.Errorf("daemon call failed: %w\n  (Is the daemon running? Start with: sudo aegisclaw start)", err)
-}
-if resp.Error != "" {
-return fmt.Errorf("secrets refresh failed: %s", resp.Error)
-}
-
-// Parse response to report injected count.
-var result struct {
-Injected int `json:"injected"`
-}
-if resp.Data != nil {
-_ = json.Unmarshal(resp.Data, &result)
-}
-fmt.Printf("Refreshed %d secret(s) in running skill VM %q\n", result.Injected, secretsSkillID)
-return nil
+	// Parse response to report injected count.
+	var result struct {
+		Injected int `json:"injected"`
+	}
+	if resp.Data != nil {
+		_ = json.Unmarshal(resp.Data, &result)
+	}
+	fmt.Printf("Refreshed %d secret(s) in running skill VM %q\n", result.Injected, secretsSkillID)
+	return nil
 }
