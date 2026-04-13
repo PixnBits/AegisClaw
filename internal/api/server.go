@@ -107,6 +107,36 @@ type ChatSummarizeRequest struct {
 	History    []ChatHistoryItem `json:"history,omitempty"`
 }
 
+// VaultSecretAddRequest carries the payload for the "vault.secret.add" action.
+// Value is the raw plaintext; the daemon encrypts it before writing to disk.
+// Used for both creating a new secret and rotating (overwriting) an existing one.
+type VaultSecretAddRequest struct {
+	Name    string `json:"name"`
+	SkillID string `json:"skill_id"`
+	Value   string `json:"value"`
+	Rotate  bool   `json:"rotate,omitempty"` // if true, secret must already exist
+}
+
+// VaultSecretListRequest carries the optional filter for the "vault.secret.list" action.
+type VaultSecretListRequest struct {
+	SkillID string `json:"skill_id,omitempty"` // if non-empty, filter by skill
+}
+
+// VaultSecretEntry is the metadata returned by the "vault.secret.list" action.
+// The plaintext value is never included.
+type VaultSecretEntry struct {
+	Name      string `json:"name"`
+	SkillID   string `json:"skill_id"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Size      int    `json:"size"`
+}
+
+// VaultSecretDeleteRequest carries the payload for the "vault.secret.delete" action.
+type VaultSecretDeleteRequest struct {
+	Name string `json:"name"`
+}
+
 // DefaultSocketPath returns the default daemon socket path.
 // Uses a fixed, well-known location so the root daemon and unprivileged CLI
 // always agree — similar to Docker's /var/run/docker.sock.

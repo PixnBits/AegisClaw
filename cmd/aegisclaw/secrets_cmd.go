@@ -9,10 +9,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
-	"github.com/PixnBits/AegisClaw/internal/kernel"
-	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 )
 
@@ -110,7 +107,8 @@ func runSecretsAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--skill flag is required")
 	}
 
-	// Read secret from secure prompt (never as CLI argument per PRD).
+	// Read secret from secure prompt before contacting the daemon so the
+	// terminal interaction is clean and the plaintext is never in a shell arg.
 	value, err := readSecretFromTerminal("Enter secret value: ")
 	if err != nil {
 		return fmt.Errorf("failed to read secret: %w", err)
@@ -119,25 +117,17 @@ func runSecretsAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("secret value cannot be empty")
 	}
 
-	env, err := initRuntime()
+	client := api.NewClient(resolveDaemonSocketPath())
+	resp, err := client.Call(cmd.Context(), "vault.secret.add", api.VaultSecretAddRequest{
+		Name:    name,
+		SkillID: secretsSkillID,
+		Value:   value,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("daemon call failed: %w\n  (Is the daemon running? Start with: sudo aegisclaw start)", err)
 	}
-
-	v, err := vault.NewVault(env.Config.Vault.Dir, env.Kernel.PrivateKeyBytes(), env.Logger)
-	if err != nil {
-		return fmt.Errorf("failed to open vault: %w", err)
-	}
-
-	if err := v.Add(name, secretsSkillID, []byte(value)); err != nil {
-		return fmt.Errorf("failed to add secret: %w", err)
-	}
-
-	// Audit log the secret addition (value is never logged).
-	auditPayload := fmt.Appendf(nil, `{"name":%q,"skill_id":%q}`, name, secretsSkillID)
-	action := kernel.NewAction(kernel.ActionSecretAdd, "cli", auditPayload)
-	if _, logErr := env.Kernel.SignAndLog(action); logErr != nil {
-		env.Logger.Error("failed to audit log secret add", zap.Error(logErr))
+	if !resp.Success {
+		return fmt.Errorf("failed to add secret: %s", resp.Error)
 	}
 
 	fmt.Printf("Secret %q stored for skill %q\n", name, secretsSkillID)
@@ -145,17 +135,22 @@ func runSecretsAdd(cmd *cobra.Command, args []string) error {
 }
 
 func runSecretsList(cmd *cobra.Command, args []string) error {
-	env, err := initRuntime()
+	client := api.NewClient(resolveDaemonSocketPath())
+	resp, err := client.Call(cmd.Context(), "vault.secret.list", api.VaultSecretListRequest{})
 	if err != nil {
-		return err
+		return fmt.Errorf("daemon call failed: %w\n  (Is the daemon running? Start with: sudo aegisclaw start)", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("failed to list secrets: %s", resp.Error)
 	}
 
-	v, err := vault.NewVault(env.Config.Vault.Dir, env.Kernel.PrivateKeyBytes(), env.Logger)
-	if err != nil {
-		return fmt.Errorf("failed to open vault: %w", err)
+	var entries []api.VaultSecretEntry
+	if resp.Data != nil {
+		if err := json.Unmarshal(resp.Data, &entries); err != nil {
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
 	}
 
-	entries := v.List()
 	if len(entries) == 0 {
 		fmt.Println("No secrets stored.")
 		return nil
@@ -165,12 +160,7 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(w, "NAME\tSKILL\tCREATED\tUPDATED")
 	fmt.Fprintln(w, "----\t-----\t-------\t-------")
 	for _, e := range entries {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			e.Name,
-			e.SkillID,
-			e.CreatedAt.Format("2006-01-02 15:04"),
-			e.UpdatedAt.Format("2006-01-02 15:04"),
-		)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Name, e.SkillID, e.CreatedAt, e.UpdatedAt)
 	}
 	w.Flush()
 
@@ -180,7 +170,7 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 func runSecretsRotate(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
-	// Read new secret from secure prompt.
+	// Read new secret from secure prompt before contacting the daemon.
 	value, err := readSecretFromTerminal("Enter new secret value: ")
 	if err != nil {
 		return fmt.Errorf("failed to read secret: %w", err)
@@ -189,43 +179,27 @@ func runSecretsRotate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("secret value cannot be empty")
 	}
 
-	env, err := initRuntime()
+	// skill_id is optional for rotate; the daemon will keep the existing
+	// association when it is absent.  We pass it through only if provided.
+	req := api.VaultSecretAddRequest{
+		Name:   name,
+		Value:  value,
+		Rotate: true,
+	}
+	if secretsSkillID != "" {
+		req.SkillID = secretsSkillID
+	}
+
+	client := api.NewClient(resolveDaemonSocketPath())
+	resp, err := client.Call(cmd.Context(), "vault.secret.rotate", req)
 	if err != nil {
-		return err
+		return fmt.Errorf("daemon call failed: %w\n  (Is the daemon running? Start with: sudo aegisclaw start)", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("failed to rotate secret: %s", resp.Error)
 	}
 
-	v, err := vault.NewVault(env.Config.Vault.Dir, env.Kernel.PrivateKeyBytes(), env.Logger)
-	if err != nil {
-		return fmt.Errorf("failed to open vault: %w", err)
-	}
-
-	// Determine skill ID: use flag or keep existing association.
-	skillID := secretsSkillID
-	if skillID == "" {
-		// Try to keep existing skill association.
-		for _, e := range v.List() {
-			if e.Name == name {
-				skillID = e.SkillID
-				break
-			}
-		}
-	}
-	if skillID == "" {
-		return fmt.Errorf("secret %q not found (use secrets add to create it)", name)
-	}
-
-	if err := v.Add(name, skillID, []byte(value)); err != nil {
-		return fmt.Errorf("failed to rotate secret: %w", err)
-	}
-
-	// Audit log the rotation (value is never logged).
-	auditPayload := fmt.Appendf(nil, `{"name":%q,"skill_id":%q,"action":"rotate"}`, name, skillID)
-	action := kernel.NewAction(kernel.ActionSecretAdd, "cli", auditPayload)
-	if _, logErr := env.Kernel.SignAndLog(action); logErr != nil {
-		env.Logger.Error("failed to audit log secret rotation", zap.Error(logErr))
-	}
-
-	fmt.Printf("Secret %q rotated for skill %q\n", name, skillID)
+	fmt.Printf("Secret %q rotated\n", name)
 	return nil
 }
 
