@@ -186,14 +186,24 @@ func maybeStopIdleScriptRunner(ctx context.Context, env *runtimeEnv) {
 	env.ScriptRunnerLastUsed.Store(0)
 
 	// Audit-log the idle shutdown to the immutable Merkle trail.
-	auditPayload, _ := json.Marshal(map[string]interface{}{
+	auditPayload, marshalErr := json.Marshal(map[string]interface{}{
 		"skill_name":        defaultScriptRunnerSkill,
 		"sandbox_id":        entry.SandboxID,
 		"action":            "idle_shutdown",
 		"idle_duration_sec": int(idleDuration.Seconds()),
 	})
+	if marshalErr != nil {
+		env.Logger.Error("script runner idle: failed to marshal audit payload",
+			zap.Error(marshalErr),
+		)
+	}
 	act := kernel.NewAction(kernel.ActionSkillDeactivate, "daemon", auditPayload)
-	env.Kernel.SignAndLog(act) //nolint:errcheck
+	if _, logErr := env.Kernel.SignAndLog(act); logErr != nil {
+		env.Logger.Error("script runner idle: failed to write audit log entry",
+			zap.String("sandbox_id", entry.SandboxID),
+			zap.Error(logErr),
+		)
+	}
 
 	env.Logger.Info("script runner idle: shutdown complete",
 		zap.String("sandbox_id", entry.SandboxID),
