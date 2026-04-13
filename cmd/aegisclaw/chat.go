@@ -737,30 +737,95 @@ func resolveEgressMode(existingMode string, override *string) string {
 	return "proxy"
 }
 
+type draftNetworkPolicyArgs struct {
+	DefaultDeny      *bool    `json:"default_deny"`
+	AllowedHosts     []string `json:"allowed_hosts"`
+	AllowedPorts     []int    `json:"allowed_ports"`
+	AllowedProtocols []string `json:"allowed_protocols"`
+	EgressMode       string   `json:"egress_mode"`
+}
+
+type createDraftArgs struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	SkillName   string `json:"skill_name"`
+	Tools       []struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"tools"`
+	DataSensitivity int                         `json:"data_sensitivity"`
+	NetworkExposure int                         `json:"network_exposure"`
+	PrivilegeLevel  int                         `json:"privilege_level"`
+	AllowedHosts    []string                    `json:"allowed_hosts"`
+	AllowedPorts    []int                       `json:"allowed_ports"`
+	SecretRefs      []string                    `json:"secret_refs"`
+	EgressMode      string                      `json:"egress_mode"`
+	Capabilities    *proposal.SkillCapabilities `json:"capabilities"`
+	NetworkPolicy   *draftNetworkPolicyArgs     `json:"network_policy"`
+}
+
+func normalizeAndDedupeHosts(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, host := range in {
+		h := strings.ToLower(strings.TrimSpace(host))
+		if h == "" {
+			continue
+		}
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		out = append(out, h)
+	}
+	return out
+}
+
+func dedupePorts(in []int) []int {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(in))
+	out := make([]int, 0, len(in))
+	for _, p := range in {
+		if p <= 0 || p > 65535 {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func dedupeStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		v := strings.TrimSpace(s)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
 // handleProposalCreateDraft creates a new draft proposal from LLM-collected fields.
 func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error) {
-	var args struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		SkillName   string `json:"skill_name"`
-		Tools       []struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		} `json:"tools"`
-		DataSensitivity int      `json:"data_sensitivity"`
-		NetworkExposure int      `json:"network_exposure"`
-		PrivilegeLevel  int      `json:"privilege_level"`
-		AllowedHosts    []string `json:"allowed_hosts"`
-		AllowedPorts    []int    `json:"allowed_ports"`
-		SecretRefs      []string `json:"secret_refs"`
-		// EgressMode controls how outbound traffic is enforced.
-		// "proxy" (default) routes TLS through the host SNI-validating egress
-		// proxy; "direct" uses nftables IP/CIDR rules.
-		EgressMode string `json:"egress_mode"`
-		// Capabilities allows the LLM to explicitly set sandbox capabilities.
-		// When omitted, capabilities are inferred from AllowedHosts/SecretRefs.
-		Capabilities *proposal.SkillCapabilities `json:"capabilities"`
-	}
+	var args createDraftArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
@@ -780,19 +845,42 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 	ne := clampInt(args.NetworkExposure, 1, 5)
 	pl := clampInt(args.PrivilegeLevel, 1, 5)
 
+	allowedHosts := normalizeAndDedupeHosts(args.AllowedHosts)
+	allowedPorts := dedupePorts(args.AllowedPorts)
+	allowedProtocols := []string(nil)
+	secretRefs := dedupeStrings(args.SecretRefs)
+	if args.NetworkPolicy != nil {
+		if args.NetworkPolicy.DefaultDeny != nil && !*args.NetworkPolicy.DefaultDeny {
+			return "", fmt.Errorf("network_policy.default_deny must be true")
+		}
+		if len(args.NetworkPolicy.AllowedHosts) > 0 {
+			allowedHosts = normalizeAndDedupeHosts(args.NetworkPolicy.AllowedHosts)
+		}
+		if len(args.NetworkPolicy.AllowedPorts) > 0 {
+			allowedPorts = dedupePorts(args.NetworkPolicy.AllowedPorts)
+		}
+		allowedProtocols = dedupeStrings(args.NetworkPolicy.AllowedProtocols)
+		if args.NetworkPolicy.EgressMode != "" {
+			args.EgressMode = args.NetworkPolicy.EgressMode
+		}
+	}
+
 	// Build wizard result to reuse existing spec generation.
 	toolSpecs := make([]wizard.WizardToolSpec, len(args.Tools))
 	for i, t := range args.Tools {
 		toolSpecs[i] = wizard.WizardToolSpec{Name: t.Name, Description: t.Description}
 	}
-	ports := make([]uint16, len(args.AllowedPorts))
-	for i, p := range args.AllowedPorts {
+	ports := make([]uint16, len(allowedPorts))
+	for i, p := range allowedPorts {
 		if p > 0 && p <= 65535 {
 			ports[i] = uint16(p)
 		}
 	}
+	if args.Capabilities != nil && len(args.Capabilities.Secrets) > 0 {
+		secretRefs = dedupeStrings(append(secretRefs, args.Capabilities.Secrets...))
+	}
 
-	needsNetwork := len(args.AllowedHosts) > 0
+	needsNetwork := len(allowedHosts) > 0 || args.NetworkPolicy != nil || (args.Capabilities != nil && args.Capabilities.Network)
 	// Resolve egress mode: default to "proxy" for new network skills.
 	var egressOverride *string
 	if args.EgressMode != "" {
@@ -812,9 +900,9 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 		NetworkExposure:  ne,
 		PrivilegeLevel:   pl,
 		NeedsNetwork:     needsNetwork,
-		AllowedHosts:     args.AllowedHosts,
+		AllowedHosts:     allowedHosts,
 		AllowedPorts:     ports,
-		SecretsRefs:      args.SecretRefs,
+		SecretsRefs:      secretRefs,
 		RequiredPersonas: []string{"CISO", "SeniorCoder", "SecurityArchitect", "Tester", "UserAdvocate"},
 		Tools:            toolSpecs,
 	}
@@ -836,10 +924,11 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 	// Populate NetworkPolicy with explicit egress mode.
 	if needsNetwork {
 		p.NetworkPolicy = &proposal.ProposalNetworkPolicy{
-			DefaultDeny:  true,
-			AllowedHosts: result.AllowedHosts,
-			AllowedPorts: ports,
-			EgressMode:   egressMode,
+			DefaultDeny:      true,
+			AllowedHosts:     result.AllowedHosts,
+			AllowedPorts:     ports,
+			AllowedProtocols: allowedProtocols,
+			EgressMode:       egressMode,
 		}
 	} else {
 		p.NetworkPolicy = &proposal.ProposalNetworkPolicy{DefaultDeny: true}
@@ -853,8 +942,8 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 	if needsNetwork {
 		caps.Network = true
 	}
-	if len(args.SecretRefs) > 0 {
-		caps.Secrets = args.SecretRefs
+	if len(secretRefs) > 0 {
+		caps.Secrets = secretRefs
 	}
 	p.Capabilities = caps
 
@@ -873,9 +962,9 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 
 	// Surface secrets guidance immediately so the user knows what to do
 	// before activating the skill (spec §3.3 — pre-activation verification).
-	if len(args.SecretRefs) > 0 {
+	if len(secretRefs) > 0 {
 		result_msg += "\n\nRequired secrets (add before activating):"
-		for _, ref := range args.SecretRefs {
+		for _, ref := range secretRefs {
 			result_msg += fmt.Sprintf("\n  aegisclaw secrets add %s --skill %s", ref, args.SkillName)
 		}
 	}
@@ -896,13 +985,13 @@ func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error)
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		} `json:"tools"`
-		DataSensitivity *int            `json:"data_sensitivity"`
-		NetworkExposure *int            `json:"network_exposure"`
-		PrivilegeLevel  *int            `json:"privilege_level"`
-		AllowedHosts    json.RawMessage `json:"allowed_hosts"`
-		AllowedPorts    json.RawMessage `json:"allowed_ports"`
-		SecretRefs      json.RawMessage `json:"secret_refs"`
-		EgressMode      *string         `json:"egress_mode"`
+		DataSensitivity *int                        `json:"data_sensitivity"`
+		NetworkExposure *int                        `json:"network_exposure"`
+		PrivilegeLevel  *int                        `json:"privilege_level"`
+		AllowedHosts    json.RawMessage             `json:"allowed_hosts"`
+		AllowedPorts    json.RawMessage             `json:"allowed_ports"`
+		SecretRefs      json.RawMessage             `json:"secret_refs"`
+		EgressMode      *string                     `json:"egress_mode"`
 		Capabilities    *proposal.SkillCapabilities `json:"capabilities"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {

@@ -49,10 +49,24 @@ type ProxyRequest struct {
 
 // ProxyResponse is the host's reply to a guest ProxyRequest.
 type ProxyResponse struct {
-	RequestID string `json:"request_id"`
-	Content   string `json:"content,omitempty"`
-	Thinking  string `json:"thinking,omitempty"`
-	Error     string `json:"error,omitempty"`
+	RequestID string          `json:"request_id"`
+	Content   string          `json:"content,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	ToolCalls []ProxyToolCall `json:"tool_calls,omitempty"`
+	Error     string          `json:"error,omitempty"`
+}
+
+// ProxyToolCall mirrors Ollama's native tool-call shape so it can be
+// propagated over vsock to the guest agent.
+type ProxyToolCall struct {
+	ID       string            `json:"id,omitempty"`
+	Function ProxyToolFunction `json:"function"`
+}
+
+type ProxyToolFunction struct {
+	Index     int             `json:"index,omitempty"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
 // ChatProgressSnapshot holds the current streamed state for an in-flight chat request.
@@ -319,10 +333,11 @@ func (p *OllamaProxy) isModelAllowed(model string) bool {
 	return false
 }
 
-func decodeOllamaChatBody(body io.Reader, onChunk func(contentDelta, thinkingDelta string)) (string, string, error) {
+func decodeOllamaChatBody(body io.Reader, onChunk func(contentDelta, thinkingDelta string)) (string, string, []ProxyToolCall, error) {
 	dec := json.NewDecoder(body)
 	var content strings.Builder
 	var thinking strings.Builder
+	var toolCalls []ProxyToolCall
 	decoded := 0
 
 	for {
@@ -331,9 +346,10 @@ func decodeOllamaChatBody(body io.Reader, onChunk func(contentDelta, thinkingDel
 			Thinking  string `json:"thinking,omitempty"`
 			Reasoning string `json:"reasoning,omitempty"`
 			Message   struct {
-				Content   string `json:"content"`
-				Thinking  string `json:"thinking,omitempty"`
-				Reasoning string `json:"reasoning,omitempty"`
+				Content   string          `json:"content"`
+				Thinking  string          `json:"thinking,omitempty"`
+				Reasoning string          `json:"reasoning,omitempty"`
+				ToolCalls []ProxyToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 		}
 		err := dec.Decode(&chunk)
@@ -341,11 +357,16 @@ func decodeOllamaChatBody(body io.Reader, onChunk func(contentDelta, thinkingDel
 			break
 		}
 		if err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
 		decoded++
 		if strings.TrimSpace(chunk.Error) != "" {
-			return "", "", fmt.Errorf("ollama error: %s", chunk.Error)
+			return "", "", nil, fmt.Errorf("ollama error: %s", chunk.Error)
+		}
+		// Accumulate tool calls across all chunks; only use them if none were captured yet.
+		// Ollama typically emits tool_calls in the first chunk with empty content.
+		if len(toolCalls) == 0 && len(chunk.Message.ToolCalls) > 0 {
+			toolCalls = append(toolCalls, chunk.Message.ToolCalls...)
 		}
 		contentDelta := chunk.Message.Content
 		thinkingDelta := chunk.Message.Thinking
@@ -379,24 +400,83 @@ func decodeOllamaChatBody(body io.Reader, onChunk func(contentDelta, thinkingDel
 	}
 
 	if decoded == 0 {
-		return "", "", fmt.Errorf("empty response body")
+		return "", "", nil, fmt.Errorf("empty response body")
 	}
 
 	contentText := content.String()
 	thinkingText := strings.TrimSpace(thinking.String())
 
-	// Some models expose reasoning inline in content using think tags.
+	// Debug: log tool calls captured for tracing.
+	if len(toolCalls) > 0 {
+		toolNames := make([]string, len(toolCalls))
+		for i, tc := range toolCalls {
+			toolNames[i] = tc.Function.Name
+		}
+		// Note: this proxy instance doesn't have logger visible here,  so we'll skip this debug log.
+		// The tool calls will be visible when returned to the guest in that log.
+	}
+
+	// Some models expose reasoning inline in content using think or thought tags.
+	// Extract both <think>...</think> and <thought>...</thought> patterns.
 	if thinkingText == "" {
 		lower := strings.ToLower(contentText)
-		start := strings.Index(lower, "<think>")
-		end := strings.Index(lower, "</think>")
-		if start >= 0 && end > start {
-			thinkingText = strings.TrimSpace(contentText[start+len("<think>") : end])
-			contentText = strings.TrimSpace(contentText[:start] + contentText[end+len("</think>"):])
+
+		// Try <thought>...</thought> first (gemma4 uses this).
+		startThought := strings.Index(lower, "<thought>")
+		endThought := strings.Index(lower, "</thought>")
+
+		// Fall back to <think>...</think> if thought tags not found.
+		startThink := strings.Index(lower, "<think>")
+		endThink := strings.Index(lower, "</think>")
+
+		// Prefer whichever appears first in the content.
+		if startThought >= 0 && endThought > startThought {
+			if startThink < 0 || startThought < startThink {
+				// Use thought tag extraction.
+				thinkingText = strings.TrimSpace(contentText[startThought+len("<thought>") : endThought])
+				contentText = strings.TrimSpace(contentText[:startThought] + contentText[endThought+len("</thought>"):])
+			} else {
+				// Use think tag extraction (appears first).
+				thinkingText = strings.TrimSpace(contentText[startThink+len("<think>") : endThink])
+				contentText = strings.TrimSpace(contentText[:startThink] + contentText[endThink+len("</think>"):])
+			}
+		} else if startThink >= 0 && endThink > startThink {
+			// Use think tag extraction.
+			thinkingText = strings.TrimSpace(contentText[startThink+len("<think>") : endThink])
+			contentText = strings.TrimSpace(contentText[:startThink] + contentText[endThink+len("</think>"):])
 		}
 	}
 
-	return contentText, thinkingText, nil
+	// Clean up any orphaned opening thought/think tags left in content
+	// (tags without closing pairs, or incomplete tags at boundaries).
+	contentText = stripOrphanedThinkingTags(contentText)
+
+	return contentText, thinkingText, toolCalls, nil
+}
+
+func stripOrphanedThinkingTags(content string) string {
+	lower := strings.ToLower(content)
+
+	// Remove leading <thought or <think if they appear to be incomplete or orphaned.
+	for _, marker := range []string{"<thought", "<think"} {
+		if idx := strings.Index(lower, marker); idx >= 0 {
+			// Check if there's a closing tag after this.
+			closing := ""
+			if marker == "<thought" {
+				closing = "</thought>"
+			} else {
+				closing = "</think>"
+			}
+			closingIdx := strings.Index(lower[idx:], closing)
+			if closingIdx < 0 {
+				// No closing tag found — this is orphaned. Remove it and everything after.
+				content = strings.TrimSpace(content[:idx])
+				lower = strings.ToLower(content)
+			}
+		}
+	}
+	return content
+
 }
 
 func fallbackThinkingMessages(messages []map[string]string) []map[string]string {
@@ -482,7 +562,7 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 		return "", fmt.Errorf("fallback ollama http %d", httpResp.StatusCode)
 	}
 
-	_, thinking, err := decodeOllamaChatBody(bytes.NewReader(bodyBytes), nil)
+	_, thinking, _, err := decodeOllamaChatBody(bytes.NewReader(bodyBytes), nil)
 	if err != nil {
 		return "", err
 	}
@@ -586,7 +666,7 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 	defer httpResp.Body.Close()
 
 	var rawBody bytes.Buffer
-	content, thinking, err := decodeOllamaChatBody(io.TeeReader(httpResp.Body, &rawBody), func(contentDelta, thinkingDelta string) {
+	content, thinking, toolCalls, err := decodeOllamaChatBody(io.TeeReader(httpResp.Body, &rawBody), func(contentDelta, thinkingDelta string) {
 		appendChatProgress(req.StreamID, thinkingDelta, contentDelta)
 	})
 	if err != nil {
@@ -656,5 +736,6 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		RequestID: req.RequestID,
 		Content:   content,
 		Thinking:  thinking,
+		ToolCalls: toolCalls,
 	}
 }

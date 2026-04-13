@@ -411,6 +411,7 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 	lastThoughtID := s.latestEventID(ctx, "chat.thought_events", 80)
 	emittedThinkingRunes := 0
 	emittedContentRunes := 0
+  lastProgressRequestID := ""
 
 	if !writeSSE(map[string]interface{}{"type": "start", "ts": time.Now().UTC().Format(time.RFC3339)}) {
 		return
@@ -443,10 +444,17 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 			progressRaw, err := s.fetchRaw(ctx, "chat.stream_progress", map[string]string{"stream_id": streamID})
 			if err == nil {
 				if progress, ok := progressRaw.(map[string]interface{}); ok {
+          requestID := toString(progress["request_id"])
+          if requestID != "" && requestID != lastProgressRequestID {
+            lastProgressRequestID = requestID
+            emittedThinkingRunes = 0
+            emittedContentRunes = 0
+          }
 					if !emitSnapshotDelta(writeSSE, "thought_delta", toString(progress["thinking"]), &emittedThinkingRunes) {
 						return false
 					}
-					if !emitSnapshotDelta(writeSSE, "content_delta", toString(progress["content"]), &emittedContentRunes) {
+          content := suppressInFlightStructuredContent(toString(progress["content"]))
+          if !emitSnapshotDelta(writeSSE, "content_delta", content, &emittedContentRunes) {
 						return false
 					}
 				}
@@ -504,6 +512,24 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 	}
+}
+
+func suppressInFlightStructuredContent(text string) string {
+  trimmed := strings.TrimSpace(text)
+  if trimmed == "" {
+    return text
+  }
+
+  // During streaming, suppress in-flight structured outputs and fenced blocks.
+  // They are intermediate protocol artifacts, not user-visible prose.
+  if strings.HasPrefix(trimmed, "```") {
+    return ""
+  }
+  if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+    return ""
+  }
+
+  return text
 }
 
 func emitSnapshotDelta(writeSSE func(interface{}) bool, eventType, text string, emittedRunes *int) bool {
@@ -2126,6 +2152,7 @@ const chatTmpl = `
 
   var typingDiv=null;
   var streamContentText='';
+  var suppressStreamContent=false;
   var streamThoughtText='';
   var liveThoughtDeltaPre=null;
   var liveToolRow=null;
@@ -2206,6 +2233,14 @@ const chatTmpl = `
 
   function appendStreamContentDelta(delta){
     if(!delta)return;
+    if(suppressStreamContent)return;
+    if(streamContentText===''){
+    var trimmed=String(delta||'').replace(/^\s+/,'');
+    if(trimmed.indexOf('{')===0 || trimmed.indexOf('[')===0 || trimmed.charCodeAt(0)===96){
+      suppressStreamContent=true;
+      return;
+    }
+    }
     streamContentText+=delta;
     if(!typingDiv){
       typingDiv=appendMsg('typing','');
@@ -2303,6 +2338,14 @@ const chatTmpl = `
   }
 
   function appendLiveToolEvent(ev){
+  if(ev && ev.phase==='start'){
+    streamContentText='';
+    suppressStreamContent=false;
+    if(typingDiv){
+    var typingBubble=typingDiv.querySelector('.bubble');
+    if(typingBubble)typingBubble.textContent='';
+    }
+  }
 	if(!liveToolLog){
 	  ensureLiveToolLog();
 	}
@@ -2420,6 +2463,7 @@ const chatTmpl = `
     awaitingResponse=true;
     activeChatStream=true;
     streamContentText='';
+      suppressStreamContent=false;
     streamThoughtText='';
     ensureLiveThoughtLog();
     showTyping();

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +21,19 @@ import (
 )
 
 const reactMaxIterations = 10
+
+// Embedded JSON Schema for the `proposal.create_draft` tool-call payload.
+//
+//go:embed schemas/proposal-create-draft.schema.json
+var proposalCreateDraftSchema string
+
+// GetProposalCreateDraftSchema returns the embedded JSON Schema for use by
+// other parts of the daemon (e.g., documentation, validators, or LLM
+// prompt generation). Keeping the schema embedded ensures the binary is
+// self-contained and the schema is versioned alongside the code.
+func GetProposalCreateDraftSchema() string {
+	return proposalCreateDraftSchema
+}
 
 // agentVMRequest is the JSON structure sent to the agent VM for chat.message.
 // It mirrors the guest-agent's Request{Type, Payload} envelope.
@@ -215,6 +230,9 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				toolTraceJSON, _ := json.Marshal(toolTrace)
 				thinkingTraceJSON, _ := json.Marshal(thinkingTrace)
 				finalContent := enforceMemoryTruth(chatResp.Content, env, memoryToolEvidence)
+				// Strip any tool-call markdown blocks that may have been included in the content.
+				// This prevents tool-call JSON from appearing as text in the user-visible response.
+				finalContent = stripToolCallMarkdown(finalContent)
 				if strings.TrimSpace(finalContent) == "" {
 					env.Logger.Warn("agent returned empty final chat content",
 						zap.Int("iteration", i+1),
@@ -823,9 +841,11 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("  requirements, secret names, tests, or security considerations — you reason those out yourself.\n")
 	b.WriteString("  Common patterns to guide your reasoning:\n")
 	b.WriteString("    Discord / Telegram / Slack → messaging skill; bot token secret, HTTPS to platform API, rate-limit and webhook handling\n")
-	b.WriteString("      network: { egress_mode: proxy, allowed_hosts: [\"discord.com\", \"gateway.discord.gg\"] }\n")
+	b.WriteString("      network_policy: { default_deny: true, allowed_hosts: [\"discord.com\", \"gateway.discord.gg\"], allowed_ports: [443], egress_mode: \"proxy\" }\n")
 	b.WriteString("    GitHub / GitLab / Jira     → developer tool skill; API token secret, HTTPS to service host, scoped permissions\n")
-	b.WriteString("      network: { egress_mode: proxy, allowed_hosts: [\"api.github.com\"] }\n")
+	b.WriteString("      network_policy: { default_deny: true, allowed_hosts: [\"api.github.com\"], allowed_ports: [443], egress_mode: \"proxy\" }\n")
+	b.WriteString("    Weather API (NOAA example) → weather-skill; public HTTPS endpoint, no secret by default\n")
+	b.WriteString("      network_policy: { default_deny: true, allowed_hosts: [\"api.weather.gov\"], allowed_ports: [443], egress_mode: \"proxy\" }\n")
 	b.WriteString("    Shell / file automation    → script runner skill; no network by default, /workspace read-write only, no secrets\n")
 	b.WriteString("    Time / date / calendar     → pure-compute or calendar-API skill; low risk, no secrets needed\n")
 	b.WriteString("    Voice / audio              → gateway voice adapter skill; host audio proxy + TTS model, medium risk\n\n")
@@ -945,6 +965,8 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("    allowed_protocols: [\"tcp\"],\n")
 	b.WriteString("    egress_mode: \"proxy\"\n")
 	b.WriteString("  }\n")
+	b.WriteString("Use canonical keys exactly once: network_policy, capabilities, and secret_refs.\n")
+	b.WriteString("Do NOT duplicate equivalent data under alternate keys (for example: network, hosts, host_allowlist, allow_hosts).\n")
 	b.WriteString("Rules: no wildcards, no 0.0.0.0/0, no ::/0, no secret values in any proposal field.\n")
 	b.WriteString("If a user asks for Discord/Telegram/GitHub/Slack integrations, infer exact FQDNs used by the client library and keep the host list minimal.\n")
 	b.WriteString("Secrets are write-only in operator UX: users can add/update/list names, never read secret values.\n")
@@ -1109,6 +1131,22 @@ func enforceMemoryTruth(content string, env *runtimeEnv, memoryToolEvidence bool
 	}
 
 	return content
+}
+
+// stripToolCallMarkdown removes tool-call markdown blocks from content.
+// Sometimes the LLM includes tool-call fenced blocks in the final response text instead
+// of cleanly separating them. This ensures they don't leak into the user-visible content.
+func stripToolCallMarkdown(content string) string {
+	// Use a more precise regex that handles both closed and unclosed fences
+	// Pattern: ```tool-call followed by content until either a closing ``` or double newline or EOF
+	re := regexp.MustCompile("(?s)```tool-call[^`]*?(?:```|\n\n|$)")
+	content = re.ReplaceAllString(content, "")
+
+	// Clean up extra blank lines that may have been left behind
+	// Replace multiple newlines with double newline
+	content = regexp.MustCompile(`\n\n\n+`).ReplaceAllString(content, "\n\n")
+
+	return strings.TrimSpace(content)
 }
 
 func synthesizeEmptyFinalMessage(toolTrace []map[string]interface{}) string {

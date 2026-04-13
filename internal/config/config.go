@@ -294,7 +294,7 @@ func DefaultConfig() Config {
 			StructuredOutput bool   `yaml:"structured_output" mapstructure:"structured_output"`
 		}{
 			RootfsPath:       "/var/lib/aegisclaw/rootfs-templates/alpine.ext4",
-			StructuredOutput: false,
+			StructuredOutput: true,
 		},
 		Snapshot: struct {
 			Dir string `yaml:"dir" mapstructure:"dir"`
