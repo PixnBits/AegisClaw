@@ -53,6 +53,11 @@ type runtimeEnv struct {
 	ToolEvents       *ToolEventBuffer
 	ThoughtEvents    *ThoughtEventBuffer
 	SafeMode         atomic.Bool
+	// ScriptRunnerLastUsed stores the Unix nanosecond timestamp of the most
+	// recent successful script.run invocation (or of the script runner's first
+	// activation).  The idle-cleanup daemon reads this to decide when it is safe
+	// to tear down the persistent sandbox.
+	ScriptRunnerLastUsed atomic.Int64
 
 	// Workspace holds content loaded from the user's workspace directory
 	// (~/.aegisclaw/workspace by default). Fields are empty when the

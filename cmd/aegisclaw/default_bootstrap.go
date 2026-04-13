@@ -14,6 +14,15 @@ import (
 
 const defaultScriptRunnerSkill = "default-script-runner"
 
+// scriptRunnerIdleTimeout is the period of inactivity after which the default
+// script runner sandbox is automatically shut down to free resources.
+// The sandbox is re-created on demand by ensureDefaultScriptRunnerActive the
+// next time script.run is called, so shutting it down when idle is safe.
+const scriptRunnerIdleTimeout = 15 * time.Minute
+
+// scriptRunnerIdleCheckInterval controls how often the idle daemon polls.
+const scriptRunnerIdleCheckInterval = 5 * time.Minute
+
 // ensureDefaultScriptRunnerActive guarantees the built-in script runner exists
 // as an active sandboxed skill so script.run can execute without manual setup.
 func ensureDefaultScriptRunnerActive(ctx context.Context, env *runtimeEnv) error {
@@ -96,7 +105,99 @@ func ensureDefaultScriptRunnerActive(ctx context.Context, env *runtimeEnv) error
 		fields = append(fields, zap.Int("pid", info.PID))
 	}
 	env.Logger.Info("bootstrap: default script runner activated", fields...)
+	// Record activation time so the idle daemon starts the inactivity window
+	// from now, not from the Unix epoch (which would cause immediate shutdown).
+	env.ScriptRunnerLastUsed.Store(time.Now().UnixNano())
 	return nil
+}
+
+// startScriptRunnerIdleDaemon launches a background goroutine that stops and
+// destroys the default script runner sandbox after scriptRunnerIdleTimeout of
+// inactivity.  This prevents a persistent microVM from consuming resources
+// between chat sessions.  The sandbox is re-created on demand by
+// ensureDefaultScriptRunnerActive the next time script.run is called.
+func startScriptRunnerIdleDaemon(ctx context.Context, env *runtimeEnv) {
+	if env == nil || env.Runtime == nil || env.Registry == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(scriptRunnerIdleCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				maybeStopIdleScriptRunner(ctx, env)
+			}
+		}
+	}()
+}
+
+// maybeStopIdleScriptRunner stops and deletes the default script runner sandbox
+// if it has been idle for longer than scriptRunnerIdleTimeout.
+// It logs the shutdown to the immutable audit trail.
+func maybeStopIdleScriptRunner(ctx context.Context, env *runtimeEnv) {
+	if env == nil || env.Runtime == nil || env.Registry == nil {
+		return
+	}
+	entry, ok := env.Registry.Get(defaultScriptRunnerSkill)
+	if !ok || entry.State != sandbox.SkillStateActive {
+		return // script runner not currently active; nothing to clean up
+	}
+
+	lastUsedNano := env.ScriptRunnerLastUsed.Load()
+	if lastUsedNano == 0 {
+		return // never used; no activation recorded, do not shut down
+	}
+	lastUsed := time.Unix(0, lastUsedNano)
+	if time.Since(lastUsed) < scriptRunnerIdleTimeout {
+		return // still within the idle window
+	}
+
+	idleDuration := time.Since(lastUsed).Round(time.Second)
+	env.Logger.Info("script runner idle: shutting down to free resources",
+		zap.Duration("idle_duration", idleDuration),
+		zap.String("sandbox_id", entry.SandboxID),
+	)
+
+	// Stop the sandbox process, delete its state directory.
+	if err := env.Runtime.Stop(ctx, entry.SandboxID); err != nil {
+		env.Logger.Warn("script runner idle: stop failed",
+			zap.String("sandbox_id", entry.SandboxID),
+			zap.Error(err),
+		)
+	}
+	if err := env.Runtime.Delete(ctx, entry.SandboxID); err != nil {
+		env.Logger.Warn("script runner idle: delete failed",
+			zap.String("sandbox_id", entry.SandboxID),
+			zap.Error(err),
+		)
+	}
+
+	// Mark the registry entry as stopped so ensureDefaultScriptRunnerActive
+	// knows to create a fresh sandbox on the next script.run call.
+	if err := env.Registry.Deactivate(defaultScriptRunnerSkill); err != nil {
+		env.Logger.Warn("script runner idle: deactivate registry failed", zap.Error(err))
+	}
+
+	// Clear the last-used timestamp so we don't repeatedly try to stop an
+	// already-stopped sandbox on subsequent idle checks.
+	env.ScriptRunnerLastUsed.Store(0)
+
+	// Audit-log the idle shutdown to the immutable Merkle trail.
+	auditPayload, _ := json.Marshal(map[string]interface{}{
+		"skill_name":        defaultScriptRunnerSkill,
+		"sandbox_id":        entry.SandboxID,
+		"action":            "idle_shutdown",
+		"idle_duration_sec": int(idleDuration.Seconds()),
+	})
+	act := kernel.NewAction(kernel.ActionSkillDeactivate, "daemon", auditPayload)
+	env.Kernel.SignAndLog(act) //nolint:errcheck
+
+	env.Logger.Info("script runner idle: shutdown complete",
+		zap.String("sandbox_id", entry.SandboxID),
+	)
 }
 
 func waitForSandboxGuestReady(ctx context.Context, env *runtimeEnv, sandboxID string) error {

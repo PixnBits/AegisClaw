@@ -139,6 +139,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
+	// Start the idle-cleanup daemon for the script runner.  It shuts down
+	// the sandbox when it has been unused for scriptRunnerIdleTimeout so that
+	// long-idle daemons don't keep a microVM allocated permanently.
+	startScriptRunnerIdleDaemon(cmd.Context(), env)
 	ensureReviewSkillsRegistered(cmd.Context(), env)
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
