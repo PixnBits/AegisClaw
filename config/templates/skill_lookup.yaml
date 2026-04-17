@@ -1,0 +1,50 @@
+name: lookup
+description: Dynamic semantic lookup of available skills/tools. Keeps the agent's context window small by retrieving only the most relevant 4-6 tools at runtime.
+type: skill
+language: go
+version: 0.1.0
+
+interfaces:
+  - name: LookupTools
+    description: Returns the most relevant tools formatted for Gemma 4's native control tokens.
+    input:
+      query: string
+      max_results: int = 6
+    output:
+      tools: array of formatted tool blocks (Gemma 4 <|tool|> format)
+
+  - name: IndexTool
+    description: Index or re-index a single tool entry in the semantic vector store.
+    input:
+      name: string
+      description: string
+      skill_name: string (optional)
+      parameters: string (optional)
+    output:
+      indexed_count: int
+
+resources:
+  - type: persistent_volume
+    name: vectordb
+    mount_path: /data/vectordb
+  - type: model
+    name: all-minilm-l6-v2
+    size_mb: 90
+
+dependencies:
+  - chromem-go
+  - onnxruntime-go
+  - all-minilm-l6-v2-go
+
+implementation_notes:
+  - On startup, load or create a chromem-go collection named "skills" at cfg.Lookup.Dir
+  - Store rich descriptions + pre-formatted Gemma 4 tool blocks as metadata
+  - Every new skill created by the builder is automatically indexed via the lookup.index_tool tool
+  - Return results already wrapped in proper Gemma 4 control tokens (<|tool|>…<|/tool|>)
+  - Embedding uses a deterministic pure-Go hash function (384 dims) as a drop-in for all-MiniLM-L6-v2
+  - Built-in daemon tools are seeded into the index at daemon startup via seedLookupStore
+  - No network access except internal Aegis Hub
+  - Must be completely isolated — agent never has direct DB access
+
+priority: high
+governance_review: required

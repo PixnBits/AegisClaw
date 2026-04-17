@@ -10,6 +10,7 @@ import (
 
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/registry"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
@@ -179,6 +180,7 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	registerWorkerTools(reg, env)
 	registerSessionTools(reg, env, &reg)
 	registerRegistryTools(reg, env)
+	registerLookupTools(reg, env)
 	return reg
 }
 
@@ -1151,5 +1153,76 @@ func registerRegistryTools(reg *ToolRegistry, env *runtimeEnv) {
 				spec.Name, spec.Language, len(spec.Tools),
 				spec.Name, spec.Description, spec.Tools,
 			), nil
+		})
+}
+
+// registerLookupTools adds the semantic tool-lookup tools to the registry.
+// lookup_tools performs a semantic vector search and returns results formatted
+// as Gemma 4 native control-token blocks.  lookup.index_tool lets the builder
+// (or any privileged caller) index a new tool into the vector store.
+func registerLookupTools(reg *ToolRegistry, env *runtimeEnv) {
+	reg.Register("lookup_tools",
+		"Semantic lookup of available tools. Returns the most relevant 4-6 tools as Gemma 4 native control-token blocks. Args: {query, max_results}.",
+		func(ctx context.Context, args string) (string, error) {
+			if env.LookupStore == nil {
+				return "", fmt.Errorf("lookup store unavailable")
+			}
+			var params struct {
+				Query      string `json:"query"`
+				MaxResults int    `json:"max_results"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.Query = strings.TrimSpace(args)
+			}
+			if params.Query == "" {
+				return "", fmt.Errorf("lookup_tools requires 'query'")
+			}
+			if params.MaxResults <= 0 {
+				params.MaxResults = 6
+			}
+			results, err := env.LookupStore.LookupTools(ctx, params.Query, params.MaxResults)
+			if err != nil {
+				return "", fmt.Errorf("lookup_tools: %w", err)
+			}
+			if len(results) == 0 {
+				return fmt.Sprintf("No tools found matching %q.", params.Query), nil
+			}
+			var blocks []string
+			for _, r := range results {
+				blocks = append(blocks, r.Block)
+			}
+			return strings.Join(blocks, "\n"), nil
+		})
+
+	reg.Register("lookup.index_tool",
+		"Index or re-index a tool in the semantic lookup store. Args: {name, description, skill_name, parameters}.",
+		func(ctx context.Context, args string) (string, error) {
+			if env.LookupStore == nil {
+				return "", fmt.Errorf("lookup store unavailable")
+			}
+			var params struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				SkillName   string `json:"skill_name"`
+				Parameters  string `json:"parameters"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				return "", fmt.Errorf("invalid lookup.index_tool args: %w", err)
+			}
+			if params.Name == "" {
+				return "", fmt.Errorf("lookup.index_tool requires 'name'")
+			}
+			if params.Description == "" {
+				return "", fmt.Errorf("lookup.index_tool requires 'description'")
+			}
+			if err := env.LookupStore.IndexTool(ctx, lookup.ToolEntry{
+				Name:        params.Name,
+				Description: params.Description,
+				SkillName:   params.SkillName,
+				Parameters:  params.Parameters,
+			}); err != nil {
+				return "", fmt.Errorf("lookup.index_tool: %w", err)
+			}
+			return fmt.Sprintf("Tool %q indexed. Total indexed: %d.", params.Name, env.LookupStore.Count()), nil
 		})
 }

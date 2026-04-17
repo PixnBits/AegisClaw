@@ -15,6 +15,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
+	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
@@ -34,6 +35,7 @@ var (
 	memoryInst      *memory.Store
 	eventBusInst    *eventbus.Bus
 	workerStoreInst *worker.Store
+	lookupInst      *lookup.Store
 	runtimeInitErr  error
 )
 
@@ -48,6 +50,7 @@ type runtimeEnv struct {
 	MemoryStore      *memory.Store
 	EventBus         *eventbus.Bus
 	WorkerStore      *worker.Store
+	LookupStore      *lookup.Store
 	Court            *court.Engine
 	LLMProxy         *llm.OllamaProxy
 	ToolEvents       *ToolEventBuffer
@@ -153,6 +156,14 @@ func initRuntime() (*runtimeEnv, error) {
 		}
 		// Worker Store: persist worker lifecycle records.
 		workerStoreInst, runtimeInitErr = worker.NewStore(cfg.Worker.Dir)
+		if runtimeInitErr != nil {
+			return
+		}
+		// Lookup Store: persistent semantic vector index for dynamic tool lookup.
+		lookupInst, runtimeInitErr = lookup.NewStore(lookup.StoreConfig{
+			Dir:    cfg.Lookup.Dir,
+			Logger: logger,
+		})
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -169,6 +180,7 @@ func initRuntime() (*runtimeEnv, error) {
 		MemoryStore:      memoryInst,
 		EventBus:         eventBusInst,
 		WorkerStore:      workerStoreInst,
+		LookupStore:      lookupInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 		ToolEvents:       NewToolEventBuffer(400),
 		ThoughtEvents:    NewThoughtEventBuffer(600),
