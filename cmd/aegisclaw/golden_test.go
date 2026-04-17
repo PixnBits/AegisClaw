@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 // ─── Trace types ──────────────────────────────────────────────────────────────
@@ -215,7 +216,7 @@ func tokenOverlap(a, b string) float64 {
 func tokenSet(s string) map[string]bool {
 	s = strings.ToLower(s)
 	words := strings.FieldsFunc(s, func(r rune) bool {
-		return !('a' <= r && r <= 'z') && !('0' <= r && r <= '9')
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
 	m := make(map[string]bool, len(words))
 	for _, w := range words {
@@ -227,6 +228,14 @@ func tokenSet(s string) map[string]bool {
 }
 
 // ─── ReActTrace builder helpers ───────────────────────────────────────────────
+
+// formatToolCallBlock formats a tool call as the assistant message content
+// that is appended to the conversation after each tool invocation.
+// This format must match the production format in chat_handlers.go so that
+// the guest-agent can parse it correctly.
+func formatToolCallBlock(tool, args string) string {
+	return fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", tool, args)
+}
 
 // traceRecorder captures ReAct events into a ReActTrace.
 // It is used by journey and in-process tests to build a trace for golden

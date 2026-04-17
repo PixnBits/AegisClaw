@@ -111,7 +111,7 @@ func driveReActLoop(
 				toolResult = fmt.Sprintf("Error executing %s: %v", resp.Tool, toolErr)
 			}
 
-			toolCallContent := fmt.Sprintf("```tool-call\n{\"name\": %q, \"args\": %s}\n```", resp.Tool, resp.Args)
+			toolCallContent := formatToolCallBlock(resp.Tool, resp.Args)
 			msgs = append(msgs,
 				rtexec.AgentMessage{Role: "assistant", Content: toolCallContent},
 				rtexec.AgentMessage{Role: "tool", Name: resp.Tool, Content: toolResult},
