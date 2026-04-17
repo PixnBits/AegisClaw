@@ -2,7 +2,6 @@ package lookup
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 )
@@ -309,5 +308,4 @@ func TestPersistence(t *testing.T) {
 	if s2.Count() != 1 {
 		t.Errorf("expected 1 persisted tool after reopen, got %d", s2.Count())
 	}
-	_ = os.RemoveAll(dir)
 }

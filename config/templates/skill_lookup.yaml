@@ -32,9 +32,9 @@ resources:
     size_mb: 90
 
 dependencies:
-  - chromem-go
-  - onnxruntime-go
-  - all-minilm-l6-v2-go
+  - chromem-go (included in go.mod)
+  - onnxruntime-go (planned: swap in for real ONNX inference when model weights are available)
+  - all-minilm-l6-v2-go (planned: replace hash-based embedding with all-MiniLM-L6-v2 ONNX weights)
 
 implementation_notes:
   - On startup, load or create a chromem-go collection named "skills" at cfg.Lookup.Dir
