@@ -384,14 +384,3 @@ func buildMinimalToolRegistry(env *runtimeEnv) *ToolRegistry {
 	})
 	return reg
 }
-
-// filterEventsByType returns all trace events of the given type.
-func filterEventsByType(events []TraceEvent, typ TraceEventType) []TraceEvent {
-	var out []TraceEvent
-	for _, e := range events {
-		if e.Type == typ {
-			out = append(out, e)
-		}
-	}
-	return out
-}

@@ -315,3 +315,16 @@ func (r *traceRecorder) finalize(finalAnswer string) ReActTrace {
 	r.trace.FinalAnswer = finalAnswer
 	return r.trace
 }
+
+// filterEventsByType returns all trace events of the given type.
+// Defined here (golden_test.go) rather than in the inprocesstest-tagged file so
+// that react_journey_test.go and portal_contract_test.go can use it too.
+func filterEventsByType(events []TraceEvent, typ TraceEventType) []TraceEvent {
+var out []TraceEvent
+for _, e := range events {
+if e.Type == typ {
+out = append(out, e)
+}
+}
+return out
+}

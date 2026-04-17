@@ -1,0 +1,19 @@
+{
+  "trace_id": "golden-premature-stop",
+  "input": "create a skill proposal for a calculator",
+  "events": [
+    {
+      "type": "thought",
+      "content": "I can answer this directly without a tool call.",
+      "timestamp": "2026-04-17T14:18:28.588640615Z"
+    },
+    {
+      "type": "task_complete",
+      "content": "I would normally create a proposal, but I am responding early without using tools.",
+      "timestamp": "2026-04-17T14:18:28.588640986Z"
+    }
+  ],
+  "final_answer": "I would normally create a proposal, but I am responding early without using tools.",
+  "tool_call_count": 0,
+  "iterations": 1
+}
