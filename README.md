@@ -277,14 +277,51 @@ See [`adrs/`](adrs/) for Architecture Decision Records.
 ## Development
 
 ```bash
-# Run the full test suite
+# Run the full test suite (no KVM or Ollama required)
 go test ./... -count=1
 
-# Run integration tests only
+# Or via Makefile:
+make test
+
+# Run integration + journey tests only
 go test ./cmd/aegisclaw/ -run 'Integration|Journey' -v
+
+# Fast mode — skip heavy journey tests
+make test-short
 
 # Rebuild after code changes
 go build -o aegisclaw ./cmd/aegisclaw
+```
+
+### In-Process Integration Tests (Test-Only, No KVM)
+
+AegisClaw ships a lightweight in-process test executor for fast iteration on
+the full agent ReAct loop without spinning up Firecracker microVMs:
+
+```bash
+# Run via Makefile (recommended):
+make test-inprocess
+
+# Manually:
+AEGISCLAW_INPROCESS_TEST_MODE=unsafe_for_testing_only \
+  go test ./cmd/aegisclaw -tags=inprocesstest -run 'InProcess|Integration|Journey' -v
+```
+
+> **⚠️ Security warning:** The in-process executor has **zero sandbox isolation**.
+> It is compiled only with the `inprocesstest` build tag and is completely absent
+> from normal `go build` and `go test ./...` runs.
+> See [CONTRIBUTING.md](CONTRIBUTING.md) for full details.
+
+### Golden Trace Tests
+
+Journey tests can be captured as JSON golden files for regression detection:
+
+```bash
+# Create / update golden files:
+UPDATE_SNAPSHOTS=1 go test ./cmd/aegisclaw/ -run TestGolden -v
+
+# Compare against golden:
+go test ./cmd/aegisclaw/ -run TestGolden -v
 ```
 
 ## Contributing

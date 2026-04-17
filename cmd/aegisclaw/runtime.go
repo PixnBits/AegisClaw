@@ -17,6 +17,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/worker"
@@ -53,6 +54,14 @@ type runtimeEnv struct {
 	ToolEvents       *ToolEventBuffer
 	ThoughtEvents    *ThoughtEventBuffer
 	SafeMode         atomic.Bool
+
+	// TaskExecutor handles one turn of the agent ReAct loop.
+	// The default (production) implementation is FirecrackerTaskExecutor which
+	// routes calls through the Firecracker microVM.  Tests compiled with the
+	// "inprocesstest" build tag may substitute InProcessTaskExecutor.
+	// TaskExecutor is set lazily on the first chat.message request (alongside
+	// AgentVMID) and is nil until then.
+	TaskExecutor rtexec.TaskExecutor
 
 	// Workspace holds content loaded from the user's workspace directory
 	// (~/.aegisclaw/workspace by default). Fields are empty when the
