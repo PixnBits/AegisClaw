@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +129,19 @@ func AssertGoldenTrace(t *testing.T, got ReActTrace, name string) {
 
 const goldenTextSimilarityThreshold = 0.90
 
+// uuidPattern matches full UUIDs and 8-char hex ID prefixes in any text.
+// Both forms appear in logs and progress messages and are non-deterministic.
+var uuidPattern = regexp.MustCompile(
+	`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}` +
+		`|[0-9a-fA-F]{8}`,
+)
+
+// normalizeIDs replaces all UUID-like strings in s with the placeholder "<id>"
+// so that golden comparisons are not affected by non-deterministic identifiers.
+func normalizeIDs(s string) string {
+	return uuidPattern.ReplaceAllString(s, "<id>")
+}
+
 // compareTraces applies the mixed exact/fuzzy comparison rules.
 func compareTraces(t *testing.T, want, got ReActTrace) {
 	t.Helper()
@@ -142,8 +156,8 @@ func compareTraces(t *testing.T, want, got ReActTrace) {
 		t.Errorf("golden: Iterations mismatch: want %d, got %d", want.Iterations, got.Iterations)
 	}
 
-	// Fuzzy match on final answer.
-	if sim := tokenOverlap(want.FinalAnswer, got.FinalAnswer); sim < goldenTextSimilarityThreshold {
+	// Fuzzy match on final answer (normalize non-deterministic IDs first).
+	if sim := tokenOverlap(normalizeIDs(want.FinalAnswer), normalizeIDs(got.FinalAnswer)); sim < goldenTextSimilarityThreshold {
 		t.Errorf(
 			"golden: FinalAnswer similarity %.2f < threshold %.2f\n  want: %q\n   got: %q",
 			sim, goldenTextSimilarityThreshold, want.FinalAnswer, got.FinalAnswer,
@@ -174,11 +188,12 @@ func compareTraces(t *testing.T, want, got ReActTrace) {
 		if we.Tool != ge.Tool {
 			t.Errorf("golden: %s Tool mismatch: want %q, got %q", pos, we.Tool, ge.Tool)
 		}
-		if we.Args != "" && we.Args != ge.Args {
+		// Args may contain non-deterministic UUIDs; normalize before comparing.
+		if we.Args != "" && normalizeIDs(we.Args) != normalizeIDs(ge.Args) {
 			t.Errorf("golden: %s Args mismatch\n  want: %q\n   got: %q", pos, we.Args, ge.Args)
 		}
 		if we.Content != "" {
-			if sim := tokenOverlap(we.Content, ge.Content); sim < goldenTextSimilarityThreshold {
+			if sim := tokenOverlap(normalizeIDs(we.Content), normalizeIDs(ge.Content)); sim < goldenTextSimilarityThreshold {
 				t.Errorf(
 					"golden: %s Content similarity %.2f < %.2f\n  want: %q\n   got: %q",
 					pos, sim, goldenTextSimilarityThreshold, we.Content, ge.Content,

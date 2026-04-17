@@ -23,7 +23,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -517,10 +516,18 @@ func TestJourneyPortalEventEmission(t *testing.T) {
 	}
 }
 
-// ─── Golden trace scenario ────────────────────────────────────────────────────
+// ─── Golden trace scenarios ────────────────────────────────────────────────────
 
-// TestGoldenTraceSimpleCreateSubmit captures a golden trace for the happy path:
-// create a draft then submit it.
+// goldenAssertOrCreate is a helper that always runs AssertGoldenTrace.
+// When the golden file doesn't exist, UPDATE_SNAPSHOTS=1 will create it.
+// Without UPDATE_SNAPSHOTS, a missing file fails the test with a clear message.
+func goldenAssertOrCreate(t *testing.T, trace ReActTrace, name string) {
+	t.Helper()
+	AssertGoldenTrace(t, trace, name)
+}
+
+// TestGoldenTraceSimpleCreateSubmit captures the happy-path golden trace:
+// create a draft, then submit it.
 // Run with UPDATE_SNAPSHOTS=1 to generate/update the golden file.
 func TestGoldenTraceSimpleCreateSubmit(t *testing.T) {
 	if testing.Short() {
@@ -553,16 +560,190 @@ func TestGoldenTraceSimpleCreateSubmit(t *testing.T) {
 
 	trace := rec.finalize("The hello-world skill proposal has been created and submitted for review. Proposal ID: " + id)
 
-	// If the golden file exists, compare; otherwise log a hint.
-	goldenPath := "testdata/golden/golden-simple-create-submit.json"
-	if _, statErr := os.Stat(goldenPath); statErr == nil {
-		AssertGoldenTrace(t, trace, "golden-simple-create-submit")
-	} else {
-		t.Logf("golden file %s does not exist; run with UPDATE_SNAPSHOTS=1 to create it", goldenPath)
-	}
+	goldenAssertOrCreate(t, trace, "golden-simple-create-submit")
 
 	// Structural assertions (independent of golden file).
 	if trace.ToolCallCount != 2 {
 		t.Errorf("expected 2 tool calls in trace, got %d", trace.ToolCallCount)
+	}
+}
+
+// TestGoldenTraceToolFailureRecovery captures the failure-recovery golden trace:
+// the first tool call has bad args (error), the second call with fixed args succeeds.
+// This covers the common failure mode where wrong tool arguments cause a partial loop.
+func TestGoldenTraceToolFailureRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping golden trace test in -short mode")
+	}
+	env := testEnv(t)
+	rec := newTraceRecorder("golden-tool-failure-recovery", "create a skill but with initially bad args")
+
+	// Step 1: First attempt fails (missing required fields).
+	rec.recordThought("I will call proposal.create_draft to create the skill.")
+	badArgs := `{"title":""}` // missing required fields
+	rec.recordToolCall("proposal.create_draft", badArgs)
+	_, firstErr := handleProposalCreateDraft(env, badArgs)
+	firstFailed := firstErr != nil
+	rec.recordToolResult("proposal.create_draft", !firstFailed)
+
+	// Step 2: Second attempt with correct args succeeds.
+	rec.recordThought("The first call failed. I will retry with complete arguments.")
+	goodArgs := `{"title":"Retry Skill","description":"Fixed","skill_name":"retry-skill","tools":[{"name":"action","description":"does something"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
+	rec.recordToolCall("proposal.create_draft", goodArgs)
+	createResult, err := handleProposalCreateDraft(env, goodArgs)
+	if err != nil {
+		t.Fatalf("second create should succeed: %v", err)
+	}
+	rec.recordToolResult("proposal.create_draft", true)
+	if !strings.Contains(createResult, "Draft proposal created") {
+		t.Errorf("expected 'Draft proposal created', got: %s", createResult)
+	}
+
+	trace := rec.finalize("Created the retry-skill proposal after correcting the arguments.")
+
+	goldenAssertOrCreate(t, trace, "golden-tool-failure-recovery")
+
+	// The first call must have failed, and overall we made exactly 2 tool calls.
+	if !firstFailed {
+		t.Errorf("expected first call to fail with empty title; it succeeded unexpectedly")
+	}
+	if trace.ToolCallCount != 2 {
+		t.Errorf("expected 2 tool calls, got %d", trace.ToolCallCount)
+	}
+}
+
+// TestGoldenTraceNoToolNeeded captures the no-op golden trace:
+// the agent answers directly without calling any tool.
+// Catches premature termination regressions — the agent should produce a final answer immediately.
+func TestGoldenTraceNoToolNeeded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping golden trace test in -short mode")
+	}
+	rec := newTraceRecorder("golden-no-tool-needed", "what is 2 + 2?")
+
+	rec.recordThought("This is a simple arithmetic question. No tool is required.")
+	trace := rec.finalize("2 + 2 equals 4.")
+
+	goldenAssertOrCreate(t, trace, "golden-no-tool-needed")
+
+	if trace.ToolCallCount != 0 {
+		t.Errorf("expected 0 tool calls for direct-answer task, got %d", trace.ToolCallCount)
+	}
+	if trace.Iterations != 1 {
+		t.Errorf("expected 1 iteration for direct-answer task, got %d", trace.Iterations)
+	}
+}
+
+// TestGoldenTraceMultiStepCreateListSubmit captures the multi-step golden trace:
+// create → list → submit in sequence.
+// Covers sequential tool calls with state shared across iterations.
+func TestGoldenTraceMultiStepCreateListSubmit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping golden trace test in -short mode")
+	}
+	env := testEnv(t)
+	reg := buildToolRegistry(env)
+	ctx := context.Background()
+	rec := newTraceRecorder("golden-multi-step-create-list-submit", "create a skill, verify it appears in the list, then submit it")
+
+	// Step 1: Create.
+	rec.recordThought("I will call proposal.create_draft first.")
+	createArgs := `{"title":"List Test Skill","description":"For list testing","skill_name":"list-test","tools":[{"name":"ping","description":"pings"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
+	rec.recordToolCall("proposal.create_draft", createArgs)
+	createResult, err := reg.Execute(ctx, "proposal.create_draft", createArgs)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := mustExtractID(t, createResult)
+	rec.recordToolResult("proposal.create_draft", true)
+	rec.recordProgress("Draft created with ID " + id[:8])
+
+	// Step 2: List to confirm.
+	rec.recordThought("Now I will list proposals to confirm the draft exists.")
+	rec.recordToolCall("proposal.list_drafts", `{}`)
+	listResult, err := reg.Execute(ctx, "proposal.list_drafts", `{}`)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	rec.recordToolResult("proposal.list_drafts", true)
+	if !strings.Contains(listResult, "List Test Skill") {
+		t.Errorf("list result should contain 'List Test Skill', got: %s", listResult)
+	}
+
+	// Step 3: Submit.
+	rec.recordThought("The draft is confirmed. I will now submit it.")
+	submitArgs := fmt.Sprintf(`{"id":%q}`, id)
+	rec.recordToolCall("proposal.submit", submitArgs)
+	submitResult, err := reg.Execute(ctx, "proposal.submit", submitArgs)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	rec.recordToolResult("proposal.submit", true)
+	if !strings.Contains(submitResult, "Proposal submitted") {
+		t.Errorf("expected 'Proposal submitted', got: %s", submitResult)
+	}
+	rec.recordProgress("Proposal submitted for Court review.")
+
+	trace := rec.finalize("Created, verified, and submitted the list-test skill proposal. ID: " + id)
+
+	goldenAssertOrCreate(t, trace, "golden-multi-step-create-list-submit")
+
+	if trace.ToolCallCount != 3 {
+		t.Errorf("expected 3 tool calls, got %d", trace.ToolCallCount)
+	}
+}
+
+// TestGoldenTraceUpdateThenSubmit captures the update lifecycle golden trace:
+// create → update → submit, verifying state is preserved between steps.
+func TestGoldenTraceUpdateThenSubmit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping golden trace test in -short mode")
+	}
+	env := testEnv(t)
+	reg := buildToolRegistry(env)
+	ctx := context.Background()
+	rec := newTraceRecorder("golden-update-then-submit", "create a skill, update its description, then submit")
+
+	// Step 1: Create.
+	rec.recordThought("I will create a draft first.")
+	createArgs := `{"title":"Update Test","description":"Original description","skill_name":"update-test","tools":[{"name":"act","description":"does it"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
+	rec.recordToolCall("proposal.create_draft", createArgs)
+	createResult, err := reg.Execute(ctx, "proposal.create_draft", createArgs)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := mustExtractID(t, createResult)
+	rec.recordToolResult("proposal.create_draft", true)
+
+	// Step 2: Update description.
+	rec.recordThought("I will update the description to be more informative.")
+	updateArgs := fmt.Sprintf(`{"id":%q,"description":"Updated and improved description"}`, id)
+	rec.recordToolCall("proposal.update_draft", updateArgs)
+	updateResult, err := reg.Execute(ctx, "proposal.update_draft", updateArgs)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	rec.recordToolResult("proposal.update_draft", true)
+	if !strings.Contains(updateResult, "updated") {
+		t.Errorf("expected 'updated' in result, got: %s", updateResult)
+	}
+
+	// Step 3: Submit.
+	rec.recordThought("The description is updated. Submitting now.")
+	submitArgs := fmt.Sprintf(`{"id":%q}`, id)
+	rec.recordToolCall("proposal.submit", submitArgs)
+	_, err = reg.Execute(ctx, "proposal.submit", submitArgs)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	rec.recordToolResult("proposal.submit", true)
+	rec.recordProgress("Proposal submitted after update.")
+
+	trace := rec.finalize("Updated and submitted the update-test skill proposal. ID: " + id)
+
+	goldenAssertOrCreate(t, trace, "golden-update-then-submit")
+
+	if trace.ToolCallCount != 3 {
+		t.Errorf("expected 3 tool calls, got %d", trace.ToolCallCount)
 	}
 }

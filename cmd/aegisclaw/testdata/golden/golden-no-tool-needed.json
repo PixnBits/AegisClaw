@@ -1,0 +1,19 @@
+{
+  "trace_id": "golden-no-tool-needed",
+  "input": "what is 2 + 2?",
+  "events": [
+    {
+      "type": "thought",
+      "content": "This is a simple arithmetic question. No tool is required.",
+      "timestamp": "2026-04-17T06:45:04.827276589Z"
+    },
+    {
+      "type": "task_complete",
+      "content": "2 + 2 equals 4.",
+      "timestamp": "2026-04-17T06:45:04.82727689Z"
+    }
+  ],
+  "final_answer": "2 + 2 equals 4.",
+  "tool_call_count": 0,
+  "iterations": 1
+}
