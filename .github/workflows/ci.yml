@@ -39,11 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Run when agent/runtime/lookup/dashboard paths change, or always on main.
-    if: >
-      github.ref == 'refs/heads/main' ||
-      contains(github.event.pull_request.labels.*.name, 'run-journey-tests') ||
-      true
+    # Always run journey and golden-trace tests — they are fast and require no
+    # KVM or Ollama, making them safe for every PR.
 
     steps:
       - name: Checkout code

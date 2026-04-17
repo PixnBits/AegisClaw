@@ -755,71 +755,71 @@ func TestGoldenTraceUpdateThenSubmit(t *testing.T) {
 // multi-turn loop manually: after create_draft the agent receives the proposal
 // ID in the tool result, and the next step uses that ID to call get_draft.
 func TestJourneyObservationFeedbackThreading(t *testing.T) {
-if testing.Short() {
-t.Skip("skipping journey test in -short mode")
-}
-env := testEnv(t)
-ctx := context.Background()
-rec := newTraceRecorder("journey-observation-feedback", "create then inspect proposal")
+	if testing.Short() {
+		t.Skip("skipping journey test in -short mode")
+	}
+	env := testEnv(t)
+	ctx := context.Background()
+	rec := newTraceRecorder("journey-observation-feedback", "create then inspect proposal")
 
-// Step 1: Create draft.
-rec.recordThought("I need to create a proposal first.")
-createArgs := `{"title":"Feedback Skill","description":"For observation threading test","skill_name":"feedback-skill","tools":[{"name":"run","description":"runs"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
-rec.recordToolCall("proposal.create_draft", createArgs)
-createResult, err := handleProposalCreateDraft(env, createArgs)
-if err != nil {
-t.Fatalf("create: %v", err)
-}
-rec.recordToolResult("proposal.create_draft", true)
+	// Step 1: Create draft.
+	rec.recordThought("I need to create a proposal first.")
+	createArgs := `{"title":"Feedback Skill","description":"For observation threading test","skill_name":"feedback-skill","tools":[{"name":"run","description":"runs"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
+	rec.recordToolCall("proposal.create_draft", createArgs)
+	createResult, err := handleProposalCreateDraft(env, createArgs)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	rec.recordToolResult("proposal.create_draft", true)
 
-// The tool result (observation) must contain the proposal ID.
-if !strings.Contains(createResult, "Draft proposal created") {
-t.Errorf("create result missing expected text: %s", createResult)
-}
-createdID := mustExtractID(t, createResult)
+	// The tool result (observation) must contain the proposal ID.
+	if !strings.Contains(createResult, "Draft proposal created") {
+		t.Errorf("create result missing expected text: %s", createResult)
+	}
+	createdID := mustExtractID(t, createResult)
 
-// Step 2: Agent uses the ID from the previous observation to call get_draft.
-// This simulates the observation being fed back into the LLM context.
-rec.recordThought("The observation shows proposal ID " + createdID + ". I will now inspect it.")
-getArgs := fmt.Sprintf(`{"id":%q}`, createdID)
-rec.recordToolCall("proposal.get_draft", getArgs)
-getResult, err := handleProposalGetDraft(env, getArgs)
-if err != nil {
-t.Fatalf("get_draft with ID from observation: %v", err)
-}
-rec.recordToolResult("proposal.get_draft", true)
+	// Step 2: Agent uses the ID from the previous observation to call get_draft.
+	// This simulates the observation being fed back into the LLM context.
+	rec.recordThought("The observation shows proposal ID " + createdID + ". I will now inspect it.")
+	getArgs := fmt.Sprintf(`{"id":%q}`, createdID)
+	rec.recordToolCall("proposal.get_draft", getArgs)
+	getResult, err := handleProposalGetDraft(env, getArgs)
+	if err != nil {
+		t.Fatalf("get_draft with ID from observation: %v", err)
+	}
+	rec.recordToolResult("proposal.get_draft", true)
 
-// The get result must show the skill we created in step 1.
-if !strings.Contains(getResult, "Feedback Skill") {
-t.Errorf("get_draft result missing title 'Feedback Skill': %s", getResult)
-}
-if !strings.Contains(getResult, "feedback-skill") {
-t.Errorf("get_draft result missing skill name 'feedback-skill': %s", getResult)
-}
-if !strings.Contains(getResult, createdID) {
-t.Errorf("get_draft result missing proposal ID %s: %s", createdID, getResult)
-}
+	// The get result must show the skill we created in step 1.
+	if !strings.Contains(getResult, "Feedback Skill") {
+		t.Errorf("get_draft result missing title 'Feedback Skill': %s", getResult)
+	}
+	if !strings.Contains(getResult, "feedback-skill") {
+		t.Errorf("get_draft result missing skill name 'feedback-skill': %s", getResult)
+	}
+	if !strings.Contains(getResult, createdID) {
+		t.Errorf("get_draft result missing proposal ID %s: %s", createdID, getResult)
+	}
 
-_ = ctx // used to signal intent; real loop uses ctx
-trace := rec.finalize("Inspected proposal " + createdID + " successfully.")
-if trace.ToolCallCount != 2 {
-t.Errorf("expected 2 tool calls, got %d", trace.ToolCallCount)
-}
-if trace.Iterations != 2 {
-t.Errorf("expected 2 iterations, got %d", trace.Iterations)
-}
+	_ = ctx // used to signal intent; real loop uses ctx
+	trace := rec.finalize("Inspected proposal " + createdID + " successfully.")
+	if trace.ToolCallCount != 2 {
+		t.Errorf("expected 2 tool calls, got %d", trace.ToolCallCount)
+	}
+	if trace.Iterations != 2 {
+		t.Errorf("expected 2 iterations, got %d", trace.Iterations)
+	}
 
-// Verify tool sequence in trace.
-toolCalls := filterEventsByType(trace.Events, TraceEventToolCalled)
-if len(toolCalls) < 2 {
-t.Fatalf("expected at least 2 tool_called events, got %d", len(toolCalls))
-}
-if toolCalls[0].Tool != "proposal.create_draft" {
-t.Errorf("tool_calls[0] = %q, want 'proposal.create_draft'", toolCalls[0].Tool)
-}
-if toolCalls[1].Tool != "proposal.get_draft" {
-t.Errorf("tool_calls[1] = %q, want 'proposal.get_draft'", toolCalls[1].Tool)
-}
+	// Verify tool sequence in trace.
+	toolCalls := filterEventsByType(trace.Events, TraceEventToolCalled)
+	if len(toolCalls) < 2 {
+		t.Fatalf("expected at least 2 tool_called events, got %d", len(toolCalls))
+	}
+	if toolCalls[0].Tool != "proposal.create_draft" {
+		t.Errorf("tool_calls[0] = %q, want 'proposal.create_draft'", toolCalls[0].Tool)
+	}
+	if toolCalls[1].Tool != "proposal.get_draft" {
+		t.Errorf("tool_calls[1] = %q, want 'proposal.get_draft'", toolCalls[1].Tool)
+	}
 }
 
 // ─── Scenario 14: Iteration limit prevents infinite loop ──────────────────────
@@ -828,52 +828,52 @@ t.Errorf("tool_calls[1] = %q, want 'proposal.get_draft'", toolCalls[1].Tool)
 // loop runs out of iterations.  Uses the in-process driveReActLoop helper
 // (compiled unconditionally — no build tag).
 func TestJourneyIterationLimit(t *testing.T) {
-if testing.Short() {
-t.Skip("skipping journey test in -short mode")
-}
-// A tool registry that always succeeds so the loop keeps going.
-env := testEnv(t)
-ctx := context.Background()
+	if testing.Short() {
+		t.Skip("skipping journey test in -short mode")
+	}
+	// A tool registry that always succeeds so the loop keeps going.
+	env := testEnv(t)
+	ctx := context.Background()
 
-// A tool registry with a no-op tool that always returns something.
-reg := &ToolRegistry{env: env}
-reg.Register("looping.tool", "A tool that always succeeds but never terminates", func(ctx context.Context, _ string) (string, error) {
-return "done, please stop", nil
-})
+	// A tool registry with a no-op tool that always returns something.
+	reg := &ToolRegistry{env: env}
+	reg.Register("looping.tool", "A tool that always succeeds but never terminates", func(ctx context.Context, _ string) (string, error) {
+		return "done, please stop", nil
+	})
 
-rec := newTraceRecorder("journey-iteration-limit", "looping task that never finalizes")
+	rec := newTraceRecorder("journey-iteration-limit", "looping task that never finalizes")
 
-// stubAgentFn (from inprocess_integration_test.go) is only compiled with
-// inprocesstest tag. Use a simpler local approach: the executor always
-// returns tool_call so the loop must cap at maxIterations.
-// We drive the loop manually here, which mirrors what driveReActLoop does.
-const maxIter = 3
-msgs := []agentChatMsg{{Role: "user", Content: "run looping.tool forever"}}
-hitLimit := false
-for i := 0; i < maxIter; i++ {
-// Simulate the LLM always returning a tool call.
-toolResult, _ := reg.Execute(ctx, "looping.tool", `{}`)
-toolCallContent := fmt.Sprintf("```tool-call\n{\"name\":\"looping.tool\",\"args\":{}}\n```")
-msgs = append(msgs,
-agentChatMsg{Role: "assistant", Content: toolCallContent},
-agentChatMsg{Role: "tool", Name: "looping.tool", Content: toolResult},
-)
-rec.recordToolCall("looping.tool", `{}`)
-rec.recordToolResult("looping.tool", true)
-}
-hitLimit = true // we always hit the cap in this test
+	// stubAgentFn (from inprocess_integration_test.go) is only compiled with
+	// inprocesstest tag. Use a simpler local approach: the executor always
+	// returns tool_call so the loop must cap at maxIterations.
+	// We drive the loop manually here, which mirrors what driveReActLoop does.
+	const maxIter = 3
+	msgs := []agentChatMsg{{Role: "user", Content: "run looping.tool forever"}}
+	hitLimit := false
+	for i := 0; i < maxIter; i++ {
+		// Simulate the LLM always returning a tool call.
+		toolResult, _ := reg.Execute(ctx, "looping.tool", `{}`)
+		toolCallContent := fmt.Sprintf("```tool-call\n{\"name\":\"looping.tool\",\"args\":{}}\n```")
+		msgs = append(msgs,
+			agentChatMsg{Role: "assistant", Content: toolCallContent},
+			agentChatMsg{Role: "tool", Name: "looping.tool", Content: toolResult},
+		)
+		rec.recordToolCall("looping.tool", `{}`)
+		rec.recordToolResult("looping.tool", true)
+	}
+	hitLimit = true // we always hit the cap in this test
 
-if !hitLimit {
-t.Error("expected iteration limit to be reached")
-}
-if len(msgs) < 2 { // user + at least one tool pair
-t.Errorf("expected messages to accumulate; got %d", len(msgs))
-}
-// The trace should show exactly maxIter tool calls.
-trace := rec.finalize("Reached iteration limit without a final answer.")
-if trace.ToolCallCount != maxIter {
-t.Errorf("expected %d tool calls, got %d", maxIter, trace.ToolCallCount)
-}
+	if !hitLimit {
+		t.Error("expected iteration limit to be reached")
+	}
+	if len(msgs) < 2 { // user + at least one tool pair
+		t.Errorf("expected messages to accumulate; got %d", len(msgs))
+	}
+	// The trace should show exactly maxIter tool calls.
+	trace := rec.finalize("Reached iteration limit without a final answer.")
+	if trace.ToolCallCount != maxIter {
+		t.Errorf("expected %d tool calls, got %d", maxIter, trace.ToolCallCount)
+	}
 }
 
 // ─── Scenario 15: Portal event ordering and content contract ──────────────────
@@ -883,108 +883,108 @@ t.Errorf("expected %d tool calls, got %d", maxIter, trace.ToolCallCount)
 // the "portal event contract" test: any change to event shapes must update this
 // test.
 func TestJourneyPortalEventContract(t *testing.T) {
-if testing.Short() {
-t.Skip("skipping journey test in -short mode")
-}
-env := testEnv(t)
-env.ToolEvents = NewToolEventBuffer(100)
-env.ThoughtEvents = NewThoughtEventBuffer(200)
+	if testing.Short() {
+		t.Skip("skipping journey test in -short mode")
+	}
+	env := testEnv(t)
+	env.ToolEvents = NewToolEventBuffer(100)
+	env.ThoughtEvents = NewThoughtEventBuffer(200)
 
-// Simulate exactly the sequence emitted by makeChatMessageHandler for a
-// single tool call (create_draft) followed by a final answer.
-tool := "proposal.create_draft"
-traceID := "test-trace-id-contract"
+	// Simulate exactly the sequence emitted by makeChatMessageHandler for a
+	// single tool call (create_draft) followed by a final answer.
+	tool := "proposal.create_draft"
+	traceID := "test-trace-id-contract"
 
-// 1. Thought: model_thinking
-env.ThoughtEvents.Record("model_thinking", "", "I will create the proposal", "Reasoning: user asked for skill creation.")
+	// 1. Thought: model_thinking
+	env.ThoughtEvents.Record("model_thinking", "", "I will create the proposal", "Reasoning: user asked for skill creation.")
 
-// 2. Tool started
-env.ToolEvents.RecordStart(tool)
+	// 2. Tool started
+	env.ToolEvents.RecordStart(tool)
 
-// 3. Thought: tool_call decision
-env.ThoughtEvents.Record("tool_call", tool, "Decided to call tool: "+tool, "Reasoning included.")
+	// 3. Thought: tool_call decision
+	env.ThoughtEvents.Record("tool_call", tool, "Decided to call tool: "+tool, "Reasoning included.")
 
-// 4. Tool finished (success)
-env.ToolEvents.RecordFinish(tool, true, nil, 42_000_000) // 42ms
+	// 4. Tool finished (success)
+	env.ToolEvents.RecordFinish(tool, true, nil, 42_000_000) // 42ms
 
-// 5. Thought: tool_result
-env.ThoughtEvents.Record("tool_result", tool, "Tool call completed: "+tool, "success=true duration_ms=42 trace_id="+traceID)
+	// 5. Thought: tool_result
+	env.ThoughtEvents.Record("tool_result", tool, "Tool call completed: "+tool, "success=true duration_ms=42 trace_id="+traceID)
 
-// Verify ToolCallEvent payload shape.
-toolEvts := env.ToolEvents.Recent(50)
-if len(toolEvts) != 2 {
-t.Fatalf("expected 2 tool events (start+finish), got %d", len(toolEvts))
-}
+	// Verify ToolCallEvent payload shape.
+	toolEvts := env.ToolEvents.Recent(50)
+	if len(toolEvts) != 2 {
+		t.Fatalf("expected 2 tool events (start+finish), got %d", len(toolEvts))
+	}
 
-startEvt := toolEvts[0]
-if startEvt.Tool != tool {
-t.Errorf("start.Tool = %q, want %q", startEvt.Tool, tool)
-}
-if startEvt.Phase != "start" {
-t.Errorf("start.Phase = %q, want 'start'", startEvt.Phase)
-}
-if startEvt.ID <= 0 {
-t.Errorf("start.ID should be positive, got %d", startEvt.ID)
-}
-if startEvt.Timestamp.IsZero() {
-t.Error("start.Timestamp should be set")
-}
+	startEvt := toolEvts[0]
+	if startEvt.Tool != tool {
+		t.Errorf("start.Tool = %q, want %q", startEvt.Tool, tool)
+	}
+	if startEvt.Phase != "start" {
+		t.Errorf("start.Phase = %q, want 'start'", startEvt.Phase)
+	}
+	if startEvt.ID <= 0 {
+		t.Errorf("start.ID should be positive, got %d", startEvt.ID)
+	}
+	if startEvt.Timestamp.IsZero() {
+		t.Error("start.Timestamp should be set")
+	}
 
-finishEvt := toolEvts[1]
-if finishEvt.Tool != tool {
-t.Errorf("finish.Tool = %q, want %q", finishEvt.Tool, tool)
-}
-if finishEvt.Phase != "finish" {
-t.Errorf("finish.Phase = %q, want 'finish'", finishEvt.Phase)
-}
-if !finishEvt.Success {
-t.Error("finish.Success should be true")
-}
-if finishEvt.Error != "" {
-t.Errorf("finish.Error should be empty for success, got %q", finishEvt.Error)
-}
-if finishEvt.DurationMS != 42 {
-t.Errorf("finish.DurationMS = %d, want 42", finishEvt.DurationMS)
-}
-// IDs are monotonically increasing.
-if finishEvt.ID <= startEvt.ID {
-t.Errorf("finish.ID (%d) should be > start.ID (%d)", finishEvt.ID, startEvt.ID)
-}
+	finishEvt := toolEvts[1]
+	if finishEvt.Tool != tool {
+		t.Errorf("finish.Tool = %q, want %q", finishEvt.Tool, tool)
+	}
+	if finishEvt.Phase != "finish" {
+		t.Errorf("finish.Phase = %q, want 'finish'", finishEvt.Phase)
+	}
+	if !finishEvt.Success {
+		t.Error("finish.Success should be true")
+	}
+	if finishEvt.Error != "" {
+		t.Errorf("finish.Error should be empty for success, got %q", finishEvt.Error)
+	}
+	if finishEvt.DurationMS != 42 {
+		t.Errorf("finish.DurationMS = %d, want 42", finishEvt.DurationMS)
+	}
+	// IDs are monotonically increasing.
+	if finishEvt.ID <= startEvt.ID {
+		t.Errorf("finish.ID (%d) should be > start.ID (%d)", finishEvt.ID, startEvt.ID)
+	}
 
-// Verify ThoughtEvent payload shape.
-thoughts := env.ThoughtEvents.Recent(50)
-if len(thoughts) != 3 {
-t.Fatalf("expected 3 thought events, got %d", len(thoughts))
-}
+	// Verify ThoughtEvent payload shape.
+	thoughts := env.ThoughtEvents.Recent(50)
+	if len(thoughts) != 3 {
+		t.Fatalf("expected 3 thought events, got %d", len(thoughts))
+	}
 
-wantPhases := []string{"model_thinking", "tool_call", "tool_result"}
-wantTools := []string{"", tool, tool}
-for i, want := range wantPhases {
-if i >= len(thoughts) {
-break
-}
-if thoughts[i].Phase != want {
-t.Errorf("thought[%d].Phase = %q, want %q", i, thoughts[i].Phase, want)
-}
-if thoughts[i].Tool != wantTools[i] {
-t.Errorf("thought[%d].Tool = %q, want %q", i, thoughts[i].Tool, wantTools[i])
-}
-if thoughts[i].ID <= 0 {
-t.Errorf("thought[%d].ID should be positive", i)
-}
-if thoughts[i].Timestamp.IsZero() {
-t.Errorf("thought[%d].Timestamp should be set", i)
-}
-if thoughts[i].Summary == "" {
-t.Errorf("thought[%d].Summary should not be empty", i)
-}
-}
+	wantPhases := []string{"model_thinking", "tool_call", "tool_result"}
+	wantTools := []string{"", tool, tool}
+	for i, want := range wantPhases {
+		if i >= len(thoughts) {
+			break
+		}
+		if thoughts[i].Phase != want {
+			t.Errorf("thought[%d].Phase = %q, want %q", i, thoughts[i].Phase, want)
+		}
+		if thoughts[i].Tool != wantTools[i] {
+			t.Errorf("thought[%d].Tool = %q, want %q", i, thoughts[i].Tool, wantTools[i])
+		}
+		if thoughts[i].ID <= 0 {
+			t.Errorf("thought[%d].ID should be positive", i)
+		}
+		if thoughts[i].Timestamp.IsZero() {
+			t.Errorf("thought[%d].Timestamp should be set", i)
+		}
+		if thoughts[i].Summary == "" {
+			t.Errorf("thought[%d].Summary should not be empty", i)
+		}
+	}
 
-// Verify trace_id appears in the tool_result details.
-toolResultThought := thoughts[2]
-if !strings.Contains(toolResultThought.Details, traceID) {
-t.Errorf("tool_result Details should contain trace_id %q; got: %q", traceID, toolResultThought.Details)
-}
+	// Verify trace_id appears in the tool_result details.
+	toolResultThought := thoughts[2]
+	if !strings.Contains(toolResultThought.Details, traceID) {
+		t.Errorf("tool_result Details should contain trace_id %q; got: %q", traceID, toolResultThought.Details)
+	}
 }
 
 // ─── Scenario 16: Duplicate create-draft by skill name ────────────────────────
@@ -994,58 +994,58 @@ t.Errorf("tool_result Details should contain trace_id %q; got: %q", traceID, too
 // errored).  The agent may create duplicates if it retries — this test ensures the
 // store handles it gracefully.
 func TestJourneyDuplicateCreateDraftBySkillName(t *testing.T) {
-if testing.Short() {
-t.Skip("skipping journey test in -short mode")
-}
-env := testEnv(t)
+	if testing.Short() {
+		t.Skip("skipping journey test in -short mode")
+	}
+	env := testEnv(t)
 
-args := `{"title":"Duplicate Skill","description":"same skill twice","skill_name":"duplicate-skill","tools":[{"name":"run","description":"runs"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
+	args := `{"title":"Duplicate Skill","description":"same skill twice","skill_name":"duplicate-skill","tools":[{"name":"run","description":"runs"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
 
-result1, err := handleProposalCreateDraft(env, args)
-if err != nil {
-t.Fatalf("first create: %v", err)
-}
-id1 := mustExtractID(t, result1)
+	result1, err := handleProposalCreateDraft(env, args)
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	id1 := mustExtractID(t, result1)
 
-// Creating again with the same skill_name must succeed (store does not enforce uniqueness on skill_name).
-result2, err := handleProposalCreateDraft(env, args)
-if err != nil {
-t.Fatalf("second create with same skill_name: %v", err)
-}
-id2 := mustExtractID(t, result2)
+	// Creating again with the same skill_name must succeed (store does not enforce uniqueness on skill_name).
+	result2, err := handleProposalCreateDraft(env, args)
+	if err != nil {
+		t.Fatalf("second create with same skill_name: %v", err)
+	}
+	id2 := mustExtractID(t, result2)
 
-// The two proposals must have distinct IDs.
-if id1 == id2 {
-t.Errorf("expected distinct proposal IDs, both got %s", id1)
-}
+	// The two proposals must have distinct IDs.
+	if id1 == id2 {
+		t.Errorf("expected distinct proposal IDs, both got %s", id1)
+	}
 
-// Both should be in draft status.
-p1, err := env.ProposalStore.Get(id1)
-if err != nil {
-t.Fatalf("get id1: %v", err)
-}
-p2, err := env.ProposalStore.Get(id2)
-if err != nil {
-t.Fatalf("get id2: %v", err)
-}
-if p1.Status != proposal.StatusDraft {
-t.Errorf("p1 status = %s, want draft", p1.Status)
-}
-if p2.Status != proposal.StatusDraft {
-t.Errorf("p2 status = %s, want draft", p2.Status)
-}
+	// Both should be in draft status.
+	p1, err := env.ProposalStore.Get(id1)
+	if err != nil {
+		t.Fatalf("get id1: %v", err)
+	}
+	p2, err := env.ProposalStore.Get(id2)
+	if err != nil {
+		t.Fatalf("get id2: %v", err)
+	}
+	if p1.Status != proposal.StatusDraft {
+		t.Errorf("p1 status = %s, want draft", p1.Status)
+	}
+	if p2.Status != proposal.StatusDraft {
+		t.Errorf("p2 status = %s, want draft", p2.Status)
+	}
 
-// Both must appear in the list.
-listResult, err := handleProposalListDrafts(env)
-if err != nil {
-t.Fatalf("list: %v", err)
-}
-if !strings.Contains(listResult, id1) {
-t.Errorf("list missing id1 %s", id1)
-}
-if !strings.Contains(listResult, id2) {
-t.Errorf("list missing id2 %s", id2)
-}
+	// Both must appear in the list.
+	listResult, err := handleProposalListDrafts(env)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(listResult, id1) {
+		t.Errorf("list missing id1 %s", id1)
+	}
+	if !strings.Contains(listResult, id2) {
+		t.Errorf("list missing id2 %s", id2)
+	}
 }
 
 // ─── Golden trace 6: Premature stop (agent finalizes on first turn, no tools) ──
@@ -1056,28 +1056,28 @@ t.Errorf("list missing id2 %s", id2)
 // requires tool use, but the agent incorrectly returns early.
 // Catching this regression ensures the loop doesn't silently skip tool calls.
 func TestGoldenTracePrematureStop(t *testing.T) {
-if testing.Short() {
-t.Skip("skipping golden trace test in -short mode")
-}
-rec := newTraceRecorder("golden-premature-stop", "create a skill proposal for a calculator")
+	if testing.Short() {
+		t.Skip("skipping golden trace test in -short mode")
+	}
+	rec := newTraceRecorder("golden-premature-stop", "create a skill proposal for a calculator")
 
-// Agent claims it is done without calling any tool — this is the bug we want
-// to detect.  The golden snapshot ensures it stays at 0 tool calls.
-rec.recordThought("I can answer this directly without a tool call.")
-trace := rec.finalize("I would normally create a proposal, but I am responding early without using tools.")
+	// Agent claims it is done without calling any tool — this is the bug we want
+	// to detect.  The golden snapshot ensures it stays at 0 tool calls.
+	rec.recordThought("I can answer this directly without a tool call.")
+	trace := rec.finalize("I would normally create a proposal, but I am responding early without using tools.")
 
-goldenAssertOrCreate(t, trace, "golden-premature-stop")
+	goldenAssertOrCreate(t, trace, "golden-premature-stop")
 
-if trace.ToolCallCount != 0 {
-t.Errorf("golden-premature-stop: expected 0 tool calls, got %d", trace.ToolCallCount)
-}
-if trace.Iterations != 1 {
-t.Errorf("golden-premature-stop: expected 1 iteration, got %d", trace.Iterations)
-}
-// Regression check: the trace must have exactly 2 events (thought + complete).
-if len(trace.Events) != 2 {
-t.Errorf("golden-premature-stop: expected 2 events (thought + complete), got %d", len(trace.Events))
-}
+	if trace.ToolCallCount != 0 {
+		t.Errorf("golden-premature-stop: expected 0 tool calls, got %d", trace.ToolCallCount)
+	}
+	if trace.Iterations != 1 {
+		t.Errorf("golden-premature-stop: expected 1 iteration, got %d", trace.Iterations)
+	}
+	// Regression check: the trace must have exactly 2 events (thought + complete).
+	if len(trace.Events) != 2 {
+		t.Errorf("golden-premature-stop: expected 2 events (thought + complete), got %d", len(trace.Events))
+	}
 }
 
 // ─── Golden trace 7: Duplicate submit idempotency trace ───────────────────────
@@ -1086,53 +1086,53 @@ t.Errorf("golden-premature-stop: expected 2 events (thought + complete), got %d"
 // idempotent double-submit scenario, ensuring the second submit returns a
 // recognizable message rather than crashing or silently succeeding.
 func TestGoldenTraceDuplicateSubmitIdempotency(t *testing.T) {
-if testing.Short() {
-t.Skip("skipping golden trace test in -short mode")
-}
-env := testEnv(t)
-reg := buildToolRegistry(env)
-ctx := context.Background()
-rec := newTraceRecorder("golden-duplicate-submit", "create then submit the same proposal twice")
+	if testing.Short() {
+		t.Skip("skipping golden trace test in -short mode")
+	}
+	env := testEnv(t)
+	reg := buildToolRegistry(env)
+	ctx := context.Background()
+	rec := newTraceRecorder("golden-duplicate-submit", "create then submit the same proposal twice")
 
-// Step 1: Create.
-rec.recordThought("I will create a proposal first.")
-createArgs := `{"title":"Idempotent Submit","description":"test double-submit","skill_name":"idem-skill","tools":[{"name":"act","description":"acts"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
-rec.recordToolCall("proposal.create_draft", createArgs)
-createResult, err := reg.Execute(ctx, "proposal.create_draft", createArgs)
-if err != nil {
-t.Fatalf("create: %v", err)
-}
-id := mustExtractID(t, createResult)
-rec.recordToolResult("proposal.create_draft", true)
+	// Step 1: Create.
+	rec.recordThought("I will create a proposal first.")
+	createArgs := `{"title":"Idempotent Submit","description":"test double-submit","skill_name":"idem-skill","tools":[{"name":"act","description":"acts"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
+	rec.recordToolCall("proposal.create_draft", createArgs)
+	createResult, err := reg.Execute(ctx, "proposal.create_draft", createArgs)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := mustExtractID(t, createResult)
+	rec.recordToolResult("proposal.create_draft", true)
 
-// Step 2: First submit.
-rec.recordThought("I will submit the proposal.")
-submitArgs := fmt.Sprintf(`{"id":%q}`, id)
-rec.recordToolCall("proposal.submit", submitArgs)
-submitResult1, err := reg.Execute(ctx, "proposal.submit", submitArgs)
-if err != nil {
-t.Fatalf("first submit: %v", err)
-}
-rec.recordToolResult("proposal.submit", true)
-if !strings.Contains(submitResult1, "Proposal submitted") {
-t.Errorf("first submit: expected 'Proposal submitted', got: %s", submitResult1)
-}
+	// Step 2: First submit.
+	rec.recordThought("I will submit the proposal.")
+	submitArgs := fmt.Sprintf(`{"id":%q}`, id)
+	rec.recordToolCall("proposal.submit", submitArgs)
+	submitResult1, err := reg.Execute(ctx, "proposal.submit", submitArgs)
+	if err != nil {
+		t.Fatalf("first submit: %v", err)
+	}
+	rec.recordToolResult("proposal.submit", true)
+	if !strings.Contains(submitResult1, "Proposal submitted") {
+		t.Errorf("first submit: expected 'Proposal submitted', got: %s", submitResult1)
+	}
 
-// Step 3: Second submit — idempotent, must not panic.
-rec.recordThought("Attempting submit again to verify idempotency.")
-rec.recordToolCall("proposal.submit", submitArgs)
-submitResult2, _ := reg.Execute(ctx, "proposal.submit", submitArgs)
-rec.recordToolResult("proposal.submit", true)
-// The second submit should produce a recognizable idempotent response.
-if submitResult2 == "" {
-t.Error("second submit returned empty result")
-}
+	// Step 3: Second submit — idempotent, must not panic.
+	rec.recordThought("Attempting submit again to verify idempotency.")
+	rec.recordToolCall("proposal.submit", submitArgs)
+	submitResult2, _ := reg.Execute(ctx, "proposal.submit", submitArgs)
+	rec.recordToolResult("proposal.submit", true)
+	// The second submit should produce a recognizable idempotent response.
+	if submitResult2 == "" {
+		t.Error("second submit returned empty result")
+	}
 
-trace := rec.finalize("Double-submit of proposal " + id + " handled correctly.")
+	trace := rec.finalize("Double-submit of proposal " + id + " handled correctly.")
 
-goldenAssertOrCreate(t, trace, "golden-duplicate-submit")
+	goldenAssertOrCreate(t, trace, "golden-duplicate-submit")
 
-if trace.ToolCallCount != 3 {
-t.Errorf("expected 3 tool calls (create + submit + submit), got %d", trace.ToolCallCount)
-}
+	if trace.ToolCallCount != 3 {
+		t.Errorf("expected 3 tool calls (create + submit + submit), got %d", trace.ToolCallCount)
+	}
 }

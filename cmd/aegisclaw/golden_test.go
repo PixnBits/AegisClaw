@@ -320,11 +320,11 @@ func (r *traceRecorder) finalize(finalAnswer string) ReActTrace {
 // Defined here (golden_test.go) rather than in the inprocesstest-tagged file so
 // that react_journey_test.go and portal_contract_test.go can use it too.
 func filterEventsByType(events []TraceEvent, typ TraceEventType) []TraceEvent {
-var out []TraceEvent
-for _, e := range events {
-if e.Type == typ {
-out = append(out, e)
-}
-}
-return out
+	var out []TraceEvent
+	for _, e := range events {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
 }
