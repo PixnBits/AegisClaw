@@ -12,7 +12,7 @@ import (
 // FirecrackerTaskExecutor depends on.  Using an interface here lets tests
 // provide a lightweight stub without importing the full sandbox package.
 type VMRuntime interface {
-	SendToVM(ctx context.Context, vmID string, req interface{}) ([]byte, error)
+	SendToVM(ctx context.Context, vmID string, req interface{}) (json.RawMessage, error)
 }
 
 // agentVMRequest mirrors the envelope expected by the guest-agent.

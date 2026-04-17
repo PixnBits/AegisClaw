@@ -38,6 +38,11 @@ type AgentTurnRequest struct {
 
 	// StructuredOutput requests JSON-mode enforcement from the agent.
 	StructuredOutput bool `json:"structured_output,omitempty"`
+
+	// TraceID is an optional correlation ID that should appear in logs,
+	// audit entries, and portal events to make end-to-end debugging easier.
+	// If empty, the executor generates no correlation context of its own.
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // AgentTurnResponse is the executor's response for one ReAct iteration.
