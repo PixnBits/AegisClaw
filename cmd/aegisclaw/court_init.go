@@ -52,7 +52,7 @@ func initCourtEngine(env *runtimeEnv, toolRegistry *ToolRegistry) (*court.Engine
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize court launcher: %w", err)
 	}
-	reviewer := court.NewReviewer(launcher, 2, env.Logger)
+	reviewer := court.NewReviewerWithLLMOptions(launcher, 2, env.Logger, env.TestLLMTemperature, env.TestLLMSeed)
 	reviewerFn := court.NewReviewerFunc(reviewer)
 
 	cfg := court.DefaultEngineConfig()
@@ -397,7 +397,11 @@ func initCourtLauncher(env *runtimeEnv) (court.SandboxLauncher, error) {
 	// Build the per-VM LLM proxy.  The proxy owns the only path from reviewer
 	// VMs to Ollama; VMs have no network interface and call the proxy via vsock.
 	allowedModels := llm.AllowedModelsFromRegistry()
-	proxy := llm.NewOllamaProxy(allowedModels, "", env.Kernel, env.Logger)
+	proxy := env.LLMProxy
+	if proxy == nil {
+		proxy = llm.NewOllamaProxyWithHTTPClient(allowedModels, "", env.OllamaHTTPClient, env.Kernel, env.Logger)
+		env.LLMProxy = proxy
+	}
 
 	return court.NewFirecrackerLauncher(env.Runtime, rtCfg, proxy, env.Logger), nil
 }
