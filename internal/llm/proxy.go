@@ -174,6 +174,7 @@ func GetChatProgress(streamID string) (ChatProgressSnapshot, bool) {
 type OllamaProxy struct {
 	allowedModels map[string]bool
 	ollamaURL     string
+	httpClient    *http.Client
 	kern          *kernel.Kernel
 	logger        *zap.Logger
 
@@ -184,8 +185,17 @@ type OllamaProxy struct {
 // NewOllamaProxy creates a proxy whose allowedModels list is enforced on every
 // request.  ollamaURL defaults to the standard local endpoint if empty.
 func NewOllamaProxy(allowedModels []string, ollamaURL string, kern *kernel.Kernel, logger *zap.Logger) *OllamaProxy {
+	return NewOllamaProxyWithHTTPClient(allowedModels, ollamaURL, nil, kern, logger)
+}
+
+// NewOllamaProxyWithHTTPClient is the test seam for replaying recorded Ollama
+// traffic without changing production behavior.
+func NewOllamaProxyWithHTTPClient(allowedModels []string, ollamaURL string, httpClient *http.Client, kern *kernel.Kernel, logger *zap.Logger) *OllamaProxy {
 	if ollamaURL == "" {
 		ollamaURL = OllamaEndpoint + "/api/chat"
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
 	}
 	m := make(map[string]bool, len(allowedModels))
 	for _, name := range allowedModels {
@@ -194,6 +204,7 @@ func NewOllamaProxy(allowedModels []string, ollamaURL string, kern *kernel.Kerne
 	return &OllamaProxy{
 		allowedModels: m,
 		ollamaURL:     ollamaURL,
+		httpClient:    httpClient,
 		kern:          kern,
 		logger:        logger,
 		listeners:     make(map[string]net.Listener),
@@ -468,7 +479,7 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	httpResp, err := http.DefaultClient.Do(httpReq)
+	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		return "", err
 	}
@@ -549,7 +560,7 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 
-		httpResp, err = http.DefaultClient.Do(httpReq)
+		httpResp, err = p.httpClient.Do(httpReq)
 		if err != nil {
 			finalizeProgress("", "", fmt.Errorf("ollama: %w", err))
 			return ProxyResponse{RequestID: req.RequestID, Error: "ollama: " + err.Error()}
