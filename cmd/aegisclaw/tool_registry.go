@@ -69,6 +69,9 @@ func (r *ToolRegistry) Execute(ctx context.Context, tool, argsJSON string) (stri
 
 // invokeSkillTool sends a tool.invoke request to the skill's sandbox VM.
 func (r *ToolRegistry) invokeSkillTool(ctx context.Context, skill, tool, argsJSON string) (string, error) {
+	if r.env == nil {
+		return "", fmt.Errorf("tool registry has no runtime env: cannot invoke skill %q", skill)
+	}
 	if r.env.SafeMode.Load() {
 		return "", fmt.Errorf("safe mode is active: skill invocation blocked")
 	}
@@ -156,17 +159,24 @@ func (r *ToolRegistry) SearchTools(query string) []ToolMeta {
 }
 
 // parseSkillToolName splits "skillname.toolname" into skill and tool parts,
-// rejecting known non-skill prefixes.
+// rejecting known non-skill prefixes and empty components.
+// Returns ("","") whenever the name is not a valid "skill.tool" pair.
 func parseSkillToolName(name string) (skill, tool string) {
 	parts := strings.SplitN(name, ".", 2)
 	if len(parts) != 2 {
 		return "", ""
 	}
-	switch parts[0] {
+	skill, tool = parts[0], parts[1]
+	// Guard against names like ".tool" or "skill." — the caller relies on
+	// both parts being non-empty to decide whether to dispatch to the skill VM.
+	if skill == "" || tool == "" {
+		return "", ""
+	}
+	switch skill {
 	case "list", "proposal":
 		return "", ""
 	}
-	return parts[0], parts[1]
+	return skill, tool
 }
 
 // buildToolRegistry constructs the daemon's tool registry with all proposal handlers

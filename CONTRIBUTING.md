@@ -13,6 +13,7 @@ protect the Firecracker isolation model.
    - [Unit & Integration Tests](#unit--integration-tests)
    - [Journey Tests](#journey-tests)
    - [Golden Trace Tests](#golden-trace-tests)
+   - [Fuzz / Property Tests](#fuzz--property-tests)
    - [In-Process Integration Tests ⚠️](#in-process-integration-tests)
 3. [Security Model & Build Tag Rules](#security-model--build-tag-rules)
 4. [Submitting Changes](#submitting-changes)
@@ -99,6 +100,39 @@ The comparison uses:
 - **Exact match** on deterministic fields: tool names, args, event types, trace IDs.
 - **Fuzzy match** (≥ 90% token overlap) on LLM-generated text to tolerate minor
   phrasing differences.
+
+---
+
+### Fuzz / Property Tests
+
+Fuzz tests in `cmd/aegisclaw/fuzz_test.go` provide property-based coverage of
+the tool lookup and ReAct termination logic without requiring any external
+services (Issue #24).
+
+**Run the seed corpus (fast, part of `go test ./...`):**
+
+```bash
+go test ./cmd/aegisclaw/ -run 'Fuzz' -v
+```
+
+**Run in continuous fuzz mode (for local security auditing):**
+
+```bash
+go test ./cmd/aegisclaw -fuzz=FuzzParseSkillToolName  -fuzztime=60s
+go test ./cmd/aegisclaw -fuzz=FuzzToolRegistryExecute -fuzztime=60s
+go test ./cmd/aegisclaw -fuzz=FuzzReActTermination     -fuzztime=60s
+```
+
+The three fuzz targets are:
+
+| Target | What it covers |
+|---|---|
+| `FuzzParseSkillToolName` | Invariants on skill/tool name parsing: symmetric return, reserved prefixes, UTF-8 preservation |
+| `FuzzToolRegistryExecute` | `ToolRegistry.Execute` never panics for arbitrary tool names + args JSON, including nil-env guard |
+| `FuzzReActTermination` | `reactMaxIterations` cap is always honoured; constant is sane |
+
+Fuzz-found bugs are fixed in the production code before merging. Failing inputs
+are committed as seed corpus entries in `testdata/fuzz/`.
 
 ---
 

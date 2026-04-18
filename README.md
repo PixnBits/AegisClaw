@@ -276,58 +276,19 @@ See [`adrs/`](adrs/) for Architecture Decision Records.
 
 ## Development
 
-```bash
-# Run the full test suite (no KVM or Ollama required)
-go test ./... -count=1
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full development guide:
 
-# Or via Makefile:
-make test
-
-# Run integration + journey tests only
-go test ./cmd/aegisclaw/ -run 'Integration|Journey' -v
-
-# Fast mode — skip heavy journey tests
-make test-short
-
-# Rebuild after code changes
-go build -o aegisclaw ./cmd/aegisclaw
-```
-
-### In-Process Integration Tests (Test-Only, No KVM)
-
-AegisClaw ships a lightweight in-process test executor for fast iteration on
-the full agent ReAct loop without spinning up Firecracker microVMs:
-
-```bash
-# Run via Makefile (recommended):
-make test-inprocess
-
-# Manually:
-AEGISCLAW_INPROCESS_TEST_MODE=unsafe_for_testing_only \
-  go test ./cmd/aegisclaw -tags=inprocesstest -run 'InProcess|Integration|Journey' -v
-```
-
-> **⚠️ Security warning:** The in-process executor has **zero sandbox isolation**.
-> It is compiled only with the `inprocesstest` build tag and is completely absent
-> from normal `go build` and `go test ./...` runs.
-> See [CONTRIBUTING.md](CONTRIBUTING.md) for full details.
-
-### Golden Trace Tests
-
-Journey tests can be captured as JSON golden files for regression detection:
-
-```bash
-# Create / update golden files:
-UPDATE_SNAPSHOTS=1 go test ./cmd/aegisclaw/ -run TestGolden -v
-
-# Compare against golden:
-go test ./cmd/aegisclaw/ -run TestGolden -v
-```
+- Running tests (unit, journey, golden trace, in-process)
+- In-process integration test executor (⚠️ test-only, no KVM required)
+- Golden trace snapshot testing
+- Security model and build-tag rules
+- How to submit changes
 
 ## Contributing
 
-Super early — but feedback welcome!
-- Read the living docs first
-- Open issues for questions, bugs, or ideas
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, testing
+guide, security rules, and how to submit a pull request.
 
-Built with ❤️ in Go — feedback? Drop an issue!
+Feedback welcome — open issues for questions, bugs, or ideas!
+
+Built with ❤️ in Go
