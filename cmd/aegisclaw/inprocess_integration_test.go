@@ -568,7 +568,13 @@ func TestInProcessIntegration_ReActRunnerStateTransitions(t *testing.T) {
 	}
 
 	// ── Observing → Thinking ──────────────────────────────────────────────────
-	runner.Step(ctx) // → Thinking (nolint: error handled below via Run)
+	res6 := runner.Step(ctx) // → Thinking
+	if res6.Err != nil {
+		t.Fatalf("step6 (Observing→Thinking): %v", res6.Err)
+	}
+	if res6.State != rtexec.StateThinking {
+		t.Errorf("step6 state = %v, want Thinking", res6.State)
+	}
 
 	// ── Thinking → Finalizing ─────────────────────────────────────────────────
 	res7 := runner.Step(ctx)
