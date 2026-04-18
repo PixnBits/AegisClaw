@@ -57,7 +57,7 @@ func TestCreateDraftIntegration(t *testing.T) {
 	env := testEnv(t)
 
 	args := `{"title":"Hello World","description":"A greeting skill","skill_name":"hello-world","tools":[{"name":"greet","description":"Returns a greeting"}]}`
-	result, err := handleProposalCreateDraft(env, args)
+	result, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("handleProposalCreateDraft: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestCreateDraftMissingFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := handleProposalCreateDraft(env, tc.args)
+			_, err := handleProposalCreateDraft(env, context.Background(), tc.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -122,7 +122,7 @@ func TestListDraftsIntegration(t *testing.T) {
 	env := testEnv(t)
 
 	// Empty store.
-	result, err := handleProposalListDrafts(env)
+	result, err := handleProposalListDrafts(env, context.Background())
 	if err != nil {
 		t.Fatalf("handleProposalListDrafts (empty): %v", err)
 	}
@@ -132,14 +132,14 @@ func TestListDraftsIntegration(t *testing.T) {
 
 	// Create a draft.
 	args := `{"title":"Test Skill","description":"A test","skill_name":"test","tools":[{"name":"run","description":"runs"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	id := extractIDFromResult(t, createResult)
 
 	// List should now have one proposal with full UUID.
-	result, err = handleProposalListDrafts(env)
+	result, err = handleProposalListDrafts(env, context.Background())
 	if err != nil {
 		t.Fatalf("handleProposalListDrafts: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestListProposalsShowsFullID(t *testing.T) {
 	env := testEnv(t)
 
 	args := `{"title":"Full ID Test","description":"Testing full IDs","skill_name":"fid","tools":[{"name":"t","description":"d"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -183,14 +183,14 @@ func TestGetDraftIntegration(t *testing.T) {
 
 	// Create.
 	args := `{"title":"Get Test","description":"Test get","skill_name":"getme","tools":[{"name":"do","description":"does"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	id := extractIDFromResult(t, createResult)
 
 	// Get by full ID.
-	getResult, err := handleProposalGetDraft(env, fmt.Sprintf(`{"id":"%s"}`, id))
+	getResult, err := handleProposalGetDraft(env, context.Background(), fmt.Sprintf(`{"id":"%s"}`, id))
 	if err != nil {
 		t.Fatalf("handleProposalGetDraft: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestGetDraftIntegration(t *testing.T) {
 
 	// Get by prefix (first 8 chars).
 	prefix := id[:8]
-	getResult2, err := handleProposalGetDraft(env, fmt.Sprintf(`{"id":"%s"}`, prefix))
+	getResult2, err := handleProposalGetDraft(env, context.Background(), fmt.Sprintf(`{"id":"%s"}`, prefix))
 	if err != nil {
 		t.Fatalf("handleProposalGetDraft (prefix): %v", err)
 	}
@@ -217,7 +217,7 @@ func TestUpdateDraftIntegration(t *testing.T) {
 
 	// Create.
 	args := `{"title":"Update Test","description":"Before update","skill_name":"up","tools":[{"name":"do","description":"does"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestUpdateDraftIntegration(t *testing.T) {
 
 	// Update title.
 	updateArgs := fmt.Sprintf(`{"id":"%s","title":"Updated Title"}`, id)
-	updateResult, err := handleProposalUpdateDraft(env, updateArgs)
+	updateResult, err := handleProposalUpdateDraft(env, context.Background(), updateArgs)
 	if err != nil {
 		t.Fatalf("handleProposalUpdateDraft: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestSubmitDraftIntegration(t *testing.T) {
 
 	// Create.
 	args := `{"title":"Submit Test","description":"To be submitted","skill_name":"sub","tools":[{"name":"do","description":"does"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestSubmitByPrefixIntegration(t *testing.T) {
 
 	// Create.
 	args := `{"title":"Prefix Submit","description":"Submit by prefix","skill_name":"pfx","tools":[{"name":"do","description":"does"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestSubmitAlreadySubmittedIntegration(t *testing.T) {
 	env := testEnv(t)
 
 	args := `{"title":"Double Submit","description":"desc","skill_name":"ds","tools":[{"name":"t","description":"d"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -353,13 +353,13 @@ func TestProposalStatusIntegration(t *testing.T) {
 	env := testEnv(t)
 
 	args := `{"title":"Status Test","description":"Check status","skill_name":"st","tools":[{"name":"t","description":"d"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	id := extractIDFromResult(t, createResult)
 
-	result, err := handleProposalStatus(env, fmt.Sprintf(`{"id":"%s"}`, id))
+	result, err := handleProposalStatus(env, context.Background(), fmt.Sprintf(`{"id":"%s"}`, id))
 	if err != nil {
 		t.Fatalf("handleProposalStatus: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestProposalJourneyCreateToSubmit(t *testing.T) {
 		"network_exposure": 1,
 		"privilege_level": 1
 	}`
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("Step 1 - Create: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestProposalJourneyCreateToSubmit(t *testing.T) {
 	t.Logf("Created proposal: %s", createdID)
 
 	// Step 2: List drafts — the created ID must appear.
-	listResult, err := handleProposalListDrafts(env)
+	listResult, err := handleProposalListDrafts(env, context.Background())
 	if err != nil {
 		t.Fatalf("Step 2 - List: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestProposalJourneyCreateToSubmit(t *testing.T) {
 	}
 
 	// Step 3: Get the draft and verify fields.
-	getResult, err := handleProposalGetDraft(env, fmt.Sprintf(`{"id":"%s"}`, createdID))
+	getResult, err := handleProposalGetDraft(env, context.Background(), fmt.Sprintf(`{"id":"%s"}`, createdID))
 	if err != nil {
 		t.Fatalf("Step 3 - Get: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestProposalJourneyCreateToSubmit(t *testing.T) {
 	}
 
 	// Step 6: The status handler should report 'submitted'.
-	statusResult, err := handleProposalStatus(env, fmt.Sprintf(`{"id":"%s"}`, createdID))
+	statusResult, err := handleProposalStatus(env, context.Background(), fmt.Sprintf(`{"id":"%s"}`, createdID))
 	if err != nil {
 		t.Fatalf("Step 6 - Status: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestProposalJourneyCreateToSubmit(t *testing.T) {
 	}
 
 	// Step 7: List should now show the proposal as submitted.
-	listResult2, err := handleProposalListDrafts(env)
+	listResult2, err := handleProposalListDrafts(env, context.Background())
 	if err != nil {
 		t.Fatalf("Step 7 - List after submit: %v", err)
 	}
@@ -461,13 +461,13 @@ func TestProposalJourneyMultipleProposals(t *testing.T) {
 	args1 := `{"title":"Skill Alpha","description":"First skill","skill_name":"alpha","tools":[{"name":"a","description":"does A"}]}`
 	args2 := `{"title":"Skill Beta","description":"Second skill","skill_name":"beta","tools":[{"name":"b","description":"does B"}]}`
 
-	result1, err := handleProposalCreateDraft(env, args1)
+	result1, err := handleProposalCreateDraft(env, context.Background(), args1)
 	if err != nil {
 		t.Fatalf("create alpha: %v", err)
 	}
 	id1 := extractIDFromResult(t, result1)
 
-	result2, err := handleProposalCreateDraft(env, args2)
+	result2, err := handleProposalCreateDraft(env, context.Background(), args2)
 	if err != nil {
 		t.Fatalf("create beta: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestProposalJourneySubmitByWrongPrefixFails(t *testing.T) {
 
 	// Create a proposal.
 	args := `{"title":"Correct One","description":"desc","skill_name":"c","tools":[{"name":"t","description":"d"}]}`
-	createResult, err := handleProposalCreateDraft(env, args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -778,7 +778,7 @@ func TestSessionD1b19f2fExpectedBehavior(t *testing.T) {
 	}
 
 	// Step 2: Execute the tool (system creates the draft).
-	createResult, err := handleProposalCreateDraft(env, toolCalls[0].Args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), toolCalls[0].Args)
 	if err != nil {
 		t.Fatalf("step 2: handleProposalCreateDraft failed: %v", err)
 	}
@@ -841,7 +841,7 @@ func TestSessionD1b19f2fWrongNamespaceFixed(t *testing.T) {
 
 	// First, create a real proposal.
 	createArgs := `{"title":"greet-us skill","description":"greeting","skill_name":"greet-us","tools":[{"name":"greet","description":"Greet user"}]}`
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("create draft failed: %v", err)
 	}
