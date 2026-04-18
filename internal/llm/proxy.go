@@ -178,6 +178,8 @@ type OllamaProxy struct {
 	kern          *kernel.Kernel
 	logger        *zap.Logger
 
+	unsupportedThinkingModels map[string]bool
+
 	mu        sync.Mutex
 	listeners map[string]net.Listener // vmID -> UDS listener on vsock.sock_1025
 }
@@ -202,13 +204,29 @@ func NewOllamaProxyWithHTTPClient(allowedModels []string, ollamaURL string, http
 		m[name] = true
 	}
 	return &OllamaProxy{
-		allowedModels: m,
-		ollamaURL:     ollamaURL,
-		httpClient:    httpClient,
-		kern:          kern,
-		logger:        logger,
-		listeners:     make(map[string]net.Listener),
+		allowedModels:             m,
+		ollamaURL:                 ollamaURL,
+		httpClient:                httpClient,
+		kern:                      kern,
+		logger:                    logger,
+		unsupportedThinkingModels: make(map[string]bool),
+		listeners:                 make(map[string]net.Listener),
 	}
+}
+
+func (p *OllamaProxy) isThinkingUnsupported(model string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.unsupportedThinkingModels[model]
+}
+
+func (p *OllamaProxy) markThinkingUnsupported(model string) {
+	if strings.TrimSpace(model) == "" {
+		return
+	}
+	p.mu.Lock()
+	p.unsupportedThinkingModels[model] = true
+	p.mu.Unlock()
 }
 
 // AllowedModelsFromRegistry returns model names from KnownGoodModels, suitable
@@ -448,6 +466,10 @@ func fallbackThinkingMessages(messages []map[string]string) []map[string]string 
 }
 
 func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
+	if p.isThinkingUnsupported(req.Model) {
+		return "", nil
+	}
+
 	fallbackMsgs := fallbackThinkingMessages(req.Messages)
 	if len(fallbackMsgs) == 0 {
 		return "", nil
@@ -490,6 +512,11 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 		return "", err
 	}
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		excerpt := strings.ToLower(strings.TrimSpace(string(bodyBytes)))
+		if httpResp.StatusCode == http.StatusBadRequest && strings.Contains(excerpt, "does not support thinking") {
+			p.markThinkingUnsupported(req.Model)
+			return "", nil
+		}
 		return "", fmt.Errorf("fallback ollama http %d", httpResp.StatusCode)
 	}
 
@@ -522,16 +549,18 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 	}
 
 	// Build the Ollama /api/chat request.
-	// think:"high" requests stronger reasoning for models that support
-	// configurable thinking effort.
-	// Some Ollama models reject this field; handle that with a retry below.
-	// stream:true captures tokenized thinking/content chunks for models that
-	// emit reasoning only while streaming.
+	// For structured JSON calls we prefer non-streaming and no explicit thinking
+	// effort so recordings stay compact and deterministic.
+	structuredJSON := strings.EqualFold(strings.TrimSpace(req.Format), "json")
 	ollamaReq := map[string]interface{}{
 		"model":    req.Model,
 		"messages": req.Messages,
-		"stream":   true,
-		"think":    "high",
+		"stream":   !structuredJSON,
+	}
+	if !structuredJSON && !p.isThinkingUnsupported(req.Model) {
+		// Conversational turns benefit from richer reasoning and incremental
+		// progress updates.
+		ollamaReq["think"] = "high"
 	}
 	if req.Format != "" {
 		ollamaReq["format"] = req.Format
@@ -583,6 +612,7 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		}
 
 		if attempt == 0 && httpResp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(excerpt), "does not support thinking") {
+			p.markThinkingUnsupported(req.Model)
 			delete(ollamaReq, "think")
 			p.logger.Info("llm proxy: retrying request without think parameter",
 				zap.String("model", req.Model),

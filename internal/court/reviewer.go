@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -316,6 +317,12 @@ func (r *Reviewer) Execute(ctx context.Context, p *proposal.Proposal, persona *P
 		return nil, fmt.Errorf("all model reviews failed for persona %s", persona.Name)
 	}
 
+	// Model goroutines complete nondeterministically; stabilize ordering for
+	// deterministic cross-verification and cassette replay.
+	sort.SliceStable(responses, func(i, j int) bool {
+		return responses[i].model < responses[j].model
+	})
+
 	// Cross-verify: check that models agree on verdict
 	aggregated := r.crossVerify(responses, persona)
 
@@ -392,10 +399,17 @@ func (r *Reviewer) crossVerify(results []modelResult, persona *Persona) *aggrega
 		}
 	}
 
-	// Determine majority verdict
+	// Determine majority verdict with deterministic tie-breaking.
 	majorityVerdict := proposal.VerdictAbstain
-	maxCount := 0
-	for v, count := range verdictCounts {
+	maxCount := -1
+	orderedVerdicts := []proposal.ReviewVerdict{
+		proposal.VerdictReject,
+		proposal.VerdictAsk,
+		proposal.VerdictApprove,
+		proposal.VerdictAbstain,
+	}
+	for _, v := range orderedVerdicts {
+		count := verdictCounts[v]
 		if count > maxCount {
 			maxCount = count
 			majorityVerdict = v
