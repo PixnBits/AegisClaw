@@ -86,7 +86,8 @@ func driveReActLoop(
 
 	for i := 0; i < maxIterations; i++ {
 		resp, err := executor.ExecuteTurn(ctx, rtexec.AgentTurnRequest{
-			Messages: msgs,
+			Messages:    msgs,
+			Temperature: 0, // enforce maximum determinism in tests (Issue #24)
 		})
 		if err != nil {
 			return "", fmt.Errorf("executor error at iteration %d: %w", i+1, err)
@@ -368,19 +369,19 @@ func TestInProcessIntegration_FullCreateSubmitJourney(t *testing.T) {
 func buildMinimalToolRegistry(env *runtimeEnv) *ToolRegistry {
 	reg := &ToolRegistry{env: env}
 	reg.Register("proposal.create_draft", "Create a new skill proposal draft", func(ctx context.Context, args string) (string, error) {
-		return handleProposalCreateDraft(env, args)
+		return handleProposalCreateDraft(env, ctx, args)
 	})
 	reg.Register("proposal.list_drafts", "List all draft proposals", func(ctx context.Context, args string) (string, error) {
-		return handleProposalListDrafts(env)
+		return handleProposalListDrafts(env, ctx)
 	})
 	reg.Register("proposal.get_draft", "Get details of a proposal draft", func(ctx context.Context, args string) (string, error) {
-		return handleProposalGetDraft(env, args)
+		return handleProposalGetDraft(env, ctx, args)
 	})
 	reg.Register("proposal.submit", "Submit a proposal for Court review", func(ctx context.Context, args string) (string, error) {
 		return handleProposalSubmit(env, nil, ctx, args)
 	})
 	reg.Register("proposal.status", "Get the current status of a proposal", func(ctx context.Context, args string) (string, error) {
-		return handleProposalStatus(env, args)
+		return handleProposalStatus(env, ctx, args)
 	})
 	return reg
 }

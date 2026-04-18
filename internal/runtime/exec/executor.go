@@ -43,6 +43,21 @@ type AgentTurnRequest struct {
 	// audit entries, and portal events to make end-to-end debugging easier.
 	// If empty, the executor generates no correlation context of its own.
 	TraceID string `json:"trace_id,omitempty"`
+
+	// Temperature controls LLM sampling randomness (0.0–2.0).
+	// Use 0 for maximum determinism — strongly recommended in all tests.
+	// Because this field uses `omitempty`, a zero value is omitted from the
+	// JSON payload sent to the guest-agent, and the agent's own default
+	// temperature is used.  To truly request temperature=0 from an Ollama
+	// model, the caller must override via the model's configuration; this
+	// field acts as a "please don't add entropy" hint rather than a hard
+	// override when sent as JSON.
+	Temperature float64 `json:"temperature,omitempty"`
+
+	// Seed, if non-zero, requests a deterministic output from the LLM given
+	// identical inputs.  Pair with a low Temperature for fully reproducible tests.
+	// Support depends on the underlying model and inference engine.
+	Seed int64 `json:"seed,omitempty"`
 }
 
 // AgentTurnResponse is the executor's response for one ReAct iteration.

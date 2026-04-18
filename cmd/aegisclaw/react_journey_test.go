@@ -65,7 +65,7 @@ func TestJourneySimpleCreateDraft(t *testing.T) {
 		t.Fatalf("expected proposal.create_draft, got %s", calls[0].Name)
 	}
 
-	result, err := handleProposalCreateDraft(env, calls[0].Args)
+	result, err := handleProposalCreateDraft(env, context.Background(), calls[0].Args)
 	if err != nil {
 		t.Fatalf("handleProposalCreateDraft: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestJourneyMultiStepCreateListGetSubmit(t *testing.T) {
 	rec.recordThought("Call proposal.create_draft")
 	rec.recordToolCall("proposal.create_draft", "")
 	createArgs := `{"title":"Calculator","description":"Basic arithmetic","skill_name":"calculator","tools":[{"name":"add","description":"Adds two numbers"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("step 1 create: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestJourneyMultiStepCreateListGetSubmit(t *testing.T) {
 	// Step 2: List drafts — the new ID must appear.
 	rec.recordThought("Call proposal.list_drafts to verify")
 	rec.recordToolCall("proposal.list_drafts", "")
-	listResult, err := handleProposalListDrafts(env)
+	listResult, err := handleProposalListDrafts(env, context.Background())
 	if err != nil {
 		t.Fatalf("step 2 list: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestJourneyMultiStepCreateListGetSubmit(t *testing.T) {
 	// Step 3: Get draft details.
 	rec.recordThought("Call proposal.get_draft to inspect")
 	rec.recordToolCall("proposal.get_draft", "")
-	getResult, err := handleProposalGetDraft(env, fmt.Sprintf(`{"id":"%s"}`, id))
+	getResult, err := handleProposalGetDraft(env, context.Background(), fmt.Sprintf(`{"id":"%s"}`, id))
 	if err != nil {
 		t.Fatalf("step 3 get: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestJourneyToolFailureBadArgs(t *testing.T) {
 	rec.recordThought("Call proposal.create_draft with bad args")
 	rec.recordToolCall("proposal.create_draft", "")
 
-	_, err := handleProposalCreateDraft(env, `{"title":"Incomplete"}`)
+	_, err := handleProposalCreateDraft(env, context.Background(), `{"title":"Incomplete"}`)
 	rec.recordToolResult("proposal.create_draft", err == nil)
 
 	if err == nil {
@@ -252,7 +252,7 @@ func TestJourneyWrongNamespaceAutoCorrection(t *testing.T) {
 	env := testEnv(t)
 
 	createArgs := `{"title":"Greeter","description":"Greets","skill_name":"greeter","tools":[{"name":"greet","description":"hi"}]}`
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestJourneyDuplicateSubmitIdempotency(t *testing.T) {
 	}
 	env := testEnv(t)
 
-	createResult, err := handleProposalCreateDraft(env, `{"title":"T","description":"d","skill_name":"t","tools":[{"name":"f","description":"does f"}]}`)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), `{"title":"T","description":"d","skill_name":"t","tools":[{"name":"f","description":"does f"}]}`)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -323,13 +323,13 @@ func TestJourneyMultipleProposalsSelectiveSubmit(t *testing.T) {
 		return fmt.Sprintf(`{"title":%q,"description":"desc","skill_name":%q,"tools":[{"name":"t","description":"d"}]}`, name, skillName)
 	}
 
-	result1, err := handleProposalCreateDraft(env, mkArgs("Skill One", "skill-one"))
+	result1, err := handleProposalCreateDraft(env, context.Background(), mkArgs("Skill One", "skill-one"))
 	if err != nil {
 		t.Fatalf("create skill-one: %v", err)
 	}
 	id1 := mustExtractID(t, result1)
 
-	result2, err := handleProposalCreateDraft(env, mkArgs("Skill Two", "skill-two"))
+	result2, err := handleProposalCreateDraft(env, context.Background(), mkArgs("Skill Two", "skill-two"))
 	if err != nil {
 		t.Fatalf("create skill-two: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestJourneyUpdateThenSubmit(t *testing.T) {
 	env := testEnv(t)
 
 	createArgs := `{"title":"Original Title","description":"original","skill_name":"updatable","tools":[{"name":"f","description":"does f"}]}`
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestJourneyUpdateThenSubmit(t *testing.T) {
 
 	// Update the draft title.
 	updateArgs := fmt.Sprintf(`{"id":%q,"title":"Updated Title"}`, id)
-	_, err = handleProposalUpdateDraft(env, updateArgs)
+	_, err = handleProposalUpdateDraft(env, context.Background(), updateArgs)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestJourneyPrefixIDResolution(t *testing.T) {
 	}
 	env := testEnv(t)
 
-	createResult, err := handleProposalCreateDraft(env, `{"title":"T","description":"d","skill_name":"t","tools":[{"name":"f","description":"d"}]}`)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), `{"title":"T","description":"d","skill_name":"t","tools":[{"name":"f","description":"d"}]}`)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestGoldenTraceSimpleCreateSubmit(t *testing.T) {
 	rec.recordThought("I will call proposal.create_draft to create the skill proposal.")
 	createArgs := `{"title":"Hello World","description":"Greets","skill_name":"hello-world","tools":[{"name":"greet","description":"Says hello"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
 	rec.recordToolCall("proposal.create_draft", createArgs)
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -582,7 +582,7 @@ func TestGoldenTraceToolFailureRecovery(t *testing.T) {
 	rec.recordThought("I will call proposal.create_draft to create the skill.")
 	badArgs := `{"title":""}` // missing required fields
 	rec.recordToolCall("proposal.create_draft", badArgs)
-	_, firstErr := handleProposalCreateDraft(env, badArgs)
+	_, firstErr := handleProposalCreateDraft(env, context.Background(), badArgs)
 	firstFailed := firstErr != nil
 	rec.recordToolResult("proposal.create_draft", !firstFailed)
 
@@ -590,7 +590,7 @@ func TestGoldenTraceToolFailureRecovery(t *testing.T) {
 	rec.recordThought("The first call failed. I will retry with complete arguments.")
 	goodArgs := `{"title":"Retry Skill","description":"Fixed","skill_name":"retry-skill","tools":[{"name":"action","description":"does something"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
 	rec.recordToolCall("proposal.create_draft", goodArgs)
-	createResult, err := handleProposalCreateDraft(env, goodArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), goodArgs)
 	if err != nil {
 		t.Fatalf("second create should succeed: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestJourneyObservationFeedbackThreading(t *testing.T) {
 	rec.recordThought("I need to create a proposal first.")
 	createArgs := `{"title":"Feedback Skill","description":"For observation threading test","skill_name":"feedback-skill","tools":[{"name":"run","description":"runs"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
 	rec.recordToolCall("proposal.create_draft", createArgs)
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -783,7 +783,7 @@ func TestJourneyObservationFeedbackThreading(t *testing.T) {
 	rec.recordThought("The observation shows proposal ID " + createdID + ". I will now inspect it.")
 	getArgs := fmt.Sprintf(`{"id":%q}`, createdID)
 	rec.recordToolCall("proposal.get_draft", getArgs)
-	getResult, err := handleProposalGetDraft(env, getArgs)
+	getResult, err := handleProposalGetDraft(env, context.Background(), getArgs)
 	if err != nil {
 		t.Fatalf("get_draft with ID from observation: %v", err)
 	}
@@ -1001,14 +1001,14 @@ func TestJourneyDuplicateCreateDraftBySkillName(t *testing.T) {
 
 	args := `{"title":"Duplicate Skill","description":"same skill twice","skill_name":"duplicate-skill","tools":[{"name":"run","description":"runs"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}`
 
-	result1, err := handleProposalCreateDraft(env, args)
+	result1, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
 	id1 := mustExtractID(t, result1)
 
 	// Creating again with the same skill_name must succeed (store does not enforce uniqueness on skill_name).
-	result2, err := handleProposalCreateDraft(env, args)
+	result2, err := handleProposalCreateDraft(env, context.Background(), args)
 	if err != nil {
 		t.Fatalf("second create with same skill_name: %v", err)
 	}
@@ -1036,7 +1036,7 @@ func TestJourneyDuplicateCreateDraftBySkillName(t *testing.T) {
 	}
 
 	// Both must appear in the list.
-	listResult, err := handleProposalListDrafts(env)
+	listResult, err := handleProposalListDrafts(env, context.Background())
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

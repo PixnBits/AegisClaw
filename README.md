@@ -17,7 +17,7 @@ Key features:
 - **Mandatory security gates** — SAST, SCA, secrets scanning, and
   policy-as-code run on every build; no bypass mechanism exists
 - **Append-only Merkle-tree audit log** — every action is signed with Ed25519
-  and queryable via `audit log` / `audit why` / `audit verify`
+  and queryable via `audit log` / `audit why` / `audit verify` / `audit trace <id>`
 - **Versioned deployment** — composition manifests track every deployed skill
   version; unhealthy deployments roll back automatically
 - **Web portal + Terminal UI** — interactive chat and live tool-call visibility
@@ -213,7 +213,7 @@ Every skill runs in its own **Firecracker microVM** with:
 - Secrets injected via proxy at runtime (never in code)
 
 Every action is recorded in the **append-only Merkle-tree audit log**, signed
-with Ed25519, and queryable via `aegisclaw audit log` / `audit why` / `audit verify`.
+with Ed25519, and queryable via `aegisclaw audit log` / `audit why` / `audit verify` / `audit trace <id>`.
 
 ---
 

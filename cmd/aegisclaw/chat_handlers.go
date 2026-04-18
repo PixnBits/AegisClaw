@@ -256,7 +256,10 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				if env.ToolEvents != nil {
 					env.ToolEvents.RecordStart(chatResp.Tool)
 				}
-				toolResult, toolErr := toolRegistry.Execute(ctx, chatResp.Tool, chatResp.Args)
+				// Enrich the context with the current trace ID so that tool
+				// handlers can include it in their audit log payloads.
+				toolCtx := withReActTraceID(ctx, traceID)
+				toolResult, toolErr := toolRegistry.Execute(toolCtx, chatResp.Tool, chatResp.Args)
 				duration := time.Since(started)
 				argsPreview := chatResp.Args
 				if len(argsPreview) > 1000 {

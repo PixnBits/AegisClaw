@@ -185,23 +185,23 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalCreateDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalCreateDraft(env, ctx, args)
 		})
 	reg.Register("proposal.update_draft",
 		"Update fields on an existing draft or in-review proposal. args: {id, ...fields}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalUpdateDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalUpdateDraft(env, ctx, args)
 		})
 	reg.Register("proposal.get_draft",
 		"Retrieve full details of a proposal draft. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalGetDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalGetDraft(env, ctx, args)
 		})
 	reg.Register("proposal.list_drafts",
 		"List all proposal drafts.",
-		func(_ context.Context, _ string) (string, error) {
-			return handleProposalListDrafts(env)
+		func(ctx context.Context, _ string) (string, error) {
+			return handleProposalListDrafts(env, ctx)
 		})
 	reg.Register("proposal.submit",
 		"Submit a draft proposal for Governance Court review. args: {id}",
@@ -210,13 +210,13 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 		})
 	reg.Register("proposal.status",
 		"Check the current status and stage of a proposal. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalStatus(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalStatus(env, ctx, args)
 		})
 	reg.Register("proposal.reviews",
 		"Get detailed reviewer feedback (verdicts, comments, questions) for a proposal. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalReviews(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalReviews(env, ctx, args)
 		})
 	reg.Register("proposal.vote",
 		"Cast a human vote to approve or reject an escalated proposal. args: {id, approve, reason}",

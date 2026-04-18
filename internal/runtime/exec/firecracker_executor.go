@@ -36,6 +36,8 @@ type agentChatPayload struct {
 	Model            string         `json:"model"`
 	StreamID         string         `json:"stream_id,omitempty"`
 	StructuredOutput bool           `json:"structured_output,omitempty"`
+	Temperature      float64        `json:"temperature,omitempty"`
+	Seed             int64          `json:"seed,omitempty"`
 }
 
 // agentChatResponse mirrors the guest-agent's ChatResponse type.
@@ -69,6 +71,8 @@ func (e *FirecrackerTaskExecutor) ExecuteTurn(ctx context.Context, req AgentTurn
 		Model:            req.Model,
 		StreamID:         req.StreamID,
 		StructuredOutput: req.StructuredOutput,
+		Temperature:      req.Temperature,
+		Seed:             req.Seed,
 	})
 	if err != nil {
 		return AgentTurnResponse{}, fmt.Errorf("firecracker executor: marshal payload: %w", err)
