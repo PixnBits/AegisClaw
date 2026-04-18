@@ -635,40 +635,19 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		return ProxyResponse{RequestID: req.RequestID, Error: "decode response: " + err.Error()}
 	}
 	if strings.TrimSpace(thinking) == "" {
-		bodyExcerpt := rawBody.String()
-		if len(bodyExcerpt) > 1200 {
-			bodyExcerpt = bodyExcerpt[:1200] + "...[truncated]"
-		}
-		msgPreview := make([]map[string]string, 0, 3)
-		for i, m := range req.Messages {
-			if i >= 3 {
-				break
-			}
-			contentPreview := strings.TrimSpace(m["content"])
-			if len(contentPreview) > 180 {
-				contentPreview = contentPreview[:180] + "...[truncated]"
-			}
-			msgPreview = append(msgPreview, map[string]string{
-				"role":    m["role"],
-				"content": contentPreview,
-			})
-		}
-		p.logger.Info("llm proxy: empty thinking in Ollama response",
-			zap.Int("message_count", len(req.Messages)),
-			zap.Any("message_preview", msgPreview),
-			zap.String("model", req.Model),
-			zap.ByteString("body", []byte(bodyExcerpt)),
-		)
-
-		fallbackThinking, fallbackErr := p.fetchFallbackThinking(req)
-		if fallbackErr != nil {
-			p.logger.Warn("llm proxy: fallback thinking request failed", zap.Error(fallbackErr), zap.String("model", req.Model))
-		} else if strings.TrimSpace(fallbackThinking) != "" {
-			thinking = fallbackThinking
-			appendChatProgress(req.StreamID, thinking, "")
-			p.logger.Info("llm proxy: recovered thinking via fallback request",
+		if structuredJSON {
+			// Structured JSON review calls prioritize deterministic parsed output;
+			// issuing an extra reasoning-only call adds latency and cassette noise.
+			p.logger.Debug("llm proxy: skipping fallback thinking for structured json request",
 				zap.String("model", req.Model),
-				zap.Int("thinking_chars", len(thinking)),
+			)
+		} else {
+			// For conversational chat traffic, a second reasoning-only request adds
+			// significant latency/token cost without changing the final answer.
+			// Keep the primary response content and continue when thinking is empty.
+			p.logger.Debug("llm proxy: empty thinking in Ollama response; skipping fallback",
+				zap.Int("message_count", len(req.Messages)),
+				zap.String("model", req.Model),
 			)
 		}
 	}
