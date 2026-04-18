@@ -155,6 +155,7 @@ func init() {
 	rootCmd.AddCommand(eventCmd)
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(evalCmd)
+	rootCmd.AddCommand(reviewCmd)
 
 	// skill subcommands: add, list, revoke, info, sbom
 	skillCmd.AddCommand(skillAddCmd)
@@ -189,6 +190,12 @@ func init() {
 	// eval subcommands: run, report
 	evalCmd.AddCommand(evalRunCmd)
 	evalCmd.AddCommand(evalReportCmd)
+
+	// review subcommands: list, run, disable, enable
+	reviewCmd.AddCommand(reviewListCmd)
+	reviewCmd.AddCommand(reviewRunCmd)
+	reviewCmd.AddCommand(reviewDisableCmd)
+	reviewCmd.AddCommand(reviewEnableCmd)
 
 	// start flags
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")

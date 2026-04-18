@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -75,6 +76,10 @@ func runScriptInSandbox(ctx context.Context, env *runtimeEnv, params *runScriptP
 	if err := ensureDefaultScriptRunnerActive(ctx, env); err != nil {
 		return "", fmt.Errorf("ensure built-in script runner: %w", err)
 	}
+
+	// Record this invocation so the idle daemon knows the sandbox is in active
+	// use and does not tear it down during the call.
+	env.ScriptRunnerLastUsed.Store(time.Now().UnixNano())
 
 	entry, ok := env.Registry.Get(defaultScriptRunnerSkill)
 	if !ok {

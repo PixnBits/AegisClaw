@@ -190,6 +190,33 @@ type Config struct {
 		// Set to "" to disable registry integration.
 		URL string `yaml:"url" mapstructure:"url"`
 	} `yaml:"registry" mapstructure:"registry"`
+	// Review holds cadence settings for the four built-in periodic security
+	// review skills (security auditor, access reviewer, secrets verifier, policy
+	// refresher).  All values are standard cron expressions or the built-in
+	// shorthands supported by AegisClaw (@daily, @weekly, @monthly, @quarterly).
+	// Set Enabled=false to prevent the skills from registering their timers on
+	// daemon start; this action is logged to the immutable audit trail.
+	Review struct {
+		// Enabled controls whether built-in review skills are registered on
+		// daemon start. Defaults to true.
+		Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+		// SecurityAuditorCron is the cadence for the core Security Auditor
+		// (queries audit log deltas, runs CISO-led Governance Court review).
+		// Defaults to "@daily".
+		SecurityAuditorCron string `yaml:"security_auditor_cron" mapstructure:"security_auditor_cron"`
+		// AccessReviewerCron is the cadence for the Access and Permission
+		// Reviewer (scans skills, network rules, file permissions).
+		// Defaults to "@monthly".
+		AccessReviewerCron string `yaml:"access_reviewer_cron" mapstructure:"access_reviewer_cron"`
+		// SecretsVerifierCron is the cadence for the Secrets Rotation Verifier
+		// (validates managed secrets have been rotated within policy windows).
+		// Defaults to "@weekly".
+		SecretsVerifierCron string `yaml:"secrets_verifier_cron" mapstructure:"secrets_verifier_cron"`
+		// PolicyRefresherCron is the cadence for the Policy and Threat Model
+		// Refresher (reviews governance rules against latest risk patterns).
+		// Defaults to "@quarterly".
+		PolicyRefresherCron string `yaml:"policy_refresher_cron" mapstructure:"policy_refresher_cron"`
+	} `yaml:"review" mapstructure:"review"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -360,6 +387,19 @@ func DefaultConfig() Config {
 		}{
 			URL: "https://registry.clawhub.io",
 		},
+		Review: struct {
+			Enabled             bool   `yaml:"enabled" mapstructure:"enabled"`
+			SecurityAuditorCron string `yaml:"security_auditor_cron" mapstructure:"security_auditor_cron"`
+			AccessReviewerCron  string `yaml:"access_reviewer_cron" mapstructure:"access_reviewer_cron"`
+			SecretsVerifierCron string `yaml:"secrets_verifier_cron" mapstructure:"secrets_verifier_cron"`
+			PolicyRefresherCron string `yaml:"policy_refresher_cron" mapstructure:"policy_refresher_cron"`
+		}{
+			Enabled:             true,
+			SecurityAuditorCron: "@daily",
+			AccessReviewerCron:  "@monthly",
+			SecretsVerifierCron: "@weekly",
+			PolicyRefresherCron: "@quarterly",
+		},
 	}
 }
 
@@ -440,6 +480,11 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("workspace.dir", defaults.Workspace.Dir)
 	viper.SetDefault("gateway.enabled", defaults.Gateway.Enabled)
 	viper.SetDefault("registry.url", defaults.Registry.URL)
+	viper.SetDefault("review.enabled", defaults.Review.Enabled)
+	viper.SetDefault("review.security_auditor_cron", defaults.Review.SecurityAuditorCron)
+	viper.SetDefault("review.access_reviewer_cron", defaults.Review.AccessReviewerCron)
+	viper.SetDefault("review.secrets_verifier_cron", defaults.Review.SecretsVerifierCron)
+	viper.SetDefault("review.policy_refresher_cron", defaults.Review.PolicyRefresherCron)
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Config file doesn't exist, write defaults

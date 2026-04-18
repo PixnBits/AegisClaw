@@ -128,6 +128,50 @@ func (r *SkillRegistry) Register(name, sandboxID string, metadata map[string]str
 	return entry, nil
 }
 
+// RegisterBuiltIn records a built-in timer-driven review skill in the registry
+// without requiring a running sandbox. Built-in skills use the synthetic
+// sandbox ID "builtin" and are created with state SkillStateInactive, because
+// they execute as ephemeral workers on each timer fire rather than as
+// persistent microVMs.
+//
+// If the skill already exists in the registry it is left unchanged so that
+// operator-edited metadata (e.g. a disabled flag) survives daemon restarts.
+func (r *SkillRegistry) RegisterBuiltIn(name string, metadata map[string]string) (*SkillEntry, error) {
+	if name == "" {
+		return nil, fmt.Errorf("skill name is required")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Return existing entry unchanged so operator edits (e.g. disabled=true)
+	// persist across daemon restarts.
+	if existing, ok := r.snapshot.Skills[name]; ok {
+		cp := *existing
+		return &cp, nil
+	}
+
+	now := time.Now().UTC()
+	entry := &SkillEntry{
+		Name:        name,
+		SandboxID:   "builtin",
+		State:       SkillStateInactive,
+		ActivatedAt: &now,
+		PrevHash:    "",
+		Version:     1,
+		Metadata:    metadata,
+	}
+
+	entry.MerkleHash = computeEntryHash(entry)
+	r.snapshot.Skills[name] = entry
+
+	if err := r.persistLocked(); err != nil {
+		return nil, fmt.Errorf("failed to persist registry: %w", err)
+	}
+
+	return entry, nil
+}
+
 // Deactivate marks a skill as stopped.
 func (r *SkillRegistry) Deactivate(name string) error {
 	r.mu.Lock()
@@ -181,7 +225,27 @@ func (r *SkillRegistry) Get(name string) (*SkillEntry, bool) {
 	return &copy, true
 }
 
-// List returns all skill entries.
+// UpdateMetadata replaces the metadata map for an existing skill entry and
+// re-computes its Merkle hash.  This is used by the review bootstrap to store
+// flags such as "disabled=true" without changing the skill state.
+func (r *SkillRegistry) UpdateMetadata(name string, metadata map[string]string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry, ok := r.snapshot.Skills[name]
+	if !ok {
+		return fmt.Errorf("skill %q not found in registry", name)
+	}
+
+	entry.PrevHash = entry.MerkleHash
+	entry.Metadata = metadata
+	entry.Version++
+	entry.MerkleHash = computeEntryHash(entry)
+
+	return r.persistLocked()
+}
+
+
 func (r *SkillRegistry) List() []SkillEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
