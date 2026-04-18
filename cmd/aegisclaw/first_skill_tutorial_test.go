@@ -75,7 +75,7 @@ func TestFirstSkillTutorialJourney(t *testing.T) {
 		"network_exposure": 1,
 		"privilege_level": 1
 	}`
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("Step 2 - create draft: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestFirstSkillTutorialJourney(t *testing.T) {
 	}
 
 	// ── Step 4: Get draft details via handler ──────────────────────────
-	getResult, err := handleProposalGetDraft(env, fmt.Sprintf(`{"id":"%s"}`, proposalID))
+	getResult, err := handleProposalGetDraft(env, context.Background(), fmt.Sprintf(`{"id":"%s"}`, proposalID))
 	if err != nil {
 		t.Fatalf("Step 4 - get draft: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestFirstSkillTutorialSpecFields(t *testing.T) {
 		"network_exposure": 1,
 		"privilege_level": 1
 	}`
-	createResult, err := handleProposalCreateDraft(env, createArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createArgs)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -860,7 +860,7 @@ func TestFirstSkillTutorialLive(t *testing.T) {
 		"network_exposure":  1,
 		"privilege_level":   1
 	}`
-	createResult, err := handleProposalCreateDraft(env, draftArgs)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), draftArgs)
 	if err != nil {
 		t.Fatalf("handleProposalCreateDraft: %v", err)
 	}

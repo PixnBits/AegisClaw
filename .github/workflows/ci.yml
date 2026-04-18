@@ -32,6 +32,28 @@ jobs:
       - name: Test
         run: go test ./... -count=1 -timeout 120s
 
+  # Journey and golden-trace tests run on every PR touching the agent, runtime,
+  # tool lookup, or dashboard code paths.  They require no KVM or Ollama.
+  journey-tests:
+    name: Journey & Golden Trace Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Always run journey and golden-trace tests — they are fast and require no
+    # KVM or Ollama, making them safe for every PR.
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run journey tests
+        run: go test ./cmd/aegisclaw/ -run 'TestJourney|TestGoldenTrace' -count=1 -v -timeout 120s
 
   image-builds:
     name: Image Builds
@@ -79,3 +101,38 @@ jobs:
 
       - name: Run live test
         run: ./scripts/run-live-test.sh --yes
+
+  # In-process integration tests are strictly opt-in — never run automatically.
+  # Trigger manually via workflow_dispatch or add the "run-inprocess-tests" label
+  # to a PR.
+  #
+  # SECURITY: These tests use InProcessTaskExecutor which has ZERO isolation.
+  # They must NEVER be part of the default CI matrix or release pipelines.
+  # See CONTRIBUTING.md for details.
+  inprocess-tests:
+    name: In-Process Integration Tests (opt-in only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: contains(github.event.pull_request.labels.*.name, 'run-inprocess-tests')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run in-process integration tests
+        env:
+          AEGISCLAW_INPROCESS_TEST_MODE: unsafe_for_testing_only
+        run: >
+          go test ./cmd/aegisclaw/
+          -tags=inprocesstest
+          -run 'TestInProcess'
+          -count=1
+          -v
+          -timeout 60s

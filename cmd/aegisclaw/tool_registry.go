@@ -69,6 +69,9 @@ func (r *ToolRegistry) Execute(ctx context.Context, tool, argsJSON string) (stri
 
 // invokeSkillTool sends a tool.invoke request to the skill's sandbox VM.
 func (r *ToolRegistry) invokeSkillTool(ctx context.Context, skill, tool, argsJSON string) (string, error) {
+	if r.env == nil {
+		return "", fmt.Errorf("tool registry has no runtime env: cannot invoke skill %q", skill)
+	}
 	if r.env.SafeMode.Load() {
 		return "", fmt.Errorf("safe mode is active: skill invocation blocked")
 	}
@@ -156,17 +159,24 @@ func (r *ToolRegistry) SearchTools(query string) []ToolMeta {
 }
 
 // parseSkillToolName splits "skillname.toolname" into skill and tool parts,
-// rejecting known non-skill prefixes.
+// rejecting known non-skill prefixes and empty components.
+// Returns ("","") whenever the name is not a valid "skill.tool" pair.
 func parseSkillToolName(name string) (skill, tool string) {
 	parts := strings.SplitN(name, ".", 2)
 	if len(parts) != 2 {
 		return "", ""
 	}
-	switch parts[0] {
+	skill, tool = parts[0], parts[1]
+	// Guard against names like ".tool" or "skill." — the caller relies on
+	// both parts being non-empty to decide whether to dispatch to the skill VM.
+	if skill == "" || tool == "" {
+		return "", ""
+	}
+	switch skill {
 	case "list", "proposal":
 		return "", ""
 	}
-	return parts[0], parts[1]
+	return skill, tool
 }
 
 // buildToolRegistry constructs the daemon's tool registry with all proposal handlers
@@ -185,23 +195,23 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalCreateDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalCreateDraft(env, ctx, args)
 		})
 	reg.Register("proposal.update_draft",
 		"Update fields on an existing draft or in-review proposal. args: {id, ...fields}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalUpdateDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalUpdateDraft(env, ctx, args)
 		})
 	reg.Register("proposal.get_draft",
 		"Retrieve full details of a proposal draft. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalGetDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalGetDraft(env, ctx, args)
 		})
 	reg.Register("proposal.list_drafts",
 		"List all proposal drafts.",
-		func(_ context.Context, _ string) (string, error) {
-			return handleProposalListDrafts(env)
+		func(ctx context.Context, _ string) (string, error) {
+			return handleProposalListDrafts(env, ctx)
 		})
 	reg.Register("proposal.submit",
 		"Submit a draft proposal for Governance Court review. args: {id}",
@@ -210,13 +220,13 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 		})
 	reg.Register("proposal.status",
 		"Check the current status and stage of a proposal. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalStatus(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalStatus(env, ctx, args)
 		})
 	reg.Register("proposal.reviews",
 		"Get detailed reviewer feedback (verdicts, comments, questions) for a proposal. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalReviews(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalReviews(env, ctx, args)
 		})
 	reg.Register("proposal.vote",
 		"Cast a human vote to approve or reject an escalated proposal. args: {id, approve, reason}",
