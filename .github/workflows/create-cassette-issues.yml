@@ -1,0 +1,153 @@
+name: Create cassette-analysis issues
+
+# Triggered once manually from the Actions tab.
+# Creates two tracking issues from the cassette-analysis work
+# (feature/ollama-recordings-determinism / PR copilot/featureollama-recordings-determinism).
+#
+# After both issues are open you can delete this workflow file.
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  create-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create issue – Cassette regression tests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh issue create \
+            --repo "$GH_REPO" \
+            --title "Cassette-based regression tests: stale sandbox re-activation and registry root hash determinism" \
+            --label "" \
+            --body "## Summary
+
+This issue tracks the new regression tests added by the cassette-analysis work in the \`feature/ollama-recordings-determinism\` branch. The cassettes confirmed two bugs; three tests were added in \`internal/sandbox/registry_test.go\` to prevent regressions.
+
+---
+
+## Tests Added
+
+### 1. \`TestComputeRootHashDeterminism\`
+
+**Covers:** Bug where \`computeRootHash\` iterated over a Go \`map[string]*SkillEntry\` (non-deterministic order), producing a different root hash for the same registry contents on each run.
+
+**Test logic:**
+- Creates a map of 3 skills
+- Calls \`computeRootHash\` 100 times on the same map
+- Asserts the result is identical every time
+
+**File:** \`internal/sandbox/registry_test.go\`
+
+---
+
+### 2. \`TestRegistryIntegrityRoundTrip\`
+
+**Covers:** The end-to-end save + reload path. Before the fix, the root hash computed at save time could differ from the one recomputed at load time (due to non-deterministic map iteration), causing \`verifyIntegrity()\` to spuriously fail on cold boot and silently self-repair — defeating tamper detection.
+
+**Test logic:**
+- Creates a \`SkillRegistry\` at a temp path
+- Registers 5 skills
+- Records the root hash
+- Reloads the registry from disk via a second \`NewSkillRegistry\` call
+- Asserts the root hash matches
+
+**File:** \`internal/sandbox/registry_test.go\`
+
+---
+
+### 3. \`TestSkillActivateHandlerDeregistersStaleEntry\`
+
+**Covers:** Bug where \`makeSkillActivateHandler\` returned the old stopped sandbox ID when called a second time, because the registry still showed \`SkillStateActive\`. Confirmed by cassette interactions 106–110 in \`chat-message-hello-world-live.yaml\`, where both calls returned the same sandbox ID and both subsequent tool invocations failed with \`vsock invoke: sandbox skill-4cd91501 is not running (state: stopped)\`.
+
+**Test logic:**
+- Registers a skill with a first sandbox ID
+- Deactivates (simulating a crashed sandbox)
+- Re-registers with a second sandbox ID
+- Asserts the entry has the new sandbox ID and an incremented version
+- Asserts the old stopped sandbox ID is not returned
+
+**File:** \`internal/sandbox/registry_test.go\`
+
+---
+
+## Acceptance Criteria
+- [ ] All three tests pass in CI (\`go test ./internal/sandbox/...\`)
+- [ ] No existing tests broken by the fix commits
+- [ ] Tests remain deterministic across multiple runs (no flakiness from goroutine scheduling or map iteration)
+
+## Related
+- Branch: \`feature/ollama-recordings-determinism\` / PR branch \`copilot/featureollama-recordings-determinism\`
+- Cassette: \`testdata/cassettes/chat-message-hello-world-live.yaml\` (interactions 106–110 confirm Bug 1)
+- Fix files: \`cmd/aegisclaw/start.go\`, \`internal/sandbox/registry.go\`, \`internal/sandbox/registry_test.go\`"
+
+      - name: Create issue – Testing improvements from cassette analysis
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh issue create \
+            --repo "$GH_REPO" \
+            --title "Testing improvements from cassette analysis (portal traces, court escalation, empty responses)" \
+            --label "" \
+            --body "## Summary
+
+Follow-up testing improvements identified by replaying the \`feature/ollama-recordings-determinism\` cassettes. None of these require code fixes in the cassette PR itself — they are recommended additions to improve coverage and catch future regressions.
+
+---
+
+## Improvement 1 — Court always escalates trivial local-only skills
+
+**Observation:** Both \`hello_world\` and \`time-of-day-greeter\` are escalated by the court across all 3 rounds with risk scores of 4–8, citing \"lack of authentication\", \"no rate limiting\", and \"data exposure\" even though both skills are fully sandboxed with no network access and no secrets. This means every skill will require a manual human vote, defeating the automated review's purpose.
+
+**Cassette evidence:** \`chat-message-hello-world-live.yaml\` interactions 11–34, 42–65, 73–99; \`first-skill-tutorial-live.yaml\` all 24 interactions.
+
+**Recommended actions:**
+- [ ] Review court persona system prompts (in \`initCourtEngine\`) for over-strict security scoring of sandboxed-only skills
+- [ ] Consider a fast-path or risk-score adjustment for skills that: have \`default_deny: true\` network policy, declare no \`capabilities.network\`, and have no \`secrets_refs\`
+- [ ] Add a test asserting that a low-risk sandboxed skill (no network, no secrets, privilege_level=1) can reach consensus approval in round 1 when replaying appropriate cassettes
+
+---
+
+## Improvement 2 — Empty agent final responses after proposal vote
+
+**Observation:** Interactions 103–104 in \`chat-message-hello-world-live.yaml\` show the agent returning empty content when asked about the court verdict immediately after a successful \`proposal.vote\`. The \`synthesizeEmptyFinalMessage\` function exists but produces empty output in the zero-tool-calls case (the model just returns an empty string without calling any tool).
+
+**Root cause:** \`synthesizeEmptyFinalMessage\` in \`cmd/aegisclaw/chat_handlers.go\` falls back to an empty string when \`toolTrace\` is empty, and the follow-up question has no tool calls to reference.
+
+**Recommended actions:**
+- [ ] Fix \`synthesizeEmptyFinalMessage\` to produce a non-empty fallback message even when \`toolTrace\` is empty (e.g., a generic \"I don't have that information currently\" message)
+- [ ] Add a test that:
+  1. Submits a chat request where the model returns empty content with no tool calls
+  2. Asserts the response is non-empty
+  3. Covers the case after \`proposal.vote\` returns successfully
+
+---
+
+## Improvement 3 — Web portal trace assertions using cassette replays
+
+**Observation:** \`env.ToolEvents\` and \`env.ThoughtEvents\` are populated during every cassette-replayed chat turn but are never asserted in any test. This means regressions in the event pipeline (missed tool events, wrong event types, dropped thought records) would not be caught.
+
+**How to implement (no KVM required):** These can be verified entirely in-process using the \`inprocesstest\` build tag.
+
+**Recommended actions:**
+- [ ] After running a cassette-backed chat scenario (e.g., the hello-world skill flow), assert that \`env.ToolEvents\` contains the expected tool names: \`proposal.create_draft\`, \`proposal.submit\`, \`activate_skill\`
+- [ ] Assert that \`env.ThoughtEvents\` contains \`tool_call\` entries matching the tool trace (at minimum, verify the count matches)
+- [ ] Add at least one test that validates the \`hello_world.greet\` tool event is recorded on the final activation+invocation step
+- [ ] These tests should use the \`inprocesstest\` build tag and require no Firecracker/KVM
+
+---
+
+## Acceptance Criteria
+- [ ] Improvement 1: A low-risk sandboxed proposal reaches consensus approval in round 1 (cassette test or in-process test)
+- [ ] Improvement 2: \`synthesizeEmptyFinalMessage\` returns non-empty content when \`toolTrace\` is empty; covered by unit test
+- [ ] Improvement 3: At least 3 portal trace assertions added to an existing or new cassette-replay test
+
+## Related
+- Branch: \`feature/ollama-recordings-determinism\` / PR branch \`copilot/featureollama-recordings-determinism\`
+- Cassettes: \`testdata/cassettes/chat-message-hello-world-live.yaml\`, \`testdata/cassettes/first-skill-tutorial-live.yaml\`
+- Relevant files: \`cmd/aegisclaw/chat_handlers.go\` (\`synthesizeEmptyFinalMessage\`), \`cmd/aegisclaw/court_init.go\`, \`cmd/aegisclaw/thought_events.go\`, \`cmd/aegisclaw/tool_events.go\`"
