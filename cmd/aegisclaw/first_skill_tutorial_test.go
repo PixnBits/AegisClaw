@@ -788,25 +788,27 @@ func TestFirstSkillTutorialArtifactSigning(t *testing.T) {
 //
 // Budget: 15 minutes — Firecracker boot (~5 s) × up to 5 VMs + LLM inference.
 func TestFirstSkillTutorialLive(t *testing.T) {
+	recording := testutil.RecordingOllama()
+
 	// ── Prerequisite: must run as root ────────────────────────────────
 	if os.Getuid() != 0 {
-		t.Skip("TestFirstSkillTutorialLive requires root (jailer needs CAP_SYS_ADMIN)")
+		t.Fatalf("TestFirstSkillTutorialLive requires root (jailer needs CAP_SYS_ADMIN)")
 	}
 
 	// ── Prerequisite: KVM must be accessible ─────────────────────────
 	if _, err := os.Stat("/dev/kvm"); err != nil {
-		t.Skipf("TestFirstSkillTutorialLive requires KVM: /dev/kvm not accessible: %v", err)
+		t.Fatalf("TestFirstSkillTutorialLive requires KVM: /dev/kvm not accessible: %v", err)
 	}
 	t.Log("✓ /dev/kvm accessible")
-	if !testutil.RecordingOllama() && !testutil.OllamaCassetteExists("first-skill-tutorial-live") {
-		t.Skip("TestFirstSkillTutorialLive replay mode requires testdata/cassettes/first-skill-tutorial-live.yaml; record it once with RECORD_OLLAMA=true")
+	if !recording && !testutil.OllamaCassetteExists("first-skill-tutorial-live") {
+		t.Fatalf("TestFirstSkillTutorialLive replay mode requires testdata/cassettes/first-skill-tutorial-live.yaml; record it once with RECORD_OLLAMA=true")
 	}
 
 	// ── Prerequisite: live Ollama only when refreshing cassettes ──────
-	if testutil.RecordingOllama() {
+	if recording {
 		conn, err := net.DialTimeout("tcp", "127.0.0.1:11434", 3*time.Second)
 		if err != nil {
-			t.Skipf("TestFirstSkillTutorialLive recording mode requires Ollama: cannot reach 127.0.0.1:11434 — start Ollama and ensure mistral-nemo:latest and llama3.2:3b are available: %v", err)
+			t.Fatalf("TestFirstSkillTutorialLive recording mode requires Ollama: cannot reach 127.0.0.1:11434 — start Ollama and ensure mistral-nemo:latest and llama3.2:3b are available: %v", err)
 		}
 		conn.Close()
 		t.Log("✓ Ollama reachable at :11434 (recording mode)")
@@ -817,7 +819,7 @@ func TestFirstSkillTutorialLive(t *testing.T) {
 	// ── Prerequisite: alpine.ext4 rootfs template must exist ─────────
 	rootfsPath := "/var/lib/aegisclaw/rootfs-templates/alpine.ext4"
 	if _, err := os.Stat(rootfsPath); err != nil {
-		t.Skipf("TestFirstSkillTutorialLive requires rootfs: %s not found: %v", rootfsPath, err)
+		t.Fatalf("TestFirstSkillTutorialLive requires rootfs: %s not found: %v", rootfsPath, err)
 	}
 	t.Logf("✓ rootfs template at %s", rootfsPath)
 

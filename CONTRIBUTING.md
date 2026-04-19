@@ -171,8 +171,33 @@ When a test does call Ollama, use deterministic settings and recorded HTTP
 cassettes by default:
 
 ```bash
-RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+# Refresh cassette intentionally (requires root + KVM + rootfs + Ollama):
+sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run '^TestFirstSkillTutorialLive$' -v -count=1
 ```
+
+Use replay mode by default (no live Ollama required):
+
+```bash
+sudo "$(command -v go)" test ./cmd/aegisclaw -run '^TestFirstSkillTutorialLive$' -v -count=1
+```
+
+Other cassette-backed live tests (chat scenarios):
+
+```bash
+# Replay existing cassettes for all chat live scenarios:
+sudo "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
+
+# Refresh chat scenario cassettes intentionally against live Ollama:
+sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
+```
+
+These chat live tests map to cassettes in `testdata/cassettes/`:
+- `TestChatMessageLiveScenarioTimeQuestion` → `chat-message-time-live.yaml`
+- `TestChatMessageLiveScenarioHelloWorldSkill` → `chat-message-hello-world-live.yaml`
+- `TestChatMessageLiveScenarioSolarSizing` → `chat-message-solar-live.yaml`
+
+`TestFirstSkillTutorialLive` now fails fast on missing hard prerequisites
+instead of skipping. In replay mode, missing cassette is also a failure.
 
 Recorded responses are stored under `testdata/cassettes/`. Replay mode is the
 default, so normal test runs stay fast and do not require a live Ollama daemon.
@@ -248,8 +273,10 @@ purpose).
 4. For Ollama-backed integration tests, replay the recorded cassettes by
    default and only refresh them intentionally:
    ```bash
-   go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
-   RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+   sudo "$(command -v go)" test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v -count=1
+   sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v -count=1
+   sudo "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
+   sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
    ```
 5. Update or regenerate golden traces if your change intentionally alters
    tool call sequences or final answers:
