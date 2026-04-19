@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -268,8 +269,13 @@ func computeEntryHash(e *SkillEntry) string {
 
 func computeRootHash(skills map[string]*SkillEntry) string {
 	h := sha256.New()
-	for _, entry := range skills {
-		h.Write([]byte(entry.MerkleHash))
+	names := make([]string, 0, len(skills))
+	for name := range skills {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		h.Write([]byte(skills[name].MerkleHash))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

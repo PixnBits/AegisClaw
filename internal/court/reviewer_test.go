@@ -248,12 +248,16 @@ func TestReviewRequestFields(t *testing.T) {
 		Prompt:      "Evaluate this",
 		Model:       "test-model",
 		Round:       1,
+		Seed:        42,
 	}
 	if req.ProposalID != "test-id" {
 		t.Error("unexpected proposal ID")
 	}
 	if req.Round != 1 {
 		t.Error("unexpected round")
+	}
+	if req.Seed != 42 {
+		t.Error("unexpected seed")
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,22 +42,25 @@ var (
 )
 
 type runtimeEnv struct {
-	Logger           *zap.Logger
-	Config           *config.Config
-	Kernel           *kernel.Kernel
-	Runtime          *sandbox.FirecrackerRuntime
-	Registry         *sandbox.SkillRegistry
-	ProposalStore    *proposal.Store
-	CompositionStore *composition.Store
-	MemoryStore      *memory.Store
-	EventBus         *eventbus.Bus
-	WorkerStore      *worker.Store
-	LookupStore      *lookup.Store
-	Court            *court.Engine
-	LLMProxy         *llm.OllamaProxy
-	ToolEvents       *ToolEventBuffer
-	ThoughtEvents    *ThoughtEventBuffer
-	SafeMode         atomic.Bool
+	Logger             *zap.Logger
+	Config             *config.Config
+	Kernel             *kernel.Kernel
+	Runtime            *sandbox.FirecrackerRuntime
+	Registry           *sandbox.SkillRegistry
+	ProposalStore      *proposal.Store
+	CompositionStore   *composition.Store
+	MemoryStore        *memory.Store
+	EventBus           *eventbus.Bus
+	WorkerStore        *worker.Store
+	LookupStore        *lookup.Store
+	Court              *court.Engine
+	LLMProxy           *llm.OllamaProxy
+	OllamaHTTPClient   *http.Client
+	ToolEvents         *ToolEventBuffer
+	ThoughtEvents      *ThoughtEventBuffer
+	SafeMode           atomic.Bool
+	TestLLMTemperature *float64
+	TestLLMSeed        int64
 
 	// TaskExecutor handles one turn of the agent ReAct loop.
 	// The default (production) implementation is FirecrackerTaskExecutor which

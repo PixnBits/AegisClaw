@@ -386,22 +386,42 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			return &api.Response{Error: "skill name is required"}
 		}
 
-		// Check if already active.
+		// Check if already active and the sandbox is still running.
 		if existing, ok := env.Registry.Get(req.Name); ok {
 			if existing.State == sandbox.SkillStateActive {
-				pid := 0
-				if info, err := env.Runtime.Status(ctx, existing.SandboxID); err == nil {
-					pid = info.PID
+				info, statusErr := env.Runtime.Status(ctx, existing.SandboxID)
+				if statusErr == nil && info.State == sandbox.StateRunning {
+					respData, _ := json.Marshal(map[string]interface{}{
+						"name":       existing.Name,
+						"sandbox_id": existing.SandboxID,
+						"pid":        info.PID,
+						"version":    existing.Version,
+						"hash":       existing.MerkleHash[:16],
+						"root_hash":  env.Registry.RootHash()[:16],
+					})
+					return &api.Response{Success: true, Data: respData}
 				}
-				respData, _ := json.Marshal(map[string]interface{}{
-					"name":       existing.Name,
-					"sandbox_id": existing.SandboxID,
-					"pid":        pid,
-					"version":    existing.Version,
-					"hash":       existing.MerkleHash[:16],
-					"root_hash":  env.Registry.RootHash()[:16],
-				})
-				return &api.Response{Success: true, Data: respData}
+				// The sandbox has stopped or is unreachable — deregister so we can
+				// launch a fresh one below.
+				env.Logger.Warn("skill registry shows active but sandbox is not running; re-activating",
+					zap.String("skill", req.Name),
+					zap.String("sandbox_id", existing.SandboxID),
+					zap.Error(statusErr),
+				)
+				if deactivateErr := env.Registry.Deactivate(req.Name); deactivateErr != nil {
+					env.Logger.Error("failed to deactivate stale registry entry",
+						zap.String("skill", req.Name),
+						zap.Error(deactivateErr),
+					)
+				}
+				// Best-effort cleanup of the stale sandbox process; errors are logged
+				// at debug level so failures don't mask the subsequent re-launch.
+				if stopErr := env.Runtime.Stop(ctx, existing.SandboxID); stopErr != nil {
+					env.Logger.Debug("stop stale sandbox", zap.String("sandbox_id", existing.SandboxID), zap.Error(stopErr))
+				}
+				if delErr := env.Runtime.Delete(ctx, existing.SandboxID); delErr != nil {
+					env.Logger.Debug("delete stale sandbox", zap.String("sandbox_id", existing.SandboxID), zap.Error(delErr))
+				}
 			}
 		}
 

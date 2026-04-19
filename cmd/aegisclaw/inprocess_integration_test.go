@@ -29,8 +29,9 @@ import (
 	"strings"
 	"testing"
 
-	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
+	"github.com/PixnBits/AegisClaw/internal/testutil"
 )
 
 // skipUnlessInProcessMode skips the test unless the safety env var is set.
@@ -87,7 +88,8 @@ func driveReActLoop(
 	for i := 0; i < maxIterations; i++ {
 		resp, err := executor.ExecuteTurn(ctx, rtexec.AgentTurnRequest{
 			Messages:    msgs,
-			Temperature: 0, // enforce maximum determinism in tests (Issue #24)
+			Temperature: testutil.TestOllamaTemperature,
+			Seed:        testutil.TestOllamaSeed,
 		})
 		if err != nil {
 			return "", fmt.Errorf("executor error at iteration %d: %w", i+1, err)
