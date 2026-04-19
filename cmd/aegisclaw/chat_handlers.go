@@ -1113,6 +1113,12 @@ func synthesizeEmptyFinalMessage(toolTrace []map[string]interface{}) string {
 	if toolName == "" {
 		return "I completed your request, but my final response came back empty. Please ask me to summarize the latest result."
 	}
+	if toolName == "proposal.vote" {
+		if success {
+			return "Your vote was recorded. You can check the proposal status for the latest outcome."
+		}
+		return "The vote could not be recorded. Please try again or check the proposal status."
+	}
 	if success {
 		return fmt.Sprintf("I completed %q, but my final response came back empty. Ask me to summarize the result and I will share it.", toolName)
 	}

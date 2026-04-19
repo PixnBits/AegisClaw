@@ -33,6 +33,11 @@ type EngineConfig struct {
 	ReviewTimeout    time.Duration `yaml:"review_timeout" mapstructure:"review_timeout"`
 	ConsensusQuorum  float64       `yaml:"consensus_quorum" mapstructure:"consensus_quorum"`
 	MaxRiskThreshold float64       `yaml:"max_risk_threshold" mapstructure:"max_risk_threshold"`
+	// AutoApproveSandboxed, when true, immediately approves proposals that are
+	// fully sandboxed and low-risk (IsSandboxedLowRisk) without running any
+	// LLM reviewer rounds. Disabled by default to preserve existing behaviour
+	// for deployments that have not opted in.
+	AutoApproveSandboxed bool `yaml:"auto_approve_sandboxed" mapstructure:"auto_approve_sandboxed"`
 }
 
 // DefaultEngineConfig returns production defaults.
@@ -183,6 +188,19 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 	}
 
 	session := e.getOrCreateSession(p)
+
+	// Fast-path: sandboxed, low-risk skills can be auto-approved without
+	// running any LLM reviewer rounds when AutoApproveSandboxed is enabled.
+	if e.config.AutoApproveSandboxed && p.IsSandboxedLowRisk() {
+		e.logger.Info("sandboxed low-risk proposal: fast-path approval without LLM review",
+			zap.String("proposal_id", proposalID),
+			zap.String("risk", string(p.Risk)),
+		)
+		session.State = SessionApproved
+		session.Verdict = "approved"
+		return e.finalizeSession(session, p, proposal.StatusApproved,
+			"sandboxed low-risk skill: auto-approved (no network, no secrets, privilege_level=1)")
+	}
 
 	// Run review rounds with iteration feedback
 	for session.Round < e.config.MaxRounds {
