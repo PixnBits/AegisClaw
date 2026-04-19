@@ -7,6 +7,11 @@ name: Create cassette-analysis issues
 # After both issues are open you can delete this workflow file.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "copilot/featureollama-recordings-determinism"
+    paths:
+      - ".github/workflows/create-cassette-issues.yml"
 
 permissions:
   issues: write
@@ -20,9 +25,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
+          TITLE="Cassette-based regression tests: stale sandbox re-activation and registry root hash determinism"
+          EXISTS=$(gh issue list --repo "$GH_REPO" --search "$TITLE" --json number --jq 'length')
+          if [ "$EXISTS" -gt "0" ]; then
+            echo "Issue already exists — skipping creation."
+            exit 0
+          fi
           gh issue create \
             --repo "$GH_REPO" \
-            --title "Cassette-based regression tests: stale sandbox re-activation and registry root hash determinism" \
+            --title "$TITLE" \
             --label "" \
             --body "## Summary
 
@@ -90,9 +101,15 @@ This issue tracks the new regression tests added by the cassette-analysis work i
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
+          TITLE="Testing improvements from cassette analysis (portal traces, court escalation, empty responses)"
+          EXISTS=$(gh issue list --repo "$GH_REPO" --search "$TITLE" --json number --jq 'length')
+          if [ "$EXISTS" -gt "0" ]; then
+            echo "Issue already exists — skipping creation."
+            exit 0
+          fi
           gh issue create \
             --repo "$GH_REPO" \
-            --title "Testing improvements from cassette analysis (portal traces, court escalation, empty responses)" \
+            --title "$TITLE" \
             --label "" \
             --body "## Summary
 
