@@ -202,6 +202,26 @@ func initRuntime() (*runtimeEnv, error) {
 	}, nil
 }
 
+// resetRuntimeSingletons zeros all package-level singleton state so that a
+// subsequent initRuntime call starts fresh.  This is used by live integration
+// tests that must run multiple scenarios in the same process without sharing
+// state from a prior initRuntime invocation.
+//
+// Must be called before kernel.ResetInstance() because the kernel itself is
+// tracked outside this package.
+func resetRuntimeSingletons() {
+	runtimeOnce = sync.Once{}
+	runtimeInst = nil
+	registryInst = nil
+	proposalInst = nil
+	compositionInst = nil
+	memoryInst = nil
+	eventBusInst = nil
+	workerStoreInst = nil
+	lookupInst = nil
+	runtimeInitErr = nil
+}
+
 // loadWorkspace loads workspace prompt files from cfg.Workspace.Dir.
 // Errors are logged and a non-nil empty Content is returned so the daemon
 // continues to function without workspace content.

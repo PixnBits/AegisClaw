@@ -171,12 +171,20 @@ When a test does call Ollama, use deterministic settings and recorded HTTP
 cassettes by default:
 
 ```bash
+# Replay recorded cassettes (default — no live Ollama needed)
+go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+
+# Refresh a single cassette with a live Ollama daemon
 RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+
+# Refresh all cassettes in one step (requires root + KVM + Ollama)
+make record-cassettes
 ```
 
 Recorded responses are stored under `testdata/cassettes/`. Replay mode is the
 default, so normal test runs stay fast and do not require a live Ollama daemon.
-The recorder only refreshes cassettes when `RECORD_OLLAMA=true` is set.
+The recorder only refreshes cassettes when `RECORD_OLLAMA=true` is set.  See
+`testdata/cassettes/README.md` for the full cassette inventory and prerequisites.
 
 #### Two safety guards (both required)
 
@@ -248,8 +256,12 @@ purpose).
 4. For Ollama-backed integration tests, replay the recorded cassettes by
    default and only refresh them intentionally:
    ```bash
+   # Replay (default — fast, no Ollama needed)
    go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+   # Refresh one cassette
    RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+   # Refresh all cassettes in one step
+   make record-cassettes
    ```
 5. Update or regenerate golden traces if your change intentionally alters
    tool call sequences or final answers:

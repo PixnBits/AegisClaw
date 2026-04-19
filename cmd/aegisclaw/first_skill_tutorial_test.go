@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -829,12 +828,7 @@ func TestFirstSkillTutorialLive(t *testing.T) {
 	// Each test in this package may have mutated global state.  Reset
 	// before initialising the real runtime.
 	kernel.ResetInstance()
-	runtimeOnce = sync.Once{}
-	runtimeInst = nil
-	registryInst = nil
-	proposalInst = nil
-	compositionInst = nil
-	runtimeInitErr = nil
+	resetRuntimeSingletons()
 
 	// ── Initialise the real runtime ───────────────────────────────────
 	t.Log("Initialising runtime from config…")
