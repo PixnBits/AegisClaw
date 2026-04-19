@@ -370,7 +370,7 @@ func (r *Reviewer) runSingleModel(ctx context.Context, p *proposal.Proposal, per
 		Spec:        p.Spec,
 		PersonaName: persona.Name,
 		PersonaRole: persona.Role,
-		Prompt:      persona.SystemPrompt,
+		Prompt:      buildReviewPrompt(p, persona),
 		Model:       model,
 		Round:       p.Round,
 		Temperature: r.temperature,
@@ -378,6 +378,37 @@ func (r *Reviewer) runSingleModel(ctx context.Context, p *proposal.Proposal, per
 	}
 
 	return r.launcher.SendReviewRequest(ctx, sandboxID, req)
+}
+
+// buildReviewPrompt constructs the system prompt for a reviewer by starting
+// from the persona's base prompt and appending sandboxed-skill context when
+// appropriate.  The court still reviews every proposal; the context only
+// calibrates the reviewer so it does not penalise for concerns that are
+// structurally impossible (e.g. authentication or rate-limiting when there is
+// no network and no secrets).
+func buildReviewPrompt(p *proposal.Proposal, persona *Persona) string {
+	base := persona.SystemPrompt
+	if !p.IsSandboxedLowRisk() {
+		return base
+	}
+	// Append sandboxed context so reviewers score proportionately and do not
+	// escalate for irrelevant attack vectors.
+	return base + `
+
+SANDBOXED SKILL CONTEXT:
+This proposal has been identified as a fully sandboxed, low-privilege skill:
+  - network_policy.default_deny: true with no allowed hosts
+  - No secrets or credentials references
+  - No elevated capabilities
+  - Privilege level 1
+
+Calibrate your review accordingly:
+  - The maximum appropriate risk score for this proposal is 2.
+  - Do NOT penalise for missing authentication, missing rate-limiting, or
+    network-based attack surface — these controls are irrelevant when the
+    skill has no network access and no secrets.
+  - Focus your review on the skill's internal logic, error handling, and
+    correctness of the sandboxed execution.`
 }
 
 // crossVerify aggregates multiple model responses, checking for agreement.
