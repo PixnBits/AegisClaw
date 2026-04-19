@@ -1109,7 +1109,12 @@ func synthesizeEmptyFinalMessage(toolTrace []map[string]interface{}) string {
 	}
 	last := toolTrace[len(toolTrace)-1]
 	toolName, _ := last["tool"].(string)
-	success, _ := last["success"].(bool)
+	successVal, successPresent := last["success"]
+	success, successIsBool := successVal.(bool)
+	// Treat missing or non-boolean success as false (conservative: unknown = failure).
+	if !successPresent || !successIsBool {
+		success = false
+	}
 	if toolName == "" {
 		return "I completed your request, but my final response came back empty. Please ask me to summarize the latest result."
 	}
