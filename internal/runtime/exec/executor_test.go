@@ -65,7 +65,8 @@ func TestAgentTurnRequest_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-// Temperature=0 must round-trip as 0, not be dropped by omitempty.
+// Temperature=0 remains a valid request value even though the public request
+// type omits it from direct JSON marshaling.
 func TestAgentTurnRequest_ZeroTemperaturePreserved(t *testing.T) {
 	req := exec.AgentTurnRequest{
 		Messages:    []exec.AgentMessage{{Role: "user", Content: "hello"}},
@@ -78,12 +79,13 @@ func TestAgentTurnRequest_ZeroTemperaturePreserved(t *testing.T) {
 	var m map[string]interface{}
 	json.Unmarshal(data, &m) //nolint:errcheck
 
-	// Temperature=0 with omitempty is absent from JSON — this is intentional:
-	// the omission tells the guest-agent to use the model's configured default,
-	// which is consistent with "don't override, use configured determinism".
+	// Temperature=0 with omitempty is still absent from the public request JSON.
+	// The Firecracker executor explicitly includes zero when a deterministic seed
+	// is present so live test payloads can force temperature=0 without changing
+	// production defaults.
 	_, present := m["temperature"]
 	if present {
-		t.Error("temperature=0 should be omitted (omitempty) — the guest-agent uses model default when absent")
+		t.Error("temperature=0 should be omitted from the public AgentTurnRequest JSON")
 	}
 }
 
@@ -302,6 +304,50 @@ func TestFirecrackerTaskExecutor_TemperatureAndSeedPropagated(t *testing.T) {
 	}
 	if chatPayload.Seed != 12345 {
 		t.Errorf("payload seed = %d, want 12345", chatPayload.Seed)
+	}
+}
+
+func TestFirecrackerTaskExecutor_ZeroTemperaturePropagatedWhenSeedSet(t *testing.T) {
+	stub := &stubVMRuntime{
+		response: buildVMResponse(t, true, "", map[string]interface{}{
+			"status":  "final",
+			"content": "ok",
+		}),
+	}
+
+	ex := exec.NewFirecrackerTaskExecutor(stub, "agent-vm")
+	_, err := ex.ExecuteTurn(context.Background(), exec.AgentTurnRequest{
+		Messages:    []exec.AgentMessage{{Role: "user", Content: "hello"}},
+		Temperature: 0,
+		Seed:        42,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTurn: %v", err)
+	}
+
+	data, err := json.Marshal(stub.lastReq)
+	if err != nil {
+		t.Fatalf("marshal lastReq: %v", err)
+	}
+	var envelope struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	var chatPayload map[string]interface{}
+	if err := json.Unmarshal(envelope.Payload, &chatPayload); err != nil {
+		t.Fatalf("unmarshal chat payload: %v", err)
+	}
+	temp, present := chatPayload["temperature"]
+	if !present {
+		t.Fatal("payload temperature missing; zero temperature should be forwarded when seed is set")
+	}
+	if temp.(float64) != 0 {
+		t.Errorf("payload temperature = %v, want 0", temp)
+	}
+	if chatPayload["seed"].(float64) != 42 {
+		t.Errorf("payload seed = %v, want 42", chatPayload["seed"])
 	}
 }
 

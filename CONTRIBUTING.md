@@ -167,6 +167,17 @@ AEGISCLAW_INPROCESS_TEST_MODE=unsafe_for_testing_only \
     -v
 ```
 
+When a test does call Ollama, use deterministic settings and recorded HTTP
+cassettes by default:
+
+```bash
+RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+```
+
+Recorded responses are stored under `testdata/cassettes/`. Replay mode is the
+default, so normal test runs stay fast and do not require a live Ollama daemon.
+The recorder only refreshes cassettes when `RECORD_OLLAMA=true` is set.
+
 #### Two safety guards (both required)
 
 1. **Build tag**: `//go:build inprocesstest` — excluded from all normal builds.
@@ -234,10 +245,16 @@ purpose).
    ```bash
    make test-inprocess
    ```
-4. Update or regenerate golden traces if your change intentionally alters
+4. For Ollama-backed integration tests, replay the recorded cassettes by
+   default and only refresh them intentionally:
+   ```bash
+   go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+   RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+   ```
+5. Update or regenerate golden traces if your change intentionally alters
    tool call sequences or final answers:
    ```bash
    UPDATE_SNAPSHOTS=1 go test ./cmd/aegisclaw/ -run TestGolden
    ```
-5. Ensure `go build ./...` (no extra tags) produces a binary that contains
+6. Ensure `go build ./...` (no extra tags) produces a binary that contains
    **no** in-process executor code.

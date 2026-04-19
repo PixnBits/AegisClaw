@@ -201,6 +201,136 @@ func TestJourneyExplicitCompletionNoTool(t *testing.T) {
 	}
 }
 
+// ─── Scenario 3b: Time question session (multi-turn, no tools) ───────────────
+
+func TestJourneyChatScenario_TimeQuestion(t *testing.T) {
+	rec := newTraceRecorder("journey-chat-time-question", "What time is it right now?")
+
+	// Turn 1: user asks for current time.
+	rec.recordThought("Cannot directly read host clock in this scenario; ask for timezone context.")
+	turn1 := "I can help with that. I cannot read your live system clock from here. What timezone should I use?"
+	if calls := parseToolCalls(turn1); len(calls) != 0 {
+		t.Fatalf("time scenario turn 1 should not emit tool calls; got %d", len(calls))
+	}
+	rec.recordProgress("Asked clarifying timezone question.")
+
+	// Turn 2: user gives timezone; assistant returns formatted guidance.
+	rec.recordThought("Provide a direct, timezone-specific answer format without any tool usage.")
+	turn2 := "Great, for Phoenix (America/Phoenix), use: `date '+%I:%M %p %Z'` to get the current local time in 12-hour format."
+	if calls := parseToolCalls(turn2); len(calls) != 0 {
+		t.Fatalf("time scenario turn 2 should not emit tool calls; got %d", len(calls))
+	}
+	if !strings.Contains(strings.ToLower(turn2), "phoenix") {
+		t.Errorf("expected Phoenix context in time response, got: %q", turn2)
+	}
+
+	trace := rec.finalize("Provided timezone-aware time guidance in two turns.")
+	if trace.ToolCallCount != 0 {
+		t.Errorf("expected zero tool calls, got %d", trace.ToolCallCount)
+	}
+	if trace.Iterations < 2 {
+		t.Errorf("expected at least 2 reasoning iterations, got %d", trace.Iterations)
+	}
+}
+
+// ─── Scenario 3c: Hello-world skill session (multi-turn, proposal tools) ─────
+
+func TestJourneyChatScenario_HelloWorldSkill(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping journey test in -short mode")
+	}
+
+	env := testEnv(t)
+	rec := newTraceRecorder("journey-chat-hello-world-skill", "Please add a hello-world skill")
+
+	// Turn 1: create skill proposal.
+	rec.recordThought("Use proposal.create_draft to materialize the requested hello-world skill.")
+	createResponse := "I will create that proposal now.\n" +
+		"```tool-call\n" +
+		`{"skill":"proposal","tool":"create_draft","args":{"title":"Hello World Skill","description":"A simple skill that greets the user","skill_name":"hello-world","tools":[{"name":"say_hello","description":"Returns a hello-world greeting"}],"data_sensitivity":1,"network_exposure":1,"privilege_level":1}}` +
+		"\n```"
+	createCalls := parseToolCalls(createResponse)
+	if len(createCalls) != 1 {
+		t.Fatalf("expected 1 tool call for hello-world creation, got %d", len(createCalls))
+	}
+	if createCalls[0].Name != "proposal.create_draft" {
+		t.Fatalf("expected proposal.create_draft, got %q", createCalls[0].Name)
+	}
+
+	rec.recordToolCall(createCalls[0].Name, createCalls[0].Args)
+	createResult, err := handleProposalCreateDraft(env, context.Background(), createCalls[0].Args)
+	if err != nil {
+		t.Fatalf("create_draft failed: %v", err)
+	}
+	rec.recordToolResult(createCalls[0].Name, true)
+	proposalID := mustExtractID(t, createResult)
+	rec.recordProgress("Created hello-world proposal draft.")
+
+	// Turn 2: user asks for confirmation and ID; assistant summarizes.
+	rec.recordThought("Summarize success with concrete proposal identifier.")
+	turn2 := fmt.Sprintf("Done. I created a hello-world draft proposal with ID %s. You can submit it for court review when ready.", proposalID)
+	if calls := parseToolCalls(turn2); len(calls) != 0 {
+		t.Fatalf("hello-world scenario turn 2 should not emit tool calls; got %d", len(calls))
+	}
+	if !strings.Contains(turn2, proposalID) {
+		t.Errorf("expected proposal ID in confirmation turn, got: %q", turn2)
+	}
+
+	p, err := env.ProposalStore.Get(proposalID)
+	if err != nil {
+		t.Fatalf("store.Get(%s): %v", proposalID, err)
+	}
+	if p.TargetSkill != "hello-world" {
+		t.Errorf("expected target skill hello-world, got %q", p.TargetSkill)
+	}
+
+	trace := rec.finalize("Created and confirmed hello-world skill proposal.")
+	if trace.ToolCallCount != 1 {
+		t.Errorf("expected exactly 1 tool call, got %d", trace.ToolCallCount)
+	}
+	if trace.Iterations < 2 {
+		t.Errorf("expected at least 2 reasoning iterations, got %d", trace.Iterations)
+	}
+}
+
+// ─── Scenario 3d: Solar sizing session (multi-turn, no tools) ────────────────
+
+func TestJourneyChatScenario_SolarSizing(t *testing.T) {
+	rec := newTraceRecorder("journey-chat-solar-sizing", "Phoenix 20x20 canopy solar sizing")
+
+	// Turn 1: full sizing answer with assumptions and annual production estimate.
+	rec.recordThought("Compute fit, capacity, annual yield, and panel count for stated daily load.")
+	turn1 := "Using a 20x20 ft roof (400 sq ft) and 6x3 ft panels (18 sq ft), you can fit about 22 panels in a dense layout. At 350 W each, that is about 7.7 kW DC. In Phoenix, that often lands around 12,000 to 14,000 kWh/year. For 130 kWh/day summer demand, you would need roughly 72 panels (about 25 kW DC), so a single 20x20 structure is far short of full coverage."
+	if calls := parseToolCalls(turn1); len(calls) != 0 {
+		t.Fatalf("solar scenario turn 1 should not emit tool calls; got %d", len(calls))
+	}
+	turn1Lower := strings.ToLower(turn1)
+	for _, want := range []string{"22 panels", "7.7 kw", "12,000 to 14,000", "72 panels"} {
+		if !strings.Contains(turn1Lower, strings.ToLower(want)) {
+			t.Errorf("turn 1 missing %q: %q", want, turn1)
+		}
+	}
+	rec.recordProgress("Provided first-pass solar design estimate.")
+
+	// Turn 2: user follow-up asks only for required panels; assistant gives concise number.
+	rec.recordThought("Respond concisely to follow-up by isolating key requirement.")
+	turn2 := "For 130 kWh/day in peak summer, plan around 72 panels at 350 W each (roughly 25 kW DC), before inverter and derate margins."
+	if calls := parseToolCalls(turn2); len(calls) != 0 {
+		t.Fatalf("solar scenario turn 2 should not emit tool calls; got %d", len(calls))
+	}
+	if !strings.Contains(strings.ToLower(turn2), "72 panels") {
+		t.Errorf("turn 2 should include concise required count, got: %q", turn2)
+	}
+
+	trace := rec.finalize("Answered solar sizing scenario in two turns with assumptions and concise follow-up.")
+	if trace.ToolCallCount != 0 {
+		t.Errorf("expected zero tool calls, got %d", trace.ToolCallCount)
+	}
+	if trace.Iterations < 2 {
+		t.Errorf("expected at least 2 reasoning iterations, got %d", trace.Iterations)
+	}
+}
+
 // ─── Scenario 4: Unknown tool → graceful error, loop terminates ───────────────
 
 func TestJourneyUnknownToolError(t *testing.T) {

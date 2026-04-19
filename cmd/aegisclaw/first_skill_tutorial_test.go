@@ -18,7 +18,9 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/builder/securitygate"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/testutil"
 	"github.com/google/uuid"
 	"go.uber.org/zap/zaptest"
 )
@@ -796,14 +798,21 @@ func TestFirstSkillTutorialLive(t *testing.T) {
 		t.Skipf("TestFirstSkillTutorialLive requires KVM: /dev/kvm not accessible: %v", err)
 	}
 	t.Log("✓ /dev/kvm accessible")
-
-	// ── Prerequisite: Ollama must be reachable ────────────────────────
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:11434", 3*time.Second)
-	if err != nil {
-		t.Skipf("TestFirstSkillTutorialLive requires Ollama: cannot reach 127.0.0.1:11434 — start Ollama and ensure mistral-nemo:latest and llama3.2:3b are available: %v", err)
+	if !testutil.RecordingOllama() && !testutil.OllamaCassetteExists("first-skill-tutorial-live") {
+		t.Skip("TestFirstSkillTutorialLive replay mode requires testdata/cassettes/first-skill-tutorial-live.yaml; record it once with RECORD_OLLAMA=true")
 	}
-	conn.Close()
-	t.Log("✓ Ollama reachable at :11434")
+
+	// ── Prerequisite: live Ollama only when refreshing cassettes ──────
+	if testutil.RecordingOllama() {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:11434", 3*time.Second)
+		if err != nil {
+			t.Skipf("TestFirstSkillTutorialLive recording mode requires Ollama: cannot reach 127.0.0.1:11434 — start Ollama and ensure mistral-nemo:latest and llama3.2:3b are available: %v", err)
+		}
+		conn.Close()
+		t.Log("✓ Ollama reachable at :11434 (recording mode)")
+	} else {
+		t.Log("✓ Ollama cassette replay mode active")
+	}
 
 	// ── Prerequisite: alpine.ext4 rootfs template must exist ─────────
 	rootfsPath := "/var/lib/aegisclaw/rootfs-templates/alpine.ext4"
@@ -833,6 +842,11 @@ func TestFirstSkillTutorialLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initRuntime: %v", err)
 	}
+	ollamaHTTPClient := testutil.NewOllamaRecorderClient(t, "first-skill-tutorial-live")
+	env.OllamaHTTPClient = ollamaHTTPClient
+	env.LLMProxy = llm.NewOllamaProxyWithHTTPClient(llm.AllowedModelsFromRegistry(), "", ollamaHTTPClient, env.Kernel, env.Logger)
+	env.TestLLMTemperature = testutil.Float64(testutil.TestOllamaTemperature)
+	env.TestLLMSeed = testutil.TestOllamaSeed
 	t.Logf("✓ Runtime ready  kernel=%p  config=%p", env.Kernel, env.Config)
 	t.Logf("  firecracker=%s  jailer=%s", env.Config.Firecracker.Bin, env.Config.Jailer.Bin)
 	t.Logf("  kernel_image=%s", env.Config.Sandbox.KernelImage)
@@ -930,7 +944,8 @@ func TestFirstSkillTutorialLive(t *testing.T) {
 	}
 
 	// ── Assert: audit log contains llm.infer entries ──────────────────
-	// This proves real LLM inference was invoked through the vsock proxy.
+	// This proves reviewer inference ran through the vsock proxy even when the
+	// underlying Ollama HTTP responses were replayed from cassettes.
 	t.Log("Checking audit log for llm.infer entries…")
 	logPath := env.Kernel.AuditLog().Path()
 	entries, readErr := audit.ReadEntries(logPath)

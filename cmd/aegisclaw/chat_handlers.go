@@ -12,9 +12,9 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/audit"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
+	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/tui"
-	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -184,13 +184,21 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				execMsgs[j] = rtexec.AgentMessage{Role: m.Role, Content: m.Content, Name: m.Name}
 			}
 
-			chatResp, err := env.TaskExecutor.ExecuteTurn(ctx, rtexec.AgentTurnRequest{
+			execReq := rtexec.AgentTurnRequest{
 				Messages:         execMsgs,
 				Model:            model,
 				StreamID:         req.StreamID,
 				StructuredOutput: env.Config.Agent.StructuredOutput,
 				TraceID:          traceID,
-			})
+			}
+			if env.TestLLMTemperature != nil {
+				execReq.Temperature = *env.TestLLMTemperature
+			}
+			if env.TestLLMSeed != 0 {
+				execReq.Seed = env.TestLLMSeed
+			}
+
+			chatResp, err := env.TaskExecutor.ExecuteTurn(ctx, execReq)
 			if err != nil {
 				return &api.Response{Error: "agent executor error: " + err.Error()}
 			}

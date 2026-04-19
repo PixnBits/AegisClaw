@@ -36,7 +36,7 @@ type agentChatPayload struct {
 	Model            string         `json:"model"`
 	StreamID         string         `json:"stream_id,omitempty"`
 	StructuredOutput bool           `json:"structured_output,omitempty"`
-	Temperature      float64        `json:"temperature,omitempty"`
+	Temperature      *float64       `json:"temperature,omitempty"`
 	Seed             int64          `json:"seed,omitempty"`
 }
 
@@ -66,12 +66,16 @@ func NewFirecrackerTaskExecutor(runtime VMRuntime, vmID string) *FirecrackerTask
 
 // ExecuteTurn implements TaskExecutor.
 func (e *FirecrackerTaskExecutor) ExecuteTurn(ctx context.Context, req AgentTurnRequest) (AgentTurnResponse, error) {
+	var temperature *float64
+	if req.Temperature != 0 || req.Seed != 0 {
+		temperature = &req.Temperature
+	}
 	payloadBytes, err := json.Marshal(agentChatPayload{
 		Messages:         req.Messages,
 		Model:            req.Model,
 		StreamID:         req.StreamID,
 		StructuredOutput: req.StructuredOutput,
-		Temperature:      req.Temperature,
+		Temperature:      temperature,
 		Seed:             req.Seed,
 	})
 	if err != nil {
