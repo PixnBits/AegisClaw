@@ -31,8 +31,9 @@ import (
 	"strings"
 	"testing"
 
-	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
+	"github.com/PixnBits/AegisClaw/internal/testutil"
 )
 
 // skipUnlessInProcessMode skips the test unless the safety env var is set.
@@ -99,6 +100,7 @@ func driveReActLoop(
 		toolExec,
 		input,
 		rtexec.WithMaxIterations(maxIterations),
+		rtexec.WithSeed(testutil.TestOllamaSeed),
 		rtexec.WithOnTransition(func(tr rtexec.StateTransition) {
 			switch tr.To {
 			case rtexec.StateActing:

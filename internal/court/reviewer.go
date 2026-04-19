@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,8 @@ type ReviewRequest struct {
 	Prompt      string          `json:"prompt"`
 	Model       string          `json:"model"`
 	Round       int             `json:"round"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	Seed        int64           `json:"seed,omitempty"`
 }
 
 // ReviewResponse is the structured JSON response expected from a reviewer sandbox.
@@ -232,9 +235,11 @@ func (fl *FirecrackerLauncher) StopReviewer(ctx context.Context, sandboxID strin
 
 // Reviewer manages the execution of a single persona review with cross-verification.
 type Reviewer struct {
-	launcher  SandboxLauncher
-	minModels int
-	logger    *zap.Logger
+	launcher    SandboxLauncher
+	minModels   int
+	temperature *float64
+	seed        int64
+	logger      *zap.Logger
 }
 
 type modelResult struct {
@@ -245,13 +250,21 @@ type modelResult struct {
 
 // NewReviewer creates a Reviewer that requires cross-verification across minModels models.
 func NewReviewer(launcher SandboxLauncher, minModels int, logger *zap.Logger) *Reviewer {
+	return NewReviewerWithLLMOptions(launcher, minModels, logger, nil, 0)
+}
+
+// NewReviewerWithLLMOptions applies deterministic LLM settings when tests need
+// reproducible reviewer calls without changing normal runtime behavior.
+func NewReviewerWithLLMOptions(launcher SandboxLauncher, minModels int, logger *zap.Logger, temperature *float64, seed int64) *Reviewer {
 	if minModels < 1 {
 		minModels = 2
 	}
 	return &Reviewer{
-		launcher:  launcher,
-		minModels: minModels,
-		logger:    logger,
+		launcher:    launcher,
+		minModels:   minModels,
+		temperature: temperature,
+		seed:        seed,
+		logger:      logger,
 	}
 }
 
@@ -304,6 +317,12 @@ func (r *Reviewer) Execute(ctx context.Context, p *proposal.Proposal, persona *P
 		return nil, fmt.Errorf("all model reviews failed for persona %s", persona.Name)
 	}
 
+	// Model goroutines complete nondeterministically; stabilize ordering for
+	// deterministic cross-verification and cassette replay.
+	sort.SliceStable(responses, func(i, j int) bool {
+		return responses[i].model < responses[j].model
+	})
+
 	// Cross-verify: check that models agree on verdict
 	aggregated := r.crossVerify(responses, persona)
 
@@ -354,6 +373,8 @@ func (r *Reviewer) runSingleModel(ctx context.Context, p *proposal.Proposal, per
 		Prompt:      persona.SystemPrompt,
 		Model:       model,
 		Round:       p.Round,
+		Temperature: r.temperature,
+		Seed:        r.seed,
 	}
 
 	return r.launcher.SendReviewRequest(ctx, sandboxID, req)
@@ -378,10 +399,17 @@ func (r *Reviewer) crossVerify(results []modelResult, persona *Persona) *aggrega
 		}
 	}
 
-	// Determine majority verdict
+	// Determine majority verdict with deterministic tie-breaking.
 	majorityVerdict := proposal.VerdictAbstain
-	maxCount := 0
-	for v, count := range verdictCounts {
+	maxCount := -1
+	orderedVerdicts := []proposal.ReviewVerdict{
+		proposal.VerdictReject,
+		proposal.VerdictAsk,
+		proposal.VerdictApprove,
+		proposal.VerdictAbstain,
+	}
+	for _, v := range orderedVerdicts {
+		count := verdictCounts[v]
 		if count > maxCount {
 			maxCount = count
 			majorityVerdict = v
