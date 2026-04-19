@@ -123,6 +123,9 @@ type ClientConfig struct {
 	Endpoint string
 	// Timeout for HTTP requests (default: 5 minutes).
 	Timeout time.Duration
+	// HTTPClient, when provided, overrides the default transport. Tests use this
+	// hook to replay recorded Ollama responses without touching production code.
+	HTTPClient *http.Client
 }
 
 // Client communicates with a local Ollama instance.
@@ -141,11 +144,19 @@ func NewClient(cfg ClientConfig) *Client {
 	if timeout == 0 {
 		timeout = 5 * time.Minute
 	}
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: timeout}
+	} else {
+		cloned := *httpClient
+		if cloned.Timeout == 0 {
+			cloned.Timeout = timeout
+		}
+		httpClient = &cloned
+	}
 	return &Client{
 		endpoint: endpoint,
-		http: &http.Client{
-			Timeout: timeout,
-		},
+		http:     httpClient,
 	}
 }
 

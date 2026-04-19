@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -84,17 +85,17 @@ type RoundResult struct {
 
 // Engine orchestrates the court review process.
 type Engine struct {
-	config     EngineConfig
-	store      *proposal.Store
-	kernel     *kernel.Kernel
-	personas   []*Persona
-	reviewerFn ReviewerFunc
+	config       EngineConfig
+	store        *proposal.Store
+	kernel       *kernel.Kernel
+	personas     []*Persona
+	reviewerFn   ReviewerFunc
 	roundUpdater RoundUpdateFunc
-	logger     *zap.Logger
-	mu         sync.Mutex
-	sessions   map[string]*Session
-	sessionDir string // directory for persisting session JSON files
-	auditDir   string // directory for court review logs
+	logger       *zap.Logger
+	mu           sync.Mutex
+	sessions     map[string]*Session
+	sessionDir   string // directory for persisting session JSON files
+	auditDir     string // directory for court review logs
 }
 
 // NewEngine creates a Court Engine. If sessionDir is non-empty, sessions are
@@ -204,7 +205,10 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			tmp := *p
 			fb := session.PriorFeedback.FormatFeedbackPrompt()
 			if fb != "" {
-				if tmp.Description == "" {
+				if strings.Contains(tmp.Description, fb) {
+					// Feedback may already be persisted on the proposal from a prior
+					// iteration update; avoid doubling prompt size with duplicate blocks.
+				} else if tmp.Description == "" {
 					tmp.Description = fb
 				} else {
 					tmp.Description = tmp.Description + "\n\n" + fb
@@ -289,7 +293,8 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			p = updated
 		} else {
 			// Fallback behavior when no external updater is configured: persist
-			// feedback text directly so proposal history still advances.
+			// a compact marker so proposal history/version still advances without
+			// bloating subsequent reviewer prompts.
 			fbText := ""
 			if session.PriorFeedback != nil {
 				fbText = session.PriorFeedback.FormatFeedbackPrompt()
@@ -297,7 +302,19 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			if fbText == "" {
 				fbText = fmt.Sprintf("Round %d completed without consensus; proposal requires updates before re-review.", session.Round)
 			}
-			if err := p.ApplyFeedback(fbText, "court-engine", fmt.Sprintf("feedback for round %d", session.Round)); err != nil {
+			questionCount := 0
+			concernCount := 0
+			if session.PriorFeedback != nil {
+				questionCount = len(session.PriorFeedback.Questions)
+				concernCount = len(session.PriorFeedback.Concerns)
+			}
+			compact := fmt.Sprintf(
+				"Court feedback captured after round %d (%d questions, %d concerns). See court review logs for details.",
+				session.Round,
+				questionCount,
+				concernCount,
+			)
+			if err := p.ApplyFeedback(compact, "court-engine", fmt.Sprintf("feedback for round %d", session.Round)); err != nil {
 				e.logger.Error("failed to apply feedback to proposal", zap.Error(err))
 			} else {
 				if err := e.store.Update(p); err != nil {
@@ -377,6 +394,15 @@ func (e *Engine) runRound(ctx context.Context, p *proposal.Proposal, round int) 
 	if len(reviews) == 0 {
 		return nil, fmt.Errorf("all %d reviewers failed: %v", len(e.personas), errors)
 	}
+
+	// Reviewer goroutines complete in nondeterministic order; sort by persona
+	// so downstream consensus/prompt generation is stable across runs.
+	sort.SliceStable(reviews, func(i, j int) bool {
+		if reviews[i].Persona == reviews[j].Persona {
+			return reviews[i].Model < reviews[j].Model
+		}
+		return reviews[i].Persona < reviews[j].Persona
+	})
 
 	// Consensus evaluation is done in Review() via EvaluateConsensus.
 	// Here we just return the raw reviews; heatmap/consensus are populated by caller.
