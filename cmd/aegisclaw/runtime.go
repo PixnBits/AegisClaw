@@ -14,6 +14,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
+	"github.com/PixnBits/AegisClaw/internal/kb"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/lookup"
@@ -40,6 +41,7 @@ var (
 	workerStoreInst *worker.Store
 	vaultInst       *vault.Vault
 	lookupInst      *lookup.Store
+	kbStoreInst     *kb.Store
 	runtimeInitErr  error
 )
 
@@ -57,6 +59,7 @@ type runtimeEnv struct {
 	LookupStore        *lookup.Store
 	Court              *court.Engine
 	LLMProxy           *llm.OllamaProxy
+	KBStore            *kb.Store
 	OllamaHTTPClient   *http.Client
 	ToolEvents         *ToolEventBuffer
 	ThoughtEvents      *ThoughtEventBuffer
@@ -195,6 +198,11 @@ func initRuntime() (*runtimeEnv, error) {
 			Dir:    cfg.Lookup.Dir,
 			Logger: logger,
 		})
+		if runtimeInitErr != nil {
+			return
+		}
+		// Knowledge Base: manages raw/ and wiki/ directories.
+		kbStoreInst, runtimeInitErr = kb.New(cfg.KnowledgeBase.Dir)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -214,6 +222,7 @@ func initRuntime() (*runtimeEnv, error) {
 		Vault:            vaultInst,
 		EgressProxy:      llm.NewEgressProxy(logger),
 		LookupStore:      lookupInst,
+		KBStore:          kbStoreInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 		ToolEvents:       NewToolEventBuffer(400),
 		ThoughtEvents:    NewThoughtEventBuffer(600),
@@ -240,6 +249,7 @@ func resetRuntimeSingletons() {
 	workerStoreInst = nil
 	vaultInst = nil
 	lookupInst = nil
+	kbStoreInst = nil
 	runtimeInitErr = nil
 }
 

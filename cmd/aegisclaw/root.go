@@ -155,6 +155,7 @@ func init() {
 	rootCmd.AddCommand(eventCmd)
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(evalCmd)
+	rootCmd.AddCommand(kbCmd)
 
 	// skill subcommands: add, list, revoke, info, sbom
 	skillCmd.AddCommand(skillAddCmd)
@@ -190,6 +191,13 @@ func init() {
 	// eval subcommands: run, report
 	evalCmd.AddCommand(evalRunCmd)
 	evalCmd.AddCommand(evalReportCmd)
+
+	// kb subcommands: ingest, query, status, compile, lint
+	kbCmd.AddCommand(kbIngestCmd)
+	kbCmd.AddCommand(kbQueryCmd)
+	kbCmd.AddCommand(kbStatusCmd)
+	kbCmd.AddCommand(kbCompileCmd)
+	kbCmd.AddCommand(kbLintCmd)
 
 	// start flags
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")

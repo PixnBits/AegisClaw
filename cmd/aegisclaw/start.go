@@ -122,6 +122,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// It runs once immediately if compact_on_startup is set, then daily.
 	startMemoryCompactionDaemon(cmd.Context(), env)
 
+	// Knowledge Base: register built-in KB skills and start scheduled daemons.
+	ensureKBSkillsRegistered(env)
+	startKBCompilerDaemon(cmd.Context(), env)
+	startKBLinterDaemon(cmd.Context(), env)
+
 	// Seed the semantic lookup store with all built-in daemon tools so
 	// lookup_tools can find them immediately on the first query.
 	seedLookupStore(cmd.Context(), env, toolRegistry)
@@ -191,6 +196,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Phase 3: Worker handlers.
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
+	// Knowledge Base: wiki list/get API handlers for the dashboard.
+	apiSrv.Handle("kb.wiki.list", makeKBWikiListHandler(env))
+	apiSrv.Handle("kb.wiki.get", makeKBWikiGetHandler(env))
+	apiSrv.Handle("kb.status", makeKBStatusHandler(env))
 	// Phase 1 (OpenClaw integration): Session routing handlers.
 	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
 	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))

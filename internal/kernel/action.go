@@ -78,6 +78,14 @@ const (
 	// (e.g. AegisHub) is launched at daemon startup. These are distinct from
 	// skill activations which go through user-initiated proposals.
 	ActionSystemComponentActivate ActionType = "system.component.activate"
+	// ActionKBIngest is logged when a document is ingested into the Knowledge Base raw store.
+	ActionKBIngest ActionType = "kb.ingest"
+	// ActionKBCompile is logged when the KB Compiler runs and updates wiki pages.
+	ActionKBCompile ActionType = "kb.compile"
+	// ActionKBLint is logged when the KB Linter scans the wiki for issues.
+	ActionKBLint ActionType = "kb.lint"
+	// ActionKBQuery is logged when the Knowledge Base is queried.
+	ActionKBQuery ActionType = "kb.query"
 )
 
 // validActionTypes enumerates all recognized action types for validation.
@@ -128,6 +136,10 @@ var validActionTypes = map[ActionType]bool{
 	ActionWorkerTimeout:           true,
 	ActionWorkerDestroy:           true,
 	ActionSystemComponentActivate: true,
+	ActionKBIngest:                 true,
+	ActionKBCompile:                true,
+	ActionKBLint:                   true,
+	ActionKBQuery:                  true,
 }
 
 // Action represents any operation that passes through the kernel.

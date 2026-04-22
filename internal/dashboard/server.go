@@ -120,6 +120,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/chat", s.handleChat)
 	s.mux.HandleFunc("/chat/send", s.handleChatSend)
 	s.mux.HandleFunc("/canvas", s.handleCanvas)
+	s.mux.HandleFunc("/wiki", s.handleWiki)
+	s.mux.HandleFunc("/wiki/", s.handleWikiPage)
 	s.mux.HandleFunc("/events", s.handleSSE)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -319,6 +321,56 @@ func (s *Server) handleCanvas(w http.ResponseWriter, r *http.Request) {
 		"Workers":   workers,
 		"Sandboxes": sandboxes,
 		"Skills":    skills,
+	})
+}
+
+func (s *Server) handleWiki(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	pages, pagesErr := s.fetchRaw(r.Context(), "kb.wiki.list", nil)
+	status, _ := s.fetchRaw(r.Context(), "kb.status", nil)
+
+	pageErr := ""
+	if pagesErr != nil {
+		pageErr = pagesErr.Error()
+	}
+
+	s.renderTemplate(w, "Wiki", wikiTmpl, map[string]interface{}{
+		"Pages":  pages,
+		"Status": status,
+		"Query":  query,
+		"Error":  pageErr,
+	})
+}
+
+func (s *Server) handleWikiPage(w http.ResponseWriter, r *http.Request) {
+	slug := strings.TrimPrefix(r.URL.Path, "/wiki/")
+	slug = strings.TrimSuffix(slug, ".md")
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		http.Redirect(w, r, "/wiki", http.StatusSeeOther)
+		return
+	}
+
+	detail, err := s.fetchRaw(r.Context(), "kb.wiki.get", map[string]string{"slug": slug})
+	detailMap, _ := detail.(map[string]interface{})
+
+	pageErr := ""
+	if err != nil {
+		pageErr = err.Error()
+	}
+
+	var page interface{}
+	var content string
+	if detailMap != nil {
+		page = detailMap["page"]
+		content, _ = detailMap["content"].(string)
+	}
+
+	s.renderTemplate(w, "Wiki — "+slug, wikiPageTmpl, map[string]interface{}{
+		"Slug":    slug,
+		"Page":    page,
+		"Content": content,
+		"Error":   pageErr,
 	})
 }
 
@@ -986,10 +1038,37 @@ a.nav-link{color:#58a6ff}
 .thought-tool{color:#e6edf3}
 .thought-model{color:#9ec1e6;font-size:.74rem}
 .thought-time{color:#8b949e}
+/* Wiki styles */
+.wiki-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-bottom:1.5rem}
+.wiki-card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem;transition:border-color .15s}
+.wiki-card:hover{border-color:#58a6ff}
+.wiki-card a{text-decoration:none;color:#e6edf3}
+.wiki-card-title{font-size:1rem;font-weight:600;color:#79c0ff;margin-bottom:.35rem}
+.wiki-card-meta{font-size:.78rem;color:#8b949e}
+.wiki-content{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1.5rem;line-height:1.7}
+.wiki-content h1{font-size:1.5rem;font-weight:700;margin:0 0 1rem;color:#e6edf3;border-bottom:1px solid #30363d;padding-bottom:.5rem}
+.wiki-content h2{font-size:1.15rem;font-weight:600;margin:1.25rem 0 .5rem;color:#dce7f3}
+.wiki-content h3{font-size:1rem;font-weight:600;margin:1rem 0 .4rem;color:#c9d4e0}
+.wiki-content p{margin:.6rem 0;color:#c9d4e0}
+.wiki-content ul,.wiki-content ol{margin:.5rem 0 .5rem 1.4rem}
+.wiki-content li{margin:.25rem 0;color:#c9d4e0}
+.wiki-content code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0f151d;border:1px solid #2a323d;border-radius:4px;padding:.08rem .3rem;font-size:.85em;color:#e6edf3}
+.wiki-content pre{background:#0b1016;border:1px solid #2a323d;border-radius:6px;padding:.75rem 1rem;margin:.75rem 0;overflow:auto}
+.wiki-content pre code{background:none;border:none;padding:0}
+.wiki-content table{border-collapse:collapse;width:100%;margin:.75rem 0}
+.wiki-content th{background:#1a2233;border:1px solid #30363d;padding:.4rem .65rem;text-align:left;color:#dce7f3}
+.wiki-content td{border:1px solid #21262d;padding:.4rem .65rem;color:#c9d4e0}
+.wiki-content blockquote{border-left:3px solid #3a4a5e;background:#10161f;padding:.5rem 1rem;margin:.75rem 0;color:#a8b8cc;border-radius:0 4px 4px 0}
+.wiki-content a{color:#79c0ff}
+.wiki-content hr{border:none;border-top:1px solid #30363d;margin:1.25rem 0}
+.wiki-stats{display:flex;gap:1.5rem;margin-bottom:1.25rem;flex-wrap:wrap}
+.wiki-stat{font-size:.85rem;color:#8b949e}
+.wiki-stat strong{color:#e6edf3}
 @media (max-width: 900px){
   #chat-sidebar{width:190px}
   .bubble{max-width:90%}
   .assistant-stack{max-width:94%}
+  .wiki-grid{grid-template-columns:1fr}
 }
 `
 
@@ -1003,6 +1082,7 @@ const dashboardNav = `
   <a href="/skills">Skills</a>
   <a href="/async">Async Hub</a>
   <a href="/memory">Memory</a>
+  <a href="/wiki">&#128218; Wiki</a>
   <a href="/approvals">Approvals</a>
   <a href="/audit">Audit</a>
   <a href="/settings">Settings</a>
@@ -1198,6 +1278,218 @@ const settingsTmpl = `
     </p>
   </div>
 </div>`
+
+const wikiTmpl = `
+<h1>{{.Title}}</h1>
+{{if .Status}}
+{{$st := .Status}}
+<div class="wiki-stats">
+  <div class="wiki-stat">&#128218; <strong>{{index $st "wiki_pages"}}</strong> wiki pages</div>
+  <div class="wiki-stat">&#128196; <strong>{{index $st "raw_documents"}}</strong> source documents</div>
+  {{with index $st "last_compile"}}<div class="wiki-stat">Last compiled: <strong>{{.}}</strong></div>{{end}}
+</div>
+{{end}}
+{{if .Error}}
+<div class="section">
+  <p class="empty" style="color:#f85149">Failed to load wiki: {{.Error}}</p>
+</div>
+{{else if .Pages}}
+<div class="wiki-grid">
+  {{range .Pages}}
+  <div class="wiki-card">
+    <a href="/wiki/{{index . "slug"}}">
+      <div class="wiki-card-title">{{index . "title"}}</div>
+      <div class="wiki-card-meta">
+        {{index . "slug"}}.md &nbsp;&middot;&nbsp; updated {{index . "updated_at"}}
+      </div>
+    </a>
+  </div>
+  {{end}}
+</div>
+{{else}}
+<div class="section">
+  <p class="empty">
+    No wiki pages yet. The Knowledge Base wiki is compiled automatically from ingested documents.<br><br>
+    <strong>Get started:</strong><br>
+    1. Ingest a document: <code>aegisclaw kb ingest ./my-doc.md</code><br>
+    2. Compile the wiki: <code>aegisclaw kb compile</code><br>
+    3. Or wait for the kb-compiler skill to run on its schedule (every 6 hours by default).
+  </p>
+</div>
+{{end}}
+<div class="section" style="margin-top:1rem">
+  <div class="section-header">About the Knowledge Base</div>
+  <div style="padding:1rem;color:#8b949e;font-size:.875rem;line-height:1.7">
+    <p>The AegisClaw Knowledge Base is a self-maintaining, compiled Markdown wiki (Karpathy-style).</p>
+    <ul style="margin:.5rem 0 0 1.2rem">
+      <li><strong>raw/</strong> — immutable source documents ingested via <code>aegisclaw kb ingest</code></li>
+      <li><strong>wiki/</strong> — compiled Markdown pages derived from raw documents by the kb-compiler skill</li>
+    </ul>
+    <p style="margin-top:.65rem">
+      CLI commands: &nbsp;
+      <code>aegisclaw kb ingest &lt;file&gt;</code> &nbsp;
+      <code>aegisclaw kb query &lt;text&gt;</code> &nbsp;
+      <code>aegisclaw kb compile</code> &nbsp;
+      <code>aegisclaw kb lint</code> &nbsp;
+      <code>aegisclaw kb status</code>
+    </p>
+  </div>
+</div>`
+
+const wikiPageTmpl = `
+<div style="margin-bottom:1.25rem">
+  <a href="/wiki" class="nav-link">&larr; Back to Wiki</a>
+</div>
+{{if .Error}}
+<div class="section">
+  <p class="empty" style="color:#f85149">{{.Error}}</p>
+</div>
+{{else if .Content}}
+{{$pg := .Page}}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+  <div style="font-size:.82rem;color:#8b949e">
+    <code>{{.Slug}}.md</code>
+    {{with $pg}}
+      {{with index . "updated_at"}} &nbsp;&middot;&nbsp; updated {{.}}{{end}}
+      {{with index . "size_bytes"}} &nbsp;&middot;&nbsp; {{.}} bytes{{end}}
+    {{end}}
+  </div>
+  <div style="display:flex;gap:.5rem">
+    <button type="button" onclick="copyRaw()" style="font-size:.78rem">Copy Markdown</button>
+  </div>
+</div>
+<div class="wiki-content" id="wiki-rendered"></div>
+<script>
+(function(){
+  var raw = {{.Content | toJSON}};
+  var container = document.getElementById('wiki-rendered');
+  if (!container) return;
+  container.innerHTML = renderWikiMarkdown(raw);
+
+  window.copyRaw = function() {
+    navigator.clipboard.writeText(raw).catch(function(){
+      var ta = document.createElement('textarea');
+      ta.value = raw;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    });
+  };
+
+  function escapeHTML(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function sanitizeURL(raw) {
+    var u = String(raw||'').trim();
+    if (!u) return '';
+    if (u[0]==='/'||u[0]==='#') return u;
+    try {
+      var p = new URL(u, window.location.origin);
+      var pr = p.protocol.toLowerCase();
+      if (pr==='http:'||pr==='https:'||pr==='mailto:') return p.href;
+      return '';
+    } catch(_) { return ''; }
+  }
+
+  function renderWikiMarkdown(src) {
+    src = src.replace(/\r\n/g, '\n');
+    var escaped = escapeHTML(src);
+    var codeBlocks = [];
+    // Fenced code blocks
+    escaped = escaped.replace(/\x60\x60\x60([a-zA-Z0-9_+-]*)?\n([\s\S]*?)\x60\x60\x60/g, function(_,lang,code){
+      codeBlocks.push('<pre><code>' + code + '</code></pre>');
+      return '@@CB' + (codeBlocks.length-1) + '@@';
+    });
+
+    var lines = escaped.split('\n');
+    var out = [];
+    var para = [];
+    var inUL = false, inOL = false;
+
+    function flushPara() {
+      if (para.length === 0) return;
+      out.push('<p>' + para.join('<br>') + '</p>');
+      para = [];
+    }
+    function closeLists() {
+      if (inUL) { out.push('</ul>'); inUL = false; }
+      if (inOL) { out.push('</ol>'); inOL = false; }
+    }
+    function inline(t) {
+      // code spans
+      t = t.replace(/\x60([^\x60]+)\x60/g,'<code>$1</code>');
+      // links
+      t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_,label,url){
+        var su = sanitizeURL(url.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>'));
+        if (!su) return escapeHTML(label);
+        return '<a href="'+escapeHTML(su)+'" target="_blank" rel="noopener noreferrer">'+label+'</a>';
+      });
+      t = t.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+      t = t.replace(/~~([^~]+)~~/g,'<s>$1</s>');
+      t = t.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g,'$1<em>$2</em>');
+      return t;
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var tr = line.trim();
+      if (!tr) { flushPara(); closeLists(); continue; }
+      if (/^@@CB\d+@@$/.test(tr)) {
+        flushPara(); closeLists();
+        out.push(codeBlocks[parseInt(tr.replace(/[^0-9]/g,''),10)]);
+        continue;
+      }
+      // HR
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(tr)) {
+        flushPara(); closeLists(); out.push('<hr>'); continue;
+      }
+      // Headings
+      var hm = tr.match(/^(#{1,4})\s+(.*)/);
+      if (hm) {
+        flushPara(); closeLists();
+        var lv = hm[1].length;
+        out.push('<h'+lv+'>'+inline(hm[2])+'</h'+lv+'>');
+        continue;
+      }
+      // Blockquote
+      if (tr.startsWith('&gt;')) {
+        flushPara(); closeLists();
+        out.push('<blockquote><p>'+inline(tr.replace(/^&gt;\s*/,''))+'</p></blockquote>');
+        continue;
+      }
+      // UL
+      var ulm = tr.match(/^[-*+]\s+(.*)/);
+      if (ulm) {
+        flushPara();
+        if (!inUL) { closeLists(); out.push('<ul>'); inUL = true; }
+        out.push('<li>'+inline(ulm[1])+'</li>');
+        continue;
+      }
+      // OL
+      var olm = tr.match(/^\d+\.\s+(.*)/);
+      if (olm) {
+        flushPara();
+        if (!inOL) { closeLists(); out.push('<ol>'); inOL = true; }
+        out.push('<li>'+inline(olm[1])+'</li>');
+        continue;
+      }
+      closeLists();
+      para.push(inline(line));
+    }
+    flushPara(); closeLists();
+    return out.join('\n');
+  }
+})();
+</script>
+{{else}}
+<div class="section">
+  <p class="empty">Page <code>{{.Slug}}</code> not found. <a href="/wiki" class="nav-link">Back to index</a></p>
+</div>
+{{end}}`
 
 const overviewTmpl = `
 <h1>{{.Title}}</h1>
