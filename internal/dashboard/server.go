@@ -1082,7 +1082,7 @@ const dashboardNav = `
   <a href="/skills">Skills</a>
   <a href="/async">Async Hub</a>
   <a href="/memory">Memory</a>
-  <a href="/wiki">&#128218; Wiki</a>
+  <a href="/wiki" aria-label="Wiki — Knowledge Base"><span aria-hidden="true">&#128218;</span> Wiki</a>
   <a href="/approvals">Approvals</a>
   <a href="/audit">Audit</a>
   <a href="/settings">Settings</a>
@@ -1400,7 +1400,7 @@ const wikiPageTmpl = `
     var escaped = escapeHTML(src);
     var codeBlocks = [];
     // Fenced code blocks
-    escaped = escaped.replace(/\x60\x60\x60([a-zA-Z0-9_+-]*)?\n([\s\S]*?)\x60\x60\x60/g, function(_,lang,code){
+    escaped = escaped.replace(/\x60\x60\x60([a-zA-Z0-9_+-]*)?\n([\s\S]*?)\x60\x60\x60/g, function(_,_lang,code){
       codeBlocks.push('<pre><code>' + code + '</code></pre>');
       return '@@CB' + (codeBlocks.length-1) + '@@';
     });

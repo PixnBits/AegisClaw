@@ -34,6 +34,11 @@ var kbBuiltInSkills = []struct {
 	},
 }
 
+// isKBSkillActive returns true when the registry entry exists and is active.
+func isKBSkillActive(entry *sandbox.SkillEntry) bool {
+	return entry != nil && entry.State == sandbox.SkillStateActive
+}
+
 // ensureKBSkillsRegistered registers the built-in KB Compiler and Linter
 // skills in the skill registry so they appear in 'aegisclaw skill list' and
 // on the dashboard Skills page.  Unlike VM-backed skills, the KB skills are
@@ -45,8 +50,7 @@ func ensureKBSkillsRegistered(env *runtimeEnv) {
 	}
 
 	for _, s := range kbBuiltInSkills {
-		if existing, ok := env.Registry.Get(s.name); ok && existing != nil &&
-			existing.State == sandbox.SkillStateActive {
+		if existing, ok := env.Registry.Get(s.name); ok && isKBSkillActive(existing) {
 			continue
 		}
 

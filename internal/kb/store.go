@@ -442,14 +442,13 @@ func (s *Store) Compile() (*CompileStats, error) {
 
 	written := 0
 	updated := 0
-	existingIndex, _, readErr := s.GetWikiPage("index")
+	_, _, indexReadErr := s.GetWikiPage("index")
 	if err := s.WriteWikiPage("index", sb.String()); err != nil {
 		return nil, fmt.Errorf("kb compile: write index: %w", err)
 	}
-	if readErr != nil {
+	if indexReadErr != nil {
 		written++
 	} else {
-		_ = existingIndex
 		updated++
 	}
 
