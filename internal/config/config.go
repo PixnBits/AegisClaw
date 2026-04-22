@@ -196,6 +196,19 @@ type Config struct {
 		// Defaults to ~/.local/share/aegisclaw/vectordb.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"lookup" mapstructure:"lookup"`
+	KnowledgeBase struct {
+		// Dir is the base directory for the Knowledge Base.
+		// Contains raw/ (ingested source docs) and wiki/ (compiled Markdown pages).
+		// Defaults to ~/.local/share/aegisclaw/knowledge.
+		Dir string `yaml:"dir" mapstructure:"dir"`
+		// CompilerIntervalHours is how often the Compiler skill runs (default: 6).
+		CompilerIntervalHours int `yaml:"compiler_interval_hours" mapstructure:"compiler_interval_hours"`
+		// LinterIntervalHours is how often the Linter skill runs (default: 24).
+		LinterIntervalHours int `yaml:"linter_interval_hours" mapstructure:"linter_interval_hours"`
+		// CompilerModel is the Ollama model used by the Compiler/Linter skills.
+		// Recommended: a 7B–14B parameter model (e.g. llama3.1:8b, qwen2.5:14b).
+		CompilerModel string `yaml:"compiler_model" mapstructure:"compiler_model"`
+	} `yaml:"knowledge_base" mapstructure:"knowledge_base"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -371,6 +384,17 @@ func DefaultConfig() Config {
 		}{
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "vectordb"),
 		},
+		KnowledgeBase: struct {
+			Dir                   string `yaml:"dir" mapstructure:"dir"`
+			CompilerIntervalHours int    `yaml:"compiler_interval_hours" mapstructure:"compiler_interval_hours"`
+			LinterIntervalHours   int    `yaml:"linter_interval_hours" mapstructure:"linter_interval_hours"`
+			CompilerModel         string `yaml:"compiler_model" mapstructure:"compiler_model"`
+		}{
+			Dir:                   filepath.Join(home, ".local", "share", "aegisclaw", "knowledge"),
+			CompilerIntervalHours: 6,
+			LinterIntervalHours:   24,
+			CompilerModel:         "llama3.1:8b",
+		},
 	}
 }
 
@@ -452,6 +476,10 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("gateway.enabled", defaults.Gateway.Enabled)
 	viper.SetDefault("registry.url", defaults.Registry.URL)
 	viper.SetDefault("lookup.dir", defaults.Lookup.Dir)
+	viper.SetDefault("knowledge_base.dir", defaults.KnowledgeBase.Dir)
+	viper.SetDefault("knowledge_base.compiler_interval_hours", defaults.KnowledgeBase.CompilerIntervalHours)
+	viper.SetDefault("knowledge_base.linter_interval_hours", defaults.KnowledgeBase.LinterIntervalHours)
+	viper.SetDefault("knowledge_base.compiler_model", defaults.KnowledgeBase.CompilerModel)
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Config file doesn't exist, write defaults

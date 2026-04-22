@@ -14,6 +14,77 @@ import (
 
 const defaultScriptRunnerSkill = "default-script-runner"
 
+// kbBuiltInSkills defines the names and metadata for the two built-in
+// Knowledge Base skills that are registered at daemon startup.
+// They appear in `aegisclaw skill list` and the dashboard Skills page.
+var kbBuiltInSkills = []struct {
+	name        string
+	description string
+	schedule    string
+}{
+	{
+		name:        "kb-compiler",
+		description: "Compiles raw KB documents into structured Markdown wiki pages on a configurable timer (default: every 6 hours).",
+		schedule:    "6h",
+	},
+	{
+		name:        "kb-linter",
+		description: "Scans the KB wiki for contradictions, stale info, orphaned pages, and gaps on a daily schedule.",
+		schedule:    "24h",
+	},
+}
+
+// isKBSkillActive returns true when the registry entry exists and is active.
+func isKBSkillActive(entry *sandbox.SkillEntry) bool {
+	return entry != nil && entry.State == sandbox.SkillStateActive
+}
+
+// ensureKBSkillsRegistered registers the built-in KB Compiler and Linter
+// skills in the skill registry so they appear in 'aegisclaw skill list' and
+// on the dashboard Skills page.  Unlike VM-backed skills, the KB skills are
+// managed entirely within the daemon process; their sandbox IDs are the
+// canonical built-in identifiers below.
+func ensureKBSkillsRegistered(env *runtimeEnv) {
+	if env == nil || env.Registry == nil {
+		return
+	}
+
+	for _, s := range kbBuiltInSkills {
+		if existing, ok := env.Registry.Get(s.name); ok && isKBSkillActive(existing) {
+			continue
+		}
+
+		// Use a deterministic, human-readable sandbox ID for built-in skills.
+		sandboxID := "builtin-" + s.name
+		entry, err := env.Registry.Register(s.name, sandboxID, map[string]string{
+			"description": s.description,
+			"schedule":    s.schedule,
+			"type":        "builtin-kb",
+			"model":       env.Config.KnowledgeBase.CompilerModel,
+		})
+		if err != nil {
+			env.Logger.Warn("bootstrap: failed to register KB skill",
+				zap.String("skill", s.name), zap.Error(err))
+			continue
+		}
+
+		payload, _ := json.Marshal(map[string]interface{}{
+			"skill_name": s.name,
+			"sandbox_id": sandboxID,
+			"version":    entry.Version,
+			"hash":       entry.MerkleHash,
+			"type":       "builtin-kb",
+		})
+		action := kernel.NewAction(kernel.ActionSkillActivate, "system", payload)
+		_, _ = env.Kernel.SignAndLog(action)
+
+		env.Logger.Info("bootstrap: KB skill registered",
+			zap.String("skill", s.name),
+			zap.String("sandbox_id", sandboxID),
+		)
+	}
+}
+
 // ensureDefaultScriptRunnerActive guarantees the built-in script runner exists
 // as an active sandboxed skill so script.run can execute without manual setup.
 func ensureDefaultScriptRunnerActive(ctx context.Context, env *runtimeEnv) error {
