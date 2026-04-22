@@ -115,6 +115,8 @@ web portal microVM.
 ```bash
 sudo ./scripts/build-rootfs.sh --target=aegishub
 sudo ./scripts/build-rootfs.sh --target=portal
+sudo ./scripts/build-rootfs.sh --target=guest
+sudo ./scripts/build-builder-rootfs.sh /var/lib/aegisclaw/rootfs-templates/builder.ext4
 ```
 
 ### 4. Start the Daemon
