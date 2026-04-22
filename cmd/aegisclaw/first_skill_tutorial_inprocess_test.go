@@ -58,7 +58,7 @@ func TestFirstSkillTutorialInProcess(t *testing.T) {
 		t.Skip("replay mode requires testdata/cassettes/first-skill-tutorial-live.yaml; record it once with RECORD_OLLAMA=true sudo ./scripts/run-live-test.sh")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	// ── Reset package-level singletons ───────────────────────────────
@@ -194,6 +194,9 @@ func TestFirstSkillTutorialInProcess(t *testing.T) {
 			t.Errorf("could not load proposal after review: %v", pErr)
 		} else {
 			t.Logf("Proposal status after review: %s  reviews=%d", p.Status, len(p.Reviews))
+			// StatusInReview means the court escalated to a human tiebreak —
+			// the automated review completed with no consensus, which is a valid
+			// terminal outcome of the court engine (not a stalled "in-progress" state).
 			terminal := p.Status == proposal.StatusApproved ||
 				p.Status == proposal.StatusRejected ||
 				p.Status == proposal.StatusInReview
