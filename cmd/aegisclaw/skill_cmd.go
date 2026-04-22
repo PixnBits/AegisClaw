@@ -9,6 +9,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/wizard"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -515,4 +516,121 @@ func printSBOM(s *sbomPkg) error {
 		}
 	}
 	return nil
+}
+
+var skillActivateCmd = &cobra.Command{
+	Use:   "activate <name>",
+	Short: "Activate an approved skill (with pre-activation secret check)",
+	Long: `Activates an approved skill by spinning up its Firecracker microVM.
+
+Before sending the activate request to the daemon, the command checks that
+all secrets declared in the skill's approved proposal are present in the local
+vault.  If any are missing, it prints a clear message explaining how to add them
+rather than letting the skill start in a degraded state.
+
+Example:
+  aegisclaw skill activate discord-messenger`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSkillActivate,
+}
+
+func runSkillActivate(cmd *cobra.Command, args []string) error {
+	skillName := args[0]
+
+	env, err := initRuntime()
+	if err != nil {
+		return err
+	}
+	defer env.Logger.Sync()
+
+	// Pre-activation check: verify all declared secrets exist in the vault.
+	// Walk proposals to find the approved one for this skill.
+	if env.Vault != nil {
+		if err := checkSecretsBeforeActivate(skillName, env); err != nil {
+			return err
+		}
+	}
+
+	client := api.NewClient(env.Config.Daemon.SocketPath)
+	resp, err := client.Call(cmd.Context(), "skill.activate", api.SkillActivateRequest{
+		Name: skillName,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to contact daemon: %w\n(Is the daemon running? Start it with: sudo aegisclaw start)", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("skill activation failed: %s", resp.Error)
+	}
+
+	var result map[string]interface{}
+	if resp.Data != nil {
+		_ = json.Unmarshal(resp.Data, &result)
+	}
+	fmt.Printf("Skill %q activated.\n", skillName)
+	if sandbox, ok := result["sandbox_id"].(string); ok {
+		fmt.Printf("  Sandbox: %s\n", sandbox)
+	}
+	return nil
+}
+
+// checkSecretsBeforeActivate looks up the approved proposal for skillName and
+// verifies all declared secrets_refs exist in the vault.  Returns a descriptive
+// error listing missing secrets and the CLI command to add each one.
+func checkSecretsBeforeActivate(skillName string, env *runtimeEnv) error {
+	summaries, err := env.ProposalStore.List()
+	if err != nil {
+		return nil // can't check — proceed optimistically
+	}
+
+	var secretsRefs []string
+	for _, s := range summaries {
+		full, err := env.ProposalStore.Get(s.ID)
+		if err != nil || full == nil {
+			continue
+		}
+		if full.TargetSkill != skillName {
+			continue
+		}
+		if !full.IsApproved() {
+			continue
+		}
+		secretsRefs = full.SecretsRefs
+		break
+	}
+
+	if len(secretsRefs) == 0 {
+		return nil // no secrets required
+	}
+
+	// Use the already-opened vault if available; otherwise open it.
+	v := env.Vault
+	if v == nil {
+		if env.Kernel == nil {
+			return nil // can't check without kernel key — proceed optimistically
+		}
+		var vaultErr error
+		v, vaultErr = vault.NewVault(env.Config.Vault.Dir, env.Kernel.PrivateKeyBytes(), env.Logger)
+		if vaultErr != nil {
+			return nil // can't check vault — proceed and let daemon handle it
+		}
+	}
+
+	var missing []string
+	for _, ref := range secretsRefs {
+		if !v.Has(ref) {
+			missing = append(missing, ref)
+		}
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Missing required secret(s) for skill %q:\n", skillName))
+	for _, m := range missing {
+		b.WriteString(fmt.Sprintf("  - %s\n", m))
+		b.WriteString(fmt.Sprintf("    Add with: aegisclaw secrets add %s --skill %s\n", m, skillName))
+	}
+	return fmt.Errorf("%s", b.String())
 }

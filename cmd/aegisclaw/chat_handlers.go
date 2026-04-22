@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +22,19 @@ import (
 )
 
 const reactMaxIterations = 10
+
+// Embedded JSON Schema for the `proposal.create_draft` tool-call payload.
+//
+//go:embed schemas/proposal-create-draft.schema.json
+var proposalCreateDraftSchema string
+
+// GetProposalCreateDraftSchema returns the embedded JSON Schema for use by
+// other parts of the daemon (e.g., documentation, validators, or LLM
+// prompt generation). Keeping the schema embedded ensures the binary is
+// self-contained and the schema is versioned alongside the code.
+func GetProposalCreateDraftSchema() string {
+	return proposalCreateDraftSchema
+}
 
 // agentVMRequest is the JSON structure sent to the agent VM for chat.message.
 // It mirrors the guest-agent's Request{Type, Payload} envelope.
@@ -227,6 +242,9 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				toolTraceJSON, _ := json.Marshal(toolTrace)
 				thinkingTraceJSON, _ := json.Marshal(thinkingTrace)
 				finalContent := enforceMemoryTruth(chatResp.Content, env, memoryToolEvidence)
+				// Strip any tool-call markdown blocks that may have been included in the content.
+				// This prevents tool-call JSON from appearing as text in the user-visible response.
+				finalContent = stripToolCallMarkdown(finalContent)
 				if strings.TrimSpace(finalContent) == "" {
 					env.Logger.Warn("agent returned empty final chat content",
 						zap.Int("iteration", i+1),
@@ -844,7 +862,11 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("  requirements, secret names, tests, or security considerations — you reason those out yourself.\n")
 	b.WriteString("  Common patterns to guide your reasoning:\n")
 	b.WriteString("    Discord / Telegram / Slack → messaging skill; bot token secret, HTTPS to platform API, rate-limit and webhook handling\n")
+	b.WriteString("      network_policy: { default_deny: true, allowed_hosts: [\"discord.com\", \"gateway.discord.gg\"], allowed_ports: [443], egress_mode: \"proxy\" }\n")
 	b.WriteString("    GitHub / GitLab / Jira     → developer tool skill; API token secret, HTTPS to service host, scoped permissions\n")
+	b.WriteString("      network_policy: { default_deny: true, allowed_hosts: [\"api.github.com\"], allowed_ports: [443], egress_mode: \"proxy\" }\n")
+	b.WriteString("    Weather API (NOAA example) → weather-skill; public HTTPS endpoint, no secret by default\n")
+	b.WriteString("      network_policy: { default_deny: true, allowed_hosts: [\"api.weather.gov\"], allowed_ports: [443], egress_mode: \"proxy\" }\n")
 	b.WriteString("    Shell / file automation    → script runner skill; no network by default, /workspace read-write only, no secrets\n")
 	b.WriteString("    Time / date / calendar     → pure-compute or calendar-API skill; low risk, no secrets needed\n")
 	b.WriteString("    Voice / audio              → gateway voice adapter skill; host audio proxy + TTS model, medium risk\n\n")
@@ -952,19 +974,48 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- \"registry.list\" — list skills available in the ClawHub registry. args: {}\n")
 	b.WriteString("- \"registry.import\" — import a skill from the registry and submit it for Court review. args: {\"name\": \"...\"}\n")
 
+	// PR 19 guidance: explicit proposal contract for network + secrets.
+	b.WriteString("\nPROPOSAL CONTRACT FOR NETWORK + SECRETS (STRICT):\n")
+	b.WriteString("When proposing a networked skill, include these JSON fields in proposal.create_draft args:\n")
+	b.WriteString("  capabilities: { network: true, secrets: [\"SECRET_NAME\", ...] }\n")
+	b.WriteString("  secret_refs: [\"SECRET_NAME\", ...] // same names as capabilities.secrets\n")
+	b.WriteString("  network_policy: {\n")
+	b.WriteString("    default_deny: true,\n")
+	b.WriteString("    allowed_hosts: [\"api.example.com\", \"gateway.example.com\"],\n")
+	b.WriteString("    allowed_ports: [443],\n")
+	b.WriteString("    allowed_protocols: [\"tcp\"],\n")
+	b.WriteString("    egress_mode: \"proxy\"\n")
+	b.WriteString("  }\n")
+	b.WriteString("Use canonical keys exactly once: network_policy, capabilities, and secret_refs.\n")
+	b.WriteString("Do NOT duplicate equivalent data under alternate keys (for example: network, hosts, host_allowlist, allow_hosts).\n")
+	b.WriteString("Rules: no wildcards, no 0.0.0.0/0, no ::/0, no secret values in any proposal field.\n")
+	b.WriteString("If a user asks for Discord/Telegram/GitHub/Slack integrations, infer exact FQDNs used by the client library and keep the host list minimal.\n")
+	b.WriteString("Secrets are write-only in operator UX: users can add/update/list names, never read secret values.\n")
+	b.WriteString("Never ask users to paste secret values into chat; direct them to CLI secure prompt commands only.\n")
+
 	// Proposal drafting instructions: proactive, complete, no back-and-forth.
 	b.WriteString("\nWhen asked to ADD, DRAFT, or CREATE any skill or capability, immediately call proposal.create_draft.\n")
 	b.WriteString("Do NOT ask the user to supply technical details first. Reason through them yourself:\n")
 	b.WriteString("  - tools: what operations does the skill expose? (name, description, example args for each)\n")
 	b.WriteString("  - network: what external hosts and ports does it need? (be specific: api.discord.com:443)\n")
+	b.WriteString("    For HTTPS/WSS skills, always use egress_mode: \"proxy\" (default) with specific FQDNs.\n")
+	b.WriteString("    Use egress_mode: \"direct\" only for non-HTTPS protocols with known static IPs.\n")
+	b.WriteString("    NEVER include wildcards (\"*\" or \"*.example.com\") in allowed_hosts — list each FQDN explicitly.\n")
+	b.WriteString("    NEVER include \"0.0.0.0/0\" or \"::/0\" in allowed_hosts — these grant unrestricted access.\n")
 	b.WriteString("  - secrets: what API keys or tokens are required? (reference by name only, never values)\n")
+	b.WriteString("    Pass them as both secret_refs and capabilities.secrets in create_draft args.\n")
 	b.WriteString("  - tests: what test cases prove it works correctly and safely?\n")
 	b.WriteString("  - security_considerations: auth model, rate limits, data retained, sandbox boundaries\n")
 	b.WriteString("The draft MUST include: title, description, skill_name, tools (name+description+args),\n")
 	b.WriteString("intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations.\n")
 	b.WriteString("Always CALL proposal.create_draft (fenced tool-call block). Never return only free-form text.\n")
-	b.WriteString("After the tool returns, summarize the draft in plain language and explain next steps:\n")
-	b.WriteString(" submit → Court review (5 AI personas) → builder pipeline + security gates → activate → invoke.\n\n")
+	b.WriteString("After the tool returns:\n")
+	b.WriteString("  1. Summarize the draft in plain language.\n")
+	b.WriteString("  2. If the draft includes secret_refs, ALWAYS tell the user to add each secret NOW before activating:\n")
+	b.WriteString("       aegisclaw secrets add <SECRET_NAME> --skill <skill_name>\n")
+	b.WriteString("     Explain that secrets are encrypted at rest in the local vault and injected into the skill VM\n")
+	b.WriteString("     at activation time — they never appear in the proposal, logs, or on disk in plaintext.\n")
+	b.WriteString("  3. Explain next steps: submit → Court review (5 AI personas) → builder pipeline + security gates → activate → invoke.\n\n")
 
 	// Active skill tools.
 	skills := env.Registry.List()
@@ -1101,6 +1152,22 @@ func enforceMemoryTruth(content string, env *runtimeEnv, memoryToolEvidence bool
 	}
 
 	return content
+}
+
+// stripToolCallMarkdown removes tool-call markdown blocks from content.
+// Sometimes the LLM includes tool-call fenced blocks in the final response text instead
+// of cleanly separating them. This ensures they don't leak into the user-visible content.
+func stripToolCallMarkdown(content string) string {
+	// Use a more precise regex that handles both closed and unclosed fences
+	// Pattern: ```tool-call followed by content until either a closing ``` or double newline or EOF
+	re := regexp.MustCompile("(?s)```tool-call[^`]*?(?:```|\n\n|$)")
+	content = re.ReplaceAllString(content, "")
+
+	// Clean up extra blank lines that may have been left behind
+	// Replace multiple newlines with double newline
+	content = regexp.MustCompile(`\n\n\n+`).ReplaceAllString(content, "\n\n")
+
+	return strings.TrimSpace(content)
 }
 
 func synthesizeEmptyFinalMessage(toolTrace []map[string]interface{}) string {

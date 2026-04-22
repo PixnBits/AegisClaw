@@ -408,15 +408,17 @@ DO NOT: Describe what you would do, show example JSON, or make up IDs. ACT by ou
 
 ## Proposal tools (namespace: "proposal")
 All proposal tools use "skill": "proposal". The tool names are:
-- create_draft — args: {"title": "...", "description": "...", "skill_name": "...", "tools": [{"name": "...", "description": "..."}], "data_sensitivity": 1-5, "network_exposure": 1-5, "privilege_level": 1-5, "allowed_hosts": [], "allowed_ports": [], "secret_refs": []}
-- update_draft — args: {"id": "<uuid>", ...fields to change}
+- create_draft — args: {"title": "...", "description": "...", "skill_name": "...", "tools": [{"name": "...", "description": "..."}], "data_sensitivity": 1-5, "network_exposure": 1-5, "privilege_level": 1-5, "allowed_hosts": [], "allowed_ports": [], "egress_mode": "proxy|direct", "secret_refs": [], "capabilities": {"network": true, "secrets": [], "filesystem_write": false}}
+- update_draft — args: {"id": "<uuid>", ...fields to change (same fields as create_draft plus egress_mode, capabilities)}
 - get_draft — args: {"id": "<uuid>"}
 - list_drafts — args: {}
 - submit — args: {"id": "<uuid>"}
 - status — args: {"id": "<uuid>"}
 
-Defaults if not discussed: data_sensitivity=1, network_exposure=1, privilege_level=1.
+Defaults if not discussed: data_sensitivity=1, network_exposure=1, privilege_level=1, egress_mode="proxy" (when network is needed).
 Required before submit: title, description, skill_name, at least one tool.
+For network skills: include allowed_hosts (exact FQDNs only, no wildcards), allowed_ports (usually [443]), egress_mode="proxy", capabilities.network=true.
+For secret-using skills: include secret_refs and capabilities.secrets with the same names. Secrets are added separately via CLI.
 
 ## How to handle a skill proposal request
 
@@ -722,23 +724,108 @@ func resolveProposalID(env *runtimeEnv, idOrPrefix string) (string, error) {
 	return env.ProposalStore.ResolveID(idOrPrefix)
 }
 
+// resolveEgressMode returns the egress mode to use for a network policy.
+// The precedence is: explicit override > existing value > "proxy" (safe default).
+// Pass existingMode="" and override=nil when creating a fresh policy.
+func resolveEgressMode(existingMode string, override *string) string {
+	if override != nil {
+		return *override
+	}
+	if existingMode != "" {
+		return existingMode
+	}
+	return "proxy"
+}
+
+type draftNetworkPolicyArgs struct {
+	DefaultDeny      *bool    `json:"default_deny"`
+	AllowedHosts     []string `json:"allowed_hosts"`
+	AllowedPorts     []int    `json:"allowed_ports"`
+	AllowedProtocols []string `json:"allowed_protocols"`
+	EgressMode       string   `json:"egress_mode"`
+}
+
+type createDraftArgs struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	SkillName   string `json:"skill_name"`
+	Tools       []struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"tools"`
+	DataSensitivity int                         `json:"data_sensitivity"`
+	NetworkExposure int                         `json:"network_exposure"`
+	PrivilegeLevel  int                         `json:"privilege_level"`
+	AllowedHosts    []string                    `json:"allowed_hosts"`
+	AllowedPorts    []int                       `json:"allowed_ports"`
+	SecretRefs      []string                    `json:"secret_refs"`
+	EgressMode      string                      `json:"egress_mode"`
+	Capabilities    *proposal.SkillCapabilities `json:"capabilities"`
+	NetworkPolicy   *draftNetworkPolicyArgs     `json:"network_policy"`
+}
+
+func normalizeAndDedupeHosts(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, host := range in {
+		h := strings.ToLower(strings.TrimSpace(host))
+		if h == "" {
+			continue
+		}
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		out = append(out, h)
+	}
+	return out
+}
+
+func dedupePorts(in []int) []int {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(in))
+	out := make([]int, 0, len(in))
+	for _, p := range in {
+		if p <= 0 || p > 65535 {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func dedupeStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		v := strings.TrimSpace(s)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
 // handleProposalCreateDraft creates a new draft proposal from LLM-collected fields.
 func handleProposalCreateDraft(env *runtimeEnv, ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		SkillName   string `json:"skill_name"`
-		Tools       []struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		} `json:"tools"`
-		DataSensitivity int      `json:"data_sensitivity"`
-		NetworkExposure int      `json:"network_exposure"`
-		PrivilegeLevel  int      `json:"privilege_level"`
-		AllowedHosts    []string `json:"allowed_hosts"`
-		AllowedPorts    []int    `json:"allowed_ports"`
-		SecretRefs      []string `json:"secret_refs"`
-	}
+	var args createDraftArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
@@ -758,16 +845,50 @@ func handleProposalCreateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 	ne := clampInt(args.NetworkExposure, 1, 5)
 	pl := clampInt(args.PrivilegeLevel, 1, 5)
 
+	allowedHosts := normalizeAndDedupeHosts(args.AllowedHosts)
+	allowedPorts := dedupePorts(args.AllowedPorts)
+	allowedProtocols := []string(nil)
+	secretRefs := dedupeStrings(args.SecretRefs)
+	if args.NetworkPolicy != nil {
+		if args.NetworkPolicy.DefaultDeny != nil && !*args.NetworkPolicy.DefaultDeny {
+			return "", fmt.Errorf("network_policy.default_deny must be true")
+		}
+		if len(args.NetworkPolicy.AllowedHosts) > 0 {
+			allowedHosts = normalizeAndDedupeHosts(args.NetworkPolicy.AllowedHosts)
+		}
+		if len(args.NetworkPolicy.AllowedPorts) > 0 {
+			allowedPorts = dedupePorts(args.NetworkPolicy.AllowedPorts)
+		}
+		allowedProtocols = dedupeStrings(args.NetworkPolicy.AllowedProtocols)
+		if args.NetworkPolicy.EgressMode != "" {
+			args.EgressMode = args.NetworkPolicy.EgressMode
+		}
+	}
+
 	// Build wizard result to reuse existing spec generation.
 	toolSpecs := make([]wizard.WizardToolSpec, len(args.Tools))
 	for i, t := range args.Tools {
 		toolSpecs[i] = wizard.WizardToolSpec{Name: t.Name, Description: t.Description}
 	}
-	ports := make([]uint16, len(args.AllowedPorts))
-	for i, p := range args.AllowedPorts {
+	ports := make([]uint16, len(allowedPorts))
+	for i, p := range allowedPorts {
 		if p > 0 && p <= 65535 {
 			ports[i] = uint16(p)
 		}
+	}
+	if args.Capabilities != nil && len(args.Capabilities.Secrets) > 0 {
+		secretRefs = dedupeStrings(append(secretRefs, args.Capabilities.Secrets...))
+	}
+
+	needsNetwork := len(allowedHosts) > 0 || args.NetworkPolicy != nil || (args.Capabilities != nil && args.Capabilities.Network)
+	// Resolve egress mode: default to "proxy" for new network skills.
+	var egressOverride *string
+	if args.EgressMode != "" {
+		egressOverride = &args.EgressMode
+	}
+	egressMode := ""
+	if needsNetwork {
+		egressMode = resolveEgressMode("", egressOverride)
 	}
 
 	result := &wizard.WizardResult{
@@ -778,10 +899,10 @@ func handleProposalCreateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 		DataSensitivity:  ds,
 		NetworkExposure:  ne,
 		PrivilegeLevel:   pl,
-		NeedsNetwork:     len(args.AllowedHosts) > 0,
-		AllowedHosts:     args.AllowedHosts,
+		NeedsNetwork:     needsNetwork,
+		AllowedHosts:     allowedHosts,
 		AllowedPorts:     ports,
-		SecretsRefs:      args.SecretRefs,
+		SecretsRefs:      secretRefs,
 		RequiredPersonas: []string{"CISO", "SeniorCoder", "SecurityArchitect", "Tester", "UserAdvocate"},
 		Tools:            toolSpecs,
 	}
@@ -799,15 +920,32 @@ func handleProposalCreateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 	}
 	p.Spec = spec
 	p.SecretsRefs = result.SecretsRefs
-	if result.NeedsNetwork {
+
+	// Populate NetworkPolicy with explicit egress mode.
+	if needsNetwork {
 		p.NetworkPolicy = &proposal.ProposalNetworkPolicy{
-			DefaultDeny:  true,
-			AllowedHosts: result.AllowedHosts,
-			AllowedPorts: ports,
+			DefaultDeny:      true,
+			AllowedHosts:     result.AllowedHosts,
+			AllowedPorts:     ports,
+			AllowedProtocols: allowedProtocols,
+			EgressMode:       egressMode,
 		}
 	} else {
 		p.NetworkPolicy = &proposal.ProposalNetworkPolicy{DefaultDeny: true}
 	}
+
+	// Populate Capabilities, merging explicit args with inferred values.
+	caps := args.Capabilities
+	if caps == nil {
+		caps = &proposal.SkillCapabilities{}
+	}
+	if needsNetwork {
+		caps.Network = true
+	}
+	if len(secretRefs) > 0 {
+		caps.Secrets = secretRefs
+	}
+	p.Capabilities = caps
 
 	if err := env.ProposalStore.Create(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
@@ -820,8 +958,19 @@ func handleProposalCreateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 	action := kernel.NewAction(kernel.ActionProposalCreate, "chat", payload)
 	env.Kernel.SignAndLog(action)
 
-	return fmt.Sprintf("Draft proposal created.\n  ID: %s\n  Title: %s\n  Skill: %s\n  Risk: %s\n  Status: %s",
-		p.ID, p.Title, p.TargetSkill, p.Risk, p.Status), nil
+	result_msg := fmt.Sprintf("Draft proposal created.\n  ID: %s\n  Title: %s\n  Skill: %s\n  Risk: %s\n  Status: %s",
+		p.ID, p.Title, p.TargetSkill, p.Risk, p.Status)
+
+	// Surface secrets guidance immediately so the user knows what to do
+	// before activating the skill (spec §3.3 — pre-activation verification).
+	if len(secretRefs) > 0 {
+		result_msg += "\n\nRequired secrets (add before activating):"
+		for _, ref := range secretRefs {
+			result_msg += fmt.Sprintf("\n  aegisclaw secrets add %s --skill %s", ref, args.SkillName)
+		}
+	}
+
+	return result_msg, nil
 }
 
 // handleProposalUpdateDraft updates fields on an existing draft proposal.
@@ -837,12 +986,14 @@ func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		} `json:"tools"`
-		DataSensitivity *int            `json:"data_sensitivity"`
-		NetworkExposure *int            `json:"network_exposure"`
-		PrivilegeLevel  *int            `json:"privilege_level"`
-		AllowedHosts    json.RawMessage `json:"allowed_hosts"`
-		AllowedPorts    json.RawMessage `json:"allowed_ports"`
-		SecretRefs      json.RawMessage `json:"secret_refs"`
+		DataSensitivity *int                        `json:"data_sensitivity"`
+		NetworkExposure *int                        `json:"network_exposure"`
+		PrivilegeLevel  *int                        `json:"privilege_level"`
+		AllowedHosts    json.RawMessage             `json:"allowed_hosts"`
+		AllowedPorts    json.RawMessage             `json:"allowed_ports"`
+		SecretRefs      json.RawMessage             `json:"secret_refs"`
+		EgressMode      *string                     `json:"egress_mode"`
+		Capabilities    *proposal.SkillCapabilities `json:"capabilities"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
@@ -865,6 +1016,8 @@ func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 		AllowedHosts    []string
 		AllowedPorts    []int
 		SecretRefs      []string
+		EgressMode      *string
+		Capabilities    *proposal.SkillCapabilities
 	}{
 		ID:              raw.ID,
 		Title:           raw.Title,
@@ -876,6 +1029,8 @@ func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 		AllowedHosts:    coerceStringSlice(raw.AllowedHosts),
 		AllowedPorts:    coerceIntSlice(raw.AllowedPorts),
 		SecretRefs:      coerceStringSlice(raw.SecretRefs),
+		EgressMode:      raw.EgressMode,
+		Capabilities:    raw.Capabilities,
 	}
 	for _, t := range raw.Tools {
 		args.Tools = append(args.Tools, toolSpec{Name: t.Name, Description: t.Description})
@@ -958,16 +1113,49 @@ func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 		p.Spec = spec
 
 		if result.NeedsNetwork {
+			// Preserve existing egress mode unless the update explicitly changes it.
+			existingMode := ""
+			if p.NetworkPolicy != nil {
+				existingMode = p.NetworkPolicy.EgressMode
+			}
 			p.NetworkPolicy = &proposal.ProposalNetworkPolicy{
 				DefaultDeny:  true,
 				AllowedHosts: result.AllowedHosts,
 				AllowedPorts: ports,
+				EgressMode:   resolveEgressMode(existingMode, args.EgressMode),
 			}
 		}
+	} else if args.EgressMode != nil && p.NetworkPolicy != nil {
+		// Allow updating egress_mode in isolation without regenerating the spec.
+		p.NetworkPolicy.EgressMode = *args.EgressMode
 	}
 
 	if args.SecretRefs != nil {
 		p.SecretsRefs = args.SecretRefs
+		// Keep capabilities.secrets in sync.
+		if p.Capabilities == nil {
+			p.Capabilities = &proposal.SkillCapabilities{}
+		}
+		p.Capabilities.Secrets = args.SecretRefs
+	}
+
+	// Apply explicit capabilities override (merged with existing).
+	if args.Capabilities != nil {
+		if p.Capabilities == nil {
+			p.Capabilities = &proposal.SkillCapabilities{}
+		}
+		if args.Capabilities.Network {
+			p.Capabilities.Network = true
+		}
+		if len(args.Capabilities.Secrets) > 0 {
+			p.Capabilities.Secrets = args.Capabilities.Secrets
+		}
+		if args.Capabilities.FilesystemWrite {
+			p.Capabilities.FilesystemWrite = true
+		}
+		if len(args.Capabilities.HostDevices) > 0 {
+			p.Capabilities.HostDevices = args.Capabilities.HostDevices
+		}
 	}
 
 	p.BumpVersion()

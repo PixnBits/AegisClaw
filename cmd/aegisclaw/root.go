@@ -162,6 +162,7 @@ func init() {
 	skillCmd.AddCommand(skillRevokeCmd)
 	skillCmd.AddCommand(skillInfoCmd)
 	skillCmd.AddCommand(skillSBOMCmd)
+	skillCmd.AddCommand(skillActivateCmd)
 
 	// audit subcommands: log, why, verify, trace
 	auditCmd.AddCommand(auditLogCmd)

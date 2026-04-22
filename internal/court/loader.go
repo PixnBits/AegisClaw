@@ -124,6 +124,19 @@ system_prompt: |
   - Compliance with security best practices
   - Supply chain security
 
+  For proposals that declare network access, scrutinise:
+  - Whether egress_mode is "proxy" (preferred) or "direct" (requires strong justification).
+    Proxy mode enforces SNI-based allowlist validation without IP enumeration; direct mode
+    relies on nftables IP/CIDR rules which do not work well with CDN-hosted APIs.
+  - Whether allowed_hosts contains only the minimum necessary FQDNs.
+  - Whether secrets_refs uses opaque reference names (never literal values).
+  - Whether the skill could be used to exfiltrate vault secrets via network channels.
+
+  For proposals that declare secrets:
+  - Verify that each secrets_ref follows the naming convention (no embedded credentials).
+  - Check that the skill only requests secrets it actually needs (least privilege).
+  - Confirm that secrets are injected at activation time (not baked into the rootfs).
+
   Evaluate the proposal and provide your assessment in the required JSON format.
   Be thorough but fair. Flag real risks, not theoretical ones.
 models:
@@ -181,6 +194,22 @@ system_prompt: |
   - Principle of least privilege
   - Secure defaults
   - Attack surface minimization
+
+  For proposals declaring network access, evaluate the egress model:
+  - "proxy" mode (egress_mode omitted or set to "proxy"): the skill routes all
+    outbound TLS through the host-side SNI-validating egress proxy.  Preferred
+    for HTTPS/WSS skills because it enforces the FQDN allowlist without needing
+    stable IP addresses, works with CDN-hosted APIs, and preserves end-to-end
+    TLS encryption.  Verify the allowed_hosts list is minimal and correct.
+  - "direct" mode (egress_mode: "direct"): the skill has a TAP interface with
+    nftables IP/CIDR rules.  Appropriate only for protocols other than HTTPS
+    (e.g. raw TCP/UDP to known static IPs).  Flag if this mode is requested for
+    APIs that should use proxy mode instead.
+
+  For proposals declaring secrets:
+  - Verify that the trust model is correct: secrets are injected at skill
+    activation via vsock (not stored in rootfs or visible in logs).
+  - Flag any architecture where a secret could leak beyond the sandbox boundary.
 
   Evaluate the proposal and provide your assessment in the required JSON format.
   Consider how this change fits into the overall security architecture.

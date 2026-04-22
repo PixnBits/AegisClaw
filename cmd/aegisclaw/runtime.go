@@ -22,6 +22,7 @@ import (
 	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
+	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/PixnBits/AegisClaw/internal/workspace"
 	"github.com/google/uuid"
@@ -37,6 +38,7 @@ var (
 	memoryInst      *memory.Store
 	eventBusInst    *eventbus.Bus
 	workerStoreInst *worker.Store
+	vaultInst       *vault.Vault
 	lookupInst      *lookup.Store
 	runtimeInitErr  error
 )
@@ -69,6 +71,16 @@ type runtimeEnv struct {
 	// TaskExecutor is set lazily on the first chat.message request (alongside
 	// AgentVMID) and is nil until then.
 	TaskExecutor rtexec.TaskExecutor
+
+	// Vault holds the age-encrypted secret store.  Opened once at daemon
+	// startup; nil only if the vault directory could not be initialised
+	// (daemon logs a warning and continues in degraded mode without secret
+	// injection).
+	Vault *vault.Vault
+
+	// EgressProxy is the per-VM SNI-validating TCP tunnel proxy.  Started for
+	// each skill VM whose approved proposal declares egress_mode "proxy".
+	EgressProxy *llm.EgressProxy
 
 	// Workspace holds content loaded from the user's workspace directory
 	// (~/.aegisclaw/workspace by default). Fields are empty when the
@@ -172,6 +184,12 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
+		// Vault: open the age-encrypted secret store once at daemon startup.
+		// The private key is derived from the kernel's Ed25519 identity.
+		vaultInst, runtimeInitErr = vault.NewVault(cfg.Vault.Dir, kern.PrivateKeyBytes(), logger)
+		if runtimeInitErr != nil {
+			return
+		}
 		// Lookup Store: persistent semantic vector index for dynamic tool lookup.
 		lookupInst, runtimeInitErr = lookup.NewStore(lookup.StoreConfig{
 			Dir:    cfg.Lookup.Dir,
@@ -193,6 +211,8 @@ func initRuntime() (*runtimeEnv, error) {
 		MemoryStore:      memoryInst,
 		EventBus:         eventBusInst,
 		WorkerStore:      workerStoreInst,
+		Vault:            vaultInst,
+		EgressProxy:      llm.NewEgressProxy(logger),
 		LookupStore:      lookupInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 		ToolEvents:       NewToolEventBuffer(400),
@@ -218,6 +238,7 @@ func resetRuntimeSingletons() {
 	memoryInst = nil
 	eventBusInst = nil
 	workerStoreInst = nil
+	vaultInst = nil
 	lookupInst = nil
 	runtimeInitErr = nil
 }

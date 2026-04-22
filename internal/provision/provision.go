@@ -224,6 +224,13 @@ func buildRootfs(ctx context.Context, outputPath, guestAgentPath string, logger 
 	return copyFile(imgPath, outputPath, 0444)
 }
 
+// maxDownloadBytes caps individual asset downloads to prevent runaway
+// transfers from a compromised or misbehaving server.
+//   - vmlinux kernel: typically 15–20 MiB
+//   - Alpine minirootfs: typically 3–5 MiB
+//   - We use a generous 512 MiB ceiling so legitimate oversized kernels still work.
+const maxDownloadBytes = 512 * 1024 * 1024
+
 func downloadFile(ctx context.Context, url, destPath string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -245,9 +252,19 @@ func downloadFile(ctx context.Context, url, destPath string) error {
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	if _, err := io.Copy(f, io.LimitReader(resp.Body, maxDownloadBytes)); err != nil {
 		os.Remove(destPath)
 		return err
+	}
+
+	// Detect silent truncation: if Content-Length is set and we got fewer bytes,
+	// the download may be incomplete.  This guards against a misbehaving server
+	// returning a truncated response without an error.
+	if cl := resp.ContentLength; cl > 0 {
+		if fi, statErr := f.Stat(); statErr == nil && fi.Size() < cl {
+			os.Remove(destPath)
+			return fmt.Errorf("download truncated: got %d bytes, expected %d from %s", fi.Size(), cl, url)
+		}
 	}
 	return nil
 }

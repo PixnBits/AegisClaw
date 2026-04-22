@@ -10,6 +10,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -115,6 +116,87 @@ func TestCreateDraftMissingFields(t *testing.T) {
 				t.Errorf("expected error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestCreateDraftCanonicalNetworkPolicyAndDedup(t *testing.T) {
+	env := testEnv(t)
+	args := `{
+		"title":"NOAA Weather Skill",
+		"description":"Fetch weather for Gilbert, AZ via NOAA API",
+		"skill_name":"noaa-weather",
+		"tools":[{"name":"get_weather","description":"Get current weather for Gilbert, AZ"}],
+		"allowed_hosts":["should-be-ignored.example"],
+		"allowed_ports":[80],
+		"secret_refs":["NOAA_API_KEY","NOAA_API_KEY"," "],
+		"capabilities":{"secrets":["NOAA_API_KEY","NOAA_API_KEY"],"network":true},
+		"network_policy":{
+			"default_deny":true,
+			"allowed_hosts":["API.WEATHER.GOV","api.weather.gov","api.weather.gov"],
+			"allowed_ports":[443,443,65536,-1],
+			"allowed_protocols":["tcp","tcp"],
+			"egress_mode":"proxy"
+		}
+	}`
+
+	result, err := handleProposalCreateDraft(env, context.Background(), args)
+	if err != nil {
+		t.Fatalf("handleProposalCreateDraft: %v", err)
+	}
+	id := extractIDFromResult(t, result)
+	p, err := env.ProposalStore.Get(id)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+
+	if p.NetworkPolicy == nil {
+		t.Fatal("expected network policy")
+	}
+	if len(p.NetworkPolicy.AllowedHosts) != 1 || p.NetworkPolicy.AllowedHosts[0] != "api.weather.gov" {
+		t.Fatalf("unexpected allowed hosts: %#v", p.NetworkPolicy.AllowedHosts)
+	}
+	if len(p.NetworkPolicy.AllowedPorts) != 1 || p.NetworkPolicy.AllowedPorts[0] != 443 {
+		t.Fatalf("unexpected allowed ports: %#v", p.NetworkPolicy.AllowedPorts)
+	}
+	if len(p.NetworkPolicy.AllowedProtocols) != 1 || p.NetworkPolicy.AllowedProtocols[0] != "tcp" {
+		t.Fatalf("unexpected allowed protocols: %#v", p.NetworkPolicy.AllowedProtocols)
+	}
+	if p.NetworkPolicy.EgressMode != "proxy" {
+		t.Fatalf("expected egress_mode proxy, got %q", p.NetworkPolicy.EgressMode)
+	}
+
+	if len(p.SecretsRefs) != 1 || p.SecretsRefs[0] != "NOAA_API_KEY" {
+		t.Fatalf("unexpected secrets refs: %#v", p.SecretsRefs)
+	}
+	if p.Capabilities == nil || len(p.Capabilities.Secrets) != 1 || p.Capabilities.Secrets[0] != "NOAA_API_KEY" {
+		t.Fatalf("unexpected capability secrets: %#v", p.Capabilities)
+	}
+	if !p.Capabilities.Network {
+		t.Fatal("expected capabilities.network=true")
+	}
+
+	if strings.Count(result, "aegisclaw secrets add NOAA_API_KEY") != 1 {
+		t.Fatalf("expected one secret guidance line, got: %s", result)
+	}
+}
+
+func TestBuildDaemonSystemPromptNetworkPolicyEfficiencyGuidance(t *testing.T) {
+	reg, err := sandbox.NewSkillRegistry(t.TempDir() + "/registry.json")
+	if err != nil {
+		t.Fatalf("NewSkillRegistry: %v", err)
+	}
+	prompt := buildDaemonSystemPrompt(&runtimeEnv{Registry: reg})
+
+	required := []string{
+		"Weather API (NOAA example)",
+		"api.weather.gov",
+		"Use canonical keys exactly once: network_policy, capabilities, and secret_refs.",
+		"Do NOT duplicate equivalent data under alternate keys",
+	}
+	for _, frag := range required {
+		if !strings.Contains(prompt, frag) {
+			t.Fatalf("prompt missing %q", frag)
+		}
 	}
 }
 
@@ -919,4 +1001,79 @@ func extractIDFromResult(t *testing.T, result string) string {
 	}
 	t.Fatalf("no 'ID:' line found in result:\n%s", result)
 	return ""
+}
+
+func TestResolveEgressMode(t *testing.T) {
+	proxy := "proxy"
+	direct := "direct"
+
+	tests := []struct {
+		existing string
+		override *string
+		want     string
+	}{
+		{"", nil, "proxy"},           // no existing, no override → default proxy
+		{"proxy", nil, "proxy"},      // existing proxy preserved
+		{"direct", nil, "direct"},    // existing direct preserved
+		{"", &proxy, "proxy"},        // explicit proxy override
+		{"", &direct, "direct"},      // explicit direct override
+		{"proxy", &direct, "direct"}, // override wins over existing
+		{"direct", &proxy, "proxy"},  // override wins over existing
+	}
+	for _, tc := range tests {
+		got := resolveEgressMode(tc.existing, tc.override)
+		if got != tc.want {
+			t.Errorf("resolveEgressMode(%q, %v) = %q, want %q", tc.existing, tc.override, got, tc.want)
+		}
+	}
+}
+
+// --- stripToolCallMarkdown tests ---
+
+func TestStripToolCallMarkdown(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "strip single fenced tool-call block with closing fence",
+			input:    "Here's a proposal for you:\n\n```tool-call\n{\"name\": \"proposal.create_draft\", \"args\": {\"title\": \"NOAA Weather\"}}\n```\n\nI've created a draft proposal.",
+			expected: "Here's a proposal for you:\n\nI've created a draft proposal.",
+		},
+		{
+			name:     "strip tool-call block without closing fence",
+			input:    "```tool-call\n{\"name\": \"list_skills\", \"args\": {}}\n\nFetching the list of skills...",
+			expected: "Fetching the list of skills...",
+		},
+		{
+			name:     "strip multiple tool-call blocks",
+			input:    "```tool-call\n{\"name\": \"tool1\", \"args\": {}}\n```\n\nSome middle text.\n\n```tool-call\n{\"name\": \"tool2\", \"args\": {}}\n```\n\nFinal text.",
+			expected: "Some middle text.\n\nFinal text.",
+		},
+		{
+			name:     "no tool-call blocks to strip",
+			input:    "Just regular content with no tool calls.",
+			expected: "Just regular content with no tool calls.",
+		},
+		{
+			name:     "strip block at start",
+			input:    "```tool-call\n{\"name\": \"test\", \"args\": {}}\n```\nAfter the block.",
+			expected: "After the block.",
+		},
+		{
+			name:     "whitespace handling",
+			input:    "Before.\n\n```tool-call\n{\"name\": \"test\", \"args\": {}}\n```\n\nAfter.",
+			expected: "Before.\n\nAfter.",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := stripToolCallMarkdown(tc.input)
+			if result != tc.expected {
+				t.Errorf("stripToolCallMarkdown failed\nInput:\n%q\n\nExpected:\n%q\n\nGot:\n%q", tc.input, tc.expected, result)
+			}
+		})
+	}
 }

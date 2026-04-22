@@ -205,7 +205,11 @@ func dispatch(ctx context.Context, req *Request) *Response {
 		return handleFileList(req)
 	case "status":
 		return handleStatus(req)
-	case "secrets.inject":
+	case "secrets.inject", "secrets.refresh":
+		// Both inject and refresh use the same handler: write/overwrite files
+		// in /run/secrets/<name> on tmpfs.  refresh is the idempotent variant
+		// used after a rotation so running skill code picks up the new value
+		// on its next /run/secrets/<name> read without a full VM restart.
 		return handleSecretsInject(req)
 	case "tool.invoke":
 		return handleToolInvoke(req)
@@ -484,41 +488,72 @@ func handleToolInvoke(req *Request) *Response {
 		return errorResponse(req.ID, "tool name is required")
 	}
 
+	// Prevent path traversal: tool names must not contain separators or ".."
+	// even though we are already inside a Firecracker-isolated rootfs.
+	if strings.ContainsAny(payload.Tool, "/\\") || strings.Contains(payload.Tool, "..") {
+		return errorResponse(req.ID, fmt.Sprintf("invalid tool name: %q", payload.Tool))
+	}
+
 	if payload.Tool == "execute_script" {
 		return handleExecuteScript(req.ID, payload.Args)
 	}
 
 	// Look for the tool as an executable under /workspace/tools/<name>.
 	toolPath := filepath.Join(workspaceDir, "tools", payload.Tool)
+	// Guard against any residual traversal after Clean (defence-in-depth).
+	if !isUnderWorkspace(toolPath) {
+		return errorResponse(req.ID, fmt.Sprintf("tool path escapes workspace: %q", payload.Tool))
+	}
 	if _, err := os.Stat(toolPath); err == nil {
-		// Execute the tool binary/script
-		cmd := exec.Command(toolPath)
+		// Execute the tool binary/script; cap combined output to maxPayloadLen.
+		var outBuf, errBuf bytes.Buffer
+		var cmd *exec.Cmd
 		if payload.Args != "" {
 			cmd = exec.Command(toolPath, payload.Args)
+		} else {
+			cmd = exec.Command(toolPath)
 		}
 		cmd.Dir = workspaceDir
 		cmd.Env = []string{
 			"PATH=/usr/local/bin:/usr/bin:/bin",
 			"HOME=/workspace",
 		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return errorResponse(req.ID, fmt.Sprintf("tool %q failed: %v (%s)", payload.Tool, err, string(out)))
+		cmd.Stdout = &limitWriter{w: &outBuf, limit: maxPayloadLen}
+		cmd.Stderr = &limitWriter{w: &errBuf, limit: maxPayloadLen}
+		if err := cmd.Run(); err != nil {
+			combined := strings.TrimSpace(outBuf.String())
+			if e := strings.TrimSpace(errBuf.String()); e != "" {
+				combined += "\n" + e
+			}
+			return errorResponse(req.ID, fmt.Sprintf("tool %q failed: %v (%s)", payload.Tool, err, combined))
 		}
-		result := ToolInvokeResult{Output: strings.TrimSpace(string(out))}
+		result := ToolInvokeResult{Output: strings.TrimSpace(outBuf.String())}
 		data, _ := json.Marshal(result)
 		return &Response{ID: req.ID, Success: true, Data: data}
 	}
 
-	// No deployed tool binary — return a placeholder so the demo flow is
-	// visible.  The builder pipeline (step 6) will eventually deploy real
-	// tool binaries into /workspace/tools/.
-	log.Printf("tool.invoke: tool %q not found at %s, returning stub", payload.Tool, toolPath)
-	result := ToolInvokeResult{
-		Output: fmt.Sprintf("[stub] Tool %q invoked.  Deploy skill code to /workspace/tools/ via the builder pipeline.", payload.Tool),
+	// No deployed tool binary — return a not-found error so callers can
+	// distinguish a missing tool from a successful empty result.
+	return errorResponse(req.ID, fmt.Sprintf("tool %q not found; deploy via the builder pipeline to /workspace/tools/", payload.Tool))
+}
+
+// limitWriter is an io.Writer that caps total bytes written at limit.
+type limitWriter struct {
+	w     *bytes.Buffer
+	limit int
+}
+
+func (lw *limitWriter) Write(p []byte) (int, error) {
+	remaining := lw.limit - lw.w.Len()
+	if remaining <= 0 {
+		log.Printf("limitWriter: output truncated at %d bytes; discarding %d further bytes", lw.limit, len(p))
+		return len(p), nil // discard excess; caller sees full write length to avoid short-write errors
 	}
-	data, _ := json.Marshal(result)
-	return &Response{ID: req.ID, Success: true, Data: data}
+	if len(p) > remaining {
+		log.Printf("limitWriter: output approaching limit (%d bytes); truncating write of %d bytes", lw.limit, len(p))
+		p = p[:remaining]
+	}
+	return lw.w.Write(p)
 }
 
 func handleExecuteScript(requestID, rawArgs string) *Response {
@@ -678,7 +713,7 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 	proxyCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
-	raw, _, err := callOllamaViaProxy(proxyCtx, payload.Model, "", messages, "json", options)
+	raw, _, _, err := callOllamaViaProxy(proxyCtx, payload.Model, "", messages, "json", options)
 	if err != nil {
 		return errorResponse(req.ID, fmt.Sprintf("ollama proxy error: %v", err))
 	}
@@ -883,9 +918,31 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 		return handleChatMessageStructured(callCtx, req.ID, payload.Model, payload.StreamID, ollamaMsgs, payload.Temperature, payload.Seed)
 	}
 
-	content, thinking, err := callOllamaViaProxy(callCtx, payload.Model, payload.StreamID, ollamaMsgs, "", buildOllamaOptions(payload.Temperature, payload.Seed, nil))
+	content, thinking, nativeToolCalls, err := callOllamaViaProxy(callCtx, payload.Model, payload.StreamID, ollamaMsgs, "", buildOllamaOptions(payload.Temperature, payload.Seed, nil))
 	if err != nil {
 		return errorResponse(req.ID, fmt.Sprintf("ollama error: %v", err))
+	}
+
+	// Debug: log received tool calls.
+	if len(nativeToolCalls) > 0 {
+		toolNames := make([]string, len(nativeToolCalls))
+		for i, tc := range nativeToolCalls {
+			toolNames[i] = tc.Function.Name
+		}
+		log.Printf("[guest.handleChatMessage] received %d tool calls from proxy: %v", len(nativeToolCalls), toolNames)
+	}
+
+	// Prefer native tool calls when Ollama returns message.tool_calls with empty content.
+	if toolName, argsJSON, ok := parseProxyToolCall(nativeToolCalls); ok {
+		log.Printf("[guest.handleChatMessage] parsed tool call: %s", toolName)
+		chatResp := ChatResponse{
+			Status:   "tool_call",
+			Thinking: strings.TrimSpace(thinking),
+			Tool:     toolName,
+			Args:     argsJSON,
+		}
+		data, _ := json.Marshal(chatResp)
+		return &Response{ID: req.ID, Success: true, Data: data}
 	}
 
 	// Check for a tool-call block in the response.
@@ -921,6 +978,96 @@ type structuredChatReply struct {
 	Args    json.RawMessage `json:"args,omitempty"`    // when status=="tool_call"
 }
 
+func parseStructuredChatReply(content string) (structuredChatReply, bool) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return structuredChatReply{}, false
+	}
+
+	var reply structuredChatReply
+	if err := json.Unmarshal([]byte(content), &reply); err == nil && strings.TrimSpace(reply.Status) != "" {
+		return reply, true
+	}
+
+	for _, marker := range []string{"```json", "```"} {
+		start := strings.Index(content, marker)
+		if start < 0 {
+			continue
+		}
+		after := content[start+len(marker):]
+		end := strings.Index(after, "```")
+		if end < 0 {
+			continue
+		}
+		block := strings.TrimSpace(after[:end])
+		if err := json.Unmarshal([]byte(block), &reply); err == nil && strings.TrimSpace(reply.Status) != "" {
+			return reply, true
+		}
+	}
+
+	return structuredChatReply{}, false
+}
+
+func decodeStructuredChatResponse(content, thinking string, nativeToolCalls []proxyToolCall, allowPlainFinal bool) (ChatResponse, bool) {
+	trimmedThinking := strings.TrimSpace(thinking)
+	trimmedContent := strings.TrimSpace(content)
+
+	if toolName, argsJSON, ok := parseProxyToolCall(nativeToolCalls); ok {
+		return ChatResponse{
+			Status:   "tool_call",
+			Thinking: trimmedThinking,
+			Tool:     toolName,
+			Args:     argsJSON,
+		}, true
+	}
+
+	if reply, ok := parseStructuredChatReply(trimmedContent); ok {
+		switch reply.Status {
+		case "tool_call":
+			if strings.TrimSpace(reply.Tool) == "" {
+				break
+			}
+			argsStr := "{}"
+			if len(reply.Args) > 0 {
+				argsStr = string(reply.Args)
+			}
+			return ChatResponse{
+				Status:   "tool_call",
+				Thinking: trimmedThinking,
+				Tool:     reply.Tool,
+				Args:     argsStr,
+			}, true
+		case "final":
+			return ChatResponse{
+				Status:   "final",
+				Role:     "assistant",
+				Content:  reply.Content,
+				Thinking: trimmedThinking,
+			}, true
+		}
+	}
+
+	if toolName, argsJSON, ok := parseAgentToolCall(trimmedContent); ok {
+		return ChatResponse{
+			Status:   "tool_call",
+			Thinking: trimmedThinking,
+			Tool:     toolName,
+			Args:     argsJSON,
+		}, true
+	}
+
+	if allowPlainFinal && trimmedContent != "" {
+		return ChatResponse{
+			Status:   "final",
+			Role:     "assistant",
+			Content:  trimmedContent,
+			Thinking: trimmedThinking,
+		}, true
+	}
+
+	return ChatResponse{}, false
+}
+
 // handleChatMessageStructured drives the ReAct step with Ollama JSON mode
 // (format="json") to achieve deterministic tool-call parsing.  On the first
 // call the model is asked to produce a structuredChatReply; if parsing fails
@@ -929,39 +1076,14 @@ func handleChatMessageStructured(ctx context.Context, reqID, model, streamID str
 	const maxAttempts = 2
 	options := buildOllamaOptions(temperature, seed, nil)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		content, thinking, err := callOllamaViaProxy(ctx, model, streamID, msgs, "json", options)
+		content, thinking, nativeToolCalls, err := callOllamaViaProxy(ctx, model, streamID, msgs, "json", options)
 		if err != nil {
 			return errorResponse(reqID, fmt.Sprintf("ollama error: %v", err))
 		}
 
-		content = strings.TrimSpace(content)
-
-		var reply structuredChatReply
-		if jsonErr := json.Unmarshal([]byte(content), &reply); jsonErr == nil && reply.Status != "" {
-			switch reply.Status {
-			case "tool_call":
-				argsStr := "{}"
-				if len(reply.Args) > 0 {
-					argsStr = string(reply.Args)
-				}
-				chatResp := ChatResponse{
-					Status:   "tool_call",
-					Thinking: strings.TrimSpace(thinking),
-					Tool:     reply.Tool,
-					Args:     argsStr,
-				}
-				data, _ := json.Marshal(chatResp)
-				return &Response{ID: reqID, Success: true, Data: data}
-			case "final":
-				chatResp := ChatResponse{
-					Status:   "final",
-					Role:     "assistant",
-					Content:  reply.Content,
-					Thinking: strings.TrimSpace(thinking),
-				}
-				data, _ := json.Marshal(chatResp)
-				return &Response{ID: reqID, Success: true, Data: data}
-			}
+		if chatResp, ok := decodeStructuredChatResponse(content, thinking, nativeToolCalls, attempt == maxAttempts-1); ok {
+			data, _ := json.Marshal(chatResp)
+			return &Response{ID: reqID, Success: true, Data: data}
 		}
 
 		// JSON was invalid or status field missing — add a correction prompt
@@ -1027,12 +1149,45 @@ func buildOllamaMsgs(msgs []ChatMsg) []map[string]string {
 // over vsock (AF_VSOCK, host CID 2, port 1025).  The proxy validates the model
 // against the allowlist and proxies to the local Ollama service; this VM has no
 // network interface and cannot reach Ollama directly.
-func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []map[string]string, format string, options map[string]interface{}) (string, string, error) {
+type proxyToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Function struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+	} `json:"function"`
+}
+
+func parseProxyToolCall(toolCalls []proxyToolCall) (toolName, argsJSON string, found bool) {
+	for _, call := range toolCalls {
+		name := strings.TrimSpace(call.Function.Name)
+		if name == "" {
+			continue
+		}
+
+		args := "{}"
+		rawArgs := bytes.TrimSpace(call.Function.Arguments)
+		if len(rawArgs) > 0 {
+			var asString string
+			if err := json.Unmarshal(rawArgs, &asString); err == nil {
+				trimmed := strings.TrimSpace(asString)
+				if trimmed != "" && json.Valid([]byte(trimmed)) {
+					args = trimmed
+				}
+			} else if json.Valid(rawArgs) {
+				args = string(rawArgs)
+			}
+		}
+		return name, args, true
+	}
+	return "", "", false
+}
+
+func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []map[string]string, format string, options map[string]interface{}) (string, string, []proxyToolCall, error) {
 	// Dial host (CID 2) on the well-known LLM proxy port.
 	const proxyPort = 1025
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
-		return "", "", fmt.Errorf("vsock socket: %w", err)
+		return "", "", nil, fmt.Errorf("vsock socket: %w", err)
 	}
 
 	// Apply the context deadline as a socket-level timeout.
@@ -1040,7 +1195,7 @@ func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			unix.Close(fd)
-			return "", "", fmt.Errorf("context already expired")
+			return "", "", nil, fmt.Errorf("context already expired")
 		}
 		tv := unix.NsecToTimeval(remaining.Nanoseconds())
 		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
@@ -1053,7 +1208,7 @@ func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []
 	}
 	if err := unix.Connect(fd, sa); err != nil {
 		unix.Close(fd)
-		return "", "", fmt.Errorf("vsock connect to llm proxy: %w", err)
+		return "", "", nil, fmt.Errorf("vsock connect to llm proxy: %w", err)
 	}
 
 	// Wrap the raw fd in a net.Conn for JSON encode/decode.
@@ -1081,22 +1236,23 @@ func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []
 	}
 
 	if err := json.NewEncoder(conn).Encode(proxyReq); err != nil {
-		return "", "", fmt.Errorf("send proxy request: %w", err)
+		return "", "", nil, fmt.Errorf("send proxy request: %w", err)
 	}
 
 	var proxyResp struct {
-		RequestID string `json:"request_id"`
-		Content   string `json:"content,omitempty"`
-		Thinking  string `json:"thinking,omitempty"`
-		Error     string `json:"error,omitempty"`
+		RequestID string          `json:"request_id"`
+		Content   string          `json:"content,omitempty"`
+		Thinking  string          `json:"thinking,omitempty"`
+		ToolCalls []proxyToolCall `json:"tool_calls,omitempty"`
+		Error     string          `json:"error,omitempty"`
 	}
 	if err := json.NewDecoder(conn).Decode(&proxyResp); err != nil {
-		return "", "", fmt.Errorf("read proxy response: %w", err)
+		return "", "", nil, fmt.Errorf("read proxy response: %w", err)
 	}
 	if proxyResp.Error != "" {
-		return "", "", fmt.Errorf("llm proxy: %s", proxyResp.Error)
+		return "", "", nil, fmt.Errorf("llm proxy: %s", proxyResp.Error)
 	}
-	return proxyResp.Content, proxyResp.Thinking, nil
+	return proxyResp.Content, proxyResp.Thinking, proxyResp.ToolCalls, nil
 }
 
 func readUptime() string {
