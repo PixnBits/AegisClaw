@@ -20,6 +20,10 @@ package main
 //   - Scenario 7:  makeLookupListHandler API response shape contract
 //   - Scenario 8:  Nil lookup store returns error, not panic
 //   - Scenario 9:  Trace record integration — tool events for lookup calls
+//   - Scenario 10: ReActRunner FSM step-by-step with lookup_tools call
+//   - Scenario 11: lookup_tools via ReActRunner.Run full loop
+//   - Scenario 10: ReActRunner FSM step-by-step with lookup_tools call
+//   - Scenario 11: lookup_tools via ReActRunner.Run full loop
 
 import (
 	"context"
@@ -29,6 +33,8 @@ import (
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/lookup"
+	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
+	"github.com/PixnBits/AegisClaw/internal/testutil"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -479,5 +485,210 @@ func TestLookupIndexToolInvalidJSON(t *testing.T) {
 	_, err := reg.Execute(context.Background(), "lookup.index_tool", `not json at all`)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON args")
+	}
+}
+
+// ─── Scenario 10: ReActRunner FSM step-by-step with lookup_tools ─────────────
+//
+// Demonstrates that the ReAct FSM (added in origin/main commit 300cd6d)
+// correctly routes a lookup_tools call through the
+// Thinking→Acting→Observing→Thinking→Finalizing sequence.
+//
+// A minimal stubTaskExecutor drives the loop without the inprocesstest build
+// tag, keeping these tests runnable in every environment.
+
+// stubTaskExecutor implements rtexec.TaskExecutor by returning scripted
+// responses in order.  Panics if the script is exhausted.
+type stubTaskExecutor struct {
+	script []rtexec.AgentTurnResponse
+	idx    int
+}
+
+func (s *stubTaskExecutor) ExecuteTurn(_ context.Context, _ rtexec.AgentTurnRequest) (rtexec.AgentTurnResponse, error) {
+	if s.idx >= len(s.script) {
+		return rtexec.AgentTurnResponse{Status: "final", Content: "done"}, nil
+	}
+	resp := s.script[s.idx]
+	s.idx++
+	return resp, nil
+}
+
+func TestLookupJourneyReActRunnerStepByStep(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping lookup ReAct journey test in -short mode")
+	}
+
+	env := testEnvWithLookup(t)
+	ctx := context.Background()
+
+	// Pre-seed the lookup store so the query returns a result.
+	if err := env.LookupStore.IndexTool(ctx, lookup.ToolEntry{
+		Name:        "worker.submit",
+		Description: "Submit a background worker job for asynchronous execution",
+		SkillName:   "worker",
+	}); err != nil {
+		t.Fatalf("IndexTool: %v", err)
+	}
+
+	queryArgs := `{"query":"background jobs","max_results":3}`
+
+	executor := &stubTaskExecutor{script: []rtexec.AgentTurnResponse{
+		{
+			Status:   "tool_call",
+			Tool:     "lookup_tools",
+			Args:     queryArgs,
+			Thinking: "I need to find tools related to background jobs.",
+		},
+		{
+			Status:  "final",
+			Content: "Found worker.submit for background job execution.",
+		},
+	}}
+
+	reg := &ToolRegistry{env: env}
+	registerLookupTools(reg, env)
+
+	var transitions []rtexec.StateTransition
+	runner := rtexec.NewReActRunner(
+		executor,
+		func(c context.Context, tool, argsJSON string) (string, error) {
+			return reg.Execute(c, tool, argsJSON)
+		},
+		"find background job tools",
+		rtexec.WithMaxIterations(5),
+		rtexec.WithSeed(testutil.TestOllamaSeed),
+		rtexec.WithOnTransition(func(tr rtexec.StateTransition) {
+			transitions = append(transitions, tr)
+		}),
+	)
+
+	// ── Step 1: Thinking → Acting ─────────────────────────────────────────────
+	res1 := runner.Step(ctx)
+	if res1.Err != nil {
+		t.Fatalf("step1 (Thinking→Acting): %v", res1.Err)
+	}
+	if res1.State != rtexec.StateActing {
+		t.Errorf("step1 state = %v, want Acting", res1.State)
+	}
+	if res1.ToolCalled != "lookup_tools" {
+		t.Errorf("step1 ToolCalled = %q, want lookup_tools", res1.ToolCalled)
+	}
+
+	// ── Step 2: Acting → Observing ────────────────────────────────────────────
+	res2 := runner.Step(ctx)
+	if res2.Err != nil {
+		t.Fatalf("step2 (Acting→Observing): %v", res2.Err)
+	}
+	if res2.State != rtexec.StateObserving {
+		t.Errorf("step2 state = %v, want Observing", res2.State)
+	}
+	if res2.ToolErr != nil {
+		t.Errorf("step2 ToolErr should be nil (lookup succeeded), got: %v", res2.ToolErr)
+	}
+
+	// ── Step 3: Observing → Thinking ──────────────────────────────────────────
+	res3 := runner.Step(ctx)
+	if res3.Err != nil {
+		t.Fatalf("step3 (Observing→Thinking): %v", res3.Err)
+	}
+	if res3.State != rtexec.StateThinking {
+		t.Errorf("step3 state = %v, want Thinking", res3.State)
+	}
+
+	// ── Step 4: Thinking → Finalizing ─────────────────────────────────────────
+	res4 := runner.Step(ctx)
+	if res4.Err != nil {
+		t.Fatalf("step4 (Thinking→Finalizing): %v", res4.Err)
+	}
+	if res4.State != rtexec.StateFinalizing {
+		t.Errorf("step4 state = %v, want Finalizing", res4.State)
+	}
+	if !strings.Contains(res4.FinalAnswer, "worker.submit") {
+		t.Errorf("FinalAnswer should mention worker.submit, got: %q", res4.FinalAnswer)
+	}
+
+	// ── Assert complete transition sequence ───────────────────────────────────
+	want := []struct{ from, to rtexec.State }{
+		{rtexec.StateThinking, rtexec.StateActing},
+		{rtexec.StateActing, rtexec.StateObserving},
+		{rtexec.StateObserving, rtexec.StateThinking},
+		{rtexec.StateThinking, rtexec.StateFinalizing},
+	}
+	if len(transitions) != len(want) {
+		t.Fatalf("transitions = %d, want %d: %v", len(transitions), len(want), transitions)
+	}
+	for i, w := range want {
+		if transitions[i].From != w.from || transitions[i].To != w.to {
+			t.Errorf("transition[%d] = %v→%v, want %v→%v",
+				i, transitions[i].From, transitions[i].To, w.from, w.to)
+		}
+	}
+	if runner.ToolCallCount() != 1 {
+		t.Errorf("ToolCallCount = %d, want 1", runner.ToolCallCount())
+	}
+}
+
+// ─── Scenario 11: lookup_tools via ReActRunner.Run full loop ─────────────────
+//
+// Uses ReActRunner.Run to exercise the full loop without step-by-step control,
+// verifying result fields (FinalAnswer, ToolCallCount, Iterations).
+
+func TestLookupJourneyReActRunnerRunFull(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping lookup ReAct full-run journey test in -short mode")
+	}
+
+	env := testEnvWithLookup(t)
+	ctx := context.Background()
+
+	// Seed the store with two tools.
+	for _, te := range []lookup.ToolEntry{
+		{Name: "proposal.create_draft", Description: "Create a new skill proposal draft", SkillName: "proposal"},
+		{Name: "proposal.submit", Description: "Submit a proposal for court review", SkillName: "proposal"},
+	} {
+		if err := env.LookupStore.IndexTool(ctx, te); err != nil {
+			t.Fatalf("IndexTool %q: %v", te.Name, err)
+		}
+	}
+
+	executor := &stubTaskExecutor{script: []rtexec.AgentTurnResponse{
+		{
+			Status:   "tool_call",
+			Tool:     "lookup_tools",
+			Args:     `{"query":"proposal governance","max_results":5}`,
+			Thinking: "Look up proposal governance tools.",
+		},
+		{
+			Status:  "final",
+			Content: "I found proposal.create_draft and proposal.submit for governance.",
+		},
+	}}
+
+	reg := &ToolRegistry{env: env}
+	registerLookupTools(reg, env)
+
+	runner := rtexec.NewReActRunner(
+		executor,
+		func(c context.Context, tool, argsJSON string) (string, error) {
+			return reg.Execute(c, tool, argsJSON)
+		},
+		"find proposal governance tools",
+		rtexec.WithMaxIterations(5),
+		rtexec.WithSeed(testutil.TestOllamaSeed),
+	)
+
+	result, err := runner.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !strings.Contains(result.FinalAnswer, "proposal") {
+		t.Errorf("FinalAnswer should mention proposal, got: %q", result.FinalAnswer)
+	}
+	if result.ToolCallCount != 1 {
+		t.Errorf("ToolCallCount = %d, want 1", result.ToolCallCount)
+	}
+	if result.Iterations != 2 {
+		t.Errorf("Iterations = %d, want 2", result.Iterations)
 	}
 }

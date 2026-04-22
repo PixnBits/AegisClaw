@@ -123,7 +123,7 @@ record-cassette-solar:
 ## record-cassette-tutorial: re-record the first-skill-tutorial live cassette.
 record-cassette-tutorial:
 	RECORD_OLLAMA=true \
-	  go test ./cmd/aegisclaw \
+	  go test ./cmd/aegisclaw -tags=livetest \
 	    -run TestFirstSkillTutorialLive \
 	    -count=1 -timeout 60m -v
 
