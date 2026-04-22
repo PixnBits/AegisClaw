@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/dnaeon/go-vcr/v2 v2.1.0
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/go-git/go-git/v5 v5.17.0
 	github.com/google/uuid v1.6.0

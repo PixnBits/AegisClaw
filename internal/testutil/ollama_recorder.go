@@ -33,6 +33,11 @@ var uuidLikePattern = regexp.MustCompile(
 		`|[0-9a-fA-F]{8}`,
 )
 
+// Normalize volatile datetime formats that may appear in tool outputs and
+// later be echoed back in the next model request payload.
+var dateTimeLikePattern = regexp.MustCompile(
+	`\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}|\s+[A-Z]{2,5})?\b`,
+)
 // Float64 returns a pointer to v for APIs that need to distinguish
 // temperature=0 from "temperature not set".
 func Float64(v float64) *float64 {
@@ -132,14 +137,20 @@ func normalizeJSONBody(body []byte) string {
 	}
 	var decoded any
 	if err := json.Unmarshal(trimmed, &decoded); err != nil {
-		return uuidLikePattern.ReplaceAllString(string(trimmed), "<id>")
+		return normalizeVolatileString(string(trimmed))
 	}
 	normalizeJSONValue(decoded)
 	canonical, err := json.Marshal(decoded)
 	if err != nil {
-		return uuidLikePattern.ReplaceAllString(string(trimmed), "<id>")
+		return normalizeVolatileString(string(trimmed))
 	}
 	return string(canonical)
+}
+
+func normalizeVolatileString(input string) string {
+	normalized := uuidLikePattern.ReplaceAllString(input, "<id>")
+	normalized = dateTimeLikePattern.ReplaceAllString(normalized, "<datetime>")
+	return normalized
 }
 
 func normalizeJSONValue(value any) {
@@ -148,7 +159,7 @@ func normalizeJSONValue(value any) {
 		for key, inner := range typed {
 			switch cast := inner.(type) {
 			case string:
-				typed[key] = uuidLikePattern.ReplaceAllString(cast, "<id>")
+				typed[key] = normalizeVolatileString(cast)
 			default:
 				normalizeJSONValue(cast)
 			}
@@ -157,7 +168,7 @@ func normalizeJSONValue(value any) {
 		for idx, inner := range typed {
 			switch cast := inner.(type) {
 			case string:
-				typed[idx] = uuidLikePattern.ReplaceAllString(cast, "<id>")
+				typed[idx] = normalizeVolatileString(cast)
 			default:
 				normalizeJSONValue(cast)
 			}

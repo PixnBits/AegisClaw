@@ -9,8 +9,8 @@ recordings of Ollama exchanges for live integration tests.
   YAML cassettes without touching a live Ollama daemon.  Tests skip
   automatically when the cassette is missing.
 - **Set `RECORD_OLLAMA=true`** to hit a live Ollama instance and write a fresh
-  cassette.  The recorder normalises UUIDs and re-orders JSON keys so cassettes
-  stay deterministic across re-recordings.
+  cassette.  The recorder normalises UUIDs, short hex IDs, and volatile
+  datetime strings so cassettes stay deterministic across re-recordings.
 
 ## Cassette inventory
 
@@ -19,7 +19,7 @@ recordings of Ollama exchanges for live integration tests.
 | `chat-message-time-live.yaml` | `TestChatMessageLiveScenarioTimeQuestion` | "What time is it in Phoenix?" |
 | `chat-message-hello-world-live.yaml` | `TestChatMessageLiveScenarioHelloWorldSkill` | Full proposal create → submit → court review → activate → invoke |
 | `chat-message-solar-live.yaml` | `TestChatMessageLiveScenarioSolarSizing` | Solar panel sizing calculation |
-| `first-skill-tutorial-live.yaml` | `TestFirstSkillTutorialLive` | End-to-end first-skill tutorial |
+| `first-skill-tutorial-live.yaml` | `TestFirstSkillTutorialLive` (livetest), `TestFirstSkillTutorialInProcess` (inprocesstest) | End-to-end first-skill tutorial |
 
 ## Prerequisites for recording
 
@@ -65,7 +65,7 @@ make record-cassette-tutorial
 Or invoke `go test` directly:
 
 ```bash
-RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestChatMessageLiveScenarioTimeQuestion -v -count=1
+sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenarioTimeQuestion$' -v -count=1
 ```
 
 ## When to regenerate
@@ -89,5 +89,6 @@ The recorder helper (`internal/testutil/ollama_recorder`) injects:
 - **seed = 42** — makes token selection fully deterministic for models that
   support the `seed` parameter
 
-UUID-like strings in request bodies are normalised to `<id>` before matching
-so cassettes survive across runs that generate different IDs.
+UUID-like strings, short hex IDs, and volatile datetime strings in request
+bodies are normalised before matching so cassettes survive across runs that
+generate different IDs or timestamps.

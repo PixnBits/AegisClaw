@@ -171,20 +171,42 @@ When a test does call Ollama, use deterministic settings and recorded HTTP
 cassettes by default:
 
 ```bash
-# Replay recorded cassettes (default — no live Ollama needed)
-go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
-
-# Refresh a single cassette with a live Ollama daemon
-RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
-
-# Refresh all cassettes in one step (requires root + KVM + Ollama)
-make record-cassettes
+# Refresh cassette intentionally (requires root + KVM + rootfs + Ollama):
+sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run '^TestFirstSkillTutorialLive$' -v -count=1
 ```
+
+Use replay mode by default (no live Ollama required):
+
+```bash
+sudo "$(command -v go)" test ./cmd/aegisclaw -run '^TestFirstSkillTutorialLive$' -v -count=1
+```
+
+Other cassette-backed live tests (chat scenarios):
+
+```bash
+# Replay existing cassettes for all chat live scenarios:
+sudo "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
+
+# Refresh chat scenario cassettes intentionally against live Ollama:
+sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
+```
+
+These chat live tests map to cassettes in `testdata/cassettes/`:
+- `TestChatMessageLiveScenarioTimeQuestion` → `chat-message-time-live.yaml`
+- `TestChatMessageLiveScenarioHelloWorldSkill` → `chat-message-hello-world-live.yaml`
+- `TestChatMessageLiveScenarioSolarSizing` → `chat-message-solar-live.yaml`
+
+`TestFirstSkillTutorialLive` now lives in `first_skill_tutorial_live_test.go`
+with a `//go:build livetest` guard (fails fast on missing prerequisites instead
+of skipping). `TestFirstSkillTutorialInProcess` in
+`first_skill_tutorial_inprocess_test.go` runs the same flow without KVM via
+`InProcessSandboxLauncher` and the existing cassettes.
 
 Recorded responses are stored under `testdata/cassettes/`. Replay mode is the
 default, so normal test runs stay fast and do not require a live Ollama daemon.
 The recorder only refreshes cassettes when `RECORD_OLLAMA=true` is set.  See
 `testdata/cassettes/README.md` for the full cassette inventory and prerequisites.
+Use `make record-cassettes` to refresh all at once.
 
 #### Two safety guards (both required)
 
@@ -256,12 +278,15 @@ purpose).
 4. For Ollama-backed integration tests, replay the recorded cassettes by
    default and only refresh them intentionally:
    ```bash
-   # Replay (default — fast, no Ollama needed)
-   go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
-   # Refresh one cassette
-   RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v
+   # Replay (default — fast, no Ollama/KVM needed)
+   sudo "$(command -v go)" test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v -count=1
+   # Refresh one cassette (requires root + KVM + Ollama)
+   sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v -count=1
    # Refresh all cassettes in one step
    make record-cassettes
+   # Chat scenario cassettes (replay/record)
+   sudo "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
+   sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
    ```
 5. Update or regenerate golden traces if your change intentionally alters
    tool call sequences or final answers:

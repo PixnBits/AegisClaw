@@ -292,10 +292,52 @@ func TestChatMessageLiveScenarioHelloWorldSkill(t *testing.T) {
 			if !strings.Contains(invokeLower, "copilot") && !strings.Contains(invokeLower, "greet") {
 				t.Fatalf("expected invoked skill result to include Copilot context or greet output, got %q", invokeOut.Content)
 			}
+
+			// ── Improvement 3: portal trace assertions ─────────────────────────────
+			// Assert that the ToolEvent buffer contains entries for the key tools
+			// exercised in this scenario.  These assertions catch regressions in the
+			// event pipeline (e.g. RecordStart/RecordFinish not being called).
+			requireToolEvent(t, env, "proposal.create_draft")
+			requireToolEvent(t, env, "proposal.submit")
+			requireToolEvent(t, env, "activate_skill")
+			requireToolEvent(t, env, stored.TargetSkill+".greet")
+
+			// Assert at least one tool_call ThoughtEvent was recorded across the run.
+			requireThoughtPhase(t, env, "tool_call")
 		},
 	)
 }
 
+// requireToolEvent asserts that env.ToolEvents contains at least one "finish"
+// phase event for the given tool name.
+func requireToolEvent(t *testing.T, env *runtimeEnv, toolName string) {
+	t.Helper()
+	if env.ToolEvents == nil {
+		t.Fatalf("ToolEvents buffer is nil; expected tool event for %q", toolName)
+	}
+	for _, ev := range env.ToolEvents.Recent(400) {
+		if ev.Tool == toolName && ev.Phase == "finish" {
+			return
+		}
+	}
+	t.Errorf("expected ToolEvent{tool=%q, phase=finish} but not found; recorded events: %v",
+		toolName, env.ToolEvents.Recent(400))
+}
+
+// requireThoughtPhase asserts that env.ThoughtEvents contains at least one
+// event with the given phase (e.g. "tool_call", "tool_result", "model_thinking").
+func requireThoughtPhase(t *testing.T, env *runtimeEnv, phase string) {
+	t.Helper()
+	if env.ThoughtEvents == nil {
+		t.Fatalf("ThoughtEvents buffer is nil; expected at least one %q phase event", phase)
+	}
+	for _, ev := range env.ThoughtEvents.Recent(600) {
+		if ev.Phase == phase {
+			return
+		}
+	}
+	t.Errorf("expected at least one ThoughtEvent with phase=%q but none found", phase)
+}
 func TestChatMessageLiveScenarioSolarSizing(t *testing.T) {
 	runChatMessageLiveScenario(
 		t,
