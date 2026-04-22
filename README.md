@@ -95,8 +95,7 @@ ollama pull mistral-nemo
 ```bash
 git clone https://github.com/PixnBits/AegisClaw.git
 cd AegisClaw
-go build -o aegisclaw ./cmd/aegisclaw
-go build -o guest-agent ./cmd/guest-agent
+make build-binaries
 ```
 
 ### 2. Initialize
@@ -113,10 +112,7 @@ The daemon requires dedicated rootfs images for AegisHub (IPC router) and the
 web portal microVM.
 
 ```bash
-sudo ./scripts/build-rootfs.sh --target=aegishub
-sudo ./scripts/build-rootfs.sh --target=portal
-sudo ./scripts/build-rootfs.sh --target=guest
-sudo ./scripts/build-builder-rootfs.sh /var/lib/aegisclaw/rootfs-templates/builder.ext4
+make build-rootfs
 ```
 
 ### 4. Start the Daemon

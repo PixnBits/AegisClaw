@@ -1,7 +1,13 @@
 # AegisClaw — Makefile
 #
 # Targets:
-#   build                      — build the aegisclaw and guest-agent binaries
+#   build                      — build everything (binaries + rootfs images)
+#   build-binaries             — build the aegisclaw and guest-agent binaries only
+#   build-rootfs               — build all microVM rootfs images
+#   build-rootfs-guest         — build guest-agent rootfs (default sandbox images)
+#   build-rootfs-aegishub      — build AegisHub system microVM rootfs
+#   build-rootfs-portal        — build dashboard portal microVM rootfs
+#   build-rootfs-builder       — build builder rootfs (Go + git + dev tools)
 #   test                       — run all unit and integration tests (no Firecracker required)
 #   test-short                 — run only fast unit tests (skip heavy journey tests)
 #   test-inprocess             — run in-process integration tests (test-only, no KVM needed)
@@ -17,7 +23,8 @@ BINARY_AEGISCLAW  := aegisclaw
 BINARY_GUEST_AGENT := guest-agent
 GOFLAGS           :=
 
-.PHONY: build test test-short test-inprocess \
+.PHONY: build build-binaries build-rootfs build-rootfs-guest build-rootfs-aegishub \
+        build-rootfs-portal build-rootfs-builder test test-short test-inprocess \
         record-cassettes \
         record-cassette-time record-cassette-hello-world \
         record-cassette-solar record-cassette-tutorial \
@@ -25,9 +32,44 @@ GOFLAGS           :=
 
 # ── build ─────────────────────────────────────────────────────────────────────
 
-build:
+## build: build everything (binaries and all microVM rootfs images).
+build: build-binaries build-rootfs
+
+## build-binaries: build the aegisclaw and guest-agent binaries only.
+build-binaries:
 	go build $(GOFLAGS) -o $(BINARY_AEGISCLAW) ./cmd/aegisclaw
 	go build $(GOFLAGS) -o $(BINARY_GUEST_AGENT) ./cmd/guest-agent
+
+# ── build-rootfs ──────────────────────────────────────────────────────────────
+#
+# Build microVM rootfs images for Firecracker sandboxes.
+#
+# Prerequisites:
+#   - root privileges (sudo)
+#   - e2fsprogs (mkfs.ext4, e2fsck, resize2fs)
+#   - For builder rootfs: docker
+#
+# The images are installed to /var/lib/aegisclaw/rootfs-templates/
+#
+
+## build-rootfs: build all microVM rootfs images.
+build-rootfs: build-rootfs-guest build-rootfs-aegishub build-rootfs-portal build-rootfs-builder
+
+## build-rootfs-guest: build guest-agent rootfs (default sandbox VMs: agent, court, builder, skills).
+build-rootfs-guest:
+	sudo ./scripts/build-rootfs.sh --target=guest
+
+## build-rootfs-aegishub: build AegisHub system microVM rootfs (IPC router).
+build-rootfs-aegishub:
+	sudo ./scripts/build-rootfs.sh --target=aegishub
+
+## build-rootfs-portal: build dashboard portal microVM rootfs.
+build-rootfs-portal:
+	sudo ./scripts/build-rootfs.sh --target=portal
+
+## build-rootfs-builder: build builder rootfs (Go + git + golangci-lint + staticcheck + make).
+build-rootfs-builder:
+	sudo ./scripts/build-builder-rootfs.sh /var/lib/aegisclaw/rootfs-templates/builder.ext4
 
 # ── test ──────────────────────────────────────────────────────────────────────
 
