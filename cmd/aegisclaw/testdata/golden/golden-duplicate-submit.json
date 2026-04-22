@@ -1,0 +1,65 @@
+{
+  "trace_id": "golden-duplicate-submit",
+  "input": "create then submit the same proposal twice",
+  "events": [
+    {
+      "type": "thought",
+      "content": "I will create a proposal first.",
+      "timestamp": "2026-04-17T14:18:28.591557395Z"
+    },
+    {
+      "type": "tool_called",
+      "tool": "proposal.create_draft",
+      "args": "{\"title\":\"Idempotent Submit\",\"description\":\"test double-submit\",\"skill_name\":\"idem-skill\",\"tools\":[{\"name\":\"act\",\"description\":\"acts\"}],\"data_sensitivity\":1,\"network_exposure\":1,\"privilege_level\":1}",
+      "timestamp": "2026-04-17T14:18:28.591557716Z"
+    },
+    {
+      "type": "tool_result",
+      "tool": "proposal.create_draft",
+      "success": true,
+      "timestamp": "2026-04-17T14:18:28.60135197Z"
+    },
+    {
+      "type": "thought",
+      "content": "I will submit the proposal.",
+      "timestamp": "2026-04-17T14:18:28.601352721Z"
+    },
+    {
+      "type": "tool_called",
+      "tool": "proposal.submit",
+      "args": "{\"id\":\"74560e4b-18c7-4188-b632-25e7a6a499e6\"}",
+      "timestamp": "2026-04-17T14:18:28.601353783Z"
+    },
+    {
+      "type": "tool_result",
+      "tool": "proposal.submit",
+      "success": true,
+      "timestamp": "2026-04-17T14:18:28.606761183Z"
+    },
+    {
+      "type": "thought",
+      "content": "Attempting submit again to verify idempotency.",
+      "timestamp": "2026-04-17T14:18:28.606761513Z"
+    },
+    {
+      "type": "tool_called",
+      "tool": "proposal.submit",
+      "args": "{\"id\":\"74560e4b-18c7-4188-b632-25e7a6a499e6\"}",
+      "timestamp": "2026-04-17T14:18:28.606761614Z"
+    },
+    {
+      "type": "tool_result",
+      "tool": "proposal.submit",
+      "success": true,
+      "timestamp": "2026-04-17T14:18:28.607157779Z"
+    },
+    {
+      "type": "task_complete",
+      "content": "Double-submit of proposal 74560e4b-18c7-4188-b632-25e7a6a499e6 handled correctly.",
+      "timestamp": "2026-04-17T14:18:28.60715824Z"
+    }
+  ],
+  "final_answer": "Double-submit of proposal 74560e4b-18c7-4188-b632-25e7a6a499e6 handled correctly.",
+  "tool_call_count": 3,
+  "iterations": 3
+}

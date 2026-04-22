@@ -235,25 +235,25 @@ func runChat(cmd *cobra.Command, args []string) error {
 		// proposal store and are latency-sensitive for the wizard flow.
 		switch call.Name {
 		case "proposal.create_draft":
-			result, toolErr = handleProposalCreateDraft(env, call.Args)
+			result, toolErr = handleProposalCreateDraft(env, cmd.Context(), call.Args)
 			return result, toolErr
 		case "proposal.update_draft":
-			result, toolErr = handleProposalUpdateDraft(env, call.Args)
+			result, toolErr = handleProposalUpdateDraft(env, cmd.Context(), call.Args)
 			return result, toolErr
 		case "proposal.get_draft":
-			result, toolErr = handleProposalGetDraft(env, call.Args)
+			result, toolErr = handleProposalGetDraft(env, cmd.Context(), call.Args)
 			return result, toolErr
 		case "proposal.list_drafts":
-			result, toolErr = handleProposalListDrafts(env)
+			result, toolErr = handleProposalListDrafts(env, cmd.Context())
 			return result, toolErr
 		case "proposal.submit":
 			result, toolErr = handleProposalSubmit(env, daemonClient, cmd.Context(), call.Args)
 			return result, toolErr
 		case "proposal.status":
-			result, toolErr = handleProposalStatus(env, call.Args)
+			result, toolErr = handleProposalStatus(env, cmd.Context(), call.Args)
 			return result, toolErr
 		case "proposal.reviews":
-			result, toolErr = handleProposalReviews(env, call.Args)
+			result, toolErr = handleProposalReviews(env, cmd.Context(), call.Args)
 			return result, toolErr
 		case "proposal.vote":
 			result, toolErr = handleProposalVote(env, cmd.Context(), call.Args)
@@ -824,7 +824,7 @@ func dedupeStrings(in []string) []string {
 }
 
 // handleProposalCreateDraft creates a new draft proposal from LLM-collected fields.
-func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error) {
+func handleProposalCreateDraft(env *runtimeEnv, ctx context.Context, argsJSON string) (string, error) {
 	var args createDraftArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
@@ -953,6 +953,7 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 
 	payload, _ := json.Marshal(map[string]interface{}{
 		"proposal_id": p.ID, "title": p.Title, "skill_name": result.SkillName,
+		"trace_id": reActTraceIDFromContext(ctx),
 	})
 	action := kernel.NewAction(kernel.ActionProposalCreate, "chat", payload)
 	env.Kernel.SignAndLog(action)
@@ -973,7 +974,7 @@ func handleProposalCreateDraft(env *runtimeEnv, argsJSON string) (string, error)
 }
 
 // handleProposalUpdateDraft updates fields on an existing draft proposal.
-func handleProposalUpdateDraft(env *runtimeEnv, argsJSON string) (string, error) {
+func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON string) (string, error) {
 	// Use json.RawMessage for array fields so we can apply lenient
 	// coercion for small LLMs that serialize arrays as strings.
 	var raw struct {
@@ -1218,7 +1219,7 @@ func coerceIntSlice(raw json.RawMessage) []int {
 }
 
 // handleProposalGetDraft loads and returns a proposal's details.
-func handleProposalGetDraft(env *runtimeEnv, argsJSON string) (string, error) {
+func handleProposalGetDraft(env *runtimeEnv, ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
 		ID string `json:"id"`
 	}
@@ -1274,7 +1275,7 @@ func handleProposalGetDraft(env *runtimeEnv, argsJSON string) (string, error) {
 }
 
 // handleProposalListDrafts returns all proposals, showing drafts prominently.
-func handleProposalListDrafts(env *runtimeEnv) (string, error) {
+func handleProposalListDrafts(env *runtimeEnv, ctx context.Context) (string, error) {
 	summaries, err := env.ProposalStore.List()
 	if err != nil {
 		return "", err
@@ -1322,7 +1323,10 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
-	payload, _ := json.Marshal(map[string]string{"proposal_id": p.ID})
+	payload, _ := json.Marshal(map[string]string{
+		"proposal_id": p.ID,
+		"trace_id":    reActTraceIDFromContext(ctx),
+	})
 	action := kernel.NewAction(kernel.ActionProposalSubmit, "chat", payload)
 	env.Kernel.SignAndLog(action)
 
@@ -1363,7 +1367,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 }
 
 // handleProposalStatus checks the current status of a proposal.
-func handleProposalStatus(env *runtimeEnv, argsJSON string) (string, error) {
+func handleProposalStatus(env *runtimeEnv, ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
 		ID string `json:"id"`
 	}
@@ -1436,7 +1440,10 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
-	payload, _ := json.Marshal(map[string]string{"proposal_id": p.ID})
+	payload, _ := json.Marshal(map[string]string{
+		"proposal_id": p.ID,
+		"trace_id":    reActTraceIDFromContext(ctx),
+	})
 	action := kernel.NewAction(kernel.ActionProposalSubmit, "agent", payload)
 	env.Kernel.SignAndLog(action)
 
@@ -1457,7 +1464,7 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 }
 
 // handleProposalReviews returns detailed review feedback for a proposal.
-func handleProposalReviews(env *runtimeEnv, argsJSON string) (string, error) {
+func handleProposalReviews(env *runtimeEnv, ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
 		ID string `json:"id"`
 	}

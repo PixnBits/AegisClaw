@@ -661,6 +661,8 @@ type ReviewExecutePayload struct {
 	Prompt      string          `json:"prompt"`
 	Model       string          `json:"model"`
 	Round       int             `json:"round"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	Seed        int64           `json:"seed,omitempty"`
 }
 
 // handleReviewExecute runs a Court review inside this sandbox (D1).
@@ -705,7 +707,8 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 		{"role": "system", "content": payload.Prompt},
 		{"role": "user", "content": userMsg.String()},
 	}
-	options := map[string]interface{}{"temperature": 0.3}
+	defaultTemperature := 0.3
+	options := buildOllamaOptions(payload.Temperature, payload.Seed, &defaultTemperature)
 
 	proxyCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
@@ -734,9 +737,11 @@ func handleReviewExecute(ctx context.Context, req *Request) *Response {
 
 // ChatMessagePayload is received from the daemon for D2 (main-agent sandbox).
 type ChatMessagePayload struct {
-	Messages []ChatMsg `json:"messages"`
-	Model    string    `json:"model"`
-	StreamID string    `json:"stream_id,omitempty"`
+	Messages    []ChatMsg `json:"messages"`
+	Model       string    `json:"model"`
+	StreamID    string    `json:"stream_id,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
+	Seed        int64     `json:"seed,omitempty"`
 	// StructuredOutput, when true, instructs the agent VM to enforce JSON-format
 	// responses from Ollama and validate tool-call JSON before returning.
 	// This is the Phase 0 structured output enforcement mechanism.
@@ -910,10 +915,10 @@ func handleChatMessage(ctx context.Context, req *Request) *Response {
 	defer cancel()
 
 	if payload.StructuredOutput {
-		return handleChatMessageStructured(callCtx, req.ID, payload.Model, payload.StreamID, ollamaMsgs)
+		return handleChatMessageStructured(callCtx, req.ID, payload.Model, payload.StreamID, ollamaMsgs, payload.Temperature, payload.Seed)
 	}
 
-	content, thinking, nativeToolCalls, err := callOllamaViaProxy(callCtx, payload.Model, payload.StreamID, ollamaMsgs, "", nil)
+	content, thinking, nativeToolCalls, err := callOllamaViaProxy(callCtx, payload.Model, payload.StreamID, ollamaMsgs, "", buildOllamaOptions(payload.Temperature, payload.Seed, nil))
 	if err != nil {
 		return errorResponse(req.ID, fmt.Sprintf("ollama error: %v", err))
 	}
@@ -1067,10 +1072,11 @@ func decodeStructuredChatResponse(content, thinking string, nativeToolCalls []pr
 // (format="json") to achieve deterministic tool-call parsing.  On the first
 // call the model is asked to produce a structuredChatReply; if parsing fails
 // we retry once with an explicit correction prompt before giving up.
-func handleChatMessageStructured(ctx context.Context, reqID, model, streamID string, msgs []map[string]string) *Response {
+func handleChatMessageStructured(ctx context.Context, reqID, model, streamID string, msgs []map[string]string, temperature *float64, seed int64) *Response {
 	const maxAttempts = 2
+	options := buildOllamaOptions(temperature, seed, nil)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		content, thinking, nativeToolCalls, err := callOllamaViaProxy(ctx, model, streamID, msgs, "json", nil)
+		content, thinking, nativeToolCalls, err := callOllamaViaProxy(ctx, model, streamID, msgs, "json", options)
 		if err != nil {
 			return errorResponse(reqID, fmt.Sprintf("ollama error: %v", err))
 		}
@@ -1091,6 +1097,26 @@ func handleChatMessageStructured(ctx context.Context, reqID, model, streamID str
 	}
 
 	return errorResponse(reqID, "structured output enforcement: model did not return valid JSON after retries")
+}
+
+func buildOllamaOptions(temperature *float64, seed int64, defaultTemperature *float64) map[string]interface{} {
+	var options map[string]interface{}
+	add := func(key string, value interface{}) {
+		if options == nil {
+			options = make(map[string]interface{}, 2)
+		}
+		options[key] = value
+	}
+	if defaultTemperature != nil {
+		add("temperature", *defaultTemperature)
+	}
+	if temperature != nil {
+		add("temperature", *temperature)
+	}
+	if seed != 0 {
+		add("seed", seed)
+	}
+	return options
 }
 
 // buildOllamaMsgs converts ChatMsg slice into the format Ollama expects.

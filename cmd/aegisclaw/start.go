@@ -122,6 +122,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// It runs once immediately if compact_on_startup is set, then daily.
 	startMemoryCompactionDaemon(cmd.Context(), env)
 
+	// Seed the semantic lookup store with all built-in daemon tools so
+	// lookup_tools can find them immediately on the first query.
+	seedLookupStore(cmd.Context(), env, toolRegistry)
+
 	// Phase 2: Start the background event bus timer daemon.
 	// Fires due timers and dispatches wakeup events.
 	startEventBusDaemon(cmd.Context(), env)
@@ -181,6 +185,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Phase 1: Memory handlers for dashboard/API access.
 	apiSrv.Handle("memory.list", makeMemoryListHandler(env))
 	apiSrv.Handle("memory.search", makeMemorySearchHandler(env))
+	// Lookup: semantic tool-lookup handlers.
+	apiSrv.Handle("lookup.search", makeLookupSearchHandler(env))
+	apiSrv.Handle("lookup.list", makeLookupListHandler(env))
 	// Phase 3: Worker handlers.
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
@@ -385,22 +392,42 @@ func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
 			return &api.Response{Error: "skill name is required"}
 		}
 
-		// Check if already active.
+		// Check if already active and the sandbox is still running.
 		if existing, ok := env.Registry.Get(req.Name); ok {
 			if existing.State == sandbox.SkillStateActive {
-				pid := 0
-				if info, err := env.Runtime.Status(ctx, existing.SandboxID); err == nil {
-					pid = info.PID
+				info, statusErr := env.Runtime.Status(ctx, existing.SandboxID)
+				if statusErr == nil && info.State == sandbox.StateRunning {
+					respData, _ := json.Marshal(map[string]interface{}{
+						"name":       existing.Name,
+						"sandbox_id": existing.SandboxID,
+						"pid":        info.PID,
+						"version":    existing.Version,
+						"hash":       existing.MerkleHash[:16],
+						"root_hash":  env.Registry.RootHash()[:16],
+					})
+					return &api.Response{Success: true, Data: respData}
 				}
-				respData, _ := json.Marshal(map[string]interface{}{
-					"name":       existing.Name,
-					"sandbox_id": existing.SandboxID,
-					"pid":        pid,
-					"version":    existing.Version,
-					"hash":       existing.MerkleHash[:16],
-					"root_hash":  env.Registry.RootHash()[:16],
-				})
-				return &api.Response{Success: true, Data: respData}
+				// The sandbox has stopped or is unreachable — deregister so we can
+				// launch a fresh one below.
+				env.Logger.Warn("skill registry shows active but sandbox is not running; re-activating",
+					zap.String("skill", req.Name),
+					zap.String("sandbox_id", existing.SandboxID),
+					zap.Error(statusErr),
+				)
+				if deactivateErr := env.Registry.Deactivate(req.Name); deactivateErr != nil {
+					env.Logger.Error("failed to deactivate stale registry entry",
+						zap.String("skill", req.Name),
+						zap.Error(deactivateErr),
+					)
+				}
+				// Best-effort cleanup of the stale sandbox process; errors are logged
+				// at debug level so failures don't mask the subsequent re-launch.
+				if stopErr := env.Runtime.Stop(ctx, existing.SandboxID); stopErr != nil {
+					env.Logger.Debug("stop stale sandbox", zap.String("sandbox_id", existing.SandboxID), zap.Error(stopErr))
+				}
+				if delErr := env.Runtime.Delete(ctx, existing.SandboxID); delErr != nil {
+					env.Logger.Debug("delete stale sandbox", zap.String("sandbox_id", existing.SandboxID), zap.Error(delErr))
+				}
 			}
 		}
 

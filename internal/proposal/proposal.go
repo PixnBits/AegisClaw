@@ -356,6 +356,39 @@ func (p *Proposal) IsApproved() bool {
 	return false
 }
 
+// IsSandboxedLowRisk returns true when the proposal meets all conditions for
+// automatic approval without LLM court review:
+//   - overall risk is "low" (all three risk dimensions score 1)
+//   - network policy is default-deny with no allowed hosts
+//   - no secrets references
+//   - no elevated capabilities (network, host devices, cross-session access)
+//
+// Engine callers may use this to short-circuit expensive LLM reviewer rounds
+// when the skill is fully isolated and carries minimal privilege.
+func (p *Proposal) IsSandboxedLowRisk() bool {
+	if p.Risk != RiskLow {
+		return false
+	}
+	if p.NetworkPolicy == nil || !p.NetworkPolicy.DefaultDeny {
+		return false
+	}
+	if len(p.NetworkPolicy.AllowedHosts) > 0 {
+		return false
+	}
+	if len(p.SecretsRefs) > 0 {
+		return false
+	}
+	if p.Capabilities != nil {
+		if p.Capabilities.Network ||
+			len(p.Capabilities.Secrets) > 0 ||
+			len(p.Capabilities.HostDevices) > 0 ||
+			p.Capabilities.CanAccessOtherSessions {
+			return false
+		}
+	}
+	return true
+}
+
 // Transition moves the proposal to a new status if the transition is allowed.
 func (p *Proposal) Transition(newStatus Status, reason, actor string) error {
 	if reason == "" {

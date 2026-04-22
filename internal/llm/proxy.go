@@ -188,8 +188,11 @@ func GetChatProgress(streamID string) (ChatProgressSnapshot, bool) {
 type OllamaProxy struct {
 	allowedModels map[string]bool
 	ollamaURL     string
+	httpClient    *http.Client
 	kern          *kernel.Kernel
 	logger        *zap.Logger
+
+	unsupportedThinkingModels map[string]bool
 
 	mu        sync.Mutex
 	listeners map[string]net.Listener // vmID -> UDS listener on vsock.sock_1025
@@ -198,20 +201,46 @@ type OllamaProxy struct {
 // NewOllamaProxy creates a proxy whose allowedModels list is enforced on every
 // request.  ollamaURL defaults to the standard local endpoint if empty.
 func NewOllamaProxy(allowedModels []string, ollamaURL string, kern *kernel.Kernel, logger *zap.Logger) *OllamaProxy {
+	return NewOllamaProxyWithHTTPClient(allowedModels, ollamaURL, nil, kern, logger)
+}
+
+// NewOllamaProxyWithHTTPClient is the test seam for replaying recorded Ollama
+// traffic without changing production behavior.
+func NewOllamaProxyWithHTTPClient(allowedModels []string, ollamaURL string, httpClient *http.Client, kern *kernel.Kernel, logger *zap.Logger) *OllamaProxy {
 	if ollamaURL == "" {
 		ollamaURL = OllamaEndpoint + "/api/chat"
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
 	}
 	m := make(map[string]bool, len(allowedModels))
 	for _, name := range allowedModels {
 		m[name] = true
 	}
 	return &OllamaProxy{
-		allowedModels: m,
-		ollamaURL:     ollamaURL,
-		kern:          kern,
-		logger:        logger,
-		listeners:     make(map[string]net.Listener),
+		allowedModels:             m,
+		ollamaURL:                 ollamaURL,
+		httpClient:                httpClient,
+		kern:                      kern,
+		logger:                    logger,
+		unsupportedThinkingModels: make(map[string]bool),
+		listeners:                 make(map[string]net.Listener),
 	}
+}
+
+func (p *OllamaProxy) isThinkingUnsupported(model string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.unsupportedThinkingModels[model]
+}
+
+func (p *OllamaProxy) markThinkingUnsupported(model string) {
+	if strings.TrimSpace(model) == "" {
+		return
+	}
+	p.mu.Lock()
+	p.unsupportedThinkingModels[model] = true
+	p.mu.Unlock()
 }
 
 // AllowedModelsFromRegistry returns model names from KnownGoodModels, suitable
@@ -517,6 +546,10 @@ func fallbackThinkingMessages(messages []map[string]string) []map[string]string 
 }
 
 func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
+	if p.isThinkingUnsupported(req.Model) {
+		return "", nil
+	}
+
 	fallbackMsgs := fallbackThinkingMessages(req.Messages)
 	if len(fallbackMsgs) == 0 {
 		return "", nil
@@ -548,7 +581,7 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	httpResp, err := http.DefaultClient.Do(httpReq)
+	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		return "", err
 	}
@@ -559,6 +592,11 @@ func (p *OllamaProxy) fetchFallbackThinking(req *ProxyRequest) (string, error) {
 		return "", err
 	}
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		excerpt := strings.ToLower(strings.TrimSpace(string(bodyBytes)))
+		if httpResp.StatusCode == http.StatusBadRequest && strings.Contains(excerpt, "does not support thinking") {
+			p.markThinkingUnsupported(req.Model)
+			return "", nil
+		}
 		return "", fmt.Errorf("fallback ollama http %d", httpResp.StatusCode)
 	}
 
@@ -591,16 +629,18 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 	}
 
 	// Build the Ollama /api/chat request.
-	// think:"high" requests stronger reasoning for models that support
-	// configurable thinking effort.
-	// Some Ollama models reject this field; handle that with a retry below.
-	// stream:true captures tokenized thinking/content chunks for models that
-	// emit reasoning only while streaming.
+	// For structured JSON calls we prefer non-streaming and no explicit thinking
+	// effort so recordings stay compact and deterministic.
+	structuredJSON := strings.EqualFold(strings.TrimSpace(req.Format), "json")
 	ollamaReq := map[string]interface{}{
 		"model":    req.Model,
 		"messages": req.Messages,
-		"stream":   true,
-		"think":    "high",
+		"stream":   !structuredJSON,
+	}
+	if !structuredJSON && !p.isThinkingUnsupported(req.Model) {
+		// Conversational turns benefit from richer reasoning and incremental
+		// progress updates.
+		ollamaReq["think"] = "high"
 	}
 	if req.Format != "" {
 		ollamaReq["format"] = req.Format
@@ -629,7 +669,7 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 
-		httpResp, err = http.DefaultClient.Do(httpReq)
+		httpResp, err = p.httpClient.Do(httpReq)
 		if err != nil {
 			finalizeProgress("", "", fmt.Errorf("ollama: %w", err))
 			return ProxyResponse{RequestID: req.RequestID, Error: "ollama: " + err.Error()}
@@ -652,6 +692,7 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		}
 
 		if attempt == 0 && httpResp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(excerpt), "does not support thinking") {
+			p.markThinkingUnsupported(req.Model)
 			delete(ollamaReq, "think")
 			p.logger.Info("llm proxy: retrying request without think parameter",
 				zap.String("model", req.Model),
@@ -674,40 +715,19 @@ func (p *OllamaProxy) handleRequest(vmID string, req *ProxyRequest) ProxyRespons
 		return ProxyResponse{RequestID: req.RequestID, Error: "decode response: " + err.Error()}
 	}
 	if strings.TrimSpace(thinking) == "" {
-		bodyExcerpt := rawBody.String()
-		if len(bodyExcerpt) > 1200 {
-			bodyExcerpt = bodyExcerpt[:1200] + "...[truncated]"
-		}
-		msgPreview := make([]map[string]string, 0, 3)
-		for i, m := range req.Messages {
-			if i >= 3 {
-				break
-			}
-			contentPreview := strings.TrimSpace(m["content"])
-			if len(contentPreview) > 180 {
-				contentPreview = contentPreview[:180] + "...[truncated]"
-			}
-			msgPreview = append(msgPreview, map[string]string{
-				"role":    m["role"],
-				"content": contentPreview,
-			})
-		}
-		p.logger.Info("llm proxy: empty thinking in Ollama response",
-			zap.Int("message_count", len(req.Messages)),
-			zap.Any("message_preview", msgPreview),
-			zap.String("model", req.Model),
-			zap.ByteString("body", []byte(bodyExcerpt)),
-		)
-
-		fallbackThinking, fallbackErr := p.fetchFallbackThinking(req)
-		if fallbackErr != nil {
-			p.logger.Warn("llm proxy: fallback thinking request failed", zap.Error(fallbackErr), zap.String("model", req.Model))
-		} else if strings.TrimSpace(fallbackThinking) != "" {
-			thinking = fallbackThinking
-			appendChatProgress(req.StreamID, thinking, "")
-			p.logger.Info("llm proxy: recovered thinking via fallback request",
+		if structuredJSON {
+			// Structured JSON review calls prioritize deterministic parsed output;
+			// issuing an extra reasoning-only call adds latency and cassette noise.
+			p.logger.Debug("llm proxy: skipping fallback thinking for structured json request",
 				zap.String("model", req.Model),
-				zap.Int("thinking_chars", len(thinking)),
+			)
+		} else {
+			// For conversational chat traffic, a second reasoning-only request adds
+			// significant latency/token cost without changing the final answer.
+			// Keep the primary response content and continue when thinking is empty.
+			p.logger.Debug("llm proxy: empty thinking in Ollama response; skipping fallback",
+				zap.Int("message_count", len(req.Messages)),
+				zap.String("model", req.Model),
 			)
 		}
 	}

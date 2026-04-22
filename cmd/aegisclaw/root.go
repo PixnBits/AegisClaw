@@ -113,7 +113,8 @@ var auditCmd = &cobra.Command{
 
   audit log     Browse audit log entries with filters
   audit why     Explain why an action was performed
-  audit verify  Verify Merkle-tree integrity`,
+  audit verify  Verify Merkle-tree integrity
+  audit trace   Show all entries correlated to a ReAct trace ID`,
 }
 
 // auditVerifyCmd verifies the integrity of the Merkle audit chain.
@@ -163,10 +164,11 @@ func init() {
 	skillCmd.AddCommand(skillSBOMCmd)
 	skillCmd.AddCommand(skillActivateCmd)
 
-	// audit subcommands: log, why, verify
+	// audit subcommands: log, why, verify, trace
 	auditCmd.AddCommand(auditLogCmd)
 	auditCmd.AddCommand(auditWhyCmd)
 	auditCmd.AddCommand(auditVerifyCmd)
+	auditCmd.AddCommand(auditTraceCmd)
 
 	// memory subcommands: search, list, compact, delete
 	memoryCmd.AddCommand(memorySearchCmd)

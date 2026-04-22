@@ -14,6 +14,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/audit"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
+	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/tui"
 	"github.com/google/uuid"
@@ -37,6 +38,7 @@ func GetProposalCreateDraftSchema() string {
 
 // agentVMRequest is the JSON structure sent to the agent VM for chat.message.
 // It mirrors the guest-agent's Request{Type, Payload} envelope.
+// Also used by court_init.go and worker_spawn.go for reviewer VM calls.
 type agentVMRequest struct {
 	ID      string          `json:"id"`
 	Type    string          `json:"type"`
@@ -53,6 +55,7 @@ type agentVMResponse struct {
 
 // agentChatPayload is placed in agentVMRequest.Payload for chat.message requests.
 // It mirrors the guest-agent's ChatMessagePayload.
+// Also used by court_init.go and worker_spawn.go.
 type agentChatPayload struct {
 	Messages []agentChatMsg `json:"messages"`
 	Model    string         `json:"model"`
@@ -64,6 +67,8 @@ type agentChatPayload struct {
 }
 
 // agentChatMsg is a single message in the conversation sent to the agent VM.
+// Used to build the message slice before converting to rtexec.AgentMessage for
+// the executor, and also used directly in court_init.go and worker_spawn.go.
 type agentChatMsg struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -72,6 +77,7 @@ type agentChatMsg struct {
 
 // agentChatResponse is the ChatResponse returned inside agentVMResponse.Data.
 // Mirrors the guest-agent's ChatResponse type.
+// Used by court_init.go, worker_spawn.go, and makeSummarizeToolResultHandler.
 type agentChatResponse struct {
 	Status   string `json:"status"`            // "final" | "tool_call"
 	Role     string `json:"role,omitempty"`    // present when status=="final"
@@ -176,35 +182,40 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		toolTrace := make([]map[string]interface{}, 0)
 		thinkingTrace := make([]map[string]interface{}, 0)
 
+		// Correlation/trace ID for this request — propagated through executor,
+		// tool events, thought events, and logger so the full ReAct loop can be
+		// correlated in logs and the portal.
+		traceID := uuid.New().String()
+		env.Logger.Info("chat.message: starting ReAct loop",
+			zap.String("trace_id", traceID),
+			zap.String("session_id", sessionID),
+			zap.String("agent_vm_id", agentVMID),
+		)
+
 		for i := 0; i < reactMaxIterations; i++ {
-			payloadBytes, _ := json.Marshal(agentChatPayload{
-				Messages:         msgs,
+			// Convert agentChatMsg slice → rtexec.AgentMessage for the executor.
+			execMsgs := make([]rtexec.AgentMessage, len(msgs))
+			for j, m := range msgs {
+				execMsgs[j] = rtexec.AgentMessage{Role: m.Role, Content: m.Content, Name: m.Name}
+			}
+
+			execReq := rtexec.AgentTurnRequest{
+				Messages:         execMsgs,
 				Model:            model,
 				StreamID:         req.StreamID,
 				StructuredOutput: env.Config.Agent.StructuredOutput,
-			})
-			vmReq := agentVMRequest{
-				ID:      uuid.New().String(),
-				Type:    "chat.message",
-				Payload: json.RawMessage(payloadBytes),
+				TraceID:          traceID,
+			}
+			if env.TestLLMTemperature != nil {
+				execReq.Temperature = *env.TestLLMTemperature
+			}
+			if env.TestLLMSeed != 0 {
+				execReq.Seed = env.TestLLMSeed
 			}
 
-			raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
+			chatResp, err := env.TaskExecutor.ExecuteTurn(ctx, execReq)
 			if err != nil {
-				return &api.Response{Error: "agent VM error: " + err.Error()}
-			}
-
-			var vmResp agentVMResponse
-			if err := json.Unmarshal(raw, &vmResp); err != nil {
-				return &api.Response{Error: "malformed agent response: " + err.Error()}
-			}
-			if !vmResp.Success {
-				return &api.Response{Error: "agent error: " + vmResp.Error}
-			}
-
-			var chatResp agentChatResponse
-			if err := json.Unmarshal(vmResp.Data, &chatResp); err != nil {
-				return &api.Response{Error: "malformed agent chat response: " + err.Error()}
+				return &api.Response{Error: "agent executor error: " + err.Error()}
 			}
 
 			if thought := strings.TrimSpace(chatResp.Thinking); thought != "" {
@@ -218,6 +229,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				thinkingTrace = append(thinkingTrace, map[string]interface{}{
 					"phase":     "model_thinking",
 					"model":     model,
+					"trace_id":  traceID,
 					"summary":   summary,
 					"details":   stored,
 					"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -260,6 +272,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 					"phase":     "tool_call",
 					"model":     model,
 					"tool":      chatResp.Tool,
+					"trace_id":  traceID,
 					"summary":   "Decided to call tool: " + chatResp.Tool,
 					"details":   reasoning,
 					"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -269,7 +282,10 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				if env.ToolEvents != nil {
 					env.ToolEvents.RecordStart(chatResp.Tool)
 				}
-				toolResult, toolErr := toolRegistry.Execute(ctx, chatResp.Tool, chatResp.Args)
+				// Enrich the context with the current trace ID so that tool
+				// handlers can include it in their audit log payloads.
+				toolCtx := withReActTraceID(ctx, traceID)
+				toolResult, toolErr := toolRegistry.Execute(toolCtx, chatResp.Tool, chatResp.Args)
 				duration := time.Since(started)
 				argsPreview := chatResp.Args
 				if len(argsPreview) > 1000 {
@@ -287,6 +303,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 					"response":    resultPreview,
 					"success":     toolErr == nil,
 					"duration_ms": duration.Milliseconds(),
+					"trace_id":    traceID,
 					"timestamp":   time.Now().UTC().Format(time.RFC3339),
 				})
 				if toolErr != nil {
@@ -302,6 +319,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 					"phase":     "tool_result",
 					"model":     model,
 					"tool":      chatResp.Tool,
+					"trace_id":  traceID,
 					"summary":   resultSummary,
 					"details":   resultDetails,
 					"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -310,6 +328,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				env.Logger.Info("tool executed via ReAct loop",
 					zap.String("tool", chatResp.Tool),
 					zap.Bool("success", toolErr == nil),
+					zap.String("trace_id", traceID),
 				)
 				if isMemoryEvidenceFromTool(chatResp.Tool, toolResult, toolErr) {
 					memoryToolEvidence = true
@@ -481,6 +500,7 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 		env.Logger.Warn("agent VM is no longer running, restarting", zap.String("vm_id", env.AgentVMID))
 		env.LLMProxy.StopForVM(env.AgentVMID)
 		env.AgentVMID = ""
+		env.TaskExecutor = nil
 	}
 
 	agentRootfs := env.Config.Agent.RootfsPath
@@ -525,6 +545,7 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 	}
 
 	env.AgentVMID = agentID
+	env.TaskExecutor = rtexec.NewFirecrackerTaskExecutor(env.Runtime, agentID)
 	env.Logger.Info("agent VM started", zap.String("vm_id", agentID))
 	return agentID, nil
 }
@@ -1155,9 +1176,20 @@ func synthesizeEmptyFinalMessage(toolTrace []map[string]interface{}) string {
 	}
 	last := toolTrace[len(toolTrace)-1]
 	toolName, _ := last["tool"].(string)
-	success, _ := last["success"].(bool)
+	successVal, successPresent := last["success"]
+	success, successIsBool := successVal.(bool)
+	// Treat missing or non-boolean success as false (conservative: unknown = failure).
+	if !successPresent || !successIsBool {
+		success = false
+	}
 	if toolName == "" {
 		return "I completed your request, but my final response came back empty. Please ask me to summarize the latest result."
+	}
+	if toolName == "proposal.vote" {
+		if success {
+			return "Your vote was recorded. You can check the proposal status for the latest outcome."
+		}
+		return "The vote could not be recorded. Please try again or check the proposal status."
 	}
 	if success {
 		return fmt.Sprintf("I completed %q, but my final response came back empty. Ask me to summarize the result and I will share it.", toolName)

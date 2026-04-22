@@ -8,9 +8,11 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/dnaeon/go-vcr/v2 v2.1.0
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/go-git/go-git/v5 v5.17.0
 	github.com/google/uuid v1.6.0
+	github.com/philippgille/chromem-go v0.7.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.21.0
@@ -44,6 +46,7 @@ require (
 	github.com/containernetworking/cni v1.0.1 // indirect
 	github.com/containernetworking/plugins v1.0.1 // indirect
 	github.com/cyphar/filepath-securejoin v0.4.1 // indirect
+	github.com/dnaeon/go-vcr/v2 v2.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect

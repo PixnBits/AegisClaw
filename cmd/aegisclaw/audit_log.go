@@ -199,3 +199,93 @@ func runAuditWhy(cmd *cobra.Command, args []string) error {
 
 	return nil
 }
+
+// auditTraceCmd is the "aegisclaw audit trace <trace-id>" sub-command.
+// It filters audit log entries whose JSON payload contains the given trace ID,
+// making it easy to reconstruct the full audit history for a single ReAct loop
+// execution.
+//
+// Usage:
+//
+//aegisclaw audit trace <trace-id>
+//aegisclaw audit trace <trace-id> --json
+var auditTraceCmd = &cobra.Command{
+Use:   "trace <trace-id>",
+Short: "Show all audit entries correlated to a ReAct trace ID",
+Long: `Scans the audit log for entries whose payload contains the given trace ID
+and displays them in chronological order.
+
+The trace ID is the correlation UUID assigned at the start of each
+aegisclaw chat.message ReAct loop and propagated to every tool call,
+portal event, and logger call within that loop.
+
+Examples:
+  aegisclaw audit trace 4b3e2c1a-...
+  aegisclaw audit trace 4b3e2c1a-... --json`,
+Args: cobra.ExactArgs(1),
+RunE: runAuditTrace,
+}
+
+func runAuditTrace(cmd *cobra.Command, args []string) error {
+	traceID := args[0]
+
+	env, err := initRuntime()
+if err != nil {
+return err
+}
+defer env.Logger.Sync()
+
+auditPath := filepath.Join(env.Config.Audit.Dir, "kernel.merkle.jsonl")
+
+entries, err := audit.ReadEntries(auditPath)
+if err != nil {
+return fmt.Errorf("failed to read audit log: %w", err)
+}
+
+// Filter: keep entries whose raw payload JSON contains the trace ID as a
+// substring.  This works because trace IDs are embedded as
+// `"trace_id":"<id>"` inside the payload JSON for proposal tool calls.
+var matched []audit.MerkleEntry
+for _, e := range entries {
+if strings.Contains(string(e.Payload), traceID) {
+matched = append(matched, e)
+}
+}
+
+if len(matched) == 0 {
+fmt.Printf("No audit entries found for trace ID %q.\n", traceID)
+fmt.Println("Tip: trace IDs are recorded in entries created by proposal tools (create_draft, submit, etc.).")
+fmt.Println("     Check that the trace ID is correct and that the ReAct loop included at least one tool call.")
+return nil
+}
+
+if globalJSON {
+data, _ := json.MarshalIndent(matched, "", "  ")
+fmt.Println(string(data))
+return nil
+}
+
+fmt.Printf("Audit entries for trace %s (%d found):\n\n", traceID[:minInt(16, len(traceID))], len(matched))
+for _, e := range matched {
+ts := e.Timestamp.Format("2006-01-02 15:04:05")
+hash := e.Hash
+if len(hash) > 16 {
+hash = hash[:16]
+}
+payloadStr := string(e.Payload)
+if len(payloadStr) > 120 {
+payloadStr = payloadStr[:120] + "..."
+}
+fmt.Printf("  %s  %s  %s\n", ts, hash, payloadStr)
+}
+
+return nil
+}
+
+// minInt returns the smaller of a and b.
+func minInt(a, b int) int {
+if a < b {
+return a
+}
+return b
+}

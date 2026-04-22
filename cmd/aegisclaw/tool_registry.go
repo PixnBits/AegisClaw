@@ -10,6 +10,7 @@ import (
 
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/registry"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
@@ -69,6 +70,9 @@ func (r *ToolRegistry) Execute(ctx context.Context, tool, argsJSON string) (stri
 
 // invokeSkillTool sends a tool.invoke request to the skill's sandbox VM.
 func (r *ToolRegistry) invokeSkillTool(ctx context.Context, skill, tool, argsJSON string) (string, error) {
+	if r.env == nil {
+		return "", fmt.Errorf("tool registry has no runtime env: cannot invoke skill %q", skill)
+	}
 	if r.env.SafeMode.Load() {
 		return "", fmt.Errorf("safe mode is active: skill invocation blocked")
 	}
@@ -156,17 +160,24 @@ func (r *ToolRegistry) SearchTools(query string) []ToolMeta {
 }
 
 // parseSkillToolName splits "skillname.toolname" into skill and tool parts,
-// rejecting known non-skill prefixes.
+// rejecting known non-skill prefixes and empty components.
+// Returns ("","") whenever the name is not a valid "skill.tool" pair.
 func parseSkillToolName(name string) (skill, tool string) {
 	parts := strings.SplitN(name, ".", 2)
 	if len(parts) != 2 {
 		return "", ""
 	}
-	switch parts[0] {
+	skill, tool = parts[0], parts[1]
+	// Guard against names like ".tool" or "skill." — the caller relies on
+	// both parts being non-empty to decide whether to dispatch to the skill VM.
+	if skill == "" || tool == "" {
+		return "", ""
+	}
+	switch skill {
 	case "list", "proposal":
 		return "", ""
 	}
-	return parts[0], parts[1]
+	return skill, tool
 }
 
 // buildToolRegistry constructs the daemon's tool registry with all proposal handlers
@@ -179,29 +190,30 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 	registerWorkerTools(reg, env)
 	registerSessionTools(reg, env, &reg)
 	registerRegistryTools(reg, env)
+	registerLookupTools(reg, env)
 	return reg
 }
 
 func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalCreateDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalCreateDraft(env, ctx, args)
 		})
 	reg.Register("proposal.update_draft",
 		"Update fields on an existing draft or in-review proposal. args: {id, ...fields}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalUpdateDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalUpdateDraft(env, ctx, args)
 		})
 	reg.Register("proposal.get_draft",
 		"Retrieve full details of a proposal draft. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalGetDraft(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalGetDraft(env, ctx, args)
 		})
 	reg.Register("proposal.list_drafts",
 		"List all proposal drafts.",
-		func(_ context.Context, _ string) (string, error) {
-			return handleProposalListDrafts(env)
+		func(ctx context.Context, _ string) (string, error) {
+			return handleProposalListDrafts(env, ctx)
 		})
 	reg.Register("proposal.submit",
 		"Submit a draft proposal for Governance Court review. args: {id}",
@@ -210,13 +222,13 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 		})
 	reg.Register("proposal.status",
 		"Check the current status and stage of a proposal. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalStatus(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalStatus(env, ctx, args)
 		})
 	reg.Register("proposal.reviews",
 		"Get detailed reviewer feedback (verdicts, comments, questions) for a proposal. args: {id}",
-		func(_ context.Context, args string) (string, error) {
-			return handleProposalReviews(env, args)
+		func(ctx context.Context, args string) (string, error) {
+			return handleProposalReviews(env, ctx, args)
 		})
 	reg.Register("proposal.vote",
 		"Cast a human vote to approve or reject an escalated proposal. args: {id, approve, reason}",
@@ -1151,5 +1163,76 @@ func registerRegistryTools(reg *ToolRegistry, env *runtimeEnv) {
 				spec.Name, spec.Language, len(spec.Tools),
 				spec.Name, spec.Description, spec.Tools,
 			), nil
+		})
+}
+
+// registerLookupTools adds the semantic tool-lookup tools to the registry.
+// lookup_tools performs a semantic vector search and returns results formatted
+// as Gemma 4 native control-token blocks.  lookup.index_tool lets the builder
+// (or any privileged caller) index a new tool into the vector store.
+func registerLookupTools(reg *ToolRegistry, env *runtimeEnv) {
+	reg.Register("lookup_tools",
+		"Semantic lookup of available tools. Returns the most relevant 4-6 tools as Gemma 4 native control-token blocks. Args: {query, max_results}.",
+		func(ctx context.Context, args string) (string, error) {
+			if env.LookupStore == nil {
+				return "", fmt.Errorf("lookup store unavailable")
+			}
+			var params struct {
+				Query      string `json:"query"`
+				MaxResults int    `json:"max_results"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				params.Query = strings.TrimSpace(args)
+			}
+			if params.Query == "" {
+				return "", fmt.Errorf("lookup_tools requires 'query'")
+			}
+			if params.MaxResults <= 0 {
+				params.MaxResults = 6
+			}
+			results, err := env.LookupStore.LookupTools(ctx, params.Query, params.MaxResults)
+			if err != nil {
+				return "", fmt.Errorf("lookup_tools: %w", err)
+			}
+			if len(results) == 0 {
+				return fmt.Sprintf("No tools found matching %q.", params.Query), nil
+			}
+			var blocks []string
+			for _, r := range results {
+				blocks = append(blocks, r.Block)
+			}
+			return strings.Join(blocks, "\n"), nil
+		})
+
+	reg.Register("lookup.index_tool",
+		"Index or re-index a tool in the semantic lookup store. Args: {name, description, skill_name, parameters}.",
+		func(ctx context.Context, args string) (string, error) {
+			if env.LookupStore == nil {
+				return "", fmt.Errorf("lookup store unavailable")
+			}
+			var params struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				SkillName   string `json:"skill_name"`
+				Parameters  string `json:"parameters"`
+			}
+			if err := json.Unmarshal([]byte(args), &params); err != nil {
+				return "", fmt.Errorf("invalid lookup.index_tool args: %w", err)
+			}
+			if params.Name == "" {
+				return "", fmt.Errorf("lookup.index_tool requires 'name'")
+			}
+			if params.Description == "" {
+				return "", fmt.Errorf("lookup.index_tool requires 'description'")
+			}
+			if err := env.LookupStore.IndexTool(ctx, lookup.ToolEntry{
+				Name:        params.Name,
+				Description: params.Description,
+				SkillName:   params.SkillName,
+				Parameters:  params.Parameters,
+			}); err != nil {
+				return "", fmt.Errorf("lookup.index_tool: %w", err)
+			}
+			return fmt.Sprintf("Tool %q indexed. Total indexed: %d.", params.Name, env.LookupStore.Count()), nil
 		})
 }

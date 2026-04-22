@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,8 +16,10 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
+	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/vault"
@@ -36,25 +39,38 @@ var (
 	eventBusInst    *eventbus.Bus
 	workerStoreInst *worker.Store
 	vaultInst       *vault.Vault
+	lookupInst      *lookup.Store
 	runtimeInitErr  error
 )
 
 type runtimeEnv struct {
-	Logger           *zap.Logger
-	Config           *config.Config
-	Kernel           *kernel.Kernel
-	Runtime          *sandbox.FirecrackerRuntime
-	Registry         *sandbox.SkillRegistry
-	ProposalStore    *proposal.Store
-	CompositionStore *composition.Store
-	MemoryStore      *memory.Store
-	EventBus         *eventbus.Bus
-	WorkerStore      *worker.Store
-	Court            *court.Engine
-	LLMProxy         *llm.OllamaProxy
-	ToolEvents       *ToolEventBuffer
-	ThoughtEvents    *ThoughtEventBuffer
-	SafeMode         atomic.Bool
+	Logger             *zap.Logger
+	Config             *config.Config
+	Kernel             *kernel.Kernel
+	Runtime            *sandbox.FirecrackerRuntime
+	Registry           *sandbox.SkillRegistry
+	ProposalStore      *proposal.Store
+	CompositionStore   *composition.Store
+	MemoryStore        *memory.Store
+	EventBus           *eventbus.Bus
+	WorkerStore        *worker.Store
+	LookupStore        *lookup.Store
+	Court              *court.Engine
+	LLMProxy           *llm.OllamaProxy
+	OllamaHTTPClient   *http.Client
+	ToolEvents         *ToolEventBuffer
+	ThoughtEvents      *ThoughtEventBuffer
+	SafeMode           atomic.Bool
+	TestLLMTemperature *float64
+	TestLLMSeed        int64
+
+	// TaskExecutor handles one turn of the agent ReAct loop.
+	// The default (production) implementation is FirecrackerTaskExecutor which
+	// routes calls through the Firecracker microVM.  Tests compiled with the
+	// "inprocesstest" build tag may substitute InProcessTaskExecutor.
+	// TaskExecutor is set lazily on the first chat.message request (alongside
+	// AgentVMID) and is nil until then.
+	TaskExecutor rtexec.TaskExecutor
 
 	// Vault holds the age-encrypted secret store.  Opened once at daemon
 	// startup; nil only if the vault directory could not be initialised
@@ -171,6 +187,14 @@ func initRuntime() (*runtimeEnv, error) {
 		// Vault: open the age-encrypted secret store once at daemon startup.
 		// The private key is derived from the kernel's Ed25519 identity.
 		vaultInst, runtimeInitErr = vault.NewVault(cfg.Vault.Dir, kern.PrivateKeyBytes(), logger)
+		if runtimeInitErr != nil {
+			return
+		}
+		// Lookup Store: persistent semantic vector index for dynamic tool lookup.
+		lookupInst, runtimeInitErr = lookup.NewStore(lookup.StoreConfig{
+			Dir:    cfg.Lookup.Dir,
+			Logger: logger,
+		})
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -189,12 +213,34 @@ func initRuntime() (*runtimeEnv, error) {
 		WorkerStore:      workerStoreInst,
 		Vault:            vaultInst,
 		EgressProxy:      llm.NewEgressProxy(logger),
+		LookupStore:      lookupInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 		ToolEvents:       NewToolEventBuffer(400),
 		ThoughtEvents:    NewThoughtEventBuffer(600),
 		Workspace:        loadWorkspace(cfg, logger),
 		Sessions:         sessions.NewStore(),
 	}, nil
+}
+
+// resetRuntimeSingletons zeros all package-level singleton state so that a
+// subsequent initRuntime call starts fresh.  This is used by live integration
+// tests that must run multiple scenarios in the same process without sharing
+// state from a prior initRuntime invocation.
+//
+// Must be called before kernel.ResetInstance() because the kernel itself is
+// tracked outside this package.
+func resetRuntimeSingletons() {
+	runtimeOnce = sync.Once{}
+	runtimeInst = nil
+	registryInst = nil
+	proposalInst = nil
+	compositionInst = nil
+	memoryInst = nil
+	eventBusInst = nil
+	workerStoreInst = nil
+	vaultInst = nil
+	lookupInst = nil
+	runtimeInitErr = nil
 }
 
 // loadWorkspace loads workspace prompt files from cfg.Workspace.Dir.

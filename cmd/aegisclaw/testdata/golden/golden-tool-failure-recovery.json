@@ -1,0 +1,48 @@
+{
+  "trace_id": "golden-tool-failure-recovery",
+  "input": "create a skill but with initially bad args",
+  "events": [
+    {
+      "type": "thought",
+      "content": "I will call proposal.create_draft to create the skill.",
+      "timestamp": "2026-04-17T06:45:04.821741983Z"
+    },
+    {
+      "type": "tool_called",
+      "tool": "proposal.create_draft",
+      "args": "{\"title\":\"\"}",
+      "timestamp": "2026-04-17T06:45:04.821742203Z"
+    },
+    {
+      "type": "tool_result",
+      "tool": "proposal.create_draft",
+      "success": false,
+      "timestamp": "2026-04-17T06:45:04.821747381Z"
+    },
+    {
+      "type": "thought",
+      "content": "The first call failed. I will retry with complete arguments.",
+      "timestamp": "2026-04-17T06:45:04.821747711Z"
+    },
+    {
+      "type": "tool_called",
+      "tool": "proposal.create_draft",
+      "args": "{\"title\":\"Retry Skill\",\"description\":\"Fixed\",\"skill_name\":\"retry-skill\",\"tools\":[{\"name\":\"action\",\"description\":\"does something\"}],\"data_sensitivity\":1,\"network_exposure\":1,\"privilege_level\":1}",
+      "timestamp": "2026-04-17T06:45:04.821747811Z"
+    },
+    {
+      "type": "tool_result",
+      "tool": "proposal.create_draft",
+      "success": true,
+      "timestamp": "2026-04-17T06:45:04.825906904Z"
+    },
+    {
+      "type": "task_complete",
+      "content": "Created the retry-skill proposal after correcting the arguments.",
+      "timestamp": "2026-04-17T06:45:04.825907314Z"
+    }
+  ],
+  "final_answer": "Created the retry-skill proposal after correcting the arguments.",
+  "tool_call_count": 2,
+  "iterations": 2
+}

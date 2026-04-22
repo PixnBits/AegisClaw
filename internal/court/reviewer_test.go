@@ -3,6 +3,7 @@ package court
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/PixnBits/AegisClaw/internal/proposal"
@@ -248,12 +249,16 @@ func TestReviewRequestFields(t *testing.T) {
 		Prompt:      "Evaluate this",
 		Model:       "test-model",
 		Round:       1,
+		Seed:        42,
 	}
 	if req.ProposalID != "test-id" {
 		t.Error("unexpected proposal ID")
 	}
 	if req.Round != 1 {
 		t.Error("unexpected round")
+	}
+	if req.Seed != 42 {
+		t.Error("unexpected seed")
 	}
 }
 
@@ -281,4 +286,85 @@ func TestNewReviewerFunc(t *testing.T) {
 	if review.Persona != "CISO" {
 		t.Errorf("expected CISO, got %s", review.Persona)
 	}
+}
+
+func TestBuildReviewPromptSandboxedSkill(t *testing.T) {
+persona := &Persona{
+Name:         "CISO",
+Role:         "security",
+SystemPrompt: "You are the CISO.\nEvaluate the proposal.",
+Models:       []string{"llama3.2:3b"},
+Weight:       0.25,
+}
+
+// A fully sandboxed low-risk proposal should receive the calibration context.
+sandboxed, _ := proposal.NewProposal("Hello World", "Greets the user.", proposal.CategoryNewSkill, "admin")
+sandboxed.Risk = proposal.RiskLow
+sandboxed.NetworkPolicy = &proposal.ProposalNetworkPolicy{DefaultDeny: true}
+sandboxed.SecretsRefs = nil
+sandboxed.Capabilities = nil
+
+prompt := buildReviewPrompt(sandboxed, persona)
+
+if !strings.Contains(prompt, persona.SystemPrompt) {
+t.Error("prompt must contain the base persona system prompt")
+}
+if !strings.Contains(prompt, "SANDBOXED SKILL CONTEXT") {
+t.Error("expected SANDBOXED SKILL CONTEXT section for sandboxed low-risk proposal")
+}
+if !strings.Contains(prompt, "maximum appropriate risk score for this proposal is 2") {
+t.Error("expected risk score cap instruction")
+}
+if !strings.Contains(prompt, "Do NOT penalise for missing authentication") {
+t.Error("expected instruction not to penalise for authentication")
+}
+}
+
+func TestBuildReviewPromptNetworkSkill(t *testing.T) {
+persona := &Persona{
+Name:         "CISO",
+Role:         "security",
+SystemPrompt: "You are the CISO.\nEvaluate the proposal.",
+Models:       []string{"llama3.2:3b"},
+Weight:       0.25,
+}
+
+// A proposal with allowed network hosts must not receive the sandboxed context.
+networked, _ := proposal.NewProposal("Weather Skill", "Fetches weather from an API.", proposal.CategoryNewSkill, "admin")
+networked.Risk = proposal.RiskMedium
+networked.NetworkPolicy = &proposal.ProposalNetworkPolicy{
+DefaultDeny:  true,
+AllowedHosts: []string{"api.weather.com"},
+}
+
+prompt := buildReviewPrompt(networked, persona)
+
+if !strings.Contains(prompt, persona.SystemPrompt) {
+t.Error("prompt must contain the base persona system prompt")
+}
+if strings.Contains(prompt, "SANDBOXED SKILL CONTEXT") {
+t.Error("sandboxed context must not appear for a proposal with allowed hosts")
+}
+}
+
+func TestBuildReviewPromptHighRiskWithSecrets(t *testing.T) {
+persona := &Persona{
+Name:         "SecurityArchitect",
+Role:         "architecture",
+SystemPrompt: "You are a Security Architect.",
+Models:       []string{"mistral-nemo"},
+Weight:       0.20,
+}
+
+// A proposal that references secrets must not receive the sandboxed context.
+secretSkill, _ := proposal.NewProposal("API Key Skill", "Uses an API key.", proposal.CategoryNewSkill, "admin")
+secretSkill.Risk = proposal.RiskMedium
+secretSkill.NetworkPolicy = &proposal.ProposalNetworkPolicy{DefaultDeny: true}
+secretSkill.SecretsRefs = []string{"api_key"}
+
+prompt := buildReviewPrompt(secretSkill, persona)
+
+if strings.Contains(prompt, "SANDBOXED SKILL CONTEXT") {
+t.Error("sandboxed context must not appear for a proposal with secrets references")
+}
 }
