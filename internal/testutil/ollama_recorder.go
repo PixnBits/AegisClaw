@@ -38,7 +38,6 @@ var uuidLikePattern = regexp.MustCompile(
 var dateTimeLikePattern = regexp.MustCompile(
 	`\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}|\s+[A-Z]{2,5})?\b`,
 )
-
 // Float64 returns a pointer to v for APIs that need to distinguish
 // temperature=0 from "temperature not set".
 func Float64(v float64) *float64 {

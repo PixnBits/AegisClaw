@@ -766,4 +766,3 @@ func TestFirstSkillTutorialArtifactSigning(t *testing.T) {
 	t.Logf("Artifact signed: skill=%s  version=%s  size=%d  sig=%s...",
 		manifest.SkillID, manifest.Version, manifest.BinarySize, manifest.Signature[:16])
 }
-

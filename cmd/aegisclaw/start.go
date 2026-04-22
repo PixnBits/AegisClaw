@@ -121,6 +121,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// It runs once immediately if compact_on_startup is set, then daily.
 	startMemoryCompactionDaemon(cmd.Context(), env)
 
+	// Seed the semantic lookup store with all built-in daemon tools so
+	// lookup_tools can find them immediately on the first query.
+	seedLookupStore(cmd.Context(), env, toolRegistry)
+
 	// Phase 2: Start the background event bus timer daemon.
 	// Fires due timers and dispatches wakeup events.
 	startEventBusDaemon(cmd.Context(), env)
@@ -175,6 +179,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Phase 1: Memory handlers for dashboard/API access.
 	apiSrv.Handle("memory.list", makeMemoryListHandler(env))
 	apiSrv.Handle("memory.search", makeMemorySearchHandler(env))
+	// Lookup: semantic tool-lookup handlers.
+	apiSrv.Handle("lookup.search", makeLookupSearchHandler(env))
+	apiSrv.Handle("lookup.list", makeLookupListHandler(env))
 	// Phase 3: Worker handlers.
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))

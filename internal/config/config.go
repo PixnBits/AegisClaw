@@ -190,6 +190,12 @@ type Config struct {
 		// Set to "" to disable registry integration.
 		URL string `yaml:"url" mapstructure:"url"`
 	} `yaml:"registry" mapstructure:"registry"`
+	Lookup struct {
+		// Dir is the directory where the persistent chromem-go vector database
+		// for the dynamic semantic tool-lookup skill is stored.
+		// Defaults to ~/.local/share/aegisclaw/vectordb.
+		Dir string `yaml:"dir" mapstructure:"dir"`
+	} `yaml:"lookup" mapstructure:"lookup"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -360,6 +366,11 @@ func DefaultConfig() Config {
 		}{
 			URL: "https://registry.clawhub.io",
 		},
+		Lookup: struct {
+			Dir string `yaml:"dir" mapstructure:"dir"`
+		}{
+			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "vectordb"),
+		},
 	}
 }
 
@@ -440,6 +451,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("workspace.dir", defaults.Workspace.Dir)
 	viper.SetDefault("gateway.enabled", defaults.Gateway.Enabled)
 	viper.SetDefault("registry.url", defaults.Registry.URL)
+	viper.SetDefault("lookup.dir", defaults.Lookup.Dir)
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Config file doesn't exist, write defaults

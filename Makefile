@@ -1,18 +1,27 @@
 # AegisClaw — Makefile
 #
 # Targets:
-#   build           — build the aegisclaw and guest-agent binaries
-#   test            — run all unit and integration tests (no Firecracker required)
-#   test-short      — run only fast unit tests (skip heavy journey tests)
-#   test-inprocess  — run in-process integration tests (test-only, no KVM needed)
-#   vet             — run go vet on all packages
-#   clean           — remove build artifacts
+#   build                      — build the aegisclaw and guest-agent binaries
+#   test                       — run all unit and integration tests (no Firecracker required)
+#   test-short                 — run only fast unit tests (skip heavy journey tests)
+#   test-inprocess             — run in-process integration tests (test-only, no KVM needed)
+#   record-cassettes           — re-record ALL Ollama cassettes (requires root + KVM + Ollama)
+#   record-cassette-time       — re-record the time-question cassette only
+#   record-cassette-hello-world — re-record the hello-world-skill cassette only
+#   record-cassette-solar      — re-record the solar-sizing cassette only
+#   record-cassette-tutorial   — re-record the first-skill-tutorial cassette only
+#   vet                        — run go vet on all packages
+#   clean                      — remove build artifacts
 
 BINARY_AEGISCLAW  := aegisclaw
 BINARY_GUEST_AGENT := guest-agent
 GOFLAGS           :=
 
-.PHONY: build test test-short test-inprocess vet clean
+.PHONY: build test test-short test-inprocess \
+        record-cassettes \
+        record-cassette-time record-cassette-hello-world \
+        record-cassette-solar record-cassette-tutorial \
+        vet clean
 
 # ── build ─────────────────────────────────────────────────────────────────────
 
@@ -55,6 +64,68 @@ test-inprocess:
 	    -run 'Integration|Journey|InProcess' \
 	    -count=1 \
 	    -v
+
+# ── Ollama cassette recording ─────────────────────────────────────────────────
+#
+# Cassettes capture live Ollama HTTP exchanges and replay them deterministically
+# so tests pass without a live Ollama daemon.  Regenerate cassettes after:
+#   • Changing model prompts or system messages
+#   • Updating the agent ReAct loop logic
+#   • Bumping Ollama or model versions
+#   • Any change that makes the existing cassette responses inconsistent
+#
+# Prerequisites (all four required):
+#   1. Run as root   — Firecracker jailer needs CAP_SYS_ADMIN
+#   2. /dev/kvm      — hardware virtualisation
+#   3. Alpine rootfs — /var/lib/aegisclaw/rootfs-templates/alpine.ext4
+#   4. Ollama daemon — listening on 127.0.0.1:11434 with the required models
+#
+# Models used:
+#   • mistral-nemo:latest  (main agent)
+#   • llama3.2:3b          (court reviewer)
+#
+# Pull them first:
+#   ollama pull mistral-nemo:latest
+#   ollama pull llama3.2:3b
+#
+# Cassette files are stored in testdata/cassettes/ and are committed to the
+# repository so CI can replay them without a live Ollama instance.
+#
+# Usage examples:
+#   make record-cassettes                    # refresh all cassettes
+#   make record-cassette-time               # refresh one scenario
+#   RECORD_OLLAMA=true go test ./cmd/aegisclaw -run TestChatMessageLiveScenarioTimeQuestion -v
+
+## record-cassettes: re-record ALL Ollama cassettes (requires root + KVM + Ollama).
+record-cassettes: record-cassette-time record-cassette-solar record-cassette-hello-world record-cassette-tutorial
+
+## record-cassette-time: re-record the time-question chat scenario cassette.
+record-cassette-time:
+	RECORD_OLLAMA=true \
+	  go test ./cmd/aegisclaw \
+	    -run TestChatMessageLiveScenarioTimeQuestion \
+	    -count=1 -timeout 10m -v
+
+## record-cassette-hello-world: re-record the hello-world skill chat scenario cassette.
+record-cassette-hello-world:
+	RECORD_OLLAMA=true \
+	  go test ./cmd/aegisclaw \
+	    -run TestChatMessageLiveScenarioHelloWorldSkill \
+	    -count=1 -timeout 30m -v
+
+## record-cassette-solar: re-record the solar sizing chat scenario cassette.
+record-cassette-solar:
+	RECORD_OLLAMA=true \
+	  go test ./cmd/aegisclaw \
+	    -run TestChatMessageLiveScenarioSolarSizing \
+	    -count=1 -timeout 10m -v
+
+## record-cassette-tutorial: re-record the first-skill-tutorial live cassette.
+record-cassette-tutorial:
+	RECORD_OLLAMA=true \
+	  go test ./cmd/aegisclaw -tags=livetest \
+	    -run TestFirstSkillTutorialLive \
+	    -count=1 -timeout 60m -v
 
 # ── vet ───────────────────────────────────────────────────────────────────────
 

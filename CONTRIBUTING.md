@@ -196,12 +196,17 @@ These chat live tests map to cassettes in `testdata/cassettes/`:
 - `TestChatMessageLiveScenarioHelloWorldSkill` → `chat-message-hello-world-live.yaml`
 - `TestChatMessageLiveScenarioSolarSizing` → `chat-message-solar-live.yaml`
 
-`TestFirstSkillTutorialLive` now fails fast on missing hard prerequisites
-instead of skipping. In replay mode, missing cassette is also a failure.
+`TestFirstSkillTutorialLive` now lives in `first_skill_tutorial_live_test.go`
+with a `//go:build livetest` guard (fails fast on missing prerequisites instead
+of skipping). `TestFirstSkillTutorialInProcess` in
+`first_skill_tutorial_inprocess_test.go` runs the same flow without KVM via
+`InProcessSandboxLauncher` and the existing cassettes.
 
 Recorded responses are stored under `testdata/cassettes/`. Replay mode is the
 default, so normal test runs stay fast and do not require a live Ollama daemon.
-The recorder only refreshes cassettes when `RECORD_OLLAMA=true` is set.
+The recorder only refreshes cassettes when `RECORD_OLLAMA=true` is set.  See
+`testdata/cassettes/README.md` for the full cassette inventory and prerequisites.
+Use `make record-cassettes` to refresh all at once.
 
 #### Two safety guards (both required)
 
@@ -273,8 +278,13 @@ purpose).
 4. For Ollama-backed integration tests, replay the recorded cassettes by
    default and only refresh them intentionally:
    ```bash
+   # Replay (default — fast, no Ollama/KVM needed)
    sudo "$(command -v go)" test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v -count=1
+   # Refresh one cassette (requires root + KVM + Ollama)
    sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run TestFirstSkillTutorialLive -v -count=1
+   # Refresh all cassettes in one step
+   make record-cassettes
+   # Chat scenario cassettes (replay/record)
    sudo "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
    sudo RECORD_OLLAMA=true "$(command -v go)" test ./cmd/aegisclaw -run '^TestChatMessageLiveScenario' -v -count=1
    ```

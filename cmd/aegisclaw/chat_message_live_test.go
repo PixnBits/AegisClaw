@@ -7,7 +7,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -51,12 +50,7 @@ func runChatMessageLiveScenario(t *testing.T, cassetteName, sessionID string, sc
 
 	// Reset package-level singletons so this test is self-contained.
 	kernel.ResetInstance()
-	runtimeOnce = sync.Once{}
-	runtimeInst = nil
-	registryInst = nil
-	proposalInst = nil
-	compositionInst = nil
-	runtimeInitErr = nil
+	resetRuntimeSingletons()
 
 	env, err := initRuntime()
 	if err != nil {
@@ -344,7 +338,6 @@ func requireThoughtPhase(t *testing.T, env *runtimeEnv, phase string) {
 	}
 	t.Errorf("expected at least one ThoughtEvent with phase=%q but none found", phase)
 }
-
 func TestChatMessageLiveScenarioSolarSizing(t *testing.T) {
 	runChatMessageLiveScenario(
 		t,
