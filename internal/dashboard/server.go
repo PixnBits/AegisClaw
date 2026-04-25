@@ -63,6 +63,12 @@ func New(addr string, client APIClient) (*Server, error) {
 			}
 			return template.JS(b)
 		},
+		"substr": func(s string, start int) string {
+			if start >= len(s) {
+				return ""
+			}
+			return s[start:]
+		},
 		// len counts items in slices or maps returned by fetchRaw (interface{}).
 		// Returns 0 for nil or unrecognised types rather than panicking.
 		"len": func(v interface{}) int {
@@ -126,6 +132,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/source/browse", s.handleSourceBrowse)
 	s.mux.HandleFunc("/workspace", s.handleWorkspace)
 	s.mux.HandleFunc("/workspace/edit", s.handleWorkspaceEdit)
+	// Phase 3: Git History routes
+	s.mux.HandleFunc("/git", s.handleGitHistory)
+	s.mux.HandleFunc("/git/diff", s.handleGitDiff)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
@@ -1007,6 +1016,7 @@ const dashboardNav = `
   <a href="/agents">Agents</a>
   <a href="/skills">Skills</a>
   <a href="/source">Source</a>
+  <a href="/git">Git</a>
   <a href="/workspace">Workspace</a>
   <a href="/async">Async Hub</a>
   <a href="/memory">Memory</a>
@@ -1110,6 +1120,66 @@ func (s *Server) handleWorkspaceEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/workspace", http.StatusSeeOther)
+}
+
+// handleGitHistory displays git commit history and branch information (Phase 3).
+func (s *Server) handleGitHistory(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	proposalID := r.URL.Query().Get("proposal")
+	if repo == "" {
+		repo = "skills"
+	}
+
+	// Get branches
+	branches, _ := s.fetchRaw(r.Context(), "git.branches", map[string]string{"repo": repo})
+
+	// Get commits if proposal ID is specified
+	var commits interface{}
+	if proposalID != "" {
+		commits, _ = s.fetchRaw(r.Context(), "git.commits", map[string]interface{}{
+			"repo":        repo,
+			"proposal_id": proposalID,
+			"limit":       50,
+		})
+	}
+
+	s.renderTemplate(w, "Git History", gitHistoryTmpl, map[string]interface{}{
+		"Repo":       repo,
+		"ProposalID": proposalID,
+		"Branches":   branches,
+		"Commits":    commits,
+	})
+}
+
+// handleGitDiff displays a diff for a proposal branch (Phase 3).
+func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	proposalID := r.URL.Query().Get("proposal")
+	
+	if repo == "" {
+		repo = "skills"
+	}
+	if proposalID == "" {
+		http.Error(w, "proposal ID required", http.StatusBadRequest)
+		return
+	}
+
+	diff, err := s.fetchRaw(r.Context(), "git.diff", map[string]string{
+		"repo":        repo,
+		"proposal_id": proposalID,
+	})
+
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
+	}
+
+	s.renderTemplate(w, "Git Diff", gitDiffTmpl, map[string]interface{}{
+		"Repo":       repo,
+		"ProposalID": proposalID,
+		"Diff":       diff,
+		"Error":      errMsg,
+	})
 }
 
 const agentsTmpl = `
@@ -3157,4 +3227,197 @@ const workspaceTmpl = `
   </script>
 </body>
 </html>`
+
+const gitHistoryTmpl = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{.Title}} — AegisClaw</title>
+  <style>` + dashboardCSS + `
+    .repo-tabs{display:flex;gap:.5rem;margin-bottom:1rem}
+    .repo-tab{background:#21262d;border:1px solid #30363d;padding:.5rem 1rem;border-radius:6px;cursor:pointer}
+    .repo-tab.active{background:#1a3a6b;border-color:#58a6ff}
+    .commit-list{background:#0d1117;border:1px solid #30363d;border-radius:6px;overflow:hidden}
+    .commit-item{padding:.75rem 1rem;border-bottom:1px solid #21262d;display:flex;align-items:flex-start;gap:1rem}
+    .commit-item:last-child{border-bottom:none}
+    .commit-item:hover{background:#161b22}
+    .commit-hash{font-family:monospace;color:#58a6ff;font-size:.85rem}
+    .commit-message{color:#e6edf3;font-weight:500;margin-bottom:.25rem}
+    .commit-meta{color:#8b949e;font-size:.82rem}
+  </style>
+</head>
+<body>
+  ` + dashboardNav + `
+  <div class="container">
+    <h1>&#128193; Git History & Branches</h1>
+    
+    <div class="repo-tabs">
+      <div class="repo-tab {{if eq .Repo "skills"}}active{{end}}" onclick="location.href='/git?repo=skills'">
+        Skills Repository
+      </div>
+      <div class="repo-tab {{if eq .Repo "self"}}active{{end}}" onclick="location.href='/git?repo=self'">
+        Self Repository
+      </div>
+    </div>
+    
+    {{if .Branches}}
+    <div class="section">
+      <div class="section-header">Branches</div>
+      <div style="padding:1rem">
+        {{$branches := .Branches}}
+        {{if $branches.branches}}
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          {{range $branches.branches}}
+            <div class="badge">{{.}}</div>
+          {{end}}
+          </div>
+          <div class="muted" style="margin-top:.75rem">Current branch: <strong>{{$branches.current_branch}}</strong></div>
+        {{else}}
+          <div class="empty">No branches found</div>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+
+    {{if .ProposalID}}
+    <div class="section">
+      <div class="section-header">Commits for proposal-{{.ProposalID}}</div>
+      {{if .Commits}}
+        {{$commits := .Commits}}
+        {{if $commits.commits}}
+        <div class="commit-list">
+          {{range $commits.commits}}
+          <div class="commit-item">
+            <div style="flex:1">
+              <div class="commit-message">{{.Message}}</div>
+              <div class="commit-meta">
+                <span class="commit-hash">{{truncate .Hash 12}}</span> &mdash;
+                by {{.Author}} &mdash;
+                {{fmtTime .Timestamp}}
+              </div>
+            </div>
+            <div>
+              <a href="/git/diff?repo={{$.Repo}}&proposal={{$.ProposalID}}" class="nav-link">View Diff</a>
+            </div>
+          </div>
+          {{end}}
+        </div>
+        {{else}}
+          <div style="padding:1rem" class="empty">No commits found for this proposal</div>
+        {{end}}
+      {{else}}
+        <div style="padding:1rem" class="empty">No commits found</div>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="section">
+      <div class="section-header">Proposal Branches</div>
+      <div style="padding:1rem">
+        {{if .Branches}}
+        {{$branches := .Branches}}
+        {{if $branches.branches}}
+          <p class="muted">Select a proposal branch to view its commit history:</p>
+          <div style="display:flex;flex-direction:column;gap:.5rem;margin-top:1rem">
+          {{range $branches.branches}}
+            {{if ne . "main"}}
+            <div>
+              <a href="/git?repo={{$.Repo}}&proposal={{substr . 9}}" class="nav-link">{{.}}</a>
+            </div>
+            {{end}}
+          {{end}}
+          </div>
+        {{else}}
+          <div class="empty">No proposal branches found</div>
+        {{end}}
+        {{else}}
+          <div class="empty">No branches found</div>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+  </div>
+  ` + dashboardSSEScript + `
+</body>
+</html>`
+
+const gitDiffTmpl = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{.Title}} — AegisClaw</title>
+  <style>` + dashboardCSS + `
+    .diff-container{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:1rem;font-family:monospace;font-size:.85rem;overflow-x:auto}
+    .diff-line{white-space:pre;line-height:1.5}
+    .diff-add{background:#1a3a1a;color:#3fb950}
+    .diff-del{background:#3a1a1a;color:#f85149}
+    .diff-header{color:#58a6ff;font-weight:600}
+    .diff-meta{color:#8b949e}
+  </style>
+</head>
+<body>
+  ` + dashboardNav + `
+  <div class="container">
+    <h1>&#128195; Diff for proposal-{{.ProposalID}}</h1>
+    
+    <div style="margin-bottom:1rem">
+      <a href="/git?repo={{.Repo}}&proposal={{.ProposalID}}" class="nav-link">← Back to Commit History</a>
+    </div>
+    
+    {{if .Error}}
+    <div class="section">
+      <div style="padding:1rem;color:#f85149">Error: {{.Error}}</div>
+    </div>
+    {{else if .Diff}}
+    <div class="section">
+      <div class="section-header">Changes (main → proposal-{{.ProposalID}})</div>
+      {{$diff := .Diff}}
+      {{if $diff.diff}}
+      <div class="diff-container">
+        <pre id="diff-content">{{$diff.diff}}</pre>
+      </div>
+      {{else}}
+        <div style="padding:1rem" class="empty">No changes found</div>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="section">
+      <div style="padding:1rem" class="empty">No diff available</div>
+    </div>
+    {{end}}
+  </div>
+  ` + dashboardSSEScript + `
+  <script>
+    // Syntax highlighting for diff
+    const diffContent = document.getElementById('diff-content');
+    if (diffContent) {
+      const lines = diffContent.textContent.split('\n');
+      const highlighted = lines.map(line => {
+        if (line.startsWith('+')) {
+          return '<span class="diff-line diff-add">' + escapeHtml(line) + '</span>';
+        } else if (line.startsWith('-')) {
+          return '<span class="diff-line diff-del">' + escapeHtml(line) + '</span>';
+        } else if (line.startsWith('@@')) {
+          return '<span class="diff-line diff-meta">' + escapeHtml(line) + '</span>';
+        } else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) {
+          return '<span class="diff-line diff-header">' + escapeHtml(line) + '</span>';
+        } else {
+          return '<span class="diff-line">' + escapeHtml(line) + '</span>';
+        }
+      }).join('\n');
+      diffContent.innerHTML = highlighted;
+    }
+    
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>`
+
 
