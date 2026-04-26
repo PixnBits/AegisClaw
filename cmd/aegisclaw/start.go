@@ -206,6 +206,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("pr.get", makePRGetHandler(env))
 	apiSrv.Handle("pr.approve", makePRApproveHandler(env))
 	apiSrv.Handle("pr.close", makePRCloseHandler(env))
+	// Dashboard PR handlers for enhanced UI
+	apiSrv.Handle("dashboard.pr.list", makeDashboardPRListHandler(env))
+	apiSrv.Handle("dashboard.pr.detail", makeDashboardPRDetailHandler(env))
+	apiSrv.Handle("dashboard.pr.stats", makeDashboardPRStatsHandler(env))
 	
 	// Phase 1 (OpenClaw integration): Session routing handlers.
 	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
