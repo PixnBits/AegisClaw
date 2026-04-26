@@ -72,7 +72,8 @@ type Pipeline struct {
 	// onPRCreated is an optional callback invoked after a PR is auto-created.
 	// This allows external systems (e.g., the daemon) to trigger follow-up
 	// actions like Court code review.
-	onPRCreated func(prID, proposalID string)
+	// Parameters: proposalID, branch, commitHash, pipelineResult
+	onPRCreated func(proposalID, branch, commitHash string, result *PipelineResult)
 	mu          sync.Mutex
 	runs        map[string]*PipelineResult
 }
@@ -118,7 +119,8 @@ func NewPipeline(
 }
 
 // SetPRCreatedCallback sets a callback to be invoked after a PR is auto-created.
-func (p *Pipeline) SetPRCreatedCallback(cb func(prID, proposalID string)) {
+// The callback receives: proposalID, branch, commitHash, and the pipeline result.
+func (p *Pipeline) SetPRCreatedCallback(cb func(proposalID, branch, commitHash string, result *PipelineResult)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onPRCreated = cb
@@ -401,6 +403,17 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 		zap.Int("files", len(codeResp.Files)),
 		zap.Duration("duration", result.Duration),
 	)
+	
+	// Step 10: Auto-create pull request (Phase 4)
+	// Call the PR creation callback if configured
+	p.mu.Lock()
+	callback := p.onPRCreated
+	p.mu.Unlock()
+	
+	if callback != nil {
+		// Callback will create PR and trigger Court code review
+		callback(result.ProposalID, result.Branch, commitHash, result)
+	}
 
 	return result, nil
 }
