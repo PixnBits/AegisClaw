@@ -71,6 +71,15 @@ build-rootfs-portal:
 build-rootfs-builder:
 	sudo ./scripts/build-builder-rootfs.sh /var/lib/aegisclaw/rootfs-templates/builder.ext4
 
+build-rootfs-builder-clean:
+	rm -rf ~/.cache/aegisclaw-builder
+	$(MAKE) build-rootfs-builder
+
+builder-cache-info:
+	@echo "APK cache: ~/.cache/aegisclaw-builder/apk"
+	@echo "Go mod cache: ~/.cache/aegisclaw-builder/go"
+	@du -sh ~/.cache/aegisclaw-builder 2>/dev/null || echo "No cache yet"
+
 # ── test ──────────────────────────────────────────────────────────────────────
 
 ## test: run all normal tests (unit + journey/integration, no Firecracker).
