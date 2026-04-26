@@ -6,3 +6,6 @@
 /guest-agent
 *.log
 /logs
+*.tar.gz
+*.tgz
+*.zip
