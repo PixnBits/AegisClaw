@@ -135,6 +135,9 @@ func (s *Server) registerRoutes() {
 	// Phase 3: Git History routes
 	s.mux.HandleFunc("/git", s.handleGitHistory)
 	s.mux.HandleFunc("/git/diff", s.handleGitDiff)
+	// Phase 4: Pull Request routes
+	s.mux.HandleFunc("/pullrequests", s.handlePRList)
+	s.mux.HandleFunc("/pullrequests/detail", s.handlePRDetail)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
@@ -1015,6 +1018,7 @@ const dashboardNav = `
   <a href="/chat">Chat</a>
   <a href="/agents">Agents</a>
   <a href="/skills">Skills</a>
+  <a href="/pullrequests">PRs</a>
   <a href="/source">Source</a>
   <a href="/git">Git</a>
   <a href="/workspace">Workspace</a>
