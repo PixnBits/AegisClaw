@@ -13,6 +13,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	// riskThresholdForApproval is the maximum average risk score for Court code review approval.
+	// Reviews with average risk >= this threshold are rejected.
+	riskThresholdForApproval = 5.0
+)
+
 // createPRFromPipelineResult creates a pull request from a completed builder pipeline.
 // This is called automatically when the builder completes successfully.
 func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash string, result *builder.PipelineResult) {
@@ -230,8 +236,8 @@ func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result
 		
 		avgRisk := totalRisk / float64(len(reviews))
 		
-		// Require majority approval and low risk
-		if approvalCount > len(reviews)/2 && avgRisk < 5.0 {
+		// Require majority approval and low risk (below configured threshold)
+		if approvalCount > len(reviews)/2 && avgRisk < riskThresholdForApproval {
 			pr.CourtReviewStatus = pullrequest.CourtReviewApproved
 		} else {
 			pr.CourtReviewStatus = pullrequest.CourtReviewRejected

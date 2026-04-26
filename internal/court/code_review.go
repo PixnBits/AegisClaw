@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -319,6 +320,12 @@ func extractInlineComments(evidence []string, files map[string]string) []pullreq
 
 // Helper functions
 
+const (
+	// riskThresholdForApproval is the maximum average risk score for Court code review approval.
+	// Reviews with average risk >= this threshold are rejected.
+	riskThresholdForApproval = 5.0
+)
+
 func boolToStatus(b bool) string {
 	if b {
 		return "✅ PASSED"
@@ -327,14 +334,8 @@ func boolToStatus(b bool) string {
 }
 
 func sortStrings(s []string) {
-	// Simple bubble sort for small lists
-	for i := 0; i < len(s); i++ {
-		for j := i + 1; j < len(s); j++ {
-			if s[i] > s[j] {
-				s[i], s[j] = s[j], s[i]
-			}
-		}
-	}
+	// Use standard library's efficient sort
+	sort.Strings(s)
 }
 
 func generateReviewID() string {

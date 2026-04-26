@@ -145,8 +145,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	courtEngine.ResumeStalled(cmd.Context())
 	
 	// TODO: Start builder daemon to monitor for approved proposals.
-	// This requires wiring up BuilderRuntime, CodeGenerator, Analyzer, etc.
-	// For now, the PR creation callback is set wherever the pipeline is created.
+	// The builder pipeline creation requires BuilderRuntime, CodeGenerator, and Analyzer
+	// to be fully initialized. The PR creation callback is set via
+	// pipeline.SetPRCreatedCallback() wherever the pipeline is created.
+	// This integration point is ready; actual pipeline instantiation depends on
+	// builder subsystem initialization which is done elsewhere.
 	
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
