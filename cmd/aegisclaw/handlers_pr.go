@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
+	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
 	"go.uber.org/zap"
 )
@@ -69,7 +70,13 @@ func makePRListHandler(env *runtimeEnv) api.Handler {
 			}
 		}
 		
-		return &api.Response{Success: true, Data: summaries}
+		// Marshal to JSON for api.Response.Data
+		respData, err := json.Marshal(summaries)
+		if err != nil {
+			return &api.Response{Error: "failed to marshal response: " + err.Error()}
+		}
+		
+		return &api.Response{Success: true, Data: respData}
 	}
 }
 
@@ -102,7 +109,13 @@ func makePRGetHandler(env *runtimeEnv) api.Handler {
 			return &api.Response{Error: "failed to get pull request: " + err.Error()}
 		}
 		
-		return &api.Response{Success: true, Data: pr}
+		// Marshal to JSON for api.Response.Data
+		respData, err := json.Marshal(pr)
+		if err != nil {
+			return &api.Response{Error: "failed to marshal response: " + err.Error()}
+		}
+		
+		return &api.Response{Success: true, Data: respData}
 	}
 }
 
@@ -133,15 +146,18 @@ func makePRApproveHandler(env *runtimeEnv) api.Handler {
 			"pr_id":       req.ID,
 			"approved_by": req.ApprovedBy,
 		})
-		action := env.Kernel.NewAction("pr.approve", "user", auditPayload)
+		action := kernel.NewAction(kernel.ActionType("pr.approve"), "user", auditPayload)
 		if _, err := env.Kernel.SignAndLog(action); err != nil {
 			env.Logger.Warn("failed to log PR approval", zap.Error(err))
 		}
 		
-		return &api.Response{Success: true, Data: map[string]string{
+		// Marshal response data
+		respData, _ := json.Marshal(map[string]string{
 			"message": "Pull request approved",
 			"pr_id":   req.ID,
-		}}
+		})
+		
+		return &api.Response{Success: true, Data: respData}
 	}
 }
 
@@ -167,14 +183,17 @@ func makePRCloseHandler(env *runtimeEnv) api.Handler {
 		auditPayload, _ := json.Marshal(map[string]string{
 			"pr_id": req.ID,
 		})
-		action := env.Kernel.NewAction("pr.close", "user", auditPayload)
+		action := kernel.NewAction(kernel.ActionType("pr.close"), "user", auditPayload)
 		if _, err := env.Kernel.SignAndLog(action); err != nil {
 			env.Logger.Warn("failed to log PR closure", zap.Error(err))
 		}
 		
-		return &api.Response{Success: true, Data: map[string]string{
+		// Marshal response data
+		respData, _ := json.Marshal(map[string]string{
 			"message": "Pull request closed",
 			"pr_id":   req.ID,
-		}}
+		})
+		
+		return &api.Response{Success: true, Data: respData}
 	}
 }
