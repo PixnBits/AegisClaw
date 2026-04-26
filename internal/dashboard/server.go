@@ -63,6 +63,12 @@ func New(addr string, client APIClient) (*Server, error) {
 			}
 			return template.JS(b)
 		},
+		"substr": func(s string, start int) string {
+			if start >= len(s) {
+				return ""
+			}
+			return s[start:]
+		},
 		// len counts items in slices or maps returned by fetchRaw (interface{}).
 		// Returns 0 for nil or unrecognised types rather than panicking.
 		"len": func(v interface{}) int {
@@ -121,6 +127,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/chat/send", s.handleChatSend)
 	s.mux.HandleFunc("/canvas", s.handleCanvas)
 	s.mux.HandleFunc("/events", s.handleSSE)
+	// Phase 2: Source Code & Git routes
+	s.mux.HandleFunc("/source", s.handleSource)
+	s.mux.HandleFunc("/source/browse", s.handleSourceBrowse)
+	s.mux.HandleFunc("/workspace", s.handleWorkspace)
+	s.mux.HandleFunc("/workspace/edit", s.handleWorkspaceEdit)
+	// Phase 3: Git History routes
+	s.mux.HandleFunc("/git", s.handleGitHistory)
+	s.mux.HandleFunc("/git/diff", s.handleGitDiff)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
@@ -1001,6 +1015,9 @@ const dashboardNav = `
   <a href="/chat">Chat</a>
   <a href="/agents">Agents</a>
   <a href="/skills">Skills</a>
+  <a href="/source">Source</a>
+  <a href="/git">Git</a>
+  <a href="/workspace">Workspace</a>
   <a href="/async">Async Hub</a>
   <a href="/memory">Memory</a>
   <a href="/approvals">Approvals</a>
@@ -1021,6 +1038,141 @@ const dashboardSSEScript = `
   }catch(e){s.innerHTML='&#9679; no sse'}
 })();
 </script>`
+
+// handleSource displays the source code browser (Phase 2: Source Code Viewer).
+func (s *Server) handleSource(w http.ResponseWriter, r *http.Request) {
+	// Only support skills repository
+	repo := "skills"
+
+	// Get repository branches
+	branches, _ := s.fetchRaw(r.Context(), "git.branches", map[string]string{"repo": repo})
+
+	s.renderTemplate(w, "Source Code Browser", sourceTmpl, map[string]interface{}{
+		"Repo":     repo,
+		"Branches": branches,
+	})
+}
+
+// handleSourceBrowse handles file browsing within a repository.
+func (s *Server) handleSourceBrowse(w http.ResponseWriter, r *http.Request) {
+	// Only support skills repository
+	repo := "skills"
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		path = "/"
+	}
+
+	content, err := s.fetchRaw(r.Context(), "git.browse", map[string]string{
+		"repo": repo,
+		"path": path,
+	})
+
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	respData, _ := json.Marshal(map[string]interface{}{
+		"content": content,
+		"error":   errMsg,
+	})
+	w.Write(respData) //nolint:errcheck
+}
+
+// handleWorkspace displays the workspace editor for user files.
+func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
+	files, _ := s.fetchRaw(r.Context(), "workspace.list", nil)
+	
+	s.renderTemplate(w, "Workspace", workspaceTmpl, map[string]interface{}{
+		"Files": files,
+	})
+}
+
+// handleWorkspaceEdit handles editing workspace files.
+func (s *Server) handleWorkspaceEdit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	filename := r.FormValue("filename")
+	content := r.FormValue("content")
+
+	if filename == "" {
+		http.Error(w, "filename required", http.StatusBadRequest)
+		return
+	}
+
+	payload := mustMarshal(map[string]string{
+		"filename": filename,
+		"content":  content,
+	})
+
+	_, err := s.apiClient.Call(r.Context(), "workspace.write", payload)
+	if err != nil {
+		http.Error(w, "failed to save: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/workspace", http.StatusSeeOther)
+}
+
+// handleGitHistory displays git commit history and branch information (Phase 3).
+func (s *Server) handleGitHistory(w http.ResponseWriter, r *http.Request) {
+	// Only support skills repository
+	repo := "skills"
+	proposalID := r.URL.Query().Get("proposal")
+
+	// Get branches
+	branches, _ := s.fetchRaw(r.Context(), "git.branches", map[string]string{"repo": repo})
+
+	// Get commits if proposal ID is specified
+	var commits interface{}
+	if proposalID != "" {
+		commits, _ = s.fetchRaw(r.Context(), "git.commits", map[string]interface{}{
+			"repo":        repo,
+			"proposal_id": proposalID,
+			"limit":       50,
+		})
+	}
+
+	s.renderTemplate(w, "Git History & Branches", gitHistoryTmpl, map[string]interface{}{
+		"Repo":       repo,
+		"ProposalID": proposalID,
+		"Branches":   branches,
+		"Commits":    commits,
+	})
+}
+
+// handleGitDiff displays a diff for a proposal branch (Phase 3).
+func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
+	// Only support skills repository
+	repo := "skills"
+	proposalID := r.URL.Query().Get("proposal")
+	
+	if proposalID == "" {
+		http.Error(w, "proposal ID required", http.StatusBadRequest)
+		return
+	}
+
+	diff, err := s.fetchRaw(r.Context(), "git.diff", map[string]string{
+		"repo":        repo,
+		"proposal_id": proposalID,
+	})
+
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
+	}
+
+	s.renderTemplate(w, "Diff for proposal-"+proposalID, gitDiffTmpl, map[string]interface{}{
+		"Repo":       repo,
+		"ProposalID": proposalID,
+		"Diff":       diff,
+		"Error":      errMsg,
+	})
+}
 
 const agentsTmpl = `
 <h1>{{.Title}}</h1>
@@ -2870,3 +3022,315 @@ const canvasTmpl = `
   }
 })();
 </script>`
+
+const sourceTmpl = `
+<style>
+  .file-tree{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:1rem;min-height:400px}
+  .tree-item{padding:.3rem .5rem;cursor:pointer;border-radius:4px}
+  .tree-item:hover{background:#161b22}
+  .tree-item.folder{font-weight:600}
+  .code-viewer{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:1rem;margin-top:1rem;min-height:300px}
+  .code-viewer pre{margin:0;white-space:pre-wrap;font-family:monospace;font-size:.85rem}
+  .line-numbers{color:#6e7681;padding-right:1rem;border-right:1px solid #30363d;margin-right:1rem;user-select:none}
+</style>
+<h1>{{.Title}}</h1>
+    
+{{if .Branches}}
+<div class="section">
+  <div class="section-header">Branches</div>
+  <div style="padding:1rem">
+    {{$branches := .Branches}}
+    {{if $branches.branches}}
+      {{range $branches.branches}}
+        <div class="badge">{{.}}</div>
+      {{end}}
+      <div class="muted" style="margin-top:.5rem">Current: {{$branches.current_branch}}</div>
+    {{else}}
+      <div class="empty">No branches found</div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+<div class="file-tree" id="file-tree">
+  <div class="empty">Select a repository to browse</div>
+</div>
+
+<div class="code-viewer" id="code-viewer" style="display:none">
+  <pre id="code-content"></pre>
+</div>`
+
+const workspaceTmpl = `
+<style>
+  .workspace-files{display:grid;gap:1rem;margin-bottom:1rem}
+  .file-card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem}
+  .file-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem}
+  .file-name{font-weight:600;color:#e6edf3}
+  .editor-area{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:1rem}
+  .editor-area textarea{width:100%;min-height:400px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:4px;padding:.5rem;font-family:monospace;font-size:.85rem}
+</style>
+<h1>{{.Title}}</h1>
+<p class="muted">Edit your workspace configuration files (SOUL.md, AGENTS.md, TOOLS.md, *.SKILL.md)</p>
+
+<div class="section">
+  <div class="section-header">Core Workspace Files</div>
+  <div style="padding:1rem">
+    <div class="workspace-files">
+      <div class="file-card">
+        <div class="file-header">
+          <span class="file-name">SOUL.md</span>
+          <button onclick="editFile('SOUL.md')">Edit</button>
+        </div>
+        <div class="muted">Your personal agent configuration</div>
+      </div>
+      
+      <div class="file-card">
+        <div class="file-header">
+          <span class="file-name">AGENTS.md</span>
+          <button onclick="editFile('AGENTS.md')">Edit</button>
+        </div>
+        <div class="muted">Multi-agent system configuration</div>
+      </div>
+      
+      <div class="file-card">
+        <div class="file-header">
+          <span class="file-name">TOOLS.md</span>
+          <button onclick="editFile('TOOLS.md')">Edit</button>
+        </div>
+        <div class="muted">Custom tool definitions</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{if .Files}}
+{{$files := .Files}}
+{{if $files.files}}
+<div class="section">
+  <div class="section-header">All Workspace Files</div>
+  <div style="padding:1rem">
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Size</th>
+          <th>Modified</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range $files.files}}
+        <tr>
+          <td>{{.name}}</td>
+          <td>{{.size}} bytes</td>
+          <td class="muted">{{fmtTime .mod_time}}</td>
+          <td><button onclick="editFile('{{.name}}')">Edit</button></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}
+{{end}}
+
+<div id="editor-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:100">
+  <div style="max-width:900px;margin:2rem auto;background:#0d1117;border:1px solid #30363d;border-radius:6px">
+    <div style="padding:1rem;border-bottom:1px solid #30363d;display:flex;justify-content:space-between">
+      <h3 id="editor-title">Edit File</h3>
+      <button onclick="closeEditor()">Close</button>
+    </div>
+    <form id="editor-form" action="/workspace/edit" method="post">
+      <input type="hidden" name="filename" id="editor-filename">
+      <div class="editor-area">
+        <textarea name="content" id="editor-content"></textarea>
+      </div>
+      <div style="padding:1rem;border-top:1px solid #30363d;display:flex;gap:.5rem">
+        <button type="submit" class="approve">Save Changes</button>
+        <button type="button" onclick="closeEditor()">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+  async function editFile(filename) {
+    document.getElementById('editor-title').textContent = 'Edit ' + filename;
+    document.getElementById('editor-filename').value = filename;
+    
+    try {
+      const resp = await fetch('/api/workspace/read', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({filename: filename})
+      });
+      const data = await resp.json();
+      if (data.success && data.data) {
+        const content = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+        document.getElementById('editor-content').value = content.content || '';
+      }
+    } catch (e) {
+      console.error('Failed to load file:', e);
+      document.getElementById('editor-content').value = '';
+    }
+    
+    document.getElementById('editor-modal').style.display = 'block';
+  }
+  
+  function closeEditor() {
+    document.getElementById('editor-modal').style.display = 'none';
+  }
+</script>`
+
+const gitHistoryTmpl = `
+<style>
+  .commit-list{background:#0d1117;border:1px solid #30363d;border-radius:6px;overflow:hidden}
+  .commit-item{padding:.75rem 1rem;border-bottom:1px solid #21262d;display:flex;align-items:flex-start;gap:1rem}
+  .commit-item:last-child{border-bottom:none}
+  .commit-item:hover{background:#161b22}
+  .commit-hash{font-family:monospace;color:#58a6ff;font-size:.85rem}
+  .commit-message{color:#e6edf3;font-weight:500;margin-bottom:.25rem}
+  .commit-meta{color:#8b949e;font-size:.82rem}
+</style>
+<h1>{{.Title}}</h1>
+
+{{if .Branches}}
+<div class="section">
+  <div class="section-header">Branches</div>
+  <div style="padding:1rem">
+    {{$branches := .Branches}}
+    {{if $branches.branches}}
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      {{range $branches.branches}}
+        <div class="badge">{{.}}</div>
+      {{end}}
+      </div>
+      <div class="muted" style="margin-top:.75rem">Current branch: <strong>{{$branches.current_branch}}</strong></div>
+    {{else}}
+      <div class="empty">No branches found</div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{if .ProposalID}}
+<div class="section">
+  <div class="section-header">Commits for proposal-{{.ProposalID}}</div>
+  {{if .Commits}}
+    {{$commits := .Commits}}
+    {{if $commits.commits}}
+    <div class="commit-list">
+      {{range $commits.commits}}
+      <div class="commit-item">
+        <div style="flex:1">
+          <div class="commit-message">{{.Message}}</div>
+          <div class="commit-meta">
+            <span class="commit-hash">{{truncate .Hash 12}}</span> &mdash;
+            by {{.Author}} &mdash;
+            {{fmtTime .Timestamp}}
+          </div>
+        </div>
+        <div>
+          <a href="/git/diff?proposal={{$.ProposalID}}" class="nav-link">View Diff</a>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+      <div style="padding:1rem" class="empty">No commits found for this proposal</div>
+    {{end}}
+  {{else}}
+    <div style="padding:1rem" class="empty">No commits found</div>
+  {{end}}
+</div>
+{{else}}
+<div class="section">
+  <div class="section-header">Proposal Branches</div>
+  <div style="padding:1rem">
+    {{if .Branches}}
+    {{$branches := .Branches}}
+    {{if $branches.branches}}
+      <p class="muted">Select a proposal branch to view its commit history:</p>
+      <div style="display:flex;flex-direction:column;gap:.5rem;margin-top:1rem">
+      {{range $branches.branches}}
+        {{if ne . "main"}}
+        <div>
+          <a href="/git?proposal={{substr . 9}}" class="nav-link">{{.}}</a>
+        </div>
+        {{end}}
+      {{end}}
+      </div>
+    {{else}}
+      <div class="empty">No proposal branches found</div>
+    {{end}}
+    {{else}}
+      <div class="empty">No branches found</div>
+    {{end}}
+  </div>
+</div>
+{{end}}`
+
+const gitDiffTmpl = `
+<style>
+  .diff-container{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:1rem;font-family:monospace;font-size:.85rem;overflow-x:auto}
+  .diff-line{white-space:pre;line-height:1.5}
+  .diff-add{background:#1a3a1a;color:#3fb950}
+  .diff-del{background:#3a1a1a;color:#f85149}
+  .diff-header{color:#58a6ff;font-weight:600}
+  .diff-meta{color:#8b949e}
+</style>
+<h1>{{.Title}}</h1>
+
+<div style="margin-bottom:1rem">
+  <a href="/git?proposal={{.ProposalID}}" class="nav-link">← Back to Commit History</a>
+</div>
+
+{{if .Error}}
+<div class="section">
+  <div style="padding:1rem;color:#f85149">Error: {{.Error}}</div>
+</div>
+{{else if .Diff}}
+<div class="section">
+  <div class="section-header">Changes (main → proposal-{{.ProposalID}})</div>
+  {{$diff := .Diff}}
+  {{if $diff.diff}}
+  <div class="diff-container">
+    <pre id="diff-content">{{$diff.diff}}</pre>
+  </div>
+  {{else}}
+    <div style="padding:1rem" class="empty">No changes found</div>
+  {{end}}
+</div>
+{{else}}
+<div class="section">
+  <div style="padding:1rem" class="empty">No diff available</div>
+</div>
+{{end}}
+<script>
+  // Syntax highlighting for diff
+  const diffContent = document.getElementById('diff-content');
+  if (diffContent) {
+    const lines = diffContent.textContent.split('\n');
+    const highlighted = lines.map(line => {
+      if (line.startsWith('+')) {
+        return '<span class="diff-line diff-add">' + escapeHtml(line) + '</span>';
+      } else if (line.startsWith('-')) {
+        return '<span class="diff-line diff-del">' + escapeHtml(line) + '</span>';
+      } else if (line.startsWith('@@')) {
+        return '<span class="diff-line diff-meta">' + escapeHtml(line) + '</span>';
+      } else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) {
+        return '<span class="diff-line diff-header">' + escapeHtml(line) + '</span>';
+      } else {
+        return '<span class="diff-line">' + escapeHtml(line) + '</span>';
+      }
+    }).join('\n');
+    diffContent.innerHTML = highlighted;
+  }
+  
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+</script>`
+
+

@@ -14,6 +14,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
+	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/lookup"
@@ -40,6 +41,7 @@ var (
 	workerStoreInst *worker.Store
 	vaultInst       *vault.Vault
 	lookupInst      *lookup.Store
+	gitManagerInst  *gitmanager.Manager
 	runtimeInitErr  error
 )
 
@@ -86,6 +88,9 @@ type runtimeEnv struct {
 	// (~/.aegisclaw/workspace by default). Fields are empty when the
 	// corresponding workspace files are absent or the directory doesn't exist.
 	Workspace *workspace.Content
+
+	// GitManager manages the skills and self git repositories.
+	GitManager *gitmanager.Manager
 
 	// Sessions tracks all active and recent chat sessions for the session
 	// routing tools (sessions_list, sessions_history, sessions_send,
@@ -195,6 +200,12 @@ func initRuntime() (*runtimeEnv, error) {
 			Dir:    cfg.Lookup.Dir,
 			Logger: logger,
 		})
+		if runtimeInitErr != nil {
+			return
+		}
+		// Git Manager: manages skills and self repositories.
+		gitBasePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "git")
+		gitManagerInst, runtimeInitErr = gitmanager.NewManager(gitBasePath, kern, logger)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -214,6 +225,7 @@ func initRuntime() (*runtimeEnv, error) {
 		Vault:            vaultInst,
 		EgressProxy:      llm.NewEgressProxy(logger),
 		LookupStore:      lookupInst,
+		GitManager:       gitManagerInst,
 		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 		ToolEvents:       NewToolEventBuffer(400),
 		ThoughtEvents:    NewThoughtEventBuffer(600),
@@ -240,6 +252,7 @@ func resetRuntimeSingletons() {
 	workerStoreInst = nil
 	vaultInst = nil
 	lookupInst = nil
+	gitManagerInst = nil
 	runtimeInitErr = nil
 }
 

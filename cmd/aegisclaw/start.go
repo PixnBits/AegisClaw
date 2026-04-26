@@ -191,6 +191,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Phase 3: Worker handlers.
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
+
+	// Git/Source Code API endpoints (Phase 2: Source Code Viewer)
+	apiSrv.Handle("git.browse", makeGitBrowseHandler(env))
+	apiSrv.Handle("git.branches", makeGitListBranchesHandler(env))
+	apiSrv.Handle("git.commits", makeGitCommitHistoryHandler(env))
+	apiSrv.Handle("git.diff", makeGitDiffHandler(env))
+	apiSrv.Handle("workspace.read", makeWorkspaceReadHandler(env))
+	apiSrv.Handle("workspace.write", makeWorkspaceWriteHandler(env))
+	apiSrv.Handle("workspace.list", makeWorkspaceListHandler(env))
 	// Phase 1 (OpenClaw integration): Session routing handlers.
 	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
 	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
