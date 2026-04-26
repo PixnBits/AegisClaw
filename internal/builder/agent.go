@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/kernel"
@@ -20,6 +21,14 @@ type BuilderAgent struct {
 	logger       *zap.Logger
 	pollInterval time.Duration
 	stopCh       chan struct{}
+	// instanceID uniquely identifies this builder agent instance
+	instanceID string
+	// inProgress tracks proposals currently being built (prevents duplicates)
+	inProgress map[string]bool
+	mu         sync.Mutex
+	// Resilience configuration
+	maxBuildAttempts int
+	staleThreshold   time.Duration
 }
 
 // NewBuilderAgent creates a builder agent for use inside a microVM.
@@ -30,12 +39,16 @@ func NewBuilderAgent(
 	logger *zap.Logger,
 ) *BuilderAgent {
 	return &BuilderAgent{
-		pipeline:     pipeline,
-		store:        store,
-		kernel:       kern,
-		logger:       logger,
-		pollInterval: 10 * time.Second,
-		stopCh:       make(chan struct{}),
+		pipeline:         pipeline,
+		store:            store,
+		kernel:           kern,
+		logger:           logger,
+		pollInterval:     10 * time.Second,
+		stopCh:           make(chan struct{}),
+		instanceID:       fmt.Sprintf("builder-%d", time.Now().UnixNano()),
+		inProgress:       make(map[string]bool),
+		maxBuildAttempts: 3,
+		staleThreshold:   15 * time.Minute,
 	}
 }
 
@@ -87,6 +100,67 @@ func (ba *BuilderAgent) checkAndBuild(ctx context.Context) error {
 			continue
 		}
 
+		// Skip if already in progress in this instance
+		ba.mu.Lock()
+		if ba.inProgress[prop.ID] {
+			ba.mu.Unlock()
+			ba.logger.Debug("skipping in-progress proposal",
+				zap.String("proposal_id", prop.ID),
+			)
+			continue
+		}
+		ba.mu.Unlock()
+
+		// Check for stale builds (started but not completed, possibly crashed)
+		if prop.BuildStartedAt != nil {
+			elapsed := time.Since(*prop.BuildStartedAt)
+			if elapsed > ba.staleThreshold && prop.BuildInstanceID != ba.instanceID {
+				ba.logger.Warn("detected stale build, will retry",
+					zap.String("proposal_id", prop.ID),
+					zap.String("old_instance", prop.BuildInstanceID),
+					zap.Duration("elapsed", elapsed),
+				)
+				// Clear stale build metadata and increment attempt count
+				prop.BuildStartedAt = nil
+				prop.BuildInstanceID = ""
+				prop.BuildAttemptCount++
+				if err := ba.store.Update(prop); err != nil {
+					ba.logger.Error("failed to update stale build",
+						zap.String("proposal_id", prop.ID),
+						zap.Error(err),
+					)
+					continue
+				}
+			} else if prop.BuildInstanceID == ba.instanceID {
+				// This instance is already building it (shouldn't happen, but defensive)
+				ba.logger.Debug("proposal already being built by this instance",
+					zap.String("proposal_id", prop.ID),
+				)
+				continue
+			} else {
+				// Another instance is actively building, skip
+				ba.logger.Debug("proposal being built by another instance",
+					zap.String("proposal_id", prop.ID),
+					zap.String("instance", prop.BuildInstanceID),
+				)
+				continue
+			}
+		}
+
+		// Check retry limit
+		if prop.BuildAttemptCount >= ba.maxBuildAttempts {
+			ba.logger.Error("proposal exceeded max build attempts",
+				zap.String("proposal_id", prop.ID),
+				zap.Int("attempts", prop.BuildAttemptCount),
+			)
+			ba.markFailed(prop, fmt.Sprintf(
+				"exceeded maximum build attempts (%d/%d)",
+				prop.BuildAttemptCount,
+				ba.maxBuildAttempts,
+			))
+			continue
+		}
+
 		// Build this proposal
 		if err := ba.buildProposal(ctx, prop); err != nil {
 			ba.logger.Error("failed to build proposal",
@@ -104,13 +178,41 @@ func (ba *BuilderAgent) buildProposal(ctx context.Context, prop *proposal.Propos
 	ba.logger.Info("building proposal",
 		zap.String("proposal_id", prop.ID),
 		zap.String("title", prop.Title),
+		zap.Int("attempt", prop.BuildAttemptCount+1),
 	)
+
+	// Mark as in-progress in this instance
+	ba.mu.Lock()
+	ba.inProgress[prop.ID] = true
+	ba.mu.Unlock()
+
+	// Clean up in-progress tracking on exit
+	defer func() {
+		ba.mu.Lock()
+		delete(ba.inProgress, prop.ID)
+		ba.mu.Unlock()
+	}()
+
+	// Mark proposal as being built (for crash recovery)
+	now := time.Now().UTC()
+	prop.BuildStartedAt = &now
+	prop.BuildInstanceID = ba.instanceID
+	prop.BuildAttemptCount++
+	prop.BumpVersion()
+	if err := ba.store.Update(prop); err != nil {
+		ba.logger.Error("failed to mark proposal as building",
+			zap.String("proposal_id", prop.ID),
+			zap.Error(err),
+		)
+		return err
+	}
 
 	// Log build start to kernel
 	action := kernel.NewAction(
 		kernel.ActionType("builder.start"),
 		"builder-agent",
-		[]byte(fmt.Sprintf(`{"proposal_id":"%s","title":"%s"}`, prop.ID, prop.Title)),
+		[]byte(fmt.Sprintf(`{"proposal_id":"%s","title":"%s","attempt":%d}`,
+			prop.ID, prop.Title, prop.BuildAttemptCount)),
 	)
 	if _, err := ba.kernel.SignAndLog(action); err != nil {
 		ba.logger.Warn("failed to log build start", zap.Error(err))
@@ -146,6 +248,11 @@ func (ba *BuilderAgent) buildProposal(ctx context.Context, prop *proposal.Propos
 
 	// Update proposal status
 	if result.State == PipelineStateComplete {
+		// Clear build metadata on success
+		prop.BuildStartedAt = nil
+		prop.BuildInstanceID = ""
+		// Keep BuildAttemptCount for metrics
+
 		if err := prop.Transition(proposal.StatusComplete, "build completed successfully", "builder-agent"); err != nil {
 			return fmt.Errorf("failed to transition to complete: %w", err)
 		}
@@ -161,6 +268,11 @@ func (ba *BuilderAgent) buildProposal(ctx context.Context, prop *proposal.Propos
 
 // markFailed transitions a proposal to failed status.
 func (ba *BuilderAgent) markFailed(prop *proposal.Proposal, reason string) {
+	// Clear build metadata
+	prop.BuildStartedAt = nil
+	prop.BuildInstanceID = ""
+	// Keep BuildAttemptCount for metrics
+
 	if err := prop.Transition(proposal.StatusFailed, reason, "builder-agent"); err != nil {
 		ba.logger.Error("failed to transition to failed",
 			zap.String("proposal_id", prop.ID),

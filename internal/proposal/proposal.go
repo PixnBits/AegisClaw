@@ -200,14 +200,18 @@ type Proposal struct {
 	// Enforcement happens at sandbox launch time (Firecracker rootfs flags or
 	// Docker seccomp/AppArmor profiles).
 	Capabilities *SkillCapabilities `json:"capabilities,omitempty"`
-	Reviews       []Review               `json:"reviews,omitempty"`
-	History       []StatusChange         `json:"history"`
-	Round         int                    `json:"round"`
-	CreatedAt     time.Time              `json:"created_at"`
-	UpdatedAt     time.Time              `json:"updated_at"`
-	MerkleHash    string                 `json:"merkle_hash"`
-	PrevHash      string                 `json:"prev_hash"`
-	Version       int                    `json:"version"`
+	Reviews      []Review           `json:"reviews,omitempty"`
+	History      []StatusChange     `json:"history"`
+	Round        int                `json:"round"`
+	CreatedAt    time.Time          `json:"created_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+	MerkleHash   string             `json:"merkle_hash"`
+	PrevHash     string             `json:"prev_hash"`
+	Version      int                `json:"version"`
+	// Build tracking metadata for resilience
+	BuildStartedAt    *time.Time `json:"build_started_at,omitempty"`
+	BuildAttemptCount int        `json:"build_attempt_count,omitempty"`
+	BuildInstanceID   string     `json:"build_instance_id,omitempty"`
 }
 
 // NewProposal creates a new proposal in draft status.
