@@ -20,6 +20,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/pullrequest"
 	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
@@ -35,6 +36,7 @@ var (
 	runtimeInst     *sandbox.FirecrackerRuntime
 	registryInst    *sandbox.SkillRegistry
 	proposalInst    *proposal.Store
+	prStoreInst     *pullrequest.Store
 	compositionInst *composition.Store
 	memoryInst      *memory.Store
 	eventBusInst    *eventbus.Bus
@@ -52,6 +54,7 @@ type runtimeEnv struct {
 	Runtime            *sandbox.FirecrackerRuntime
 	Registry           *sandbox.SkillRegistry
 	ProposalStore      *proposal.Store
+	PRStore            *pullrequest.Store
 	CompositionStore   *composition.Store
 	MemoryStore        *memory.Store
 	EventBus           *eventbus.Bus
@@ -152,6 +155,12 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
+		// Pull Request Store: stores PR metadata for code review workflow.
+		prStorePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "pullrequests")
+		prStoreInst, runtimeInitErr = pullrequest.NewStore(prStorePath, logger)
+		if runtimeInitErr != nil {
+			return
+		}
 		compositionInst, runtimeInitErr = composition.NewStore(cfg.Composition.Dir)
 		if runtimeInitErr != nil {
 			return
@@ -218,6 +227,7 @@ func initRuntime() (*runtimeEnv, error) {
 		Runtime:          runtimeInst,
 		Registry:         registryInst,
 		ProposalStore:    proposalInst,
+		PRStore:          prStoreInst,
 		CompositionStore: compositionInst,
 		MemoryStore:      memoryInst,
 		EventBus:         eventBusInst,
@@ -246,6 +256,7 @@ func resetRuntimeSingletons() {
 	runtimeInst = nil
 	registryInst = nil
 	proposalInst = nil
+	prStoreInst = nil
 	compositionInst = nil
 	memoryInst = nil
 	eventBusInst = nil

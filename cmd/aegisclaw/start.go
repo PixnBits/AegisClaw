@@ -200,6 +200,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("workspace.read", makeWorkspaceReadHandler(env))
 	apiSrv.Handle("workspace.write", makeWorkspaceWriteHandler(env))
 	apiSrv.Handle("workspace.list", makeWorkspaceListHandler(env))
+	
+	// Pull request handlers (Phase 4: Pull Request System)
+	apiSrv.Handle("pr.list", makePRListHandler(env))
+	apiSrv.Handle("pr.get", makePRGetHandler(env))
+	apiSrv.Handle("pr.approve", makePRApproveHandler(env))
+	apiSrv.Handle("pr.close", makePRCloseHandler(env))
+	
 	// Phase 1 (OpenClaw integration): Session routing handlers.
 	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
 	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
