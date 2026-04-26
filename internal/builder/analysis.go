@@ -34,22 +34,22 @@ type AnalysisFinding struct {
 
 // AnalysisResult captures the output of all analysis steps.
 type AnalysisResult struct {
-	ProposalID    string            `json:"proposal_id"`
-	Diff          string            `json:"diff"`
-	TestOutput    string            `json:"test_output"`
-	TestPassed    bool              `json:"test_passed"`
-	LintOutput    string            `json:"lint_output"`
-	LintPassed    bool              `json:"lint_passed"`
-	SecurityOutput string           `json:"security_output"`
-	SecurityPassed bool             `json:"security_passed"`
-	BuildOutput   string            `json:"build_output"`
-	BuildPassed   bool              `json:"build_passed"`
-	Findings      []AnalysisFinding `json:"findings"`
-	BinaryHash    string            `json:"binary_hash,omitempty"`
-	Passed        bool              `json:"passed"`
-	FailureReason string            `json:"failure_reason,omitempty"`
-	Duration      time.Duration     `json:"duration"`
-	CompletedAt   time.Time         `json:"completed_at"`
+	ProposalID     string            `json:"proposal_id"`
+	Diff           string            `json:"diff"`
+	TestOutput     string            `json:"test_output"`
+	TestPassed     bool              `json:"test_passed"`
+	LintOutput     string            `json:"lint_output"`
+	LintPassed     bool              `json:"lint_passed"`
+	SecurityOutput string            `json:"security_output"`
+	SecurityPassed bool              `json:"security_passed"`
+	BuildOutput    string            `json:"build_output"`
+	BuildPassed    bool              `json:"build_passed"`
+	Findings       []AnalysisFinding `json:"findings"`
+	BinaryHash     string            `json:"binary_hash,omitempty"`
+	Passed         bool              `json:"passed"`
+	FailureReason  string            `json:"failure_reason,omitempty"`
+	Duration       time.Duration     `json:"duration"`
+	CompletedAt    time.Time         `json:"completed_at"`
 }
 
 // HasHighSeverity returns true if any finding is error or critical.
@@ -95,13 +95,13 @@ func (ar *AnalysisRequest) Validate() error {
 
 // Analyzer runs static analysis, tests, and builds inside the builder sandbox.
 type Analyzer struct {
-	builderRT *BuilderRuntime
+	builderRT BuilderRuntimeInterface
 	kern      *kernel.Kernel
 	logger    *zap.Logger
 }
 
 // NewAnalyzer creates an Analyzer for the builder sandbox.
-func NewAnalyzer(br *BuilderRuntime, kern *kernel.Kernel, logger *zap.Logger) (*Analyzer, error) {
+func NewAnalyzer(br BuilderRuntimeInterface, kern *kernel.Kernel, logger *zap.Logger) (*Analyzer, error) {
 	if br == nil {
 		return nil, fmt.Errorf("builder runtime is required")
 	}

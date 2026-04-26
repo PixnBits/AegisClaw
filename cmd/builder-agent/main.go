@@ -75,9 +75,13 @@ func main() {
 
 // initKernel initializes the kernel for audit logging.
 func initKernel(logger *zap.Logger) (*kernel.Kernel, error) {
-	// In the microVM, the kernel state is shared via vsock or a mounted volume
-	// For now, use a simple in-memory kernel
-	return kernel.NewKernel(logger), nil
+	// In the microVM, use an in-memory kernel without persistent audit
+	// The host daemon has the main audit trail
+	kern, err := kernel.GetInstance(logger, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kernel: %w", err)
+	}
+	return kern, nil
 }
 
 // initProposalStore initializes the proposal store.
@@ -92,17 +96,14 @@ func initProposalStore(logger *zap.Logger) (*proposal.Store, error) {
 	return proposal.NewStore(storeDir, logger)
 }
 
-// initPipeline initializes the builder pipeline.
+// initPipeline initializes the builder pipeline for in-process execution.
+// When running inside the builder microVM, we don't need to launch nested VMs.
+// Instead, we run code generation and analysis directly in this VM.
 func initPipeline(kern *kernel.Kernel, store *proposal.Store, logger *zap.Logger) (*builder.Pipeline, error) {
 	// Get configuration from environment
 	workspaceDir := os.Getenv("WORKSPACE_DIR")
 	if workspaceDir == "" {
 		workspaceDir = "/workspace"
-	}
-
-	rootfsTemplate := os.Getenv("BUILDER_ROOTFS")
-	if rootfsTemplate == "" {
-		return nil, fmt.Errorf("BUILDER_ROOTFS environment variable not set")
 	}
 
 	// Initialize git manager
@@ -111,9 +112,32 @@ func initPipeline(kern *kernel.Kernel, store *proposal.Store, logger *zap.Logger
 		return nil, fmt.Errorf("failed to create git manager: %w", err)
 	}
 
-	// TODO: Initialize BuilderRuntime, CodeGenerator, Analyzer
-	// For now, return an error indicating this needs to be implemented
-	return nil, fmt.Errorf("pipeline initialization not yet implemented in microVM context")
+	// Create in-process builder runtime (stub that doesn't launch nested VMs)
+	// We're already running inside the builder VM, so we execute directly.
+	builderRT := builder.NewInProcessBuilderRuntime(logger)
+
+	// Create code generator with direct Ollama HTTP client
+	// Inside the microVM, Ollama is accessible at localhost:11434 via the LLM proxy
+	templates := builder.DefaultPromptTemplates()
+	codeGen, err := builder.NewCodeGenerator(builderRT, kern, logger, templates)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create code generator: %w", err)
+	}
+
+	// Create analyzer for running tests and linting directly
+	analyzer, err := builder.NewAnalyzer(builderRT, kern, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create analyzer: %w", err)
+	}
+
+	// Create pipeline with all components
+	pipeline, err := builder.NewPipeline(builderRT, codeGen, gitMgr, analyzer, kern, store, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create pipeline: %w", err)
+	}
+
+	logger.Info("pipeline initialized for in-process execution")
+	return pipeline, nil
 }
 
 // startVsockListener listens for build requests on vsock port 1024.

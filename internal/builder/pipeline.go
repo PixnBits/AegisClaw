@@ -54,7 +54,7 @@ type PipelineResult struct {
 // Pipeline orchestrates the end-to-end flow from approved proposal to code diff.
 // It coordinates BuilderRuntime, CodeGenerator, GitManager, and Analyzer.
 type Pipeline struct {
-	builderRT *BuilderRuntime
+	builderRT BuilderRuntimeInterface
 	codeGen   *CodeGenerator
 	gitMgr    *gitmanager.Manager
 	analyzer  *Analyzer
@@ -80,7 +80,7 @@ type Pipeline struct {
 
 // NewPipeline creates a Pipeline connecting all subsystems.
 func NewPipeline(
-	br *BuilderRuntime,
+	br BuilderRuntimeInterface,
 	cg *CodeGenerator,
 	gm *gitmanager.Manager,
 	az *Analyzer,
@@ -403,13 +403,13 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 		zap.Int("files", len(codeResp.Files)),
 		zap.Duration("duration", result.Duration),
 	)
-	
+
 	// Step 10: Auto-create pull request (Phase 4)
 	// Call the PR creation callback if configured
 	p.mu.Lock()
 	callback := p.onPRCreated
 	p.mu.Unlock()
-	
+
 	if callback != nil {
 		// Callback will create PR and trigger Court code review
 		callback(result.ProposalID, result.Branch, commitHash, result)

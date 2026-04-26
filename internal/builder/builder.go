@@ -13,6 +13,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// BuilderRuntimeInterface defines the methods needed for building code.
+// This interface allows for different implementations (e.g., Firecracker-based
+// for the host daemon, or in-process for the builder-agent microVM).
+type BuilderRuntimeInterface interface {
+	LaunchBuilder(ctx context.Context, spec *BuilderSpec) (*BuilderInfo, error)
+	StopBuilder(ctx context.Context, builderID string) error
+	SendBuildRequest(ctx context.Context, builderID string, msg kernel.ControlMessage) (*kernel.ControlResponse, error)
+}
+
 // BuilderState represents the lifecycle state of a builder sandbox.
 type BuilderState string
 

@@ -189,7 +189,7 @@ func (pt *PromptTemplate) Format(vars map[string]string) (system string, user st
 // CodeGenerator runs inside the builder sandbox and manages code generation
 // via Ollama. It sends structured prompts and parses JSON responses.
 type CodeGenerator struct {
-	builderRT *BuilderRuntime
+	builderRT BuilderRuntimeInterface
 	kern      *kernel.Kernel
 	logger    *zap.Logger
 	templates map[string]*PromptTemplate
@@ -197,7 +197,7 @@ type CodeGenerator struct {
 }
 
 // NewCodeGenerator creates a CodeGenerator with loaded prompt templates.
-func NewCodeGenerator(br *BuilderRuntime, kern *kernel.Kernel, logger *zap.Logger, templates map[string]*PromptTemplate) (*CodeGenerator, error) {
+func NewCodeGenerator(br BuilderRuntimeInterface, kern *kernel.Kernel, logger *zap.Logger, templates map[string]*PromptTemplate) (*CodeGenerator, error) {
 	if br == nil {
 		return nil, fmt.Errorf("builder runtime is required")
 	}
