@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -23,10 +24,14 @@ import (
 
 const (
 	vsockPort     = 1024
-	workspaceDir  = "/workspace"
 	secretsDir    = "/run/secrets"
 	maxPayloadLen = 10 * 1024 * 1024 // 10 MB max payload
 )
+
+// workspaceDir is the active workspace mountpoint. It is a variable so the
+// agent can fall back to an in-memory location if the rootfs is read-only
+// (common for immutable root images where /workspace may be absent).
+var workspaceDir = "/workspace"
 
 // Request is a JSON message from the kernel via vsock.
 type Request struct {
@@ -108,13 +113,37 @@ func main() {
 
 	mountEssentialFS()
 
+	// Mount workspace volume if available (Firecracker attaches workspace.ext4 as /dev/vdb)
+	if _, err := os.Stat("/dev/vdb"); err == nil {
+		if err := os.MkdirAll("/workspace", 0755); err == nil {
+			if err := syscall.Mount("/dev/vdb", "/workspace", "ext4", 0, ""); err != nil {
+				log.Printf("warning: failed to mount /dev/vdb on /workspace: %v", err)
+			} else {
+				log.Println("mounted /dev/vdb on /workspace")
+				workspaceDir = "/workspace"
+			}
+		}
+	}
+
 	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
-		log.Fatalf("failed to create workspace directory: %v", err)
+		log.Printf("warning: failed to create workspace directory %s: %v", workspaceDir, err)
+		// Fall back to a tmpfs-backed workspace under /run which is mounted
+		// by mountEssentialFS. This keeps PID 1 alive even when the image
+		// doesn't include /workspace or the rootfs is read-only.
+		fb := "/run/workspace"
+		if err2 := os.MkdirAll(fb, 0755); err2 != nil {
+			log.Printf("warning: failed to create fallback workspace %s: %v; continuing without writable workspace", fb, err2)
+		} else {
+			workspaceDir = fb
+			log.Printf("using fallback workspace: %s", workspaceDir)
+		}
 	}
 
 	// The virtio_vsock transport may not be ready when init (PID 1)
-	// starts — the virtio device probe runs asynchronously.  Retry for
-	// up to 2 seconds before falling back to TCP.
+	// starts — the virtio device probe runs asynchronously. Retry briefly
+	// before falling back to TCP. If TCP bind also fails, do not exit the
+	// process; instead retry with backoff so init remains alive for debugging
+	// and the host-side manager can reconnect.
 	var listener net.Listener
 	var err error
 	for attempt := 0; attempt < 20; attempt++ {
@@ -127,13 +156,55 @@ func main() {
 	if listener == nil {
 		log.Printf("vsock unavailable after retries (%v), falling back to TCP", err)
 		configureNetwork()
-		listener, err = net.Listen("tcp", fmt.Sprintf(":%d", vsockPort))
-		if err != nil {
-			log.Fatalf("failed to listen on TCP port %d: %v", vsockPort, err)
+
+		// Try to bind TCP with several retries and backoff instead of exiting.
+		for attempt := 0; attempt < 60; attempt++ {
+			listener, err = net.Listen("tcp", fmt.Sprintf(":%d", vsockPort))
+			if err == nil {
+				break
+			}
+			log.Printf("failed to listen on TCP port %d: %v; retrying (%d/60)", vsockPort, err, attempt+1)
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if listener == nil || err != nil {
+			// Final fallback: keep retrying slowly forever so init does not exit.
+			log.Printf("failed to bind TCP port %d after retries: %v; entering retry loop", vsockPort, err)
+			for {
+				listener, err = net.Listen("tcp", fmt.Sprintf(":%d", vsockPort))
+				if err == nil {
+					log.Printf("succeeded binding TCP port %d after retry", vsockPort)
+					break
+				}
+				log.Printf("retry: failed to listen on TCP port %d: %v; sleeping 5s", vsockPort, err)
+				time.Sleep(5 * time.Second)
+			}
 		}
 	}
 	defer listener.Close()
 	log.Printf("listening on %s", listener.Addr())
+
+	// Auto-start builder-agent if it exists (for builder VMs)
+	if _, err := os.Stat("/sbin/builder-agent"); err == nil {
+		// Start HTTP-to-vsock proxy for Ollama API (builder-agent needs this)
+		go startOllamaHTTPProxy()
+
+		go func() {
+			log.Println("starting builder-agent in background")
+			cmd := exec.Command("/sbin/builder-agent")
+			cmd.Dir = workspaceDir // Set working directory to writable workspace
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Env = []string{
+				"PATH=/usr/local/bin:/usr/bin:/bin:/sbin",
+				"HOME=" + workspaceDir,
+				"PROPOSAL_STORE_DIR=" + workspaceDir + "/proposals",
+			}
+			if err := cmd.Run(); err != nil {
+				log.Printf("builder-agent exited: %v", err)
+			}
+		}()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1183,12 +1254,16 @@ func parseProxyToolCall(toolCalls []proxyToolCall) (toolName, argsJSON string, f
 }
 
 func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []map[string]string, format string, options map[string]interface{}) (string, string, []proxyToolCall, error) {
+	log.Printf("callOllamaViaProxy: starting, model=%s", model)
+
 	// Dial host (CID 2) on the well-known LLM proxy port.
 	const proxyPort = 1025
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("vsock socket: %w", err)
 	}
+
+	log.Printf("callOllamaViaProxy: created vsock socket, fd=%d", fd)
 
 	// Apply the context deadline as a socket-level timeout.
 	if deadline, ok := ctx.Deadline(); ok {
@@ -1206,10 +1281,12 @@ func callOllamaViaProxy(ctx context.Context, model, streamID string, messages []
 		CID:  unix.VMADDR_CID_HOST,
 		Port: proxyPort,
 	}
+	log.Printf("callOllamaViaProxy: connecting to vsock CID=%d port=%d", sa.CID, sa.Port)
 	if err := unix.Connect(fd, sa); err != nil {
 		unix.Close(fd)
 		return "", "", nil, fmt.Errorf("vsock connect to llm proxy: %w", err)
 	}
+	log.Printf("callOllamaViaProxy: connected successfully")
 
 	// Wrap the raw fd in a net.Conn for JSON encode/decode.
 	// net.FileConn can't handle AF_VSOCK (getsockname fails), so we wrap
@@ -1394,5 +1471,109 @@ func runNetCmd(name string, args ...string) {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		log.Printf("warning: %s %v failed: %v", name, args, err)
+	}
+}
+
+// startOllamaHTTPProxy starts an HTTP server on localhost:11434 that forwards
+// Ollama API requests to the vsock LLM proxy. This allows the builder-agent's
+// HTTP-based llm.Client to work transparently inside the VM.
+func startOllamaHTTPProxy() {
+	const ollamaPort = ":11434"
+
+	http.HandleFunc("/api/chat", handleOllamaHTTPRequest)
+	http.HandleFunc("/api/generate", handleOllamaHTTPRequest)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Ollama is running"))
+	})
+
+	log.Printf("starting HTTP-to-vsock Ollama proxy on %s", ollamaPort)
+	if err := http.ListenAndServe(ollamaPort, nil); err != nil {
+		log.Printf("ollama http proxy failed: %v", err)
+	}
+}
+
+// handleOllamaHTTPRequest forwards Ollama HTTP API requests to the vsock LLM proxy.
+func handleOllamaHTTPRequest(w http.ResponseWriter, r *http.Request) {
+	log.Printf("HTTP proxy: received %s request to %s", r.Method, r.URL.Path)
+
+	// Only allow POST
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse the incoming request body
+	var reqBody struct {
+		Model    string                   `json:"model"`
+		Messages []map[string]interface{} `json:"messages,omitempty"`
+		Prompt   string                   `json:"prompt,omitempty"`
+		Format   string                   `json:"format,omitempty"`
+		Stream   bool                     `json:"stream,omitempty"`
+		Options  map[string]interface{}   `json:"options,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		log.Printf("HTTP proxy: failed to decode request body: %v", err)
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("HTTP proxy: request for model=%s, format=%s, stream=%v", reqBody.Model, reqBody.Format, reqBody.Stream)
+
+	// Convert to the format expected by callOllamaViaProxy
+	var messages []map[string]string
+	if len(reqBody.Messages) > 0 {
+		// Chat request
+		for _, msg := range reqBody.Messages {
+			msgMap := make(map[string]string)
+			if role, ok := msg["role"].(string); ok {
+				msgMap["role"] = role
+			}
+			if content, ok := msg["content"].(string); ok {
+				msgMap["content"] = content
+			}
+			messages = append(messages, msgMap)
+		}
+	} else if reqBody.Prompt != "" {
+		// Generate request - convert to chat format
+		messages = []map[string]string{
+			{"role": "user", "content": reqBody.Prompt},
+		}
+	} else {
+		http.Error(w, "missing messages or prompt", http.StatusBadRequest)
+		return
+	}
+
+	// Call the vsock proxy
+	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
+	defer cancel()
+
+	content, _, _, err := callOllamaViaProxy(ctx, reqBody.Model, "", messages, reqBody.Format, reqBody.Options)
+	if err != nil {
+		log.Printf("ollama proxy error: %v", err)
+		http.Error(w, fmt.Sprintf("ollama proxy error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Return response in Ollama API format
+	var resp interface{}
+	if r.URL.Path == "/api/chat" {
+		resp = map[string]interface{}{
+			"model":   reqBody.Model,
+			"message": map[string]string{"role": "assistant", "content": content},
+			"done":    true,
+		}
+	} else {
+		resp = map[string]interface{}{
+			"model":    reqBody.Model,
+			"response": content,
+			"done":     true,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("failed to encode response: %v", err)
 	}
 }

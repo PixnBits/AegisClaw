@@ -238,7 +238,7 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 		WorkspaceSkillContext: p.workspaceSkillContext,
 	}
 
-	codeResp, err := p.codeGen.Generate(builderInfo.ID, codeReq)
+	codeResp, err := p.codeGen.Generate(ctx, builderInfo.ID, codeReq)
 	if err != nil {
 		result.State = PipelineStateFailed
 		result.Error = fmt.Sprintf("code generation failed: %v", err)

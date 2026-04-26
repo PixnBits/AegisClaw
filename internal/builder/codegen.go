@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -219,7 +220,7 @@ func NewCodeGenerator(br BuilderRuntimeInterface, kern *kernel.Kernel, logger *z
 
 // Generate sends a code generation request to the builder sandbox via vsock.
 // It iterates up to maxRounds, feeding back errors from each round.
-func (cg *CodeGenerator) Generate(builderID string, req *CodeGenRequest) (*CodeGenResponse, error) {
+func (cg *CodeGenerator) Generate(ctx context.Context, builderID string, req *CodeGenRequest) (*CodeGenResponse, error) {
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid code gen request: %w", err)
 	}
@@ -261,7 +262,7 @@ func (cg *CodeGenerator) Generate(builderID string, req *CodeGenRequest) (*CodeG
 	}
 
 	// Send to builder sandbox via control plane
-	resp, err := cg.builderRT.SendBuildRequest(nil, builderID, msg)
+	resp, err := cg.builderRT.SendBuildRequest(ctx, builderID, msg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send codegen request to builder %s: %w", builderID, err)
 	}

@@ -40,12 +40,12 @@ type ReviewFeedback struct {
 
 // FixRequest contains all the information needed to attempt a code fix.
 type FixRequest struct {
-	ProposalID    string           `json:"proposal_id"`
-	SkillSpec     SkillSpec        `json:"skill_spec"`
-	CurrentFiles  map[string]string `json:"current_files"`
-	Feedback      []ReviewFeedback `json:"feedback"`
-	AnalysisResult *AnalysisResult `json:"analysis_result,omitempty"`
-	Round         int              `json:"round"`
+	ProposalID     string            `json:"proposal_id"`
+	SkillSpec      SkillSpec         `json:"skill_spec"`
+	CurrentFiles   map[string]string `json:"current_files"`
+	Feedback       []ReviewFeedback  `json:"feedback"`
+	AnalysisResult *AnalysisResult   `json:"analysis_result,omitempty"`
+	Round          int               `json:"round"`
 }
 
 // Validate checks the fix request.
@@ -125,27 +125,27 @@ func (fr *FixRequest) FeedbackSummary() string {
 
 // FixRound records a single fix iteration attempt.
 type FixRound struct {
-	Round          int            `json:"round"`
-	State          FixRoundState  `json:"state"`
-	Files          map[string]string `json:"files,omitempty"`
-	Diff           string         `json:"diff,omitempty"`
-	CommitHash     string         `json:"commit_hash,omitempty"`
-	Analysis       *AnalysisResult `json:"analysis,omitempty"`
-	FeedbackUsed   []ReviewFeedback `json:"feedback_used"`
-	StartedAt      time.Time      `json:"started_at"`
-	CompletedAt    time.Time      `json:"completed_at,omitempty"`
-	Duration       time.Duration  `json:"duration,omitempty"`
-	Error          string         `json:"error,omitempty"`
+	Round        int               `json:"round"`
+	State        FixRoundState     `json:"state"`
+	Files        map[string]string `json:"files,omitempty"`
+	Diff         string            `json:"diff,omitempty"`
+	CommitHash   string            `json:"commit_hash,omitempty"`
+	Analysis     *AnalysisResult   `json:"analysis,omitempty"`
+	FeedbackUsed []ReviewFeedback  `json:"feedback_used"`
+	StartedAt    time.Time         `json:"started_at"`
+	CompletedAt  time.Time         `json:"completed_at,omitempty"`
+	Duration     time.Duration     `json:"duration,omitempty"`
+	Error        string            `json:"error,omitempty"`
 }
 
 // IterationResult captures the outcome of the entire fix loop.
 type IterationResult struct {
-	ProposalID    string       `json:"proposal_id"`
-	Rounds        []FixRound   `json:"rounds"`
-	FinalRound    int          `json:"final_round"`
-	FinalPassed   bool         `json:"final_passed"`
-	FinalCommit   string       `json:"final_commit,omitempty"`
-	FinalDiff     string       `json:"final_diff,omitempty"`
+	ProposalID    string        `json:"proposal_id"`
+	Rounds        []FixRound    `json:"rounds"`
+	FinalRound    int           `json:"final_round"`
+	FinalPassed   bool          `json:"final_passed"`
+	FinalCommit   string        `json:"final_commit,omitempty"`
+	FinalDiff     string        `json:"final_diff,omitempty"`
 	TotalDuration time.Duration `json:"total_duration"`
 }
 
@@ -371,7 +371,7 @@ func (ie *IterationEngine) runSingleFixRound(
 	}
 
 	// Step 2: Re-generate code
-	codeResp, err := ie.codeGen.Generate(builderID, codeReq)
+	codeResp, err := ie.codeGen.Generate(ctx, builderID, codeReq)
 	if err != nil {
 		return fr, fmt.Errorf("code generation failed in fix round %d: %w", fixReq.Round, err)
 	}

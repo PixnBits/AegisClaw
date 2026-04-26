@@ -1455,6 +1455,36 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 		if reviewErr == nil {
 			result += fmt.Sprintf("\n\nCourt review completed.\n  State: %s\n  Verdict: %s\n  Risk: %.1f",
 				session.State, session.Verdict, session.RiskScore)
+
+			// Auto-transition approved proposals to implementing (matches REST API behavior)
+			if session.Verdict == "approved" {
+				freshP, pErr := env.ProposalStore.Get(p.ID)
+				if pErr == nil && freshP.Status == proposal.StatusApproved {
+					if tErr := freshP.Transition(proposal.StatusImplementing, "auto-triggered by court approval", "daemon"); tErr == nil {
+						env.ProposalStore.Update(freshP)
+						env.Logger.Info("proposal auto-transitioned to implementing",
+							zap.String("proposal_id", p.ID),
+							zap.String("status", string(freshP.Status)),
+						)
+						result += "\n\n✓ Proposal automatically transitioned to 'implementing' status.\n  The builder agent will process it shortly."
+
+						// Ensure builder VM is running
+						if env.BuilderVMManager != nil {
+							if ensureErr := env.BuilderVMManager.EnsureRunning(ctx); ensureErr != nil {
+								env.Logger.Error("failed to ensure builder VM is running",
+									zap.String("proposal_id", p.ID),
+									zap.Error(ensureErr),
+								)
+							}
+						}
+					} else {
+						env.Logger.Warn("failed to auto-transition approved proposal",
+							zap.String("proposal_id", p.ID),
+							zap.Error(tErr),
+						)
+					}
+				}
+			}
 		} else {
 			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRecovery: proposal remains in_review and will be auto-resumed on next daemon start (aegisclaw stop; aegisclaw start).\nUse proposal.status / proposal.reviews with ID %s to track progress.", reviewErr, p.ID)
 		}

@@ -71,6 +71,7 @@ func (ba *BuilderAgent) Run(ctx context.Context) error {
 			ba.logger.Info("builder agent shutting down (stop signal)")
 			return nil
 		case <-ticker.C:
+			ba.logger.Debug("polling for proposals to build")
 			if err := ba.checkAndBuild(ctx); err != nil {
 				ba.logger.Error("error checking for builds", zap.Error(err))
 			}
@@ -80,10 +81,12 @@ func (ba *BuilderAgent) Run(ctx context.Context) error {
 
 // checkAndBuild finds proposals that need building and processes them.
 func (ba *BuilderAgent) checkAndBuild(ctx context.Context) error {
+	ba.logger.Info("checking for proposals to build")
 	summaries, err := ba.store.List()
 	if err != nil {
 		return fmt.Errorf("failed to list proposals: %w", err)
 	}
+	ba.logger.Info("found proposals", zap.Int("count", len(summaries)))
 
 	for _, summary := range summaries {
 		if summary.Status != proposal.StatusImplementing {

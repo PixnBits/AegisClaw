@@ -17,6 +17,8 @@ var KnownGoodModels = []ModelEntry{
 	{Name: "gemma4:26b", SHA256: "", Tags: []string{"reasoning", "security", "architecture", "code_review"}},
 	{Name: "gemma4:e4b", SHA256: "", Tags: []string{"reasoning", "code_review", "testing", "usability"}},
 	{Name: "qwen2.5-coder:14b", SHA256: "", Tags: []string{"code_generation", "code_review"}},
+	{Name: "qwen2.5-coder:7b", SHA256: "", Tags: []string{"code_generation"}},
+	{Name: "qwen2.5-coder:32b", SHA256: "", Tags: []string{"code_generation", "code_review"}},
 	{Name: "nemotron-mini", SHA256: "", Tags: []string{"code_review", "testing"}},
 }
 

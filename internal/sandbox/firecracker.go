@@ -113,14 +113,42 @@ func (r *FirecrackerRuntime) Create(ctx context.Context, spec SandboxSpec) error
 		return fmt.Errorf("failed to copy rootfs for sandbox %s: %w", spec.ID, err)
 	}
 
-	// Create workspace overlay image
-	workspaceMB := spec.WorkspaceMB
-	if workspaceMB <= 0 {
-		workspaceMB = defaultWorkspace
+	// Create workspace overlay image only for VMs that need it
+	// (builder, portal, hub - not reviewer VMs which don't need persistent storage)
+	var workspacePath string
+	needsWorkspace := spec.Name == "builder-agent" || spec.Name == "aegisclaw-portal" || spec.Name == "aegishub"
+	if needsWorkspace {
+		workspaceMB := spec.WorkspaceMB
+		if workspaceMB <= 0 {
+			workspaceMB = defaultWorkspace
+		}
+		workspacePath = filepath.Join(sandboxDir, "workspace.ext4")
+		if err := createExt4Image(workspacePath, workspaceMB); err != nil {
+			return fmt.Errorf("failed to create workspace image: %w", err)
+		}
 	}
-	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
-	if err := createExt4Image(workspacePath, workspaceMB); err != nil {
-		return fmt.Errorf("failed to create workspace image: %w", err)
+
+	// Sync proposals from host store to builder workspace if this is a builder sandbox
+	r.logger.Info("checking if proposal sync needed",
+		zap.String("spec_name", spec.Name),
+		zap.String("state_dir", r.cfg.StateDir),
+	)
+	if spec.Name == "builder-agent" && r.cfg.StateDir != "" && workspacePath != "" {
+		// Derive host proposal store path from state dir
+		// StateDir is typically ~/.local/share/aegisclaw_user/sandboxes
+		// Proposal store is ~/.local/share/aegisclaw_user/proposals
+		baseDir := filepath.Dir(r.cfg.StateDir) // Get parent of sandboxes dir
+		hostProposalStore := filepath.Join(baseDir, "proposals")
+		r.logger.Info("syncing proposals to builder workspace",
+			zap.String("workspace", workspacePath),
+			zap.String("host_store", hostProposalStore),
+		)
+		if err := syncProposalsToWorkspace(workspacePath, hostProposalStore, r.logger); err != nil {
+			r.logger.Warn("failed to sync proposals to builder workspace",
+				zap.String("workspace", workspacePath),
+				zap.Error(err),
+			)
+		}
 	}
 
 	// Determine socket path for Firecracker API
@@ -203,7 +231,13 @@ func (r *FirecrackerRuntime) Start(ctx context.Context, id string) error {
 
 	// Build Firecracker configuration
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
-	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
+	// Find existing workspace.ext4 if it was created during Create()
+	// (not all VMs need workspace - reviewers don't)
+	var workspacePath string
+	potentialWorkspace := filepath.Join(sandboxDir, "workspace.ext4")
+	if _, err := os.Stat(potentialWorkspace); err == nil {
+		workspacePath = potentialWorkspace
+	}
 	socketPath := ms.info.SocketPath
 
 	// Remove stale socket
@@ -223,7 +257,12 @@ func (r *FirecrackerRuntime) Start(ctx context.Context, id string) error {
 		// after the privilege drop.
 		uid := int(10000 + spec.VsockCID)
 		gid := uid
-		for _, p := range []string{rootfsPath, workspacePath} {
+		// Build list of paths to chown (skip empty paths - reviewers don't have workspace)
+		pathsToChown := []string{rootfsPath}
+		if workspacePath != "" {
+			pathsToChown = append(pathsToChown, workspacePath)
+		}
+		for _, p := range pathsToChown {
 			if err := os.Chown(p, uid, gid); err != nil {
 				r.teardownNetwork(tapName, spec.ID)
 				ms.info.State = StateError
@@ -452,13 +491,16 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 		kernelImage = r.cfg.KernelImage
 	}
 
-	drives := firecracker.NewDrivesBuilder(rootfsPath).
-		WithRootDrive(rootfsPath, firecracker.WithReadOnly(true)).
-		AddDrive(workspacePath, false).
-		Build()
+	// Build drives - only add workspace if path is provided
+	drivesBuilder := firecracker.NewDrivesBuilder(rootfsPath).
+		WithRootDrive(rootfsPath, firecracker.WithReadOnly(true))
+	if workspacePath != "" {
+		drivesBuilder = drivesBuilder.AddDrive(workspacePath, false)
+	}
+	drives := drivesBuilder.Build()
 
-		// Pass guest IP to the guest-agent via kernel command line so it can
-		// configure eth0 when vsock transport is not available.
+	// Pass guest IP to the guest-agent via kernel command line so it can
+	// configure eth0 when vsock transport is not available.
 	// For NoNetwork sandboxes, omit the IP configuration entirely so the
 	// guest kernel does not attempt to bring up a non-existent interface.
 	initPath := spec.InitPath
@@ -466,6 +508,9 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 		initPath = "/sbin/guest-agent"
 	}
 	kernelArgs := "console=ttyS0 reboot=k panic=1 pci=off init=" + initPath
+	// Add rootflags=noload to skip ext4 journal recovery on read-only rootfs.
+	// This allows VMs to boot even if the template image has a dirty journal.
+	kernelArgs += " rootflags=noload"
 	if !spec.NetworkPolicy.NoNetwork {
 		kernelArgs += fmt.Sprintf(" ip=%s::%s:255.255.255.252::eth0:off", guestIP, hostIP)
 	}
