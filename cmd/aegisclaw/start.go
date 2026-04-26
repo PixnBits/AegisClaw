@@ -143,6 +143,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Resume any proposals that were stuck in submitted/in_review when the
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
+	
+	// TODO: Start builder daemon to monitor for approved proposals.
+	// This requires wiring up BuilderRuntime, CodeGenerator, Analyzer, etc.
+	// For now, the PR creation callback is set wherever the pipeline is created.
+	
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
