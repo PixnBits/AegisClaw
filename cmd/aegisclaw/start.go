@@ -144,10 +144,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
 	
-	// Start builder daemon to monitor for approved proposals and trigger code generation.
+	// Launch builder microVM to monitor for approved proposals and trigger code generation.
+	// The builder runs in an isolated microVM (like Court reviewers) for security.
 	// This connects Court approval (Phase 2) to Implementation (Phase 3) in the SDLC flow.
-	if err := startBuilderDaemon(cmd.Context(), env); err != nil {
-		env.Logger.Error("failed to start builder daemon", zap.Error(err))
+	if err := launchBuilderVM(cmd.Context(), env); err != nil {
+		env.Logger.Error("failed to launch builder VM", zap.Error(err))
 		// Don't fail daemon startup - builder is optional if config is incomplete
 	}
 	
