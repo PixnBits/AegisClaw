@@ -169,9 +169,29 @@ The builder agent is now **fully resilient** across crashes and restarts:
 6. **internal/builder/analysis.go** — Updated to use interface
 7. **internal/proposal/proposal.go** — Added build tracking metadata (BuildStartedAt, BuildAttemptCount, BuildInstanceID)
 8. **internal/builder/agent.go** — Added crash recovery, stale detection, retry limits, and duplicate prevention
-9. **docs/builder-resilience.md** — NEW: Complete resilience design documentation
+9. **cmd/aegisclaw/builder_vm_manager.go** — NEW: Builder VM lifecycle manager (~300 lines)
+10. **cmd/aegisclaw/runtime.go** — Added BuilderVMManager field to runtimeEnv
+11. **cmd/aegisclaw/start.go** — Integrated builder VM manager with daemon lifecycle
+12. **scripts/cleanup-stale-builder.sh** — NEW: Cleanup script for orphaned resources
+13. **docs/builder-resilience.md** — Complete agent-level resilience design
+14. **docs/builder-vm-resilience.md** — NEW: VM-level resilience design and testing guide
 
 ## Next Steps (Manual)
+
+### Step 0: Clean Up Stale Resources (FIRST)
+
+**Before restarting the daemon**, clean up any orphaned builder resources from the failed launch:
+
+```bash
+./scripts/cleanup-stale-builder.sh
+```
+
+**What this does:**
+- Removes stale `fc-builder-*` tap devices
+- Kills orphaned Firecracker processes for builder VMs
+- Cleans up jailer chroot directories
+
+**Time:** < 5 seconds
 
 ### Step 1: Rebuild Builder Rootfs
 
@@ -190,9 +210,15 @@ sudo ./scripts/build-builder-rootfs.sh
 
 ### Step 2: Restart AegisClaw Daemon
 
+**If daemon is currently running:**
 ```bash
-sudo ./aegisclaw stop
-sudo ./aegisclaw start
+./aegisclaw stop
+sudo ./aegisclaw start &> aegisclaw.log &
+```
+
+**If daemon is not running:**
+```bash
+sudo ./aegisclaw start &> aegisclaw.log &
 ```
 
 Watch the logs for builder VM startup:
@@ -201,11 +227,19 @@ tail -f aegisclaw.log | grep -i builder
 ```
 
 **Expected log entries:**
+- "builder VM manager started successfully"
 - "launching builder microVM"
-- "builder microVM launched successfully"
-- "builder agent starting" (from inside the VM)
-- "pipeline initialized for in-process execution"
-- "builder agent running" (polling loop started)
+- "builder microVM launched successfully sandbox_id=builder-..."
+- Inside the VM (via internal logs):
+  - "builder agent starting"
+  - "pipeline initialized for in-process execution"
+  - "builder agent running"
+
+**NEW:** The builder VM is now managed by a lifecycle manager that:
+- Monitors builder health every 30 seconds
+- Automatically restarts if it crashes
+- Ensures builder is running when new proposals are approved
+- Detects and reports stalled proposals
 
 ### Step 3: Test End-to-End SDLC Flow
 

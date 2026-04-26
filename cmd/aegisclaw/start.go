@@ -143,15 +143,25 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Resume any proposals that were stuck in submitted/in_review when the
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
-	
+
 	// Launch builder microVM to monitor for approved proposals and trigger code generation.
 	// The builder runs in an isolated microVM (like Court reviewers) for security.
 	// This connects Court approval (Phase 2) to Implementation (Phase 3) in the SDLC flow.
-	if err := launchBuilderVM(cmd.Context(), env); err != nil {
-		env.Logger.Error("failed to launch builder VM", zap.Error(err))
-		// Don't fail daemon startup - builder is optional if config is incomplete
+	builderMgr, err := newBuilderVMManager(env)
+	if err != nil {
+		env.Logger.Warn("builder VM manager initialization failed, builder disabled",
+			zap.Error(err),
+		)
+	} else {
+		if err := builderMgr.Start(cmd.Context()); err != nil {
+			env.Logger.Error("failed to start builder VM manager", zap.Error(err))
+			// Don't fail daemon startup - builder will retry automatically
+		} else {
+			env.BuilderVMManager = builderMgr
+			env.Logger.Info("builder VM manager started successfully")
+		}
 	}
-	
+
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
@@ -209,7 +219,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("workspace.read", makeWorkspaceReadHandler(env))
 	apiSrv.Handle("workspace.write", makeWorkspaceWriteHandler(env))
 	apiSrv.Handle("workspace.list", makeWorkspaceListHandler(env))
-	
+
 	// Pull request handlers (Phase 4: Pull Request System)
 	apiSrv.Handle("pr.list", makePRListHandler(env))
 	apiSrv.Handle("pr.get", makePRGetHandler(env))
@@ -220,7 +230,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("dashboard.pr.list", makeDashboardPRListHandler(env))
 	apiSrv.Handle("dashboard.pr.detail", makeDashboardPRDetailHandler(env))
 	apiSrv.Handle("dashboard.pr.stats", makeDashboardPRStatsHandler(env))
-	
+
 	// Phase 1 (OpenClaw integration): Session routing handlers.
 	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
 	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
@@ -273,6 +283,13 @@ No skills, no Court, no main agent sandbox.
 
 	fmt.Println("\nShutting down...")
 	env.Logger.Info("shutdown signal received, cleaning up")
+
+	// Stop builder VM manager
+	if env.BuilderVMManager != nil {
+		if err := env.BuilderVMManager.Stop(context.Background()); err != nil {
+			env.Logger.Error("failed to stop builder VM manager", zap.Error(err))
+		}
+	}
 
 	// Clean up all running sandboxes
 	env.Runtime.Cleanup(context.Background())
@@ -350,6 +367,16 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 						zap.String("proposal_id", req.ProposalID),
 						zap.String("status", string(p.Status)),
 					)
+
+					// Ensure builder VM is running to pick up this proposal
+					if env.BuilderVMManager != nil {
+						if ensureErr := env.BuilderVMManager.EnsureRunning(ctx); ensureErr != nil {
+							env.Logger.Error("failed to ensure builder VM is running",
+								zap.String("proposal_id", req.ProposalID),
+								zap.Error(ensureErr),
+							)
+						}
+					}
 				}
 			}
 		}
@@ -1069,7 +1096,7 @@ func doInjectSecrets(ctx context.Context, env *runtimeEnv, sandboxID, skillName 
 
 // secretsRefreshRequest is the payload for skill.secrets.refresh.
 type secretsRefreshRequest struct {
-Name string `json:"name"` // skill name
+	Name string `json:"name"` // skill name
 }
 
 // makeSecretsRefreshHandler returns a handler that re-injects the vault secrets
@@ -1078,50 +1105,50 @@ Name string `json:"name"` // skill name
 // rotating a secret in the vault the operator calls this endpoint (or the CLI
 // wrapper) to push the new value to the running VM's /run/secrets/<name>.
 func makeSecretsRefreshHandler(env *runtimeEnv) api.Handler {
-return func(ctx context.Context, data json.RawMessage) *api.Response {
-var req secretsRefreshRequest
-if err := json.Unmarshal(data, &req); err != nil {
-return &api.Response{Error: "invalid request: " + err.Error()}
-}
-if req.Name == "" {
-return &api.Response{Error: "skill name is required"}
-}
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req secretsRefreshRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		if req.Name == "" {
+			return &api.Response{Error: "skill name is required"}
+		}
 
-entry, ok := env.Registry.Get(req.Name)
-if !ok || entry.State != sandbox.SkillStateActive {
-return &api.Response{Error: fmt.Sprintf("skill %q is not currently active", req.Name)}
-}
+		entry, ok := env.Registry.Get(req.Name)
+		if !ok || entry.State != sandbox.SkillStateActive {
+			return &api.Response{Error: fmt.Sprintf("skill %q is not currently active", req.Name)}
+		}
 
-// Find the approved proposal to get the secrets refs.
-summaries, pErr := env.ProposalStore.List()
-if pErr != nil {
-return &api.Response{Error: "failed to list proposals: " + pErr.Error()}
-}
-var refs []string
-for _, s := range summaries {
-full, getErr := env.ProposalStore.Get(s.ID)
-if getErr == nil && full.TargetSkill == req.Name && len(full.SecretsRefs) > 0 {
-refs = full.SecretsRefs
-break
-}
-}
-if len(refs) == 0 {
-return &api.Response{Error: fmt.Sprintf("no secrets declared for skill %q", req.Name)}
-}
+		// Find the approved proposal to get the secrets refs.
+		summaries, pErr := env.ProposalStore.List()
+		if pErr != nil {
+			return &api.Response{Error: "failed to list proposals: " + pErr.Error()}
+		}
+		var refs []string
+		for _, s := range summaries {
+			full, getErr := env.ProposalStore.Get(s.ID)
+			if getErr == nil && full.TargetSkill == req.Name && len(full.SecretsRefs) > 0 {
+				refs = full.SecretsRefs
+				break
+			}
+		}
+		if len(refs) == 0 {
+			return &api.Response{Error: fmt.Sprintf("no secrets declared for skill %q", req.Name)}
+		}
 
-injected, err := injectSecretsIntoVM(ctx, env, entry.SandboxID, req.Name, refs)
-if err != nil {
-return &api.Response{Error: "secrets refresh failed: " + err.Error()}
-}
+		injected, err := injectSecretsIntoVM(ctx, env, entry.SandboxID, req.Name, refs)
+		if err != nil {
+			return &api.Response{Error: "secrets refresh failed: " + err.Error()}
+		}
 
-env.Logger.Info("secrets refreshed in running skill VM",
-zap.String("skill", req.Name),
-zap.Int("count", injected),
-)
-respData, _ := json.Marshal(map[string]interface{}{
-"skill":    req.Name,
-"injected": injected,
-})
-return &api.Response{Success: true, Data: respData}
-}
+		env.Logger.Info("secrets refreshed in running skill VM",
+			zap.String("skill", req.Name),
+			zap.Int("count", injected),
+		)
+		respData, _ := json.Marshal(map[string]interface{}{
+			"skill":    req.Name,
+			"injected": injected,
+		})
+		return &api.Response{Success: true, Data: respData}
+	}
 }

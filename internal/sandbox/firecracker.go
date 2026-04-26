@@ -544,7 +544,13 @@ func (r *FirecrackerRuntime) setupNetwork(spec SandboxSpec) (tapName, hostIP, gu
 		return "", "", "", fmt.Errorf("CID %d exceeds available 10.0.0.0/16 address space", spec.VsockCID)
 	}
 
-	tapName = fmt.Sprintf("%s%s", tapDevicePrefix, spec.ID[:minInt(8, len(spec.ID))])
+	// Use the last up-to-8 characters of the sandbox ID as the tap suffix
+	// This avoids producing names like "fc-builder-" when the ID prefix
+	// contains a trailing dash (e.g. "builder-xxxx"). Also sanitize the
+	// suffix so the interface name is safe for netlink operations.
+	suffixLen := minInt(8, len(spec.ID))
+	idSuffix := spec.ID[len(spec.ID)-suffixLen:]
+	tapName = fmt.Sprintf("%s%s", tapDevicePrefix, sanitizeID(idSuffix))
 	hostIP = fmt.Sprintf("10.0.%d.%d", hostOff/256, hostOff%256)
 	guestIP = fmt.Sprintf("10.0.%d.%d", guestOff/256, guestOff%256)
 

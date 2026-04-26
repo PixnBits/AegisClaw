@@ -116,6 +116,11 @@ type runtimeEnv struct {
 	// portalVMMu and lazily started when dashboard.enabled is true.
 	PortalVMID string
 	portalVMMu sync.Mutex
+
+	// BuilderVMManager manages the builder microVM lifecycle, ensuring it's
+	// always running and automatically restarting it if it crashes.
+	// Initialized once at daemon start if builder config is valid.
+	BuilderVMManager *builderVMManager
 }
 
 func initRuntime() (*runtimeEnv, error) {
