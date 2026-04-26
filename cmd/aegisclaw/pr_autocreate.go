@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/builder"
+	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
 	"go.uber.org/zap"
@@ -128,14 +130,129 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		zap.Int("files", pr.FilesChanged),
 	)
 	
-	// TODO: Trigger Court code review for the generated code
-	// This would call the Court engine to review the actual code changes
-	// in the PR, not just the proposal.
-	// For now, we log that this should happen.
-	env.Logger.Info("TODO: trigger Court code review for PR",
+	// Trigger Court code review for the generated code
+	// This is critical for security - all generated code must be reviewed
+	if env.Court != nil {
+		triggerCourtCodeReview(env, pr, result)
+	} else {
+		env.Logger.Warn("Court engine not available, skipping code review",
+			zap.String("pr_id", pr.ID),
+		)
+	}
+}
+
+// triggerCourtCodeReview initiates a Court code review for the generated code.
+func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result *builder.PipelineResult) {
+	// Build the code review request from the pipeline result
+	codeReq := &court.CodeReviewRequest{
+		PRID:                pr.ID,
+		ProposalID:          pr.ProposalID,
+		Title:               pr.Title,
+		Description:         pr.Description,
+		Branch:              pr.Branch,
+		CommitHash:          pr.CommitHash,
+		Files:               result.Files,
+		FilesChanged:        pr.FilesChanged,
+		Additions:           pr.Additions,
+		Deletions:           pr.Deletions,
+		BuildPassed:         pr.BuildPassed,
+		AnalysisPassed:      pr.AnalysisPassed,
+		SecurityGatesPassed: pr.SecurityGatesPassed,
+	}
+	
+	// Validate the request before sending to Court
+	if err := codeReq.Validate(); err != nil {
+		env.Logger.Error("invalid code review request",
+			zap.String("pr_id", pr.ID),
+			zap.Error(err),
+		)
+		// Mark Court review as failed
+		pr.CourtReviewStatus = pullrequest.CourtReviewRejected
+		if err := env.PRStore.Update(pr); err != nil {
+			env.Logger.Error("failed to update PR status", zap.Error(err))
+		}
+		return
+	}
+	
+	// Update status to in-progress
+	pr.CourtReviewStatus = pullrequest.CourtReviewInProgress
+	if err := env.PRStore.Update(pr); err != nil {
+		env.Logger.Warn("failed to update PR status to in-progress", zap.Error(err))
+	}
+	
+	env.Logger.Info("triggering Court code review",
 		zap.String("pr_id", pr.ID),
-		zap.String("proposal_id", proposalID),
+		zap.Int("files", len(result.Files)),
 	)
+	
+	// Trigger the Court code review (async to not block pipeline completion)
+	go func() {
+		ctx := context.Background()
+		reviews, err := env.Court.ReviewCode(ctx, codeReq)
+		if err != nil {
+			env.Logger.Error("Court code review failed",
+				zap.String("pr_id", pr.ID),
+				zap.Error(err),
+			)
+			// Mark as rejected on error
+			pr.CourtReviewStatus = pullrequest.CourtReviewRejected
+			if err := env.PRStore.Update(pr); err != nil {
+				env.Logger.Error("failed to update PR after Court error", zap.Error(err))
+			}
+			return
+		}
+		
+		// Add reviews to PR
+		for _, review := range reviews {
+			if err := env.PRStore.AddCourtReview(pr.ID, review); err != nil {
+				env.Logger.Error("failed to add Court review to PR",
+					zap.String("pr_id", pr.ID),
+					zap.String("persona", review.Persona),
+					zap.Error(err),
+				)
+			}
+		}
+		
+		// Determine overall verdict from reviews
+		approvalCount := 0
+		rejectCount := 0
+		totalRisk := 0.0
+		
+		for _, review := range reviews {
+			switch review.Verdict {
+			case "approve":
+				approvalCount++
+			case "reject":
+				rejectCount++
+			}
+			totalRisk += review.RiskScore
+		}
+		
+		avgRisk := totalRisk / float64(len(reviews))
+		
+		// Require majority approval and low risk
+		if approvalCount > len(reviews)/2 && avgRisk < 5.0 {
+			pr.CourtReviewStatus = pullrequest.CourtReviewApproved
+		} else {
+			pr.CourtReviewStatus = pullrequest.CourtReviewRejected
+		}
+		
+		if err := env.PRStore.Update(pr); err != nil {
+			env.Logger.Error("failed to update PR with Court verdict",
+				zap.String("pr_id", pr.ID),
+				zap.Error(err),
+			)
+		}
+		
+		env.Logger.Info("Court code review completed",
+			zap.String("pr_id", pr.ID),
+			zap.Int("reviews", len(reviews)),
+			zap.Int("approvals", approvalCount),
+			zap.Int("rejections", rejectCount),
+			zap.Float64("avg_risk", avgRisk),
+			zap.String("verdict", string(pr.CourtReviewStatus)),
+		)
+	}()
 }
 
 // boolToPassFail converts a boolean to "PASS" or "FAIL" string.
