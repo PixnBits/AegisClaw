@@ -144,12 +144,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
 	
-	// TODO: Start builder daemon to monitor for approved proposals.
-	// The builder pipeline creation requires BuilderRuntime, CodeGenerator, and Analyzer
-	// to be fully initialized. The PR creation callback is set via
-	// pipeline.SetPRCreatedCallback() wherever the pipeline is created.
-	// This integration point is ready; actual pipeline instantiation depends on
-	// builder subsystem initialization which is done elsewhere.
+	// Start builder daemon to monitor for approved proposals and trigger code generation.
+	// This connects Court approval (Phase 2) to Implementation (Phase 3) in the SDLC flow.
+	if err := startBuilderDaemon(cmd.Context(), env); err != nil {
+		env.Logger.Error("failed to start builder daemon", zap.Error(err))
+		// Don't fail daemon startup - builder is optional if config is incomplete
+	}
 	
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
