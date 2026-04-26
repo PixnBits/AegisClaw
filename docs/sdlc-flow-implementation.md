@@ -1,4 +1,4 @@
-# SDLC Flow Implementation - Complete
+# SDLC Flow Implementation - Isolated MicroVM Architecture
 
 ## Problem Statement
 
@@ -16,120 +16,174 @@ The proposal would transition to `StatusImplementing` after Court approval, but 
 
 ## Solution Implemented
 
-Created a complete builder daemon (`cmd/aegisclaw/builder_daemon.go`) that:
+Created a complete builder system that runs in an **isolated microVM** (matching the PRD architecture), not as an in-process daemon.
 
-1. **Monitors Proposals**: Polls every 10 seconds for proposals in `StatusImplementing` status
-2. **Prevents Duplicates**: Uses sync.Map to ensure each proposal is built only once
-3. **Initializes Builder**: Creates full builder subsystem with all dependencies
-4. **Triggers Pipeline**: Calls `pipeline.Execute()` for each implementing proposal
-5. **Handles Results**: Transitions proposals to Complete/Failed based on outcome
-6. **Integrates with PR System**: Connects to PR auto-creation via callback
+### Architecture Correction
 
-## Complete SDLC Flow - All Phases Connected
+**PRD Requirement (Section 10.3 Data Flow Diagram):**
+```
+subgraph Isolated MicroVMs
+    Main
+    Court
+    Builder    ← Builder MUST run in microVM
+    Skill
+end
+```
+
+**Initial Implementation (Incorrect):**
+- ❌ Builder daemon ran in main process
+- ❌ Violated isolation principle
+- ❌ Didn't match architecture diagram
+
+**Current Implementation (Correct):**
+- ✅ Builder runs in isolated Firecracker microVM
+- ✅ Communicates via vsock (like Court reviewers)
+- ✅ Same security model as other isolated components
+- ✅ Matches PRD architecture exactly
+
+### Components
 
 ### Before This Fix
 ```
 User Request → Proposal → Court Review → Approved → ⚠️ BROKEN ⚠️
 ```
 
-### After This Fix  
+### After This Fix (MicroVM Architecture)
 ```
 User Request
     ↓
-Proposal Created (Agent)
+Proposal Created (Main Agent in microVM)
     ↓
-Phase 2: Court Review
-    ├─ Multiple personas review
-    ├─ Consensus evaluation
+Phase 2: Court Review  
+    ├─ Each persona in isolated microVM
+    ├─ Vsock communication with host
     └─ Verdict: Approved
     ↓
 Auto-transition to StatusImplementing
     ↓
-🆕 Phase 3: Builder Daemon Triggers
-    ├─ Detects implementing proposal
-    ├─ Initializes builder subsystem
-    ├─ Extracts SkillSpec
-    └─ Calls pipeline.Execute()
+Phase 3: Builder VM Detects (Polling)
+    ├─ Builder agent runs in isolated microVM ✨
+    ├─ Polls proposal store via shared volume
+    └─ Finds implementing proposals
     ↓
-Phase 3: Code Generation
-    ├─ BuilderRuntime launches VM
-    ├─ CodeGenerator creates code
-    ├─ Analyzer checks quality/security
-    ├─ GitManager commits changes
-    └─ Returns PipelineResult
+Phase 3: Code Generation (In Builder VM)
+    ├─ Pipeline.Execute() in isolated VM
+    ├─ Code generated with LLM via vsock proxy
+    ├─ Git operations (commit, branch)
+    └─ Returns BuildResponse via vsock
     ↓
 Phase 4: PR Auto-Creation
-    ├─ createPRFromPipelineResult()
+    ├─ createPRFromPipelineResult() in host
     ├─ PR created in PR store
     └─ Court code review triggered
     ↓
 Phase 4: Court Code Review
-    ├─ All personas review code
+    ├─ All personas review in microVMs
     ├─ Consensus on security/quality
     └─ Verdict stored on PR
     ↓
 Ready for Deployment
 ```
 
-## Key Components
+### Isolation Architecture
 
-### Builder Daemon Architecture
+```
+┌───────────────────────────────────────────────────┐
+│ Host (Main Daemon)                                │
+│                                                    │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐       │
+│  │ Reviewer │  │ Reviewer │  │  Builder  │       │
+│  │ microVM  │  │ microVM  │  │  microVM  │       │
+│  │          │  │          │  │           │       │
+│  │  Persona │  │  Persona │  │   Agent   │       │
+│  │  + LLM   │  │  + LLM   │  │   + LLM   │       │
+│  └────┬─────┘  └────┬─────┘  └─────┬─────┘       │
+│       │ vsock       │ vsock        │ vsock        │
+│  ┌────┴──────────────┴───────────────┴──────┐     │
+│  │      Firecracker Runtime                 │     │
+│  │                                           │     │
+│  │  ┌────────────┐   ┌────────────────┐    │     │
+│  │  │ LLM Proxy  │→→→│ Ollama         │    │     │
+│  │  └────────────┘   └────────────────┘    │     │
+│  │                                           │     │
+│  │  ┌────────────┐   ┌────────────────┐    │     │
+│  │  │ Proposal   │   │ Kernel Audit   │    │     │
+│  │  │ Store      │   │ Log            │    │     │
+│  │  └────────────┘   └────────────────┘    │     │
+│  └───────────────────────────────────────────┘    │
+└───────────────────────────────────────────────────┘
+```
+
+**Security Properties:**
+- Each VM fully isolated (separate processes, memory, filesystem)
+- No VM can access host filesystem directly
+- All LLM access via proxy (no direct network in VMs)
+- Vsock-only communication (no IP stack in VMs)
+- Resource limits enforced per VM
+- Complete audit trail for all operations
+
+
+### Components
+
+#### 1. BuilderLauncher (`internal/builder/launcher.go`)
+
+Manages builder microVM lifecycle:
 
 ```go
-type builderDaemon struct {
-    env          *runtimeEnv       // Access to all subsystems
-    pipeline     *builder.Pipeline // Orchestrates build process
-    gitMgr       *gitmanager.Manager // Git operations
-    activeBuild  sync.Map          // Prevents duplicate builds
-    stopCh       chan struct{}     // Graceful shutdown
-    wg           sync.WaitGroup    // Wait for goroutines
-    pollInterval time.Duration     // 10 seconds
+type BuilderLauncher interface {
+    LaunchBuilder(ctx context.Context) (string, error)
+    SendBuildRequest(ctx context.Context, sandboxID string, req *BuildRequest) (*BuildResponse, error)
+    StopBuilder(ctx context.Context, sandboxID string) error
+    GetStatus(ctx context.Context, sandboxID string) (string, error)
 }
 ```
 
-### Initialization Sequence
+**FirecrackerBuilderLauncher** implementation:
+- Creates isolated microVM with Firecracker
+- 2 vCPUs, 2GB RAM (higher than reviewers for compilation)
+- Network restricted to Ollama only (port 11434)
+- LLM proxy over vsock for model access
+- No direct host filesystem access
 
-1. **startBuilderDaemon()** - Entry point called from daemon startup
-   - Validates configuration
-   - Initializes git manager
-   - Creates builder pipeline
-   - Sets PR callback
-   - Configures SBOM
-   - Starts background loop
+#### 2. BuilderAgent (`internal/builder/agent.go`)
 
-2. **initBuilderPipeline()** - Creates full pipeline
-   - BuilderRuntime (manages VMs)
-   - CodeGenerator (with templates)
-   - Analyzer (static analysis)
-   - Pipeline (orchestration)
+Runs **inside the microVM**:
 
-3. **run()** - Background polling loop
-   - Ticks every 10 seconds
-   - Calls checkAndBuildProposals()
-   - Handles context cancellation
+```go
+type BuilderAgent struct {
+    pipeline     *Pipeline
+    store        *proposal.Store
+    kernel       *kernel.Kernel
+    pollInterval time.Duration  // 10 seconds
+}
+```
 
-4. **checkAndBuildProposals()** - Finds work
-   - Lists all proposals
-   - Filters for StatusImplementing
-   - Checks if already building
-   - Spawns buildProposal() goroutine
+**Key methods:**
+- `Run()` - Main polling loop
+- `checkAndBuild()` - Finds implementing proposals
+- `buildProposal()` - Executes pipeline
+- `HandleBuildRequest()` - Processes vsock requests
 
-5. **buildProposal()** - Executes one build
-   - Extracts SkillSpec
-   - Logs to kernel audit trail
-   - Calls pipeline.Execute()
-   - Updates proposal status
-   - Logs completion
+#### 3. Builder Agent Binary (`cmd/builder-agent/main.go`)
 
-### Dependencies Initialized
+Standalone binary compiled into builder rootfs:
+- Vsock listener on port 1024
+- Signal handling (SIGINT, SIGTERM)
+- Kernel audit logging
+- Proposal store access (via shared volume)
 
-| Component | Purpose | Configuration |
-|-----------|---------|---------------|
-| **BuilderRuntime** | Manages builder microVMs | rootfs_template, workspace_base_dir |
-| **CodeGenerator** | Generates code from proposals | Prompt templates |
-| **Analyzer** | Static analysis & security checks | Builder runtime |
-| **GitManager** | Version control operations | workspace_base_dir, kernel |
-| **Pipeline** | Orchestrates full process | All of the above |
+#### 4. VM Launcher (`cmd/aegisclaw/builder_vm.go`)
+
+Called from daemon startup:
+
+```go
+func launchBuilderVM(ctx context.Context, env *runtimeEnv) error
+```
+
+- Creates RuntimeConfig (like Court reviewers)
+- Initializes LLM proxy
+- Launches builder microVM
+- VM runs autonomously until daemon stops
 
 ## Configuration Required
 
