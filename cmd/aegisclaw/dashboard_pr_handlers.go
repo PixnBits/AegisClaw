@@ -48,6 +48,8 @@ type dashboardPRDetail struct {
 // makeDashboardPRListHandler returns a handler for listing PRs in the dashboard.
 func makeDashboardPRListHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		// Context unused but required by Handler signature. May be used for
+		// cancellation/timeout in future versions.
 		_ = ctx
 		if env.PRStore == nil {
 			return &api.Response{Error: "PR store is unavailable"}
@@ -117,6 +119,8 @@ func makeDashboardPRListHandler(env *runtimeEnv) api.Handler {
 // makeDashboardPRDetailHandler returns a handler for viewing a single PR's details.
 func makeDashboardPRDetailHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		// Context unused but required by Handler signature. May be used for
+		// cancellation/timeout in future versions.
 		_ = ctx
 		if env.PRStore == nil {
 			return &api.Response{Error: "PR store is unavailable"}
@@ -200,6 +204,8 @@ func makeDashboardPRDetailHandler(env *runtimeEnv) api.Handler {
 // makeDashboardPRStatsHandler returns statistics about PRs for the dashboard.
 func makeDashboardPRStatsHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		// Context and data unused but required by Handler signature.
+		// Stats endpoint doesn't require input parameters.
 		_ = ctx
 		_ = data
 		if env.PRStore == nil {

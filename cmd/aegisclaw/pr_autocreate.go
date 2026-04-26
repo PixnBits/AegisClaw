@@ -71,7 +71,7 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 `,
 		proposalID,
 		skillName,
-		commitHash[:12],
+		truncateCommitHash(commitHash),
 		branch,
 		pr.BaseBranch,
 		prop.Description,
@@ -124,7 +124,7 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		zap.String("pr_id", pr.ID),
 		zap.String("proposal_id", proposalID),
 		zap.String("branch", branch),
-		zap.String("commit", commitHash[:12]),
+		zap.String("commit", truncateCommitHash(commitHash)),
 		zap.Int("files", pr.FilesChanged),
 	)
 	
@@ -144,4 +144,13 @@ func boolToPassFail(b bool) string {
 		return "PASS"
 	}
 	return "FAIL"
+}
+
+// truncateCommitHash returns the first 12 characters of a commit hash.
+// If the hash is shorter than 12 characters, returns the full hash.
+func truncateCommitHash(hash string) string {
+	if len(hash) <= 12 {
+		return hash
+	}
+	return hash[:12]
 }
