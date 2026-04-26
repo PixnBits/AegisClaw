@@ -206,6 +206,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("pr.get", makePRGetHandler(env))
 	apiSrv.Handle("pr.approve", makePRApproveHandler(env))
 	apiSrv.Handle("pr.close", makePRCloseHandler(env))
+	apiSrv.Handle("pr.merge", makePRMergeHandler(env))
 	// Dashboard PR handlers for enhanced UI
 	apiSrv.Handle("dashboard.pr.list", makeDashboardPRListHandler(env))
 	apiSrv.Handle("dashboard.pr.detail", makeDashboardPRDetailHandler(env))

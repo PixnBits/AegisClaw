@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
@@ -196,4 +197,84 @@ func makePRCloseHandler(env *runtimeEnv) api.Handler {
 		
 		return &api.Response{Success: true, Data: respData}
 	}
+}
+
+// makePRMergeHandler returns a handler to merge a pull request.
+func makePRMergeHandler(env *runtimeEnv) api.Handler {
+return func(ctx context.Context, data json.RawMessage) *api.Response {
+var req struct {
+ID       string `json:"id"`
+MergedBy string `json:"merged_by"`
+}
+if err := json.Unmarshal(data, &req); err != nil {
+return &api.Response{Error: "invalid request: " + err.Error()}
+}
+
+if req.ID == "" {
+return &api.Response{Error: "PR ID is required"}
+}
+if req.MergedBy == "" {
+req.MergedBy = "user" // Default merger
+}
+
+// Get PR to check if it can be merged
+pr, err := env.PRStore.Get(req.ID)
+if err != nil {
+return &api.Response{Error: "failed to get PR: " + err.Error()}
+}
+
+// Validate PR can be merged
+if !pr.CanMerge() {
+reasons := []string{}
+if pr.Status != pullrequest.StatusOpen {
+reasons = append(reasons, "PR is not open")
+}
+if !pr.BuildPassed {
+reasons = append(reasons, "build has not passed")
+}
+if !pr.AnalysisPassed {
+reasons = append(reasons, "analysis has not passed")
+}
+if !pr.SecurityGatesPassed {
+reasons = append(reasons, "security gates have not passed")
+}
+if pr.CourtReviewRequired && pr.CourtReviewStatus != pullrequest.CourtReviewApproved {
+reasons = append(reasons, "Court review not approved")
+}
+if !pr.Approved {
+reasons = append(reasons, "PR not approved by maintainer")
+}
+
+return &api.Response{
+Error: fmt.Sprintf("PR cannot be merged: %s", strings.Join(reasons, ", ")),
+}
+}
+
+// Mark PR as merged in store
+if err := env.PRStore.MarkMerged(req.ID); err != nil {
+return &api.Response{Error: "failed to mark PR as merged: " + err.Error()}
+}
+
+// Log merge to kernel audit trail
+auditPayload, _ := json.Marshal(map[string]string{
+"pr_id":       req.ID,
+"proposal_id": pr.ProposalID,
+"merged_by":   req.MergedBy,
+"branch":      pr.Branch,
+"commit":      pr.CommitHash,
+})
+action := kernel.NewAction(kernel.ActionType("pr.merge"), req.MergedBy, auditPayload)
+if _, err := env.Kernel.SignAndLog(action); err != nil {
+env.Logger.Warn("failed to log PR merge", zap.Error(err))
+}
+
+// Marshal response data
+respData, _ := json.Marshal(map[string]string{
+"message": "Pull request merged successfully",
+"pr_id":   req.ID,
+"branch":  pr.Branch,
+})
+
+return &api.Response{Success: true, Data: respData}
+}
 }
