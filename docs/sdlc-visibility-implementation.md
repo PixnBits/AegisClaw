@@ -2,6 +2,41 @@
 
 This document tracks the implementation of enhanced SDLC visibility and control features in the AegisClaw web portal, as specified in the GitHub issue for "Enhanced SDLC Visibility and Control in Web Portal".
 
+## Recent Updates (2026-04-26)
+
+### Fix: Duplicate Navigation and Self Repository Removal
+
+**Issue**: Templates were including full HTML structure with navigation, causing duplicate nav bars. Additionally, the "Self" repository (AegisClaw source code) was editable, which is a security risk.
+
+**Resolution**:
+- Converted all new templates from full HTML pages to fragments
+- Removed "Self" repository support - only skills repository is now accessible
+- All handlers hardcode `repo="skills"`
+- Templates now follow same pattern as existing pages (agentsTmpl, asyncTmpl, etc.)
+- Removed repository selector tabs since only one repository is supported
+
+**Template Pattern**:
+```go
+// OLD (incorrect) - Full HTML with duplicate nav
+const sourceTmpl = `
+<!DOCTYPE html>
+<html>
+<head>...</head>
+<body>
+  ` + dashboardNav + `  <!-- DUPLICATE! -->
+  <div class="container">...</div>
+</body>
+</html>`
+
+// NEW (correct) - Fragment only
+const sourceTmpl = `
+<style>...</style>
+<h1>{{.Title}}</h1>
+<div class="section">...</div>`
+```
+
+The `pageWrap()` function already provides full HTML structure and navigation, so templates should only contain the page-specific content.
+
 ## Completed Phases
 
 ### Phase 2: Source Code Viewer ✅ COMPLETE
@@ -27,12 +62,13 @@ This document tracks the implementation of enhanced SDLC visibility and control 
   - Added handlers: `handleSource`, `handleSourceBrowse`, `handleWorkspace`, `handleWorkspaceEdit`
 
 **Features:**
-- ✅ File tree navigation for skills/ and self/ repositories
-- ✅ Repository switching (skills ↔ self)
+- ✅ File tree navigation for skills/ repository only
 - ✅ Branch listing and current branch indicator
 - ✅ Workspace file management (read/write/list)
 - ✅ Audit logging for all workspace edits
 - ✅ Security controls: read-only for generated code, audited writes for workspace
+- ✅ Single navigation bar (no duplication)
+- ⚠️ Removed: Self repository support (security requirement)
 
 **Security:**
 - All file operations go through GitManager with proper validation
