@@ -465,7 +465,7 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 	if initPath == "" {
 		initPath = "/sbin/guest-agent"
 	}
-	kernelArgs := "console=ttyS0 reboot=k panic=1 pci=off init=" + initPath
+	kernelArgs := "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro rootflags=noload init=" + initPath
 	if !spec.NetworkPolicy.NoNetwork {
 		kernelArgs += fmt.Sprintf(" ip=%s::%s:255.255.255.252::eth0:off", guestIP, hostIP)
 	}
@@ -481,7 +481,6 @@ func (r *FirecrackerRuntime) buildFirecrackerConfig(
 		},
 		VsockDevices: []firecracker.VsockDevice{
 			{
-				ID:   "vsock0",
 				Path: filepath.Join(filepath.Dir(socketPath), "vsock.sock"),
 				CID:  spec.VsockCID,
 			},

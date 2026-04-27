@@ -348,7 +348,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Input     string `json:"input"`
 		SessionID string `json:"session_id,omitempty"`
-		History []struct {
+		History   []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"history,omitempty"`
@@ -428,7 +428,7 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 	lastThoughtID := s.latestEventID(ctx, "chat.thought_events", 80)
 	emittedThinkingRunes := 0
 	emittedContentRunes := 0
-  lastProgressRequestID := ""
+	lastProgressRequestID := ""
 
 	if !writeSSE(map[string]interface{}{"type": "start", "ts": time.Now().UTC().Format(time.RFC3339)}) {
 		return
@@ -461,17 +461,17 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 			progressRaw, err := s.fetchRaw(ctx, "chat.stream_progress", map[string]string{"stream_id": streamID})
 			if err == nil {
 				if progress, ok := progressRaw.(map[string]interface{}); ok {
-          requestID := toString(progress["request_id"])
-          if requestID != "" && requestID != lastProgressRequestID {
-            lastProgressRequestID = requestID
-            emittedThinkingRunes = 0
-            emittedContentRunes = 0
-          }
+					requestID := toString(progress["request_id"])
+					if requestID != "" && requestID != lastProgressRequestID {
+						lastProgressRequestID = requestID
+						emittedThinkingRunes = 0
+						emittedContentRunes = 0
+					}
 					if !emitSnapshotDelta(writeSSE, "thought_delta", toString(progress["thinking"]), &emittedThinkingRunes) {
 						return false
 					}
-          content := suppressInFlightStructuredContent(toString(progress["content"]))
-          if !emitSnapshotDelta(writeSSE, "content_delta", content, &emittedContentRunes) {
+					content := suppressInFlightStructuredContent(toString(progress["content"]))
+					if !emitSnapshotDelta(writeSSE, "content_delta", content, &emittedContentRunes) {
 						return false
 					}
 				}
@@ -532,21 +532,21 @@ func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, pa
 }
 
 func suppressInFlightStructuredContent(text string) string {
-  trimmed := strings.TrimSpace(text)
-  if trimmed == "" {
-    return text
-  }
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return text
+	}
 
-  // During streaming, suppress in-flight structured outputs and fenced blocks.
-  // They are intermediate protocol artifacts, not user-visible prose.
-  if strings.HasPrefix(trimmed, "```") {
-    return ""
-  }
-  if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-    return ""
-  }
+	// During streaming, suppress in-flight structured outputs and fenced blocks.
+	// They are intermediate protocol artifacts, not user-visible prose.
+	if strings.HasPrefix(trimmed, "```") {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return ""
+	}
 
-  return text
+	return text
 }
 
 func emitSnapshotDelta(writeSSE func(interface{}) bool, eventType, text string, emittedRunes *int) bool {
@@ -1087,7 +1087,7 @@ func (s *Server) handleSourceBrowse(w http.ResponseWriter, r *http.Request) {
 // handleWorkspace displays the workspace editor for user files.
 func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 	files, _ := s.fetchRaw(r.Context(), "workspace.list", nil)
-	
+
 	s.renderTemplate(w, "Workspace", workspaceTmpl, map[string]interface{}{
 		"Files": files,
 	})
@@ -1154,7 +1154,7 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 	// Only support skills repository
 	repo := "skills"
 	proposalID := r.URL.Query().Get("proposal")
-	
+
 	if proposalID == "" {
 		http.Error(w, "proposal ID required", http.StatusBadRequest)
 		return
@@ -1406,7 +1406,7 @@ const overviewTmpl = `
 <div class="section">
   <div class="section-header">Running MicroVMs</div>
   <table>
-    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>vCPUs</th><th>Alloc Mem</th><th>RSS</th><th>CPU avg</th></tr></thead>
+    <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>vCPUs</th><th>Alloc Mem</th><th>RSS</th><th>CPU avg</th></tr></thead>
     <tbody>
     {{range .RunningVMs}}
     <tr>
@@ -1758,7 +1758,7 @@ const chatTmpl = `
       .replace(/&/g,'&amp;')
       .replace(/</g,'&lt;')
       .replace(/>/g,'&gt;')
-      .replace(/\"/g,'&quot;')
+      .replace(/"/g,'&quot;')
       .replace(/'/g,'&#39;');
   }
 
@@ -2760,12 +2760,12 @@ const chatTmpl = `
       for(var i=0;i<d.tool_events.length;i++){
         var ev=d.tool_events[i]||{};
         var id=Number(ev.id||0);
-        if(id>newestTool)newestTool=id;
-        if(!awaitingResponse || activeChatStream)continue;
-        if(id<=lastToolEventIDSeen)continue;
-        appendLiveToolEvent(ev);
+        if(id>newestTool){
+          appendLiveToolEvent(ev);
+          lastToolEventIDSeen=id;
+        }
+        return;
       }
-      lastToolEventIDSeen=newestTool;
     }
 
     if(Array.isArray(d.thought_events) && d.thought_events.length>0){
@@ -2773,12 +2773,12 @@ const chatTmpl = `
       for(var j=0;j<d.thought_events.length;j++){
         var tev=d.thought_events[j]||{};
         var tid=Number(tev.id||0);
-        if(tid>newestThought)newestThought=tid;
-        if(!awaitingResponse || activeChatStream)continue;
-        if(tid<=lastThoughtEventIDSeen)continue;
-        appendLiveThoughtEvent(tev);
+        if(tid>newestThought){
+          appendLiveThoughtEvent(tev);
+          lastThoughtEventIDSeen=tid;
+        }
+        return;
       }
-      lastThoughtEventIDSeen=newestThought;
     }
   };
 
@@ -3337,52 +3337,51 @@ const gitDiffTmpl = `
   }
 </script>`
 
-
-
-// handlePRList displays a list of pull requests (Phase 4: Pull Request System).
+// handlePRList renders the Pull Requests overview page.
 func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
-statusFilter := r.URL.Query().Get("status")
-var reqData json.RawMessage
-if statusFilter != "" {
-reqData, _ = json.Marshal(map[string]string{"status": statusFilter})
-} else {
-reqData = json.RawMessage(`{}`)
+	s.renderTemplate(w, "Pull Requests", prListTmpl, nil)
 }
 
-resp, err := s.apiClient.Call(r.Context(), "pr.list", reqData)
-if err != nil || !resp.Success {
-http.Error(w, "Failed to fetch pull requests", http.StatusInternalServerError)
-return
-}
-
-var prs []interface{}
-json.Unmarshal(resp.Data, &prs)
-
-s.renderTemplate(w, "Pull Requests", `<h1>{{.Title}}</h1><div class="section"><p>Pull Requests feature implemented. {{len .PullRequests}} PRs found.</p><p><a href="/pullrequests?status=open">Open</a> | <a href="/pullrequests?status=merged">Merged</a> | <a href="/pullrequests?status=closed">Closed</a></p></div>`, map[string]interface{}{
-"PullRequests": prs,
-"StatusFilter": statusFilter,
-})
-}
-
-// handlePRDetail displays details of a specific pull request (Phase 4).
+// handlePRDetail renders a single PR detail page.
 func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
-prID := r.URL.Query().Get("id")
-if prID == "" {
-http.Error(w, "PR ID required", http.StatusBadRequest)
-return
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Redirect(w, r, "/pullrequests", http.StatusSeeOther)
+		return
+	}
+	data := map[string]interface{}{"ID": id}
+	s.renderTemplate(w, "PR Detail", prDetailTmpl, data)
 }
 
-reqData, _ := json.Marshal(map[string]string{"id": prID})
-resp, err := s.apiClient.Call(r.Context(), "pr.get", reqData)
-if err != nil || !resp.Success {
-http.Error(w, "Failed to fetch PR", http.StatusInternalServerError)
-return
-}
+// prListTmpl is the HTMX-powered PR list page.
+const prListTmpl = `
+<div class="section">
+  <h2>PR Stats</h2>
+  <div hx-get="/api/dashboard/pr/stats" hx-trigger="load" hx-swap="innerHTML" class="stats-grid">
+    Loading stats...
+  </div>
+</div>
+<div class="section">
+  <div class="section-header">
+    Open PRs
+  </div>
+  <div id="open-prs" hx-get="/api/dashboard/pr/list?status=open" hx-trigger="load, every 10s" hx-swap="innerHTML">
+    Loading open PRs...
+  </div>
+</div>
+<div class="section">
+  <div class="section-header">
+    All PRs
+  </div>
+  <div id="all-prs" hx-get="/api/dashboard/pr/list" hx-trigger="load" hx-swap="innerHTML">
+    Loading all PRs...
+  </div>
+</div>
+`
 
-var pr map[string]interface{}
-json.Unmarshal(resp.Data, &pr)
-
-s.renderTemplate(w, "Pull Request", `<h1>{{.Title}}</h1><div class="section"><h2>PR Details</h2><p>PR feature is implemented and working.</p><p><a href="/pullrequests">Back to PRs</a></p></div>`, map[string]interface{}{
-"PR": pr,
-})
-}
+// prDetailTmpl is the HTMX-powered PR detail page.
+const prDetailTmpl = `
+<div hx-get="/api/dashboard/pr/detail?id={{.ID}}" hx-trigger="load" hx-swap="innerHTML">
+  Loading PR details...
+</div>
+`

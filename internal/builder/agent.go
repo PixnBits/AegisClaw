@@ -73,7 +73,7 @@ func (ba *BuilderAgent) checkAndBuild(ctx context.Context) error {
 	}
 
 	for _, summary := range summaries {
-		if summary.Status != proposal.StatusImplementing {
+		if summary.Status != proposal.StatusApproved && summary.Status != proposal.StatusImplementing {
 			continue
 		}
 
@@ -87,12 +87,35 @@ func (ba *BuilderAgent) checkAndBuild(ctx context.Context) error {
 			continue
 		}
 
-		// Build this proposal
-		if err := ba.buildProposal(ctx, prop); err != nil {
-			ba.logger.Error("failed to build proposal",
+		if prop.Status == proposal.StatusApproved {
+			if err := prop.Transition(proposal.StatusImplementing, "builder-agent auto-transition after court approval", "builder-agent"); err != nil {
+				ba.logger.Error("failed to transition approved to implementing",
+					zap.String("proposal_id", prop.ID),
+					zap.Error(err),
+				)
+				continue
+			}
+			if err := ba.store.Update(prop); err != nil {
+				ba.logger.Error("failed to update proposal after transition",
+					zap.String("proposal_id", prop.ID),
+					zap.Error(err),
+				)
+				continue
+			}
+			ba.logger.Info("auto-transitioned proposal to implementing",
 				zap.String("proposal_id", prop.ID),
-				zap.Error(err),
+				zap.String("title", prop.Title),
 			)
+		}
+
+		if prop.Status == proposal.StatusImplementing {
+			// Build this proposal
+			if err := ba.buildProposal(ctx, prop); err != nil {
+				ba.logger.Error("failed to build proposal",
+					zap.String("proposal_id", prop.ID),
+					zap.Error(err),
+				)
+			}
 		}
 	}
 

@@ -60,13 +60,16 @@ docker run --rm \
     "alpine:${ALPINE_VERSION}" \
     sh -c "
         set -e
-        mkdir -p /rootfs/etc/apk
-        cp -r /etc/apk/keys /rootfs/etc/apk/keys
-        cp /etc/apk/repositories /rootfs/etc/apk/repositories
-        apk add \
-            --root /rootfs \
-            --initdb \
-            --no-cache \
+        apk add --no-cache alpine-keys
+        mkdir -p /rootfs/var/cache/apk /rootfs/var/lib/apk /rootfs/etc/apk
+        cp -r /etc/apk/keys /rootfs/etc/apk/
+        cp -r /var/cache/apk /rootfs/var/cache/
+        cat > /rootfs/etc/apk/repositories << 'EOF'
+https://dl-cdn.alpinelinux.org/alpine/v3.21/main
+https://dl-cdn.alpinelinux.org/alpine/v3.21/community
+EOF
+        apk --root /rootfs update
+        apk --root /rootfs add \
             alpine-base bash openssl ca-certificates curl wget \
             git make gcc musl-dev linux-headers
     "
@@ -84,7 +87,7 @@ chroot "$MOUNT_DIR" /bin/sh -c "
     export GOBIN=/usr/local/bin
 
     # golangci-lint
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+    go install github.com/golangci-lint-linters/ghidra/cmd/golangci-lint@latest
 
     # staticcheck
     go install honnef.co/go/tools/cmd/staticcheck@latest
