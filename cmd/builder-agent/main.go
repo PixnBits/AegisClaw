@@ -76,8 +76,18 @@ func main() {
 // initKernel initializes the kernel for audit logging.
 func initKernel(logger *zap.Logger) (*kernel.Kernel, error) {
 	// In the microVM, the kernel state is shared via vsock or a mounted volume
-	// For now, use a simple in-memory kernel
-	return kernel.NewKernel(logger), nil
+	// Use GetInstance with a local audit directory
+	auditDir := os.Getenv("AUDIT_DIR")
+	if auditDir == "" {
+		auditDir = "/var/lib/aegisclaw/audit"
+	}
+	
+	// Ensure audit directory exists
+	if err := os.MkdirAll(auditDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create audit directory: %w", err)
+	}
+	
+	return kernel.GetInstance(logger, auditDir)
 }
 
 // initProposalStore initializes the proposal store.
@@ -93,16 +103,13 @@ func initProposalStore(logger *zap.Logger) (*proposal.Store, error) {
 }
 
 // initPipeline initializes the builder pipeline.
-func initPipeline(kern *kernel.Kernel, store *proposal.Store, logger *zap.Logger) (*builder.Pipeline, error) {
+// Since this code runs INSIDE a microVM, we use simplified in-VM components
+// that don't spawn nested VMs.
+func initPipeline(kern *kernel.Kernel, store *proposal.Store, logger *zap.Logger) (builder.PipelineExecutor, error) {
 	// Get configuration from environment
 	workspaceDir := os.Getenv("WORKSPACE_DIR")
 	if workspaceDir == "" {
 		workspaceDir = "/workspace"
-	}
-
-	rootfsTemplate := os.Getenv("BUILDER_ROOTFS")
-	if rootfsTemplate == "" {
-		return nil, fmt.Errorf("BUILDER_ROOTFS environment variable not set")
 	}
 
 	// Initialize git manager
@@ -111,10 +118,31 @@ func initPipeline(kern *kernel.Kernel, store *proposal.Store, logger *zap.Logger
 		return nil, fmt.Errorf("failed to create git manager: %w", err)
 	}
 
-	// TODO: Initialize BuilderRuntime, CodeGenerator, Analyzer
-	// For now, return an error indicating this needs to be implemented
-	return nil, fmt.Errorf("pipeline initialization not yet implemented in microVM context")
+	// Initialize in-VM code generator
+	// Ollama is available via vsock proxy on the host
+	ollamaURL := os.Getenv("OLLAMA_URL")
+	if ollamaURL == "" {
+		ollamaURL = "http://127.0.0.1:11434" // Default Ollama endpoint via proxy
+	}
+	codeGen := NewInVMCodeGenerator(kern, logger, ollamaURL)
+
+	// Initialize in-VM analyzer
+	analyzer := NewInVMAnalyzer(kern, logger)
+
+	// Create in-VM pipeline that runs everything directly without nested VMs
+	pipeline, err := NewInVMPipeline(codeGen, analyzer, gitMgr, kern, store, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create in-VM pipeline: %w", err)
+	}
+
+	logger.Info("in-VM pipeline initialized successfully",
+		zap.String("workspace", workspaceDir),
+		zap.String("ollama_url", ollamaURL),
+	)
+
+	return pipeline, nil
 }
+
 
 // startVsockListener listens for build requests on vsock port 1024.
 func startVsockListener(ctx context.Context, agent *builder.BuilderAgent, logger *zap.Logger) {

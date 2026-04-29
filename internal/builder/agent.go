@@ -11,10 +11,17 @@ import (
 	"go.uber.org/zap"
 )
 
+// PipelineExecutor defines the interface for pipeline execution.
+// This allows the BuilderAgent to work with different pipeline implementations
+// (e.g., full Pipeline with nested VMs, or simplified in-VM pipeline).
+type PipelineExecutor interface {
+	Execute(ctx context.Context, prop *proposal.Proposal, spec *SkillSpec) (*PipelineResult, error)
+}
+
 // BuilderAgent runs inside a microVM and handles build requests.
 // It polls for proposals in "implementing" status and executes the pipeline.
 type BuilderAgent struct {
-	pipeline     *Pipeline
+	pipeline     PipelineExecutor
 	store        *proposal.Store
 	kernel       *kernel.Kernel
 	logger       *zap.Logger
@@ -24,7 +31,7 @@ type BuilderAgent struct {
 
 // NewBuilderAgent creates a builder agent for use inside a microVM.
 func NewBuilderAgent(
-	pipeline *Pipeline,
+	pipeline PipelineExecutor,
 	store *proposal.Store,
 	kern *kernel.Kernel,
 	logger *zap.Logger,
