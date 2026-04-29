@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/builder"
 	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"golang.org/x/sys/unix"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +28,10 @@ func main() {
 	defer logger.Sync()
 
 	logger.Info("builder agent starting")
+
+	if err := prepareRuntimeFS(logger); err != nil {
+		logger.Fatal("failed to prepare runtime filesystem", zap.Error(err))
+	}
 
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,13 +79,61 @@ func main() {
 	logger.Info("builder agent stopped")
 }
 
+// prepareRuntimeFS performs minimal PID1 setup for the builder VM.
+// When running as init, we must mount /proc and attach the workspace disk.
+func prepareRuntimeFS(logger *zap.Logger) error {
+	_ = os.MkdirAll("/proc", 0755)
+	_ = os.MkdirAll("/sys", 0755)
+	_ = os.MkdirAll("/dev", 0755)
+	_ = os.MkdirAll("/workspace", 0755)
+	_ = os.MkdirAll("/var/lib/aegisclaw", 0755)
+
+	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil && err != syscall.EBUSY {
+		logger.Warn("failed to mount /proc", zap.Error(err))
+	}
+	if err := syscall.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil && err != syscall.EBUSY {
+		logger.Warn("failed to mount /sys", zap.Error(err))
+	}
+	if err := syscall.Mount("devtmpfs", "/dev", "devtmpfs", 0, ""); err != nil && err != syscall.EBUSY {
+		logger.Warn("failed to mount /dev", zap.Error(err))
+	}
+
+	if err := syscall.Mount("/dev/vdb", "/workspace", "ext4", 0, ""); err != nil && err != syscall.EBUSY {
+		return fmt.Errorf("mount /dev/vdb -> /workspace: %w", err)
+	}
+	if err := os.MkdirAll("/workspace/tmp", 0777); err != nil {
+		return fmt.Errorf("create /workspace/tmp: %w", err)
+	}
+	if err := os.MkdirAll("/workspace/.cache/go-build", 0755); err != nil {
+		return fmt.Errorf("create /workspace/.cache/go-build: %w", err)
+	}
+
+	logger.Info("runtime filesystem prepared",
+		zap.String("workspace", "/workspace"),
+		zap.String("workspace_device", "/dev/vdb"),
+	)
+	return nil
+}
+
 // initKernel initializes the kernel for audit logging.
 func initKernel(logger *zap.Logger) (*kernel.Kernel, error) {
+	if err := os.Setenv("HOME", "/workspace"); err != nil {
+		logger.Warn("failed to set HOME for builder agent", zap.Error(err))
+	}
+	if err := os.Setenv("PATH", "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"); err != nil {
+		logger.Warn("failed to set PATH for builder agent", zap.Error(err))
+	}
+	if err := os.Setenv("TMPDIR", "/workspace/tmp"); err != nil {
+		logger.Warn("failed to set TMPDIR for builder agent", zap.Error(err))
+	}
+	if err := os.Setenv("GOCACHE", "/workspace/.cache/go-build"); err != nil {
+		logger.Warn("failed to set GOCACHE for builder agent", zap.Error(err))
+	}
 	// In the microVM, the kernel state is shared via vsock or a mounted volume
 	// Use GetInstance with a local audit directory
 	auditDir := os.Getenv("AUDIT_DIR")
 	if auditDir == "" {
-		auditDir = "/var/lib/aegisclaw/audit"
+		auditDir = "/workspace/audit"
 	}
 	
 	// Ensure audit directory exists
@@ -96,7 +150,7 @@ func initProposalStore(logger *zap.Logger) (*proposal.Store, error) {
 	// For now, use a local directory
 	storeDir := os.Getenv("PROPOSAL_STORE_DIR")
 	if storeDir == "" {
-		storeDir = "/var/lib/aegisclaw/proposals"
+		storeDir = "/workspace/proposals"
 	}
 
 	return proposal.NewStore(storeDir, logger)
@@ -146,9 +200,19 @@ func initPipeline(kern *kernel.Kernel, store *proposal.Store, logger *zap.Logger
 
 // startVsockListener listens for build requests on vsock port 1024.
 func startVsockListener(ctx context.Context, agent *builder.BuilderAgent, logger *zap.Logger) {
-	// Vsock listener on port 1024 (Firecracker vsock convention)
-	listener, err := net.Listen("vsock", ":1024")
-	if err != nil {
+	// The virtio_vsock transport may not be ready when PID 1 starts.
+	var (
+		listener net.Listener
+		err      error
+	)
+	for attempt := 0; attempt < 20; attempt++ {
+		listener, err = listenVsock(1024)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if listener == nil {
 		logger.Error("failed to start vsock listener", zap.Error(err))
 		return
 	}
@@ -171,6 +235,64 @@ func startVsockListener(ctx context.Context, agent *builder.BuilderAgent, logger
 
 		go handleVsockConnection(ctx, conn, agent, logger)
 	}
+}
+
+type vsockConn struct {
+	file *os.File
+}
+
+func (c *vsockConn) Read(b []byte) (int, error)         { return c.file.Read(b) }
+func (c *vsockConn) Write(b []byte) (int, error)        { return c.file.Write(b) }
+func (c *vsockConn) Close() error                       { return c.file.Close() }
+func (c *vsockConn) LocalAddr() net.Addr                { return vsockAddr(0) }
+func (c *vsockConn) RemoteAddr() net.Addr               { return vsockAddr(0) }
+func (c *vsockConn) SetDeadline(t time.Time) error      { return c.file.SetDeadline(t) }
+func (c *vsockConn) SetReadDeadline(t time.Time) error  { return c.file.SetReadDeadline(t) }
+func (c *vsockConn) SetWriteDeadline(t time.Time) error { return c.file.SetWriteDeadline(t) }
+
+type vsockListener struct {
+	fd   int
+	port int
+}
+
+func (l *vsockListener) Accept() (net.Conn, error) {
+	nfd, _, err := unix.Accept(l.fd)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(nfd), "vsock-conn")
+	return &vsockConn{file: file}, nil
+}
+
+func (l *vsockListener) Close() error   { return unix.Close(l.fd) }
+func (l *vsockListener) Addr() net.Addr { return vsockAddr(l.port) }
+
+type vsockAddr int
+
+func (a vsockAddr) Network() string { return "vsock" }
+func (a vsockAddr) String() string  { return fmt.Sprintf("vsock://:%d", int(a)) }
+
+func listenVsock(port int) (net.Listener, error) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err != nil {
+		return nil, fmt.Errorf("socket(AF_VSOCK): %w", err)
+	}
+
+	sa := &unix.SockaddrVM{
+		CID:  unix.VMADDR_CID_ANY,
+		Port: uint32(port),
+	}
+	if err := unix.Bind(fd, sa); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("bind vsock port %d: %w", port, err)
+	}
+
+	if err := unix.Listen(fd, 5); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("listen vsock: %w", err)
+	}
+
+	return &vsockListener{fd: fd, port: port}, nil
 }
 
 // handleVsockConnection handles a single vsock connection.

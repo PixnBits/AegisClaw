@@ -1451,7 +1451,10 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 
 	// Trigger court review inline if the court engine is available.
 	if env.Court != nil {
-		session, reviewErr := env.Court.Review(ctx, p.ID)
+		reviewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		session, reviewErr := env.Court.Review(reviewCtx, p.ID)
 		if reviewErr != nil {
 			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRecovery: proposal remains in_review and will be auto-resumed on next daemon start (aegisclaw stop; aegisclaw start).\nUse proposal.status / proposal.reviews with ID %s to track progress.", reviewErr, p.ID)
 		} else {

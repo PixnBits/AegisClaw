@@ -93,6 +93,7 @@ func (fbl *FirecrackerBuilderLauncher) LaunchBuilder(ctx context.Context) (strin
 			AllowedPorts: []uint16{11434},       // Ollama port
 		},
 		RootfsPath: fbl.config.RootfsTemplate,
+		InitPath:   "/sbin/builder-agent",
 	}
 
 	if err := fbl.runtime.Create(ctx, spec); err != nil {

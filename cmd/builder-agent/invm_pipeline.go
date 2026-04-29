@@ -53,7 +53,7 @@ func (cg *InVMCodeGenerator) Generate(ctx context.Context, spec *builder.SkillSp
 
 	// Generate the code using Ollama (simplified - in production this would
 	// use the full template system and iteration logic)
-	files, reasoning, err := cg.generateSkillCode(ctx, spec, skillDir)
+	files, reasoning, err := cg.generateSkillCode(ctx, spec, workspaceDir, skillDir)
 	if err != nil {
 		return nil, "", fmt.Errorf("code generation failed: %w", err)
 	}
@@ -64,9 +64,11 @@ func (cg *InVMCodeGenerator) Generate(ctx context.Context, spec *builder.SkillSp
 		"language":   spec.Language,
 		"file_count": len(files),
 	})
-	action := kernel.NewAction(kernel.ActionBuilderBuild, "invm-codegen", auditPayload)
-	if _, err := cg.kern.SignAndLog(action); err != nil {
-		cg.logger.Warn("failed to log code generation", zap.Error(err))
+	if cg.kern != nil {
+		action := kernel.NewAction(kernel.ActionBuilderBuild, "invm-codegen", auditPayload)
+		if _, err := cg.kern.SignAndLog(action); err != nil {
+			cg.logger.Warn("failed to log code generation", zap.Error(err))
+		}
 	}
 
 	return files, reasoning, nil
@@ -75,25 +77,43 @@ func (cg *InVMCodeGenerator) Generate(ctx context.Context, spec *builder.SkillSp
 // generateSkillCode generates the actual skill files.
 // In a real implementation, this would use LLM calls via Ollama.
 // For now, we'll create basic template-based code.
-func (cg *InVMCodeGenerator) generateSkillCode(ctx context.Context, spec *builder.SkillSpec, skillDir string) (map[string]string, string, error) {
+func (cg *InVMCodeGenerator) generateSkillCode(ctx context.Context, spec *builder.SkillSpec, workspaceDir string, skillDir string) (map[string]string, string, error) {
 	files := make(map[string]string)
 	
 	// Create main.go for Go skills
 	if spec.Language == "go" {
 		mainCode := cg.generateGoMain(spec)
 		mainPath := filepath.Join(skillDir, "main.go")
+		relMainPath := strings.TrimPrefix(mainPath, workspaceDir+string(os.PathSeparator))
 		if err := os.WriteFile(mainPath, []byte(mainCode), 0644); err != nil {
 			return nil, "", fmt.Errorf("failed to write main.go: %w", err)
 		}
-		files[mainPath] = mainCode
+		files[relMainPath] = mainCode
 		
 		// Create go.mod
 		goModContent := fmt.Sprintf("module github.com/aegisclaw/skills/%s\n\ngo 1.21\n", spec.Name)
 		goModPath := filepath.Join(skillDir, "go.mod")
+		relGoModPath := strings.TrimPrefix(goModPath, workspaceDir+string(os.PathSeparator))
 		if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
 			return nil, "", fmt.Errorf("failed to write go.mod: %w", err)
 		}
-		files[goModPath] = goModContent
+		files[relGoModPath] = goModContent
+
+		readmeContent := fmt.Sprintf("# %s\n\n%s\n", spec.Name, spec.Description)
+		readmePath := filepath.Join(skillDir, "README.md")
+		relReadmePath := strings.TrimPrefix(readmePath, workspaceDir+string(os.PathSeparator))
+		if err := os.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
+			return nil, "", fmt.Errorf("failed to write README.md: %w", err)
+		}
+		files[relReadmePath] = readmeContent
+
+		testContent := fmt.Sprintf("package main\n\nimport \"testing\"\n\nfunc TestGeneratedSkillMetadata(t *testing.T) {\n\tif %q == \"\" {\n\t\tt.Fatal(\"skill name must not be empty\")\n\t}\n}\n", spec.Name)
+		testPath := filepath.Join(skillDir, "main_test.go")
+		relTestPath := strings.TrimPrefix(testPath, workspaceDir+string(os.PathSeparator))
+		if err := os.WriteFile(testPath, []byte(testContent), 0644); err != nil {
+			return nil, "", fmt.Errorf("failed to write main_test.go: %w", err)
+		}
+		files[relTestPath] = testContent
 	}
 	
 	reasoning := fmt.Sprintf("Generated %s skill with %d files", spec.Name, len(files))
@@ -106,7 +126,6 @@ func (cg *InVMCodeGenerator) generateGoMain(spec *builder.SkillSpec) string {
 	b.WriteString("package main\n\n")
 	b.WriteString("import (\n")
 	b.WriteString("\t\"encoding/json\"\n")
-	b.WriteString("\t\"fmt\"\n")
 	b.WriteString("\t\"os\"\n")
 	b.WriteString(")\n\n")
 	
@@ -191,9 +210,11 @@ func (a *InVMAnalyzer) Analyze(ctx context.Context, workspaceDir string, languag
 		"findings":        len(result.Findings),
 		"passed":          result.Passed,
 	})
-	action := kernel.NewAction(kernel.ActionBuilderBuild, "invm-analyzer", auditPayload)
-	if _, err := a.kern.SignAndLog(action); err != nil {
-		a.logger.Warn("failed to log analysis result", zap.Error(err))
+	if a.kern != nil {
+		action := kernel.NewAction(kernel.ActionBuilderBuild, "invm-analyzer", auditPayload)
+		if _, err := a.kern.SignAndLog(action); err != nil {
+			a.logger.Warn("failed to log analysis result", zap.Error(err))
+		}
 	}
 
 	return result, nil
@@ -285,6 +306,7 @@ func (p *InVMPipeline) Execute(ctx context.Context, prop *proposal.Proposal, spe
 
 	// Use workspace directory from git manager's basePath
 	workspaceDir := "/workspace" // Default, or read from environment
+	skillDir := filepath.Join(workspaceDir, "skills", spec.Name)
 
 	// Step 1: Generate code
 	files, reasoning, err := p.codeGen.Generate(ctx, spec, workspaceDir)
@@ -300,7 +322,7 @@ func (p *InVMPipeline) Execute(ctx context.Context, prop *proposal.Proposal, spe
 
 	// Step 2: Analyze code (if analyzer is available)
 	if p.analyzer != nil {
-		analysis, err := p.analyzer.Analyze(ctx, workspaceDir, spec.Language)
+		analysis, err := p.analyzer.Analyze(ctx, skillDir, spec.Language)
 		if err != nil {
 			p.logger.Warn("analysis failed, continuing anyway", zap.Error(err))
 		} else {

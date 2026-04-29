@@ -197,18 +197,9 @@ func (ba *BuilderAgent) HandleBuildRequest(ctx context.Context, req *BuildReques
 		zap.String("title", req.Title),
 	)
 
-	// Load the proposal
-	prop, err := ba.store.Get(req.ProposalID)
-	if err != nil {
-		return &BuildResponse{
-			ProposalID: req.ProposalID,
-			State:      PipelineStateFailed,
-			Error:      fmt.Sprintf("failed to load proposal: %v", err),
-		}, nil
-	}
-
 	// Extract skill spec
 	var spec *SkillSpec
+	var err error
 	if len(req.Spec) > 0 {
 		var s SkillSpec
 		if err := json.Unmarshal(req.Spec, &s); err != nil {
@@ -219,7 +210,34 @@ func (ba *BuilderAgent) HandleBuildRequest(ctx context.Context, req *BuildReques
 			}, nil
 		}
 		spec = &s
-	} else {
+	}
+
+	var prop *proposal.Proposal
+	if ba.store != nil {
+		prop, err = ba.store.Get(req.ProposalID)
+		if err != nil {
+			ba.logger.Warn("proposal not available in builder VM store; using request payload",
+				zap.String("proposal_id", req.ProposalID),
+				zap.Error(err),
+			)
+		}
+	}
+
+	if prop == nil {
+		prop = &proposal.Proposal{
+			ID:          req.ProposalID,
+			Title:       req.Title,
+			Description: req.Description,
+			Status:      proposal.StatusImplementing,
+			Spec:        req.Spec,
+			Round:       req.Round,
+		}
+		if spec != nil {
+			prop.TargetSkill = spec.Name
+		}
+	}
+
+	if spec == nil {
 		spec, err = extractSkillSpecFromProposal(prop)
 		if err != nil {
 			return &BuildResponse{

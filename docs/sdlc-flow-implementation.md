@@ -172,18 +172,19 @@ Standalone binary compiled into builder rootfs:
 - Kernel audit logging
 - Proposal store access (via shared volume)
 
-#### 4. VM Launcher (`cmd/aegisclaw/builder_vm.go`)
+#### 4. Builder Dispatch (`cmd/aegisclaw/builder_daemon.go`)
 
 Called from daemon startup:
 
 ```go
-func launchBuilderVM(ctx context.Context, env *runtimeEnv) error
+func startBuilderDispatchDaemon(ctx context.Context, env *runtimeEnv)
 ```
 
-- Creates RuntimeConfig (like Court reviewers)
-- Initializes LLM proxy
-- Launches builder microVM
-- VM runs autonomously until daemon stops
+- Daemon lists proposals in `implementing`
+- For each proposal, launches a short-lived builder microVM
+- Sends `builder.execute` request over vsock with proposal/spec payload
+- Receives generated files from the microVM and commits them on the host
+- Creates a PR record after the microVM build completes
 
 ## Configuration Required
 

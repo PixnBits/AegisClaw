@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/composition"
@@ -145,13 +146,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	courtEngine.ResumeStalled(cmd.Context())
 	reconcileApprovedProposals(env)
 
-	// Launch builder microVM to monitor for approved proposals and trigger code generation.
-	// The builder runs in an isolated microVM (like Court reviewers) for security.
-	// This connects Court approval (Phase 2) to Implementation (Phase 3) in the SDLC flow.
-	if err := launchBuilderVM(cmd.Context(), env); err != nil {
-		env.Logger.Error("failed to launch builder VM", zap.Error(err))
-		// Don't fail daemon startup - builder is optional if config is incomplete
-	}
+	// Dispatch implementing proposals into short-lived builder microVMs.
+	// The daemon only orchestrates proposal state and host git/PR integration.
+	startBuilderDispatchDaemon(cmd.Context(), env)
 
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
@@ -374,7 +371,10 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 			}
 		}
 
-		session, err := engine.Review(ctx, req.ProposalID)
+		reviewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		session, err := engine.Review(reviewCtx, req.ProposalID)
 		if err != nil {
 			env.Logger.Warn("court review failed",
 				zap.String("proposal_id", req.ProposalID),
