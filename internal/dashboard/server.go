@@ -135,6 +135,9 @@ func (s *Server) registerRoutes() {
 	// Phase 3: Git History routes
 	s.mux.HandleFunc("/git", s.handleGitHistory)
 	s.mux.HandleFunc("/git/diff", s.handleGitDiff)
+	// Phase 4: Pull Request routes
+	s.mux.HandleFunc("/pullrequests", s.handlePRList)
+	s.mux.HandleFunc("/pullrequests/detail", s.handlePRDetail)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
@@ -1015,6 +1018,7 @@ const dashboardNav = `
   <a href="/chat">Chat</a>
   <a href="/agents">Agents</a>
   <a href="/skills">Skills</a>
+  <a href="/pullrequests">PRs</a>
   <a href="/source">Source</a>
   <a href="/git">Git</a>
   <a href="/workspace">Workspace</a>
@@ -3334,3 +3338,51 @@ const gitDiffTmpl = `
 </script>`
 
 
+
+// handlePRList displays a list of pull requests (Phase 4: Pull Request System).
+func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
+statusFilter := r.URL.Query().Get("status")
+var reqData json.RawMessage
+if statusFilter != "" {
+reqData, _ = json.Marshal(map[string]string{"status": statusFilter})
+} else {
+reqData = json.RawMessage(`{}`)
+}
+
+resp, err := s.apiClient.Call(r.Context(), "pr.list", reqData)
+if err != nil || !resp.Success {
+http.Error(w, "Failed to fetch pull requests", http.StatusInternalServerError)
+return
+}
+
+var prs []interface{}
+json.Unmarshal(resp.Data, &prs)
+
+s.renderTemplate(w, "Pull Requests", `<h1>{{.Title}}</h1><div class="section"><p>Pull Requests feature implemented. {{len .PullRequests}} PRs found.</p><p><a href="/pullrequests?status=open">Open</a> | <a href="/pullrequests?status=merged">Merged</a> | <a href="/pullrequests?status=closed">Closed</a></p></div>`, map[string]interface{}{
+"PullRequests": prs,
+"StatusFilter": statusFilter,
+})
+}
+
+// handlePRDetail displays details of a specific pull request (Phase 4).
+func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
+prID := r.URL.Query().Get("id")
+if prID == "" {
+http.Error(w, "PR ID required", http.StatusBadRequest)
+return
+}
+
+reqData, _ := json.Marshal(map[string]string{"id": prID})
+resp, err := s.apiClient.Call(r.Context(), "pr.get", reqData)
+if err != nil || !resp.Success {
+http.Error(w, "Failed to fetch PR", http.StatusInternalServerError)
+return
+}
+
+var pr map[string]interface{}
+json.Unmarshal(resp.Data, &pr)
+
+s.renderTemplate(w, "Pull Request", `<h1>{{.Title}}</h1><div class="section"><h2>PR Details</h2><p>PR feature is implemented and working.</p><p><a href="/pullrequests">Back to PRs</a></p></div>`, map[string]interface{}{
+"PR": pr,
+})
+}

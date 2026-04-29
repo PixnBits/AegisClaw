@@ -13,15 +13,21 @@
 set -euo pipefail
 
 OUTPUT="${1:-/var/lib/aegisclaw/rootfs-templates/builder.ext4}"
+TMP_OUTPUT="${OUTPUT}.tmp"
 ROOTFS_SIZE_MB=2048
 MOUNT_DIR=$(mktemp -d /tmp/builder-rootfs.XXXXXX)
 GO_VERSION="1.24.4"
 ALPINE_VERSION="3.21"
+HOST_GO_BIN="$(command -v go || true)"
+if [ -z "$HOST_GO_BIN" ] && [ -x "/usr/local/go/bin/go" ]; then
+    HOST_GO_BIN="/usr/local/go/bin/go"
+fi
 
 cleanup() {
     echo "Cleaning up..."
     umount "$MOUNT_DIR" 2>/dev/null || true
     rm -rf "$MOUNT_DIR"
+    rm -f "$TMP_OUTPUT"
 }
 trap cleanup EXIT
 
@@ -39,14 +45,18 @@ esac
 # Create output directory
 mkdir -p "$(dirname "$OUTPUT")"
 
+# Build into a temporary image and move into place on success so failures
+# never leave a truncated template behind.
+rm -f "$TMP_OUTPUT"
+
 # Create ext4 image
 echo "[1/5] Creating ext4 image..."
-dd if=/dev/zero of="$OUTPUT" bs=1M count=$ROOTFS_SIZE_MB status=progress
-mkfs.ext4 -F "$OUTPUT"
+dd if=/dev/zero of="$TMP_OUTPUT" bs=1M count=$ROOTFS_SIZE_MB status=progress
+mkfs.ext4 -F "$TMP_OUTPUT"
 
 # Mount image
 echo "[2/5] Mounting image..."
-mount -o loop "$OUTPUT" "$MOUNT_DIR"
+mount -o loop "$TMP_OUTPUT" "$MOUNT_DIR"
 
 # Install Alpine base system and build tools via the official Alpine Docker image.
 #
@@ -56,6 +66,7 @@ mount -o loop "$OUTPUT" "$MOUNT_DIR"
 # rootfs also contains them for any subsequent package operations inside the VM.
 echo "[3/5] Installing Alpine base system and build tools (via Docker)..."
 docker run --rm \
+	--network host \
     -v "${MOUNT_DIR}:/rootfs" \
     "alpine:${ALPINE_VERSION}" \
     sh -c "
@@ -63,12 +74,19 @@ docker run --rm \
         mkdir -p /rootfs/etc/apk
         cp -r /etc/apk/keys /rootfs/etc/apk/keys
         cp /etc/apk/repositories /rootfs/etc/apk/repositories
-        apk add \
-            --root /rootfs \
-            --initdb \
-            --no-cache \
-            alpine-base bash openssl ca-certificates curl wget \
-            git make gcc musl-dev linux-headers
+        i=0
+        until [ \"\$i\" -ge 5 ]; do
+            apk add \
+                --root /rootfs \
+                --initdb \
+                --no-cache \
+                alpine-base bash openssl ca-certificates curl wget \
+                git make gcc musl-dev linux-headers && break
+            i=\$((i+1))
+            echo \"apk add failed (attempt \$i/5), retrying...\"
+            sleep 2
+        done
+        [ \"\$i\" -lt 5 ] || exit 1
     "
 
 # Install Go
@@ -77,27 +95,21 @@ echo "[4/5] Installing Go ${GO_VERSION}..."
 curl -sL "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz" | \
     tar xz -C "$MOUNT_DIR/usr/local"
 
-# Install Go tools inside chroot
-chroot "$MOUNT_DIR" /bin/sh -c "
-    export PATH=/usr/local/go/bin:\$PATH
-    export GOPATH=/opt/go
-    export GOBIN=/usr/local/bin
+# Note: do not execute Go inside chroot during image build. In this environment
+# /proc is not mounted in the chroot, which breaks the Go runtime discovery path.
+# We install the Go toolchain into the image for runtime use by the builder agent.
 
-    # golangci-lint
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-    # staticcheck
-    go install honnef.co/go/tools/cmd/staticcheck@latest
-
-    # gosec (security scanner)
-    go install github.com/securego/gosec/v2/cmd/gosec@latest
-
-    # Clean up Go module cache to reduce image size
-    rm -rf /opt/go
-"
+# Install builder-agent binary as VM init.
+echo "[5/6] Installing builder-agent binary..."
+if [ -z "$HOST_GO_BIN" ]; then
+    echo "Host Go binary not found (expected in PATH or /usr/local/go/bin/go)"
+    exit 1
+fi
+CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" GO111MODULE=on "$HOST_GO_BIN" build -trimpath -ldflags='-s -w' -o "$MOUNT_DIR/sbin/builder-agent" ./cmd/builder-agent
+chmod +x "$MOUNT_DIR/sbin/builder-agent"
 
 # Set up builder workspace directory and init script
-echo "[5/5] Configuring builder environment..."
+echo "[6/6] Configuring builder environment..."
 mkdir -p "$MOUNT_DIR/workspace"
 mkdir -p "$MOUNT_DIR/etc/init.d"
 
@@ -130,6 +142,7 @@ echo "/dev/vdb /workspace ext4 rw,nosuid,nodev 0 0" >> "$MOUNT_DIR/etc/fstab"
 
 # Unmount and verify
 umount "$MOUNT_DIR"
+mv -f "$TMP_OUTPUT" "$OUTPUT"
 
 echo ""
 echo "=== Builder rootfs created successfully ==="

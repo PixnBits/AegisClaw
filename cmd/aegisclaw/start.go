@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/composition"
@@ -143,6 +144,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Resume any proposals that were stuck in submitted/in_review when the
 	// daemon last stopped. Reviews run in background goroutines.
 	courtEngine.ResumeStalled(cmd.Context())
+	reconcileApprovedProposals(env)
+
+	// Dispatch implementing proposals into short-lived builder microVMs.
+	// The daemon only orchestrates proposal state and host git/PR integration.
+	startBuilderDispatchDaemon(cmd.Context(), env)
+
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
@@ -200,6 +207,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("workspace.read", makeWorkspaceReadHandler(env))
 	apiSrv.Handle("workspace.write", makeWorkspaceWriteHandler(env))
 	apiSrv.Handle("workspace.list", makeWorkspaceListHandler(env))
+
+	// Pull request handlers (Phase 4: Pull Request System)
+	apiSrv.Handle("pr.list", makePRListHandler(env))
+	apiSrv.Handle("pr.get", makePRGetHandler(env))
+	apiSrv.Handle("pr.approve", makePRApproveHandler(env))
+	apiSrv.Handle("pr.close", makePRCloseHandler(env))
+	apiSrv.Handle("pr.merge", makePRMergeHandler(env))
+	// Dashboard PR handlers for enhanced UI
+	apiSrv.Handle("dashboard.pr.list", makeDashboardPRListHandler(env))
+	apiSrv.Handle("dashboard.pr.detail", makeDashboardPRDetailHandler(env))
+	apiSrv.Handle("dashboard.pr.stats", makeDashboardPRStatsHandler(env))
+
 	// Phase 1 (OpenClaw integration): Session routing handlers.
 	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
 	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
@@ -275,6 +294,57 @@ No skills, no Court, no main agent sandbox.
 	return nil
 }
 
+// reconcileApprovedProposals upgrades legacy approved proposals to implementing.
+// This is a startup recovery path for proposals approved before auto-transition
+// logic was added in chat/API review handlers.
+func reconcileApprovedProposals(env *runtimeEnv) {
+	summaries, err := env.ProposalStore.List()
+	if err != nil {
+		env.Logger.Warn("failed to list proposals for approved->implementing reconciliation", zap.Error(err))
+		return
+	}
+
+	for _, summary := range summaries {
+		if summary.Status != proposal.StatusApproved {
+			continue
+		}
+
+		p, getErr := env.ProposalStore.Get(summary.ID)
+		if getErr != nil {
+			env.Logger.Warn("failed to load approved proposal during reconciliation",
+				zap.String("proposal_id", summary.ID),
+				zap.Error(getErr),
+			)
+			continue
+		}
+
+		if p.Status != proposal.StatusApproved {
+			continue
+		}
+
+		if tErr := p.Transition(proposal.StatusImplementing, "startup recovery: approved proposal queued for builder", "daemon"); tErr != nil {
+			env.Logger.Warn("failed to transition approved proposal during reconciliation",
+				zap.String("proposal_id", p.ID),
+				zap.Error(tErr),
+			)
+			continue
+		}
+
+		if uErr := env.ProposalStore.Update(p); uErr != nil {
+			env.Logger.Warn("failed to persist reconciled proposal status",
+				zap.String("proposal_id", p.ID),
+				zap.Error(uErr),
+			)
+			continue
+		}
+
+		env.Logger.Info("reconciled approved proposal to implementing",
+			zap.String("proposal_id", p.ID),
+			zap.String("status", string(p.Status)),
+		)
+	}
+}
+
 // makeCourtReviewHandler returns an API handler that runs the full court review
 // inside the daemon process (which has root privileges for sandbox operations).
 // Per D3: If the court approves the proposal, the builder pipeline is
@@ -301,7 +371,10 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 			}
 		}
 
-		session, err := engine.Review(ctx, req.ProposalID)
+		reviewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		session, err := engine.Review(reviewCtx, req.ProposalID)
 		if err != nil {
 			env.Logger.Warn("court review failed",
 				zap.String("proposal_id", req.ProposalID),
@@ -1048,7 +1121,7 @@ func doInjectSecrets(ctx context.Context, env *runtimeEnv, sandboxID, skillName 
 
 // secretsRefreshRequest is the payload for skill.secrets.refresh.
 type secretsRefreshRequest struct {
-Name string `json:"name"` // skill name
+	Name string `json:"name"` // skill name
 }
 
 // makeSecretsRefreshHandler returns a handler that re-injects the vault secrets
@@ -1057,50 +1130,50 @@ Name string `json:"name"` // skill name
 // rotating a secret in the vault the operator calls this endpoint (or the CLI
 // wrapper) to push the new value to the running VM's /run/secrets/<name>.
 func makeSecretsRefreshHandler(env *runtimeEnv) api.Handler {
-return func(ctx context.Context, data json.RawMessage) *api.Response {
-var req secretsRefreshRequest
-if err := json.Unmarshal(data, &req); err != nil {
-return &api.Response{Error: "invalid request: " + err.Error()}
-}
-if req.Name == "" {
-return &api.Response{Error: "skill name is required"}
-}
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		var req secretsRefreshRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		if req.Name == "" {
+			return &api.Response{Error: "skill name is required"}
+		}
 
-entry, ok := env.Registry.Get(req.Name)
-if !ok || entry.State != sandbox.SkillStateActive {
-return &api.Response{Error: fmt.Sprintf("skill %q is not currently active", req.Name)}
-}
+		entry, ok := env.Registry.Get(req.Name)
+		if !ok || entry.State != sandbox.SkillStateActive {
+			return &api.Response{Error: fmt.Sprintf("skill %q is not currently active", req.Name)}
+		}
 
-// Find the approved proposal to get the secrets refs.
-summaries, pErr := env.ProposalStore.List()
-if pErr != nil {
-return &api.Response{Error: "failed to list proposals: " + pErr.Error()}
-}
-var refs []string
-for _, s := range summaries {
-full, getErr := env.ProposalStore.Get(s.ID)
-if getErr == nil && full.TargetSkill == req.Name && len(full.SecretsRefs) > 0 {
-refs = full.SecretsRefs
-break
-}
-}
-if len(refs) == 0 {
-return &api.Response{Error: fmt.Sprintf("no secrets declared for skill %q", req.Name)}
-}
+		// Find the approved proposal to get the secrets refs.
+		summaries, pErr := env.ProposalStore.List()
+		if pErr != nil {
+			return &api.Response{Error: "failed to list proposals: " + pErr.Error()}
+		}
+		var refs []string
+		for _, s := range summaries {
+			full, getErr := env.ProposalStore.Get(s.ID)
+			if getErr == nil && full.TargetSkill == req.Name && len(full.SecretsRefs) > 0 {
+				refs = full.SecretsRefs
+				break
+			}
+		}
+		if len(refs) == 0 {
+			return &api.Response{Error: fmt.Sprintf("no secrets declared for skill %q", req.Name)}
+		}
 
-injected, err := injectSecretsIntoVM(ctx, env, entry.SandboxID, req.Name, refs)
-if err != nil {
-return &api.Response{Error: "secrets refresh failed: " + err.Error()}
-}
+		injected, err := injectSecretsIntoVM(ctx, env, entry.SandboxID, req.Name, refs)
+		if err != nil {
+			return &api.Response{Error: "secrets refresh failed: " + err.Error()}
+		}
 
-env.Logger.Info("secrets refreshed in running skill VM",
-zap.String("skill", req.Name),
-zap.Int("count", injected),
-)
-respData, _ := json.Marshal(map[string]interface{}{
-"skill":    req.Name,
-"injected": injected,
-})
-return &api.Response{Success: true, Data: respData}
-}
+		env.Logger.Info("secrets refreshed in running skill VM",
+			zap.String("skill", req.Name),
+			zap.Int("count", injected),
+		)
+		respData, _ := json.Marshal(map[string]interface{}{
+			"skill":    req.Name,
+			"injected": injected,
+		})
+		return &api.Response{Success: true, Data: respData}
+	}
 }

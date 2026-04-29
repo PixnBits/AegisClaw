@@ -69,8 +69,13 @@ type Pipeline struct {
 	// for each code-generation round so users can inject project-specific
 	// context without modifying Court-reviewed templates.
 	workspaceSkillContext string
-	mu                    sync.Mutex
-	runs                  map[string]*PipelineResult
+	// onPRCreated is an optional callback invoked after a PR is auto-created.
+	// This allows external systems (e.g., the daemon) to trigger follow-up
+	// actions like Court code review.
+	// Parameters: proposalID, branch, commitHash, pipelineResult
+	onPRCreated func(proposalID, branch, commitHash string, result *PipelineResult)
+	mu          sync.Mutex
+	runs        map[string]*PipelineResult
 }
 
 // NewPipeline creates a Pipeline connecting all subsystems.
@@ -100,15 +105,25 @@ func NewPipeline(
 	}
 
 	return &Pipeline{
-		builderRT: br,
-		codeGen:   cg,
-		gitMgr:    gm,
-		analyzer:  az,
-		kern:      kern,
-		store:     store,
-		logger:    logger,
-		runs:      make(map[string]*PipelineResult),
+		builderRT:             br,
+		codeGen:               cg,
+		gitMgr:                gm,
+		analyzer:              az,
+		kern:                  kern,
+		store:                 store,
+		logger:                logger,
+		runs:                  make(map[string]*PipelineResult),
+		workspaceSkillContext: "",
+		onPRCreated:           nil,
 	}, nil
+}
+
+// SetPRCreatedCallback sets a callback to be invoked after a PR is auto-created.
+// The callback receives: proposalID, branch, commitHash, and the pipeline result.
+func (p *Pipeline) SetPRCreatedCallback(cb func(proposalID, branch, commitHash string, result *PipelineResult)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onPRCreated = cb
 }
 
 // SetSBOMDir configures the directory where SBOM JSON files are written.
@@ -388,6 +403,17 @@ func (p *Pipeline) Execute(ctx context.Context, prop *proposal.Proposal, spec *S
 		zap.Int("files", len(codeResp.Files)),
 		zap.Duration("duration", result.Duration),
 	)
+	
+	// Step 10: Auto-create pull request (Phase 4)
+	// Call the PR creation callback if configured
+	p.mu.Lock()
+	callback := p.onPRCreated
+	p.mu.Unlock()
+	
+	if callback != nil {
+		// Callback will create PR and trigger Court code review
+		callback(result.ProposalID, result.Branch, commitHash, result)
+	}
 
 	return result, nil
 }

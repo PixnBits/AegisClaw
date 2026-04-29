@@ -1451,12 +1451,40 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 
 	// Trigger court review inline if the court engine is available.
 	if env.Court != nil {
-		session, reviewErr := env.Court.Review(ctx, p.ID)
-		if reviewErr == nil {
+		reviewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		session, reviewErr := env.Court.Review(reviewCtx, p.ID)
+		if reviewErr != nil {
+			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRecovery: proposal remains in_review and will be auto-resumed on next daemon start (aegisclaw stop; aegisclaw start).\nUse proposal.status / proposal.reviews with ID %s to track progress.", reviewErr, p.ID)
+		} else {
 			result += fmt.Sprintf("\n\nCourt review completed.\n  State: %s\n  Verdict: %s\n  Risk: %.1f",
 				session.State, session.Verdict, session.RiskScore)
-		} else {
-			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRecovery: proposal remains in_review and will be auto-resumed on next daemon start (aegisclaw stop; aegisclaw start).\nUse proposal.status / proposal.reviews with ID %s to track progress.", reviewErr, p.ID)
+			env.Logger.Info("court review completed (direct)",
+				zap.String("proposal_id", p.ID),
+				zap.String("verdict", session.Verdict),
+				zap.String("state", string(session.State)),
+				zap.Float64("risk_score", session.RiskScore),
+			)
+
+			// Auto-transition approved proposals to trigger builder (aligns direct path with API handler)
+			if session.Verdict == "approved" {
+				updatedP, pErr := env.ProposalStore.Get(p.ID)
+				if pErr == nil && updatedP.Status == proposal.StatusApproved {
+					if tErr := updatedP.Transition(proposal.StatusImplementing, "auto-triggered by court approval (direct)", "daemon"); tErr == nil {
+						if uErr := env.ProposalStore.Update(updatedP); uErr == nil {
+							env.Logger.Info("proposal auto-transitioned to implementing (direct)",
+								zap.String("proposal_id", p.ID),
+								zap.String("status", string(updatedP.Status)),
+							)
+						} else {
+							env.Logger.Warn("failed to update proposal after transition (direct)", zap.Error(uErr))
+						}
+					} else {
+						env.Logger.Warn("failed to transition proposal to implementing (direct)", zap.Error(tErr))
+					}
+				}
+			}
 		}
 	}
 
