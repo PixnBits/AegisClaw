@@ -4,11 +4,16 @@
 The `exec` package defines the agent task execution abstraction and provides multiple implementations for different environments. At its core is the `TaskExecutor` interface and the `ReActRunner` FSM that implements the Reasoning + Acting loop. Production execution routes through a Firecracker microVM via vsock; test execution uses an in-process Ollama client with optional cassette replay.
 
 ## Files
-- `executor.go`: `TaskExecutor` interface definition and shared `AgentTurnRequest`/`AgentTurnResponse` types
-- `react_fsm.go`: ReAct FSM — Thinking/Acting/Observing states, `Step`/`Run` methods, and option functions
-- `firecracker_executor.go`: Production executor; delegates to guest VM via `VMRuntime.SendToVM`
-- `inprocess_executor.go`: Test-only in-process executor (build tag `inprocesstest`); requires safety env var
-- `ollama_recorder.go`: Test-only VCR cassette record/replay for Ollama (build tag `inprocesstest`)
+| File | Description |
+|------|-------------|
+| `executor.go` | `TaskExecutor` interface and shared `AgentTurnRequest`/`AgentTurnResponse` wire types |
+| `react_fsm.go` | ReAct FSM — Thinking/Acting/Observing states, `Step`/`Run` methods, option functions |
+| `firecracker_executor.go` | Production executor; delegates to guest VM via `VMRuntime.SendToVM` |
+| `inprocess_executor.go` | Test-only in-process executor (build tag `inprocesstest`); requires safety env var |
+| `ollama_recorder.go` | Test-only VCR cassette record/replay for Ollama (build tag `inprocesstest`) |
+| `executor_test.go` | Unit tests for wire types and `FirecrackerTaskExecutor`; uses `stubVMRuntime` (no KVM required) |
+| `ollama_recorder_test.go` | Tests for cassette record/replay and end-to-end `OllamaRecorder`+`ReActRunner` integration (build tag `inprocesstest`) |
+| `react_fsm_test.go` | Comprehensive FSM tests covering all states, transitions, option functions, and error paths |
 
 ## Key Abstractions
 - `TaskExecutor`: single-method interface decoupling the FSM from all LLM backends
