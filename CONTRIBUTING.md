@@ -16,7 +16,8 @@ protect the Firecracker isolation model.
    - [Fuzz / Property Tests](#fuzz--property-tests)
    - [In-Process Integration Tests ⚠️](#in-process-integration-tests)
 3. [Security Model & Build Tag Rules](#security-model--build-tag-rules)
-4. [Submitting Changes](#submitting-changes)
+4. [Maintaining Code Summaries](#maintaining-code-summaries)
+5. [Submitting Changes](#submitting-changes)
 
 ---
 
@@ -261,6 +262,72 @@ To preserve this guarantee:
 that is also compiled without the tag. If you need a test helper that touches
 production code, use interfaces (the `TaskExecutor` interface exists for this
 purpose).
+
+---
+
+## Maintaining Code Summaries
+
+Every source file in the repository has a companion `<filename>.summary.md` file
+in the same directory, and every directory has a `summary.md` package overview.
+These files are read by Copilot agents and AI tools to provide fast context
+without loading full source files.
+
+### What to update
+
+| Change | Action required |
+|--------|----------------|
+| Add a new source file | Create `<newfile>.summary.md` in the same directory |
+| Delete a source file | Delete its `.summary.md` sibling |
+| Rename a source file | Rename the `.summary.md` sibling to match |
+| Significantly change a file's purpose or public API | Update `<filename>.summary.md` and the package `summary.md` |
+| Add a new package directory | Create per-file summaries + `summary.md` for the directory, update the parent `summary.md` |
+| Remove a package directory | Remove all its `*.summary.md` files, update the parent `summary.md` |
+
+### Summary format
+
+**Per-file summary** (`<filename>.summary.md`):
+```markdown
+# <filename>
+
+Brief one-sentence purpose.
+
+## Purpose
+...
+
+## Key types / functions
+...
+
+## Role in the system
+...
+
+## Notable dependencies
+...
+```
+
+**Directory summary** (`summary.md`):
+```markdown
+# Package <name>
+
+One-paragraph overview of what this package does and how it fits
+into the broader AegisClaw architecture.
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `foo.go` | ... |
+| `bar.go` | ... |
+```
+
+### Keeping summaries accurate
+
+- Summaries should be 100–300 words for per-file files.
+- Directory `summary.md` files should include a file table and a brief
+  architectural note.
+- When a PR changes public types, function signatures, or the overall purpose
+  of a file, the summary **must** be updated in the same PR.
+- Do not include implementation details that are likely to change frequently;
+  focus on stable, conceptual descriptions.
 
 ---
 
