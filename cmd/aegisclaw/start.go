@@ -68,7 +68,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// microVM launched; all subsequent VMs communicate exclusively through it.
 	// This is a hard requirement — the daemon will not start without a valid
 	// AegisHub rootfs. If the image is missing, rebuild it with:
-	//   sudo ./scripts/build-rootfs.sh --target=aegishub
+	//   sudo ./scripts/build-microvms-docker.sh --target=aegishub
 	// or set AEGISCLAW_HUB_ROOTFS to the path of a pre-built image.
 	//
 	// Security guarantee: AegisHub is launched before any other VM and before
@@ -78,7 +78,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf(
 			"AegisHub microVM required but failed to start — "+
-				"rebuild the image with: sudo ./scripts/build-rootfs.sh --target=aegishub\n"+
+				"rebuild the image with: sudo ./scripts/build-microvms-docker.sh --target=aegishub\n"+
 				"(set %s to override the rootfs path)\n"+
 				"underlying error: %w",
 			aegisHubRootfsEnvKey, err,
@@ -800,7 +800,7 @@ func makeKernelShutdownHandler(cancelFunc context.CancelFunc) api.Handler {
 // This is a required step. The daemon will not start without a valid AegisHub
 // rootfs. Build it with:
 //
-//	sudo ./scripts/build-rootfs.sh --target=aegishub
+//	sudo ./scripts/build-microvms-docker.sh --target=aegishub
 //
 // Security invariants:
 //   - AegisHub is launched BEFORE any other microVM. No skill, agent, or

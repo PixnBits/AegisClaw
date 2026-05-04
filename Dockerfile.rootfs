@@ -1,0 +1,36 @@
+# Stage 1: Build everything in one go
+FROM alpine:3.21 AS builder
+RUN apk add --no-cache bash curl wget ca-certificates git make gcc musl-dev linux-headers openssl python3 nodejs
+RUN curl -sL "https://go.dev/dl/go1.24.0.linux-amd64.tar.gz" | tar -xz -C /usr/local
+ENV PATH=$PATH:/usr/local/go/bin
+RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && \
+    go install honnef.co/go/tools/cmd/staticcheck@latest && \
+    go install github.com/securego/gosec/v2/cmd/gosec@latest && \
+    mkdir -p /etc/profile.d /etc/init.d && \
+    echo 'export PATH=/usr/local/go/bin:/usr/local/bin:$PATH\nexport GOPATH=/workspace/go\nexport GOCACHE=/workspace/.cache/go-build\nexport GOMODCACHE=/workspace/go/pkg/mod' > /etc/profile.d/go.sh && \
+    echo '#!/bin/sh\ncase "$1" in\n    start)\n        echo "Builder agent starting..."\n        ;;\n    stop)\n        echo "Builder agent stopping..."\n        ;;\nesac' > /etc/init.d/builder-agent && \
+    chmod +x /etc/init.d/builder-agent
+
+# Stage 2: Prepare templates
+FROM alpine:3.21 AS final
+RUN mkdir -p /templates/guest /templates/aegishub /templates/portal /templates/builder /workspace
+
+
+# Copy everything from builder to the heavy templates
+COPY --from=builder /usr /templates/guest/usr
+COPY --from=builder /etc /templates/guest/etc
+COPY --from=builder /lib /templates/guest/lib
+
+COPY --from=builder /usr /templates/builder/usr
+COPY --from=builder /etc /templates/builder/etc
+COPY --from=builder /lib /templates/builder/lib
+
+# For minimal ones, we'll just use the base alpine contents
+# (Note: we are copying from the 'builder' stage which has alpine 3.21 installed)
+COPY --from=builder /etc/apk /templates/aegishub/etc/apk
+COPY --from=builder /bin/busybox /templates/aegishub/usr/bin/busybox
+COPY --from=builder /lib /templates/aegishub/lib
+
+COPY --from=builder /etc/apk /templates/portal/etc/apk
+COPY --from=builder /bin/busybox /templates/portal/usr/bin/busybox
+COPY --from=builder /lib /templates/portal/lib
