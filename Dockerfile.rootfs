@@ -10,7 +10,7 @@ RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && \
     go install github.com/securego/gosec/v2/cmd/gosec@latest && \
     mkdir -p /etc/profile.d /etc/init.d && \
     printf 'export PATH=/usr/local/go/bin:/usr/local/bin:$PATH\nexport GOPATH=/workspace/go\nexport GOCACHE=/workspace/.cache/go-build\nexport GOMODCACHE=/workspace/go/pkg/mod\n' > /etc/profile.d/go.sh && \
-    printf '#!/bin/sh\ncase "$1" in\n    start) echo "Builder agent starting..." ;;\n    stop)  echo "Builder agent stopping."  ;;\nesac\n' > /etc/init.d/builder-agent && \
+    printf '#!/bin/sh\ncase "$1" in\n    start) echo "Builder agent starting..." ;;\n    stop)  echo "Builder agent stopping..." ;;\nesac\n' > /etc/init.d/builder-agent && \
     chmod +x /etc/init.d/builder-agent
 
 # Stage 2: Minimal runtime base for guest and portal VMs.
