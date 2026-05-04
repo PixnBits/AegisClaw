@@ -3,8 +3,7 @@
 # Targets:
 #   build                      — build everything (binaries + rootfs images)
 #   build-binaries             — build the aegisclaw and guest-agent binaries only
-#   build-rootfs               — build all microVM rootfs images
-#   build-microvms-docker      — build all microVM rootfs images using Docker templates (fast/cacheable)
+#   build-rootfs               — build all microVM rootfs images using Docker templates (fast/cacheable)
 #   test                       — run all unit and integration tests (no Firecracker required)
 #   test-short                 — run only fast unit tests (skip heavy journey tests)
 #   test-inprocess             — run in-process integration tests (test-only, no KVM needed)
@@ -20,7 +19,7 @@ BINARY_AEGISCLAW  := aegisclaw
 BINARY_GUEST_AGENT := guest-agent
 GOFLAGS           :=
 
-.PHONY: build build-binaries build-rootfs build-microvms-docker test test-short test-inprocess \
+.PHONY: build build-binaries build-rootfs test test-short test-inprocess \
         record-cassettes \
         record-cassette-time record-cassette-hello-world \
         record-cassette-solar record-cassette-tutorial \
@@ -37,20 +36,20 @@ build-binaries:
 
 # ── build-rootfs ─────────────────────────────────────────────────────────────
 #
-# Build microVM rootfs images for Firecracker sandboxes.
+# Build microVM rootfs images for Firecracker sandboxes using Docker templates.
+# Docker is used to produce cacheable, reproducible Alpine base layers; the
+# freshly compiled Go binaries are injected afterwards on the host.
 #
 # Prerequisites:
 #   - root privileges (sudo)
+#   - docker
 #   - e2fsprogs (mkfs.ext4, e2fsck, resize2fs)
-#   - For builder rootfs: docker
 #
 # The images are installed to /var/lib/aegisclaw/rootfs-templates/
+# Use --target=<name> to build a single image (guest, aegishub, portal, builder).
 #
 ## build-rootfs: build all microVM rootfs images.
-build-rootfs: build-microvms-docker
-
-## build-microvms-docker: build all microVM rootfs images using Docker templates (fast/cacheable).
-build-microvms-docker:
+build-rootfs:
 	sudo ./scripts/build-microvms-docker.sh
 
 # ── test ──────────────────────────────────────────────────────────────────────

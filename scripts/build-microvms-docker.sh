@@ -104,6 +104,10 @@ for target_info in "${targets[@]}"; do
     echo "Template: ${TEMP_PATH}"
 
     # 1. Create ext4 image
+    if ! [[ "${SIZE_MB}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: Invalid SIZE_MB '${SIZE_MB}' for target ${TARGET}"
+        exit 1
+    fi
     mkdir -p "$(dirname "${OUTPUT}")"
     truncate -s "${SIZE_MB}M" "${OUTPUT}"
     mkfs.ext4 -F -q -L "${TARGET}" "${OUTPUT}"
@@ -119,7 +123,7 @@ for target_info in "${targets[@]}"; do
     echo ">>> Extracting template from Docker..."
     TEMP_EXTRACT_DIR=$(mktemp -d)
     ACTIVE_TEMP_EXTRACT_DIR="${TEMP_EXTRACT_DIR}"
-    docker cp "${CONTAINER_ID}:${TEMP_PATH}/." "${TEMP_EXTRACT_DIR}/"
+    docker cp "${CONTAINER_ID}:${TEMP_PATH}/." "${TEMP_EXTRACT_DIR}"
 
     # 4. Populate rootfs with template contents
     echo ">>> Populating rootfs..."

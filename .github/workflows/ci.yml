@@ -74,14 +74,8 @@ jobs:
       - name: Install build tools
         run: sudo apt-get install -y e2fsprogs
 
-      - name: Build guest rootfs
-        run: sudo env PATH="$PATH" ./scripts/build-rootfs.sh --target=guest /tmp/guest.ext4
-
-      - name: Build aegishub rootfs
-        run: sudo env PATH="$PATH" ./scripts/build-rootfs.sh --target=aegishub /tmp/aegishub.ext4
-
-      - name: Build builder rootfs
-        run: sudo env PATH="$PATH" ./scripts/build-builder-rootfs.sh /tmp/builder.ext4
+      - name: Build all microVM rootfs images
+        run: sudo ./scripts/build-microvms-docker.sh /tmp/rootfs-templates
 
   live-test:
     name: Live Test
