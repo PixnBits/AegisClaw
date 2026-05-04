@@ -1,36 +1,55 @@
-# Stage 1: Build everything in one go
-FROM alpine:3.21 AS builder
+# Stage 1: Full development toolchain for the builder template.
+# Installs Go (matching go.mod) plus linters, compilers, and language runtimes.
+FROM alpine:3.21 AS go-builder
+ARG TARGETARCH
 RUN apk add --no-cache bash curl wget ca-certificates git make gcc musl-dev linux-headers openssl python3 nodejs
-RUN curl -sL "https://go.dev/dl/go1.24.0.linux-amd64.tar.gz" | tar -xz -C /usr/local
+RUN curl -fsSL "https://go.dev/dl/go1.25.0.linux-${TARGETARCH}.tar.gz" | tar -xz -C /usr/local
 ENV PATH=$PATH:/usr/local/go/bin
 RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && \
     go install honnef.co/go/tools/cmd/staticcheck@latest && \
     go install github.com/securego/gosec/v2/cmd/gosec@latest && \
     mkdir -p /etc/profile.d /etc/init.d && \
-    echo 'export PATH=/usr/local/go/bin:/usr/local/bin:$PATH\nexport GOPATH=/workspace/go\nexport GOCACHE=/workspace/.cache/go-build\nexport GOMODCACHE=/workspace/go/pkg/mod' > /etc/profile.d/go.sh && \
-    echo '#!/bin/sh\ncase "$1" in\n    start)\n        echo "Builder agent starting..."\n        ;;\n    stop)\n        echo "Builder agent stopping..."\n        ;;\nesac' > /etc/init.d/builder-agent && \
+    printf 'export PATH=/usr/local/go/bin:/usr/local/bin:$PATH\nexport GOPATH=/workspace/go\nexport GOCACHE=/workspace/.cache/go-build\nexport GOMODCACHE=/workspace/go/pkg/mod\n' > /etc/profile.d/go.sh && \
+    printf '#!/bin/sh\ncase "$1" in\n    start) echo "Builder agent starting..." ;;\n    stop)  echo "Builder agent stopping."  ;;\nesac\n' > /etc/init.d/builder-agent && \
     chmod +x /etc/init.d/builder-agent
 
-# Stage 2: Prepare templates
+# Stage 2: Minimal runtime base for guest and portal VMs.
+# Includes language runtimes (bash, python3, nodejs) but no compilers or dev tools.
+FROM alpine:3.21 AS runtime-base
+RUN apk add --no-cache bash ca-certificates python3 nodejs
+
+# Stage 3: Ultra-minimal base for AegisHub (IPC router — no language runtimes needed).
+FROM alpine:3.21 AS minimal-base
+RUN apk add --no-cache ca-certificates
+
+# Stage 4: Assemble per-target template layouts.
 FROM alpine:3.21 AS final
-RUN mkdir -p /templates/guest /templates/aegishub /templates/portal /templates/builder /workspace
+RUN mkdir -p /templates/guest /templates/aegishub /templates/portal /templates/builder
 
+# Guest template: alpine runtime only (bash, python3, nodejs, certs — no dev tools).
+COPY --from=runtime-base /bin    /templates/guest/bin
+COPY --from=runtime-base /sbin   /templates/guest/sbin
+COPY --from=runtime-base /usr    /templates/guest/usr
+COPY --from=runtime-base /etc    /templates/guest/etc
+COPY --from=runtime-base /lib    /templates/guest/lib
 
-# Copy everything from builder to the heavy templates
-COPY --from=builder /usr /templates/guest/usr
-COPY --from=builder /etc /templates/guest/etc
-COPY --from=builder /lib /templates/guest/lib
+# AegisHub template: busybox + certs only (router binary injected by build script).
+COPY --from=minimal-base /bin    /templates/aegishub/bin
+COPY --from=minimal-base /sbin   /templates/aegishub/sbin
+COPY --from=minimal-base /lib    /templates/aegishub/lib
+COPY --from=minimal-base /etc    /templates/aegishub/etc
+COPY --from=minimal-base /usr    /templates/aegishub/usr
 
-COPY --from=builder /usr /templates/builder/usr
-COPY --from=builder /etc /templates/builder/etc
-COPY --from=builder /lib /templates/builder/lib
+# Portal template: busybox + certs only (portal binary injected by build script).
+COPY --from=minimal-base /bin    /templates/portal/bin
+COPY --from=minimal-base /sbin   /templates/portal/sbin
+COPY --from=minimal-base /lib    /templates/portal/lib
+COPY --from=minimal-base /etc    /templates/portal/etc
+COPY --from=minimal-base /usr    /templates/portal/usr
 
-# For minimal ones, we'll just use the base alpine contents
-# (Note: we are copying from the 'builder' stage which has alpine 3.21 installed)
-COPY --from=builder /etc/apk /templates/aegishub/etc/apk
-COPY --from=builder /bin/busybox /templates/aegishub/usr/bin/busybox
-COPY --from=builder /lib /templates/aegishub/lib
-
-COPY --from=builder /etc/apk /templates/portal/etc/apk
-COPY --from=builder /bin/busybox /templates/portal/usr/bin/busybox
-COPY --from=builder /lib /templates/portal/lib
+# Builder template: full dev toolchain + Go (for in-VM builds and analysis).
+COPY --from=go-builder /bin      /templates/builder/bin
+COPY --from=go-builder /sbin     /templates/builder/sbin
+COPY --from=go-builder /usr      /templates/builder/usr
+COPY --from=go-builder /etc      /templates/builder/etc
+COPY --from=go-builder /lib      /templates/builder/lib
