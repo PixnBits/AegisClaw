@@ -3,9 +3,12 @@ set -euo pipefail
 
 # build-microvms-docker.sh — Build microVM rootfs images using Docker templates.
 #
-# Usage: sudo ./scripts/build-microvms-docker.sh [--target=<target>] [output-path-prefix]
+# Usage: sudo ./scripts/build-microvms-docker.sh [--target=<target>] [--mode=<mode>] [output-path-prefix]
 #
 # Targets: guest, aegishub, portal, builder  (default: build all)
+# Modes:
+#   ext4  (default) — Create ext4 disk images for Firecracker microVMs.
+#   image           — Build and tag runnable OCI Docker images (Docker-mode sandbox backend).
 # Requirements: root privileges, docker, e2fsprogs (mkfs.ext4, e2fsck, resize2fs)
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
@@ -14,11 +17,15 @@ IMAGE_NAME="aegisclaw-rootfs-templates"
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 FILTER_TARGET=""
+BUILD_MODE="ext4"
 POSITIONAL_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --target=*)
             FILTER_TARGET="${arg#--target=}"
+            ;;
+        --mode=*)
+            BUILD_MODE="${arg#--mode=}"
             ;;
         *)
             POSITIONAL_ARGS+=("$arg")
@@ -35,6 +42,14 @@ if [[ -n "${FILTER_TARGET}" ]]; then
             ;;
     esac
 fi
+
+case "${BUILD_MODE}" in
+    ext4|image) ;;
+    *)
+        echo "ERROR: Unknown mode '${BUILD_MODE}'. Valid modes: ext4, image"
+        exit 1
+        ;;
+esac
 
 # Default output prefix
 OUTPUT_PREFIX="${POSITIONAL_ARGS[0]:-/var/lib/aegisclaw/rootfs-templates}"
@@ -59,6 +74,73 @@ esac
 # ── Build Docker Image ───────────────────────────────────────────────────────
 echo ">>> Building Docker template image: ${IMAGE_NAME} (platform: linux/${GOARCH})..."
 docker build --platform "linux/${GOARCH}" -t "${IMAGE_NAME}" -f "${DOCKERFILE_ROOTFS}" "${PROJECT_ROOT}"
+
+# ─── Image mode: build runnable OCI images for Docker-mode sandbox backend ──
+if [[ "${BUILD_MODE}" == "image" ]]; then
+    # Fields: name | binary_src_pkg | binary_dest | oci_dockerfile_target | oci_tag
+    declare -a image_targets=(
+        "guest|./cmd/guest-agent/|/sbin/guest-agent|aegisclaw-guest|aegisclaw/guest:latest"
+        "aegishub|./cmd/aegishub/|/sbin/aegishub|aegisclaw-aegishub|aegisclaw/aegishub:latest"
+        "portal|./cmd/aegisportal/|/sbin/aegisportal|aegisclaw-portal|aegisclaw/portal:latest"
+        "builder|./cmd/builder/|/sbin/builder-agent|aegisclaw-builder|aegisclaw/builder:latest"
+    )
+
+    for target_info in "${image_targets[@]}"; do
+        IFS='|' read -r TARGET BIN_SRC BIN_DEST DOCKERFILE_TARGET OCI_TAG <<< "${target_info}"
+
+        if [[ -n "${FILTER_TARGET}" && "${TARGET}" != "${FILTER_TARGET}" ]]; then
+            continue
+        fi
+
+        echo ""
+        echo "=== Building OCI image: ${OCI_TAG} (target: ${TARGET}) ==="
+
+        # Build a temporary image with just the binary compiled in.
+        TMP_BINARY="$(mktemp -d)/$(basename "${BIN_DEST}")"
+
+        if [ -d "${PROJECT_ROOT}/${BIN_SRC}" ]; then
+            echo ">>> Compiling ${BIN_SRC}..."
+            (
+                cd "${PROJECT_ROOT}"
+                export PATH=$PATH:/usr/local/go/bin
+                CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH}" \
+                    go build -ldflags="-s -w" -o "${TMP_BINARY}" "${BIN_SRC}"
+            )
+            chmod 755 "${TMP_BINARY}"
+        else
+            echo "WARNING: Binary source ${BIN_SRC} not found; OCI image will lack the binary."
+            TMP_BINARY=""
+        fi
+
+        # Build the OCI image from the Dockerfile stage, injecting the binary.
+        TMPDIR_CTX="$(mktemp -d)"
+        cp "${DOCKERFILE_ROOTFS}" "${TMPDIR_CTX}/Dockerfile"
+        if [[ -n "${TMP_BINARY}" ]]; then
+            cp "${TMP_BINARY}" "${TMPDIR_CTX}/$(basename "${BIN_DEST}")"
+            # Append a COPY that injects the compiled binary.
+            printf '\nFROM %s AS final-with-bin\nCOPY %s %s\n' \
+                "${DOCKERFILE_TARGET}" "$(basename "${BIN_DEST}")" "${BIN_DEST}" \
+                >> "${TMPDIR_CTX}/Dockerfile"
+            BUILD_TARGET="final-with-bin"
+        else
+            BUILD_TARGET="${DOCKERFILE_TARGET}"
+        fi
+
+        docker build \
+            --platform "linux/${GOARCH}" \
+            --target "${BUILD_TARGET}" \
+            -t "${OCI_TAG}" \
+            -f "${TMPDIR_CTX}/Dockerfile" \
+            "${TMPDIR_CTX}"
+
+        rm -rf "${TMPDIR_CTX}" "$(dirname "${TMP_BINARY}")" 2>/dev/null || true
+        echo "=== OCI image ${OCI_TAG} built successfully ==="
+    done
+
+    echo ""
+    echo "=== All requested OCI images built ==="
+    exit 0
+fi
 
 # Create a temporary container to extract templates from
 CONTAINER_ID=$(docker create "${IMAGE_NAME}")

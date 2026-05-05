@@ -48,13 +48,34 @@ func runStart(cmd *cobra.Command, args []string) error {
 			zap.String("model", startModelFlag))
 	}
 
-	// Provision Firecracker assets (vmlinux kernel, rootfs template) on first run.
-	fmt.Println("Checking Firecracker assets...")
-	if err := provision.EnsureAssets(cmd.Context(), provision.AssetConfig{
-		KernelPath: env.Config.Sandbox.KernelImage,
-		RootfsPath: env.Config.Rootfs.Template,
-	}, env.Logger); err != nil {
-		return fmt.Errorf("asset provisioning failed: %w", err)
+	// Provision sandbox assets based on the configured isolation mode.
+	// Firecracker mode: download vmlinux kernel and build Alpine rootfs.
+	// Docker mode: verify/pull required OCI images.
+	isolationMode := env.Config.Sandbox.IsolationMode
+	if isolationMode == "" || isolationMode == string(sandbox.IsolationFirecracker) {
+		fmt.Println("Checking Firecracker assets...")
+		if err := provision.EnsureAssets(cmd.Context(), provision.AssetConfig{
+			KernelPath: env.Config.Sandbox.KernelImage,
+			RootfsPath: env.Config.Rootfs.Template,
+		}, env.Logger); err != nil {
+			return fmt.Errorf("asset provisioning failed: %w", err)
+		}
+	} else if isolationMode == string(sandbox.IsolationDocker) {
+		fmt.Println("Checking Docker assets...")
+		var images []string
+		if img := env.Config.Docker.GuestImage; img != "" {
+			images = append(images, img)
+		}
+		if len(images) > 0 {
+			if err := provision.EnsureDockerAssets(cmd.Context(), provision.DockerAssetConfig{
+				DockerBin: env.Config.Docker.Bin,
+				Images:    images,
+			}, env.Logger); err != nil {
+				// Non-fatal: Docker images may be built locally.
+				env.Logger.Warn("docker asset check failed; continuing without pre-pulled images",
+					zap.Error(err))
+			}
+		}
 	}
 
 	// Log kernel start action

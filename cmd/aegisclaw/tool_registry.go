@@ -431,7 +431,10 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 			if vmID == "" {
 				return "", fmt.Errorf("agent VM is not running; start a chat session first")
 			}
-			meta, err := env.Runtime.CreateSnapshot(ctx, vmID, params.Label, env.Config.Snapshot.Dir)
+			if env.Snapshotter == nil {
+				return "", fmt.Errorf("snapshot.create is not supported in the current configuration")
+			}
+			meta, err := env.Snapshotter.CreateSnapshot(ctx, vmID, params.Label, env.Config.Snapshot.Dir)
 			if err != nil {
 				return "", fmt.Errorf("create snapshot: %w", err)
 			}
@@ -495,7 +498,10 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 			newSpec.ID = generateVMID("agent")
 			newSpec.Name = "aegisclaw-agent"
 
-			newVMID, err := env.Runtime.RestoreSnapshot(ctx, meta, newSpec)
+			if env.Snapshotter == nil {
+				return "", fmt.Errorf("snapshot.restore is not supported in the current configuration")
+			}
+			newVMID, err := env.Snapshotter.RestoreSnapshot(ctx, meta, newSpec)
 			if err != nil {
 				return "", fmt.Errorf("restore snapshot: %w", err)
 			}

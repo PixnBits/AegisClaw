@@ -82,14 +82,7 @@ func (p *EgressProxy) StartForVM(vmID, vsockPath string, allowedHosts []string) 
 
 	p.mu.Lock()
 	p.listeners[vmID] = l
-	// Normalize allowlist: lowercase, trim spaces.
-	norm := make([]string, 0, len(allowedHosts))
-	for _, h := range allowedHosts {
-		h = strings.ToLower(strings.TrimSpace(h))
-		if h != "" {
-			norm = append(norm, h)
-		}
-	}
+	norm := normalizeAllowedHosts(allowedHosts)
 	p.policies[vmID] = norm
 	p.mu.Unlock()
 
@@ -101,6 +94,51 @@ func (p *EgressProxy) StartForVM(vmID, vsockPath string, allowedHosts []string) 
 		zap.Strings("allowed_hosts", norm),
 	)
 	return nil
+}
+
+// StartForContainerTCP starts the egress proxy for a Docker container sandbox
+// by listening on a TCP address (e.g. "172.17.0.1:1026") on the aegis-egress
+// bridge network.  The container routes outbound TLS traffic to this address
+// via the bridge gateway.
+//
+// The SNI-validation and transparent-splice logic is identical to StartForVM;
+// only the transport changes from vsock UDS to TCP.
+func (p *EgressProxy) StartForContainerTCP(sandboxID, listenAddr string, allowedHosts []string) error {
+	l, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("egress proxy: tcp listen for container %s at %s: %w", sandboxID, listenAddr, err)
+	}
+
+	p.mu.Lock()
+	// If a listener already exists for this sandbox, close it first.
+	if old, ok := p.listeners[sandboxID]; ok {
+		old.Close()
+	}
+	p.listeners[sandboxID] = l
+	norm := normalizeAllowedHosts(allowedHosts)
+	p.policies[sandboxID] = norm
+	p.mu.Unlock()
+
+	go p.serveVM(sandboxID, l)
+
+	p.logger.Info("egress proxy started for container (tcp)",
+		zap.String("sandbox_id", sandboxID),
+		zap.String("listen_addr", listenAddr),
+		zap.Strings("allowed_hosts", norm),
+	)
+	return nil
+}
+
+// normalizeAllowedHosts lowercases and trims each entry, dropping blanks.
+func normalizeAllowedHosts(hosts []string) []string {
+	norm := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h != "" {
+			norm = append(norm, h)
+		}
+	}
+	return norm
 }
 
 // StopForVM closes the proxy listener for the specified VM.

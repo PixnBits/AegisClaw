@@ -53,3 +53,33 @@ COPY --from=go-builder /sbin     /templates/builder/sbin
 COPY --from=go-builder /usr      /templates/builder/usr
 COPY --from=go-builder /etc      /templates/builder/etc
 COPY --from=go-builder /lib      /templates/builder/lib
+
+# ─── Docker-mode runnable images ──────────────────────────────────────────────
+#
+# The stages below produce self-contained OCI images that can be run directly
+# with `docker run` when isolation_mode = "docker".  The guest-agent binary is
+# NOT included here because it is injected at build time by the build script.
+# The CMD/ENTRYPOINT stubs below are replaced at build time by the script.
+
+# aegisclaw/guest:latest — minimal runtime container for skill/agent VMs.
+FROM runtime-base AS aegisclaw-guest
+ARG TARGETARCH
+RUN mkdir -p /run/aegis /workspace /tmp/secrets
+# Placeholder CMD replaced by build script when guest-agent is injected.
+CMD ["/sbin/guest-agent", "--transport=unix"]
+
+# aegisclaw/aegishub:latest — ultra-minimal IPC router container.
+FROM minimal-base AS aegisclaw-aegishub
+RUN mkdir -p /run/aegis
+CMD ["/sbin/aegishub"]
+
+# aegisclaw/portal:latest — dashboard portal container.
+FROM minimal-base AS aegisclaw-portal
+RUN mkdir -p /run/aegis
+CMD ["/sbin/aegisportal"]
+
+# aegisclaw/builder:latest — full dev toolchain container for in-daemon skill builds.
+FROM go-builder AS aegisclaw-builder
+RUN mkdir -p /workspace /run/aegis
+WORKDIR /workspace
+CMD ["/sbin/builder-agent"]

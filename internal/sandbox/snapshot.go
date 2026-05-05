@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
@@ -15,24 +16,147 @@ import (
 	"go.uber.org/zap"
 )
 
-// SnapshotMeta holds metadata about a stored VM snapshot.
+// Snapshotter provides snapshot create/restore operations over either the
+// Firecracker or Docker sandbox backend.
+type Snapshotter interface {
+	// CreateSnapshot freezes the running sandbox identified by sandboxID,
+	// writes its state to baseDir/<label>/, and returns the metadata.
+	CreateSnapshot(ctx context.Context, sandboxID, label, baseDir string) (*SnapshotMeta, error)
+
+	// RestoreSnapshot creates and starts a new sandbox restored from meta.
+	// newSpec may override fields from meta.OriginalSpec (e.g. a new ID).
+	// Returns the ID of the newly started sandbox.
+	RestoreSnapshot(ctx context.Context, meta *SnapshotMeta, newSpec SandboxSpec) (string, error)
+}
+
+// SnapshotMeta holds metadata about a stored sandbox snapshot.
 type SnapshotMeta struct {
 	// Label is a human-readable identifier (e.g. "agent-baseline").
 	Label string `json:"label"`
-	// VMID is the ID of the VM that was snapshotted.
+	// VMID is the ID of the sandbox that was snapshotted.
 	VMID string `json:"vm_id"`
-	// VMName is the friendly name of the snapshotted VM.
+	// VMName is the friendly name of the snapshotted sandbox.
 	VMName string `json:"vm_name"`
-	// SnapFile is the path to the Firecracker VM state file.
-	SnapFile string `json:"snap_file"`
-	// MemFile is the path to the memory dump file.
-	MemFile string `json:"mem_file"`
+	// SnapFile is the path to the Firecracker VM state file (Firecracker only).
+	SnapFile string `json:"snap_file,omitempty"`
+	// MemFile is the path to the memory dump file (Firecracker only).
+	MemFile string `json:"mem_file,omitempty"`
 	// CreatedAt is when the snapshot was taken.
 	CreatedAt time.Time `json:"created_at"`
-	// OriginalSpec is the SandboxSpec of the VM at snapshot time.
-	// It is used to reconstruct the Drives, network policy, and resources
-	// when restoring the snapshot into a new VM.
+	// OriginalSpec is the SandboxSpec of the sandbox at snapshot time.
+	// It is used to reconstruct the spec when restoring the snapshot.
 	OriginalSpec SandboxSpec `json:"original_spec"`
+	// Backend identifies the snapshot type: "firecracker" or "docker".
+	Backend string `json:"backend"`
+}
+
+// ─── FirecrackerSnapshotter ───────────────────────────────────────────────────
+
+// FirecrackerSnapshotter wraps FirecrackerRuntime to implement Snapshotter.
+type FirecrackerSnapshotter struct {
+	RT *FirecrackerRuntime
+}
+
+// CreateSnapshot implements Snapshotter using Firecracker pause/snapshot.
+func (s *FirecrackerSnapshotter) CreateSnapshot(ctx context.Context, sandboxID, label, baseDir string) (*SnapshotMeta, error) {
+	return s.RT.CreateSnapshot(ctx, sandboxID, label, baseDir)
+}
+
+// RestoreSnapshot implements Snapshotter using Firecracker snapshot load.
+func (s *FirecrackerSnapshotter) RestoreSnapshot(ctx context.Context, meta *SnapshotMeta, newSpec SandboxSpec) (string, error) {
+	return s.RT.RestoreSnapshot(ctx, meta, newSpec)
+}
+
+// ─── DockerSnapshotter ────────────────────────────────────────────────────────
+
+// DockerSnapshotter implements Snapshotter using Docker CRIU checkpoints.
+//
+// Requirements:
+//   - Host must have the `criu` binary installed.
+//   - Container must be created with `--security-opt seccomp=unconfined` (or a
+//     CRIU-compatible profile) to allow the required syscalls.
+//   - Enabled must be true (mirrors config.Sandbox.Checkpoints.Enabled).
+type DockerSnapshotter struct {
+	RT      *DockerRuntime
+	Enabled bool
+}
+
+// CreateSnapshot checkpoints the running Docker container via `docker checkpoint
+// create`.  The checkpoint is identified by label; meta.json is written to
+// baseDir/<label>/ for listing and restore purposes.
+func (s *DockerSnapshotter) CreateSnapshot(ctx context.Context, sandboxID, label, baseDir string) (*SnapshotMeta, error) {
+	if !s.Enabled {
+		return nil, fmt.Errorf("docker checkpoints are disabled; set sandbox.checkpoints.enabled=true to use")
+	}
+
+	out, err := s.RT.runDockerCmd(ctx, "checkpoint", "create", containerName(sandboxID), label)
+	if err != nil {
+		return nil, fmt.Errorf("docker checkpoint create %s/%s: %w (output: %s)", sandboxID, label, err, strings.TrimSpace(out))
+	}
+
+	s.RT.mu.Lock()
+	var spec SandboxSpec
+	if ms, ok := s.RT.sandboxes[sandboxID]; ok {
+		spec = ms.info.Spec
+	}
+	s.RT.mu.Unlock()
+
+	meta := &SnapshotMeta{
+		Label:        label,
+		VMID:         sandboxID,
+		VMName:       spec.Name,
+		CreatedAt:    time.Now().UTC(),
+		OriginalSpec: spec,
+		Backend:      "docker",
+	}
+
+	snapDir := snapshotDir(baseDir, label)
+	if err := os.MkdirAll(snapDir, 0700); err != nil {
+		return nil, fmt.Errorf("create docker snapshot dir: %w", err)
+	}
+	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(filepath.Join(snapDir, "meta.json"), metaBytes, 0600); err != nil {
+		return nil, fmt.Errorf("write docker snapshot meta: %w", err)
+	}
+
+	s.RT.logger.Info("docker checkpoint created",
+		zap.String("sandbox_id", sandboxID),
+		zap.String("label", label),
+	)
+	return meta, nil
+}
+
+// RestoreSnapshot creates a new container and starts it from an existing CRIU
+// checkpoint via `docker start --checkpoint <label>`.
+func (s *DockerSnapshotter) RestoreSnapshot(ctx context.Context, meta *SnapshotMeta, newSpec SandboxSpec) (string, error) {
+	if !s.Enabled {
+		return "", fmt.Errorf("docker checkpoints are disabled; set sandbox.checkpoints.enabled=true to use")
+	}
+
+	if err := s.RT.Create(ctx, newSpec); err != nil {
+		return "", fmt.Errorf("docker snapshot restore: create container: %w", err)
+	}
+
+	// docker start --checkpoint restores from the CRIU checkpoint.
+	out, err := s.RT.runDockerCmd(ctx, "start", "--checkpoint", meta.Label, containerName(newSpec.ID))
+	if err != nil {
+		_ = s.RT.Delete(ctx, newSpec.ID)
+		return "", fmt.Errorf("docker start --checkpoint %s: %w (output: %s)", meta.Label, err, strings.TrimSpace(out))
+	}
+
+	s.RT.mu.Lock()
+	if ms, ok := s.RT.sandboxes[newSpec.ID]; ok {
+		now := time.Now().UTC()
+		ms.info.State = StateRunning
+		ms.info.StartedAt = &now
+	}
+	s.RT.mu.Unlock()
+
+	s.RT.logger.Info("docker container restored from checkpoint",
+		zap.String("sandbox_id", newSpec.ID),
+		zap.String("label", meta.Label),
+	)
+	return newSpec.ID, nil
 }
 
 // snapshotDir returns the directory for a snapshot with the given label.

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"go.uber.org/zap"
 )
@@ -291,4 +292,57 @@ func sh(ctx context.Context, name string, args ...string) error {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run()
+}
+
+// ─── Docker asset provisioning ────────────────────────────────────────────────
+
+// DockerAssetConfig holds the images that must be present for Docker-mode sandboxes.
+type DockerAssetConfig struct {
+	// DockerBin is the path to the docker CLI binary.
+	// Defaults to "docker" (resolved via $PATH).
+	DockerBin string
+	// Images is the list of OCI image references that must be present locally.
+	// EnsureDockerAssets will pull any image that is not already available.
+	Images []string
+}
+
+// EnsureDockerAssets verifies that each required OCI image is present in the
+// local Docker daemon, pulling it if it is not.  Unlike EnsureAssets, no
+// kernel or ext4 manipulation is performed — only standard docker pull calls.
+func EnsureDockerAssets(ctx context.Context, cfg DockerAssetConfig, logger *zap.Logger) error {
+	bin := cfg.DockerBin
+	if bin == "" {
+		bin = "docker"
+	}
+	for _, image := range cfg.Images {
+		if err := ensureDockerImage(ctx, bin, image, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureDockerImage checks whether image is already available in the local
+// daemon and pulls it if not.
+func ensureDockerImage(ctx context.Context, dockerBin, image string, logger *zap.Logger) error {
+	// docker image inspect returns exit 0 and non-empty output when the image
+	// exists locally.
+	out, err := exec.CommandContext(ctx, dockerBin, "image", "inspect",
+		"--format", "{{.Id}}", image).Output()
+	if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		logger.Debug("docker image already present", zap.String("image", image))
+		return nil
+	}
+
+	fmt.Printf("  Pulling Docker image %s...\n", image)
+	logger.Info("pulling docker image", zap.String("image", image))
+
+	pullCmd := exec.CommandContext(ctx, dockerBin, "pull", image)
+	pullCmd.Stdout = os.Stdout
+	pullCmd.Stderr = os.Stderr
+	if err := pullCmd.Run(); err != nil {
+		return fmt.Errorf("docker pull %s: %w", image, err)
+	}
+	fmt.Printf("  Image %s ready.\n", image)
+	return nil
 }

@@ -6,8 +6,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
@@ -110,16 +112,27 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	if isolationMode == "" {
 		isolationMode = "firecracker"
 	}
-	isoOK := isolationMode == "firecracker"
+	isoOK := isolationMode == "firecracker" || isolationMode == "docker"
 	isoDetail := isolationMode
 	if !isoOK {
-		isoDetail += fmt.Sprintf(" (unsupported; only %q is supported on this platform)", "firecracker")
+		isoDetail += fmt.Sprintf(" (unsupported; supported values: %q, %q)", "firecracker", "docker")
+	} else if isolationMode == "firecracker" {
+		isoDetail += " (deprecated: consider switching to isolation_mode: docker)"
 	}
 	checks = append(checks, check{
 		label:  "isolation mode",
 		ok:     isoOK,
 		detail: isoDetail,
 	})
+
+	// ── Docker availability (when isolation_mode = docker) ───────────────────
+	if isolationMode == "docker" {
+		dockerBin := cfg.Docker.Bin
+		if dockerBin == "" {
+			dockerBin = "docker"
+		}
+		checks = append(checks, checkDockerAvailable(dockerBin))
+	}
 
 	// ── Print results ─────────────────────────────────────────────────────────
 	allOK := true
@@ -218,4 +231,25 @@ func checkDaemon(socketPath string) check {
 	}
 	conn.Close()
 	return check{label: label, ok: true, detail: socketPath + " (daemon running)"}
+}
+
+// checkDockerAvailable verifies that the docker CLI is reachable and that the
+// Docker daemon is responsive.
+func checkDockerAvailable(dockerBin string) check {
+	label := "docker daemon"
+	if dockerBin == "" {
+		dockerBin = "docker"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, dockerBin, "info", "--format", "{{.ServerVersion}}")
+	out, err := cmd.Output()
+	if err != nil {
+		return check{label: label, ok: false, detail: "docker not available: " + err.Error()}
+	}
+	version := strings.TrimSpace(string(out))
+	if version == "" {
+		return check{label: label, ok: false, detail: "docker info returned empty server version"}
+	}
+	return check{label: label, ok: true, detail: "docker server " + version}
 }

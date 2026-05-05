@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"filippo.io/age"
 	"github.com/PixnBits/AegisClaw/internal/composition"
@@ -31,18 +32,20 @@ import (
 )
 
 var (
-	runtimeOnce     sync.Once
-	runtimeInst     *sandbox.FirecrackerRuntime
-	registryInst    *sandbox.SkillRegistry
-	proposalInst    *proposal.Store
-	compositionInst *composition.Store
-	memoryInst      *memory.Store
-	eventBusInst    *eventbus.Bus
-	workerStoreInst *worker.Store
-	vaultInst       *vault.Vault
-	lookupInst      *lookup.Store
-	gitManagerInst  *gitmanager.Manager
-	runtimeInitErr  error
+	runtimeOnce        sync.Once
+	runtimeInst        *sandbox.FirecrackerRuntime
+	dockerRuntimeInst  *sandbox.DockerRuntime
+	snapshotterInst    sandbox.Snapshotter
+	registryInst       *sandbox.SkillRegistry
+	proposalInst       *proposal.Store
+	compositionInst    *composition.Store
+	memoryInst         *memory.Store
+	eventBusInst       *eventbus.Bus
+	workerStoreInst    *worker.Store
+	vaultInst          *vault.Vault
+	lookupInst         *lookup.Store
+	gitManagerInst     *gitmanager.Manager
+	runtimeInitErr     error
 )
 
 type runtimeEnv struct {
@@ -113,6 +116,18 @@ type runtimeEnv struct {
 	// portalVMMu and lazily started when dashboard.enabled is true.
 	PortalVMID string
 	portalVMMu sync.Mutex
+
+	// Snapshotter provides sandbox snapshot/restore operations.
+	// For Firecracker mode this is a *sandbox.FirecrackerSnapshotter backed by
+	// Runtime.  For Docker mode it is a *sandbox.DockerSnapshotter (only
+	// functional when config.Sandbox.Checkpoints.Enabled is true).
+	// Nil if snapshotting is not supported in the current configuration.
+	Snapshotter sandbox.Snapshotter
+
+	// DockerRuntime is non-nil when isolation_mode = "docker".  It holds the
+	// Docker-specific runtime instance; the generic Runtime field remains nil
+	// in Docker mode.
+	DockerRuntime *sandbox.DockerRuntime
 }
 
 func initRuntime() (*runtimeEnv, error) {
@@ -132,17 +147,46 @@ func initRuntime() (*runtimeEnv, error) {
 	}
 
 	runtimeOnce.Do(func() {
-		rtCfg := sandbox.RuntimeConfig{
-			FirecrackerBin: cfg.Firecracker.Bin,
-			JailerBin:      cfg.Jailer.Bin,
-			KernelImage:    cfg.Sandbox.KernelImage,
-			RootfsTemplate: cfg.Rootfs.Template,
-			ChrootBaseDir:  cfg.Sandbox.ChrootBase,
-			StateDir:       cfg.Sandbox.StateDir,
-		}
-		runtimeInst, runtimeInitErr = sandbox.NewFirecrackerRuntime(rtCfg, kern, logger)
-		if runtimeInitErr != nil {
-			return
+		isolationMode := cfg.Sandbox.IsolationMode
+		if isolationMode == string(sandbox.IsolationDocker) {
+			// Docker mode: initialize DockerRuntime, skip FirecrackerRuntime.
+			var idleTimeout time.Duration
+			if cfg.Sandbox.IdleTimeout != "" {
+				if d, err := time.ParseDuration(cfg.Sandbox.IdleTimeout); err == nil {
+					idleTimeout = d
+				} else {
+					logger.Warn("invalid sandbox.idle_timeout; idle pausing disabled",
+						zap.String("value", cfg.Sandbox.IdleTimeout), zap.Error(err))
+				}
+			}
+			drCfg := sandbox.DockerRuntimeConfig{
+				DockerBin:   cfg.Docker.Bin,
+				StateDir:    cfg.Docker.StateDir,
+				IdleTimeout: idleTimeout,
+			}
+			dockerRuntimeInst, runtimeInitErr = sandbox.NewDockerRuntime(drCfg, kern, logger)
+			if runtimeInitErr != nil {
+				return
+			}
+			snapshotterInst = &sandbox.DockerSnapshotter{
+				RT:      dockerRuntimeInst,
+				Enabled: cfg.Sandbox.Checkpoints.Enabled,
+			}
+		} else {
+			// Firecracker mode (default): initialize FirecrackerRuntime.
+			rtCfg := sandbox.RuntimeConfig{
+				FirecrackerBin: cfg.Firecracker.Bin,
+				JailerBin:      cfg.Jailer.Bin,
+				KernelImage:    cfg.Sandbox.KernelImage,
+				RootfsTemplate: cfg.Rootfs.Template,
+				ChrootBaseDir:  cfg.Sandbox.ChrootBase,
+				StateDir:       cfg.Sandbox.StateDir,
+			}
+			runtimeInst, runtimeInitErr = sandbox.NewFirecrackerRuntime(rtCfg, kern, logger)
+			if runtimeInitErr != nil {
+				return
+			}
+			snapshotterInst = &sandbox.FirecrackerSnapshotter{RT: runtimeInst}
 		}
 		registryInst, runtimeInitErr = sandbox.NewSkillRegistry(cfg.Sandbox.RegistryPath)
 		if runtimeInitErr != nil {
@@ -216,6 +260,8 @@ func initRuntime() (*runtimeEnv, error) {
 		Config:           cfg,
 		Kernel:           kern,
 		Runtime:          runtimeInst,
+		DockerRuntime:    dockerRuntimeInst,
+		Snapshotter:      snapshotterInst,
 		Registry:         registryInst,
 		ProposalStore:    proposalInst,
 		CompositionStore: compositionInst,
@@ -244,6 +290,8 @@ func initRuntime() (*runtimeEnv, error) {
 func resetRuntimeSingletons() {
 	runtimeOnce = sync.Once{}
 	runtimeInst = nil
+	dockerRuntimeInst = nil
+	snapshotterInst = nil
 	registryInst = nil
 	proposalInst = nil
 	compositionInst = nil

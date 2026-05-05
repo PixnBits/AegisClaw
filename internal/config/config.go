@@ -51,10 +51,20 @@ type Config struct {
 		KernelImage  string `yaml:"kernel_image" mapstructure:"kernel_image"`
 		RegistryPath string `yaml:"registry_path" mapstructure:"registry_path"`
 		// IsolationMode selects the sandbox backend.
-		// Only "firecracker" is supported on this platform (hardware-virtualised
-		// microVMs via Firecracker + jailer).  Any other value is rejected at
-		// daemon startup.  See internal/sandbox.IsolationMode for details.
+		// Supported values: "firecracker" (hardware microVMs) or "docker" (OCI containers).
+		// Defaults to "firecracker".  Set to "docker" on hosts without KVM support.
 		IsolationMode string `yaml:"isolation_mode" mapstructure:"isolation_mode"`
+		// IdleTimeout is how long a running Docker sandbox may be idle before
+		// it is automatically paused with "docker pause".  Zero (the default)
+		// disables idle pausing.  Example: "5m".
+		IdleTimeout string `yaml:"idle_timeout" mapstructure:"idle_timeout"`
+		// Checkpoints controls CRIU-based snapshot support for Docker sandboxes.
+		Checkpoints struct {
+			// Enabled gates the docker checkpoint create/restore feature.
+			// Requires the criu binary on the host and a CRIU-compatible seccomp
+			// profile on each container.  Defaults to false.
+			Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+		} `yaml:"checkpoints" mapstructure:"checkpoints"`
 	} `yaml:"sandbox" mapstructure:"sandbox"`
 	Proposal struct {
 		StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
@@ -196,6 +206,19 @@ type Config struct {
 		// Defaults to ~/.local/share/aegisclaw/vectordb.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"lookup" mapstructure:"lookup"`
+	Docker struct {
+		// Bin is the path to the docker CLI binary.
+		// Defaults to "docker" (resolved via $PATH).
+		Bin string `yaml:"bin" mapstructure:"bin"`
+		// StateDir is the host directory where per-sandbox state directories
+		// (Unix sockets, bind-mount sources) are created for Docker containers.
+		// Defaults to ~/.local/share/aegisclaw/docker-sandboxes.
+		StateDir string `yaml:"state_dir" mapstructure:"state_dir"`
+		// GuestImage is the OCI image reference used as the default guest
+		// container image when no DockerImage is specified in the SandboxSpec.
+		// Defaults to "aegisclaw/guest:latest".
+		GuestImage string `yaml:"guest_image" mapstructure:"guest_image"`
+	} `yaml:"docker" mapstructure:"docker"`
 }
 
 // DefaultConfig returns the default configuration values
@@ -235,6 +258,10 @@ func DefaultConfig() Config {
 			KernelImage   string `yaml:"kernel_image" mapstructure:"kernel_image"`
 			RegistryPath  string `yaml:"registry_path" mapstructure:"registry_path"`
 			IsolationMode string `yaml:"isolation_mode" mapstructure:"isolation_mode"`
+			IdleTimeout   string `yaml:"idle_timeout" mapstructure:"idle_timeout"`
+			Checkpoints   struct {
+				Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+			} `yaml:"checkpoints" mapstructure:"checkpoints"`
 		}{
 			StateDir:      filepath.Join(home, ".local", "share", "aegisclaw", "sandboxes"),
 			ChrootBase:    filepath.Join(home, ".local", "share", "aegisclaw", "jailer"),
@@ -370,6 +397,15 @@ func DefaultConfig() Config {
 			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
 			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "vectordb"),
+		},
+		Docker: struct {
+			Bin        string `yaml:"bin" mapstructure:"bin"`
+			StateDir   string `yaml:"state_dir" mapstructure:"state_dir"`
+			GuestImage string `yaml:"guest_image" mapstructure:"guest_image"`
+		}{
+			Bin:        "docker",
+			StateDir:   filepath.Join(home, ".local", "share", "aegisclaw", "docker-sandboxes"),
+			GuestImage: "aegisclaw/guest:latest",
 		},
 	}
 }

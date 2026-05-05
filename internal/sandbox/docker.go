@@ -49,6 +49,14 @@ const (
 
 	// idleCheckInterval is how often the idle-pause goroutine wakes up.
 	idleCheckInterval = time.Minute
+
+	// sandboxNetworkPrefix is prepended to the sanitised sandbox ID to form the
+	// per-sandbox Docker bridge network name (e.g. "aegis-net-skill_abc123").
+	sandboxNetworkPrefix = "aegis-net-"
+
+	// egressBridgeName is the name of the shared Docker bridge that connects
+	// proxy-mode containers to the host-side egress proxy listener.
+	egressBridgeName = "aegis-egress"
 )
 
 // DockerRuntimeConfig holds configuration for the Docker sandbox runtime.
@@ -126,8 +134,75 @@ func (r *DockerRuntime) bin() string {
 	return dockerDefaultBin
 }
 
+// sandboxNetworkName returns the Docker bridge network name for a sandbox.
+func sandboxNetworkName(id string) string {
+	return sandboxNetworkPrefix + sanitizeID(id)
+}
+
 // containerName returns the Docker container name for a sandbox ID.
 func containerName(id string) string { return dockerContainerPrefix + id }
+
+// createSandboxNetwork creates a per-sandbox Docker bridge network.
+// For NoNetwork sandboxes this is a no-op.
+// For proxy-mode sandboxes the shared aegis-egress bridge is also ensured.
+func (r *DockerRuntime) createSandboxNetwork(ctx context.Context, id string, policy NetworkPolicy) error {
+	if policy.NoNetwork {
+		return nil
+	}
+	netName := sandboxNetworkName(id)
+	if out, err := r.runDockerCmd(ctx, "network", "create",
+		"--driver", "bridge",
+		"--internal",
+		netName,
+	); err != nil {
+		return fmt.Errorf("docker network create %s: %w (output: %s)", netName, err, strings.TrimSpace(out))
+	}
+	if policy.EgressMode == "proxy" {
+		if err := r.ensureEgressBridge(ctx); err != nil {
+			// Non-fatal: egress proxy may not be needed immediately.
+			r.logger.Warn("could not ensure aegis-egress bridge; proxy egress may be unavailable",
+				zap.Error(err))
+		}
+	}
+	return nil
+}
+
+// deleteSandboxNetwork removes the per-sandbox Docker bridge network.
+// Called on Stop and Delete; errors are logged but do not block teardown.
+func (r *DockerRuntime) deleteSandboxNetwork(ctx context.Context, id string, policy NetworkPolicy) {
+	if policy.NoNetwork {
+		return
+	}
+	netName := sandboxNetworkName(id)
+	if out, err := r.runDockerCmd(ctx, "network", "rm", netName); err != nil {
+		if !strings.Contains(out, "No such network") && !strings.Contains(out, "not found") {
+			r.logger.Warn("docker network rm failed",
+				zap.String("network", netName),
+				zap.Error(err),
+				zap.String("output", strings.TrimSpace(out)))
+		}
+	}
+}
+
+// ensureEgressBridge creates the shared aegis-egress bridge network if it does
+// not already exist.  This network connects proxy-mode containers to the
+// host-side egress proxy TCP listener on the bridge gateway address.
+func (r *DockerRuntime) ensureEgressBridge(ctx context.Context) error {
+	if out, err := r.runDockerCmd(ctx, "network", "inspect", egressBridgeName); err == nil && !strings.Contains(out, "No such network") {
+		return nil // already exists
+	}
+	if out, err := r.runDockerCmd(ctx, "network", "create",
+		"--driver", "bridge",
+		"--internal",
+		egressBridgeName,
+	); err != nil {
+		return fmt.Errorf("create egress bridge %s: %w (output: %s)", egressBridgeName, err, strings.TrimSpace(out))
+	}
+	r.logger.Info("created shared egress bridge network", zap.String("name", egressBridgeName))
+	return nil
+}
+
+
 
 // sandboxDir returns the host-side state directory for a sandbox.
 func (r *DockerRuntime) sandboxDir(id string) string {
@@ -238,6 +313,12 @@ func (r *DockerRuntime) buildDockerCreateArgs(spec SandboxSpec) []string {
 
 	if spec.NetworkPolicy.NoNetwork {
 		args = append(args, "--network", "none")
+	} else {
+		// Attach to the per-sandbox internal bridge so nftables/iptables rules
+		// can reference a stable network boundary.  For proxy-mode sandboxes a
+		// second docker network connect (aegis-egress) is issued in Create after
+		// the container is built.
+		args = append(args, "--network", sandboxNetworkName(spec.ID))
 	}
 
 	args = append(args, spec.DockerImage)
@@ -266,10 +347,35 @@ func (r *DockerRuntime) Create(ctx context.Context, spec SandboxSpec) error {
 		return fmt.Errorf("failed to create sandbox state dir %s: %w", stateDir, err)
 	}
 
+	// Create the per-sandbox Docker bridge network before the container.
+	if err := r.createSandboxNetwork(ctx, spec.ID, spec.NetworkPolicy); err != nil {
+		_ = os.RemoveAll(stateDir)
+		return fmt.Errorf("failed to create sandbox network: %w", err)
+	}
+
 	args := r.buildDockerCreateArgs(spec)
 	if out, err := r.runDockerCmd(ctx, args...); err != nil {
+		r.deleteSandboxNetwork(ctx, spec.ID, spec.NetworkPolicy)
 		_ = os.RemoveAll(stateDir)
 		return fmt.Errorf("docker create failed: %w (output: %s)", err, strings.TrimSpace(out))
+	}
+
+	// For proxy-mode sandboxes: also attach to the shared egress bridge.
+	// Docker only supports one --network in `docker create`; additional
+	// networks are attached via `docker network connect` immediately after.
+	if !spec.NetworkPolicy.NoNetwork && spec.NetworkPolicy.EgressMode == "proxy" {
+		if out, err := r.runDockerCmd(ctx, "network", "connect",
+			egressBridgeName, containerName(spec.ID),
+		); err != nil {
+			// Non-fatal: log the issue and continue.  Egress will simply be
+			// unavailable via the shared bridge; the sandbox can still be
+			// started and used for non-egress work.
+			r.logger.Warn("could not attach container to egress bridge",
+				zap.String("id", spec.ID),
+				zap.String("bridge", egressBridgeName),
+				zap.Error(err),
+				zap.String("output", strings.TrimSpace(out)))
+		}
 	}
 
 	info := SandboxInfo{
@@ -369,6 +475,9 @@ func (r *DockerRuntime) Stop(ctx context.Context, id string) error {
 	ms.info.StoppedAt = &now
 	ms.idleSince = nil
 
+	// Tear down the per-sandbox bridge network after the container has stopped.
+	r.deleteSandboxNetwork(ctx, id, ms.info.Spec.NetworkPolicy)
+
 	payload, _ := json.Marshal(ms.info.Spec)
 	action := kernel.NewAction(kernel.ActionSandboxStop, "kernel", payload)
 	if _, err := r.kern.SignAndLog(action); err != nil {
@@ -424,6 +533,9 @@ func (r *DockerRuntime) Delete(ctx context.Context, id string) error {
 		r.logger.Warn("failed to remove sandbox state dir",
 			zap.String("id", id), zap.String("dir", stateDir), zap.Error(rmErr))
 	}
+
+	// Remove the per-sandbox bridge network (no-op for NoNetwork sandboxes).
+	r.deleteSandboxNetwork(ctx, id, ms.info.Spec.NetworkPolicy)
 
 	delete(r.sandboxes, id)
 

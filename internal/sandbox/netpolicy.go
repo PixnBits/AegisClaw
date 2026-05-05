@@ -249,6 +249,186 @@ func formatPorts(ports []uint16) string {
 	return strings.Join(strs, ", ")
 }
 
+// ─── iptables backend (Docker) ────────────────────────────────────────────────
+
+// IPTablesRuleset holds iptables commands for Docker container network policy.
+// Rules are keyed on the container source IP so they survive container restarts
+// with a new MAC address.
+type IPTablesRuleset struct {
+	// SandboxID is the AegisClaw sandbox identifier.
+	SandboxID string `json:"sandbox_id"`
+	// ContainerIP is the container's IP on its per-sandbox bridge network.
+	ContainerIP string `json:"container_ip"`
+	// ChainName is the per-sandbox iptables chain (e.g. "AEGIS_skill_abc12345").
+	ChainName string `json:"chain_name"`
+	// Rules are iptables arguments (without "iptables") to apply in order.
+	Rules []string `json:"rules"`
+	// Teardown are iptables arguments to remove the rules on sandbox stop.
+	Teardown []string `json:"teardown"`
+}
+
+// ToIPTablesCommands returns Rules as iptables argument slices ready for exec.
+func (rs *IPTablesRuleset) ToIPTablesCommands() [][]string {
+	cmds := make([][]string, 0, len(rs.Rules))
+	for _, r := range rs.Rules {
+		cmds = append(cmds, strings.Fields(r))
+	}
+	return cmds
+}
+
+// TeardownIPTablesCommands returns Teardown as iptables argument slices.
+func (rs *IPTablesRuleset) TeardownIPTablesCommands() [][]string {
+	cmds := make([][]string, 0, len(rs.Teardown))
+	for _, r := range rs.Teardown {
+		cmds = append(cmds, strings.Fields(r))
+	}
+	return cmds
+}
+
+// GenerateIPTablesRules converts a NetworkPolicy into per-container iptables
+// rules.  containerIP must be the IP address assigned to the container on its
+// per-sandbox bridge network.
+//
+// The generated ruleset:
+//   - Creates a per-sandbox chain AEGIS_<sanitizedID> in the filter table.
+//   - Inserts a jump from the FORWARD chain keyed on the container source IP.
+//   - Allows established/related return traffic.
+//   - Allows DNS (UDP/TCP port 53) unconditionally.
+//   - Allows traffic matching AllowedHosts / AllowedPorts / AllowedProtocols.
+//   - Logs and drops all other traffic.
+//
+// Direct-mode sandboxes (EgressMode="direct") must provide IP/CIDR entries in
+// AllowedHosts because iptables rules operate at L3.
+func (pe *PolicyEngine) GenerateIPTablesRules(policy *NetworkPolicy, sandboxID, containerIP string) (*IPTablesRuleset, error) {
+	if policy == nil {
+		return nil, fmt.Errorf("network policy is required")
+	}
+	if !policy.DefaultDeny {
+		return nil, fmt.Errorf("default_deny must be true")
+	}
+	if sandboxID == "" {
+		return nil, fmt.Errorf("sandbox ID is required")
+	}
+	if containerIP == "" {
+		return nil, fmt.Errorf("container IP is required")
+	}
+	if net.ParseIP(containerIP) == nil {
+		return nil, fmt.Errorf("container IP %q is not a valid IP address", containerIP)
+	}
+
+	chainName := fmt.Sprintf("AEGIS_%s", sanitizeID(sandboxID))
+
+	rs := &IPTablesRuleset{
+		SandboxID:   sandboxID,
+		ContainerIP: containerIP,
+		ChainName:   chainName,
+	}
+
+	// 1. Create the per-sandbox chain.
+	rs.Rules = append(rs.Rules, fmt.Sprintf("-t filter -N %s", chainName))
+
+	// 2. Jump into the chain from FORWARD for traffic originating from this container.
+	rs.Rules = append(rs.Rules, fmt.Sprintf("-t filter -I FORWARD -s %s -j %s", containerIP, chainName))
+
+	// 3. Allow established/related return traffic.
+	rs.Rules = append(rs.Rules, fmt.Sprintf("-t filter -A %s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT", chainName))
+
+	// 4. Allow DNS for hostname resolution.
+	rs.Rules = append(rs.Rules, fmt.Sprintf("-t filter -A %s -p udp --dport 53 -j ACCEPT", chainName))
+	rs.Rules = append(rs.Rules, fmt.Sprintf("-t filter -A %s -p tcp --dport 53 -j ACCEPT", chainName))
+
+	// 5. Per-host allow rules.
+	for _, host := range policy.AllowedHosts {
+		hostRules, err := pe.generateIPTablesHostRules(chainName, host, policy.AllowedPorts, policy.AllowedProtocols)
+		if err != nil {
+			return nil, fmt.Errorf("iptables rules for host %q: %w", host, err)
+		}
+		rs.Rules = append(rs.Rules, hostRules...)
+	}
+
+	// 6. If no hosts but ports/protocols are specified, allow broadly.
+	if len(policy.AllowedHosts) == 0 && (len(policy.AllowedPorts) > 0 || len(policy.AllowedProtocols) > 0) {
+		rs.Rules = append(rs.Rules, pe.generateIPTablesPortRules(chainName, policy.AllowedPorts, policy.AllowedProtocols)...)
+	}
+
+	// 7. Log and drop everything else.
+	rs.Rules = append(rs.Rules, fmt.Sprintf("-t filter -A %s -j LOG --log-prefix \"aegis-drop-%s: \"", chainName, sanitizeID(sandboxID)))
+	rs.Rules = append(rs.Rules, fmt.Sprintf("-t filter -A %s -j DROP", chainName))
+
+	// Teardown: remove FORWARD jump, flush chain, delete chain.
+	rs.Teardown = []string{
+		fmt.Sprintf("-t filter -D FORWARD -s %s -j %s", containerIP, chainName),
+		fmt.Sprintf("-t filter -F %s", chainName),
+		fmt.Sprintf("-t filter -X %s", chainName),
+	}
+
+	return rs, nil
+}
+
+func (pe *PolicyEngine) generateIPTablesHostRules(chain, host string, ports []uint16, protocols []string) ([]string, error) {
+	var rules []string
+	dstMatch := ""
+	if net.ParseIP(host) != nil {
+		dstMatch = fmt.Sprintf("-d %s", host)
+	} else if _, _, err := net.ParseCIDR(host); err == nil {
+		dstMatch = fmt.Sprintf("-d %s", host)
+	} else {
+		return nil, fmt.Errorf("invalid host %q: must be an IP or CIDR in direct mode", host)
+	}
+
+	if len(protocols) == 0 && len(ports) == 0 {
+		rules = append(rules, fmt.Sprintf("-t filter -A %s %s -j ACCEPT", chain, dstMatch))
+		return rules, nil
+	}
+
+	protos := protocols
+	if len(protos) == 0 {
+		protos = []string{"tcp", "udp"}
+	}
+	for _, proto := range protos {
+		if proto == "icmp" {
+			rules = append(rules, fmt.Sprintf("-t filter -A %s %s -p icmp -j ACCEPT", chain, dstMatch))
+			continue
+		}
+		if len(ports) == 0 {
+			rules = append(rules, fmt.Sprintf("-t filter -A %s %s -p %s -j ACCEPT", chain, dstMatch, proto))
+		} else {
+			rules = append(rules, fmt.Sprintf("-t filter -A %s %s -p %s -m multiport --dports %s -j ACCEPT", chain, dstMatch, proto, formatPortsComma(ports)))
+		}
+	}
+	return rules, nil
+}
+
+func (pe *PolicyEngine) generateIPTablesPortRules(chain string, ports []uint16, protocols []string) []string {
+	var rules []string
+	protos := protocols
+	if len(protos) == 0 {
+		protos = []string{"tcp", "udp"}
+	}
+	for _, proto := range protos {
+		if proto == "icmp" {
+			rules = append(rules, fmt.Sprintf("-t filter -A %s -p icmp -j ACCEPT", chain))
+			continue
+		}
+		if len(ports) == 0 {
+			rules = append(rules, fmt.Sprintf("-t filter -A %s -p %s -j ACCEPT", chain, proto))
+		} else {
+			rules = append(rules, fmt.Sprintf("-t filter -A %s -p %s -m multiport --dports %s -j ACCEPT", chain, proto, formatPortsComma(ports)))
+		}
+	}
+	return rules
+}
+
+// formatPortsComma formats a port list as comma-separated values for iptables
+// --multiport --dports (e.g. "80,443,8080").
+func formatPortsComma(ports []uint16) string {
+	strs := make([]string, len(ports))
+	for i, p := range ports {
+		strs[i] = fmt.Sprintf("%d", p)
+	}
+	return strings.Join(strs, ",")
+}
+
 func sanitizeID(id string) string {
 	var b strings.Builder
 	for _, ch := range id {
