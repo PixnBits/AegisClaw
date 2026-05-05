@@ -116,7 +116,6 @@
         "mlock2",
         "mlockall",
         "mmap",
-        "mount",
         "mprotect",
         "mremap",
         "msgctl",

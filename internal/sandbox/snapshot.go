@@ -114,7 +114,10 @@ func (s *DockerSnapshotter) CreateSnapshot(ctx context.Context, sandboxID, label
 	if err := os.MkdirAll(snapDir, 0700); err != nil {
 		return nil, fmt.Errorf("create docker snapshot dir: %w", err)
 	}
-	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	metaBytes, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal docker snapshot meta: %w", err)
+	}
 	if err := os.WriteFile(filepath.Join(snapDir, "meta.json"), metaBytes, 0600); err != nil {
 		return nil, fmt.Errorf("write docker snapshot meta: %w", err)
 	}
