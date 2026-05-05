@@ -54,7 +54,7 @@ Every other component — **AegisHub**, the main agent, Governance Court reviewe
 │   │  │  • Enforces ACL/policy before every message delivery    │  │       │
 │   │  │  • Writes routing events to Merkle audit log            │  │       │
 │   │  │  • No network egress — vsock only                       │  │       │
-│   │  │  • aegishub-rootfs.ext4 built by build-rootfs.sh        │  │       │
+│   │  │  • aegishub-rootfs.ext4 via build-microvms-docker.sh    │  │       │
 │   │  └─────────────────────────────────────────────────────────┘  │       │
 │   │                            │ vsock (all inter-VM traffic)      │       │
 │   │  Agent VM    Court VMs(×5)  Builder VM    Skill VMs            │       │
@@ -373,7 +373,7 @@ The `StatusEscalated` state is entered when the court cannot reach consensus wit
 
 ### 9.1 Rootfs and InitPath
 
-The agent VM uses the standard rootfs built by `scripts/build-rootfs.sh` with the `guest-agent` binary embedded. No special agent rootfs is needed — the guest-agent binary already handles `chat.message` and `tool.exec` dispatch.
+The agent VM uses the standard rootfs built by `scripts/build-microvms-docker.sh` with the `guest-agent` binary embedded. No special agent rootfs is needed — the guest-agent binary already handles `chat.message` and `tool.exec` dispatch.
 
 Each `SandboxSpec` has an optional `InitPath` field (default: `/sbin/guest-agent`). This allows VMs with different init binaries (e.g., AegisHub uses `/sbin/aegishub`) to share the same Firecracker launch code. The init path is passed as the kernel `init=` boot argument.
 
@@ -430,7 +430,7 @@ Build tag: `//go:build integration`
 
 **Setup:**
 1. Build the guest-agent binary if not present (`go build ./cmd/guest-agent`).
-2. Build minimal rootfs embedding guest-agent (use `scripts/build-rootfs.sh` output or a cached path from `AEGISCLAW_TEST_ROOTFS`).
+2. Build minimal rootfs embedding guest-agent (use `scripts/build-microvms-docker.sh` output or a cached path from `AEGISCLAW_TEST_ROOTFS`).
 3. Start a real `api.Server` on a temp socket, wired with all production handlers from `runStart`.
 4. Start the agent VM via `sandbox.FirecrackerRuntime.Create` + `Start` using the test rootfs.
 5. Register the agent VM with the message bus.
@@ -568,7 +568,7 @@ Moving routing out of the root-privileged daemon shrinks the privileged Trusted 
 ### 13.2 Binary and location
 
 - **Binary**: `cmd/aegishub/` (`aegishub`)
-- **VM image**: `aegishub-rootfs.ext4` (built with `sudo ./scripts/build-rootfs.sh --target=aegishub`; override path via `AEGISCLAW_HUB_ROOTFS` env var)
+- **VM image**: `aegishub-rootfs.ext4` (built with `sudo ./scripts/build-microvms-docker.sh --target=aegishub`; override path via `AEGISCLAW_HUB_ROOTFS` env var)
 - **InitPath**: `/sbin/aegishub` — set in the `SandboxSpec.InitPath` field so the Firecracker kernel boots this binary instead of the default `/sbin/guest-agent`
 - **Vsock port**: 1024 (same as `guest-agent`, since only one process listens inside the VM)
 
@@ -579,7 +579,7 @@ Moving routing out of the root-privileged daemon shrinks the privileged Trusted 
 2. Daemon provisions Firecracker assets (kernel, standard rootfs template).
 3. Daemon logs kernel start action.
 4. Daemon calls launchAegisHub() — REQUIRED. Fatal error if AegisHub rootfs is missing.
-   Build with: sudo ./scripts/build-rootfs.sh --target=aegishub
+   Build with: sudo ./scripts/build-microvms-docker.sh --target=aegishub
 5. AegisHub VM starts, runs aegishub binary, listens on vsock port 1024.
 6. Daemon registers AegisHub VM identity with RoleHub in the MessageHub.
 7. Daemon registers AegisHub in the versioned composition manifest.
