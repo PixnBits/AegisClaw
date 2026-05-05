@@ -16,6 +16,9 @@ const (
 	StateRunning SandboxState = "running"
 	StateStopped SandboxState = "stopped"
 	StateError   SandboxState = "error"
+	// StatePaused indicates the sandbox is frozen via cgroup pause (Docker only).
+	// A paused sandbox resumes instantly on the next SendToSandbox call.
+	StatePaused SandboxState = "paused"
 )
 
 // Resources defines resource limits for a sandbox microVM.
@@ -47,7 +50,10 @@ type NetworkPolicy struct {
 	EgressMode string `json:"egress_mode,omitempty"`
 }
 
-// SandboxSpec defines the desired state of a Firecracker sandbox.
+// SandboxSpec defines the desired state of a sandbox.
+// Fields used only by the Firecracker backend (VsockCID, RootfsPath,
+// KernelPath, InitPath) are ignored by DockerRuntime and vice versa
+// (DockerImage is ignored by FirecrackerRuntime).
 type SandboxSpec struct {
 	ID            string        `json:"id"`
 	Name          string        `json:"name"`
@@ -59,6 +65,9 @@ type SandboxSpec struct {
 	KernelPath    string        `json:"kernel_path,omitempty"`
 	InitPath      string        `json:"init_path,omitempty"`
 	WorkspaceMB   int           `json:"workspace_mb"`
+	// DockerImage is the OCI image reference used by DockerRuntime
+	// (e.g. "aegisclaw/guest:latest").  Ignored by FirecrackerRuntime.
+	DockerImage string `json:"docker_image,omitempty"`
 }
 
 // SandboxInfo captures the runtime state of a sandbox.

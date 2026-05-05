@@ -71,3 +71,24 @@ func TestDecodeStructuredChatResponsePlainFinalOnlyOnLastAttempt(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
+
+func TestParseTransportFlag(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{nil, "vsock"},
+		{[]string{}, "vsock"},
+		{[]string{"--transport=unix"}, "unix"},
+		{[]string{"--transport", "unix"}, "unix"},
+		{[]string{"--transport=vsock"}, "vsock"},
+		{[]string{"--other-flag", "--transport=unix"}, "unix"},
+		{[]string{"--transport"}, "vsock"}, // value missing → default
+	}
+	for _, tc := range cases {
+		got := parseTransportFlag(tc.args)
+		if got != tc.want {
+			t.Errorf("parseTransportFlag(%v) = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}

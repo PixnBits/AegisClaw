@@ -26,6 +26,12 @@ const (
 	workspaceDir  = "/workspace"
 	secretsDir    = "/run/secrets"
 	maxPayloadLen = 10 * 1024 * 1024 // 10 MB max payload
+
+	// unixSocketPath is the AF_UNIX socket path used when --transport=unix.
+	// It lives inside the bind-mounted /run/aegis directory so the host can
+	// reach it via the state directory without entering the container network
+	// namespace.
+	unixSocketPath = "/run/aegis/agent.sock"
 )
 
 // Request is a JSON message from the kernel via vsock.
@@ -106,34 +112,58 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("guest-agent starting as PID 1")
 
+	// --transport selects the IPC mechanism:
+	//   vsock (default) — AF_VSOCK port 1024 with TCP fallback (Firecracker mode)
+	//   unix            — AF_UNIX /run/aegis/agent.sock (Docker mode)
+	//
+	// Accepted forms: --transport=unix  or  --transport unix
+	transport := parseTransportFlag(os.Args[1:])
+
 	mountEssentialFS()
 
 	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
 		log.Fatalf("failed to create workspace directory: %v", err)
 	}
 
-	// The virtio_vsock transport may not be ready when init (PID 1)
-	// starts — the virtio device probe runs asynchronously.  Retry for
-	// up to 2 seconds before falling back to TCP.
 	var listener net.Listener
 	var err error
-	for attempt := 0; attempt < 20; attempt++ {
-		listener, err = listenVsock(vsockPort)
-		if err == nil {
-			break
+
+	switch transport {
+	case "unix":
+		// Docker mode: listen on a Unix domain socket inside the bind-mounted
+		// /run/aegis directory.  The parent directory must already exist (it is
+		// bind-mounted from the host state directory).
+		if err = os.MkdirAll("/run/aegis", 0755); err != nil {
+			log.Fatalf("failed to create /run/aegis: %v", err)
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if listener == nil {
-		log.Printf("vsock unavailable after retries (%v), falling back to TCP", err)
-		configureNetwork()
-		listener, err = net.Listen("tcp", fmt.Sprintf(":%d", vsockPort))
+		// Remove a stale socket from a previous container invocation.
+		_ = os.Remove(unixSocketPath)
+		listener, err = net.Listen("unix", unixSocketPath)
 		if err != nil {
-			log.Fatalf("failed to listen on TCP port %d: %v", vsockPort, err)
+			log.Fatalf("failed to listen on unix socket %s: %v", unixSocketPath, err)
 		}
+		log.Printf("listening on unix:%s", unixSocketPath)
+	default:
+		// vsock mode (Firecracker): the virtio_vsock device probe runs
+		// asynchronously so retry for up to 2 seconds before falling back to TCP.
+		for attempt := 0; attempt < 20; attempt++ {
+			listener, err = listenVsock(vsockPort)
+			if err == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if listener == nil {
+			log.Printf("vsock unavailable after retries (%v), falling back to TCP", err)
+			configureNetwork()
+			listener, err = net.Listen("tcp", fmt.Sprintf(":%d", vsockPort))
+			if err != nil {
+				log.Fatalf("failed to listen on TCP port %d: %v", vsockPort, err)
+			}
+		}
+		log.Printf("listening on %s", listener.Addr())
 	}
 	defer listener.Close()
-	log.Printf("listening on %s", listener.Addr())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -646,6 +676,21 @@ func errorResponse(id, msg string) *Response {
 		Success: false,
 		Error:   msg,
 	}
+}
+
+// parseTransportFlag parses the --transport flag from args, returning the
+// transport name.  The flag can appear as --transport=<value> or as two
+// separate tokens --transport <value>.  Defaults to "vsock".
+func parseTransportFlag(args []string) string {
+	for i, arg := range args {
+		if strings.HasPrefix(arg, "--transport=") {
+			return strings.TrimPrefix(arg, "--transport=")
+		}
+		if arg == "--transport" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return "vsock"
 }
 
 // ReviewExecutePayload is received from the kernel control plane (D1).
