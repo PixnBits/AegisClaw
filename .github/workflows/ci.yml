@@ -55,6 +55,27 @@ jobs:
       - name: Run journey tests
         run: go test ./cmd/aegisclaw/ -run 'TestJourney|TestGoldenTrace' -count=1 -v -timeout 120s
 
+  # New: Web Portal E2E SDLC test (autonomous, starts full system)
+  # Runs on every PR that touches dashboard or SDLC paths
+  web-portal-e2e:
+    name: Web Portal E2E SDLC Test (Issue #35)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Web Portal E2E SDLC test
+        run: go test ./cmd/aegisclaw/ -run TestWebPortalFullSDLC_Autonomous -count=1 -v -timeout 180s
+
   image-builds:
     name: Image Builds
     runs-on: ubuntu-latest
@@ -75,13 +96,13 @@ jobs:
         run: sudo apt-get install -y e2fsprogs
 
       - name: Build guest rootfs
-        run: sudo env PATH="$PATH" ./scripts/build-rootfs.sh --target=guest /tmp/guest.ext4
+        run: sudo env PATH=\"$PATH\" ./scripts/build-rootfs.sh --target=guest /tmp/guest.ext4
 
       - name: Build aegishub rootfs
-        run: sudo env PATH="$PATH" ./scripts/build-rootfs.sh --target=aegishub /tmp/aegishub.ext4
+        run: sudo env PATH=\"$PATH\" ./scripts/build-rootfs.sh --target=aegishub /tmp/aegishub.ext4
 
       - name: Build builder rootfs
-        run: sudo env PATH="$PATH" ./scripts/build-builder-rootfs.sh /tmp/builder.ext4
+        run: sudo env PATH=\"$PATH\" ./scripts/build-builder-rootfs.sh /tmp/builder.ext4
 
   live-test:
     name: Live Test
