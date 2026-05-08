@@ -1,10 +1,3 @@
-**Perfect.** Here's the final polished version with a nice bow on it:
-
----
-
-**`docs/specs/aegishub.md`**
-
-```markdown
 # AegisHub Specification
 
 **Status:** Draft  
@@ -20,6 +13,16 @@ AegisHub is the central, privileged message router for AegisClaw. **No microVM i
 - Enforce strict ACL rules
 - Reject and audit unauthorized communication attempts
 - Support hot-reloading of ACL rules
+
+## Traceability
+
+**Driven by:**
+- [../prd/runtime-architecture.md](../prd/runtime-architecture.md) — Mediator and isolation requirements
+- [../prd/security-model.md](../prd/security-model.md) — Zero-trust and secret isolation rules
+
+**See also:**
+- [../architecture.md](../architecture.md)
+- [../prd/glossary.md](../prd/glossary.md)
 
 ## ACL Management
 
