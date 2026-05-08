@@ -28,3 +28,9 @@ To keep reviews efficient, a lightweight **Court Scribe** (running in its own is
 
 The agent must behave like a trusted colleague who has been given a mission — not like a tool that only moves when commanded. Trust is earned, never assumed.
 
+## Related Documents
+
+- **[../architecture.md](../architecture.md)** — High-level system architecture
+- **[runtime-architecture.md](./runtime-architecture.md)** — Runtime requirements
+- **[glossary.md](./glossary.md)** — Key term definitions
+- **Component Specs** — [../../specs/](../../specs/) (where applicable)
