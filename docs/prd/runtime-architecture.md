@@ -32,3 +32,10 @@ All other functionality runs in isolated microVMs:
 This architecture ensures that a compromise in any single component cannot spread. The trusted computing base is kept to an absolute minimum.
 
 Every major function has its own security boundary.
+
+## Related Documents
+
+- **[../architecture.md](../architecture.md)** — High-level overview
+- **[../index.md](./index.md)** — PRD index
+- **[glossary.md](./glossary.md)** — Key terms
+- **[security-model.md](./security-model.md)** — Security guarantees
