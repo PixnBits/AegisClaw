@@ -48,3 +48,13 @@ The Agent Runtime VM communicates with its Memory VM using these **explicit comm
 - Short-term context must never exceed 32k tokens
 - Agent Runtime VM crash + restart must not lose conversation state
 - One agent must not be able to read another agent’s memories
+
+## Traceability
+
+**Driven by:**
+- [../prd/runtime-architecture.md](../prd/runtime-architecture.md) — Sandbox separation and Agent Runtime requirements
+- [../prd/security-model.md](../prd/security-model.md) — Isolation and state protection guarantees
+
+**See also:**
+- [../architecture.md](../architecture.md)
+- [../prd/glossary.md](../prd/glossary.md)
