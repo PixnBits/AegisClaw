@@ -28,3 +28,8 @@
 - **Paranoid-by-Design** — The belief that all external input and generated code is potentially malicious.
 - **Every Boundary is a Security Boundary** — The guiding rule that no two components should directly trust each other.
 
+## Related Documents
+
+- **[../architecture.md](../architecture.md)** — High-level architecture
+- **[index.md](./index.md)** — PRD overview
+- **[runtime-architecture.md](./runtime-architecture.md)** — Runtime details
