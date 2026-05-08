@@ -56,3 +56,14 @@ Each Court VM must return its response in a strict structured format containing:
 - Court VMs must pull proposal content directly from the Store VM
 - A compromised Court VM must not be able to forge or suppress another persona’s vote
 - The structured output format must be strictly enforced
+
+## Traceability
+
+**Driven by:**
+- [../prd/governance-court.md](../prd/governance-court.md)
+- [../prd/runtime-architecture.md](../prd/runtime-architecture.md)
+- [../prd/security-model.md](../prd/security-model.md)
+
+**See also:**
+- [../architecture.md](../architecture.md)
+- [../prd/glossary.md](../prd/glossary.md)
