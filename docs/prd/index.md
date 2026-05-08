@@ -23,3 +23,10 @@ AegisClaw is a local-first AI agent platform that runs entirely on your hardware
 ## Current Status
 
 This PRD has been restructured and updated based on lessons learned from the first implementation. Each document is focused and scoped to fit comfortably in an LLM’s context window.
+
+## Related Documents
+
+- **[../architecture.md](../architecture.md)** — High-level system architecture and principles
+- **[runtime-architecture.md](./runtime-architecture.md)** — Detailed runtime requirements (this index links to all PRD docs)
+- **[../specs/](../specs/)** — Component-level specifications
+- **[glossary.md](./glossary.md)** — All key term definitions
