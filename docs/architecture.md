@@ -110,3 +110,9 @@ The architecture is designed with explicit trust boundaries:
 - **Agent Runtime VMs**: Untrusted. Run user-facing agent logic.
 
 **Key Rule:** Compromise of any single microVM must not allow an attacker to compromise the host or bypass the Governance Court.
+
+## Related Documents
+
+- **[prd/index.md](../prd/index.md)** — Full set of Product Requirements Documents
+- **[prd/runtime-architecture.md](../prd/runtime-architecture.md)** — Detailed runtime requirements
+- **[specs/](../specs/)** — Individual component specifications (when available)
