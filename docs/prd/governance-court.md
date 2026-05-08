@@ -32,3 +32,10 @@ Every code change, new skill, prompt modification, or increase in agent autonomy
 ## Court Scribe
 
 A lightweight Court Scribe component records structured summaries of all user-agent conversations. These summaries are fed to the Court during autonomy promotion reviews and major system changes.
+
+## Related Documents
+
+- **[../architecture.md](../architecture.md)** — High-level system architecture
+- **[runtime-architecture.md](./runtime-architecture.md)** — Runtime requirements this drives
+- **[../glossary.md](./glossary.md)** — Key term definitions
+- **Component Spec** — [../../specs/governance-court.md](../../specs/governance-court.md) (if exists)
