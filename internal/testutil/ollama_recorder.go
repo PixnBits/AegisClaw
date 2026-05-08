@@ -1,11 +1,9 @@
 package testutil
 
 import (
-	"context"
 	"net/http"
 	"testing"
 
-	"gopkg.in/dnaeon/go-vcr.v2/cassette"
 	"gopkg.in/dnaeon/go-vcr.v2/recorder"
 )
 
@@ -15,7 +13,7 @@ type OllamaRecorder struct {
 }
 
 func NewOllamaRecorder(t *testing.T, cassetteName string) *OllamaRecorder {
-	r, err := recorder.NewAsMode(cassetteName, recorder.ModeRecordOnly, http.DefaultTransport) // change mode as needed
+	r, err := recorder.NewAsMode(cassetteName, recorder.ModeRecordOnly, http.DefaultTransport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,4 +22,4 @@ func NewOllamaRecorder(t *testing.T, cassetteName string) *OllamaRecorder {
 	return &OllamaRecorder{rec: r}
 }
 
-// ... rest of the file with correct imports only ...
+// TODO: Add methods as needed for tests

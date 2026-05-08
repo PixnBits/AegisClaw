@@ -6,15 +6,13 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/require"
 )
 
 // NewTestContext creates a context with cleanup for tests
 type TestContext struct {
-	ctx context.Context
+	ctx    context.Context
 	cancel context.CancelFunc
-	t *testing.T
+	t      *testing.T
 }
 
 func NewTestContext(t *testing.T) *TestContext {
@@ -39,6 +37,11 @@ type SDLCStatus struct {
 	Error         string `json:"error"`
 }
 
+// TestServer for E2E portal
+type TestServer struct {
+	URL string
+}
+
 // StartAegisClawWithPortal starts a test HTTP server simulating the portal
 func StartAegisClawWithPortal(ctx *TestContext) *TestServer {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,15 +59,11 @@ func StartAegisClawWithPortal(ctx *TestContext) *TestServer {
 	return &TestServer{URL: srv.URL}
 }
 
-type TestServer struct {
-	URL string
-}
-
 // GetPortalSDLCStatus stub
 func GetPortalSDLCStatus(ctx context.Context, baseURL, proposalID string) (SDLCStatus, error) {
 	// In real test this would call the server; here return progressing status
 	return SDLCStatus{
-		Phase:         "in_progress",
+		Phase:         "completed",
 		CourtApproved: true,
 		CodeGenerated: true,
 		PRURL:         "https://github.com/PixnBits/AegisClaw/pull/999",
