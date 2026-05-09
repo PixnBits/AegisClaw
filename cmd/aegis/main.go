@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -168,6 +169,7 @@ func (f *FirecrackerBackend) StatusVM(ctx context.Context, id string) (string, e
 
 var backend SandboxBackend
 var runningVMs sync.Map
+var jsonOutput bool
 
 func initBackend() {
 	if runtime.GOOS == "linux" {
@@ -213,6 +215,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	defer listener.Close()
 
 	fmt.Println("AegisClaw daemon started. Listening on", socket)
+
+	pidFile := expandPath("~/.aegis/daemon.pid")
+	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 
 	done := make(chan bool)
 	// For now, just accept connections
@@ -262,10 +267,21 @@ func handleConnection(conn net.Conn, done chan bool) {
 			if _, ok := backend.(*FirecrackerBackend); ok {
 				backendName = "Firecracker"
 			}
-			response := fmt.Sprintf("Daemon: running\nBackend: %s\nSafe Mode: %t\nRunning VMs: %d\nUptime: %v\n", backendName, safeMode, count, time.Since(startTime).Round(time.Second))
+			response := fmt.Sprintf("Daemon: running\nBackend: %s\nSafe Mode: %t\nRunning VMs: %d\nUptime: %v\nPID: %d\n", backendName, safeMode, count, time.Since(startTime).Round(time.Second), os.Getpid())
 			conn.Write([]byte(response))
 		case "stop":
 			logger.Info("Stopping daemon")
+			// Gracefully stop all running VMs
+			runningVMs.Range(func(key, value interface{}) bool {
+				id := key.(string)
+				logger.WithField("vm_id", id).Info("Stopping VM during daemon shutdown")
+				backend.StopVM(context.Background(), id)
+				runningVMs.Delete(id)
+				return true
+			})
+			// Remove PID file
+			pidFile := expandPath("~/.aegis/daemon.pid")
+			os.Remove(pidFile)
 			conn.Write([]byte("stopping\n"))
 			done <- true
 			return
@@ -421,7 +437,32 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	conn.Write([]byte("status"))
 	buf := make([]byte, 1024)
 	n, _ := conn.Read(buf)
-	fmt.Printf("Daemon status: %s\n", string(buf[:n]))
+	response := string(buf[:n])
+	if jsonOutput {
+		lines := strings.Split(strings.TrimSpace(response), "\n")
+		status := map[string]interface{}{}
+		for _, line := range lines {
+			parts := strings.SplitN(line, ": ", 2)
+			if len(parts) == 2 {
+				key := parts[0]
+				val := parts[1]
+				switch key {
+				case "Running VMs", "PID":
+					if num, err := strconv.Atoi(val); err == nil {
+						status[strings.ToLower(strings.ReplaceAll(key, " ", ""))] = num
+					}
+				case "Safe Mode":
+					status["safeMode"] = val == "true"
+				default:
+					status[strings.ToLower(strings.ReplaceAll(key, " ", ""))] = val
+				}
+			}
+		}
+		jsonBytes, _ := json.Marshal(status)
+		fmt.Println(string(jsonBytes))
+	} else {
+		fmt.Printf("Daemon status: %s\n", response)
+	}
 }
 
 func doctorDaemon(cmd *cobra.Command, args []string) {
@@ -472,6 +513,7 @@ func main() {
 		Short: "Check daemon status",
 		Run:   statusDaemon,
 	}
+	statusCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 
 	var doctorCmd = &cobra.Command{
 		Use:   "doctor",
