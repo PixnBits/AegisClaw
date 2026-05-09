@@ -28,9 +28,13 @@ The AegisClaw CLI (`aegis`) is the primary power-user interface. It is lightweig
 ## Command Groups
 
 ### System & Setup
+- `aegis start` — Starts the Host Daemon **in the background** by default and returns immediately
+  - Use `aegis start --foreground` for debugging/development (runs in foreground)
+  - Must check for an existing background process and if one is found a new one is not started
+- `aegis stop` — Stops the daemon cleanly
 - `aegis doctor` — Verify prerequisites and system health
 - `aegis status [--json]` — Overall system + security posture
-- `aegis start` / `aegis stop` / `aegis restart`
+- `aegis restart`
 - `aegis vm list [--json]`
 
 ### Conversations & Agents
