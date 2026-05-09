@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ func TestDaemonStartAndStatus(t *testing.T) {
 	os.Remove(testSocketPath)
 
 	// Start daemon in background
-	cmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/aegis", "start")
+	cmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/aegis", "start")
 	cmd.Env = append(os.Environ(), "AEGIS_SOCKET="+testSocketPath)
 	err := cmd.Start()
 	if err != nil {
@@ -106,8 +107,8 @@ func TestStatusJSON(t *testing.T) {
 				status["safeMode"] = val == "true"
 			default:
 				status[strings.ToLower(strings.ReplaceAll(key, " ", ""))] = val
-			}
-		}
+	}
+}
 	}
 	expected := map[string]interface{}{
 		"daemon":     "running",
@@ -121,5 +122,62 @@ func TestStatusJSON(t *testing.T) {
 		if status[k] != v {
 			t.Errorf("Expected %v for %s, got %v", v, k, status[k])
 		}
+	}
+}
+
+func TestGetOriginalUser(t *testing.T) {
+	// Test without SUDO_USER
+	os.Unsetenv("SUDO_USER")
+	origUser, err := getOriginalUser()
+	if err != nil {
+		t.Fatalf("Failed to get original user: %v", err)
+	}
+	current, _ := user.Current()
+	if origUser.Uid != current.Uid {
+		t.Errorf("Expected current user, got %v", origUser)
+	}
+
+	// Test with SUDO_USER
+	os.Setenv("SUDO_USER", "root")
+	defer os.Unsetenv("SUDO_USER")
+	origUser, err = getOriginalUser()
+	if err != nil {
+		t.Fatalf("Failed to get original user: %v", err)
+	}
+	if origUser.Username != "root" {
+		t.Errorf("Expected root, got %v", origUser.Username)
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	// Test without ~
+	path := "/tmp/test"
+	expanded := expandPath(path)
+	if expanded != path {
+		t.Errorf("Expected %s, got %s", path, expanded)
+	}
+
+	// Test with ~/, assuming SUDO_USER not set
+	os.Unsetenv("SUDO_USER")
+	home, _ := os.UserHomeDir()
+	expected := home + "/.aegis/test"
+	expanded = expandPath("~/.aegis/test")
+	if expanded != expected {
+		t.Errorf("Expected %s, got %s", expected, expanded)
+	}
+}
+
+func TestVMConfig(t *testing.T) {
+	config := VMConfig{
+		ID:         "test",
+		StartTime:  time.Now(),
+		KernelPath: "/tmp/kernel",
+		RootfsPath: "/tmp/rootfs",
+	}
+	if config.ID != "test" {
+		t.Errorf("Expected test, got %s", config.ID)
+	}
+	if config.KernelPath != "/tmp/kernel" {
+		t.Errorf("Expected /tmp/kernel, got %s", config.KernelPath)
 	}
 }
