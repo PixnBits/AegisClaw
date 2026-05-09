@@ -28,8 +28,8 @@ import (
 
 var socketPath = "~/.aegis/daemon.sock"
 
-const defaultKernelPath = "/tmp/vmlinuz"
-const defaultRootfsPath = "/tmp/rootfs.img"
+var defaultKernelPath string
+var defaultRootfsPath string
 
 var startTime time.Time
 var safeMode bool
@@ -303,6 +303,13 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	uid, _ := strconv.Atoi(origUser.Uid)
 	gid, _ := strconv.Atoi(origUser.Gid)
 	os.Chown(dir, uid, gid)
+
+	// Set default image paths
+	imagesDir := filepath.Join(origUser.HomeDir, ".aegis", "images")
+	os.MkdirAll(imagesDir, 0700)
+	os.Chown(imagesDir, uid, gid)
+	defaultKernelPath = filepath.Join(imagesDir, "vmlinuz")
+	defaultRootfsPath = filepath.Join(imagesDir, "rootfs.img")
 
 	os.Remove(socket) // Remove existing socket if any
 
