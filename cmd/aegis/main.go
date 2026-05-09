@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -174,6 +175,15 @@ var jsonOutput bool
 var foreground bool
 
 func isDaemonRunning() bool {
+	// Check socket first - this is the most reliable indicator
+	socket := expandPath(socketPath)
+	conn, err := net.DialTimeout("unix", socket, 1*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+
+	// Also check PID file for additional verification
 	pidFile := expandPath("~/.aegis/daemon.pid")
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -198,7 +208,7 @@ func initBackend() {
 
 func setupLogging() {
 	logFile := expandPath("~/.aegis/daemon.log")
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err == nil {
 		logrus.SetOutput(file)
 	}
@@ -207,10 +217,24 @@ func setupLogging() {
 
 func expandPath(path string) string {
 	if path[:2] == "~/" {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[2:])
+		origUser, err := getOriginalUser()
+		if err != nil {
+			// fallback to current user's home
+			home, _ := os.UserHomeDir()
+			return filepath.Join(home, path[2:])
+		}
+		return filepath.Join(origUser.HomeDir, path[2:])
 	}
 	return path
+}
+
+func getOriginalUser() (*user.User, error) {
+	sudoUser := os.Getenv("SUDO_USER")
+	if sudoUser != "" {
+		return user.Lookup(sudoUser)
+	}
+	// If not sudo, return current user
+	return user.Current()
 }
 
 func startDaemon(cmd *cobra.Command, args []string) {
@@ -236,13 +260,40 @@ func startDaemon(cmd *cobra.Command, args []string) {
 			fmt.Printf("Failed to start daemon: %v\n", err)
 			return
 		}
-		fmt.Println("Daemon started in background")
-		return
+		// Wait for daemon to be ready by checking socket
+		socket := expandPath(socketPath)
+		timeout := time.After(10 * time.Second)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-timeout:
+				fmt.Println("Timeout waiting for daemon to start")
+				return
+			case <-ticker.C:
+				if conn, err := net.Dial("unix", socket); err == nil {
+					conn.Close()
+					fmt.Println("Daemon started in background")
+					return
+				}
+			}
+		}
 	}
 
 	// Foreground: run the daemon
 	dir := filepath.Dir(socket)
 	os.MkdirAll(dir, 0700)
+
+	// Get original user and chown directory to allow non-root access
+	origUser, err := getOriginalUser()
+	if err != nil {
+		fmt.Printf("Failed to get original user: %v\n", err)
+		os.Exit(1)
+	}
+	uid, _ := strconv.Atoi(origUser.Uid)
+	gid, _ := strconv.Atoi(origUser.Gid)
+	os.Chown(dir, uid, gid)
+
 	os.Remove(socket) // Remove existing socket if any
 
 	listener, err := net.Listen("unix", socket)
@@ -252,10 +303,18 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 	defer listener.Close()
 
+	// Chown socket to original user for non-root access
+	os.Chown(socket, uid, gid)
+	os.Chmod(socket, 0600)
+
 	fmt.Println("AegisClaw daemon started. Listening on", socket)
 
 	pidFile := expandPath("~/.aegis/daemon.pid")
-	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
+	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0600)
+	os.Chown(pidFile, uid, gid)
+	logFile := expandPath("~/.aegis/daemon.log")
+	os.Chown(logFile, uid, gid)
+	os.Chmod(logFile, 0600)
 
 	done := make(chan bool)
 	// For now, just accept connections
@@ -339,9 +398,11 @@ func handleConnection(conn net.Conn, done chan bool) {
 				runningVMs.Delete(id)
 				return true
 			})
-			// Remove PID file
+			// Remove PID file and socket
 			pidFile := expandPath("~/.aegis/daemon.pid")
 			os.Remove(pidFile)
+			socket := expandPath(socketPath)
+			os.Remove(socket)
 			conn.Write([]byte("stopping\n"))
 			done <- true
 			return
