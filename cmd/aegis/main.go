@@ -205,13 +205,22 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	socket := expandPath(socketPath)
+	pidFile := expandPath("~/.aegis/daemon.pid")
 
-	// Check if daemon is already running
-	conn, err := net.Dial("unix", socket)
-	if err == nil {
-		conn.Close()
-		fmt.Println("Daemon already running")
-		return
+	// Check if daemon is already running via PID
+	if data, err := os.ReadFile(pidFile); err == nil {
+		pidStr := strings.TrimSpace(string(data))
+		pid, err := strconv.Atoi(pidStr)
+		if err == nil {
+			cmd := exec.Command("kill", "-0", strconv.Itoa(pid))
+			if cmd.Run() == nil {
+				fmt.Println("Daemon already running")
+				return
+			} else {
+				// Stale PID file, remove it
+				os.Remove(pidFile)
+			}
+		}
 	}
 
 	if !foreground {
@@ -241,7 +250,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	fmt.Println("AegisClaw daemon started. Listening on", socket)
 
-	pidFile := expandPath("~/.aegis/daemon.pid")
 	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 
 	done := make(chan bool)
