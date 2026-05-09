@@ -173,6 +173,21 @@ var runningVMs sync.Map
 var jsonOutput bool
 var foreground bool
 
+func isDaemonRunning() bool {
+	pidFile := expandPath("~/.aegis/daemon.pid")
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return false
+	}
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return false
+	}
+	cmd := exec.Command("kill", "-0", strconv.Itoa(pid))
+	return cmd.Run() == nil
+}
+
 func initBackend() {
 	if runtime.GOOS == "linux" {
 		backend = &FirecrackerBackend{}
@@ -205,22 +220,11 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	socket := expandPath(socketPath)
-	pidFile := expandPath("~/.aegis/daemon.pid")
 
-	// Check if daemon is already running via PID
-	if data, err := os.ReadFile(pidFile); err == nil {
-		pidStr := strings.TrimSpace(string(data))
-		pid, err := strconv.Atoi(pidStr)
-		if err == nil {
-			cmd := exec.Command("kill", "-0", strconv.Itoa(pid))
-			if cmd.Run() == nil {
-				fmt.Println("Daemon already running")
-				return
-			} else {
-				// Stale PID file, remove it
-				os.Remove(pidFile)
-			}
-		}
+	// Check if daemon is already running
+	if isDaemonRunning() {
+		fmt.Println("Daemon already running")
+		return
 	}
 
 	if !foreground {
@@ -250,6 +254,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	fmt.Println("AegisClaw daemon started. Listening on", socket)
 
+	pidFile := expandPath("~/.aegis/daemon.pid")
 	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 
 	done := make(chan bool)

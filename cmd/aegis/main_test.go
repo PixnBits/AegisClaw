@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -58,3 +59,31 @@ func TestDaemonStartAndStatus(t *testing.T) {
 		t.Errorf("Expected %q, got %q", expected, string(buf[:n]))
 	}
 }
+
+func TestIsDaemonRunning(t *testing.T) {
+	pidFile := expandPath("~/.aegis/daemon.pid")
+	os.Remove(pidFile) // Clean up
+
+	// Test when no PID file
+	if isDaemonRunning() {
+		t.Error("Expected not running when no PID file")
+	}
+
+	// Create fake PID file with invalid PID
+	pidFile = expandPath("~/.aegis/daemon.pid")
+	os.WriteFile(pidFile, []byte("99999"), 0644)
+	defer os.Remove(pidFile)
+
+	// Should return false
+	if isDaemonRunning() {
+		t.Error("Expected not running with invalid PID")
+	}
+
+	// Test with own PID
+	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
+	if !isDaemonRunning() {
+		t.Error("Expected running with own PID")
+	}
+}
+
+
