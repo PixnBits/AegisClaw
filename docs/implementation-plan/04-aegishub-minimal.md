@@ -1,15 +1,11 @@
-# 04 - AegisHub Minimal Version
+# 04 - AegisHub Minimal
 
 ## Goal
-Implement basic message routing through AegisHub.
+Basic message routing through AegisHub.
 
 ## Acceptance Criteria
-- AegisHub starts as first VM
-- Basic JSON message passing between Host Daemon and dummy VM
-- Structured protocol defined
+- AegisHub starts
+- JSON message round-trip works
 
 ## References
 - specs/aegishub.md
-
-## Test
-- Round-trip message test succeeds

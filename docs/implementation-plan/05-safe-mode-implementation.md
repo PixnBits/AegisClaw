@@ -1,16 +1,11 @@
-# 05 - Safe Mode Implementation
+# 05 - Safe Mode
 
 ## Goal
-Implement emergency containment (kill switch).
+Implement emergency stop.
 
 ## Acceptance Criteria
-- `aegis safe-mode enable` works
-- Kills all Agent Runtimes, blocks new ones
-- Web Portal shows banner
-- `aegis safe-mode disable` restores normal operation
+- `aegis safe-mode enable/disable` works
+- All agents stopped
 
 ## References
 - specs/safe-mode.md
-
-## Test
-- Trigger Safe Mode and verify all agents stopped

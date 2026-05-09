@@ -1,19 +1,14 @@
 # 03 - Sandbox Backend Abstraction
 
 ## Goal
-Implement abstract sandbox backend interface with Firecracker (primary) and Docker (fallback) implementations.
+Implement abstract sandbox backend with Firecracker primary and Docker fallback.
 
 ## Acceptance Criteria
-- SandboxBackend interface defined
-- Firecracker backend functional for basic create/start/stop
-- Docker backend functional
-- Host Daemon can start a dummy VM using either backend
-- Integration test for lifecycle
+- SandboxBackend interface
+- Firecracker backend working for basic lifecycle
+- Docker backend working
+- Integration test passes
 
 ## References
 - specs/host-daemon.md
 - specs/runtime-architecture.md
-
-## Test
-- `aegis vm create test-vm --backend=firecracker` works
-- `aegis vm list` shows it
