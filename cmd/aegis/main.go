@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -170,6 +171,7 @@ func (f *FirecrackerBackend) StatusVM(ctx context.Context, id string) (string, e
 var backend SandboxBackend
 var runningVMs sync.Map
 var jsonOutput bool
+var foreground bool
 
 func initBackend() {
 	if runtime.GOOS == "linux" {
@@ -203,6 +205,29 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	socket := expandPath(socketPath)
+
+	// Check if daemon is already running
+	conn, err := net.Dial("unix", socket)
+	if err == nil {
+		conn.Close()
+		fmt.Println("Daemon already running")
+		return
+	}
+
+	if !foreground {
+		// Start daemon in background
+		cmd := exec.Command(os.Args[0], "start", "--foreground")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		err := cmd.Start()
+		if err != nil {
+			fmt.Printf("Failed to start daemon: %v\n", err)
+			return
+		}
+		fmt.Println("Daemon started in background")
+		return
+	}
+
+	// Foreground: run the daemon
 	dir := filepath.Dir(socket)
 	os.MkdirAll(dir, 0700)
 	os.Remove(socket) // Remove existing socket if any
@@ -507,6 +532,7 @@ func main() {
 		Short: "Start the AegisClaw daemon",
 		Run:   startDaemon,
 	}
+	startCmd.Flags().BoolVar(&foreground, "foreground", false, "Run daemon in foreground")
 
 	var statusCmd = &cobra.Command{
 		Use:   "status",
