@@ -46,24 +46,6 @@ type SandboxBackend interface {
 	StatusVM(ctx context.Context, id string) (string, error)
 }
 
-type DummyBackend struct{}
-
-func (d *DummyBackend) StartVM(ctx context.Context, config VMConfig) error {
-	// Simulate starting a VM
-	time.Sleep(100 * time.Millisecond)
-	return nil
-}
-
-func (d *DummyBackend) StopVM(ctx context.Context, id string) error {
-	// Simulate stopping a VM
-	time.Sleep(100 * time.Millisecond)
-	return nil
-}
-
-func (d *DummyBackend) StatusVM(ctx context.Context, id string) (string, error) {
-	return "running", nil
-}
-
 type DockerBackend struct{}
 
 func NewDockerBackend() *DockerBackend {
@@ -341,11 +323,9 @@ func handleConnection(conn net.Conn, done chan bool) {
 				count++
 				return true
 			})
-			backendName := "Dummy"
+			backendName := "Docker"
 			if _, ok := backend.(*FirecrackerBackend); ok {
 				backendName = "Firecracker"
-			} else if _, ok := backend.(*DockerBackend); ok {
-				backendName = "Docker"
 			}
 			response := fmt.Sprintf("Daemon: running\nBackend: %s\nSafe Mode: %t\nRunning VMs: %d\nUptime: %v\nPID: %d\n", backendName, safeMode, count, time.Since(startTime).Round(time.Second), os.Getpid())
 			conn.Write([]byte(response))
