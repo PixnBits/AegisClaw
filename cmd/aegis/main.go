@@ -1,16 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
@@ -18,6 +25,12 @@ import (
 )
 
 var socketPath = "~/.aegis/daemon.sock"
+
+var startTime time.Time
+var safeMode bool
+var runningCmds sync.Map
+var daemonPrivateKey ed25519.PrivateKey
+var daemonPublicKey ed25519.PublicKey
 
 type VMConfig struct {
 	ID         string
@@ -60,18 +73,66 @@ func (d *DockerBackend) StatusVM(ctx context.Context, id string) (string, error)
 type FirecrackerBackend struct{}
 
 func (f *FirecrackerBackend) StartVM(ctx context.Context, config VMConfig) error {
-	// Stub implementation
-	log.Printf("Starting Firecracker VM %s", config.ID)
+	if config.KernelPath == "" || config.RootfsPath == "" {
+		return fmt.Errorf("KernelPath and RootfsPath required for Firecracker")
+	}
+	sockPath := "/tmp/firecracker-" + config.ID + ".sock"
+	configPath := "/tmp/config-" + config.ID + ".json"
+	configData := map[string]interface{}{
+		"boot-source": map[string]interface{}{
+			"kernel_image_path": config.KernelPath,
+			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off",
+		},
+		"drives": []map[string]interface{}{
+			{
+				"drive_id":        "rootfs",
+				"path_on_host":    config.RootfsPath,
+				"is_root_device":  true,
+				"is_read_only":    false,
+			},
+		},
+	}
+	configBytes, _ := json.Marshal(configData)
+	err := os.WriteFile(configPath, configBytes, 0644)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "firecracker", "--api-sock", sockPath, "--config-file", configPath)
+	err = cmd.Start()
+	if err != nil {
+		return err
+	}
+	runningCmds.Store(config.ID, cmd)
+	// Wait for firecracker to be ready
+	time.Sleep(500 * time.Millisecond)
+	// Send start action
+	err = sendAPIRequest(sockPath, "PUT", "/actions", map[string]string{"action_type": "InstanceStart"})
+	if err != nil {
+		cmd.Process.Kill()
+		runningCmds.Delete(config.ID)
+		return err
+	}
 	return nil
 }
 
 func (f *FirecrackerBackend) StopVM(ctx context.Context, id string) error {
-	log.Printf("Stopping Firecracker VM %s", id)
+	sockPath := "/tmp/firecracker-" + id + ".sock"
+	// Send halt action
+	sendAPIRequest(sockPath, "PUT", "/actions", map[string]string{"action_type": "InstanceHalt"})
+	if cmd, ok := runningCmds.Load(id); ok {
+		c := cmd.(*exec.Cmd)
+		c.Process.Kill()
+		runningCmds.Delete(id)
+		runningVMs.Delete(id)
+	}
 	return nil
 }
 
 func (f *FirecrackerBackend) StatusVM(ctx context.Context, id string) (string, error) {
-	return "running", nil
+	if _, ok := runningCmds.Load(id); ok {
+		return "running", nil
+	}
+	return "stopped", nil
 }
 
 var backend SandboxBackend
@@ -161,7 +222,17 @@ func handleConnection(conn net.Conn, done chan bool) {
 		switch cmd {
 		case "status":
 			logger.Info("Daemon status requested")
-			conn.Write([]byte("running\n"))
+			count := 0
+			runningVMs.Range(func(key, value interface{}) bool {
+				count++
+				return true
+			})
+			backendName := "Docker"
+			if _, ok := backend.(*FirecrackerBackend); ok {
+				backendName = "Firecracker"
+			}
+			response := fmt.Sprintf("Daemon: running\nBackend: %s\nSafe Mode: %t\nRunning VMs: %d\nUptime: %v\n", backendName, safeMode, count, time.Since(startTime).Round(time.Second))
+			conn.Write([]byte(response))
 		case "stop":
 			logger.Info("Stopping daemon")
 			conn.Write([]byte("stopping\n"))
@@ -170,19 +241,30 @@ func handleConnection(conn net.Conn, done chan bool) {
 		case "start-vm":
 			if len(parts) < 3 {
 				logger.Warn("Invalid start-vm command")
-				conn.Write([]byte("usage: start-vm <id> <image>\n"))
+				conn.Write([]byte("usage: start-vm <id> <image> or start-vm <id> <kernel> <rootfs>\n"))
 				continue
 			}
 			id := parts[1]
-			image := parts[2]
-			logger.WithFields(logrus.Fields{"vm_id": id, "image": image}).Info("Starting VM")
-			config := VMConfig{ID: id, Image: image}
+			config := VMConfig{ID: id}
+			if len(parts) == 3 {
+				config.Image = parts[2]
+			} else if len(parts) == 4 {
+				config.KernelPath = parts[2]
+				config.RootfsPath = parts[3]
+			} else {
+				conn.Write([]byte("usage: start-vm <id> <image> or start-vm <id> <kernel> <rootfs>\n"))
+				continue
+			}
+			logger.WithFields(logrus.Fields{"vm_id": id, "image": config.Image, "kernel": config.KernelPath, "rootfs": config.RootfsPath}).Info("Starting VM")
 			err := backend.StartVM(context.Background(), config)
 			if err != nil {
 				logger.WithError(err).Error("Failed to start VM")
 				conn.Write([]byte("error: " + err.Error() + "\n"))
 			} else {
 				runningVMs.Store(id, config)
+				vmPublic, vmPrivate, _ := ed25519.GenerateKey(rand.Reader)
+				logger.WithFields(logrus.Fields{"vm_id": id, "public_key": fmt.Sprintf("%x", vmPublic)}).Info("Generated VM keypair")
+				// Assume private key sent to VM somehow
 				conn.Write([]byte("started\n"))
 			}
 		case "stop-vm":
@@ -230,9 +312,11 @@ func handleConnection(conn net.Conn, done chan bool) {
 					runningVMs.Delete(id)
 					return true
 				})
+				safeMode = true
 				conn.Write([]byte("safe-mode enabled\n"))
 			} else if action == "disable" {
 				logger.Info("Disabling safe mode")
+				safeMode = false
 				conn.Write([]byte("safe-mode disabled\n"))
 			} else {
 				logger.Warn("Unknown safe-mode action")
@@ -337,6 +421,8 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 
 func main() {
 	initBackend()
+	startTime = time.Now()
+	daemonPublicKey, daemonPrivateKey, _ = ed25519.GenerateKey(rand.Reader)
 	setupLogging()
 	if envSocket := os.Getenv("AEGIS_SOCKET"); envSocket != "" {
 		socketPath = envSocket
