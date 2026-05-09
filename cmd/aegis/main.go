@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +43,24 @@ type SandboxBackend interface {
 	StartVM(ctx context.Context, config VMConfig) error
 	StopVM(ctx context.Context, id string) error
 	StatusVM(ctx context.Context, id string) (string, error)
+}
+
+type DummyBackend struct{}
+
+func (d *DummyBackend) StartVM(ctx context.Context, config VMConfig) error {
+	// Simulate starting a VM
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
+func (d *DummyBackend) StopVM(ctx context.Context, id string) error {
+	// Simulate stopping a VM
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
+func (d *DummyBackend) StatusVM(ctx context.Context, id string) (string, error) {
+	return "running", nil
 }
 
 type DockerBackend struct{}
@@ -189,11 +206,8 @@ func isDaemonRunning() bool {
 }
 
 func initBackend() {
-	if runtime.GOOS == "linux" {
-		backend = &FirecrackerBackend{}
-	} else {
-		backend = NewDockerBackend()
-	}
+	// Use DummyBackend for testing
+	backend = &DummyBackend{}
 }
 
 func setupLogging() {
@@ -323,9 +337,11 @@ func handleConnection(conn net.Conn, done chan bool) {
 				count++
 				return true
 			})
-			backendName := "Docker"
+			backendName := "Dummy"
 			if _, ok := backend.(*FirecrackerBackend); ok {
 				backendName = "Firecracker"
+			} else if _, ok := backend.(*DockerBackend); ok {
+				backendName = "Docker"
 			}
 			response := fmt.Sprintf("Daemon: running\nBackend: %s\nSafe Mode: %t\nRunning VMs: %d\nUptime: %v\nPID: %d\n", backendName, safeMode, count, time.Since(startTime).Round(time.Second), os.Getpid())
 			conn.Write([]byte(response))
@@ -387,6 +403,7 @@ func handleConnection(conn net.Conn, done chan bool) {
 				logger.WithError(err).Error("Failed to stop VM")
 				conn.Write([]byte("error: " + err.Error() + "\n"))
 			} else {
+				runningVMs.Delete(id)
 				conn.Write([]byte("stopped\n"))
 			}
 		case "status-vm":
@@ -565,6 +582,51 @@ func listVMs(cmd *cobra.Command, args []string) {
 	}
 }
 
+func startVM(cmd *cobra.Command, args []string) {
+	socket := expandPath(socketPath)
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		fmt.Println("Daemon not running")
+		return
+	}
+	defer conn.Close()
+
+	conn.Write([]byte(fmt.Sprintf("start-vm %s %s", args[0], args[1])))
+	buf := make([]byte, 1024)
+	n, _ := conn.Read(buf)
+	fmt.Printf("VM start: %s", string(buf[:n]))
+}
+
+func stopVM(cmd *cobra.Command, args []string) {
+	socket := expandPath(socketPath)
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		fmt.Println("Daemon not running")
+		return
+	}
+	defer conn.Close()
+
+	conn.Write([]byte(fmt.Sprintf("stop-vm %s", args[0])))
+	buf := make([]byte, 1024)
+	n, _ := conn.Read(buf)
+	fmt.Printf("VM stop: %s", string(buf[:n]))
+}
+
+func statusVM(cmd *cobra.Command, args []string) {
+	socket := expandPath(socketPath)
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		fmt.Println("Daemon not running")
+		return
+	}
+	defer conn.Close()
+
+	conn.Write([]byte(fmt.Sprintf("status-vm %s", args[0])))
+	buf := make([]byte, 1024)
+	n, _ := conn.Read(buf)
+	fmt.Printf("VM status: %s", string(buf[:n]))
+}
+
 func doctorDaemon(cmd *cobra.Command, args []string) {
 	fmt.Println("Running aegis doctor...")
 
@@ -663,7 +725,28 @@ func main() {
 	}
 	listCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 
-	vmCmd.AddCommand(listCmd)
+	var startVMCmd = &cobra.Command{
+		Use:   "start <id> <image>",
+		Short: "Start a VM",
+		Run:   startVM,
+		Args:  cobra.ExactArgs(2),
+	}
+
+	var stopVMCmd = &cobra.Command{
+		Use:   "stop <id>",
+		Short: "Stop a VM",
+		Run:   stopVM,
+		Args:  cobra.ExactArgs(1),
+	}
+
+	var statusVMCmd = &cobra.Command{
+		Use:   "status <id>",
+		Short: "Check VM status",
+		Run:   statusVM,
+		Args:  cobra.ExactArgs(1),
+	}
+
+	vmCmd.AddCommand(listCmd, startVMCmd, stopVMCmd, statusVMCmd)
 
 	safeModeCmd.AddCommand(enableCmd, disableCmd)
 
