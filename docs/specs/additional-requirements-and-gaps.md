@@ -1,42 +1,50 @@
-# Additional Requirements & Identified Gaps
+# Additional Requirements & Identified Gaps from v1 Codebase
 
-## 1. Skill & Tool Discovery / Lookup
+## Incorporated Items
 
-**Requirement**: Agents must be able to query the available skills and tools at runtime.
+### 1. Skill / Tool Discovery & Lookup
+Agents must be able to dynamically query available skills and tools at runtime.
 
-- New skill/tool: `list_skills` / `list_tools` (or combined `get_capabilities`)
-- Should return: name, description, required scopes/permissions, current status, version
-- Must be fast and available in every Agent Runtime VM via AegisHub
+- Dedicated tool: `list_skills()`, `list_tools()`, or `get_capabilities()`
+- Returns: name, description, required scopes, version, status
+- Should support semantic search (vector embeddings)
+- Must be fast and available in every Agent Runtime VM
 
-## 2. Secrets Management
+### 2. Workspace Customization
+Support loading user-defined context files from `~/.aegis/workspace/`:
+- `AGENTS.md` — custom agent personas
+- `SOUL.md` — system soul / values
+- `TOOLS.md` — tool descriptions
+- `SKILL.md` — skill templates
 
-**Requirement**: All secret handling must be done through the CLI (never via chat or autonomous agent action).
+This enables strong personalization.
 
-- `aegis secrets set <name>` → interactive prompt or `--stdin`
-- `aegis secrets list` (shows names only)
-- `aegis secrets remove <name>`
-- Secrets stored encrypted and injected only at execution time by Network Boundary VM
+### 3. Vault / Secrets Management
+- CLI-only: `aegis secrets set/list/remove`
+- Interactive prompt or `--stdin` / `--file`
+- Encrypted storage (age + HKDF recommended)
+- Safe injection via Network Boundary only
+- Memory zeroing after use
 
-## 3. Upgrade Process
+### 4. Advanced Skill Lifecycle (Builder)
+- SAST, SCA, secrets scanning
+- Policy-as-code enforcement
+- Composition with health checks + automatic rollback
+- SBOM (CycloneDX) generation
 
-Current accepted process for v2:
-1. `aegis safe-mode enable` (or `aegis stop`)
-2. `git pull`
-3. `make build` / `make install`
-4. `aegis start`
+### 5. EventBus & Background Services
+- Internal event bus for scheduled tasks, timers, signals
+- Background service management
+- Approval queues for proactive actions
 
-## 4. Open Questions (No Answers Yet)
-
-- Global configuration system and where defaults live
-- Resource quotas and host protection mechanisms
-- Skill dependency management inside Builder VM
-- Backup / restore strategy for Store VM
-- Standardized error taxonomy and user-facing error messages
-- Full threat model documentation
-- Audit log retention and pruning policy
-- Packaging and distribution story beyond dev mode
+## Remaining Open Questions
+- Global configuration system (Viper-style layering)
+- Resource quotas and host protection
+- TUI (Bubble Tea)
+- Full threat model
+- Skill dependency management
+- Backup / restore strategy
 
 ## Next Actions
-- Create dedicated specs for Secrets Management, Configuration, and Skill Discovery
-
-**Last Updated:** May 08, 2026
+- Create dedicated specs for the top 5 items above
+- Update relevant PRD and architecture docs
