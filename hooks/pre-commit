@@ -8,3 +8,9 @@ if ! go build ./...; then
   echo "Go build failed. Aborting commit."
   exit 1
 fi
+
+# Check if go tests pass
+if ! go test -run TestIsDaemonRunning ./cmd/aegis; then
+  echo "Go tests failed. Aborting commit."
+  exit 1
+fi
