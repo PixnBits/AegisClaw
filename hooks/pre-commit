@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# Run go fmt on all Go files
+go fmt ./...
+
+# Check if go build succeeds
+if ! go build ./...; then
+  echo "Go build failed. Aborting commit."
+  exit 1
+fi

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -70,6 +69,38 @@ func (d *DockerBackend) StatusVM(ctx context.Context, id string) (string, error)
 	return strings.TrimSpace(string(output)), nil
 }
 
+func sendAPIRequest(sockPath, method, path string, body interface{}) error {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", sockPath)
+			},
+		},
+	}
+	var reqBody io.Reader
+	if body != nil {
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reqBody = bytes.NewReader(jsonBody)
+	}
+	req, err := http.NewRequest(method, "http://localhost"+path, reqBody)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("API request failed with status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 type FirecrackerBackend struct{}
 
 func (f *FirecrackerBackend) StartVM(ctx context.Context, config VMConfig) error {
@@ -85,10 +116,10 @@ func (f *FirecrackerBackend) StartVM(ctx context.Context, config VMConfig) error
 		},
 		"drives": []map[string]interface{}{
 			{
-				"drive_id":        "rootfs",
-				"path_on_host":    config.RootfsPath,
-				"is_root_device":  true,
-				"is_read_only":    false,
+				"drive_id":       "rootfs",
+				"path_on_host":   config.RootfsPath,
+				"is_root_device": true,
+				"is_read_only":   false,
 			},
 		},
 	}
@@ -262,7 +293,7 @@ func handleConnection(conn net.Conn, done chan bool) {
 				conn.Write([]byte("error: " + err.Error() + "\n"))
 			} else {
 				runningVMs.Store(id, config)
-				vmPublic, vmPrivate, _ := ed25519.GenerateKey(rand.Reader)
+				vmPublic, _, _ := ed25519.GenerateKey(rand.Reader)
 				logger.WithFields(logrus.Fields{"vm_id": id, "public_key": fmt.Sprintf("%x", vmPublic)}).Info("Generated VM keypair")
 				// Assume private key sent to VM somehow
 				conn.Write([]byte("started\n"))
