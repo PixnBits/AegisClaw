@@ -461,7 +461,11 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 
 	conn.Write([]byte("status"))
 	buf := make([]byte, 1024)
-	n, _ := conn.Read(buf)
+	n, err := conn.Read(buf)
+	if err != nil || n == 0 {
+		fmt.Println("Daemon not running")
+		return
+	}
 	response := string(buf[:n])
 	if jsonOutput {
 		lines := strings.Split(strings.TrimSpace(response), "\n")
