@@ -103,6 +103,11 @@ func expandPath(path string) string {
 }
 
 func startDaemon(cmd *cobra.Command, args []string) {
+	if os.Getuid() != 0 {
+		fmt.Println("Host Daemon must be started with root privileges")
+		os.Exit(1)
+	}
+
 	socket := expandPath(socketPath)
 	dir := filepath.Dir(socket)
 	os.MkdirAll(dir, 0700)
@@ -306,7 +311,27 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 
 func doctorDaemon(cmd *cobra.Command, args []string) {
 	fmt.Println("Running aegis doctor...")
-	// Placeholder for health checks
+
+	// Check if daemon is running
+	socket := expandPath(socketPath)
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		fmt.Println("FAIL: Daemon not running")
+		os.Exit(1)
+	}
+	conn.Close()
+
+	fmt.Println("PASS: Daemon is running")
+
+	// Check socket permissions
+	info, err := os.Stat(filepath.Dir(socket))
+	if err != nil || info.Mode().Perm() != 0700 {
+		fmt.Println("FAIL: Socket directory permissions incorrect")
+		os.Exit(1)
+	}
+
+	fmt.Println("PASS: Socket permissions correct")
+
 	fmt.Println("All systems operational")
 }
 
