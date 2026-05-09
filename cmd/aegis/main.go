@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -206,8 +207,11 @@ func isDaemonRunning() bool {
 }
 
 func initBackend() {
-	// Use DummyBackend for testing
-	backend = &DummyBackend{}
+	if runtime.GOOS == "linux" {
+		backend = &FirecrackerBackend{}
+	} else {
+		backend = NewDockerBackend()
+	}
 }
 
 func setupLogging() {
