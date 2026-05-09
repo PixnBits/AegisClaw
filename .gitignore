@@ -9,6 +9,7 @@
 /builder
 /network-boundary
 /web-portal
+bin/
 /shared/ollama/models/*
 /REPO_SUMMARY.md
 /shared/ollama/id_ed25519*

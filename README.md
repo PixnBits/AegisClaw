@@ -9,7 +9,13 @@ AegisClaw is a secure, sandboxed AI agent runtime built for safety and reliabili
 ### Building
 
 ```bash
-go build ./cmd/aegis
+make build
+```
+
+Or build individual components:
+
+```bash
+make build-binaries
 ```
 
 ### Running
