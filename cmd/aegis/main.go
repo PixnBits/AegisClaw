@@ -163,8 +163,14 @@ func (f *FirecrackerBackend) StopVM(ctx context.Context, id string) error {
 }
 
 func (f *FirecrackerBackend) StatusVM(ctx context.Context, id string) (string, error) {
-	if _, ok := runningCmds.Load(id); ok {
-		return "running", nil
+	if cmd, ok := runningCmds.Load(id); ok {
+		c := cmd.(*exec.Cmd)
+		if c.Process != nil {
+			err := c.Process.Signal(syscall.Signal(0))
+			if err == nil {
+				return "running", nil
+			}
+		}
 	}
 	return "stopped", nil
 }
@@ -360,11 +366,12 @@ func handleConnection(conn net.Conn, done chan bool) {
 				runningVMs.Range(func(key, value interface{}) bool {
 					id := key.(string)
 					config := value.(VMConfig)
+					status, _ := backend.StatusVM(context.Background(), id)
 					image := config.Image
 					if image == "" {
 						image = fmt.Sprintf("kernel:%s rootfs:%s", config.KernelPath, config.RootfsPath)
 					}
-					list = append(list, fmt.Sprintf("%s: %s", id, image))
+					list = append(list, fmt.Sprintf("%s: %s (%s)", id, image, status))
 					return true
 				})
 				response := "No running VMs\n"
@@ -636,7 +643,7 @@ func startVM(cmd *cobra.Command, args []string) {
 	}
 	defer conn.Close()
 
-	conn.Write([]byte(fmt.Sprintf("start-vm %s %s", args[0], args[1])))
+	conn.Write([]byte(fmt.Sprintf("start-vm %s %s %s", args[0], args[1], args[2])))
 	buf := make([]byte, 1024)
 	n, _ := conn.Read(buf)
 	fmt.Printf("VM start: %s", string(buf[:n]))
@@ -771,10 +778,10 @@ func main() {
 	listCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 
 	var startVMCmd = &cobra.Command{
-		Use:   "start <id> <image>",
+		Use:   "start <id> <kernel> <rootfs>",
 		Short: "Start a VM",
 		Run:   startVM,
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.ExactArgs(3),
 	}
 
 	var stopVMCmd = &cobra.Command{
