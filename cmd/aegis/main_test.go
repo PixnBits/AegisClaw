@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -84,5 +85,41 @@ func TestIsDaemonRunning(t *testing.T) {
 	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 	if !isDaemonRunning() {
 		t.Error("Expected running with own PID")
+	}
+}
+
+func TestStatusJSON(t *testing.T) {
+	response := "Daemon: running\nBackend: Firecracker\nSafe Mode: false\nRunning VMs: 0\nUptime: 1s\nPID: 123\n"
+	lines := strings.Split(strings.TrimSpace(response), "\n")
+	status := map[string]interface{}{}
+	for _, line := range lines {
+		parts := strings.SplitN(line, ": ", 2)
+		if len(parts) == 2 {
+			key := parts[0]
+			val := parts[1]
+			switch key {
+			case "Running VMs", "PID":
+				if num, err := strconv.Atoi(val); err == nil {
+					status[strings.ToLower(strings.ReplaceAll(key, " ", ""))] = num
+				}
+			case "Safe Mode":
+				status["safeMode"] = val == "true"
+			default:
+				status[strings.ToLower(strings.ReplaceAll(key, " ", ""))] = val
+			}
+		}
+	}
+	expected := map[string]interface{}{
+		"daemon":     "running",
+		"backend":    "Firecracker",
+		"safeMode":   false,
+		"runningvms": 0,
+		"uptime":     "1s",
+		"pid":        123,
+	}
+	for k, v := range expected {
+		if status[k] != v {
+			t.Errorf("Expected %v for %s, got %v", v, k, status[k])
+		}
 	}
 }
