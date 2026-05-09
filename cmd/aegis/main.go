@@ -28,6 +28,9 @@ import (
 
 var socketPath = "~/.aegis/daemon.sock"
 
+const defaultKernelPath = "/tmp/vmlinuz"
+const defaultRootfsPath = "/tmp/rootfs.img"
+
 var startTime time.Time
 var safeMode bool
 var runningCmds sync.Map
@@ -39,6 +42,7 @@ type VMConfig struct {
 	Image      string
 	KernelPath string
 	RootfsPath string
+	StartTime  time.Time
 }
 
 type SandboxBackend interface {
@@ -371,7 +375,8 @@ func handleConnection(conn net.Conn, done chan bool) {
 					if image == "" {
 						image = fmt.Sprintf("kernel:%s rootfs:%s", config.KernelPath, config.RootfsPath)
 					}
-					list = append(list, fmt.Sprintf("%s: %s (%s)", id, image, status))
+					uptime := time.Since(config.StartTime).Round(time.Second)
+					list = append(list, fmt.Sprintf("%s: %s (%s, uptime %v)", id, image, status, uptime))
 					return true
 				})
 				response := "No running VMs\n"
@@ -414,20 +419,21 @@ func handleConnection(conn net.Conn, done chan bool) {
 			done <- true
 			return
 		case "start-vm":
-			if len(parts) < 3 {
+			if len(parts) < 2 {
 				logger.Warn("Invalid start-vm command")
-				conn.Write([]byte("usage: start-vm <id> <image> or start-vm <id> <kernel> <rootfs>\n"))
+				conn.Write([]byte("usage: start-vm <id> [kernel rootfs]\n"))
 				continue
 			}
 			id := parts[1]
-			config := VMConfig{ID: id}
-			if len(parts) == 3 {
-				config.Image = parts[2]
+			config := VMConfig{ID: id, StartTime: time.Now()}
+			if len(parts) == 2 {
+				config.KernelPath = defaultKernelPath
+				config.RootfsPath = defaultRootfsPath
 			} else if len(parts) == 4 {
 				config.KernelPath = parts[2]
 				config.RootfsPath = parts[3]
 			} else {
-				conn.Write([]byte("usage: start-vm <id> <image> or start-vm <id> <kernel> <rootfs>\n"))
+				conn.Write([]byte("usage: start-vm <id> [kernel rootfs]\n"))
 				continue
 			}
 			logger.WithFields(logrus.Fields{"vm_id": id, "image": config.Image, "kernel": config.KernelPath, "rootfs": config.RootfsPath}).Info("Starting VM")
@@ -643,7 +649,7 @@ func startVM(cmd *cobra.Command, args []string) {
 	}
 	defer conn.Close()
 
-	conn.Write([]byte(fmt.Sprintf("start-vm %s %s %s", args[0], args[1], args[2])))
+	conn.Write([]byte(fmt.Sprintf("start-vm %s", args[0])))
 	buf := make([]byte, 1024)
 	n, _ := conn.Read(buf)
 	fmt.Printf("VM start: %s", string(buf[:n]))
@@ -778,10 +784,10 @@ func main() {
 	listCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 
 	var startVMCmd = &cobra.Command{
-		Use:   "start <id> <kernel> <rootfs>",
+		Use:   "start <name>",
 		Short: "Start a VM",
 		Run:   startVM,
-		Args:  cobra.ExactArgs(3),
+		Args:  cobra.ExactArgs(1),
 	}
 
 	var stopVMCmd = &cobra.Command{
