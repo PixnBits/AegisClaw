@@ -294,6 +294,28 @@ func handleConnection(conn net.Conn, done chan bool) {
 		cmd := parts[0]
 		logger.WithField("command", cmd).Info("Handling command")
 		switch cmd {
+		case "vm":
+			if len(parts) > 1 && parts[1] == "list" {
+				logger.Info("VM list requested")
+				var list []string
+				runningVMs.Range(func(key, value interface{}) bool {
+					id := key.(string)
+					config := value.(VMConfig)
+					image := config.Image
+					if image == "" {
+						image = fmt.Sprintf("kernel:%s rootfs:%s", config.KernelPath, config.RootfsPath)
+					}
+					list = append(list, fmt.Sprintf("%s: %s", id, image))
+					return true
+				})
+				response := "No running VMs\n"
+				if len(list) > 0 {
+					response = strings.Join(list, "\n") + "\n"
+				}
+				conn.Write([]byte(response))
+			} else {
+				conn.Write([]byte("unknown vm command\n"))
+			}
 		case "status":
 			logger.Info("Daemon status requested")
 			count := 0
@@ -507,6 +529,42 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	}
 }
 
+func listVMs(cmd *cobra.Command, args []string) {
+	socket := expandPath(socketPath)
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		fmt.Println("Daemon not running")
+		return
+	}
+	defer conn.Close()
+
+	conn.Write([]byte("vm list"))
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		fmt.Println("Error reading response")
+		return
+	}
+	response := string(buf[:n])
+	if jsonOutput {
+		lines := strings.Split(strings.TrimSpace(response), "\n")
+		vms := []map[string]string{}
+		for _, line := range lines {
+			if line == "No running VMs" || line == "" {
+				break
+			}
+			parts := strings.SplitN(line, ": ", 2)
+			if len(parts) == 2 {
+				vms = append(vms, map[string]string{"id": parts[0], "image": parts[1]})
+			}
+		}
+		jsonBytes, _ := json.Marshal(vms)
+		fmt.Println(string(jsonBytes))
+	} else {
+		fmt.Printf("Running VMs:\n%s\n", response)
+	}
+}
+
 func doctorDaemon(cmd *cobra.Command, args []string) {
 	fmt.Println("Running aegis doctor...")
 
@@ -593,8 +651,22 @@ func main() {
 		Run:   showLogs,
 	}
 
+	var vmCmd = &cobra.Command{
+		Use:   "vm",
+		Short: "Manage virtual machines",
+	}
+
+	var listCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List running VMs",
+		Run:   listVMs,
+	}
+	listCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+
+	vmCmd.AddCommand(listCmd)
+
 	safeModeCmd.AddCommand(enableCmd, disableCmd)
 
-	rootCmd.AddCommand(startCmd, statusCmd, doctorCmd, stopCmd, safeModeCmd, logsCmd)
+	rootCmd.AddCommand(startCmd, statusCmd, doctorCmd, stopCmd, safeModeCmd, logsCmd, vmCmd)
 	rootCmd.Execute()
 }
