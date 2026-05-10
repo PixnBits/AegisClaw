@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -41,7 +42,9 @@ func signMessage(msg *Message, priv ed25519.PrivateKey) {
 }
 
 func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	fmt.Println("1. Observe: Received", msg.Command, "with payload", msg.Payload)
+	prompt := "Observe the user input: " + fmt.Sprintf("%v", msg.Payload)
+	llmResponse := callLLM(prompt)
+	fmt.Println("1. Observe:", llmResponse)
 
 	// Get context from memory
 	contextMsg := Message{
@@ -70,23 +73,50 @@ func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 }
 
 func think(msg *Message) {
-	fmt.Println("2. Think: Analyzing the request")
+	prompt := "Think about the request: " + fmt.Sprintf("%v", msg.Payload)
+	llmResponse := callLLM(prompt)
+	fmt.Println("2. Think:", llmResponse)
 }
 
 func plan(msg *Message) {
-	fmt.Println("3. Plan: Decide to respond with processing confirmation")
+	prompt := "Plan how to respond to: " + fmt.Sprintf("%v", msg.Payload)
+	llmResponse := callLLM(prompt)
+	fmt.Println("3. Plan:", llmResponse)
 }
 
 func act(msg *Message) {
-	fmt.Println("4. Act: Prepare response")
+	prompt := "Act on the plan for: " + fmt.Sprintf("%v", msg.Payload)
+	llmResponse := callLLM(prompt)
+	fmt.Println("4. Act:", llmResponse)
 }
 
 func execute(msg *Message) {
-	fmt.Println("5. Execute: Send response")
+	prompt := "Execute the actions for: " + fmt.Sprintf("%v", msg.Payload)
+	llmResponse := callLLM(prompt)
+	fmt.Println("5. Execute:", llmResponse)
 }
 
 func judge(msg *Message) {
 	fmt.Println("6. Judge: Response sent successfully")
+}
+
+// Mock LLM integration
+func callLLM(prompt string) string {
+	// Simulate LLM response based on prompt
+	if strings.Contains(prompt, "Observe") {
+		return "Observed: User input received and context loaded."
+	} else if strings.Contains(prompt, "Think") {
+		return "Analyzed: This is a request for information."
+	} else if strings.Contains(prompt, "Plan") {
+		return "Planned: Respond with relevant information."
+	} else if strings.Contains(prompt, "Act") {
+		return "Acting: Prepare tool calls if needed."
+	} else if strings.Contains(prompt, "Execute") {
+		return "Executed: Tools called and results received."
+	} else if strings.Contains(prompt, "Judge") {
+		return "Judged: Response quality is good."
+	}
+	return "LLM response: " + prompt
 }
 
 func runAgent(cmd *cobra.Command, args []string) {
