@@ -14,8 +14,13 @@ func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
 	}
 
+	repoRoot := repoRoot(t)
+	hubBinary := buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
+	memoryBinary := buildRepoBinary(t, repoRoot, "./cmd/memory", "memory")
+	agentBinary := buildRepoBinary(t, repoRoot, "./cmd/agent", "agent")
+
 	// Start hub
-	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/aegishub", "start")
+	hubCmd := exec.Command(hubBinary, "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test.sock")
 	err := hubCmd.Start()
 	if err != nil {
@@ -25,7 +30,7 @@ func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Start memory
-	memCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/memory")
+	memCmd := exec.Command(memoryBinary)
 	memCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test.sock")
 	err = memCmd.Start()
 	if err != nil {
@@ -35,7 +40,7 @@ func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Start agent
-	agentCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/agent")
+	agentCmd := exec.Command(agentBinary)
 	agentCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test.sock")
 	err = agentCmd.Start()
 	if err != nil {
@@ -104,8 +109,14 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
 	}
 
+	repoRoot := repoRoot(t)
+	hubBinary := buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
+	storeBinary := buildRepoBinary(t, repoRoot, "./cmd/store", "store")
+	scribeBinary := buildRepoBinary(t, repoRoot, "./cmd/court-scribe", "court-scribe")
+	personaBinary := buildRepoBinary(t, repoRoot, "./cmd/court-persona", "court-persona")
+
 	// Similar setup
-	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/aegishub", "start")
+	hubCmd := exec.Command(hubBinary, "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
 	err := hubCmd.Start()
 	if err != nil {
@@ -114,7 +125,7 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 	defer hubCmd.Process.Kill()
 	time.Sleep(100 * time.Millisecond)
 
-	storeCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/store")
+	storeCmd := exec.Command(storeBinary)
 	storeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
 	err = storeCmd.Start()
 	if err != nil {
@@ -125,7 +136,7 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 
 	// builderCmd := exec.Command("./bin/builder")
 
-	scribeCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/court-scribe")
+	scribeCmd := exec.Command(scribeBinary)
 	scribeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
 	err = scribeCmd.Start()
 	if err != nil {
@@ -138,7 +149,7 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 	personas := []string{"ciso", "security_architect", "architect", "senior_coder", "tester", "efficiency", "user_advocate"}
 	var personaCmds []*exec.Cmd
 	for _, p := range personas {
-		cmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/court-persona", "--persona", p)
+		cmd := exec.Command(personaBinary, "--persona", p)
 		cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
 		err = cmd.Start()
 		if err != nil {
@@ -202,8 +213,13 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
 	}
 
+	repoRoot := repoRoot(t)
+	hubBinary := buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
+	storeBinary := buildRepoBinary(t, repoRoot, "./cmd/store", "store")
+	networkBoundaryBinary := buildRepoBinary(t, repoRoot, "./cmd/network-boundary", "network-boundary")
+
 	// Start hub, store, builder, network-boundary for skill deployment
-	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/aegishub", "start")
+	hubCmd := exec.Command(hubBinary, "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")
 	err := hubCmd.Start()
 	if err != nil {
@@ -212,7 +228,7 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 	defer hubCmd.Process.Kill()
 	time.Sleep(100 * time.Millisecond)
 
-	storeCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/store")
+	storeCmd := exec.Command(storeBinary)
 	storeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")
 	err = storeCmd.Start()
 	if err != nil {
@@ -223,7 +239,7 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 
 	// builderCmd := exec.Command("./bin/builder")
 
-	netCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/network-boundary")
+	netCmd := exec.Command(networkBoundaryBinary)
 	netCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")
 	err = netCmd.Start()
 	if err != nil {

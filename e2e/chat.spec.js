@@ -16,6 +16,8 @@ test.describe('Web Portal E2E Tests', () => {
 
     const response = page.locator('#messages .message.agent').last();
     await expect(response).toContainText('Based on my analysis');
+    await expect(response).toContainText('Hello AegisClaw');
+    await expect(response).toContainText('insights.');
   });
 
   test('should handle tool calls in stream', async ({ page }) => {
@@ -39,7 +41,9 @@ test.describe('Web Portal E2E Tests', () => {
     await sendButton.click();
 
     const response = page.locator('#messages .message.agent').last();
+    await expect(response).toContainText('Based on my analysis');
     await expect(response).toContainText('Explain quantum computing');
+    await expect(response).toContainText('insights.');
     await page.waitForTimeout(500);
     expect(await page.locator('#messages .message.agent').count()).toBeGreaterThanOrEqual(4);
   });

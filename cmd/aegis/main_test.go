@@ -15,6 +15,17 @@ import (
 
 const testSocketPath = "/tmp/aegis_test.sock"
 
+func repoRoot(t *testing.T) string {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+
+	return filepath.Clean(filepath.Join(wd, "..", ".."))
+}
+
 func buildRepoBinary(t *testing.T, repoRoot, pkgPath, outputName string) string {
 	t.Helper()
 
@@ -33,6 +44,22 @@ func buildRepoBinary(t *testing.T, repoRoot, pkgPath, outputName string) string 
 	return outputPath
 }
 
+func waitForUnixSocket(t *testing.T, socketPath string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("unix", socketPath, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Fatalf("Timed out waiting for socket %s", socketPath)
+}
+
 func TestDaemonStartAndStatus(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("daemon start integration test requires root privileges")
@@ -41,11 +68,7 @@ func TestDaemonStartAndStatus(t *testing.T) {
 	// Clean up
 	os.Remove(testSocketPath)
 
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Failed to get working directory: %v", err)
-	}
-	repoRoot := filepath.Clean(filepath.Join(wd, "..", ".."))
+	repoRoot := repoRoot(t)
 	aegisBinary := buildRepoBinary(t, repoRoot, "./cmd/aegis", "aegis")
 	buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
 	buildRepoBinary(t, repoRoot, "./cmd/memory", "memory")
@@ -55,8 +78,7 @@ func TestDaemonStartAndStatus(t *testing.T) {
 	cmd := exec.Command(aegisBinary, "start")
 	cmd.Env = append(os.Environ(), "AEGIS_SOCKET="+testSocketPath)
 	cmd.Dir = repoRoot
-	err = cmd.Start()
-	if err != nil {
+	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start daemon: %v", err)
 	}
 	defer func() {
@@ -67,8 +89,7 @@ func TestDaemonStartAndStatus(t *testing.T) {
 		_ = os.Remove(testSocketPath)
 	}()
 
-	// Wait for socket to be created
-	time.Sleep(500 * time.Millisecond)
+	waitForUnixSocket(t, testSocketPath, 10*time.Second)
 
 	// Check status
 	conn, err := net.Dial("unix", testSocketPath)
