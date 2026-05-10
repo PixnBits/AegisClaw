@@ -120,15 +120,17 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		"api.github.com":  true,
 		"localhost:11434": true,
 	}
+	ollamaGenerateURL := "http://localhost:11434/api/generate"
 
 	// Start HTTP proxy
 	go func() {
-		http.HandleFunc("/proxy", func(w http.ResponseWriter, r *http.Request) {
-			targetURL := r.URL.Query().Get("url")
-			if targetURL == "" {
-				http.Error(w, "Missing url parameter", 400)
+		http.HandleFunc("/proxy/ollama/generate", func(w http.ResponseWriter, r *http.Request) {
+			targetURL := ollamaGenerateURL
+			if legacyURL := r.URL.Query().Get("url"); legacyURL != "" && legacyURL != ollamaGenerateURL {
+				http.Error(w, "Domain not allowed", 403)
 				return
 			}
+
 			parsedURL, err := parseAllowedURL(targetURL, allowedDomains)
 			if err != nil {
 				// Log to audit

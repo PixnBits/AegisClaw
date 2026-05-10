@@ -181,7 +181,7 @@ func ollamaEndpoint() string {
 		return strings.TrimRight(raw, "/") + "/api/generate"
 	}
 
-	return "http://localhost:8081/proxy?url=http://localhost:11434/api/generate"
+	return "http://localhost:8081/proxy/ollama/generate"
 }
 
 func mockLLMResponse(prompt string) string {
