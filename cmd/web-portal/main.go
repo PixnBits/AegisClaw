@@ -156,11 +156,47 @@ func sendSSE(w http.ResponseWriter, msg StreamMessage) {
 }
 
 func runWebPortal(cmd *cobra.Command, args []string) {
+	// API routes
 	http.HandleFunc("/api/chat/stream", handleChatStream)
-	http.Handle("/", http.FileServer(http.Dir("./static"))) // Assume static files
+	http.HandleFunc("/api/dashboard", handleDashboard)
+	http.HandleFunc("/api/skills", handleSkills)
+	http.HandleFunc("/api/proposals", handleProposals)
+
+	// Static files
+	http.Handle("/", http.FileServer(http.Dir("./static")))
 
 	fmt.Println("Web Portal starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+func handleDashboard(w http.ResponseWriter, r *http.Request) {
+	// Mock dashboard data
+	data := map[string]interface{}{
+		"status": "running",
+		"agents": 1,
+		"skills": 5,
+		"proposals": 2,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+func handleSkills(w http.ResponseWriter, r *http.Request) {
+	// Mock skills data
+	data := []map[string]interface{}{
+		{"id": "discord_monitor", "name": "Discord Monitor", "description": "Monitors Discord for keywords"},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+func handleProposals(w http.ResponseWriter, r *http.Request) {
+	// Mock proposals data
+	data := []map[string]interface{}{
+		{"id": "prop1", "description": "Add new feature", "status": "pending"},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
 }
 
 func main() {

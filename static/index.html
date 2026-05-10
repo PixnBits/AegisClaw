@@ -5,8 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AegisClaw - Secure AI Assistant</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-        .chat-container { max-width: 800px; margin: 0 auto; background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
+        nav { background: #333; color: white; padding: 10px; }
+        nav a { color: white; margin: 0 15px; text-decoration: none; }
+        .container { max-width: 1200px; margin: 20px auto; padding: 20px; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+        .card { border: 1px solid #ddd; padding: 20px; border-radius: 8px; text-align: center; }
+        .chat-container { max-width: 800px; margin: 20px auto; }
         .messages { height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin-bottom: 20px; }
         .message { margin-bottom: 10px; }
         .user { text-align: right; }
@@ -15,22 +20,79 @@
         input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
         button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; margin-left: 10px; cursor: pointer; }
         button:hover { background: #0056b3; }
+        .skills, .proposals { margin-top: 20px; }
+        .list { list-style: none; padding: 0; }
+        .list li { padding: 10px; border-bottom: 1px solid #ddd; }
     </style>
 </head>
 <body>
-    <div class="chat-container">
-        <h1>Welcome to AegisClaw</h1>
-        <div id="messages" class="messages"></div>
-        <div class="input-area">
-            <input type="text" id="messageInput" placeholder="Ask me anything..." />
-            <button onclick="sendMessage()">Send</button>
-        </div>
+    <nav>
+        <a href="#dashboard">Dashboard</a>
+        <a href="#chat">Chat</a>
+        <a href="#skills">Skills</a>
+        <a href="#proposals">Proposals</a>
+    </nav>
+
+    <div class="container">
+        <section id="dashboard">
+            <h1>Dashboard</h1>
+            <div class="dashboard" id="dashboard-content">
+                <!-- Loaded via JS -->
+            </div>
+        </section>
+
+        <section id="chat" class="chat-container">
+            <h2>Chat with AegisClaw</h2>
+            <div id="messages" class="messages"></div>
+            <div class="input-area">
+                <input type="text" id="messageInput" placeholder="Ask me anything..." />
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </section>
+
+        <section id="skills">
+            <h2>Skills Registry</h2>
+            <ul class="list" id="skills-list">
+                <!-- Loaded via JS -->
+            </ul>
+        </section>
+
+        <section id="proposals">
+            <h2>Proposals</h2>
+            <ul class="list" id="proposals-list">
+                <!-- Loaded via JS -->
+            </ul>
+        </section>
     </div>
 
     <script>
         const messagesDiv = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         let sessionId = 'session_' + Date.now();
+        let currentAgentMessage = null;
+
+        // Load dashboard
+        fetch('/api/dashboard').then(r => r.json()).then(data => {
+            const dashboard = document.getElementById('dashboard-content');
+            dashboard.innerHTML = `
+                <div class="card"><h3>Status</h3><p>${data.status}</p></div>
+                <div class="card"><h3>Active Agents</h3><p>${data.agents}</p></div>
+                <div class="card"><h3>Skills</h3><p>${data.skills}</p></div>
+                <div class="card"><h3>Proposals</h3><p>${data.proposals}</p></div>
+            `;
+        });
+
+        // Load skills
+        fetch('/api/skills').then(r => r.json()).then(data => {
+            const list = document.getElementById('skills-list');
+            list.innerHTML = data.map(s => `<li>${s.name}: ${s.description}</li>`).join('');
+        });
+
+        // Load proposals
+        fetch('/api/proposals').then(r => r.json()).then(data => {
+            const list = document.getElementById('proposals-list');
+            list.innerHTML = data.map(p => `<li>${p.description} (${p.status})</li>`).join('');
+        });
 
         function sendMessage() {
             const message = messageInput.value.trim();
@@ -65,8 +127,6 @@
                 addMessage('agent', `✅ Tool result: ${data.content.result}`);
             }
         }
-
-        let currentAgentMessage = null;
 
         function updateAgentMessage(text, isPartial) {
             if (!currentAgentMessage) {
