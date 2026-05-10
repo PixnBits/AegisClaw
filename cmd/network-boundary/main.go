@@ -96,7 +96,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 
 	// Load allowed domains (stub: hardcode for now)
 	allowedDomains := map[string]bool{
-		"example.com": true,
+		"example.com":    true,
 		"api.github.com": true,
 	}
 
