@@ -378,6 +378,66 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 	runningCmds.Store("store", storeCmd)
 
+	// Start Web Portal
+	webCmd := exec.Command("./bin/web-portal")
+	webCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = webCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start Web Portal: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("web-portal", webCmd)
+
+	// Start Agent Runtime
+	agentCmd := exec.Command("./bin/agent")
+	agentCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = agentCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start Agent Runtime: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("agent", agentCmd)
+
+	// Start Builder VM
+	builderCmd := exec.Command("./bin/builder")
+	builderCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = builderCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start Builder VM: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("builder", builderCmd)
+
+	// Start Network Boundary
+	netCmd := exec.Command("./bin/network-boundary")
+	netCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = netCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start Network Boundary: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("network-boundary", netCmd)
+
+	// Start Court Scribe
+	scribeCmd := exec.Command("./bin/court-scribe")
+	scribeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = scribeCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start Court Scribe: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("court-scribe", scribeCmd)
+
+	// Start Court Personas (for simplicity, start one)
+	personaCmd := exec.Command("./bin/court-persona", "--persona", "ciso")
+	personaCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = personaCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start Court Persona: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("court-persona", personaCmd)
+
 	// Connect to hub
 	hubConn, err = net.Dial("unix", hubSocket)
 	if err != nil {
