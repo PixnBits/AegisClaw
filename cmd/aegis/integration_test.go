@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -302,6 +303,32 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 
 	if toolResp.Command != "tool.list" {
 		t.Errorf("Expected tool.list, got %s", toolResp.Command)
+	}
+
+	// Test daemon status for VM states
+	testDaemonStatus(t)
+}
+
+func testDaemonStatus(t *testing.T) {
+	socket := expandPath("~/.aegis/daemon.sock")
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatalf("Failed to connect to daemon: %v", err)
+	}
+	defer conn.Close()
+
+	conn.Write([]byte("status"))
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil || n == 0 {
+		t.Fatalf("Expected status response")
+	}
+	status := string(buf[:n])
+	if !strings.Contains(status, "Memory VM: running") {
+		t.Errorf("Expected Memory VM running, got %s", status)
+	}
+	if !strings.Contains(status, "Store VM: running") {
+		t.Errorf("Expected Store VM running, got %s", status)
 	}
 }
 
