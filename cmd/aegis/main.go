@@ -208,6 +208,7 @@ var backend SandboxBackend
 var runningVMs sync.Map
 var jsonOutput bool
 var foreground bool
+var headless bool
 
 func isDaemonRunning() bool {
 	// Check PID file first
@@ -685,7 +686,97 @@ func enableSafeMode(cmd *cobra.Command, args []string) {
 
 func showLogs(cmd *cobra.Command, args []string) {
 	logFile := expandPath("~/.aegis/daemon.log")
-	exec.Command("tail", "-f", logFile).Run()
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		fmt.Printf("Error reading logs: %v\n", err)
+		return
+	}
+	fmt.Print(string(data))
+}
+
+func listSkills(cmd *cobra.Command, args []string) {
+	resp := sendToHub("store", "skill.list", nil)
+	if jsonOutput {
+		fmt.Println(resp)
+	} else {
+		fmt.Println("Skills: (JSON output for parsing)")
+	}
+}
+
+func proposeSkill(cmd *cobra.Command, args []string) {
+	fmt.Println("Propose a new skill via chat or provide description.")
+}
+
+func listCourtDecisions(cmd *cobra.Command, args []string) {
+	resp := sendToHub("store", "court.get_reviews", map[string]interface{}{"id": "all"})
+	if jsonOutput {
+		fmt.Println(resp)
+	} else {
+		fmt.Println("Court decisions: (JSON output for parsing)")
+	}
+}
+
+func startChat(cmd *cobra.Command, args []string) {
+	fmt.Println("Starting chat session...")
+	if headless {
+		fmt.Println("Running in headless mode.")
+	}
+}
+
+func listSessions(cmd *cobra.Command, args []string) {
+	fmt.Println("Sessions: (mock list)")
+}
+
+func listTasks(cmd *cobra.Command, args []string) {
+	fmt.Println("Tasks: (mock list)")
+}
+
+func showAutonomy(cmd *cobra.Command, args []string) {
+	sessionID := args[0]
+	fmt.Printf("Autonomy for session %s: (mock data)\n", sessionID)
+}
+
+func showAuditLog(cmd *cobra.Command, args []string) {
+	resp := sendToHub("store", "audit.get_root", nil)
+	if jsonOutput {
+		fmt.Println(resp)
+	} else {
+		fmt.Println("Audit root:", resp)
+	}
+}
+
+func sendToHub(destination, command string, payload interface{}) string {
+	socket := expandPath(socketPath)
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		return fmt.Sprintf("Error connecting: %v", err)
+	}
+	defer conn.Close()
+
+	msg := Message{
+		Source:      "cli",
+		Destination: destination,
+		Command:     command,
+		Payload:     payload,
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Signature:   "dummy",
+	}
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(conn)
+
+	err = encoder.Encode(msg)
+	if err != nil {
+		return fmt.Sprintf("Error sending: %v", err)
+	}
+
+	var resp Message
+	err = decoder.Decode(&resp)
+	if err != nil {
+		return fmt.Sprintf("Error receiving: %v", err)
+	}
+
+	data, _ := json.Marshal(resp)
+	return string(data)
 }
 
 func disableSafeMode(cmd *cobra.Command, args []string) {
@@ -948,6 +1039,102 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 	}
 
+	// Skills commands
+	var skillsCmd = &cobra.Command{
+		Use:   "skills",
+		Short: "Manage skills",
+	}
+	var skillsListCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List skills",
+		Run:   listSkills,
+	}
+	skillsListCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	var skillsProposeCmd = &cobra.Command{
+		Use:   "propose",
+		Short: "Propose a new skill",
+		Run:   proposeSkill,
+	}
+	skillsCmd.AddCommand(skillsListCmd, skillsProposeCmd)
+
+	// Court commands
+	var courtCmd = &cobra.Command{
+		Use:   "court",
+		Short: "Manage court decisions",
+	}
+	var courtDecisionsCmd = &cobra.Command{
+		Use:   "decisions",
+		Short: "Manage court decisions",
+	}
+	var courtDecisionsListCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List court decisions",
+		Run:   listCourtDecisions,
+	}
+	courtDecisionsListCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	courtDecisionsCmd.AddCommand(courtDecisionsListCmd)
+	courtCmd.AddCommand(courtDecisionsCmd)
+
+	// Chat command
+	var chatCmd = &cobra.Command{
+		Use:   "chat",
+		Short: "Start chat session",
+		Run:   startChat,
+	}
+	chatCmd.Flags().BoolVar(&headless, "headless", false, "Run in headless mode")
+
+	// Sessions commands
+	var sessionsCmd = &cobra.Command{
+		Use:   "sessions",
+		Short: "Manage chat sessions",
+	}
+	var sessionsListCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List sessions",
+		Run:   listSessions,
+	}
+	sessionsListCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	sessionsCmd.AddCommand(sessionsListCmd)
+
+	// Tasks commands
+	var tasksCmd = &cobra.Command{
+		Use:   "tasks",
+		Short: "Manage tasks",
+	}
+	var tasksListCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List tasks",
+		Run:   listTasks,
+	}
+	tasksListCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	tasksCmd.AddCommand(tasksListCmd)
+
+	// Autonomy commands
+	var autonomyCmd = &cobra.Command{
+		Use:   "autonomy",
+		Short: "Manage autonomy settings",
+	}
+	var autonomyShowCmd = &cobra.Command{
+		Use:   "show <session-id>",
+		Short: "Show autonomy for session",
+		Run:   showAutonomy,
+		Args:  cobra.ExactArgs(1),
+	}
+	autonomyCmd.AddCommand(autonomyShowCmd)
+
+	// Audit commands
+	var auditCmd = &cobra.Command{
+		Use:   "audit",
+		Short: "Audit and verification",
+	}
+	var auditLogCmd = &cobra.Command{
+		Use:   "log",
+		Short: "Show audit log",
+		Run:   showAuditLog,
+	}
+	auditLogCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	auditCmd.AddCommand(auditLogCmd)
+
 	var stopVMCmd = &cobra.Command{
 		Use:   "stop <id>",
 		Short: "Stop a VM",
@@ -966,6 +1153,6 @@ func main() {
 
 	safeModeCmd.AddCommand(enableCmd, disableCmd)
 
-	rootCmd.AddCommand(startCmd, statusCmd, doctorCmd, stopCmd, safeModeCmd, logsCmd, vmCmd)
+	rootCmd.AddCommand(startCmd, statusCmd, doctorCmd, stopCmd, safeModeCmd, logsCmd, vmCmd, skillsCmd, courtCmd, chatCmd, sessionsCmd, tasksCmd, autonomyCmd, auditCmd)
 	rootCmd.Execute()
 }

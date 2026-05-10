@@ -172,9 +172,9 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// Mock dashboard data
 	data := map[string]interface{}{
-		"status": "running",
-		"agents": 1,
-		"skills": 5,
+		"status":    "running",
+		"agents":    1,
+		"skills":    5,
 		"proposals": 2,
 	}
 	w.Header().Set("Content-Type", "application/json")
