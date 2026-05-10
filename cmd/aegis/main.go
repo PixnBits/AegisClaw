@@ -114,13 +114,13 @@ func (f *FirecrackerBackend) StartVM(ctx context.Context, config VMConfig) error
 	if config.KernelPath == "" || config.RootfsPath == "" {
 		return fmt.Errorf("KernelPath and RootfsPath required for Firecracker")
 	}
-	sockPath := expandPath("~/.aegis/firecracker-" + config.ID + ".sock")
-	configPath := expandPath("~/.aegis/config-" + config.ID + ".json")
+	sockPath := "/tmp/firecracker-" + config.ID + ".sock"
+	configPath := "/tmp/config-" + config.ID + ".json"
 	logrus.Infof("Starting Firecracker VM %s with kernel %s, rootfs %s", config.ID, config.KernelPath, config.RootfsPath)
 	configData := map[string]interface{}{
 		"boot-source": map[string]interface{}{
 			"kernel_image_path": config.KernelPath,
-			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off",
+			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off nomodules",
 		},
 		"drives": []map[string]interface{}{
 			{
@@ -147,37 +147,27 @@ func (f *FirecrackerBackend) StartVM(ctx context.Context, config VMConfig) error
 	logrus.Infof("Firecracker process started, PID %d", cmd.Process.Pid)
 	runningCmds.Store(config.ID, cmd)
 	// Wait for firecracker to be ready
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 	logrus.Infof("Checking if Firecracker process is alive")
 	if cmd.Process == nil || cmd.Process.Signal(syscall.Signal(0)) != nil {
 		logrus.Error("Firecracker process died")
 		runningCmds.Delete(config.ID)
 		return fmt.Errorf("Firecracker process died")
 	}
-	logrus.Infof("Checking if socket %s is listening", sockPath)
-	conn, err := net.DialTimeout("unix", sockPath, 100*time.Millisecond)
-	if err != nil {
-		logrus.Errorf("Socket not listening: %v", err)
+	logrus.Infof("Checking if socket %s is created", sockPath)
+	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
+		logrus.Errorf("Firecracker socket not created: %v", err)
 		cmd.Process.Kill()
 		runningCmds.Delete(config.ID)
 		return err
 	}
-	conn.Close()
-	logrus.Info("Socket listening, sending InstanceStart")
-	// Send start action
-	err = sendAPIRequest(sockPath, "PUT", "/actions", map[string]string{"action_type": "InstanceStart"})
-	if err != nil {
-		logrus.Errorf("Failed to send InstanceStart: %v", err)
-		cmd.Process.Kill()
-		runningCmds.Delete(config.ID)
-		return err
-	}
+	logrus.Info("Socket created, VM launched successfully")
 	logrus.Infof("VM %s started successfully", config.ID)
 	return nil
 }
 
 func (f *FirecrackerBackend) StopVM(ctx context.Context, id string) error {
-	sockPath := expandPath("~/.aegis/firecracker-" + id + ".sock")
+	sockPath := "/tmp/firecracker-" + id + ".sock"
 	logrus.Infof("Stopping Firecracker VM %s", id)
 	// Send halt action
 	sendAPIRequest(sockPath, "PUT", "/actions", map[string]string{"action_type": "InstanceHalt"})
