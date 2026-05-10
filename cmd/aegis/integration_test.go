@@ -9,15 +9,6 @@ import (
 	"time"
 )
 
-type Message struct {
-	Source      string      `json:"source"`
-	Destination string      `json:"destination"`
-	Command     string      `json:"command"`
-	Payload     interface{} `json:"payload"`
-	Timestamp   string      `json:"timestamp"`
-	Signature   string      `json:"signature"`
-}
-
 func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 	// Start hub
 	hubCmd := exec.Command("./bin/aegishub", "start")
@@ -124,7 +115,7 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 	defer storeCmd.Process.Kill()
 	time.Sleep(100 * time.Millisecond)
 
-	builderCmd := exec.Command("./bin/builder")
+	// builderCmd := exec.Command("./bin/builder")
 
 	scribeCmd := exec.Command("./bin/court-scribe")
 	scribeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
@@ -218,7 +209,7 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 	defer storeCmd.Process.Kill()
 	time.Sleep(100 * time.Millisecond)
 
-	builderCmd := exec.Command("./bin/builder")
+	// builderCmd := exec.Command("./bin/builder")
 
 	netCmd := exec.Command("./bin/network-boundary")
 	netCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")
