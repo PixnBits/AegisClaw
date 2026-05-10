@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AegisClaw - Secure AI Assistant</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .chat-container { max-width: 800px; margin: 0 auto; background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .messages { height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin-bottom: 20px; }
+        .message { margin-bottom: 10px; }
+        .user { text-align: right; }
+        .agent { text-align: left; }
+        .input-area { display: flex; }
+        input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; margin-left: 10px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <h1>Welcome to AegisClaw</h1>
+        <div id="messages" class="messages"></div>
+        <div class="input-area">
+            <input type="text" id="messageInput" placeholder="Ask me anything..." />
+            <button onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        let sessionId = 'session_' + Date.now();
+
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            addMessage('user', message);
+            messageInput.value = '';
+
+            // Start SSE
+            const eventSource = new EventSource(`/api/chat/stream?message=${encodeURIComponent(message)}&session_id=${sessionId}`);
+
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                handleStreamMessage(data);
+            };
+
+            eventSource.onerror = function() {
+                eventSource.close();
+            };
+        }
+
+        function handleStreamMessage(data) {
+            if (data.type === 'user_message') {
+                // Already added
+            } else if (data.type === 'agent_response') {
+                updateAgentMessage(data.content.text, !data.content.is_complete);
+            } else if (data.type === 'agent_thinking') {
+                addMessage('agent', `🤔 ${data.content.description}`);
+            } else if (data.type === 'tool_call') {
+                addMessage('agent', `🔧 Using ${data.content.tool}...`);
+            } else if (data.type === 'tool_result') {
+                addMessage('agent', `✅ Tool result: ${data.content.result}`);
+            }
+        }
+
+        let currentAgentMessage = null;
+
+        function updateAgentMessage(text, isPartial) {
+            if (!currentAgentMessage) {
+                currentAgentMessage = addMessage('agent', text);
+            } else {
+                currentAgentMessage.textContent = text;
+            }
+            if (!isPartial) {
+                currentAgentMessage = null;
+            }
+        }
+
+        function addMessage(type, text) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = text;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            return messageDiv;
+        }
+
+        messageInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>

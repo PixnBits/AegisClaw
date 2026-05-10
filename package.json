@@ -1,0 +1,12 @@
+{
+  "name": "aegisclaw-e2e",
+  "version": "1.0.0",
+  "description": "E2E tests for AegisClaw Web Portal",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0"
+  }
+}

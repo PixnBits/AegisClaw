@@ -24,3 +24,7 @@ clean:
 # Run tests
 test:
 	go test ./...
+
+# Run E2E tests
+test-e2e:
+	npm test
