@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -96,8 +97,15 @@ func execute(msg *Message) {
 	fmt.Println("5. Execute:", llmResponse)
 }
 
-func judge(msg *Message) {
-	fmt.Println("6. Judge: Response sent successfully")
+func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
+	llmResponse := callLLM("Judge the response quality: " + fmt.Sprintf("%v", msg.Payload))
+	fmt.Println("6. Judge:", llmResponse)
+
+	// If the request is to add a skill, create a proposal
+	payloadStr := fmt.Sprintf("%v", msg.Payload)
+	if strings.Contains(strings.ToLower(payloadStr), "add a") && strings.Contains(strings.ToLower(payloadStr), "skill") {
+		createProposal(payloadStr, encoder, priv)
+	}
 }
 
 // Mock LLM integration
@@ -117,6 +125,25 @@ func callLLM(prompt string) string {
 		return "Judged: Response quality is good."
 	}
 	return "LLM response: " + prompt
+}
+
+func createProposal(description string, encoder *json.Encoder, priv ed25519.PrivateKey) {
+	proposal := map[string]interface{}{
+		"id":          "proposal_" + fmt.Sprintf("%d", time.Now().Unix()),
+		"description": description,
+		"status":      "pending",
+	}
+	msg := Message{
+		Source:      "agent1",
+		Destination: "store",
+		Command:     "proposal.create",
+		Payload:     proposal,
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Signature:   "",
+	}
+	signMessage(&msg, priv)
+	encoder.Encode(msg)
+	fmt.Println("Proposal created:", proposal["id"])
 }
 
 func runAgent(cmd *cobra.Command, args []string) {
@@ -176,7 +203,7 @@ func runAgent(cmd *cobra.Command, args []string) {
 		plan(&msg)
 		act(&msg)
 		execute(&msg)
-		judge(&msg)
+		judge(&msg, encoder, decoder, priv)
 
 		// Respond
 		response := Message{

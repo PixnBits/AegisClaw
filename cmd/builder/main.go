@@ -123,6 +123,22 @@ func runSecurityGates(code, deps string) (bool, string) {
 	return true, ""
 }
 
+func generateSkillCode(description string) string {
+	prompt := "Generate Go code for a skill based on this description: " + description + ". Include main function, error handling, and basic tests."
+	return callLLM(prompt)
+}
+
+func callLLM(prompt string) string {
+	// Mock LLM response
+	return `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Skill executed")
+}`
+}
+
 func runBuilder(cmd *cobra.Command, args []string) {
 	// Generate keys
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -226,6 +242,21 @@ func runBuilder(cmd *cobra.Command, args []string) {
 		case "store.pr.create":
 			response.Command = "pr.created"
 			response.Payload = "ok"
+		case "builder.implement_skill":
+			payload := msg.Payload.(map[string]interface{})
+			description := payload["description"].(string)
+			code := generateSkillCode(description)
+			// Run security gates
+			if pass, report := runSecurityGates(code, ""); !pass {
+				response.Command = "implementation.failed"
+				response.Payload = report
+			} else {
+				response.Command = "implementation.success"
+				response.Payload = map[string]interface{}{
+					"code": code,
+					"tests": "basic tests", // stub
+				}
+			}
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"
