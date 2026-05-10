@@ -210,15 +210,7 @@ var jsonOutput bool
 var foreground bool
 
 func isDaemonRunning() bool {
-	// Check socket first - this is the most reliable indicator
-	socket := expandPath(socketPath)
-	conn, err := net.DialTimeout("unix", socket, 1*time.Second)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-
-	// Also check PID file for additional verification
+	// Check PID file first
 	pidFile := expandPath("~/.aegis/daemon.pid")
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -229,8 +221,23 @@ func isDaemonRunning() bool {
 	if err != nil {
 		return false
 	}
-	cmd := exec.Command("kill", "-0", strconv.Itoa(pid))
-	return cmd.Run() == nil
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = process.Signal(syscall.Signal(0))
+	if err != nil {
+		return false
+	}
+
+	// Also check socket for additional verification
+	socket := expandPath(socketPath)
+	conn, err := net.DialTimeout("unix", socket, 1*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 func initBackend() {

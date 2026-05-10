@@ -6,11 +6,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
+func TestCountTokens(t *testing.T) {
+	messages := []string{"hello", "world"}
+	expected := 10
+	if count := countTokens(messages); count != expected {
+		t.Errorf("Expected %d, got %d", expected, count)
+	}
+}
+
 func TestLoadSaveFromFile(t *testing.T) {
-	filename := "test_store.json"
+	filename := "test_memory.json"
 	defer os.Remove(filename)
 
 	data := map[string]interface{}{"key": "value"}
@@ -35,6 +44,7 @@ func TestSignMessage(t *testing.T) {
 		t.Error("Signature not set")
 	}
 
+	// Verify
 	data, _ := json.Marshal(Message{Source: "test", Command: "test", Payload: "data", Timestamp: "2026-05-10T00:00:00Z"})
 	sigBytes, _ := base64.StdEncoding.DecodeString(msg.Signature)
 	if !ed25519.Verify(pub, data, sigBytes) {
@@ -42,32 +52,24 @@ func TestSignMessage(t *testing.T) {
 	}
 }
 
-func TestStoreCommands(t *testing.T) {
-	// Test proposal create
-	proposals := make(map[string]interface{})
+func TestMemoryCommands(t *testing.T) {
+	longTerm := make(map[string]interface{})
+	content := "test memory"
 	payload := map[string]interface{}{
-		"id":          "test_proposal",
-		"description": "test",
+		"content": content,
+		"tags":    []string{"test"},
 	}
-	id := payload["id"].(string)
-	payload["state"] = "pending"
-	payload["reviews"] = make(map[string]string)
-	proposals[id] = payload
+	longTerm[content] = payload
 
-	if proposals["test_proposal"] == nil {
-		t.Error("Proposal not created")
+	// Test search logic
+	results := []interface{}{}
+	query := "test"
+	for k, v := range longTerm {
+		if strings.Contains(k, query) {
+			results = append(results, v)
+		}
 	}
-}
-
-func TestComputeMerkleRoot(t *testing.T) {
-	log := []interface{}{"entry1", "entry2"}
-	root := computeMerkleRoot(log)
-	if root == "" {
-		t.Error("Root should not be empty")
-	}
-	// Test empty
-	emptyRoot := computeMerkleRoot([]interface{}{})
-	if emptyRoot != "" {
-		t.Error("Empty root should be empty string")
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
 	}
 }

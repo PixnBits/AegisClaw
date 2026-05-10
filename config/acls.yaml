@@ -1,0 +1,9 @@
+rules:
+- source: client1
+  destination: client2
+  commands:
+    - test
+- source: agent1
+  destination: memory
+  commands:
+    - memory.*

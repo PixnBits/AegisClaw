@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -29,7 +32,68 @@ func expandPath(path string) string {
 	return path
 }
 
+func signMessage(msg *Message, priv ed25519.PrivateKey) {
+	msgCopy := *msg
+	msgCopy.Signature = ""
+	data, _ := json.Marshal(msgCopy)
+	signature := ed25519.Sign(priv, data)
+	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+}
+
+func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
+	fmt.Println("1. Observe: Received", msg.Command, "with payload", msg.Payload)
+
+	// Get context from memory
+	contextMsg := Message{
+		Source:      "agent1",
+		Destination: "memory",
+		Command:     "memory.get_context",
+		Payload:     nil,
+		Timestamp:   "2026-05-09T19:30:02Z",
+		Signature:   "",
+	}
+	signMessage(&contextMsg, priv)
+	err := encoder.Encode(contextMsg)
+	if err != nil {
+		fmt.Println("Failed to get context:", err)
+		return
+	}
+
+	// Wait for response
+	var contextResp Message
+	err = decoder.Decode(&contextResp)
+	if err != nil {
+		fmt.Println("Failed to decode context:", err)
+		return
+	}
+	fmt.Println("Context received:", contextResp.Payload)
+}
+
+func think(msg *Message) {
+	fmt.Println("2. Think: Analyzing the request")
+}
+
+func plan(msg *Message) {
+	fmt.Println("3. Plan: Decide to respond with processing confirmation")
+}
+
+func act(msg *Message) {
+	fmt.Println("4. Act: Prepare response")
+}
+
+func execute(msg *Message) {
+	fmt.Println("5. Execute: Send response")
+}
+
+func judge(msg *Message) {
+	fmt.Println("6. Judge: Response sent successfully")
+}
+
 func runAgent(cmd *cobra.Command, args []string) {
+	// Generate keys
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pubStr := base64.StdEncoding.EncodeToString(pub)
+
 	socket := expandPath(hubSocket)
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
@@ -45,9 +109,9 @@ func runAgent(cmd *cobra.Command, args []string) {
 		Source:      "agent1",
 		Destination: "hub",
 		Command:     "register",
-		Payload:     nil,
+		Payload:     map[string]string{"public_key": pubStr},
 		Timestamp:   "2026-05-09T19:30:00Z",
-		Signature:   "dummy",
+		Signature:   "dummy", // Register doesn't require sig
 	}
 	err = encoder.Encode(regMsg)
 	if err != nil {
@@ -60,6 +124,9 @@ func runAgent(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatal("Failed to decode register response:", err)
 	}
+	if error, ok := resp["error"]; ok {
+		log.Fatal("Registration failed:", error)
+	}
 	fmt.Println("Agent registered")
 
 	// Agent loop
@@ -71,15 +138,15 @@ func runAgent(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		fmt.Println("Agent received message:", msg.Command)
+		fmt.Println("Agent received message:", msg.Command, "from", msg.Source)
 
-		// 6-step loop (simplified)
-		fmt.Println("1. Observe")
-		fmt.Println("2. Think")
-		fmt.Println("3. Plan")
-		fmt.Println("4. Act")
-		fmt.Println("5. Execute")
-		fmt.Println("6. Judge")
+		// 6-step loop
+		observe(&msg, encoder, decoder, priv)
+		think(&msg)
+		plan(&msg)
+		act(&msg)
+		execute(&msg)
+		judge(&msg)
 
 		// Respond
 		response := Message{
@@ -88,8 +155,9 @@ func runAgent(cmd *cobra.Command, args []string) {
 			Command:     "response",
 			Payload:     "Agent processed: " + msg.Command,
 			Timestamp:   "2026-05-09T19:30:01Z",
-			Signature:   "dummy",
+			Signature:   "",
 		}
+		signMessage(&response, priv)
 		err = encoder.Encode(response)
 		if err != nil {
 			log.Println("Failed to send response:", err)

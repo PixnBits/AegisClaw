@@ -13,6 +13,7 @@ build-binaries:
 	go build -o bin/court-scribe ./cmd/court-scribe
 	go build -o bin/memory ./cmd/memory
 	go build -o bin/network-boundary ./cmd/network-boundary
+	go build -o bin/secrets ./cmd/secrets
 	go build -o bin/store ./cmd/store
 	go build -o bin/web-portal ./cmd/web-portal
 

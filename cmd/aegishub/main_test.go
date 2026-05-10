@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"os"
@@ -15,8 +18,14 @@ func TestHubRoundTrip(t *testing.T) {
 	// Clean up
 	os.Remove(testHubSocketPath)
 
+	// Generate keys for clients
+	pub1, priv1, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub1Str := base64.StdEncoding.EncodeToString(pub1)
+	pub2Str := base64.StdEncoding.EncodeToString(pub2)
+
 	// Start hub in background
-	cmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/aegishub", "start")
+	cmd := exec.Command("../../bin/aegishub", "start")
 	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+testHubSocketPath)
 	err := cmd.Start()
 	if err != nil {
@@ -41,26 +50,53 @@ func TestHubRoundTrip(t *testing.T) {
 	}
 	defer conn2.Close()
 
+	// Register client1
+	encoder1 := json.NewEncoder(conn1)
+	decoder1 := json.NewDecoder(conn1)
+	regMsg1 := Message{
+		Source:      "client1",
+		Destination: "hub",
+		Command:     "register",
+		Payload:     map[string]string{"public_key": pub1Str},
+		Timestamp:   "2026-05-09T19:20:00Z",
+		Signature:   "dummy", // For register, perhaps no sig needed
+	}
+	err = encoder1.Encode(regMsg1)
+	if err != nil {
+		t.Fatalf("Failed to register client1: %v", err)
+	}
+	var resp1 map[string]interface{}
+	err = decoder1.Decode(&resp1)
+	if err != nil {
+		t.Fatalf("Failed to decode register response for client1: %v", err)
+	}
+	if error, ok := resp1["error"]; ok {
+		t.Fatalf("Register client1 failed: %s", error)
+	}
+
 	// Register client2
 	encoder2 := json.NewEncoder(conn2)
 	decoder2 := json.NewDecoder(conn2)
-	regMsg := Message{
+	regMsg2 := Message{
 		Source:      "client2",
 		Destination: "hub",
 		Command:     "register",
-		Payload:     nil,
+		Payload:     map[string]string{"public_key": pub2Str},
 		Timestamp:   "2026-05-09T19:20:00Z",
 		Signature:   "dummy",
 	}
-	err = encoder2.Encode(regMsg)
+	err = encoder2.Encode(regMsg2)
 	if err != nil {
 		t.Fatalf("Failed to register client2: %v", err)
 	}
 	// Consume response
-	var resp map[string]interface{}
-	err = decoder2.Decode(&resp)
+	var resp2 map[string]interface{}
+	err = decoder2.Decode(&resp2)
 	if err != nil {
 		t.Fatalf("Failed to decode register response: %v", err)
+	}
+	if error, ok := resp2["error"]; ok {
+		t.Fatalf("Register client2 failed: %s", error)
 	}
 
 	// Send message from client1 to client2
@@ -70,9 +106,13 @@ func TestHubRoundTrip(t *testing.T) {
 		Command:     "test",
 		Payload:     "hello",
 		Timestamp:   "2026-05-09T19:20:00Z",
-		Signature:   "dummy",
+		Signature:   "",
 	}
-	encoder1 := json.NewEncoder(conn1)
+	// Sign the message
+	data, _ := json.Marshal(msg)
+	signature := ed25519.Sign(priv1, data)
+	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+
 	err = encoder1.Encode(msg)
 	if err != nil {
 		t.Fatalf("Failed to send message: %v", err)
