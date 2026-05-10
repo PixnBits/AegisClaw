@@ -320,6 +320,9 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "tool.list":
 			response.Command = "tool.list"
 			response.Payload = skills
+		case "ping":
+			response.Command = "pong"
+			response.Payload = "ok"
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"

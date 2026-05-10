@@ -492,7 +492,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	os.Chmod(logFile, 0600)
 
 	done := make(chan bool)
-	// For now, just accept connections
+	// Handle CLI connections
 	for {
 		select {
 		case <-done:
@@ -501,10 +501,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		default:
 			conn, err := listener.Accept()
 			if err != nil {
-				fmt.Printf("Accept error: %v\n", err)
 				continue
 			}
-			go handleConnection(conn, done)
+			go handleCLIConnection(conn)
 		}
 	}
 }
@@ -803,6 +802,105 @@ func showAuditLog(cmd *cobra.Command, args []string) {
 	} else {
 		fmt.Println("Audit root:", resp)
 	}
+}
+
+func handleCLIConnection(conn net.Conn) {
+	defer conn.Close()
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil || n == 0 {
+		return
+	}
+	cmd := string(buf[:n])
+	cmd = strings.TrimSpace(cmd)
+
+	switch cmd {
+	case "status":
+		response := getDaemonStatus()
+		conn.Write([]byte(response))
+	case "vm list":
+		response := getVMList()
+		conn.Write([]byte(response))
+	default:
+		conn.Write([]byte("Unknown command"))
+	}
+}
+
+func getDaemonStatus() string {
+	hubStatus, memoryStatus, storeStatus := "unknown", "unknown", "unknown"
+
+	// Check hub
+	if hubConn != nil {
+		hubStatus = "running"
+	}
+
+	// Check VMs by querying hub
+	if resp := sendToHubInternal("memory", "ping"); resp != "" {
+		memoryStatus = "running"
+	}
+	if resp := sendToHubInternal("store", "ping"); resp != "" {
+		storeStatus = "running"
+	}
+
+	count := 0
+	if hubStatus == "running" { count++ }
+	if memoryStatus == "running" { count++ }
+	if storeStatus == "running" { count++ }
+
+	uptime := time.Since(startTime).Round(time.Second)
+	backend := "Firecracker"
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		backend = "Docker"
+	}
+	response := fmt.Sprintf("Daemon: running\nBackend: %s\nSafe Mode: %t\nRunning VMs: %d\nUptime: %v\nPID: %d\nHub: %s\nMemory VM: %s\nStore VM: %s\n", backend, safeMode, count, uptime, os.Getpid(), hubStatus, memoryStatus, storeStatus)
+	return response
+}
+
+func getVMList() string {
+	vms := []string{}
+	runningCmds.Range(func(key, value interface{}) bool {
+		name := key.(string)
+		if name != "hub" { // hub is not a VM
+			vms = append(vms, name)
+		}
+		return true
+	})
+
+	if len(vms) == 0 {
+		return "Running VMs:\nNo running VMs"
+	}
+
+	response := "Running VMs:\n"
+	for _, vm := range vms {
+		response += fmt.Sprintf("- %s\n", vm)
+	}
+	return response
+}
+
+func sendToHubInternal(destination, command string) string {
+	if hubConn == nil {
+		return ""
+	}
+	msg := Message{
+		Source:      "daemon",
+		Destination: destination,
+		Command:     command,
+		Payload:     nil,
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Signature:   "dummy",
+	}
+	encoder := json.NewEncoder(hubConn)
+	decoder := json.NewDecoder(hubConn)
+	err := encoder.Encode(msg)
+	if err != nil {
+		return ""
+	}
+	var resp Message
+	err = decoder.Decode(&resp)
+	if err != nil {
+		return ""
+	}
+	return resp.Command
 }
 
 func sendToHub(destination, command string, payload interface{}) string {

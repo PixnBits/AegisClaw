@@ -241,10 +241,13 @@ func runMemory(cmd *cobra.Command, args []string) {
 			response.Command = "memory.results"
 			response.Payload = results
 		case "memory.summarize":
-			if len(shortTerm) > 5 {
-				shortTerm = shortTerm[len(shortTerm)-5:]
-			}
-			response.Command = "memory.summarized"
+		if len(shortTerm) > 5 {
+			shortTerm = shortTerm[len(shortTerm)-5:]
+		}
+		response.Command = "memory.summarized"
+		response.Payload = "ok"
+		case "ping":
+			response.Command = "pong"
 			response.Payload = "ok"
 		default:
 			response.Command = "error"
