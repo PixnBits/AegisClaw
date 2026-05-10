@@ -20,7 +20,7 @@ type Message struct {
 
 func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 	// Start hub
-	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/aegishub", "start")
+	hubCmd := exec.Command("./bin/aegishub", "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test.sock")
 	err := hubCmd.Start()
 	if err != nil {
@@ -30,7 +30,7 @@ func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Start memory
-	memCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/memory")
+	memCmd := exec.Command("./bin/memory")
 	memCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test.sock")
 	err = memCmd.Start()
 	if err != nil {
@@ -40,7 +40,7 @@ func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Start agent
-	agentCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/agent")
+	agentCmd := exec.Command("./bin/agent")
 	agentCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test.sock")
 	err = agentCmd.Start()
 	if err != nil {
@@ -106,7 +106,7 @@ func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 
 func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 	// Similar setup
-	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/aegishub", "start")
+	hubCmd := exec.Command("./bin/aegishub", "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
 	err := hubCmd.Start()
 	if err != nil {
@@ -115,7 +115,7 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 	defer hubCmd.Process.Kill()
 	time.Sleep(100 * time.Millisecond)
 
-	storeCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/store")
+	storeCmd := exec.Command("./bin/store")
 	storeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
 	err = storeCmd.Start()
 	if err != nil {
@@ -124,16 +124,9 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 	defer storeCmd.Process.Kill()
 	time.Sleep(100 * time.Millisecond)
 
-	builderCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/builder")
-	builderCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
-	err = builderCmd.Start()
-	if err != nil {
-		t.Fatalf("Failed to start builder: %v", err)
-	}
-	defer builderCmd.Process.Kill()
-	time.Sleep(100 * time.Millisecond)
+	builderCmd := exec.Command("./bin/builder")
 
-	scribeCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/court-scribe")
+	scribeCmd := exec.Command("./bin/court-scribe")
 	scribeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
 	err = scribeCmd.Start()
 	if err != nil {
@@ -146,7 +139,7 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 	personas := []string{"ciso", "security_architect", "architect", "senior_coder", "tester", "efficiency", "user_advocate"}
 	var personaCmds []*exec.Cmd
 	for _, p := range personas {
-		cmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/court-persona", "--persona", p)
+		cmd := exec.Command("./bin/court-persona", "--persona", p)
 		cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
 		err = cmd.Start()
 		if err != nil {
@@ -207,7 +200,7 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 
 func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 	// Start hub, store, builder, network-boundary for skill deployment
-	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/aegishub", "start")
+	hubCmd := exec.Command("./bin/aegishub", "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")
 	err := hubCmd.Start()
 	if err != nil {
@@ -216,7 +209,7 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 	defer hubCmd.Process.Kill()
 	time.Sleep(100 * time.Millisecond)
 
-	storeCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/store")
+	storeCmd := exec.Command("./bin/store")
 	storeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")
 	err = storeCmd.Start()
 	if err != nil {
@@ -225,16 +218,9 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 	defer storeCmd.Process.Kill()
 	time.Sleep(100 * time.Millisecond)
 
-	builderCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/builder")
-	builderCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")
-	err = builderCmd.Start()
-	if err != nil {
-		t.Fatalf("Failed to start builder: %v", err)
-	}
-	defer builderCmd.Process.Kill()
-	time.Sleep(100 * time.Millisecond)
+	builderCmd := exec.Command("./bin/builder")
 
-	netCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/network-boundary")
+	netCmd := exec.Command("./bin/network-boundary")
 	netCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")
 	err = netCmd.Start()
 	if err != nil {

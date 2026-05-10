@@ -107,8 +107,8 @@ func TestStatusJSON(t *testing.T) {
 				status["safeMode"] = val == "true"
 			default:
 				status[strings.ToLower(strings.ReplaceAll(key, " ", ""))] = val
-	}
-}
+			}
+		}
 	}
 	expected := map[string]interface{}{
 		"daemon":     "running",
