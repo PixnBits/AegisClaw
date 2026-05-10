@@ -21,6 +21,16 @@ type Message struct {
 	Signature   string      `json:"signature"`
 }
 
+type StreamMessage struct {
+	Type      string                 `json:"type"`
+	MessageID string                 `json:"message_id"`
+	SessionID string                 `json:"session_id"`
+	Timestamp string                 `json:"timestamp"`
+	TraceID   string                 `json:"trace_id"`
+	Content   map[string]interface{} `json:"content"`
+	Metadata  map[string]interface{} `json:"metadata"`
+}
+
 var hubSocket = "~/.aegis/hub.sock"
 
 func expandPath(path string) string {
@@ -36,49 +46,19 @@ func connectToHub() (net.Conn, error) {
 	return net.Dial("unix", socket)
 }
 
-func handleChat(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", 405)
+func handleChatStream(w http.ResponseWriter, r *http.Request) {
+	message := r.URL.Query().Get("message")
+	sessionID := r.URL.Query().Get("session_id")
+	if message == "" || sessionID == "" {
+		http.Error(w, "Missing message or session_id", 400)
 		return
 	}
 
-	var req struct {
-		Message string `json:"message"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-
-	// Connect to hub
-	conn, err := connectToHub()
-	if err != nil {
-		http.Error(w, "Failed to connect to hub", 500)
-		return
-	}
-	defer conn.Close()
-
-	encoder := json.NewEncoder(conn)
-
-	// Send message to agent
-	msg := Message{
-		Source:      "web-portal",
-		Destination: "agent1",
-		Command:     "user_message",
-		Payload:     req.Message,
-		Timestamp:   time.Now().Format(time.RFC3339),
-		Signature:   "dummy",
-	}
-	err = encoder.Encode(msg)
-	if err != nil {
-		http.Error(w, "Failed to send message", 500)
-		return
-	}
-
-	// Stream response
-	w.Header().Set("Content-Type", "text/plain")
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -86,25 +66,98 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Simulate streaming
-	response := "Agent thinking...\n"
-	fmt.Fprint(w, response)
+	// Send user_message first
+	userMsg := StreamMessage{
+		Type:      "user_message",
+		MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		SessionID: sessionID,
+		Timestamp: time.Now().Format(time.RFC3339),
+		TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		Content:   map[string]interface{}{"text": message},
+		Metadata:  map[string]interface{}{},
+	}
+	sendSSE(w, userMsg)
 	flusher.Flush()
-	time.Sleep(100 * time.Millisecond)
 
-	response = "Tool call: search\n"
-	fmt.Fprint(w, response)
-	flusher.Flush()
-	time.Sleep(100 * time.Millisecond)
+	// Simulate agent response with RAIL principle
+	go func() {
+		time.Sleep(200 * time.Millisecond) // Fast first feedback < 300ms
 
-	response = "Response: " + req.Message
-	fmt.Fprint(w, response)
-	flusher.Flush()
+		// agent_thinking
+		thinkingMsg := StreamMessage{
+			Type:      "agent_thinking",
+			MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			SessionID: sessionID,
+			Timestamp: time.Now().Format(time.RFC3339),
+			TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			Content:   map[string]interface{}{"step": "analyze_request", "description": "Understanding user request"},
+			Metadata:  map[string]interface{}{},
+		}
+		sendSSE(w, thinkingMsg)
+		flusher.Flush()
+
+		time.Sleep(300 * time.Millisecond)
+
+		// tool_call
+		toolMsg := StreamMessage{
+			Type:      "tool_call",
+			MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			SessionID: sessionID,
+			Timestamp: time.Now().Format(time.RFC3339),
+			TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			Content:   map[string]interface{}{"tool": "web_search", "args": map[string]string{"query": message}},
+			Metadata:  map[string]interface{}{"timing": "150ms"},
+		}
+		sendSSE(w, toolMsg)
+		flusher.Flush()
+
+		time.Sleep(200 * time.Millisecond)
+
+		// tool_result
+		resultMsg := StreamMessage{
+			Type:      "tool_result",
+			MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			SessionID: sessionID,
+			Timestamp: time.Now().Format(time.RFC3339),
+			TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			Content:   map[string]interface{}{"tool": "web_search", "result": "Found relevant information"},
+			Metadata:  map[string]interface{}{"timing": "200ms"},
+		}
+		sendSSE(w, resultMsg)
+		flusher.Flush()
+
+		time.Sleep(100 * time.Millisecond)
+
+		// Incremental agent_response
+		responseText := "Based on my analysis, here's what I found:\n\n"
+		words := []string{"The", "user", "asked", "about", message, "and", "I", "have", "some", "insights."}
+
+		for i, word := range words {
+			responseText += word + " "
+			respMsg := StreamMessage{
+				Type:      "agent_response",
+				MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+				SessionID: sessionID,
+				Timestamp: time.Now().Format(time.RFC3339),
+				TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+				Content:   map[string]interface{}{"text": responseText, "is_complete": i == len(words)-1},
+				Metadata:  map[string]interface{}{},
+			}
+			sendSSE(w, respMsg)
+			flusher.Flush()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+}
+
+func sendSSE(w http.ResponseWriter, msg StreamMessage) {
+	data, _ := json.Marshal(msg)
+	fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
 func runWebPortal(cmd *cobra.Command, args []string) {
-	http.HandleFunc("/chat", handleChat)
-	http.Handle("/", http.FileServer(http.Dir("./static"))) // Assume static/chat.html
+	http.HandleFunc("/api/chat/stream", handleChatStream)
+	http.Handle("/", http.FileServer(http.Dir("./static"))) // Assume static files
 
 	fmt.Println("Web Portal starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
