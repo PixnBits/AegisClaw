@@ -128,9 +128,13 @@ func callLLM(prompt string) string {
 }
 
 func createProposal(description string, encoder *json.Encoder, priv ed25519.PrivateKey) {
+	// Use LLM to extract skill specs
+	prompt := "Extract skill name, description, required permissions, and code skeleton from: " + description
+	extracted := callLLM(prompt)
 	proposal := map[string]interface{}{
 		"id":          "proposal_" + fmt.Sprintf("%d", time.Now().Unix()),
 		"description": description,
+		"extracted":   extracted,
 		"status":      "pending",
 	}
 	msg := Message{

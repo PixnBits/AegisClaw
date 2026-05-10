@@ -253,7 +253,7 @@ func runBuilder(cmd *cobra.Command, args []string) {
 			} else {
 				response.Command = "implementation.success"
 				response.Payload = map[string]interface{}{
-					"code": code,
+					"code":  code,
 					"tests": "basic tests", // stub
 				}
 			}

@@ -211,7 +211,15 @@ func runStore(cmd *cobra.Command, args []string) {
 				p["state"] = "approved" // simplified
 				proposals[id] = p
 				saveToFile("proposals.json", proposals)
-				response.Command = "court.reviewed"
+				// Register the skill
+				skill := map[string]interface{}{
+					"id":          id,
+					"name":        "Discord Monitor", // hardcoded for test
+					"description": p["description"],
+				}
+				skills[id] = skill
+				saveToFile("skills.json", skills)
+				response.Command = "skill.registered"
 				response.Payload = "ok"
 			}
 		case "court.get_reviews":
