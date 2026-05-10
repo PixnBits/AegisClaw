@@ -32,6 +32,7 @@ var defaultKernelPath string
 var defaultRootfsPath string
 
 var startTime time.Time
+var hubConn net.Conn
 var safeMode bool
 var runningCmds sync.Map
 var daemonPrivateKey ed25519.PrivateKey
@@ -43,6 +44,15 @@ type VMConfig struct {
 	KernelPath string
 	RootfsPath string
 	StartTime  time.Time
+}
+
+type Message struct {
+	Source      string      `json:"source"`
+	Destination string      `json:"destination"`
+	Command     string      `json:"command"`
+	Payload     interface{} `json:"payload"`
+	Timestamp   string      `json:"timestamp"`
+	Signature   string      `json:"signature"`
 }
 
 type SandboxBackend interface {
@@ -326,6 +336,71 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	defaultKernelPath = filepath.Join(imagesDir, "vmlinuz")
 	defaultRootfsPath = filepath.Join(imagesDir, "rootfs.img")
 
+	// Start AegisHub
+	hubSocket := expandPath("~/.aegis/hub.sock")
+	hubCmd := exec.Command("./bin/aegishub", "start")
+	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = hubCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start AegisHub: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("hub", hubCmd)
+
+	// Wait for hub
+	time.Sleep(2 * time.Second)
+
+	// Start Memory VM
+	memCmd := exec.Command("./bin/memory")
+	memCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = memCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start Memory VM: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("memory", memCmd)
+
+	// Start Store VM
+	storeCmd := exec.Command("./bin/store")
+	storeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	err = storeCmd.Start()
+	if err != nil {
+		logrus.Errorf("Failed to start Store VM: %v", err)
+		os.Exit(1)
+	}
+	runningCmds.Store("store", storeCmd)
+
+	// Connect to hub
+	hubConn, err = net.Dial("unix", hubSocket)
+	if err != nil {
+		logrus.Errorf("Failed to connect to hub: %v", err)
+		os.Exit(1)
+	}
+
+	// Register with hub
+	encoder := json.NewEncoder(hubConn)
+	decoder := json.NewDecoder(hubConn)
+	regMsg := Message{
+		Source:      "daemon",
+		Destination: "hub",
+		Command:     "register",
+		Payload:     nil,
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Signature:   "dummy",
+	}
+	err = encoder.Encode(regMsg)
+	if err != nil {
+		logrus.Errorf("Failed to register with hub: %v", err)
+		os.Exit(1)
+	}
+	var resp map[string]interface{}
+	err = decoder.Decode(&resp)
+	if err != nil {
+		logrus.Errorf("Failed to decode hub response: %v", err)
+		os.Exit(1)
+	}
+	logrus.Info("Registered with AegisHub")
+
 	os.Remove(socket) // Remove existing socket if any
 
 	listener, err := net.Listen("unix", socket)
@@ -420,7 +495,53 @@ func handleConnection(conn net.Conn, done chan bool) {
 			if _, ok := backend.(*FirecrackerBackend); ok {
 				backendName = "Firecracker"
 			}
-			response := fmt.Sprintf("Daemon: running\nBackend: %s\nSafe Mode: %t\nRunning VMs: %d\nUptime: %v\nPID: %d\n", backendName, safeMode, count, time.Since(startTime).Round(time.Second), os.Getpid())
+			hubStatus := "stopped"
+			if cmd, ok := runningCmds.Load("hub"); ok {
+				c := cmd.(*exec.Cmd)
+				if c.Process != nil && c.Process.Signal(syscall.Signal(0)) == nil {
+					hubStatus = "running"
+				}
+			}
+			memoryStatus := "stopped"
+			if cmd, ok := runningCmds.Load("memory"); ok {
+				c := cmd.(*exec.Cmd)
+				if c.Process != nil && c.Process.Signal(syscall.Signal(0)) == nil {
+					memoryStatus = "running"
+				}
+			}
+			storeStatus := "stopped"
+			if cmd, ok := runningCmds.Load("store"); ok {
+				c := cmd.(*exec.Cmd)
+				if c.Process != nil && c.Process.Signal(syscall.Signal(0)) == nil {
+					storeStatus = "running"
+				}
+			}
+			response := fmt.Sprintf("Daemon: running\nBackend: %s\nSafe Mode: %t\nRunning VMs: %d\nUptime: %v\nPID: %d\nHub: %s\nMemory VM: %s\nStore VM: %s\n", backendName, safeMode, count, time.Since(startTime).Round(time.Second), os.Getpid(), hubStatus, memoryStatus, storeStatus)
+			conn.Write([]byte(response))
+		case "memory.get_context":
+			logger.Info("Memory get context requested")
+			encoder := json.NewEncoder(hubConn)
+			msg := Message{
+				Source:      "daemon",
+				Destination: "memory",
+				Command:     "memory.get_context",
+				Payload:     nil,
+				Timestamp:   time.Now().Format(time.RFC3339),
+				Signature:   "dummy",
+			}
+			err := encoder.Encode(msg)
+			if err != nil {
+				conn.Write([]byte("error: failed to send to memory\n"))
+				continue
+			}
+			decoder := json.NewDecoder(hubConn)
+			var resp Message
+			err = decoder.Decode(&resp)
+			if err != nil {
+				conn.Write([]byte("error: failed to receive from memory\n"))
+				continue
+			}
+			response := fmt.Sprintf("Memory context: %v\n", resp.Payload)
 			conn.Write([]byte(response))
 		case "stop":
 			logger.Info("Stopping daemon")
@@ -432,6 +553,14 @@ func handleConnection(conn net.Conn, done chan bool) {
 				runningVMs.Delete(id)
 				return true
 			})
+			// Stop hub, memory, store
+			for _, name := range []string{"hub", "memory", "store"} {
+				if cmd, ok := runningCmds.Load(name); ok {
+					c := cmd.(*exec.Cmd)
+					c.Process.Kill()
+					runningCmds.Delete(name)
+				}
+			}
 			// Remove PID file and socket
 			pidFile := expandPath("~/.aegis/daemon.pid")
 			os.Remove(pidFile)
