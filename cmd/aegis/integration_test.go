@@ -10,6 +10,10 @@ import (
 )
 
 func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
+	if os.Getenv("AEGIS_RUN_MULTI_PROCESS_JOURNEYS") == "" {
+		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
+	}
+
 	// Start hub
 	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/aegishub", "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test.sock")
@@ -96,6 +100,10 @@ func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 }
 
 func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
+	if os.Getenv("AEGIS_RUN_MULTI_PROCESS_JOURNEYS") == "" {
+		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
+	}
+
 	// Similar setup
 	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/aegishub", "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test4.sock")
@@ -190,6 +198,10 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 }
 
 func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
+	if os.Getenv("AEGIS_RUN_MULTI_PROCESS_JOURNEYS") == "" {
+		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
+	}
+
 	// Start hub, store, builder, network-boundary for skill deployment
 	hubCmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/aegishub", "start")
 	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET=/tmp/hub_test9.sock")

@@ -8,11 +8,31 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 const testHubSocketPath = "/tmp/aegishub_test.sock"
+
+func buildTestBinary(t *testing.T, pkgPath, binaryName string) string {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+
+	repoRoot := filepath.Clean(filepath.Join(wd, "..", ".."))
+	binPath := filepath.Join(t.TempDir(), binaryName)
+	buildCmd := exec.Command("go", "build", "-o", binPath, pkgPath)
+	buildCmd.Dir = repoRoot
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build %s: %v\n%s", pkgPath, err, output)
+	}
+
+	return binPath
+}
 
 func TestHubRoundTrip(t *testing.T) {
 	// Clean up
@@ -25,7 +45,8 @@ func TestHubRoundTrip(t *testing.T) {
 	pub2Str := base64.StdEncoding.EncodeToString(pub2)
 
 	// Start hub in background
-	cmd := exec.Command("../../bin/aegishub", "start")
+	hubBinary := buildTestBinary(t, "./cmd/aegishub", "aegishub-test")
+	cmd := exec.Command(hubBinary, "start")
 	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+testHubSocketPath)
 	err := cmd.Start()
 	if err != nil {

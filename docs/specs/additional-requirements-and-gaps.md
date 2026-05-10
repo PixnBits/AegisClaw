@@ -45,6 +45,15 @@ This enables strong personalization.
 - Skill dependency management
 - Backup / restore strategy
 
+## Confirmed Remaining Gaps In This Branch
+
+- **CLI coverage (`docs/specs/cli.md`)**: `restart`, `team *`, `skills status`, `court decisions show`, session/task status and control verbs, autonomy grant/revoke/reset, `audit verify`, and the CLI secrets lifecycle are not implemented end-to-end yet.
+- **Journey automation (`docs/tasks/phase-0-foundations.md`, `docs/roadmap.md`)**: only User Journey #1 is currently automated in CI; journeys #2-#9 are still partial, placeholder, or documentation-only.
+- **Host Daemon (`docs/specs/host-daemon.md`)**: watchdog behavior, audit-root signing, static-binary verification, socket-hardening tests, and lifecycle-containment coverage remain incomplete.
+- **AegisHub (`docs/specs/aegishub.md`)**: ACL hot reload, denied-message audit persistence, and fuller handshake/signature enforcement coverage still need implementation.
+- **Web Portal (`docs/specs/web-portal.md`)**: dedicated skills/proposals/court/autonomy flows and the stable selectors needed to automate those later journeys are not implemented yet.
+- **Operational scripts referenced by CI**: the repository does not yet contain the image-build and live-test scripts that future phases expect under `scripts/`.
+
 ## Next Actions
 - Create dedicated specs for the top 5 items above
 - Update relevant PRD and architecture docs

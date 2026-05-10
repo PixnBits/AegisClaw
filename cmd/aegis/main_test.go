@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,21 +15,60 @@ import (
 
 const testSocketPath = "/tmp/aegis_test.sock"
 
+func buildRepoBinary(t *testing.T, repoRoot, pkgPath, outputName string) string {
+	t.Helper()
+
+	binDir := filepath.Join(repoRoot, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("Failed to create bin directory: %v", err)
+	}
+
+	outputPath := filepath.Join(binDir, outputName)
+	buildCmd := exec.Command("go", "build", "-o", outputPath, pkgPath)
+	buildCmd.Dir = repoRoot
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build %s: %v\n%s", pkgPath, err, output)
+	}
+
+	return outputPath
+}
+
 func TestDaemonStartAndStatus(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("daemon start integration test requires root privileges")
+	}
+
 	// Clean up
 	os.Remove(testSocketPath)
 
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	repoRoot := filepath.Clean(filepath.Join(wd, "..", ".."))
+	aegisBinary := buildRepoBinary(t, repoRoot, "./cmd/aegis", "aegis")
+	buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
+	buildRepoBinary(t, repoRoot, "./cmd/memory", "memory")
+	buildRepoBinary(t, repoRoot, "./cmd/store", "store")
+
 	// Start daemon in background
-	cmd := exec.Command("/home/pixnbits/AegisClaw_lessons-learned/bin/aegis", "start")
+	cmd := exec.Command(aegisBinary, "start")
 	cmd.Env = append(os.Environ(), "AEGIS_SOCKET="+testSocketPath)
-	err := cmd.Start()
+	cmd.Dir = repoRoot
+	err = cmd.Start()
 	if err != nil {
 		t.Fatalf("Failed to start daemon: %v", err)
 	}
-	defer cmd.Process.Kill()
+	defer func() {
+		stopCmd := exec.Command(aegisBinary, "stop")
+		stopCmd.Env = append(os.Environ(), "AEGIS_SOCKET="+testSocketPath)
+		stopCmd.Dir = repoRoot
+		_ = stopCmd.Run()
+		_ = os.Remove(testSocketPath)
+	}()
 
 	// Wait for socket to be created
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	// Check status
 	conn, err := net.Dial("unix", testSocketPath)

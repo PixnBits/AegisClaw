@@ -80,74 +80,72 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// Simulate agent response with RAIL principle
-	go func() {
-		time.Sleep(200 * time.Millisecond) // Fast first feedback < 300ms
+	time.Sleep(200 * time.Millisecond) // Fast first feedback < 300ms
 
-		// agent_thinking
-		thinkingMsg := StreamMessage{
-			Type:      "agent_thinking",
+	// agent_thinking
+	thinkingMsg := StreamMessage{
+		Type:      "agent_thinking",
+		MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		SessionID: sessionID,
+		Timestamp: time.Now().Format(time.RFC3339),
+		TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		Content:   map[string]interface{}{"step": "analyze_request", "description": "Understanding user request"},
+		Metadata:  map[string]interface{}{},
+	}
+	sendSSE(w, thinkingMsg)
+	flusher.Flush()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// tool_call
+	toolMsg := StreamMessage{
+		Type:      "tool_call",
+		MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		SessionID: sessionID,
+		Timestamp: time.Now().Format(time.RFC3339),
+		TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		Content:   map[string]interface{}{"tool": "web_search", "args": map[string]string{"query": message}},
+		Metadata:  map[string]interface{}{"timing": "150ms"},
+	}
+	sendSSE(w, toolMsg)
+	flusher.Flush()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// tool_result
+	resultMsg := StreamMessage{
+		Type:      "tool_result",
+		MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		SessionID: sessionID,
+		Timestamp: time.Now().Format(time.RFC3339),
+		TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		Content:   map[string]interface{}{"tool": "web_search", "result": "Found relevant information"},
+		Metadata:  map[string]interface{}{"timing": "200ms"},
+	}
+	sendSSE(w, resultMsg)
+	flusher.Flush()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Incremental agent_response
+	responseText := "Based on my analysis, here's what I found:\n\n"
+	words := []string{"The", "user", "asked", "about", message, "and", "I", "have", "some", "insights."}
+
+	for i, word := range words {
+		responseText += word + " "
+		respMsg := StreamMessage{
+			Type:      "agent_response",
 			MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
 			SessionID: sessionID,
 			Timestamp: time.Now().Format(time.RFC3339),
 			TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
-			Content:   map[string]interface{}{"step": "analyze_request", "description": "Understanding user request"},
+			Content:   map[string]interface{}{"text": responseText, "is_complete": i == len(words)-1},
 			Metadata:  map[string]interface{}{},
 		}
-		sendSSE(w, thinkingMsg)
+		sendSSE(w, respMsg)
 		flusher.Flush()
-
-		time.Sleep(300 * time.Millisecond)
-
-		// tool_call
-		toolMsg := StreamMessage{
-			Type:      "tool_call",
-			MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
-			SessionID: sessionID,
-			Timestamp: time.Now().Format(time.RFC3339),
-			TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
-			Content:   map[string]interface{}{"tool": "web_search", "args": map[string]string{"query": message}},
-			Metadata:  map[string]interface{}{"timing": "150ms"},
-		}
-		sendSSE(w, toolMsg)
-		flusher.Flush()
-
-		time.Sleep(200 * time.Millisecond)
-
-		// tool_result
-		resultMsg := StreamMessage{
-			Type:      "tool_result",
-			MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
-			SessionID: sessionID,
-			Timestamp: time.Now().Format(time.RFC3339),
-			TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
-			Content:   map[string]interface{}{"tool": "web_search", "result": "Found relevant information"},
-			Metadata:  map[string]interface{}{"timing": "200ms"},
-		}
-		sendSSE(w, resultMsg)
-		flusher.Flush()
-
-		time.Sleep(100 * time.Millisecond)
-
-		// Incremental agent_response
-		responseText := "Based on my analysis, here's what I found:\n\n"
-		words := []string{"The", "user", "asked", "about", message, "and", "I", "have", "some", "insights."}
-
-		for i, word := range words {
-			responseText += word + " "
-			respMsg := StreamMessage{
-				Type:      "agent_response",
-				MessageID: "msg_" + fmt.Sprintf("%d", time.Now().UnixNano()),
-				SessionID: sessionID,
-				Timestamp: time.Now().Format(time.RFC3339),
-				TraceID:   "trace_" + fmt.Sprintf("%d", time.Now().UnixNano()),
-				Content:   map[string]interface{}{"text": responseText, "is_complete": i == len(words)-1},
-				Metadata:  map[string]interface{}{},
-			}
-			sendSSE(w, respMsg)
-			flusher.Flush()
-			time.Sleep(50 * time.Millisecond)
-		}
-	}()
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func sendSSE(w http.ResponseWriter, msg StreamMessage) {
