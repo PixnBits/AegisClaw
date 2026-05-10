@@ -147,6 +147,7 @@ func runMemory(cmd *cobra.Command, args []string) {
 	// In-memory store
 	shortTerm := []string{}                   // conversation history
 	longTerm := loadFromFile("longterm.json") // key: content, value: metadata
+	tokenCount := 0
 
 	var mu sync.Mutex
 
@@ -171,6 +172,13 @@ func runMemory(cmd *cobra.Command, args []string) {
 		mu.Lock()
 		switch msg.Command {
 		case "memory.get_context":
+			// Auto summarize if over limit
+			if tokenCount > 32000 {
+				if len(shortTerm) > 5 {
+					shortTerm = shortTerm[len(shortTerm)-5:]
+					tokenCount = countTokens(shortTerm)
+				}
+			}
 			short := shortTerm
 			if len(shortTerm) > 10 {
 				short = shortTerm[len(shortTerm)-10:]
