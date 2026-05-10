@@ -68,23 +68,23 @@ func TestDaemonStartAndStatus(t *testing.T) {
 	// Clean up
 	os.Remove(testSocketPath)
 
-	repoRoot := repoRoot(t)
-	aegisBinary := buildRepoBinary(t, repoRoot, "./cmd/aegis", "aegis")
-	buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
-	buildRepoBinary(t, repoRoot, "./cmd/memory", "memory")
-	buildRepoBinary(t, repoRoot, "./cmd/store", "store")
+	rootDir := repoRoot(t)
+	aegisBinary := buildRepoBinary(t, rootDir, "./cmd/aegis", "aegis")
+	buildRepoBinary(t, rootDir, "./cmd/aegishub", "aegishub")
+	buildRepoBinary(t, rootDir, "./cmd/memory", "memory")
+	buildRepoBinary(t, rootDir, "./cmd/store", "store")
 
 	// Start daemon in background
 	cmd := exec.Command(aegisBinary, "start")
 	cmd.Env = append(os.Environ(), "AEGIS_SOCKET="+testSocketPath)
-	cmd.Dir = repoRoot
+	cmd.Dir = rootDir
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start daemon: %v", err)
 	}
 	defer func() {
 		stopCmd := exec.Command(aegisBinary, "stop")
 		stopCmd.Env = append(os.Environ(), "AEGIS_SOCKET="+testSocketPath)
-		stopCmd.Dir = repoRoot
+		stopCmd.Dir = rootDir
 		_ = stopCmd.Run()
 		_ = os.Remove(testSocketPath)
 	}()

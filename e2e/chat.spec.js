@@ -28,7 +28,7 @@ test.describe('Web Portal E2E Tests', () => {
     await input.fill('Search for AI news');
     await sendButton.click();
 
-    const toolCall = page.locator('#messages .message.agent', { hasText: 'web_search' });
+    const toolCall = page.locator('#messages .message.agent').filter({ hasText: 'web_search' });
     await expect(toolCall).toBeVisible();
   });
 

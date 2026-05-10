@@ -33,6 +33,14 @@ type StreamMessage struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 
+const (
+	initialResponseDelay = 200 * time.Millisecond
+	thinkingDelay        = 300 * time.Millisecond
+	toolResultDelay      = 200 * time.Millisecond
+	finalResponseDelay   = 100 * time.Millisecond
+	wordStreamDelay      = 50 * time.Millisecond
+)
+
 func expandPath(path string) string {
 	if path[:2] == "~/" {
 		home, _ := os.UserHomeDir()
@@ -80,7 +88,7 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// Simulate agent response with RAIL principle
-	time.Sleep(200 * time.Millisecond) // Fast first feedback < 300ms
+	time.Sleep(initialResponseDelay) // Fast first feedback < 300ms
 
 	// agent_thinking
 	thinkingMsg := StreamMessage{
@@ -95,7 +103,7 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	sendSSE(w, thinkingMsg)
 	flusher.Flush()
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(thinkingDelay)
 
 	// tool_call
 	toolMsg := StreamMessage{
@@ -110,7 +118,7 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	sendSSE(w, toolMsg)
 	flusher.Flush()
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(toolResultDelay)
 
 	// tool_result
 	resultMsg := StreamMessage{
@@ -125,7 +133,7 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	sendSSE(w, resultMsg)
 	flusher.Flush()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(finalResponseDelay)
 
 	// Incremental agent_response
 	responseText := "Based on my analysis, here's what I found:\n\n"
@@ -144,7 +152,7 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		sendSSE(w, respMsg)
 		flusher.Flush()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(wordStreamDelay)
 	}
 }
 

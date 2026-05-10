@@ -14,10 +14,10 @@ func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
 	}
 
-	repoRoot := repoRoot(t)
-	hubBinary := buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
-	memoryBinary := buildRepoBinary(t, repoRoot, "./cmd/memory", "memory")
-	agentBinary := buildRepoBinary(t, repoRoot, "./cmd/agent", "agent")
+	rootDir := repoRoot(t)
+	hubBinary := buildRepoBinary(t, rootDir, "./cmd/aegishub", "aegishub")
+	memoryBinary := buildRepoBinary(t, rootDir, "./cmd/memory", "memory")
+	agentBinary := buildRepoBinary(t, rootDir, "./cmd/agent", "agent")
 
 	// Start hub
 	hubCmd := exec.Command(hubBinary, "start")
@@ -109,11 +109,11 @@ func TestUserJourney04CreatingIteratingNewSkill(t *testing.T) {
 		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
 	}
 
-	repoRoot := repoRoot(t)
-	hubBinary := buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
-	storeBinary := buildRepoBinary(t, repoRoot, "./cmd/store", "store")
-	scribeBinary := buildRepoBinary(t, repoRoot, "./cmd/court-scribe", "court-scribe")
-	personaBinary := buildRepoBinary(t, repoRoot, "./cmd/court-persona", "court-persona")
+	rootDir := repoRoot(t)
+	hubBinary := buildRepoBinary(t, rootDir, "./cmd/aegishub", "aegishub")
+	storeBinary := buildRepoBinary(t, rootDir, "./cmd/store", "store")
+	scribeBinary := buildRepoBinary(t, rootDir, "./cmd/court-scribe", "court-scribe")
+	personaBinary := buildRepoBinary(t, rootDir, "./cmd/court-persona", "court-persona")
 
 	// Similar setup
 	hubCmd := exec.Command(hubBinary, "start")
@@ -213,10 +213,10 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
 	}
 
-	repoRoot := repoRoot(t)
-	hubBinary := buildRepoBinary(t, repoRoot, "./cmd/aegishub", "aegishub")
-	storeBinary := buildRepoBinary(t, repoRoot, "./cmd/store", "store")
-	networkBoundaryBinary := buildRepoBinary(t, repoRoot, "./cmd/network-boundary", "network-boundary")
+	rootDir := repoRoot(t)
+	hubBinary := buildRepoBinary(t, rootDir, "./cmd/aegishub", "aegishub")
+	storeBinary := buildRepoBinary(t, rootDir, "./cmd/store", "store")
+	networkBoundaryBinary := buildRepoBinary(t, rootDir, "./cmd/network-boundary", "network-boundary")
 
 	// Start hub, store, builder, network-boundary for skill deployment
 	hubCmd := exec.Command(hubBinary, "start")
