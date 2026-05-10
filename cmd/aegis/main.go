@@ -843,9 +843,15 @@ func getDaemonStatus() string {
 	}
 
 	count := 0
-	if hubStatus == "running" { count++ }
-	if memoryStatus == "running" { count++ }
-	if storeStatus == "running" { count++ }
+	if hubStatus == "running" {
+		count++
+	}
+	if memoryStatus == "running" {
+		count++
+	}
+	if storeStatus == "running" {
+		count++
+	}
 
 	uptime := time.Since(startTime).Round(time.Second)
 	backend := "Firecracker"
