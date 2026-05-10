@@ -77,6 +77,36 @@ jobs:
       - name: Build all microVM rootfs images
         run: sudo ./scripts/build-microvms-docker.sh /tmp/rootfs-templates
 
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Playwright
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run E2E tests
+        run: npm test
+
   live-test:
     name: Live Test
     runs-on: ubuntu-latest
