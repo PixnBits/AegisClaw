@@ -497,13 +497,14 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		select {
 		case <-done:
 			fmt.Println("Daemon stopping...")
+			stopAllVMs()
 			return
 		default:
 			conn, err := listener.Accept()
 			if err != nil {
 				continue
 			}
-			go handleCLIConnection(conn)
+			go handleCLIConnection(conn, done)
 		}
 	}
 }
@@ -804,7 +805,7 @@ func showAuditLog(cmd *cobra.Command, args []string) {
 	}
 }
 
-func handleCLIConnection(conn net.Conn) {
+func handleCLIConnection(conn net.Conn, done chan bool) {
 	defer conn.Close()
 	buf := make([]byte, 1024)
 	n, err := conn.Read(buf)
@@ -821,9 +822,20 @@ func handleCLIConnection(conn net.Conn) {
 	case "vm list":
 		response := getVMList()
 		conn.Write([]byte(response))
+	case "stop":
+		conn.Write([]byte("stopping"))
+		done <- true
 	default:
 		conn.Write([]byte("Unknown command"))
 	}
+}
+
+func stopAllVMs() {
+	runningCmds.Range(func(key, value interface{}) bool {
+		cmd := value.(*exec.Cmd)
+		cmd.Process.Kill()
+		return true
+	})
 }
 
 func getDaemonStatus() string {
