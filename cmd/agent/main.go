@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -25,6 +29,20 @@ type Message struct {
 }
 
 var hubSocket = "~/.aegis/hub.sock"
+
+const (
+	defaultOllamaModel = "qwen3-coder:30b"
+)
+
+type ollamaGenerateRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream"`
+}
+
+type ollamaGenerateResponse struct {
+	Response string `json:"response"`
+}
 
 func expandPath(path string) string {
 	if path[:2] == "~/" {
@@ -108,9 +126,70 @@ func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25
 	}
 }
 
-// Mock LLM integration
 func callLLM(prompt string) string {
-	// Simulate LLM response based on prompt
+	response, err := callOllama(prompt)
+	if err == nil && strings.TrimSpace(response) != "" {
+		return response
+	}
+	return mockLLMResponse(prompt)
+}
+
+func callOllama(prompt string) (string, error) {
+	endpoint := ollamaEndpoint()
+	requestPayload := ollamaGenerateRequest{
+		Model:  ollamaModel(),
+		Prompt: prompt,
+		Stream: false,
+	}
+	body, err := json.Marshal(requestPayload)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := http.Post(endpoint, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("ollama request failed: %s", resp.Status)
+	}
+
+	var parsed ollamaGenerateResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", err
+	}
+	return parsed.Response, nil
+}
+
+func ollamaModel() string {
+	if model := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); model != "" {
+		return model
+	}
+	return defaultOllamaModel
+}
+
+func ollamaEndpoint() string {
+	if raw := strings.TrimSpace(os.Getenv("AEGIS_OLLAMA_URL")); raw != "" {
+		if strings.Contains(raw, "/api/generate") {
+			return raw
+		}
+		return strings.TrimRight(raw, "/") + "/api/generate"
+	}
+
+	base := "http://localhost:8081/proxy?url=http://localhost:11434/api/generate"
+	if strings.Contains(base, "/api/generate") {
+		return base
+	}
+	return path.Join(strings.TrimRight(base, "/"), "api/generate")
+}
+
+func mockLLMResponse(prompt string) string {
 	if strings.Contains(prompt, "Observe") {
 		return "Observed: User input received and context loaded."
 	} else if strings.Contains(prompt, "Think") {

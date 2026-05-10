@@ -5,11 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
 func TestCallLLM(t *testing.T) {
+	t.Setenv("AEGIS_OLLAMA_URL", "http://127.0.0.1:0")
+
 	response := callLLM("Observe test")
 	if !strings.Contains(response, "Observed") {
 		t.Errorf("Expected Observed, got %s", response)
@@ -18,6 +22,29 @@ func TestCallLLM(t *testing.T) {
 	response = callLLM("Think test")
 	if !strings.Contains(response, "Analyzed") {
 		t.Errorf("Expected Analyzed, got %s", response)
+	}
+}
+
+func TestCallLLMUsesOllamaResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/generate" {
+			t.Fatalf("expected /api/generate path, got %s", r.URL.Path)
+		}
+		var req ollamaGenerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		if req.Model != defaultOllamaModel {
+			t.Fatalf("expected default model %s, got %s", defaultOllamaModel, req.Model)
+		}
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: "ollama-success"})
+	}))
+	defer server.Close()
+
+	t.Setenv("AEGIS_OLLAMA_URL", server.URL)
+	response := callLLM("Observe this via Ollama")
+	if response != "ollama-success" {
+		t.Fatalf("expected ollama response, got %s", response)
 	}
 }
 

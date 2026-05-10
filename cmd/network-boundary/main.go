@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -43,15 +45,15 @@ func signMessage(msg *Message, priv ed25519.PrivateKey) {
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
 }
 
-func isDomainAllowed(url string, allowed map[string]bool) bool {
-	// Extract domain from URL
-	if strings.HasPrefix(url, "http://") {
-		url = url[7:]
-	} else if strings.HasPrefix(url, "https://") {
-		url = url[8:]
+func isDomainAllowed(rawURL string, allowed map[string]bool) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
 	}
-	domain := strings.Split(url, "/")[0]
-	return allowed[domain]
+	if parsed.Host == "" {
+		return false
+	}
+	return allowed[parsed.Host]
 }
 
 func runNetworkBoundary(cmd *cobra.Command, args []string) {
@@ -96,8 +98,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 
 	// Load allowed domains (stub: hardcode for now)
 	allowedDomains := map[string]bool{
-		"example.com":    true,
-		"api.github.com": true,
+		"example.com":     true,
+		"api.github.com":  true,
+		"localhost:11434": true,
 	}
 
 	// Start HTTP proxy
@@ -125,10 +128,18 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				return
 			}
 			// Inject secrets if needed (stub: for github, add token)
-			req, err := http.NewRequest("GET", url, nil)
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Invalid body", 400)
+				return
+			}
+			req, err := http.NewRequest(r.Method, url, bytes.NewReader(body))
 			if err != nil {
 				http.Error(w, "Invalid URL", 400)
 				return
+			}
+			if contentType := r.Header.Get("Content-Type"); contentType != "" {
+				req.Header.Set("Content-Type", contentType)
 			}
 			if strings.Contains(url, "api.github.com") {
 				// Inject secret (stub: hardcode)
@@ -181,7 +192,10 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 			// Handle network request (similar to proxy)
 			payload := msg.Payload.(map[string]interface{})
 			url := payload["url"].(string)
-			method := payload["method"].(string)
+			method, _ := payload["method"].(string)
+			if strings.TrimSpace(method) == "" {
+				method = http.MethodGet
+			}
 			if !isDomainAllowed(url, allowedDomains) {
 				response.Command = "network.response"
 				response.Payload = map[string]interface{}{"error": "Domain not allowed"}
@@ -197,11 +211,21 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				signMessage(&auditMsg, priv)
 				encoder.Encode(auditMsg)
 			} else {
-				req, err := http.NewRequest(method, url, nil)
+				var bodyReader io.Reader
+				if body, ok := payload["body"].(string); ok {
+					bodyReader = strings.NewReader(body)
+				}
+
+				req, err := http.NewRequest(method, url, bodyReader)
 				if err != nil {
 					response.Command = "network.response"
 					response.Payload = map[string]interface{}{"error": "Invalid request"}
 				} else {
+					if headers, ok := payload["headers"].(map[string]interface{}); ok {
+						for k, v := range headers {
+							req.Header.Set(k, fmt.Sprintf("%v", v))
+						}
+					}
 					if strings.Contains(url, "api.github.com") {
 						req.Header.Set("Authorization", "Bearer dummy_token")
 					}

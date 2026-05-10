@@ -56,23 +56,38 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    if: ${{ hashFiles('scripts/build-microvms-docker.sh') != '' }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check image build script
+        id: image_script
+        run: |
+          if [ -f scripts/build-microvms-docker.sh ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Go
+        if: steps.image_script.outputs.exists == 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install build tools
+        if: steps.image_script.outputs.exists == 'true'
         run: sudo apt-get install -y e2fsprogs
 
       - name: Build all microVM rootfs images
+        if: steps.image_script.outputs.exists == 'true'
         run: sudo ./scripts/build-microvms-docker.sh /tmp/rootfs-templates
+
+      - name: Skip image build (script missing)
+        if: steps.image_script.outputs.exists != 'true'
+        run: echo "Skipping image-builds job because scripts/build-microvms-docker.sh is not present."
 
   e2e-tests:
     name: E2E Tests
@@ -109,20 +124,34 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    if: ${{ hashFiles('scripts/run-live-test.sh') != '' }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check live test script
+        id: live_script
+        run: |
+          if [ -f scripts/run-live-test.sh ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Go
+        if: steps.live_script.outputs.exists == 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Run live test
+        if: steps.live_script.outputs.exists == 'true'
         run: ./scripts/run-live-test.sh --yes
+
+      - name: Skip live test (script missing)
+        if: steps.live_script.outputs.exists != 'true'
+        run: echo "Skipping live-test job because scripts/run-live-test.sh is not present."
 
   # In-process integration tests are strictly opt-in — never run automatically.
   # Trigger manually via workflow_dispatch or add the "run-inprocess-tests" label

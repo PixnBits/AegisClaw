@@ -10,10 +10,14 @@ import (
 
 func TestIsDomainAllowed(t *testing.T) {
 	allowed := map[string]bool{
-		"example.com": true,
+		"example.com":     true,
+		"localhost:11434": true,
 	}
 	if !isDomainAllowed("http://example.com/test", allowed) {
 		t.Error("Should allow example.com")
+	}
+	if !isDomainAllowed("http://localhost:11434/api/generate", allowed) {
+		t.Error("Should allow localhost Ollama endpoint")
 	}
 	if isDomainAllowed("http://blocked.com/test", allowed) {
 		t.Error("Should block blocked.com")
