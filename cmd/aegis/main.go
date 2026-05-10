@@ -850,15 +850,13 @@ func getDaemonStatus() string {
 	}
 
 	count := 0
-	if hubStatus == "running" {
-		count++
-	}
-	if memoryStatus == "running" {
-		count++
-	}
-	if storeStatus == "running" {
-		count++
-	}
+	runningCmds.Range(func(key, value interface{}) bool {
+		name := key.(string)
+		if name != "hub" { // Don't count hub as VM
+			count++
+		}
+		return true
+	})
 
 	uptime := time.Since(startTime).Round(time.Second)
 	backend := "Firecracker"

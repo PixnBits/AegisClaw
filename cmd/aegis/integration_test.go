@@ -330,6 +330,9 @@ func testDaemonStatus(t *testing.T) {
 	if !strings.Contains(status, "Store VM: running") {
 		t.Errorf("Expected Store VM running, got %s", status)
 	}
+	if !strings.Contains(status, "Running VMs: 8") {
+		t.Errorf("Expected 8 running VMs, got %s", status)
+	}
 }
 
 func TestUserJourney05MonitoringAgentActivity(t *testing.T) {
