@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"strings"
 	"time"
 
@@ -182,11 +181,7 @@ func ollamaEndpoint() string {
 		return strings.TrimRight(raw, "/") + "/api/generate"
 	}
 
-	base := "http://localhost:8081/proxy?url=http://localhost:11434/api/generate"
-	if strings.Contains(base, "/api/generate") {
-		return base
-	}
-	return path.Join(strings.TrimRight(base, "/"), "api/generate")
+	return "http://localhost:8081/proxy?url=http://localhost:11434/api/generate"
 }
 
 func mockLLMResponse(prompt string) string {

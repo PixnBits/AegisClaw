@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -17,6 +16,11 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+var allowedForwardHeaders = map[string]bool{
+	"Accept":       true,
+	"Content-Type": true,
+}
 
 type Message struct {
 	Source      string      `json:"source"`
@@ -54,6 +58,20 @@ func isDomainAllowed(rawURL string, allowed map[string]bool) bool {
 		return false
 	}
 	return allowed[parsed.Host]
+}
+
+func parseAllowedURL(rawURL string, allowed map[string]bool) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported URL scheme")
+	}
+	if !allowed[parsed.Host] {
+		return nil, fmt.Errorf("domain not allowed")
+	}
+	return parsed, nil
 }
 
 func runNetworkBoundary(cmd *cobra.Command, args []string) {
@@ -106,19 +124,19 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	// Start HTTP proxy
 	go func() {
 		http.HandleFunc("/proxy", func(w http.ResponseWriter, r *http.Request) {
-			url := r.URL.Query().Get("url")
-			if url == "" {
+			targetURL := r.URL.Query().Get("url")
+			if targetURL == "" {
 				http.Error(w, "Missing url parameter", 400)
 				return
 			}
-			// Check domain
-			if !isDomainAllowed(url, allowedDomains) {
+			parsedURL, err := parseAllowedURL(targetURL, allowedDomains)
+			if err != nil {
 				// Log to audit
 				auditMsg := Message{
 					Source:      "network-boundary",
 					Destination: "store",
 					Command:     "audit.append",
-					Payload:     map[string]interface{}{"action": "blocked_request", "url": url},
+					Payload:     map[string]interface{}{"action": "blocked_request", "url": targetURL},
 					Timestamp:   "2026-05-09T20:05:01Z",
 					Signature:   "",
 				}
@@ -128,20 +146,17 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				return
 			}
 			// Inject secrets if needed (stub: for github, add token)
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				http.Error(w, "Invalid body", 400)
-				return
-			}
-			req, err := http.NewRequest(r.Method, url, bytes.NewReader(body))
+			req, err := http.NewRequest(r.Method, parsedURL.String(), r.Body)
 			if err != nil {
 				http.Error(w, "Invalid URL", 400)
 				return
 			}
-			if contentType := r.Header.Get("Content-Type"); contentType != "" {
-				req.Header.Set("Content-Type", contentType)
+			for header := range allowedForwardHeaders {
+				if val := r.Header.Get(header); val != "" {
+					req.Header.Set(header, val)
+				}
 			}
-			if strings.Contains(url, "api.github.com") {
+			if strings.Contains(parsedURL.Host, "api.github.com") {
 				// Inject secret (stub: hardcode)
 				req.Header.Set("Authorization", "Bearer dummy_token")
 			}
@@ -159,7 +174,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				Source:      "network-boundary",
 				Destination: "store",
 				Command:     "audit.append",
-				Payload:     map[string]interface{}{"action": "proxied_request", "url": url, "status": resp.StatusCode},
+				Payload:     map[string]interface{}{"action": "proxied_request", "url": targetURL, "status": resp.StatusCode},
 				Timestamp:   "2026-05-09T20:05:01Z",
 				Signature:   "",
 			}
@@ -191,20 +206,21 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		case "network.request":
 			// Handle network request (similar to proxy)
 			payload := msg.Payload.(map[string]interface{})
-			url := payload["url"].(string)
+			targetURL := payload["url"].(string)
 			method, _ := payload["method"].(string)
 			if strings.TrimSpace(method) == "" {
 				method = http.MethodGet
 			}
-			if !isDomainAllowed(url, allowedDomains) {
+			parsedURL, err := parseAllowedURL(targetURL, allowedDomains)
+			if err != nil {
 				response.Command = "network.response"
-				response.Payload = map[string]interface{}{"error": "Domain not allowed"}
+				response.Payload = map[string]interface{}{"error": err.Error()}
 				// Audit
 				auditMsg := Message{
 					Source:      "network-boundary",
 					Destination: "store",
 					Command:     "audit.append",
-					Payload:     map[string]interface{}{"action": "blocked_request", "url": url},
+					Payload:     map[string]interface{}{"action": "blocked_request", "url": targetURL},
 					Timestamp:   response.Timestamp,
 					Signature:   "",
 				}
@@ -216,17 +232,19 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 					bodyReader = strings.NewReader(body)
 				}
 
-				req, err := http.NewRequest(method, url, bodyReader)
+				req, err := http.NewRequest(method, parsedURL.String(), bodyReader)
 				if err != nil {
 					response.Command = "network.response"
 					response.Payload = map[string]interface{}{"error": "Invalid request"}
 				} else {
 					if headers, ok := payload["headers"].(map[string]interface{}); ok {
 						for k, v := range headers {
-							req.Header.Set(k, fmt.Sprintf("%v", v))
+							if allowedForwardHeaders[k] {
+								req.Header.Set(k, fmt.Sprintf("%v", v))
+							}
 						}
 					}
-					if strings.Contains(url, "api.github.com") {
+					if strings.Contains(parsedURL.Host, "api.github.com") {
 						req.Header.Set("Authorization", "Bearer dummy_token")
 					}
 					client := &http.Client{}
@@ -240,14 +258,14 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 						response.Command = "network.response"
 						response.Payload = map[string]interface{}{"status": resp.StatusCode, "body": string(body)}
 						// Audit
-						auditMsg := Message{
-							Source:      "network-boundary",
-							Destination: "store",
-							Command:     "audit.append",
-							Payload:     map[string]interface{}{"action": "network_request", "url": url, "status": resp.StatusCode},
-							Timestamp:   response.Timestamp,
-							Signature:   "",
-						}
+							auditMsg := Message{
+								Source:      "network-boundary",
+								Destination: "store",
+								Command:     "audit.append",
+								Payload:     map[string]interface{}{"action": "network_request", "url": targetURL, "status": resp.StatusCode},
+								Timestamp:   response.Timestamp,
+								Signature:   "",
+							}
 						signMessage(&auditMsg, priv)
 						encoder.Encode(auditMsg)
 					}
