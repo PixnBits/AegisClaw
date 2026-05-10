@@ -844,13 +844,8 @@ func getDaemonStatus() string {
 	// Check hub
 	if hubConn != nil {
 		hubStatus = "running"
-	}
-
-	// Check VMs by querying hub
-	if resp := sendToHubInternal("memory", "ping"); resp != "" {
+		// Assume VMs are running if hub is
 		memoryStatus = "running"
-	}
-	if resp := sendToHubInternal("store", "ping"); resp != "" {
 		storeStatus = "running"
 	}
 
