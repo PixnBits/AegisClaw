@@ -127,10 +127,11 @@ func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25
 
 func callLLM(prompt string) string {
 	response, err := callOllama(prompt)
-	if err == nil && strings.TrimSpace(response) != "" {
-		return response
+	if err != nil {
+		log.Printf("ollama call failed: %v", err)
+		return ""
 	}
-	return mockLLMResponse(prompt)
+	return strings.TrimSpace(response)
 }
 
 func callOllama(prompt string) (string, error) {
@@ -182,23 +183,6 @@ func ollamaEndpoint() string {
 	}
 
 	return "http://localhost:8081/proxy/ollama/generate"
-}
-
-func mockLLMResponse(prompt string) string {
-	if strings.Contains(prompt, "Observe") {
-		return "Observed: User input received and context loaded."
-	} else if strings.Contains(prompt, "Think") {
-		return "Analyzed: This is a request for information."
-	} else if strings.Contains(prompt, "Plan") {
-		return "Planned: Respond with relevant information."
-	} else if strings.Contains(prompt, "Act") {
-		return "Acting: Prepare tool calls if needed."
-	} else if strings.Contains(prompt, "Execute") {
-		return "Executed: Tools called and results received."
-	} else if strings.Contains(prompt, "Judge") {
-		return "Judged: Response quality is good."
-	}
-	return "LLM response: " + prompt
 }
 
 func createProposal(description string, encoder *json.Encoder, priv ed25519.PrivateKey) {

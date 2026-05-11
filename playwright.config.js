@@ -27,7 +27,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'go run cmd/web-portal/main.go',
+    command: 'AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json go run cmd/web-portal/main.go',
     port: 8080,
     reuseExistingServer: !process.env.CI,
   },

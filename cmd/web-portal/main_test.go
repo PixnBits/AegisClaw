@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -100,7 +102,7 @@ func TestMuxServesEmbeddedIndexWithSecurityHeaders(t *testing.T) {
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "Dashboard") || !strings.Contains(body, "Chat with AegisClaw") {
-		t.Fatalf("expected dashboard and chat headings in index, got %q", body)
+		t.Fatalf("expected dashboard and chat headings in index")
 	}
 	if strings.Contains(body, "cdn.jsdelivr.net") {
 		t.Fatal("external CDN reference should not be present")
@@ -121,22 +123,26 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestDashboardEndpoint(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
-	rec := httptest.NewRecorder()
+func TestBackendDataEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	writeTestStoreJSON(t, filepath.Join(dir, "skills.json"), `{"discord_monitor":{"id":"discord_monitor","name":"Discord Monitor","version":"1.2","status":"Deployed","description":"Monitors Discord","required_scopes":["network:discord.com"],"secrets":["DISCORD_BOT_TOKEN"]}}`)
+	writeTestStoreJSON(t, filepath.Join(dir, "proposals.json"), `{"prop1":{"id":"prop1","description":"Add new skill","state":"pending","reviews":{"ciso":"approve"}}}`)
+	t.Setenv("AEGIS_STORE_DATA_DIR", dir)
 
-	newMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	for _, endpoint := range []string{"/api/dashboard", "/api/skills", "/api/proposals", "/api/monitoring"} {
+		req := httptest.NewRequest(http.MethodGet, endpoint, nil)
+		rec := httptest.NewRecorder()
+		newMux().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for %s, got %d", endpoint, rec.Code)
+		}
 	}
 
-	var payload map[string]interface{}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("failed to decode payload: %v", err)
-	}
-	if payload["runtime"] != "Firecracker" {
-		t.Fatalf("expected Firecracker runtime, got %v", payload["runtime"])
+	skillsReq := httptest.NewRequest(http.MethodGet, "/api/skills", nil)
+	skillsRec := httptest.NewRecorder()
+	newMux().ServeHTTP(skillsRec, skillsReq)
+	if !strings.Contains(skillsRec.Body.String(), "Discord Monitor") {
+		t.Fatalf("expected backend skill data in response, got %s", skillsRec.Body.String())
 	}
 }
 
@@ -152,6 +158,12 @@ func TestChatStreamRequiresInputs(t *testing.T) {
 }
 
 func TestChatStreamEmitsExpectedRailSequence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: "Ollama test response"})
+	}))
+	defer server.Close()
+	t.Setenv("AEGIS_OLLAMA_URL", server.URL)
+
 	reset := setTestStreamingDelays()
 	defer reset()
 
@@ -178,7 +190,10 @@ func TestChatStreamEmitsExpectedRailSequence(t *testing.T) {
 
 	last := events[len(events)-1]
 	if last.Type != "agent_response" || last.Content["is_complete"] != true {
-		t.Fatalf("expected final complete agent_response, got %#v", last)
+		t.Fatalf("expected final complete agent_response")
+	}
+	if !strings.Contains(last.Content["text"].(string), "Ollama") {
+		t.Fatalf("expected Ollama-backed response text, got %q", last.Content["text"])
 	}
 }
 
@@ -223,6 +238,13 @@ func setTestStreamingDelays() func() {
 		toolResultDelay = originalTool
 		finalResponseDelay = originalFinal
 		wordStreamDelay = originalWord
+	}
+}
+
+func writeTestStoreJSON(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write %s: %v", path, err)
 	}
 }
 

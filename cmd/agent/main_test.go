@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -15,13 +14,13 @@ func TestCallLLM(t *testing.T) {
 	t.Setenv("AEGIS_OLLAMA_URL", "http://127.0.0.1:0")
 
 	response := callLLM("Observe test")
-	if !strings.Contains(response, "Observed") {
-		t.Errorf("Expected Observed, got %s", response)
+	if response != "" {
+		t.Errorf("Expected empty response when Ollama is unavailable, got %q", response)
 	}
 
 	response = callLLM("Think test")
-	if !strings.Contains(response, "Analyzed") {
-		t.Errorf("Expected Analyzed, got %s", response)
+	if response != "" {
+		t.Errorf("Expected empty response when Ollama is unavailable, got %q", response)
 	}
 }
 

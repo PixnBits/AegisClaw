@@ -1,15 +1,21 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +44,26 @@ type StreamMessage struct {
 	Metadata  map[string]interface{} `json:"metadata"`
 }
 
+type ollamaGenerateRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream"`
+}
+
+type ollamaGenerateResponse struct {
+	Response string `json:"response"`
+}
+
+type daemonSnapshot struct {
+	Running    bool
+	Backend    string
+	SafeMode   bool
+	RunningVMs int
+	Hub        string
+	MemoryVM   string
+	StoreVM    string
+}
+
 var hubSocket = "~/.aegis/hub.sock"
 
 var (
@@ -46,6 +72,7 @@ var (
 	toolResultDelay      = 200 * time.Millisecond
 	finalResponseDelay   = 100 * time.Millisecond
 	wordStreamDelay      = 50 * time.Millisecond
+	defaultOllamaModel   = "qwen3-coder:30b"
 	sessionIDPattern     = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 )
 
@@ -127,7 +154,7 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	traceID := nextID("trace")
-	userMsg := StreamMessage{
+	sendSSE(w, StreamMessage{
 		Type:      "user_message",
 		MessageID: nextID("msg"),
 		SessionID: sessionID,
@@ -135,12 +162,11 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 		TraceID:   traceID,
 		Content:   map[string]interface{}{"text": message},
 		Metadata:  map[string]interface{}{"origin": "browser"},
-	}
-	sendSSE(w, userMsg)
+	})
 	flusher.Flush()
 
 	time.Sleep(initialResponseDelay)
-	thinkingMsg := StreamMessage{
+	sendSSE(w, StreamMessage{
 		Type:      "agent_thinking",
 		MessageID: nextID("msg"),
 		SessionID: sessionID,
@@ -151,47 +177,68 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 			"description": "Observe → Think → Plan",
 		},
 		Metadata: map[string]interface{}{"timing": "200ms"},
-	}
-	sendSSE(w, thinkingMsg)
+	})
 	flusher.Flush()
 
 	time.Sleep(thinkingDelay)
-	toolMsg := StreamMessage{
+	sendSSE(w, StreamMessage{
 		Type:      "tool_call",
 		MessageID: nextID("msg"),
 		SessionID: sessionID,
 		Timestamp: time.Now().Format(time.RFC3339),
 		TraceID:   traceID,
 		Content: map[string]interface{}{
-			"tool": "tool.search",
-			"args": map[string]string{"query": message},
+			"tool": "ollama.generate",
+			"args": map[string]string{"prompt": message},
 		},
 		Metadata: map[string]interface{}{"timing": "150ms"},
-	}
-	sendSSE(w, toolMsg)
+	})
 	flusher.Flush()
 
+	responseText, err := callOllama(fmt.Sprintf("User request: %s", message))
 	time.Sleep(toolResultDelay)
-	resultMsg := StreamMessage{
-		Type:      "tool_result",
-		MessageID: nextID("msg"),
-		SessionID: sessionID,
-		Timestamp: time.Now().Format(time.RFC3339),
-		TraceID:   traceID,
-		Content: map[string]interface{}{
-			"tool":   "tool.search",
-			"result": "Matched secure internal guidance and current portal context.",
-		},
-		Metadata: map[string]interface{}{"timing": "200ms"},
+	if err != nil {
+		sendSSE(w, StreamMessage{
+			Type:      "tool_result",
+			MessageID: nextID("msg"),
+			SessionID: sessionID,
+			Timestamp: time.Now().Format(time.RFC3339),
+			TraceID:   traceID,
+			Content: map[string]interface{}{
+				"tool":   "ollama.generate",
+				"result": "error",
+			},
+			Metadata: map[string]interface{}{"timing": "200ms", "error": err.Error()},
+		})
+		sendSSE(w, StreamMessage{
+			Type:      "error",
+			MessageID: nextID("msg"),
+			SessionID: sessionID,
+			Timestamp: time.Now().Format(time.RFC3339),
+			TraceID:   traceID,
+			Content:   map[string]interface{}{"message": "Ollama backend unavailable"},
+			Metadata:  map[string]interface{}{"detail": err.Error()},
+		})
+		responseText = "Ollama backend unavailable. Check Network Boundary/Ollama status and retry."
+	} else {
+		sendSSE(w, StreamMessage{
+			Type:      "tool_result",
+			MessageID: nextID("msg"),
+			SessionID: sessionID,
+			Timestamp: time.Now().Format(time.RFC3339),
+			TraceID:   traceID,
+			Content: map[string]interface{}{
+				"tool":   "ollama.generate",
+				"result": "ok",
+			},
+			Metadata: map[string]interface{}{"timing": "200ms"},
+		})
 	}
-	sendSSE(w, resultMsg)
 	flusher.Flush()
 
 	time.Sleep(finalResponseDelay)
-	responseText := fmt.Sprintf("## Assessment\n- Request: %s\n- Portal posture: self-contained and security-first\n\nAegisClaw keeps the user informed with transparent tool activity, stable controls, and no external frontend dependencies.", message)
-	chunks := incrementalChunks(responseText)
-	for i, chunk := range chunks {
-		respMsg := StreamMessage{
+	for i, chunk := range incrementalChunks(responseText) {
+		sendSSE(w, StreamMessage{
 			Type:      "agent_response",
 			MessageID: nextID("msg"),
 			SessionID: sessionID,
@@ -199,14 +246,61 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 			TraceID:   traceID,
 			Content: map[string]interface{}{
 				"text":        chunk,
-				"is_complete": i == len(chunks)-1,
+				"is_complete": i == len(incrementalChunks(responseText))-1,
 			},
 			Metadata: map[string]interface{}{},
-		}
-		sendSSE(w, respMsg)
+		})
 		flusher.Flush()
 		time.Sleep(wordStreamDelay)
 	}
+}
+
+func callOllama(prompt string) (string, error) {
+	payload := ollamaGenerateRequest{Model: ollamaModel(), Prompt: prompt, Stream: false}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(ollamaEndpoint(), "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("ollama request failed: %s", resp.Status)
+	}
+
+	var parsed ollamaGenerateResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(parsed.Response) == "" {
+		return "", fmt.Errorf("ollama returned empty response")
+	}
+	return strings.TrimSpace(parsed.Response), nil
+}
+
+func ollamaModel() string {
+	if model := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); model != "" {
+		return model
+	}
+	return defaultOllamaModel
+}
+
+func ollamaEndpoint() string {
+	if raw := strings.TrimSpace(os.Getenv("AEGIS_OLLAMA_URL")); raw != "" {
+		if strings.Contains(raw, "/api/generate") || strings.Contains(raw, "/proxy/ollama/generate") {
+			return raw
+		}
+		return strings.TrimRight(raw, "/") + "/api/generate"
+	}
+	return "http://localhost:8081/proxy/ollama/generate"
 }
 
 func incrementalChunks(text string) []string {
@@ -236,107 +330,303 @@ func sendSSE(w http.ResponseWriter, msg StreamMessage) {
 }
 
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
+	skills := loadSkills()
+	proposals := loadProposals()
+	status := loadDaemonStatus()
+	logs := loadRecentDaemonLogs(3)
+	pending := countPendingProposals(proposals)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"system_status": "running",
-		"runtime":       "Firecracker",
-		"safe_mode":     false,
-		"notifications": 2,
+		"system_status": statusLabel(status.Running),
+		"runtime":       status.Backend,
+		"safe_mode":     status.SafeMode,
+		"notifications": pending,
 		"quick_stats": map[string]interface{}{
-			"active_agents":     3,
-			"background_tasks":  2,
-			"skills_installed":  24,
-			"pending_proposals": 2,
+			"active_agents":     0,
+			"background_tasks":  0,
+			"skills_installed":  len(skills),
+			"pending_proposals": pending,
 		},
-		"agents": []map[string]interface{}{
-			{"name": "researcher", "status": "working", "task": "Reviewing Zig adoption", "progress": "4m"},
-			{"name": "analyst", "status": "idle", "task": "Awaiting direction", "progress": "0m"},
-			{"name": "general", "status": "working", "task": "Monitoring email summaries", "progress": "2m"},
-		},
-		"tasks": []map[string]interface{}{
-			{"name": "Research Zig adoption", "status": "running", "progress": "12% complete"},
-			{"name": "Daily security scan", "status": "running", "progress": "running"},
-		},
-		"recent_activity": []string{
-			"discord_monitor deployed v1.2",
-			"Court approved web_search v2",
-			"Audit log verification completed",
-		},
+		"agents":          []map[string]interface{}{},
+		"tasks":           []map[string]interface{}{},
+		"recent_activity": logs,
 	})
 }
 
 func handleSkills(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []map[string]interface{}{
-		{
-			"id":              "discord_monitor",
-			"name":            "Discord Monitor",
-			"version":         "1.2",
-			"status":          "Deployed",
-			"description":     "Monitor Discord servers for keywords and send summaries.",
-			"required_scopes": []string{"network:discord.com", "background"},
-			"secrets":         []string{"DISCORD_BOT_TOKEN"},
-		},
-		{
-			"id":              "web_search",
-			"name":            "Web Search",
-			"version":         "2.1",
-			"status":          "Deployed",
-			"description":     "Search curated web sources through approved boundaries.",
-			"required_scopes": []string{"network:approved-search"},
-			"secrets":         []string{},
-		},
-		{
-			"id":              "email_client",
-			"name":            "Email Client",
-			"version":         "0.9",
-			"status":          "Building",
-			"description":     "Draft and summarize email workflows through Court-reviewed automation.",
-			"required_scopes": []string{"network:mail-relay"},
-			"secrets":         []string{"SMTP_TOKEN"},
-		},
-	})
+	writeJSON(w, http.StatusOK, loadSkills())
 }
 
 func handleProposals(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []map[string]interface{}{
-		{
-			"id":             "discord_monitor_v1_2",
-			"title":          "discord_monitor v1.2",
-			"status":         "APPROVED",
-			"summary":        "Security gates passed and deployment completed.",
-			"votes":          "7/7 unanimous",
-			"security_gates": []string{"SAST Passed", "SCA Passed", "Secrets Scan Passed"},
-		},
-		{
-			"id":             "web_search_v2",
-			"title":          "web_search v2",
-			"status":         "UNDER REVIEW",
-			"summary":        "Awaiting additional Court votes.",
-			"votes":          "4 approve / 2 reject / 1 abstain",
-			"security_gates": []string{"Build Ready", "SBOM Available"},
-		},
-	})
+	writeJSON(w, http.StatusOK, loadProposals())
 }
 
 func handleMonitoring(w http.ResponseWriter, r *http.Request) {
+	status := loadDaemonStatus()
+	logs := loadRecentDaemonLogs(50)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"safe_mode": false,
-		"agents": []map[string]interface{}{
-			{"name": "researcher", "status": "Working", "progress": "87%"},
-			{"name": "analyst", "status": "Idle", "progress": "0%"},
-			{"name": "general", "status": "Working", "progress": "42%"},
-		},
+		"safe_mode": status.SafeMode,
+		"agents":    []map[string]interface{}{},
 		"stats": map[string]interface{}{
-			"running_vms":      4,
-			"background_tasks": 7,
-			"cpu_usage":        "34%",
-			"memory_usage":     "18GB",
+			"running_vms":      status.RunningVMs,
+			"background_tasks": 0,
+			"cpu_usage":        "unknown",
+			"memory_usage":     "unknown",
 		},
-		"logs": []string{
-			"14:32:11 researcher: Found 12 relevant papers",
-			"14:32:09 analyst: Key tradeoff identified",
-			"14:31:55 general: New email batch processed",
-		},
+		"logs": logs,
 	})
+}
+
+func loadSkills() []map[string]interface{} {
+	values := loadJSONObjects(storeSkillsFilename())
+	skills := make([]map[string]interface{}, 0, len(values))
+	for _, item := range values {
+		skill := map[string]interface{}{}
+		for k, v := range item {
+			skill[k] = v
+		}
+		if _, ok := skill["id"]; !ok {
+			skill["id"] = "unknown"
+		}
+		if _, ok := skill["name"]; !ok {
+			skill["name"] = fmt.Sprintf("%v", skill["id"])
+		}
+		if _, ok := skill["version"]; !ok {
+			skill["version"] = "n/a"
+		}
+		if _, ok := skill["status"]; !ok {
+			skill["status"] = "Unknown"
+		}
+		if _, ok := skill["description"]; !ok {
+			skill["description"] = ""
+		}
+		if _, ok := skill["required_scopes"]; !ok {
+			skill["required_scopes"] = []string{}
+		}
+		if _, ok := skill["secrets"]; !ok {
+			skill["secrets"] = []string{}
+		}
+		skills = append(skills, skill)
+	}
+	sort.Slice(skills, func(i, j int) bool {
+		return fmt.Sprintf("%v", skills[i]["id"]) < fmt.Sprintf("%v", skills[j]["id"])
+	})
+	return skills
+}
+
+func loadProposals() []map[string]interface{} {
+	values := loadJSONObjects(storeProposalsFilename())
+	proposals := make([]map[string]interface{}, 0, len(values))
+	for _, item := range values {
+		proposal := map[string]interface{}{}
+		for k, v := range item {
+			proposal[k] = v
+		}
+		if _, ok := proposal["id"]; !ok {
+			proposal["id"] = nextID("proposal")
+		}
+		title := fmt.Sprintf("%v", proposal["id"])
+		if desc, ok := proposal["description"].(string); ok && strings.TrimSpace(desc) != "" {
+			title = desc
+		}
+		proposal["title"] = title
+		proposal["status"] = normalizeProposalStatus(fmt.Sprintf("%v", proposal["state"]))
+		proposal["summary"] = fmt.Sprintf("Proposal %s", title)
+		proposal["votes"] = summarizeVotes(proposal["reviews"])
+		proposal["security_gates"] = []string{"Pending backend security gates"}
+		proposals = append(proposals, proposal)
+	}
+	sort.Slice(proposals, func(i, j int) bool {
+		return fmt.Sprintf("%v", proposals[i]["id"]) < fmt.Sprintf("%v", proposals[j]["id"])
+	})
+	return proposals
+}
+
+func summarizeVotes(raw interface{}) string {
+	votes, ok := raw.(map[string]interface{})
+	if !ok || len(votes) == 0 {
+		return "No votes"
+	}
+	approve := 0
+	reject := 0
+	abstain := 0
+	for _, v := range votes {
+		s := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", v)))
+		switch s {
+		case "approve":
+			approve++
+		case "reject":
+			reject++
+		case "abstain":
+			abstain++
+		}
+	}
+	return fmt.Sprintf("%d approve / %d reject / %d abstain", approve, reject, abstain)
+}
+
+func normalizeProposalStatus(state string) string {
+	s := strings.ToLower(strings.TrimSpace(state))
+	switch s {
+	case "approved":
+		return "APPROVED"
+	case "rejected":
+		return "REJECTED"
+	case "pending", "under_review", "under review":
+		return "UNDER REVIEW"
+	default:
+		return "UNDER REVIEW"
+	}
+}
+
+func countPendingProposals(proposals []map[string]interface{}) int {
+	pending := 0
+	for _, proposal := range proposals {
+		status := strings.ToLower(fmt.Sprintf("%v", proposal["status"]))
+		if strings.Contains(status, "review") || strings.Contains(status, "pending") {
+			pending++
+		}
+	}
+	return pending
+}
+
+func loadJSONObjects(filename string) []map[string]interface{} {
+	path := filepath.Join(storeDataDir(), filename)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return []map[string]interface{}{}
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return []map[string]interface{}{}
+	}
+
+	asMap := map[string]interface{}{}
+	if err := json.Unmarshal(raw, &asMap); err == nil {
+		list := make([]map[string]interface{}, 0, len(asMap))
+		for key, value := range asMap {
+			if obj, ok := value.(map[string]interface{}); ok {
+				if _, exists := obj["id"]; !exists {
+					obj["id"] = key
+				}
+				list = append(list, obj)
+			}
+		}
+		return list
+	}
+
+	asList := []map[string]interface{}{}
+	if err := json.Unmarshal(raw, &asList); err == nil {
+		return asList
+	}
+
+	return []map[string]interface{}{}
+}
+
+func storeDataDir() string {
+	if dir := strings.TrimSpace(os.Getenv("AEGIS_STORE_DATA_DIR")); dir != "" {
+		return dir
+	}
+	return "."
+}
+
+func storeSkillsFilename() string {
+	if file := strings.TrimSpace(os.Getenv("AEGIS_SKILLS_FILE")); file != "" {
+		return file
+	}
+	return "skills.json"
+}
+
+func storeProposalsFilename() string {
+	if file := strings.TrimSpace(os.Getenv("AEGIS_PROPOSALS_FILE")); file != "" {
+		return file
+	}
+	return "proposals.json"
+}
+
+func loadDaemonStatus() daemonSnapshot {
+	snapshot := daemonSnapshot{Running: false, Backend: "unknown", RunningVMs: 0, Hub: "unknown", MemoryVM: "unknown", StoreVM: "unknown"}
+	socket := expandPath("~/.aegis/daemon.sock")
+	conn, err := net.DialTimeout("unix", socket, 400*time.Millisecond)
+	if err != nil {
+		return snapshot
+	}
+	defer conn.Close()
+
+	snapshot.Running = true
+	_ = conn.SetDeadline(time.Now().Add(1 * time.Second))
+	if _, err := conn.Write([]byte("status")); err != nil {
+		return snapshot
+	}
+
+	resp, err := io.ReadAll(conn)
+	if err != nil {
+		return snapshot
+	}
+	parseDaemonStatus(&snapshot, string(resp))
+	return snapshot
+}
+
+func parseDaemonStatus(snapshot *daemonSnapshot, raw string) {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		switch key {
+		case "Backend":
+			snapshot.Backend = value
+		case "Safe Mode":
+			snapshot.SafeMode = strings.EqualFold(value, "true")
+		case "Running VMs":
+			if n, err := strconv.Atoi(value); err == nil {
+				snapshot.RunningVMs = n
+			}
+		case "Hub":
+			snapshot.Hub = value
+		case "Memory VM":
+			snapshot.MemoryVM = value
+		case "Store VM":
+			snapshot.StoreVM = value
+		}
+	}
+}
+
+func loadRecentDaemonLogs(limit int) []string {
+	if limit <= 0 {
+		return []string{}
+	}
+	path := expandPath("~/.aegis/daemon.log")
+	file, err := os.Open(path)
+	if err != nil {
+		return []string{}
+	}
+	defer file.Close()
+
+	lines := make([]string, 0, limit)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) <= limit {
+		return lines
+	}
+	return lines[len(lines)-limit:]
+}
+
+func statusLabel(running bool) string {
+	if running {
+		return "running"
+	}
+	return "degraded"
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
