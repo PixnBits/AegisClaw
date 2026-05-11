@@ -368,13 +368,15 @@ function activePage() {
 }
 
 function navigate(page) {
+  // Validate against the known-page whitelist; default to dashboard for unknown values.
+  const safePage = Object.prototype.hasOwnProperty.call(PAGE_TITLES, page) ? page : 'dashboard';
   document.querySelectorAll('[data-page]').forEach((panel) => {
-    panel.hidden = panel.dataset.page !== page;
+    panel.hidden = panel.dataset.page !== safePage;
   });
   document.querySelectorAll('[data-nav-page]').forEach((btn) => {
-    btn.classList.toggle('is-active', btn.dataset.navPage === page);
+    btn.classList.toggle('is-active', btn.dataset.navPage === safePage);
   });
-  const title = PAGE_TITLES[page] || 'AegisClaw';
+  const title = PAGE_TITLES[safePage];
   document.title = `${title} — AegisClaw Secure Command Center`;
 }
 
