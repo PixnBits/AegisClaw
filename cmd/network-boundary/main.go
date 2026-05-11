@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -95,7 +96,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		Destination: "hub",
 		Command:     "register",
 		Payload:     map[string]string{"public_key": pubStr},
-		Timestamp:   "2026-05-09T20:05:00Z",
+		Timestamp:   time.Now().Format(time.RFC3339),
 		Signature:   "dummy",
 	}
 	err = encoder.Encode(regMsg)
@@ -115,12 +116,13 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	fmt.Println("Network Boundary registered")
 
 	// Load allowed domains (stub: hardcode for now)
+	ollamaHost := ollamaBackendHost()
 	allowedDomains := map[string]bool{
-		"example.com":     true,
-		"api.github.com":  true,
-		"localhost:11434": true,
+		"example.com":    true,
+		"api.github.com": true,
+		ollamaHost:       true,
 	}
-	ollamaGenerateURL := "http://localhost:11434/api/generate"
+	ollamaGenerateURL := "http://" + ollamaHost + "/api/generate"
 
 	// Start HTTP proxy
 	go func() {
@@ -139,7 +141,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 					Destination: "store",
 					Command:     "audit.append",
 					Payload:     map[string]interface{}{"action": "blocked_request", "url": targetURL},
-					Timestamp:   "2026-05-09T20:05:01Z",
+					Timestamp:   time.Now().Format(time.RFC3339),
 					Signature:   "",
 				}
 				signMessage(&auditMsg, priv)
@@ -177,7 +179,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				Destination: "store",
 				Command:     "audit.append",
 				Payload:     map[string]interface{}{"action": "proxied_request", "url": targetURL, "status": resp.StatusCode},
-				Timestamp:   "2026-05-09T20:05:01Z",
+				Timestamp:   time.Now().Format(time.RFC3339),
 				Signature:   "",
 			}
 			signMessage(&auditMsg, priv)
@@ -200,7 +202,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		response := Message{
 			Source:      "network-boundary",
 			Destination: msg.Source,
-			Timestamp:   "2026-05-09T20:05:01Z",
+			Timestamp:   time.Now().Format(time.RFC3339),
 			Signature:   "",
 		}
 
@@ -284,6 +286,13 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 			log.Println("Failed to send response:", err)
 		}
 	}
+}
+
+func ollamaBackendHost() string {
+	if host := strings.TrimSpace(os.Getenv("AEGIS_OLLAMA_BACKEND_HOST")); host != "" {
+		return host
+	}
+	return "localhost:11434"
 }
 
 func main() {

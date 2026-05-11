@@ -26,11 +26,14 @@
         </div>
 
         <nav class="primary-nav" aria-label="Primary">
-          <button type="button" class="nav-button is-active" data-nav-target="dashboardPanel">Dashboard</button>
-          <button type="button" class="nav-button" data-nav-target="chatPanel">Conversations</button>
-          <button type="button" class="nav-button" data-nav-target="skillsPanel">Skills</button>
-          <button type="button" class="nav-button" data-nav-target="courtPanel">Court</button>
-          <button type="button" class="nav-button" data-nav-target="monitoringPanel">Monitoring</button>
+          <button type="button" class="nav-button is-active" data-nav-page="dashboard">Dashboard</button>
+          <button type="button" class="nav-button" data-nav-page="chat">Conversations</button>
+          <button type="button" class="nav-button" data-nav-page="teams">Teams</button>
+          <button type="button" class="nav-button" data-nav-page="agents">Agents</button>
+          <button type="button" class="nav-button" data-nav-page="skills">Skills</button>
+          <button type="button" class="nav-button" data-nav-page="court">Court</button>
+          <button type="button" class="nav-button" data-nav-page="monitoring">Monitoring</button>
+          <button type="button" class="nav-button" data-nav-page="audit">Audit</button>
         </nav>
       </div>
 
@@ -66,7 +69,7 @@
       </aside>
 
       <section class="main-column">
-        <section id="dashboardPanel" class="panel content-panel" data-testid="dashboard-panel">
+        <section id="dashboardPanel" class="panel content-panel" data-testid="dashboard-panel" data-page="dashboard">
           <div class="panel-heading">
             <p class="eyebrow">Dashboard</p>
             <h1>Dashboard</h1>
@@ -115,7 +118,7 @@
           </div>
         </section>
 
-        <section id="chatPanel" class="panel content-panel" data-testid="chat-panel">
+        <section id="chatPanel" class="panel content-panel" data-testid="chat-panel" data-page="chat" hidden>
           <div class="panel-heading">
             <p class="eyebrow">Conversations</p>
             <h2>Chat with AegisClaw</h2>
@@ -134,7 +137,7 @@
           </form>
         </section>
 
-        <section id="skillsPanel" class="panel content-panel" data-testid="skills-panel">
+        <section id="skillsPanel" class="panel content-panel" data-testid="skills-panel" data-page="skills" hidden>
           <div class="panel-heading">
             <p class="eyebrow">Skills</p>
             <h2>Skills Registry</h2>
@@ -142,7 +145,7 @@
           <div id="skillsList" class="card-grid" data-testid="skills-list"></div>
         </section>
 
-        <section id="courtPanel" class="panel content-panel" data-testid="court-panel">
+        <section id="courtPanel" class="panel content-panel" data-testid="court-panel" data-page="court" hidden>
           <div class="panel-heading">
             <p class="eyebrow">Court</p>
             <h2>Court / Governance</h2>
@@ -150,7 +153,7 @@
           <div id="proposalsList" class="card-grid" data-testid="proposals-list"></div>
         </section>
 
-        <section id="monitoringPanel" class="panel content-panel" data-testid="monitoring-panel">
+        <section id="monitoringPanel" class="panel content-panel" data-testid="monitoring-panel" data-page="monitoring" hidden>
           <div class="panel-heading">
             <p class="eyebrow">Monitoring</p>
             <h2>Monitoring / Status</h2>
@@ -180,6 +183,30 @@
               <pre id="monitoringLogs" class="log-box" data-testid="monitoring-logs"></pre>
             </article>
           </div>
+        </section>
+
+        <section id="teamsPanel" class="panel content-panel" data-testid="teams-panel" data-page="teams" hidden>
+          <div class="panel-heading">
+            <p class="eyebrow">Teams</p>
+            <h2>Team Workspace</h2>
+          </div>
+          <ul id="teamsList" class="list-stack" data-testid="teams-list"></ul>
+        </section>
+
+        <section id="agentsPanel" class="panel content-panel" data-testid="agents-panel" data-page="agents" hidden>
+          <div class="panel-heading">
+            <p class="eyebrow">Agents</p>
+            <h2>Agents</h2>
+          </div>
+          <ul id="agentsList" class="list-stack" data-testid="agents-list"></ul>
+        </section>
+
+        <section id="auditPanel" class="panel content-panel" data-testid="audit-panel" data-page="audit" hidden>
+          <div class="panel-heading">
+            <p class="eyebrow">Audit</p>
+            <h2>Audit Log</h2>
+          </div>
+          <pre id="auditLog" class="log-box" data-testid="audit-log"></pre>
         </section>
       </section>
 

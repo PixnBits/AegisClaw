@@ -3,8 +3,9 @@ import { test, expect } from '@playwright/test';
 test.describe('User Journey E2E Tests', () => {
   test('User Journey 1: Onboarding and basic chat', async ({ page }) => {
     await page.goto('/');
-
     await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible();
+
+    await page.goto('/#chat');
     await expect(page.getByRole('heading', { level: 2, name: 'Chat with AegisClaw' })).toBeVisible();
 
     const input = page.locator('#messageInput');

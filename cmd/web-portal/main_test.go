@@ -101,11 +101,27 @@ func TestMuxServesEmbeddedIndexWithSecurityHeaders(t *testing.T) {
 		t.Fatalf("expected CSP header, got %q", csp)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Dashboard") || !strings.Contains(body, "Chat with AegisClaw") {
-		t.Fatalf("expected dashboard and chat headings in index")
+	if !strings.Contains(body, "Dashboard") {
+		t.Fatalf("expected Dashboard heading in index")
 	}
 	if strings.Contains(body, "cdn.jsdelivr.net") {
 		t.Fatal("external CDN reference should not be present")
+	}
+}
+
+func TestSPAFallbackServesIndex(t *testing.T) {
+	for _, path := range []string{"/dashboard", "/skills", "/court", "/monitoring"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+
+		newMux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for SPA path %s, got %d", path, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "AegisClaw") {
+			t.Fatalf("expected index.html for SPA path %s", path)
+		}
 	}
 }
 

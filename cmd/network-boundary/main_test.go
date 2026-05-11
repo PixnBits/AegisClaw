@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"testing"
 )
 
@@ -41,5 +42,19 @@ func TestSignMessage(t *testing.T) {
 	sigBytes, _ := base64.StdEncoding.DecodeString(msg.Signature)
 	if !ed25519.Verify(pub, data, sigBytes) {
 		t.Error("Signature verification failed")
+	}
+}
+
+func TestOllamaBackendHostDefault(t *testing.T) {
+	os.Unsetenv("AEGIS_OLLAMA_BACKEND_HOST")
+	if got := ollamaBackendHost(); got != "localhost:11434" {
+		t.Errorf("expected default localhost:11434, got %q", got)
+	}
+}
+
+func TestOllamaBackendHostEnvOverride(t *testing.T) {
+	t.Setenv("AEGIS_OLLAMA_BACKEND_HOST", "ollama-vm:11434")
+	if got := ollamaBackendHost(); got != "ollama-vm:11434" {
+		t.Errorf("expected ollama-vm:11434, got %q", got)
 	}
 }

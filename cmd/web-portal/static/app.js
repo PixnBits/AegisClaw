@@ -6,6 +6,17 @@ const state = {
   recentTools: [],
 };
 
+const PAGE_TITLES = {
+  dashboard: 'Dashboard',
+  chat: 'Conversations',
+  teams: 'Team Workspace',
+  agents: 'Agents',
+  skills: 'Skills Registry',
+  court: 'Court / Governance',
+  monitoring: 'Monitoring',
+  audit: 'Audit Log',
+};
+
 const elements = {
   systemStatusLabel: document.getElementById('systemStatusLabel'),
   runtimeLabel: document.getElementById('runtimeLabel'),
@@ -351,22 +362,36 @@ function titleCase(value) {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
-function wireNavigation() {
-  document.querySelectorAll('[data-nav-target]').forEach((button) => {
+function activePage() {
+  const hash = location.hash.slice(1);
+  return Object.prototype.hasOwnProperty.call(PAGE_TITLES, hash) ? hash : 'dashboard';
+}
+
+function navigate(page) {
+  document.querySelectorAll('[data-page]').forEach((panel) => {
+    panel.hidden = panel.dataset.page !== page;
+  });
+  document.querySelectorAll('[data-nav-page]').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.navPage === page);
+  });
+  const title = PAGE_TITLES[page] || 'AegisClaw';
+  document.title = `${title} — AegisClaw Secure Command Center`;
+}
+
+function wireRouter() {
+  document.querySelectorAll('[data-nav-page]').forEach((button) => {
     button.addEventListener('click', () => {
-      document.querySelectorAll('[data-nav-target]').forEach((candidate) => candidate.classList.remove('is-active'));
-      button.classList.add('is-active');
-      const target = document.getElementById(button.dataset.navTarget);
-      if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+      const page = button.dataset.navPage;
+      location.hash = page;
     });
   });
+  window.addEventListener('hashchange', () => navigate(activePage()));
 }
 
 async function boot() {
-  wireNavigation();
+  wireRouter();
   elements.chatForm.addEventListener('submit', sendMessage);
+  navigate(activePage());
   try {
     await loadPortalData();
   } catch (error) {

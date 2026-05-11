@@ -109,7 +109,18 @@ func newMux() http.Handler {
 	if err != nil {
 		panic(err)
 	}
-	mux.Handle("/", http.FileServer(http.FS(staticSub)))
+	fileServer := http.FileServer(http.FS(staticSub))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Serve static files as-is; for unknown paths serve index.html (SPA fallback).
+		_, fsErr := fs.Stat(staticSub, strings.TrimPrefix(r.URL.Path, "/"))
+		if fsErr != nil && r.URL.Path != "/" {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/"
+			fileServer.ServeHTTP(w, r2)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	}))
 
 	return securityMiddleware(mux)
 }
