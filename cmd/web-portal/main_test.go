@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestStreamMessage(t *testing.T) {
+func TestStreamMessageRoundTrip(t *testing.T) {
 	msg := StreamMessage{
 		Type:      "agent_response",
 		MessageID: "msg_123",
@@ -24,21 +28,19 @@ func TestStreamMessage(t *testing.T) {
 	}
 
 	var unmarshaled StreamMessage
-	err = json.Unmarshal(data, &unmarshaled)
-	if err != nil {
+	if err := json.Unmarshal(data, &unmarshaled); err != nil {
 		t.Fatalf("Failed to unmarshal: %v", err)
 	}
 
 	if unmarshaled.Type != "agent_response" {
-		t.Errorf("Expected type agent_response, got %s", unmarshaled.Type)
+		t.Fatalf("Expected type agent_response, got %s", unmarshaled.Type)
 	}
 	if unmarshaled.Content["text"] != "Hello" {
-		t.Errorf("Expected text Hello, got %v", unmarshaled.Content["text"])
+		t.Fatalf("Expected text Hello, got %v", unmarshaled.Content["text"])
 	}
 }
 
 func TestSendSSE(t *testing.T) {
-	// sendSSE is hard to test without HTTP, but we can check it doesn't panic
 	msg := StreamMessage{
 		Type:      "test",
 		MessageID: "msg_test",
@@ -49,14 +51,178 @@ func TestSendSSE(t *testing.T) {
 		Metadata:  map[string]interface{}{},
 	}
 
-	// Mock writer
 	var output []byte
 	writer := &mockWriter{output: &output}
-
 	sendSSE(writer, msg)
 
-	if len(output) == 0 {
-		t.Error("Expected output from sendSSE")
+	if got := string(output); !strings.HasPrefix(got, "data: {") || !strings.HasSuffix(got, "\n\n") {
+		t.Fatalf("unexpected SSE payload: %q", got)
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	path := expandPath("~/.aegis/test")
+	if path == "~/.aegis/test" {
+		t.Fatal("expected path expansion")
+	}
+}
+
+func TestIsSafeSessionID(t *testing.T) {
+	if !isSafeSessionID("sess_123-abc") {
+		t.Fatal("expected session id to be valid")
+	}
+	if isSafeSessionID("../../bad") {
+		t.Fatal("expected traversal-like session id to be rejected")
+	}
+}
+
+func TestIncrementalChunks(t *testing.T) {
+	chunks := incrementalChunks("one two three")
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	}
+	if chunks[2] != "one two three" {
+		t.Fatalf("unexpected final chunk: %q", chunks[2])
+	}
+}
+
+func TestMuxServesEmbeddedIndexWithSecurityHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	newMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Fatalf("expected CSP header, got %q", csp)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Dashboard") || !strings.Contains(body, "Chat with AegisClaw") {
+		t.Fatalf("expected dashboard and chat headings in index, got %q", body)
+	}
+	if strings.Contains(body, "cdn.jsdelivr.net") {
+		t.Fatal("external CDN reference should not be present")
+	}
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	newMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("expected json content type, got %q", got)
+	}
+}
+
+func TestDashboardEndpoint(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+	rec := httptest.NewRecorder()
+
+	newMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode payload: %v", err)
+	}
+	if payload["runtime"] != "Firecracker" {
+		t.Fatalf("expected Firecracker runtime, got %v", payload["runtime"])
+	}
+}
+
+func TestChatStreamRequiresInputs(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
+	rec := httptest.NewRecorder()
+
+	newMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestChatStreamEmitsExpectedRailSequence(t *testing.T) {
+	reset := setTestStreamingDelays()
+	defer reset()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream?message=hello%20portal&session_id=sess_123", nil)
+	rec := httptest.NewRecorder()
+
+	handleChatStream(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	events := decodeSSEEvents(t, rec.Body.Bytes())
+	if len(events) < 5 {
+		t.Fatalf("expected at least 5 events, got %d", len(events))
+	}
+
+	expectedPrefix := []string{"user_message", "agent_thinking", "tool_call", "tool_result", "agent_response"}
+	for i, want := range expectedPrefix {
+		if events[i].Type != want {
+			t.Fatalf("event %d: expected %s, got %s", i, want, events[i].Type)
+		}
+	}
+
+	last := events[len(events)-1]
+	if last.Type != "agent_response" || last.Content["is_complete"] != true {
+		t.Fatalf("expected final complete agent_response, got %#v", last)
+	}
+}
+
+func decodeSSEEvents(t *testing.T, payload []byte) []StreamMessage {
+	t.Helper()
+
+	scanner := bufio.NewScanner(bytes.NewReader(payload))
+	var events []StreamMessage
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event StreamMessage
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			t.Fatalf("failed to decode SSE event: %v", err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanner error: %v", err)
+	}
+	return events
+}
+
+func setTestStreamingDelays() func() {
+	originalInitial := initialResponseDelay
+	originalThinking := thinkingDelay
+	originalTool := toolResultDelay
+	originalFinal := finalResponseDelay
+	originalWord := wordStreamDelay
+
+	initialResponseDelay = 0
+	thinkingDelay = 0
+	toolResultDelay = 0
+	finalResponseDelay = 0
+	wordStreamDelay = 0
+
+	return func() {
+		initialResponseDelay = originalInitial
+		thinkingDelay = originalThinking
+		toolResultDelay = originalTool
+		finalResponseDelay = originalFinal
+		wordStreamDelay = originalWord
 	}
 }
 
@@ -74,10 +240,3 @@ func (m *mockWriter) Header() http.Header {
 }
 
 func (m *mockWriter) WriteHeader(int) {}
-
-func TestExpandPath(t *testing.T) {
-	path := expandPath("~/.aegis/test")
-	if path == "~/.aegis/test" {
-		t.Error("Expected path expansion")
-	}
-}
