@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -111,8 +112,10 @@ func newMux() http.Handler {
 	}
 	fileServer := http.FileServer(http.FS(staticSub))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Serve static files as-is; for unknown paths serve index.html (SPA fallback).
-		_, fsErr := fs.Stat(staticSub, strings.TrimPrefix(r.URL.Path, "/"))
+		// Strip the leading slash and clean the path before probing the embedded FS.
+		// Go's embed FS already prevents path traversal, but we normalise explicitly.
+		cleanPath := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		_, fsErr := fs.Stat(staticSub, cleanPath)
 		if fsErr != nil && r.URL.Path != "/" {
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = "/"

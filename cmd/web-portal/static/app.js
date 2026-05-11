@@ -363,7 +363,8 @@ function titleCase(value) {
 }
 
 function activePage() {
-  const hash = location.hash.slice(1);
+  // Strip any query params from the hash before looking up the page (e.g. #chat?id=1 → chat).
+  const hash = location.hash.slice(1).split('?')[0];
   return Object.prototype.hasOwnProperty.call(PAGE_TITLES, hash) ? hash : 'dashboard';
 }
 
@@ -371,7 +372,9 @@ function navigate(page) {
   // Validate against the known-page whitelist; default to dashboard for unknown values.
   const safePage = Object.prototype.hasOwnProperty.call(PAGE_TITLES, page) ? page : 'dashboard';
   document.querySelectorAll('[data-page]').forEach((panel) => {
-    panel.hidden = panel.dataset.page !== safePage;
+    const active = panel.dataset.page === safePage;
+    panel.hidden = !active;
+    panel.setAttribute('aria-hidden', String(!active));
   });
   document.querySelectorAll('[data-nav-page]').forEach((btn) => {
     btn.classList.toggle('is-active', btn.dataset.navPage === safePage);
