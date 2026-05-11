@@ -114,7 +114,7 @@ func newMux() http.Handler {
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Strip the leading slash and clean the path before probing the embedded FS.
 		// Go's embed FS already prevents path traversal, but we normalise explicitly.
-		cleanPath := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		cleanPath := path.Clean(r.URL.Path[1:])
 		_, fsErr := fs.Stat(staticSub, cleanPath)
 		if fsErr != nil && r.URL.Path != "/" {
 			r2 := r.Clone(r.Context())

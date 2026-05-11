@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"os"
 	"testing"
 )
 
@@ -46,7 +45,7 @@ func TestSignMessage(t *testing.T) {
 }
 
 func TestOllamaBackendHostDefault(t *testing.T) {
-	os.Unsetenv("AEGIS_OLLAMA_BACKEND_HOST")
+	t.Setenv("AEGIS_OLLAMA_BACKEND_HOST", "")
 	if got := ollamaBackendHost(); got != "localhost:11434" {
 		t.Errorf("expected default localhost:11434, got %q", got)
 	}

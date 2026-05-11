@@ -374,7 +374,6 @@ function navigate(page) {
   document.querySelectorAll('[data-page]').forEach((panel) => {
     const active = panel.dataset.page === safePage;
     panel.hidden = !active;
-    panel.setAttribute('aria-hidden', String(!active));
   });
   document.querySelectorAll('[data-nav-page]').forEach((btn) => {
     btn.classList.toggle('is-active', btn.dataset.navPage === safePage);
