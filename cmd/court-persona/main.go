@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -40,6 +41,23 @@ func signMessage(msg *Message, priv ed25519.PrivateKey) {
 	data, _ := json.Marshal(msgCopy)
 	signature := ed25519.Sign(priv, data)
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+}
+
+func getBuildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version := info.Main.Version
+		if version == "" || version == "(devel)" {
+			// Use commit hash if available
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+					return setting.Value[:7] // Short commit hash
+				}
+			}
+			return "dev"
+		}
+		return version
+	}
+	return "unknown"
 }
 
 func getPersonaPrompt(persona string) string {
@@ -180,6 +198,20 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 			err = encoder.Encode(voteMsg)
 			if err != nil {
 				log.Println("Failed to submit vote:", err)
+			}
+		} else if msg.Command == "version" {
+			response := Message{
+				Source:      "court-" + persona,
+				Destination: msg.Source,
+				Command:     "version",
+				Payload:     getBuildVersion(),
+				Timestamp:   "2026-05-09T19:50:01Z",
+				Signature:   "",
+			}
+			signMessage(&response, priv)
+			err = encoder.Encode(response)
+			if err != nil {
+				log.Println("Failed to send version response:", err)
 			}
 		}
 	}

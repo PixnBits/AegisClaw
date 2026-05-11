@@ -867,12 +867,52 @@ func getDaemonStatus() string {
 	return response
 }
 
+func getVMVersion(vmName string) string {
+	// Try to get version from the VM by sending a message through hub
+	if hubConn == nil {
+		return "unknown"
+	}
+
+	msg := Message{
+		Source:      "daemon",
+		Destination: vmName,
+		Command:     "version",
+		Payload:     nil,
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Signature:   "dummy",
+	}
+
+	encoder := json.NewEncoder(hubConn)
+	decoder := json.NewDecoder(hubConn)
+
+	err := encoder.Encode(msg)
+	if err != nil {
+		return "unknown"
+	}
+
+	// Set a short timeout for version response
+	hubConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var resp Message
+	err = decoder.Decode(&resp)
+	hubConn.SetReadDeadline(time.Time{}) // Reset deadline
+
+	if err != nil {
+		return "unknown"
+	}
+
+	if version, ok := resp.Payload.(string); ok {
+		return version
+	}
+	return "unknown"
+}
+
 func getVMList() string {
-	vms := []string{}
+	vms := []map[string]string{}
 	runningCmds.Range(func(key, value interface{}) bool {
 		name := key.(string)
 		if name != "hub" { // hub is not a VM
-			vms = append(vms, name)
+			version := getVMVersion(name)
+			vms = append(vms, map[string]string{"name": name, "version": version})
 		}
 		return true
 	})
@@ -883,7 +923,7 @@ func getVMList() string {
 
 	response := "Running VMs:\n"
 	for _, vm := range vms {
-		response += fmt.Sprintf("- %s\n", vm)
+		response += fmt.Sprintf("- %s (version: %s)\n", vm["name"], vm["version"])
 	}
 	return response
 }

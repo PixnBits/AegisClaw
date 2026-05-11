@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -40,6 +41,23 @@ func signMessage(msg *Message, priv ed25519.PrivateKey) {
 	data, _ := json.Marshal(msgCopy)
 	signature := ed25519.Sign(priv, data)
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+}
+
+func getBuildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version := info.Main.Version
+		if version == "" || version == "(devel)" {
+			// Use commit hash if available
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+					return setting.Value[:7] // Short commit hash
+				}
+			}
+			return "dev"
+		}
+		return version
+	}
+	return "unknown"
 }
 
 func runSAST(code string) (bool, string) {
@@ -257,6 +275,9 @@ func runBuilder(cmd *cobra.Command, args []string) {
 					"tests": "basic tests", // stub
 				}
 			}
+		case "version":
+			response.Command = "version"
+			response.Payload = getBuildVersion()
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"

@@ -1,17 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -29,19 +27,7 @@ type Message struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 
-const (
-	defaultOllamaModel = "qwen3-coder:30b"
-)
 
-type ollamaGenerateRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	Stream bool   `json:"stream"`
-}
-
-type ollamaGenerateResponse struct {
-	Response string `json:"response"`
-}
 
 func expandPath(path string) string {
 	if path[:2] == "~/" {
@@ -59,9 +45,79 @@ func signMessage(msg *Message, priv ed25519.PrivateKey) {
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
 }
 
+func getBuildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version := info.Main.Version
+		if version == "" || version == "(devel)" {
+			// Use commit hash if available
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+					return setting.Value[:7] // Short commit hash
+				}
+			}
+			return "dev"
+		}
+		return version
+	}
+	return "unknown"
+}
+
+func callLLM(prompt string, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) string {
+	// Send LLM request to Network Boundary
+	model := "qwen3-coder:30b"
+	if envModel := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); envModel != "" {
+		model = envModel
+	}
+	llmRequest := map[string]interface{}{
+		"model":  model,
+		"prompt": prompt,
+		"stream": false,
+	}
+	llmMsg := Message{
+		Source:      "agent1",
+		Destination: "network-boundary",
+		Command:     "llm.call",
+		Payload:     map[string]interface{}{"request": llmRequest, "endpoint": "/api/generate"},
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Signature:   "",
+	}
+	signMessage(&llmMsg, priv)
+	err := encoder.Encode(llmMsg)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to send LLM request: %v", err)
+	}
+
+	// Wait for response
+	var respMsg Message
+	err = decoder.Decode(&respMsg)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to receive LLM response: %v", err)
+	}
+
+	if respMsg.Command == "llm.response" {
+		if payload, ok := respMsg.Payload.(map[string]interface{}); ok {
+			if response, ok := payload["response"].(string); ok {
+				// Parse the Ollama response JSON
+				var ollamaResp map[string]interface{}
+				if err := json.Unmarshal([]byte(response), &ollamaResp); err == nil {
+					if text, ok := ollamaResp["response"].(string); ok {
+						return text
+					}
+				}
+				return response // Return raw if parsing fails
+			}
+			if error, ok := payload["error"].(string); ok {
+				return fmt.Sprintf("LLM Error: %s", error)
+			}
+		}
+	}
+
+	return "Error: Invalid LLM response format"
+}
+
 func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Observe the user input: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt)
+	llmResponse := callLLM(prompt, encoder, decoder, priv)
 	fmt.Println("1. Observe:", llmResponse)
 
 	// Get context from memory
@@ -90,105 +146,63 @@ func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 	fmt.Println("Context received:", contextResp.Payload)
 }
 
-func think(msg *Message) {
+func think(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Think about the request: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt)
+	llmResponse := callLLM(prompt, encoder, decoder, priv)
 	fmt.Println("2. Think:", llmResponse)
 }
 
-func plan(msg *Message) {
+func plan(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Plan how to respond to: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt)
+	llmResponse := callLLM(prompt, encoder, decoder, priv)
 	fmt.Println("3. Plan:", llmResponse)
 }
 
-func act(msg *Message) {
+func act(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Act on the plan for: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt)
+	llmResponse := callLLM(prompt, encoder, decoder, priv)
 	fmt.Println("4. Act:", llmResponse)
 }
 
-func execute(msg *Message) {
+func execute(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Execute the actions for: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt)
+	llmResponse := callLLM(prompt, encoder, decoder, priv)
 	fmt.Println("5. Execute:", llmResponse)
 }
 
 func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	llmResponse := callLLM("Judge the response quality: " + fmt.Sprintf("%v", msg.Payload))
+	llmResponse := callLLM("Judge the response quality: " + fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
 	fmt.Println("6. Judge:", llmResponse)
 
 	// If the request is to add a skill, create a proposal
 	payloadStr := fmt.Sprintf("%v", msg.Payload)
 	if strings.Contains(strings.ToLower(payloadStr), "add a") && strings.Contains(strings.ToLower(payloadStr), "skill") {
-		createProposal(payloadStr, encoder, priv)
+		createProposal(payloadStr, encoder, decoder, priv)
 	}
 }
 
-func callLLM(prompt string) string {
-	response, err := callOllama(prompt)
-	if err != nil {
-		log.Printf("ollama call failed: %v", err)
-		return ""
+
+func mockLLMResponse(prompt string) string {
+	if strings.Contains(prompt, "Observe") {
+		return "Observed: User input received and context loaded."
+	} else if strings.Contains(prompt, "Think") {
+		return "Analyzed: This is a request for information."
+	} else if strings.Contains(prompt, "Plan") {
+		return "Planned: Respond with relevant information."
+	} else if strings.Contains(prompt, "Act") {
+		return "Acting: Prepare tool calls if needed."
+	} else if strings.Contains(prompt, "Execute") {
+		return "Executed: Tools called and results received."
+	} else if strings.Contains(prompt, "Judge") {
+		return "Judged: Response quality is good."
 	}
-	return strings.TrimSpace(response)
+	return "LLM response: " + prompt
 }
 
-func callOllama(prompt string) (string, error) {
-	endpoint := ollamaEndpoint()
-	requestPayload := ollamaGenerateRequest{
-		Model:  ollamaModel(),
-		Prompt: prompt,
-		Stream: false,
-	}
-	body, err := json.Marshal(requestPayload)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.Post(endpoint, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("ollama request failed: %s", resp.Status)
-	}
-
-	var parsed ollamaGenerateResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", err
-	}
-	return parsed.Response, nil
-}
-
-func ollamaModel() string {
-	if model := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); model != "" {
-		return model
-	}
-	return defaultOllamaModel
-}
-
-func ollamaEndpoint() string {
-	if raw := strings.TrimSpace(os.Getenv("AEGIS_OLLAMA_URL")); raw != "" {
-		if strings.Contains(raw, "/api/generate") {
-			return raw
-		}
-		return strings.TrimRight(raw, "/") + "/api/generate"
-	}
-
-	return "http://localhost:8081/proxy/ollama/generate"
-}
-
-func createProposal(description string, encoder *json.Encoder, priv ed25519.PrivateKey) {
+func createProposal(description string, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	// Use LLM to extract skill specs
 	prompt := "Extract skill name, description, required permissions, and code skeleton from: " + description
-	extracted := callLLM(prompt)
+	extracted := callLLM(prompt, encoder, decoder, priv)
 	proposal := map[string]interface{}{
 		"id":          "proposal_" + fmt.Sprintf("%d", time.Now().Unix()),
 		"description": description,
@@ -259,12 +273,28 @@ func runAgent(cmd *cobra.Command, args []string) {
 
 		fmt.Println("Agent received message:", msg.Command, "from", msg.Source)
 
+		// Handle version command
+		if msg.Command == "version" {
+			version := getBuildVersion()
+			response := Message{
+				Source:      "agent1",
+				Destination: msg.Source,
+				Command:     "version",
+				Payload:     version,
+				Timestamp:   time.Now().Format(time.RFC3339),
+				Signature:   "",
+			}
+			signMessage(&response, priv)
+			encoder.Encode(response)
+			continue
+		}
+
 		// 6-step loop
 		observe(&msg, encoder, decoder, priv)
-		think(&msg)
-		plan(&msg)
-		act(&msg)
-		execute(&msg)
+		think(&msg, encoder, decoder, priv)
+		plan(&msg, encoder, decoder, priv)
+		act(&msg, encoder, decoder, priv)
+		execute(&msg, encoder, decoder, priv)
 		judge(&msg, encoder, decoder, priv)
 
 		// Respond

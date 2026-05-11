@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime/debug"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -21,6 +22,23 @@ type Message struct {
 }
 
 var hubSocket = "~/.aegis/hub.sock"
+
+func getBuildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version := info.Main.Version
+		if version == "" || version == "(devel)" {
+			// Use commit hash if available
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+					return setting.Value[:7] // Short commit hash
+				}
+			}
+			return "dev"
+		}
+		return version
+	}
+	return "unknown"
+}
 
 func expandPath(path string) string {
 	if path[:2] == "~/" {
@@ -130,6 +148,9 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 			proposalID := payload["proposal_id"].(string)
 			response.Command = "scribe.status"
 			response.Payload = reviews[proposalID]
+		case "version":
+			response.Command = "version"
+			response.Payload = getBuildVersion()
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"
