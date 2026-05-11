@@ -279,6 +279,9 @@ function updateAgentResponse(text, isComplete) {
   scrollMessages();
 }
 
+// Intentionally supports only headings, bullet lists, and paragraphs.
+// The portal avoids third-party markdown libraries here so streamed content
+// stays self-contained and is rendered only through textContent-based nodes.
 function renderSafeMarkdown(source) {
   const fragment = document.createDocumentFragment();
   const lines = source.split(/\n+/);

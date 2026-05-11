@@ -38,7 +38,7 @@ test.describe('Web Portal E2E Tests', () => {
     const response = page.locator('#messages .message-bubble.agent').last();
     await expect(response).toContainText('Assessment');
     await expect(response).toContainText('Hello AegisClaw');
-    await expect(response).toContainText('security-first');
+    await expect(response).toContainText('AegisClaw keeps the user informed');
   });
 
   test('should show tool calls and tool results during streaming', async ({ page }) => {

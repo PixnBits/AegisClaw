@@ -225,7 +225,11 @@ func incrementalChunks(text string) []string {
 }
 
 func sendSSE(w http.ResponseWriter, msg StreamMessage) {
-	data, _ := json.Marshal(msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("failed to marshal SSE event %s: %v", msg.Type, err)
+		return
+	}
 	fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
