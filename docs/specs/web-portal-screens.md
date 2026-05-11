@@ -1,66 +1,40 @@
-# Web Portal Screens Specification
+# Web Portal Screens & Wireframes
 
-## Overview
-The Web Portal provides a rich, real-time interface for all major user journeys.
+## Design Foundation
 
-## Core Screens
+**Color Palette**
+- Primary Background: `#0a0a0a`
+- Surface / Cards: `#1f1f1f`
+- Accent: `#00d4ff`
+- Danger / Safe Mode: `#ff3333`
+- Text Primary: `#e0e0e0`
 
-### 1. Dashboard (Home)
-- System health overview
-- Active agents and tasks
-- Recent Court decisions
-- Notifications and Safe Mode status
-- Quick actions (New Chat, New Team, Propose Skill)
+**Typography**
+- System UI stack (no external fonts)
 
-### 2. Conversations
-- List of all chats
-- Quick start new conversation
-- Search/filter chats
+**Header (Consistent Across Screens)**
+- Logo left
+- Navigation center
+- Right: Connection status, Notifications (with badge), Avatar dropdown
 
-### 3. Chat Interface
-- Real-time streaming with incremental Markdown
-- Thinking steps and tool call cards
-- RAIL fast feedback
-- `@role` mentions in team chats
+## Wireframes
 
-### 4. Team Workspace
-- Unified view for multi-agent teams
-- Per-agent contribution timeline
-- Shared context and artifacts
+### Dashboard
+[Quick Actions prominent, Active Agents, Background Tasks, Recent Activity, System Health lower]
 
-### 5. Agents & Profiles
-- List of agent profiles
-- Edit SOUL.md, AGENTS.md, skills
-- Autonomy controls
+### Chat Interface
+[Thinking steps, tool calls as cards, incremental Markdown streaming]
 
-### 6. Skills Registry
-- Browse installed skills
-- Propose new skill wizard
-- Status and deployment history
+### Team Workspace
+[Unified timeline, per-agent contributions, shared context]
 
-### 7. Court / Governance
-- Recent decisions with vote breakdowns
-- Proposal review interface
-- Audit explorer
+### Court / Governance
+[Vote breakdown, Code Changes / Diff link, Build Logs, SBOM]
 
-### 8. Monitoring
-- Live background tasks
-- Resource usage
-- Pause/resume/cancel controls
+### Skills Registry
+[Status badges, quick propose button, detail panel]
 
-### 9. Audit Explorer
-- Searchable tamper-evident log
-- Verification tools
+### Monitoring / Status
+[Live tasks, agent status, resource usage]
 
-### 10. Safe Mode / Emergency
-- Prominent emergency stop button (always visible)
-- Current status and recovery options
-
-## Navigation
-- Left sidebar with main sections
-- Top bar with system status, Safe Mode button, and user menu
-
-## Related Documents
-- `../web-portal.md`
-- `../chat-ui-data-flow.md`
-- User Journeys (docs/specs/user-journeys/)
+All screens follow self-contained, paranoid design principles (no external assets).
