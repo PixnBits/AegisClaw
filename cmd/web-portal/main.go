@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -45,6 +46,7 @@ var (
 	toolResultDelay      = 200 * time.Millisecond
 	finalResponseDelay   = 100 * time.Millisecond
 	wordStreamDelay      = 50 * time.Millisecond
+	sessionIDPattern     = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 )
 
 func expandPath(path string) string {
@@ -348,16 +350,7 @@ func nextID(prefix string) string {
 }
 
 func isSafeSessionID(sessionID string) bool {
-	if len(sessionID) == 0 || len(sessionID) > 128 {
-		return false
-	}
-	for _, r := range sessionID {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return len(sessionID) > 0 && len(sessionID) <= 128 && sessionIDPattern.MatchString(sessionID)
 }
 
 func runWebPortal(cmd *cobra.Command, args []string) {

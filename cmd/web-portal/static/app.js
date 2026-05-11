@@ -287,7 +287,7 @@ function renderSafeMarkdown(source) {
   const lines = source.split(/\n+/);
   let list = null;
 
-  const flushList = () => {
+  const commitListToFragment = () => {
     if (list) {
       fragment.appendChild(list);
       list = null;
@@ -297,7 +297,7 @@ function renderSafeMarkdown(source) {
   lines.forEach((line) => {
     const trimmed = line.trim();
     if (!trimmed) {
-      flushList();
+      commitListToFragment();
       return;
     }
 
@@ -311,7 +311,7 @@ function renderSafeMarkdown(source) {
       return;
     }
 
-    flushList();
+    commitListToFragment();
     let node;
     if (trimmed.startsWith('### ')) {
       node = document.createElement('h3');
@@ -329,7 +329,7 @@ function renderSafeMarkdown(source) {
     fragment.appendChild(node);
   });
 
-  flushList();
+  commitListToFragment();
   const wrapper = document.createElement('div');
   wrapper.appendChild(fragment);
   return wrapper;

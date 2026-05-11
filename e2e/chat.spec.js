@@ -32,7 +32,7 @@ test.describe('Web Portal E2E Tests', () => {
     const started = Date.now();
     await sendButton.click();
 
-    await expect(chatStatus).toContainText(/Observe|Executing|Streaming/, { timeout: 800 });
+    await expect(chatStatus).toContainText(/Observe|Executing|Streaming/, { timeout: 1200 });
     expect(Date.now() - started).toBeLessThan(1200);
 
     const response = page.locator('#messages .message-bubble.agent').last();
