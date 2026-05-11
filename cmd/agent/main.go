@@ -27,8 +27,6 @@ type Message struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 
-
-
 func expandPath(path string) string {
 	if path[:2] == "~/" {
 		home, _ := os.UserHomeDir()
@@ -171,7 +169,7 @@ func execute(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 }
 
 func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	llmResponse := callLLM("Judge the response quality: " + fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
+	llmResponse := callLLM("Judge the response quality: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
 	fmt.Println("6. Judge:", llmResponse)
 
 	// If the request is to add a skill, create a proposal
@@ -180,7 +178,6 @@ func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25
 		createProposal(payloadStr, encoder, decoder, priv)
 	}
 }
-
 
 func mockLLMResponse(prompt string) string {
 	if strings.Contains(prompt, "Observe") {

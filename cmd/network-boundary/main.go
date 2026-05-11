@@ -280,14 +280,14 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 						response.Command = "network.response"
 						response.Payload = map[string]interface{}{"status": resp.StatusCode, "body": string(body)}
 						// Audit
-							auditMsg := Message{
-								Source:      "network-boundary",
-								Destination: "store",
-								Command:     "audit.append",
-								Payload:     map[string]interface{}{"action": "network_request", "url": targetURL, "status": resp.StatusCode},
-								Timestamp:   response.Timestamp,
-								Signature:   "",
-							}
+						auditMsg := Message{
+							Source:      "network-boundary",
+							Destination: "store",
+							Command:     "audit.append",
+							Payload:     map[string]interface{}{"action": "network_request", "url": targetURL, "status": resp.StatusCode},
+							Timestamp:   response.Timestamp,
+							Signature:   "",
+						}
 						signMessage(&auditMsg, priv)
 						encoder.Encode(auditMsg)
 					}
