@@ -76,6 +76,8 @@ var (
 	sessionIDPattern     = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 )
 
+const unknownStatus = "unknown"
+
 func expandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		home, _ := os.UserHomeDir()
@@ -237,7 +239,9 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	time.Sleep(finalResponseDelay)
-	for i, chunk := range incrementalChunks(responseText) {
+	chunks := incrementalChunks(responseText)
+	lastChunkIndex := len(chunks) - 1
+	for i, chunk := range chunks {
 		sendSSE(w, StreamMessage{
 			Type:      "agent_response",
 			MessageID: nextID("msg"),
@@ -246,7 +250,7 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 			TraceID:   traceID,
 			Content: map[string]interface{}{
 				"text":        chunk,
-				"is_complete": i == len(incrementalChunks(responseText))-1,
+				"is_complete": i == lastChunkIndex,
 			},
 			Metadata: map[string]interface{}{},
 		})
@@ -544,7 +548,7 @@ func storeProposalsFilename() string {
 }
 
 func loadDaemonStatus() daemonSnapshot {
-	snapshot := daemonSnapshot{Running: false, Backend: "unknown", RunningVMs: 0, Hub: "unknown", MemoryVM: "unknown", StoreVM: "unknown"}
+	snapshot := daemonSnapshot{Running: false, Backend: unknownStatus, RunningVMs: 0, Hub: unknownStatus, MemoryVM: unknownStatus, StoreVM: unknownStatus}
 	socket := expandPath("~/.aegis/daemon.sock")
 	conn, err := net.DialTimeout("unix", socket, 400*time.Millisecond)
 	if err != nil {
