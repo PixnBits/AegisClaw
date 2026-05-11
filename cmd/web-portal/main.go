@@ -77,6 +77,7 @@ var (
 )
 
 const unknownStatus = "unknown"
+const ollamaRequestTimeout = 30 * time.Second
 
 func expandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
@@ -265,7 +266,7 @@ func callOllama(prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: ollamaRequestTimeout}
 	resp, err := client.Post(ollamaEndpoint(), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -291,6 +292,9 @@ func callOllama(prompt string) (string, error) {
 }
 
 func ollamaModel() string {
+	if model := strings.TrimSpace(os.Getenv("AEGIS_OLLAMA_MODEL")); model != "" {
+		return model
+	}
 	if model := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); model != "" {
 		return model
 	}
