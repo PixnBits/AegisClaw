@@ -76,10 +76,12 @@ var (
 	sessionIDPattern     = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 )
 
-const unknownStatus = "unknown"
-const ollamaRequestTimeout = 30 * time.Second
-const daemonConnectTimeout = 400 * time.Millisecond
-const daemonReadDeadline = 1 * time.Second
+const (
+	unknownStatus        = "unknown"
+	ollamaRequestTimeout = 30 * time.Second
+	daemonConnectTimeout = 400 * time.Millisecond
+	daemonReadDeadline   = 1 * time.Second
+)
 
 func expandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
@@ -397,7 +399,7 @@ func loadSkills() []map[string]interface{} {
 			skill[k] = v
 		}
 		if _, ok := skill["id"]; !ok {
-			skill["id"] = "unknown"
+			skill["id"] = unknownStatus
 		}
 		if _, ok := skill["name"]; !ok {
 			skill["name"] = fmt.Sprintf("%v", skill["id"])
@@ -554,7 +556,14 @@ func storeProposalsFilename() string {
 }
 
 func loadDaemonStatus() daemonSnapshot {
-	snapshot := daemonSnapshot{Running: false, Backend: unknownStatus, RunningVMs: 0, Hub: unknownStatus, MemoryVM: unknownStatus, StoreVM: unknownStatus}
+	snapshot := daemonSnapshot{
+		Running:    false,
+		Backend:    unknownStatus,
+		RunningVMs: 0,
+		Hub:        unknownStatus,
+		MemoryVM:   unknownStatus,
+		StoreVM:    unknownStatus,
+	}
 	socket := expandPath("~/.aegis/daemon.sock")
 	conn, err := net.DialTimeout("unix", socket, daemonConnectTimeout)
 	if err != nil {
