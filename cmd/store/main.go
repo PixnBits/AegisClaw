@@ -29,6 +29,12 @@ type Message struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 
+func init() {
+	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+		hubSocket = env
+	}
+}
+
 func expandPath(path string) string {
 	if path[:2] == "~/" {
 		home, _ := os.UserHomeDir()

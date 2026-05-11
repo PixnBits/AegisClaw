@@ -23,6 +23,12 @@ type Message struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 
+func init() {
+	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+		hubSocket = env
+	}
+}
+
 func getBuildVersion() string {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		version := info.Main.Version

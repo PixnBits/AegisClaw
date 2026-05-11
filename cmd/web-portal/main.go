@@ -12,9 +12,9 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,6 +67,12 @@ type daemonSnapshot struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 
+func init() {
+	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+		hubSocket = env
+	}
+}
+
 var (
 	initialResponseDelay = 200 * time.Millisecond
 	thinkingDelay        = 300 * time.Millisecond
@@ -97,6 +103,55 @@ func connectToHub() (net.Conn, error) {
 	return net.Dial("unix", socket)
 }
 
+func handleHubMessages() {
+	for {
+		conn, err := connectToHub()
+		if err != nil {
+			fmt.Printf("Failed to connect to hub: %v, retrying...\n", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		// Register with hub
+		regMsg := Message{
+			Source:      "web-portal",
+			Destination: "hub",
+			Command:     "register",
+			Payload:     nil,
+			Timestamp:   time.Now().Format(time.RFC3339),
+			Signature:   "dummy",
+		}
+		encoder := json.NewEncoder(conn)
+		decoder := json.NewDecoder(conn)
+
+		if err := encoder.Encode(regMsg); err != nil {
+			conn.Close()
+			continue
+		}
+
+		// Message handling loop
+		for {
+			var msg Message
+			if err := decoder.Decode(&msg); err != nil {
+				break
+			}
+
+			if msg.Command == "version" {
+				response := Message{
+					Source:      "web-portal",
+					Destination: msg.Source,
+					Command:     "version",
+					Payload:     getBuildVersion(),
+					Timestamp:   time.Now().Format(time.RFC3339),
+					Signature:   "dummy",
+				}
+				encoder.Encode(response)
+			}
+		}
+		conn.Close()
+	}
+}
+
 func newMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
@@ -113,8 +168,10 @@ func newMux() http.Handler {
 	fileServer := http.FileServer(http.FS(staticSub))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Strip the leading slash and clean the path before probing the embedded FS.
+
 		// Go's embed FS already prevents path traversal, but we normalise explicitly.
-		cleanPath := path.Clean(r.URL.Path[1:])
+
+		cleanPath := filepath.Clean(r.URL.Path[1:])
 		_, fsErr := fs.Stat(staticSub, cleanPath)
 		if fsErr != nil && r.URL.Path != "/" {
 			r2 := r.Clone(r.Context())
@@ -672,11 +729,31 @@ func nextID(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
 }
 
+func getBuildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version := info.Main.Version
+		if version == "" || version == "(devel)" {
+			// Use commit hash if available
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+					return setting.Value[:7] // Short commit hash
+				}
+			}
+			return "dev"
+		}
+		return version
+	}
+	return "unknown"
+}
+
 func isSafeSessionID(sessionID string) bool {
 	return len(sessionID) > 0 && len(sessionID) <= 128 && sessionIDPattern.MatchString(sessionID)
 }
 
 func runWebPortal(cmd *cobra.Command, args []string) {
+	// Start message handler for hub communication
+	go handleHubMessages()
+
 	fmt.Println("Web Portal starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", newMux()))
 }

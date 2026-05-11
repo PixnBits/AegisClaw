@@ -55,29 +55,64 @@ func expandPath(path string) string {
 }
 
 func loadACL() {
-	file, err := os.Open("../../config/acls.yaml")
-	if err != nil {
-		log.Printf("No ACL file, using default deny")
+	possiblePaths := []string{
+		"../../config/acls.yaml",
+		"./config/acls.yaml",
+		"/root/AegisClaw_lessons-learned/config/acls.yaml",
+		"/home/pixnbits/AegisClaw_lessons-learned/config/acls.yaml",
+	}
+
+	// Also try from working directory
+	if wd, err := os.Getwd(); err == nil {
+		possiblePaths = append(possiblePaths, filepath.Join(wd, "config/acls.yaml"))
+	}
+
+	var file *os.File
+	var openErr error
+
+	for _, path := range possiblePaths {
+		file, openErr = os.Open(path)
+		if openErr == nil {
+			log.Printf("Loaded ACL from %s", path)
+			break
+		}
+	}
+
+	if file == nil {
+		log.Printf("No ACL file found, using default deny")
 		return
 	}
 	defer file.Close()
+
 	decoder := yaml.NewDecoder(file)
 	var config ACLConfig
-	err = decoder.Decode(&config)
+	err := decoder.Decode(&config)
 	if err != nil {
 		log.Printf("Failed to decode ACL: %v", err)
 		return
 	}
 	aclRules = config.Rules
+	log.Printf("Loaded %d ACL rules", len(aclRules))
 }
 
 func checkACL(source, dest, cmd string) bool {
 	for _, rule := range aclRules {
-		if rule.Source == source && rule.Destination == dest {
-			for _, c := range rule.Commands {
-				if c == cmd || strings.HasPrefix(cmd, strings.TrimSuffix(c, "*")) {
-					return true
-				}
+		// Check source match (including wildcards)
+		sourceMatches := rule.Source == source || rule.Source == "*"
+		if !sourceMatches {
+			continue
+		}
+
+		// Check destination match (including wildcards)
+		destMatches := rule.Destination == dest || rule.Destination == "*"
+		if !destMatches {
+			continue
+		}
+
+		// Check command match (including wildcard patterns)
+		for _, c := range rule.Commands {
+			if c == cmd || strings.HasPrefix(cmd, strings.TrimSuffix(c, "*")) {
+				return true
 			}
 		}
 	}

@@ -33,6 +33,9 @@ var defaultRootfsPath string
 
 var startTime time.Time
 var hubConn net.Conn
+var hubEncoder *json.Encoder
+var hubDecoder *json.Decoder
+var hubMutex sync.Mutex
 var safeMode bool
 var runningCmds sync.Map
 var daemonPrivateKey ed25519.PrivateKey
@@ -361,6 +364,8 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// Start Memory VM
 	memCmd := exec.Command("./bin/memory")
 	memCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	memCmd.Stdout = os.Stdout
+	memCmd.Stderr = os.Stderr
 	err = memCmd.Start()
 	if err != nil {
 		logrus.Errorf("Failed to start Memory VM: %v", err)
@@ -391,6 +396,8 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// Start Agent Runtime
 	agentCmd := exec.Command("./bin/agent")
 	agentCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	agentCmd.Stdout = os.Stdout
+	agentCmd.Stderr = os.Stderr
 	err = agentCmd.Start()
 	if err != nil {
 		logrus.Errorf("Failed to start Agent Runtime: %v", err)
@@ -401,6 +408,8 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// Start Builder VM
 	builderCmd := exec.Command("./bin/builder")
 	builderCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	builderCmd.Stdout = os.Stdout
+	builderCmd.Stderr = os.Stderr
 	err = builderCmd.Start()
 	if err != nil {
 		logrus.Errorf("Failed to start Builder VM: %v", err)
@@ -445,9 +454,11 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// Initialize persistent encoder/decoder
+	hubEncoder = json.NewEncoder(hubConn)
+	hubDecoder = json.NewDecoder(hubConn)
+
 	// Register with hub
-	encoder := json.NewEncoder(hubConn)
-	decoder := json.NewDecoder(hubConn)
 	regMsg := Message{
 		Source:      "daemon",
 		Destination: "hub",
@@ -456,13 +467,13 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		Timestamp:   time.Now().Format(time.RFC3339),
 		Signature:   "dummy",
 	}
-	err = encoder.Encode(regMsg)
+	err = hubEncoder.Encode(regMsg)
 	if err != nil {
 		logrus.Errorf("Failed to register with hub: %v", err)
 		os.Exit(1)
 	}
 	var resp map[string]interface{}
-	err = decoder.Decode(&resp)
+	err = hubDecoder.Decode(&resp)
 	if err != nil {
 		logrus.Errorf("Failed to decode hub response: %v", err)
 		os.Exit(1)
@@ -588,7 +599,6 @@ func handleConnection(conn net.Conn, done chan bool) {
 			conn.Write([]byte(response))
 		case "memory.get_context":
 			logger.Info("Memory get context requested")
-			encoder := json.NewEncoder(hubConn)
 			msg := Message{
 				Source:      "daemon",
 				Destination: "memory",
@@ -597,14 +607,16 @@ func handleConnection(conn net.Conn, done chan bool) {
 				Timestamp:   time.Now().Format(time.RFC3339),
 				Signature:   "dummy",
 			}
-			err := encoder.Encode(msg)
+			hubMutex.Lock()
+			err := hubEncoder.Encode(msg)
 			if err != nil {
+				hubMutex.Unlock()
 				conn.Write([]byte("error: failed to send to memory\n"))
 				continue
 			}
-			decoder := json.NewDecoder(hubConn)
 			var resp Message
-			err = decoder.Decode(&resp)
+			err = hubDecoder.Decode(&resp)
+			hubMutex.Unlock()
 			if err != nil {
 				conn.Write([]byte("error: failed to receive from memory\n"))
 				continue
@@ -882,10 +894,11 @@ func getVMVersion(vmName string) string {
 		Signature:   "dummy",
 	}
 
-	encoder := json.NewEncoder(hubConn)
-	decoder := json.NewDecoder(hubConn)
+	hubMutex.Lock()
+	defer hubMutex.Unlock()
 
-	err := encoder.Encode(msg)
+	// Send message
+	err := hubEncoder.Encode(msg)
 	if err != nil {
 		return "unknown"
 	}
@@ -893,7 +906,7 @@ func getVMVersion(vmName string) string {
 	// Set a short timeout for version response
 	hubConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var resp Message
-	err = decoder.Decode(&resp)
+	err = hubDecoder.Decode(&resp)
 	hubConn.SetReadDeadline(time.Time{}) // Reset deadline
 
 	if err != nil {
@@ -904,6 +917,14 @@ func getVMVersion(vmName string) string {
 		return version
 	}
 	return "unknown"
+}
+
+func debugLog(msg string) {
+	f, _ := os.OpenFile("/tmp/aegis-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if f != nil {
+		defer f.Close()
+		fmt.Fprintln(f, time.Now().Format("15:04:05.000"), msg)
+	}
 }
 
 func getVMList() string {
@@ -940,14 +961,15 @@ func sendToHubInternal(destination, command string) string {
 		Timestamp:   time.Now().Format(time.RFC3339),
 		Signature:   "dummy",
 	}
-	encoder := json.NewEncoder(hubConn)
-	decoder := json.NewDecoder(hubConn)
-	err := encoder.Encode(msg)
+	hubMutex.Lock()
+	defer hubMutex.Unlock()
+
+	err := hubEncoder.Encode(msg)
 	if err != nil {
 		return ""
 	}
 	var resp Message
-	err = decoder.Decode(&resp)
+	err = hubDecoder.Decode(&resp)
 	if err != nil {
 		return ""
 	}

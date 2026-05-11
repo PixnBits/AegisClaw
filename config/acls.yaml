@@ -7,3 +7,11 @@ rules:
   destination: memory
   commands:
     - memory.*
+- source: daemon
+  destination: "*"
+  commands:
+    - version
+- source: "*"
+  destination: daemon
+  commands:
+    - version
