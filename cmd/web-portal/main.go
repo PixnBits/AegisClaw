@@ -78,6 +78,8 @@ var (
 
 const unknownStatus = "unknown"
 const ollamaRequestTimeout = 30 * time.Second
+const daemonConnectTimeout = 400 * time.Millisecond
+const daemonReadDeadline = 1 * time.Second
 
 func expandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
@@ -554,14 +556,14 @@ func storeProposalsFilename() string {
 func loadDaemonStatus() daemonSnapshot {
 	snapshot := daemonSnapshot{Running: false, Backend: unknownStatus, RunningVMs: 0, Hub: unknownStatus, MemoryVM: unknownStatus, StoreVM: unknownStatus}
 	socket := expandPath("~/.aegis/daemon.sock")
-	conn, err := net.DialTimeout("unix", socket, 400*time.Millisecond)
+	conn, err := net.DialTimeout("unix", socket, daemonConnectTimeout)
 	if err != nil {
 		return snapshot
 	}
 	defer conn.Close()
 
 	snapshot.Running = true
-	_ = conn.SetDeadline(time.Now().Add(1 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(daemonReadDeadline))
 	if _, err := conn.Write([]byte("status")); err != nil {
 		return snapshot
 	}
