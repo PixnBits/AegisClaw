@@ -148,9 +148,12 @@ func runMemory(cmd *cobra.Command, args []string) {
 		Source:      "memory",
 		Destination: "hub",
 		Command:     "register",
-		Payload:     map[string]string{"public_key": pubStr},
-		Timestamp:   "2026-05-09T19:35:00Z",
-		Signature:   "dummy",
+		Payload: map[string]string{
+			"public_key": pubStr,
+			"version":    getBuildVersion(),
+		},
+		Timestamp: "2026-05-09T19:35:00Z",
+		Signature: "dummy",
 	}
 	err = encoder.Encode(regMsg)
 	if err != nil {
@@ -273,9 +276,18 @@ func runMemory(cmd *cobra.Command, args []string) {
 		case "ping":
 			response.Command = "pong"
 			response.Payload = "ok"
-		case "version":
-			response.Command = "version"
-			response.Payload = getBuildVersion()
+		case "version", "get-version":
+			if msg.Command == "get-version" {
+				// For get-version from hub, send a proper Message response back
+				response.Command = "version"
+				response.Source = "memory"
+				response.Destination = msg.Source  // Send back to the requester
+				response.Payload = map[string]string{"version": getBuildVersion()}
+				// Don't unlock here - let the normal flow sign and send
+			} else {
+				response.Command = "version"
+				response.Payload = map[string]string{"version": getBuildVersion()}
+			}
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"

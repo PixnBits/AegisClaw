@@ -119,9 +119,12 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		Source:      "network-boundary",
 		Destination: "hub",
 		Command:     "register",
-		Payload:     map[string]string{"public_key": pubStr},
-		Timestamp:   time.Now().Format(time.RFC3339),
-		Signature:   "dummy",
+		Payload: map[string]string{
+			"public_key": pubStr,
+			"version":    getBuildVersion(),
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+		Signature: "dummy",
 	}
 	err = encoder.Encode(regMsg)
 	if err != nil {
@@ -299,9 +302,18 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 					}
 				}
 			}
-		case "version":
-			response.Command = "version"
-			response.Payload = getBuildVersion()
+		case "version", "get-version":
+			if msg.Command == "get-version" {
+				// For get-version from hub, send proper Message response back
+				response.Command = "version"
+				response.Source = "network-boundary"
+				response.Destination = msg.Source
+				response.Payload = map[string]string{"version": getBuildVersion()}
+				// Don't continue - let normal flow sign and send
+			} else {
+				response.Command = "version"
+				response.Payload = map[string]string{"version": getBuildVersion()}
+			}
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"

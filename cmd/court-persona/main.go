@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -122,7 +123,7 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 
 	// Register
 	regMsg := Message{
-		Source:      "court-" + persona,
+		Source:      "court-persona",
 		Destination: "hub",
 		Command:     "register",
 		Payload:     map[string]string{"public_key": pubStr},
@@ -161,7 +162,7 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 			payload := msg.Payload.(map[string]interface{})
 			proposalID := payload["proposal_id"].(string)
 			getMsg := Message{
-				Source:      "court-" + persona,
+				Source:      "court-persona",
 				Destination: "store",
 				Command:     "proposal.get",
 				Payload:     map[string]interface{}{"id": proposalID},
@@ -188,7 +189,7 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 
 			// Submit vote
 			voteMsg := Message{
-				Source:      "court-" + persona,
+				Source:      "court-persona",
 				Destination: "court-scribe",
 				Command:     "scribe.submit_vote",
 				Payload: map[string]interface{}{
@@ -205,13 +206,13 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 			if err != nil {
 				log.Println("Failed to submit vote:", err)
 			}
-		} else if msg.Command == "version" {
+		} else if msg.Command == "version" || msg.Command == "get-version" {
 			response := Message{
-				Source:      "court-" + persona,
+				Source:      "court-persona",
 				Destination: msg.Source,
 				Command:     "version",
-				Payload:     getBuildVersion(),
-				Timestamp:   "2026-05-09T19:50:01Z",
+				Payload:     map[string]string{"version": getBuildVersion()},
+				Timestamp:   time.Now().Format(time.RFC3339),
 				Signature:   "",
 			}
 			signMessage(&response, priv)

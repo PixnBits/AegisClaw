@@ -447,14 +447,14 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 	runningCmds.Store("court-persona", personaCmd)
 
-	// Connect to hub
+	// Connect to hub (main connection for command-response)
 	hubConn, err = net.Dial("unix", hubSocket)
 	if err != nil {
 		logrus.Errorf("Failed to connect to hub: %v", err)
 		os.Exit(1)
 	}
 
-	// Initialize persistent encoder/decoder
+	// Initialize persistent encoder/decoder for main connection
 	hubEncoder = json.NewEncoder(hubConn)
 	hubDecoder = json.NewDecoder(hubConn)
 
@@ -880,60 +880,166 @@ func getDaemonStatus() string {
 }
 
 func getVMVersion(vmName string) string {
-	// Try to get version from the VM by sending a message through hub
-	if hubConn == nil {
+	// Debug logging
+	debugFile := expandPath("~/.aegis/getversion.log")
+	f, _ := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if f != nil {
+		defer f.Close()
+		fmt.Fprintf(f, "[%s] Querying version for %s\n", time.Now().Format("15:04:05"), vmName)
+	}
+
+	// Query hub using a fresh connection (won't overwrite persistent registration)
+	socket := expandPath("~/.aegis/hub.sock")
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Failed to connect to hub for %s: %v\n", time.Now().Format("15:04:05"), vmName, err)
+			f.Close()
+		}
+		return "unknown"
+	}
+	defer conn.Close()
+
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(conn)
+
+	// Channel to receive responses from reader goroutine (as generic JSON)
+	responseChan := make(chan json.RawMessage, 10)  // Larger buffer to hold multiple responses
+	errChan := make(chan error, 1)
+	
+	// Start a goroutine to read responses from the hub
+	go func() {
+		for {
+			var rawMsg json.RawMessage
+			if err := decoder.Decode(&rawMsg); err != nil {
+				errChan <- err
+				return
+			}
+			// Send response through channel (blocking send if buffer full)
+			responseChan <- rawMsg
+		}
+	}()
+
+	// Register with the hub (will get a temporary ID like daemon-temp-1)
+	regMsg := Message{
+		Source:      "daemon",
+		Destination: "hub",
+		Command:     "register",
+		Payload: map[string]interface{}{
+			"public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // dummy ed25519 public key (32 bytes base64)
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+		Signature: "dummy",
+	}
+
+	if err := encoder.Encode(regMsg); err != nil {
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Failed to send register to hub for %s: %v\n", time.Now().Format("15:04:05"), vmName, err)
+			f.Close()
+		}
 		return "unknown"
 	}
 
-	msg := Message{
-		Source:      "daemon",
+	// Read registration response
+	var regResp map[string]interface{}
+	select {
+	case rawMsg := <-responseChan:
+		if err := json.Unmarshal(rawMsg, &regResp); err != nil {
+			if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+				fmt.Fprintf(f, "[%s] Failed to parse registration response for %s: %v\n", time.Now().Format("15:04:05"), vmName, err)
+				f.Close()
+			}
+			return "unknown"
+		}
+	case err := <-errChan:
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Error reading registration response for %s: %v\n", time.Now().Format("15:04:05"), vmName, err)
+			f.Close()
+		}
+		return "unknown"
+	case <-time.After(2 * time.Second):
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Timeout reading registration response for %s\n", time.Now().Format("15:04:05"), vmName)
+			f.Close()
+		}
+		return "unknown"
+	}
+	
+	if errMsg, ok := regResp["error"].(string); ok {
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Registration error for %s: %s\n", time.Now().Format("15:04:05"), vmName, errMsg)
+			f.Close()
+		}
+		return "unknown"
+	}
+	
+	// Get the assigned ID from registration response
+	assignedID := "daemon"  // default
+	if assignedIDVal, ok := regResp["assigned_id"].(string); ok {
+		assignedID = assignedIDVal
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Fresh connection registered with ID: %s\n", time.Now().Format("15:04:05"), assignedID)
+			f.Close()
+		}
+	}
+
+	// Send get-version query using the assigned ID
+	query := Message{
+		Source:      assignedID,  // Use the assigned ID so responses come back to this connection
 		Destination: vmName,
-		Command:     "version",
-		Payload:     nil,
+		Command:     "get-version",
 		Timestamp:   time.Now().Format(time.RFC3339),
 		Signature:   "dummy",
 	}
 
-	// Log request for debugging
-	if f, err := os.OpenFile("/tmp/daemon-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
-		fmt.Fprintf(f, "[%s] Sending version request to %s\n", time.Now().Format("15:04:05.000"), vmName)
+	if err := encoder.Encode(query); err != nil {
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Failed to send query to hub for %s: %v\n", time.Now().Format("15:04:05"), vmName, err)
+			f.Close()
+		}
+		return "unknown"
+	}
+
+	// Read response from fresh connection (via goroutine channel)
+	var response Message
+	select {
+	case rawMsg := <-responseChan:
+		if err := json.Unmarshal(rawMsg, &response); err != nil {
+			if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+				fmt.Fprintf(f, "[%s] Failed to parse response for %s: %v (rawMsg=%s)\n", time.Now().Format("15:04:05"), vmName, err, string(rawMsg))
+				f.Close()
+			}
+			return "unknown"
+		}
+	case err := <-errChan:
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Error reading response for %s: %v\n", time.Now().Format("15:04:05"), vmName, err)
+			f.Close()
+		}
+		return "unknown"
+	case <-time.After(3 * time.Second):
+		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+			fmt.Fprintf(f, "[%s] Timeout reading response for %s\n", time.Now().Format("15:04:05"), vmName)
+			f.Close()
+		}
+		return "unknown"
+	}
+
+	// Extract version from response payload
+	if payload, ok := response.Payload.(map[string]interface{}); ok {
+		if version, ok := payload["version"].(string); ok {
+			if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+				fmt.Fprintf(f, "[%s] Got version for %s: %s\n", time.Now().Format("15:04:05"), vmName, version)
+				f.Close()
+			}
+			return version
+		}
+	}
+	if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
+		fmt.Fprintf(f, "[%s] Version not found in response for %s: source=%s dest=%s cmd=%s payload=%v\n", time.Now().Format("15:04:05"), vmName, response.Source, response.Destination, response.Command, response.Payload)
 		f.Close()
 	}
 
-	hubMutex.Lock()
-	defer hubMutex.Unlock()
-
-	// Send message
-	err := hubEncoder.Encode(msg)
-	if err != nil {
-		if f, err := os.OpenFile("/tmp/daemon-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
-			fmt.Fprintf(f, "[%s] Error sending version request: %v\n", time.Now().Format("15:04:05.000"), err)
-			f.Close()
-		}
-		return "unknown"
-	}
-
-	// Set a longer timeout for version response to account for routing delays
-	hubConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var resp Message
-	err = hubDecoder.Decode(&resp)
-	hubConn.SetReadDeadline(time.Time{}) // Reset deadline
-
-	if err != nil {
-		if f, err := os.OpenFile("/tmp/daemon-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
-			fmt.Fprintf(f, "[%s] Error reading version response from %s: %v\n", time.Now().Format("15:04:05.000"), vmName, err)
-			f.Close()
-		}
-		return "unknown"
-	}
-
-	if version, ok := resp.Payload.(string); ok {
-		if f, err := os.OpenFile("/tmp/daemon-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
-			fmt.Fprintf(f, "[%s] Got version response from %s: %s\n", time.Now().Format("15:04:05.000"), vmName, version)
-			f.Close()
-		}
-		return version
-	}
 	return "unknown"
 }
 

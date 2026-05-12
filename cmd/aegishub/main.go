@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -21,6 +22,8 @@ var hubSocketPath = "~/.aegis/hub.sock"
 var registered = make(map[string]*RegisteredComponent)
 var aclRules []ACLRule
 var registeredMutex sync.RWMutex
+var tempConnCounter int = 0
+var tempConnMutex sync.Mutex
 
 type ComponentEncoders struct {
 	Encoder *json.Encoder
@@ -40,6 +43,8 @@ type Message struct {
 type RegisteredComponent struct {
 	ID        string
 	PublicKey ed25519.PublicKey
+	Encoders  *ComponentEncoders
+	Version   string
 }
 
 type ACLRule struct {
@@ -207,38 +212,84 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	}
 	pubKey := ed25519.PublicKey(pubKeyBytes)
 
+	// Extract version from payload if available
+	version := "unknown"
+	if versionStr, ok := payloadMap["version"].(string); ok {
+		version = versionStr
+		log.Printf("Hub: Registered component %s with version %s", regMsg.Source, version)
+	} else {
+		log.Printf("Hub: Registered component %s with no version (payload: %+v)", regMsg.Source, payloadMap)
+	}
+
 	// Check if already registered
 	registeredMutex.Lock()
-	if _, exists := registered[regMsg.Source]; exists {
-		registeredMutex.Unlock()
-		encoder.Encode(map[string]string{"error": "ERR_DUPLICATE_COMPONENT"})
-		return
+	componentID := regMsg.Source
+	
+	// For daemon connections: if already registered, use a temporary ID
+	if regMsg.Source == "daemon" {
+		if _, exists := registered[regMsg.Source]; exists {
+			// This is a fresh daemon connection (not the persistent one)
+			// Give it a temporary ID
+			tempConnMutex.Lock()
+			tempConnCounter++
+			componentID = fmt.Sprintf("daemon-temp-%d", tempConnCounter)
+			tempConnMutex.Unlock()
+			log.Printf("Hub: Fresh daemon connection registered as %s (original daemon still at %s)", componentID, regMsg.Source)
+		}
+	} else {
+		// Other components cannot re-register
+		if _, exists := registered[regMsg.Source]; exists {
+			registeredMutex.Unlock()
+			encoder.Encode(map[string]string{"error": "ERR_DUPLICATE_COMPONENT"})
+			return
+		}
 	}
-	registered[regMsg.Source] = &RegisteredComponent{ID: regMsg.Source, PublicKey: pubKey}
+	
+	encoders := &ComponentEncoders{
+		Encoder: encoder,
+		Decoder: decoder,
+		Mutex:   sync.Mutex{},
+	}
+	registered[componentID] = &RegisteredComponent{ID: componentID, PublicKey: pubKey, Encoders: encoders, Version: version}
 	registeredMutex.Unlock()
 
-	conns.Store(regMsg.Source, conn)
+	conns.Store(componentID, conn)
 
-	// Send ACL rules for this component
+	// Cleanup when connection closes
+	defer func(id string) {
+		registeredMutex.Lock()
+		delete(registered, id)
+		registeredMutex.Unlock()
+		conns.Delete(id)
+		debugLog("hub", fmt.Sprintf("Cleaned up registration for %s", id))
+	}(componentID)
+
+	// Send ACL rules for this component, including the assigned ID
 	response := map[string]interface{}{
-		"status": "registered",
-		"acls":   aclRules, // TODO: filter for this component
+		"status":       "registered",
+		"assigned_id":  componentID,  // Send the assigned ID back to the client
+		"acls":         aclRules,      // TODO: filter for this component
 	}
-	encoder.Encode(response)
+	encoders.Mutex.Lock()
+	encoders.Encoder.Encode(response)
+	encoders.Mutex.Unlock()
 
 	// Now handle normal messages
 	for {
 		var msg Message
 		if err := decoder.Decode(&msg); err != nil {
-			log.Printf("Decode error: %v", err)
+			debugLog("hub", fmt.Sprintf("Decode error: %v", err))
 			return
 		}
+
+		debugLog("hub", fmt.Sprintf("Received message from %s to %s, command: %s", msg.Source, msg.Destination, msg.Command))
 
 		// Verify signature
 		registeredMutex.RLock()
 		regComp, exists := registered[msg.Source]
 		registeredMutex.RUnlock()
 		if !exists {
+			debugLog("hub", fmt.Sprintf("Unauthorized source %s", msg.Source))
 			encoder.Encode(map[string]string{"error": "ERR_UNAUTHORIZED"})
 			log.Printf("Audit: unauthorized source %s", msg.Source)
 			continue
@@ -250,20 +301,44 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 
 		// Check ACL (skip for version commands for debugging)
-		if msg.Command != "version" && !checkACL(msg.Source, msg.Destination, msg.Command) {
+		if msg.Command != "get-version" && !checkACL(msg.Source, msg.Destination, msg.Command) {
 			encoder.Encode(map[string]string{"error": "ERR_ACL_VIOLATION"})
 			log.Printf("Audit: ACL violation %s -> %s : %s", msg.Source, msg.Destination, msg.Command)
 			continue
 		}
 
 		if msg.Destination == "hub" {
-			if msg.Command == "tool.list" {
+			if msg.Command == "component.list" {
+				debugLog("hub", fmt.Sprintf("Received component.list query from %s", msg.Source))
+				// Return list of all registered components with versions
+				var components []map[string]string
+				registeredMutex.RLock()
+				for id, comp := range registered {
+					if id != "daemon" { // Don't list the daemon itself
+						debugLog("hub", fmt.Sprintf("  Including component %s version %s", id, comp.Version))
+						components = append(components, map[string]string{
+							"id":      id,
+							"version": comp.Version,
+						})
+					}
+				}
+				registeredMutex.RUnlock()
+				response := map[string]interface{}{
+					"components": components,
+				}
+				debugLog("hub", fmt.Sprintf("Sending component.list response with %d components", len(components)))
+				encoder.Encode(response)
+			} else if msg.Command == "tool.list" {
 				// Forward to store
 				storeMsg := msg
 				storeMsg.Destination = "store"
-				if destConn, ok := conns.Load("store"); ok {
-					destEncoder := json.NewEncoder(destConn.(net.Conn))
-					destEncoder.Encode(storeMsg)
+				registeredMutex.RLock()
+				storeComp, ok := registered["store"]
+				registeredMutex.RUnlock()
+				if ok && storeComp.Encoders != nil {
+					storeComp.Encoders.Mutex.Lock()
+					storeComp.Encoders.Encoder.Encode(storeMsg)
+					storeComp.Encoders.Mutex.Unlock()
 					// Wait for response from store
 					var storeResp Message
 					err := decoder.Decode(&storeResp)
@@ -286,14 +361,31 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				encoder.Encode(response)
 			}
 		} else {
-			if destConn, ok := conns.Load(msg.Destination); ok {
-				destEncoder := json.NewEncoder(destConn.(net.Conn))
-				destEncoder.Encode(msg)
+			// Forward message to destination
+			registeredMutex.RLock()
+			destComponent, exists := registered[msg.Destination]
+			registeredMutex.RUnlock()
+
+			if exists && destComponent.Encoders != nil {
+				debugLog("hub", fmt.Sprintf("Forwarding %s->%s command %s to persistent encoder", msg.Source, msg.Destination, msg.Command))
+				destComponent.Encoders.Mutex.Lock()
+				destComponent.Encoders.Encoder.Encode(msg)
+				destComponent.Encoders.Mutex.Unlock()
+
 			} else {
+				debugLog("hub", fmt.Sprintf("Destination %s not found or no encoders", msg.Destination))
 				errorMsg := map[string]string{"error": "ERR_DESTINATION_NOT_FOUND"}
 				encoder.Encode(errorMsg)
 			}
 		}
+	}
+}
+
+func debugLog(component, msg string) {
+	f, _ := os.OpenFile("/tmp/hub-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if f != nil {
+		defer f.Close()
+		fmt.Fprintf(f, "[%s][%s] %s\n", component, time.Now().Format("15:04:05.000"), msg)
 	}
 }
 

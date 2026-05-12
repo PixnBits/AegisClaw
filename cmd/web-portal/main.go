@@ -117,14 +117,28 @@ func handleHubMessages() {
 			Source:      "web-portal",
 			Destination: "hub",
 			Command:     "register",
-			Payload:     nil,
-			Timestamp:   time.Now().Format(time.RFC3339),
-			Signature:   "dummy",
+			Payload: map[string]string{
+				"version": getBuildVersion(),
+			},
+			Timestamp: time.Now().Format(time.RFC3339),
+			Signature: "dummy",
 		}
 		encoder := json.NewEncoder(conn)
 		decoder := json.NewDecoder(conn)
 
 		if err := encoder.Encode(regMsg); err != nil {
+			conn.Close()
+			continue
+		}
+
+		// Consume registration response
+		var regResp map[string]interface{}
+		if err := decoder.Decode(&regResp); err != nil {
+			conn.Close()
+			continue
+		}
+		if errMsg, ok := regResp["error"]; ok {
+			log.Printf("Registration failed: %v", errMsg)
 			conn.Close()
 			continue
 		}
@@ -136,12 +150,12 @@ func handleHubMessages() {
 				break
 			}
 
-			if msg.Command == "version" {
+			if msg.Command == "version" || msg.Command == "get-version" {
 				response := Message{
 					Source:      "web-portal",
 					Destination: msg.Source,
 					Command:     "version",
-					Payload:     getBuildVersion(),
+					Payload:     map[string]string{"version": getBuildVersion()},
 					Timestamp:   time.Now().Format(time.RFC3339),
 					Signature:   "dummy",
 				}

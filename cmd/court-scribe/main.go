@@ -70,9 +70,11 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 		Source:      "court-scribe",
 		Destination: "hub",
 		Command:     "register",
-		Payload:     nil,
-		Timestamp:   "2026-05-09T19:45:00Z",
-		Signature:   "dummy",
+		Payload: map[string]string{
+			"version": getBuildVersion(),
+		},
+		Timestamp: "2026-05-09T19:45:00Z",
+		Signature: "dummy",
 	}
 	err = encoder.Encode(regMsg)
 	if err != nil {
@@ -154,9 +156,18 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 			proposalID := payload["proposal_id"].(string)
 			response.Command = "scribe.status"
 			response.Payload = reviews[proposalID]
-		case "version":
-			response.Command = "version"
-			response.Payload = getBuildVersion()
+		case "version", "get-version":
+			if msg.Command == "get-version" {
+				// For get-version from hub, send proper Message response back
+				response.Command = "version"
+				response.Source = "court-scribe"
+				response.Destination = msg.Source
+				response.Payload = map[string]string{"version": getBuildVersion()}
+				// Don't continue - let normal flow sign and send
+			} else {
+				response.Command = "version"
+				response.Payload = map[string]string{"version": getBuildVersion()}
+			}
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"

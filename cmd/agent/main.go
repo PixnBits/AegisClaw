@@ -78,7 +78,7 @@ func callLLM(prompt string, encoder *json.Encoder, decoder *json.Decoder, priv e
 		"stream": false,
 	}
 	llmMsg := Message{
-		Source:      "agent1",
+		Source:      "agent",
 		Destination: "network-boundary",
 		Command:     "llm.call",
 		Payload:     map[string]interface{}{"request": llmRequest, "endpoint": "/api/generate"},
@@ -126,7 +126,7 @@ func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 
 	// Get context from memory
 	contextMsg := Message{
-		Source:      "agent1",
+		Source:      "agent",
 		Destination: "memory",
 		Command:     "memory.get_context",
 		Payload:     nil,
@@ -213,7 +213,7 @@ func createProposal(description string, encoder *json.Encoder, decoder *json.Dec
 		"status":      "pending",
 	}
 	msg := Message{
-		Source:      "agent1",
+		Source:      "agent",
 		Destination: "store",
 		Command:     "proposal.create",
 		Payload:     proposal,
@@ -242,12 +242,15 @@ func runAgent(cmd *cobra.Command, args []string) {
 
 	// Register
 	regMsg := Message{
-		Source:      "agent1",
+		Source:      "agent",
 		Destination: "hub",
 		Command:     "register",
-		Payload:     map[string]string{"public_key": pubStr},
-		Timestamp:   "2026-05-09T19:30:00Z",
-		Signature:   "dummy", // Register doesn't require sig
+		Payload: map[string]string{
+			"public_key": pubStr,
+			"version":    getBuildVersion(),
+		},
+		Timestamp: "2026-05-09T19:30:00Z",
+		Signature: "dummy", // Register doesn't require sig
 	}
 	err = encoder.Encode(regMsg)
 	if err != nil {
@@ -282,20 +285,21 @@ func runAgent(cmd *cobra.Command, args []string) {
 			f.Close()
 		}
 
-		// Handle version command
-		if msg.Command == "version" {
+		// Handle version queries
+		if msg.Command == "version" || msg.Command == "get-version" {
 			version := getBuildVersion()
+			// For all version queries, send full Message
 			response := Message{
-				Source:      "agent1",
+				Source:      "agent",
 				Destination: msg.Source,
 				Command:     "version",
-				Payload:     version,
+				Payload:     map[string]string{"version": version},
 				Timestamp:   time.Now().Format(time.RFC3339),
 				Signature:   "",
 			}
 			signMessage(&response, priv)
 			if f, err := os.OpenFile("/tmp/agent-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
-				fmt.Fprintf(f, "[%s] Sending version response: %s to %s\n", time.Now().Format("15:04:05.000"), version, msg.Source)
+				fmt.Fprintf(f, "[%s] Sending version response: %s to %s (cmd=%s)\n", time.Now().Format("15:04:05.000"), version, msg.Source, msg.Command)
 				f.Close()
 			}
 			encoder.Encode(response)
@@ -312,7 +316,7 @@ func runAgent(cmd *cobra.Command, args []string) {
 
 		// Respond
 		response := Message{
-			Source:      "agent1",
+			Source:      "agent",
 			Destination: msg.Source,
 			Command:     "response",
 			Payload:     "Agent processed: " + msg.Command,

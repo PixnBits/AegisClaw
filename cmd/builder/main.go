@@ -183,9 +183,12 @@ func runBuilder(cmd *cobra.Command, args []string) {
 		Source:      "builder",
 		Destination: "hub",
 		Command:     "register",
-		Payload:     map[string]string{"public_key": pubStr},
-		Timestamp:   "2026-05-09T20:00:00Z",
-		Signature:   "dummy",
+		Payload: map[string]string{
+			"public_key": pubStr,
+			"version":    getBuildVersion(),
+		},
+		Timestamp: "2026-05-09T20:00:00Z",
+		Signature: "dummy",
 	}
 	err = encoder.Encode(regMsg)
 	if err != nil {
@@ -281,9 +284,18 @@ func runBuilder(cmd *cobra.Command, args []string) {
 					"tests": "basic tests", // stub
 				}
 			}
-		case "version":
-			response.Command = "version"
-			response.Payload = getBuildVersion()
+		case "version", "get-version":
+			if msg.Command == "get-version" {
+				// For get-version from hub, send proper Message response back
+				response.Command = "version"
+				response.Source = "builder"
+				response.Destination = msg.Source
+				response.Payload = map[string]string{"version": getBuildVersion()}
+				// Don't continue - let normal flow sign and send
+			} else {
+				response.Command = "version"
+				response.Payload = map[string]string{"version": getBuildVersion()}
+			}
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"
