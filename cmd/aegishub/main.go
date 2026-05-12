@@ -224,7 +224,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	// Check if already registered
 	registeredMutex.Lock()
 	componentID := regMsg.Source
-	
+
 	// For daemon connections: if already registered, use a temporary ID
 	if regMsg.Source == "daemon" {
 		if _, exists := registered[regMsg.Source]; exists {
@@ -244,7 +244,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			return
 		}
 	}
-	
+
 	encoders := &ComponentEncoders{
 		Encoder: encoder,
 		Decoder: decoder,
@@ -266,9 +266,9 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 
 	// Send ACL rules for this component, including the assigned ID
 	response := map[string]interface{}{
-		"status":       "registered",
-		"assigned_id":  componentID,  // Send the assigned ID back to the client
-		"acls":         aclRules,      // TODO: filter for this component
+		"status":      "registered",
+		"assigned_id": componentID, // Send the assigned ID back to the client
+		"acls":        aclRules,    // TODO: filter for this component
 	}
 	encoders.Mutex.Lock()
 	encoders.Encoder.Encode(response)

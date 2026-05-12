@@ -64,6 +64,7 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
+	var connMutex sync.Mutex
 
 	// Register
 	regMsg := Message{
@@ -76,14 +77,18 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 		Timestamp: "2026-05-09T19:45:00Z",
 		Signature: "dummy",
 	}
+	connMutex.Lock()
 	err = encoder.Encode(regMsg)
+	connMutex.Unlock()
 	if err != nil {
 		log.Fatal("Failed to register:", err)
 	}
 
 	// Consume response
 	var resp map[string]interface{}
+	connMutex.Lock()
 	err = decoder.Decode(&resp)
+	connMutex.Unlock()
 	if err != nil {
 		log.Fatal("Failed to decode register response:", err)
 	}
@@ -96,7 +101,9 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 	// Scribe loop
 	for {
 		var msg Message
+		connMutex.Lock()
 		err := decoder.Decode(&msg)
+		connMutex.Unlock()
 		if err != nil {
 			log.Println("Decode error:", err)
 			continue
@@ -145,7 +152,9 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 						Timestamp:   response.Timestamp,
 						Signature:   "dummy",
 					}
-					encoder.Encode(storeMsg)
+					connMutex.Lock()
+				encoder.Encode(storeMsg)
+				connMutex.Unlock()
 				} else {
 					response.Command = "scribe.vote_recorded"
 					response.Payload = "ok"
@@ -174,7 +183,9 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 		}
 		mu.Unlock()
 
+		connMutex.Lock()
 		err = encoder.Encode(response)
+		connMutex.Unlock()
 		if err != nil {
 			log.Println("Failed to send response:", err)
 		}

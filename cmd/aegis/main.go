@@ -904,9 +904,9 @@ func getVMVersion(vmName string) string {
 	decoder := json.NewDecoder(conn)
 
 	// Channel to receive responses from reader goroutine (as generic JSON)
-	responseChan := make(chan json.RawMessage, 10)  // Larger buffer to hold multiple responses
+	responseChan := make(chan json.RawMessage, 10) // Larger buffer to hold multiple responses
 	errChan := make(chan error, 1)
-	
+
 	// Start a goroutine to read responses from the hub
 	go func() {
 		for {
@@ -964,7 +964,7 @@ func getVMVersion(vmName string) string {
 		}
 		return "unknown"
 	}
-	
+
 	if errMsg, ok := regResp["error"].(string); ok {
 		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
 			fmt.Fprintf(f, "[%s] Registration error for %s: %s\n", time.Now().Format("15:04:05"), vmName, errMsg)
@@ -972,9 +972,9 @@ func getVMVersion(vmName string) string {
 		}
 		return "unknown"
 	}
-	
+
 	// Get the assigned ID from registration response
-	assignedID := "daemon"  // default
+	assignedID := "daemon" // default
 	if assignedIDVal, ok := regResp["assigned_id"].(string); ok {
 		assignedID = assignedIDVal
 		if f, err2 := os.OpenFile(debugFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err2 == nil {
@@ -985,7 +985,7 @@ func getVMVersion(vmName string) string {
 
 	// Send get-version query using the assigned ID
 	query := Message{
-		Source:      assignedID,  // Use the assigned ID so responses come back to this connection
+		Source:      assignedID, // Use the assigned ID so responses come back to this connection
 		Destination: vmName,
 		Command:     "get-version",
 		Timestamp:   time.Now().Format(time.RFC3339),

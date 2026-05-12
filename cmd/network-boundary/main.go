@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -113,6 +114,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
+	var connMutex sync.Mutex
 
 	// Register
 	regMsg := Message{
@@ -126,14 +128,18 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		Timestamp: time.Now().Format(time.RFC3339),
 		Signature: "dummy",
 	}
+	connMutex.Lock()
 	err = encoder.Encode(regMsg)
+	connMutex.Unlock()
 	if err != nil {
 		log.Fatal("Failed to register:", err)
 	}
 
 	// Consume response
 	var resp map[string]interface{}
+	connMutex.Lock()
 	err = decoder.Decode(&resp)
+	connMutex.Unlock()
 	if err != nil {
 		log.Fatal("Failed to decode register response:", err)
 	}
@@ -172,7 +178,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 					Signature:   "",
 				}
 				signMessage(&auditMsg, priv)
+				connMutex.Lock()
 				encoder.Encode(auditMsg)
+				connMutex.Unlock()
 				http.Error(w, "Domain not allowed", 403)
 				return
 			}
@@ -210,7 +218,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				Signature:   "",
 			}
 			signMessage(&auditMsg, priv)
+			connMutex.Lock()
 			encoder.Encode(auditMsg)
+			connMutex.Unlock()
 		})
 		log.Fatal(http.ListenAndServe(":8081", nil))
 	}()
@@ -218,7 +228,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	// Boundary loop
 	for {
 		var msg Message
+		connMutex.Lock()
 		err := decoder.Decode(&msg)
+		connMutex.Unlock()
 		if err != nil {
 			log.Println("Decode error:", err)
 			continue
@@ -256,7 +268,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 					Signature:   "",
 				}
 				signMessage(&auditMsg, priv)
+				connMutex.Lock()
 				encoder.Encode(auditMsg)
+				connMutex.Unlock()
 			} else {
 				var bodyReader io.Reader
 				if body, ok := payload["body"].(string); ok {
@@ -298,7 +312,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 							Signature:   "",
 						}
 						signMessage(&auditMsg, priv)
+						connMutex.Lock()
 						encoder.Encode(auditMsg)
+						connMutex.Unlock()
 					}
 				}
 			}
@@ -320,7 +336,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		}
 		signMessage(&response, priv)
 
+		connMutex.Lock()
 		err = encoder.Encode(response)
+		connMutex.Unlock()
 		if err != nil {
 			log.Println("Failed to send response:", err)
 		}

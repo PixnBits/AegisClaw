@@ -281,7 +281,7 @@ func runMemory(cmd *cobra.Command, args []string) {
 				// For get-version from hub, send a proper Message response back
 				response.Command = "version"
 				response.Source = "memory"
-				response.Destination = msg.Source  // Send back to the requester
+				response.Destination = msg.Source // Send back to the requester
 				response.Payload = map[string]string{"version": getBuildVersion()}
 				// Don't unlock here - let the normal flow sign and send
 			} else {

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -177,6 +178,7 @@ func runBuilder(cmd *cobra.Command, args []string) {
 
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
+	var connMutex sync.Mutex
 
 	// Register
 	regMsg := Message{
@@ -190,14 +192,18 @@ func runBuilder(cmd *cobra.Command, args []string) {
 		Timestamp: "2026-05-09T20:00:00Z",
 		Signature: "dummy",
 	}
+	connMutex.Lock()
 	err = encoder.Encode(regMsg)
+	connMutex.Unlock()
 	if err != nil {
 		log.Fatal("Failed to register:", err)
 	}
 
 	// Consume response
 	var resp map[string]interface{}
+	connMutex.Lock()
 	err = decoder.Decode(&resp)
+	connMutex.Unlock()
 	if err != nil {
 		log.Fatal("Failed to decode register response:", err)
 	}
@@ -209,7 +215,9 @@ func runBuilder(cmd *cobra.Command, args []string) {
 	// Builder loop
 	for {
 		var msg Message
+		connMutex.Lock()
 		err := decoder.Decode(&msg)
+		connMutex.Unlock()
 		if err != nil {
 			log.Println("Decode error:", err)
 			continue
@@ -250,7 +258,9 @@ func runBuilder(cmd *cobra.Command, args []string) {
 					Signature:   "",
 				}
 				signMessage(&auditMsg, priv)
+				connMutex.Lock()
 				encoder.Encode(auditMsg)
+				connMutex.Unlock()
 			} else {
 				response.Command = "git.pushed"
 				response.Payload = "ok"
@@ -302,7 +312,9 @@ func runBuilder(cmd *cobra.Command, args []string) {
 		}
 		signMessage(&response, priv)
 
+		connMutex.Lock()
 		err = encoder.Encode(response)
+		connMutex.Unlock()
 		if err != nil {
 			log.Println("Failed to send response:", err)
 		}
