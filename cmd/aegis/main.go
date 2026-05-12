@@ -145,7 +145,7 @@ func (f *FirecrackerBackend) StartVM(ctx context.Context, config VMConfig) error
 		},
 	}
 	configBytes, _ := json.Marshal(configData)
-	err := os.WriteFile(configPath, configBytes, 0644)
+	err := os.WriteFile(configPath, configBytes, 0666)
 	if err != nil {
 		logrus.Errorf("Failed to write config file %s: %v", configPath, err)
 		return err
@@ -894,33 +894,51 @@ func getVMVersion(vmName string) string {
 		Signature:   "dummy",
 	}
 
+	// Log request for debugging
+	if f, err := os.OpenFile("/tmp/daemon-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
+		fmt.Fprintf(f, "[%s] Sending version request to %s\n", time.Now().Format("15:04:05.000"), vmName)
+		f.Close()
+	}
+
 	hubMutex.Lock()
 	defer hubMutex.Unlock()
 
 	// Send message
 	err := hubEncoder.Encode(msg)
 	if err != nil {
+		if f, err := os.OpenFile("/tmp/daemon-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
+			fmt.Fprintf(f, "[%s] Error sending version request: %v\n", time.Now().Format("15:04:05.000"), err)
+			f.Close()
+		}
 		return "unknown"
 	}
 
-	// Set a short timeout for version response
-	hubConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	// Set a longer timeout for version response to account for routing delays
+	hubConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var resp Message
 	err = hubDecoder.Decode(&resp)
 	hubConn.SetReadDeadline(time.Time{}) // Reset deadline
 
 	if err != nil {
+		if f, err := os.OpenFile("/tmp/daemon-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
+			fmt.Fprintf(f, "[%s] Error reading version response from %s: %v\n", time.Now().Format("15:04:05.000"), vmName, err)
+			f.Close()
+		}
 		return "unknown"
 	}
 
 	if version, ok := resp.Payload.(string); ok {
+		if f, err := os.OpenFile("/tmp/daemon-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
+			fmt.Fprintf(f, "[%s] Got version response from %s: %s\n", time.Now().Format("15:04:05.000"), vmName, version)
+			f.Close()
+		}
 		return version
 	}
 	return "unknown"
 }
 
 func debugLog(msg string) {
-	f, _ := os.OpenFile("/tmp/aegis-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, _ := os.OpenFile("/tmp/aegis-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if f != nil {
 		defer f.Close()
 		fmt.Fprintln(f, time.Now().Format("15:04:05.000"), msg)

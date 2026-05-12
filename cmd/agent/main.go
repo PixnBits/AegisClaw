@@ -276,6 +276,12 @@ func runAgent(cmd *cobra.Command, args []string) {
 
 		fmt.Println("Agent received message:", msg.Command, "from", msg.Source)
 
+		// Log to file for debugging
+		if f, err := os.OpenFile("/tmp/agent-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
+			fmt.Fprintf(f, "[%s] Received: %s from %s\n", time.Now().Format("15:04:05.000"), msg.Command, msg.Source)
+			f.Close()
+		}
+
 		// Handle version command
 		if msg.Command == "version" {
 			version := getBuildVersion()
@@ -288,6 +294,10 @@ func runAgent(cmd *cobra.Command, args []string) {
 				Signature:   "",
 			}
 			signMessage(&response, priv)
+			if f, err := os.OpenFile("/tmp/agent-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
+				fmt.Fprintf(f, "[%s] Sending version response: %s to %s\n", time.Now().Format("15:04:05.000"), version, msg.Source)
+				f.Close()
+			}
 			encoder.Encode(response)
 			continue
 		}
