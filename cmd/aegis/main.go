@@ -386,6 +386,8 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// Start Web Portal
 	webCmd := exec.Command("./bin/web-portal")
 	webCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	webCmd.Stdout = os.Stdout
+	webCmd.Stderr = os.Stderr
 	err = webCmd.Start()
 	if err != nil {
 		logrus.Errorf("Failed to start Web Portal: %v", err)
@@ -430,6 +432,8 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// Start Court Scribe
 	scribeCmd := exec.Command("./bin/court-scribe")
 	scribeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	scribeCmd.Stdout = os.Stdout
+	scribeCmd.Stderr = os.Stderr
 	err = scribeCmd.Start()
 	if err != nil {
 		logrus.Errorf("Failed to start Court Scribe: %v", err)

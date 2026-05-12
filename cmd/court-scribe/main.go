@@ -153,8 +153,8 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 						Signature:   "dummy",
 					}
 					connMutex.Lock()
-				encoder.Encode(storeMsg)
-				connMutex.Unlock()
+					encoder.Encode(storeMsg)
+					connMutex.Unlock()
 				} else {
 					response.Command = "scribe.vote_recorded"
 					response.Payload = "ok"
