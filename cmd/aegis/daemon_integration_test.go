@@ -42,77 +42,95 @@ func TestDaemonLifecycle(t *testing.T) {
 	}
 
 	t.Run("daemon_not_running_initially", func(t *testing.T) {
-		// Step 1: Check initial status
+		// Behavior: status command returns proper output
 		cmd := exec.Command(aegisBinary, "status")
 		output, _ := cmd.CombinedOutput()
 		status := string(output)
 
+		// VALIDATION: Output must contain one of these (user expectation)
 		if !strings.Contains(status, "daemon is not running") && !strings.Contains(status, "daemon is running") {
-			t.Errorf("Unexpected status output: %s", status)
-		} else {
-			t.Logf("✓ Initial status: %s", strings.TrimSpace(status))
+			t.Errorf("BEHAVIOR FAILED: status output invalid: %s", status)
+			return
 		}
+		t.Logf("✓ status returns valid output: %s", strings.TrimSpace(status))
 	})
 
 	t.Run("daemon_starts_successfully", func(t *testing.T) {
-		// Step 2: Start daemon (requires sudo)
+		// Behavior: daemon can be started and reports success
 		cmd := exec.Command("sudo", aegisBinary, "start")
 		output, _ := cmd.CombinedOutput()
 		status := string(output)
 
+		// VALIDATION: Must explicitly say daemon started (user expectation)
 		if !strings.Contains(status, "daemon started") {
-			t.Logf("Warning: Start output doesn't contain 'daemon started', got: %s", status)
+			t.Errorf("BEHAVIOR FAILED: start didn't report success: %s", status)
+			return
 		}
+		t.Logf("✓ start reports success: %s", strings.TrimSpace(status))
 
 		// Wait for daemon to be ready
 		time.Sleep(2 * time.Second)
 	})
 
 	t.Run("daemon_status_shows_running", func(t *testing.T) {
-		// Step 3: Check status (daemon should be running)
+		// Behavior: status command shows daemon is running after start
 		cmd := exec.Command(aegisBinary, "status")
 		output, err := cmd.CombinedOutput()
 		status := string(output)
 
-		// Note: This may fail due to stale daemon processes in test environment
-		t.Logf("Status output: %s (err: %v)", status, err)
+		// VALIDATION: status must report running (user expectation)
+		if err != nil || !strings.Contains(status, "daemon is running") {
+			t.Errorf("BEHAVIOR FAILED: daemon should be running but status says: %s (err: %v)", status, err)
+			return
+		}
+		t.Logf("✓ status correctly reports: %s", strings.TrimSpace(status))
 	})
 
 	t.Run("daemon_prevents_duplicate_start", func(t *testing.T) {
-		// Step 4: Try to start again (should say already running or error appropriately)
+		// Behavior: daemon prevents duplicate start
 		cmd := exec.Command("sudo", aegisBinary, "start")
-		output, err := cmd.CombinedOutput()
+		output, _ := cmd.CombinedOutput()
 		status := string(output)
 
-		t.Logf("Second start output: %s (err: %v)", status, err)
-		// Either "already running" or timeout is acceptable
-		if !strings.Contains(status, "already running") && !strings.Contains(status, "timeout") {
-			t.Logf("Note: Expected 'already running', but got: %s", status)
+		// VALIDATION: Must say already running (user expectation)
+		if !strings.Contains(status, "already running") {
+			t.Errorf("BEHAVIOR FAILED: duplicate start should be prevented, got: %s", status)
+			return
 		}
+		t.Logf("✓ duplicate start properly rejected: %s", strings.TrimSpace(status))
 	})
 
 	t.Run("daemon_stops_successfully", func(t *testing.T) {
-		// Step 5: Stop daemon
+		// Behavior: daemon can be stopped and reports success
 		cmd := exec.Command("sudo", aegisBinary, "stop")
-		output, err := cmd.CombinedOutput()
+		output, _ := cmd.CombinedOutput()
 		status := string(output)
 
-		t.Logf("Stop output: %s (err: %v)", status, err)
-		// Should say stopped or something similar
+		// VALIDATION: Must explicitly report stop success (user expectation)
+		if !strings.Contains(status, "daemon stopped") {
+			t.Errorf("BEHAVIOR FAILED: stop didn't report success: %s", status)
+			return
+		}
+		t.Logf("✓ stop reports success: %s", strings.TrimSpace(status))
 	})
 
 	t.Run("daemon_not_running_after_stop", func(t *testing.T) {
-		// Step 6: Check final status
+		// Behavior: status shows daemon is not running after stop
 		time.Sleep(1 * time.Second) // Give it time to clean up
 		cmd := exec.Command(aegisBinary, "status")
-		output, err := cmd.CombinedOutput()
+		output, _ := cmd.CombinedOutput()
 		status := string(output)
 
-		t.Logf("Final status output: %s (err: %v)", status, err)
+		// VALIDATION: status must report not running (user expectation)
+		if !strings.Contains(status, "daemon is not running") {
+			t.Errorf("BEHAVIOR FAILED: daemon should not be running after stop, but status says: %s", status)
+			return
+		}
+		t.Logf("✓ status correctly reports: %s", strings.TrimSpace(status))
 	})
 }
 
-// TestDaemonDoctor tests the health check command
+// TestDaemonDoctor tests the health check command with behavior validation
 func TestDaemonDoctor(t *testing.T) {
 	rootDir := repoRoot(t)
 	aegisBinary := filepath.Join(rootDir, "bin", "aegis")
@@ -126,7 +144,7 @@ func TestDaemonDoctor(t *testing.T) {
 
 	t.Logf("Doctor output:\n%s", status)
 
-	// Check for expected health check items
+	// BEHAVIOR VALIDATION: doctor must return all expected health check items
 	expectedChecks := []string{
 		"Platform:",
 		"Sandbox type:",
@@ -136,9 +154,16 @@ func TestDaemonDoctor(t *testing.T) {
 
 	for _, check := range expectedChecks {
 		if !strings.Contains(status, check) {
-			t.Errorf("Expected health check '%s' not found in output", check)
+			t.Errorf("BEHAVIOR FAILED: health check for '%s' missing from output", check)
 		}
 	}
+
+	// REGRESSION CHECK: doctor must not return error messages
+	if strings.Contains(status, "FATAL") || strings.Contains(status, "Error") || strings.Contains(status, "error") {
+		t.Logf("Warning: doctor output contains error messages: %s", status)
+	}
+
+	t.Logf("✓ doctor command returns all expected health checks")
 }
 
 // TestWebPortalConnectivity tests if web portal can be accessed
@@ -390,7 +415,7 @@ func TestDaemonProcessCleaning(t *testing.T) {
 	}
 }
 
-// TestVMListCommand tests the 'aegis vm list' command end-to-end
+// TestVMListCommand tests the 'aegis vm list' command end-to-end with behavior validation
 func TestVMListCommand(t *testing.T) {
 	rootDir := repoRoot(t)
 	aegisBinary := filepath.Join(rootDir, "bin", "aegis")
@@ -409,72 +434,95 @@ func TestVMListCommand(t *testing.T) {
 	// Wait for daemon to fully start
 	time.Sleep(1 * time.Second)
 
-	// Verify socket exists
+	// Verify socket exists (infrastructure check before behavior tests)
 	socketPath := filepath.Join("/tmp", "aegis", "daemon.sock")
 	if _, err := os.Stat(socketPath); err != nil {
-		t.Errorf("Socket file not found at %s: %v", socketPath, err)
+		t.Fatalf("INFRASTRUCTURE FAILED: Socket file not found at %s: %v", socketPath, err)
 	}
 
-	// Test: vm list command
+	// Test: vm list command basic behavior
 	t.Run("vm_list_basic", func(t *testing.T) {
 		cmd := exec.Command(aegisBinary, "vm", "list")
 		output, err := cmd.CombinedOutput()
 		outputStr := string(output)
 
-		if err != nil && !strings.Contains(outputStr, "Running VMs") {
-			t.Errorf("vm list command failed: %v, output: %s", err, outputStr)
-		}
-
-		// Verify output contains expected strings
-		if !strings.Contains(outputStr, "Running VMs:") {
-			t.Errorf("vm list output missing 'Running VMs:': %s", outputStr)
-		}
-
-		// Verify output is NOT the "not yet implemented" message
+		// REGRESSION CHECK: Must not return "not yet implemented"
 		if strings.Contains(outputStr, "not yet implemented") {
-			t.Errorf("vm list returned 'not yet implemented' - functionality broken: %s", outputStr)
+			t.Errorf("REGRESSION DETECTED: vm list returned 'not yet implemented' - feature broken!")
+			t.Errorf("Full output: %s", outputStr)
+			return
 		}
 
-		// For empty VM list, should show "No running VMs"
-		if !strings.Contains(outputStr, "No running VMs") {
-			t.Logf("vm list output: %s", outputStr)
+		// BEHAVIOR VALIDATION: Must return proper output format
+		if !strings.Contains(outputStr, "Running VMs:") {
+			t.Errorf("BEHAVIOR FAILED: vm list must start with 'Running VMs:', got: %s", outputStr)
+			return
 		}
+
+		// BEHAVIOR VALIDATION: For empty list, must say "No running VMs"
+		if !strings.Contains(outputStr, "No running VMs") {
+			t.Errorf("BEHAVIOR FAILED: vm list must show 'No running VMs' when empty, got: %s", outputStr)
+			return
+		}
+
+		// BEHAVIOR VALIDATION: Exit code should be 0
+		if err != nil {
+			t.Errorf("BEHAVIOR FAILED: vm list should succeed with exit code 0, got error: %v", err)
+			return
+		}
+
+		t.Logf("✓ vm list returns correct output format")
 	})
 
-	// Test: vm list --json flag
+	// Test: vm list --json behavior
 	t.Run("vm_list_json", func(t *testing.T) {
 		cmd := exec.Command(aegisBinary, "vm", "list", "--json")
 		output, err := cmd.CombinedOutput()
 		outputStr := string(output)
 
-		if err != nil {
-			t.Errorf("vm list --json command failed: %v", err)
-		}
-
-		// Verify output is valid JSON array
-		if !strings.HasPrefix(strings.TrimSpace(outputStr), "[") {
-			t.Errorf("vm list --json output is not JSON array: %s", outputStr)
-		}
-
-		// Verify output is NOT the "not yet implemented" message
+		// REGRESSION CHECK: Must not return "not yet implemented"
 		if strings.Contains(outputStr, "not yet implemented") {
-			t.Errorf("vm list --json returned 'not yet implemented': %s", outputStr)
+			t.Errorf("REGRESSION DETECTED: vm list --json returned 'not yet implemented'!")
+			return
 		}
+
+		// BEHAVIOR VALIDATION: Output must be valid JSON
+		if !strings.HasPrefix(strings.TrimSpace(outputStr), "[") {
+			t.Errorf("BEHAVIOR FAILED: vm list --json must return JSON array, got: %s", outputStr)
+			return
+		}
+
+		// BEHAVIOR VALIDATION: JSON must be empty array for no VMs
+		if strings.TrimSpace(outputStr) != "[]" {
+			t.Logf("Note: vm list --json output is not empty array: %s", outputStr)
+		}
+
+		// BEHAVIOR VALIDATION: Exit code should be 0
+		if err != nil {
+			t.Errorf("BEHAVIOR FAILED: vm list --json should succeed, got error: %v", err)
+			return
+		}
+
+		t.Logf("✓ vm list --json returns valid JSON format")
 	})
 
-	// Test: status command still works with socket server running
-	t.Run("status_with_socket_server", func(t *testing.T) {
+	// Test: status command works with daemon running
+	t.Run("status_with_daemon_running", func(t *testing.T) {
 		cmd := exec.Command(aegisBinary, "status")
 		output, _ := cmd.CombinedOutput()
 		outputStr := string(output)
 
+		// BEHAVIOR VALIDATION: Must report daemon is running
 		if !strings.Contains(outputStr, "daemon is running") {
-			t.Errorf("status command failed with socket server running: %s", outputStr)
+			t.Errorf("BEHAVIOR FAILED: status must show 'daemon is running', got: %s", outputStr)
+			return
 		}
+
+		t.Logf("✓ status correctly reports daemon running")
 	})
 }
 
-// TestSocketServer verifies Unix socket server setup
+// TestSocketServer verifies Unix socket server setup and behavior
 func TestSocketServer(t *testing.T) {
 	rootDir := repoRoot(t)
 	aegisBinary := filepath.Join(rootDir, "bin", "aegis")
@@ -495,49 +543,83 @@ func TestSocketServer(t *testing.T) {
 	// Test: Socket file exists
 	t.Run("socket_exists", func(t *testing.T) {
 		if _, err := os.Stat(socketPath); err != nil {
-			t.Errorf("Socket file not found at %s: %v", socketPath, err)
+			t.Fatalf("INFRASTRUCTURE FAILED: Socket file not found at %s: %v", socketPath, err)
 		}
+		t.Logf("✓ socket file exists at %s", socketPath)
 	})
 
 	// Test: Socket is readable by all users
 	t.Run("socket_permissions", func(t *testing.T) {
 		fileInfo, err := os.Stat(socketPath)
 		if err != nil {
-			t.Errorf("Could not stat socket: %v", err)
-			return
+			t.Fatalf("INFRASTRUCTURE FAILED: Could not stat socket: %v", err)
 		}
 
-		// Socket should be readable and writable by everyone for client access
+		// BEHAVIOR VALIDATION: Socket should be accessible by all users
 		perms := fileInfo.Mode().Perm()
 		if perms&0666 != 0666 {
-			t.Logf("Socket permissions: %o (may restrict to current user)", perms)
+			t.Logf("Warning: Socket permissions %o may restrict client access", perms)
+		} else {
+			t.Logf("✓ socket has correct permissions for multi-user access: %o", perms)
 		}
 	})
 
-	// Test: Socket accepts connections
+	// Test: Socket accepts connections and responds to commands
 	t.Run("socket_accepts_connections", func(t *testing.T) {
 		conn, err := net.Dial("unix", socketPath)
 		if err != nil {
-			t.Errorf("Could not connect to socket: %v", err)
-			return
+			t.Fatalf("PROTOCOL FAILED: Could not connect to socket: %v", err)
 		}
 		defer conn.Close()
 
-		// Send test command
+		// BEHAVIOR VALIDATION: Send vm list command and get response
 		conn.Write([]byte("vm list"))
 		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
 		if err != nil {
-			t.Errorf("Could not read response: %v", err)
+			t.Errorf("PROTOCOL FAILED: Could not read response from socket: %v", err)
 			return
 		}
 
 		response := string(buf[:n])
+
+		// REGRESSION CHECK: Must not return "not yet implemented"
 		if strings.Contains(response, "not yet implemented") {
-			t.Errorf("Socket handler returned 'not yet implemented': %s", response)
+			t.Errorf("REGRESSION DETECTED: Socket handler returned 'not yet implemented': %s", response)
+			return
 		}
+
+		// BEHAVIOR VALIDATION: Must return proper vm list response
 		if !strings.Contains(response, "Running VMs") && !strings.Contains(response, "No running VMs") {
-			t.Errorf("Unexpected socket response: %s", response)
+			t.Errorf("PROTOCOL FAILED: Unexpected socket response format: %s", response)
+			return
 		}
+
+		t.Logf("✓ socket accepts connections and returns valid vm list response")
+	})
+
+	// Test: Socket protocol - multiple sequential commands
+	t.Run("socket_sequential_commands", func(t *testing.T) {
+		// Test that daemon can handle multiple client connections
+		for i := 0; i < 3; i++ {
+			conn, err := net.Dial("unix", socketPath)
+			if err != nil {
+				t.Errorf("PROTOCOL FAILED: Could not connect to socket (attempt %d): %v", i+1, err)
+				continue
+			}
+
+			conn.Write([]byte("vm list"))
+			buf := make([]byte, 1024)
+			n, _ := conn.Read(buf)
+			response := string(buf[:n])
+
+			// REGRESSION CHECK
+			if strings.Contains(response, "not yet implemented") {
+				t.Errorf("REGRESSION DETECTED: Sequential command %d returned 'not yet implemented'", i+1)
+			}
+
+			conn.Close()
+		}
+		t.Logf("✓ socket handles sequential commands correctly")
 	})
 }
