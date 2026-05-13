@@ -5,10 +5,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,6 +30,7 @@ var (
 	pidFile      string
 	orchestrator *runtime.Orchestrator
 	cfg          *config.Config
+	jsonOutput   bool
 )
 
 func init() {
@@ -184,6 +188,11 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 	defer removePIDFile()
 
+	// Start socket server
+	if err := startSocketServer(socketPath, orchestrator); err != nil {
+		logrus.Fatalf("failed to start socket server: %v", err)
+	}
+
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -199,8 +208,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		os.Exit(0)
 	}()
 
-	// For now, just keep the daemon running
-	// TODO: Add HTTP API server for starting/stopping VMs
 	logrus.Info("daemon ready")
 
 	// Block forever
@@ -304,14 +311,133 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 	fmt.Println("\nHealth checks complete")
 }
 
-func listVMs(cmd *cobra.Command, args []string) {
-	if !isDaemonRunning() {
-		fmt.Println("daemon is not running")
+func getOriginalUser() (*user.User, error) {
+	sudoUser := os.Getenv("SUDO_USER")
+	if sudoUser != "" {
+		return user.Lookup(sudoUser)
+	}
+	// If not sudo, return current user
+	return user.Current()
+}
+
+func expandPath(path string) string {
+	if len(path) > 1 && path[:2] == "~/" {
+		origUser, err := getOriginalUser()
+		if err != nil {
+			// fallback to current user's home
+			home, _ := os.UserHomeDir()
+			return filepath.Join(home, path[2:])
+		}
+		return filepath.Join(origUser.HomeDir, path[2:])
+	}
+	return path
+}
+
+func startSocketServer(socketPath string, orch *runtime.Orchestrator) error {
+	socket := expandPath(socketPath)
+	dir := filepath.Dir(socket)
+
+	// Create socket directory
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create socket directory: %w", err)
+	}
+
+	// Remove old socket if it exists
+	os.Remove(socket)
+
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		return fmt.Errorf("failed to listen on socket: %w", err)
+	}
+
+	// Make socket readable by all users
+	if err := os.Chmod(socket, 0666); err != nil {
+		return fmt.Errorf("failed to chmod socket: %w", err)
+	}
+
+	go func() {
+		defer listener.Close()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				logrus.Errorf("socket accept error: %v", err)
+				continue
+			}
+			go handleSocketCommand(conn, orch)
+		}
+	}()
+
+	logrus.Infof("socket server listening on %s", socket)
+	return nil
+}
+
+func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
+	defer conn.Close()
+
+	buf := make([]byte, 256)
+	n, err := conn.Read(buf)
+	if err != nil {
+		logrus.Errorf("socket read error: %v", err)
 		return
 	}
 
-	// TODO: Connect to daemon API and list VMs
-	fmt.Println("VM listing not yet implemented")
+	command := string(buf[:n])
+	logrus.Debugf("received command: %s", command)
+
+	response := ""
+	switch command {
+	case "vm list":
+		vms, err := orch.ListVMs(context.Background())
+		if err != nil {
+			response = fmt.Sprintf("Error listing VMs: %v\n", err)
+		} else if len(vms) == 0 {
+			response = "No running VMs\n"
+		} else {
+			for _, vm := range vms {
+				response += fmt.Sprintf("%s: %s (%s)\n", vm.ID, vm.Type, vm.Status)
+			}
+		}
+	default:
+		response = "Unknown command\n"
+	}
+
+	conn.Write([]byte(response))
+}
+
+func listVMs(cmd *cobra.Command, args []string) {
+	socket := expandPath(socketPath)
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		fmt.Println("Daemon not running")
+		return
+	}
+	defer conn.Close()
+
+	conn.Write([]byte("vm list"))
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		fmt.Println("Error reading response")
+		return
+	}
+	response := string(buf[:n])
+	if jsonOutput {
+		lines := strings.Split(strings.TrimSpace(response), "\n")
+		vms := []map[string]string{}
+		for _, line := range lines {
+			if line == "No running VMs" || line == "" {
+				break
+			}
+			parts := strings.SplitN(line, ": ", 2)
+			if len(parts) >= 2 {
+				vms = append(vms, map[string]string{"id": parts[0], "type": strings.Split(parts[1], " ")[0]})
+			}
+		}
+		jsonBytes, _ := json.Marshal(vms)
+		fmt.Println(string(jsonBytes))
+	} else {
+		fmt.Printf("Running VMs:\n%s", response)
+	}
 }
 
 func main() {
@@ -357,6 +483,7 @@ func main() {
 		Short: "List running VMs",
 		Run:   listVMs,
 	}
+	listCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 
 	vmCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(startCmd, stopCmd, statusCmd, doctorCmd, vmCmd)
