@@ -4,22 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/signal"
-	"path/filepath"
-	"syscall"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
-	"github.com/PixnBits/AegisClaw/internal/composition"
+	"github.com/PixnBits/AegisClaw/internal/builder"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/events"
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/provision"
-	"github.com/PixnBits/AegisClaw/internal/sandbox"
-	"github.com/PixnBits/AegisClaw/internal/vault"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -87,10 +80,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	courtEngine.ResumeStalled(cmd.Context())
 
-	// Initialize ProposalEventDispatcher
+	// === Event-driven builder trigger (D3) ===
 	env.ProposalEventDispatcher = events.NewProposalEventDispatcher()
 
-	// Initialize BuildOrchestrator (stub for now)
 	buildOrch, err := initBuildOrchestrator(env)
 	if err != nil {
 		hub.Stop()
@@ -103,7 +95,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))
-	// Add other handlers as needed...
 
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
@@ -147,14 +138,8 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 	}
 }
 
-// initBuildOrchestrator stub
+// initBuildOrchestrator is a stub. Full implementation will be added in follow-up commits.
 func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
 	env.Logger.Info("BuildOrchestrator initialization skipped (stub)")
 	return nil, nil
 }
-
-// Stubs for other functions
-func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler { return nil }
-func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, string, error) { return nil, "", nil }
-func buildToolRegistry(env *runtimeEnv) interface{} { return nil }
-func initCourtEngine(env *runtimeEnv, tr interface{}) (*court.Engine, error) { return nil, nil }
