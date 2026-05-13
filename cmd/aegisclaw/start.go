@@ -138,8 +138,44 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 	}
 }
 
-// initBuildOrchestrator is a stub. Full implementation will be added in follow-up commits.
+// initBuildOrchestrator creates the BuildOrchestrator and wires it with a Pipeline.
+// This is a best-effort implementation to make the event-driven trigger functional.
+// A fuller extraction of builder initialization is planned as future work.
 func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
-	env.Logger.Info("BuildOrchestrator initialization skipped (stub)")
-	return nil, nil
+	if env == nil || env.Kernel == nil || env.Runtime == nil || env.ProposalStore == nil || env.GitManager == nil {
+		env.Logger.Warn("BuildOrchestrator: missing required runtime dependencies, skipping")
+		return nil, nil
+	}
+
+	// 1. Create BuilderRuntime
+	bcfg := builder.DefaultBuilderConfig()
+	builderRT, err := builder.NewBuilderRuntime(bcfg, env.Runtime, env.Kernel, env.Logger)
+	if err != nil {
+		env.Logger.Error("failed to create BuilderRuntime", zap.Error(err))
+		return nil, fmt.Errorf("create BuilderRuntime: %w", err)
+	}
+
+	// 2. Create CodeGenerator with default templates
+	codeGen, err := builder.NewCodeGenerator(builderRT, env.Kernel, env.Logger, builder.DefaultTemplates())
+	if err != nil {
+		env.Logger.Error("failed to create CodeGenerator", zap.Error(err))
+		return nil, fmt.Errorf("create CodeGenerator: %w", err)
+	}
+
+	// 3. Create Pipeline (Analyzer is optional for now)
+	pipe, err := builder.NewPipeline(builderRT, codeGen, env.GitManager, nil, env.Kernel, env.ProposalStore, env.Logger)
+	if err != nil {
+		env.Logger.Error("failed to create Pipeline", zap.Error(err))
+		return nil, fmt.Errorf("create Pipeline: %w", err)
+	}
+
+	// 4. Create the BuildOrchestrator
+	orch, err := builder.NewBuildOrchestrator(pipe, env.ProposalStore, env.Kernel, env.Logger, env.ProposalEventDispatcher)
+	if err != nil {
+		env.Logger.Error("failed to create BuildOrchestrator", zap.Error(err))
+		return nil, fmt.Errorf("create BuildOrchestrator: %w", err)
+	}
+
+	env.Logger.Info("BuildOrchestrator initialized successfully (event-driven builder trigger active)")
+	return orch, nil
 }
