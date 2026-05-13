@@ -6,6 +6,7 @@ Updated: 2026-03-28 (D2 re-opened; new deviations D2-a, D2-b, D2-c, DA, DB, DC a
 Updated: 2026-03-28 (DirectLauncher deleted; agent VM wiring complete; D2-b, D2-c, DC resolved)
 Updated: 2026-03-28 (AegisHub microVM architecture introduced; DA-hub, DA, DB status updated)
 Updated: 2026-03-28 (DA-hub resolved: fallback eliminated, AegisHub is a required core component)
+**Updated: 2026-05-13** — D3 marked **Open** (see below). Court approval transitions status but does not automatically invoke the builder pipeline.
 
 Scope:
 - Compared the implementation in this repository against [docs/PRD.md](docs/PRD.md) and [docs/cli-design.md](docs/cli-design.md).
@@ -18,11 +19,12 @@ Summary:
 - **Update (2026-03-27)**: D1 (FirecrackerLauncher), D2 (main-agent sandbox), D10 (versioned compositions with rollback), and D8 (SAST/SCA/policy-as-code) have been resolved.
 - **Update (2026-03-28)**: D2 has been re-opened after a detailed architectural audit. `makeChatMessageHandler` in the daemon calls Ollama directly (D2-b). The guest-agent `handleChatMessage` performs one LLM call with no ReAct loop (D2-a). `ExecuteTool` callbacks run in the CLI process (D2-c-cli). Three additional deviations were identified: IPC bus lacks ACL enforcement (DA), no central tool registry in daemon (DB), and no agent-VM startup on first chat message (DC). See `docs/architecture.md` for the correct north-star architecture.
 - **Update (2026-03-28)**: `DirectLauncher` (`internal/court/direct_launcher.go`) deleted — there is no opt-out from microVM isolation. `docs/architecture.md` §1 updated to make the no-opt-out rule explicit. D2-b resolved (daemon now forwards to agent VM). DC resolved (lazy agent VM startup via `ensureAgentVM`). D2-c (court DirectLauncher) resolved. D2-a and D2-c-cli remain open.
+- **Update (2026-05-13)**: D3 re-classified as **Open**. The auto-transition to `implementing` exists in `makeCourtReviewHandler`, but the actual invocation of the `internal/builder` pipeline (code generation + security gates) after Court approval is not wired.
 
 ## Deviation Resolution Status
 
 | ID | Source | Requirement | Status | Notes |
-| --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | |
 | D1 | PRD | Governance Court reviewers must run in isolated microVMs. | **Resolved** | Court initialization uses `FirecrackerLauncher` exclusively. `DirectLauncher` has been deleted — there is no fallback path to host execution. Daemon fails hard if KVM or Firecracker binary is unavailable. Guest agent handles `review.execute` inside sandbox. See `cmd/aegisclaw/court_init.go`. |
 | D2 | PRD, CLI | The main agent should be a sandboxed component. | **Partially resolved** | The daemon's `makeChatMessageHandler` now starts the agent microVM lazily (`ensureAgentVM`) and forwards every conversation turn to it; the daemon no longer calls Ollama directly. The outer ReAct loop (tool dispatch) is driven by the daemon pending D2-a completion. CLI `ExecuteTool` callbacks still run on the host (D2-c-cli). See sub-items below. |
 | D2-a | architecture.md §3, §7, §13.4 | Agent VM must run the full ReAct loop: parse tool-call blocks → send `tool.exec` IPC **routed through AegisHub** → receive `tool.result` → append to conversation → loop until clean response. All tool invocations from agent VMs must be AegisHub-routed messages (ACL-gated) rather than direct daemon calls. | **Open** | `handleChatMessage` in `cmd/guest-agent/main.go` makes one Ollama call per turn and returns either `tool_call` or `final`. The daemon's `makeChatMessageHandler` drives the outer loop and executes tool handlers inline (bypassing AegisHub routing for the tool dispatch leg). The target architecture requires: (1) agent VM sends `tool.exec` as an AegisHub-routed message; (2) daemon receives it as a registered tool-handler endpoint (with `RoleDaemon` ACL); (3) daemon replies via AegisHub. This closes a security gap where tool invocations currently bypass AegisHub's ACL enforcement. Full implementation is future work. |
@@ -33,7 +35,7 @@ Summary:
 | DA-hub | architecture.md §13 | All IPC routing and ACL enforcement must execute inside the AegisHub microVM, not in the host daemon. This shrinks the privileged TCB to VMM operations only. | **Resolved** | Transitional fallback eliminated. `launchAegisHub()` now returns a fatal error if the AegisHub rootfs is missing — there is no fallback to an in-process hub. AegisHub is built as a dedicated `aegishub-rootfs.ext4` image via `sudo ./scripts/build-microvms-docker.sh --target=aegishub`. It is registered in the versioned composition manifest at startup. The STRIDE threat model is documented in `docs/architecture.md §14`. |
 | DB | architecture.md §6 | Daemon must maintain a central tool registry mapping tool names to handler functions, used by the ACL and dispatch layer. | **Substantially resolved** | `ToolRegistry` in `cmd/aegisclaw/tool_registry.go` maps qualified tool names to handlers. `buildToolRegistry(env)` populates it at startup. Tool dispatch in the chat handler uses `toolRegistry.Execute()`. In the target AegisHub architecture, AegisHub will hold the registry metadata (tool names, roles) while execution remains in the daemon. |
 | DC | architecture.md §9 | Agent VM must be lazy-started on the first `chat.message` request and registered with the message bus before the forwarding call is made. | **Resolved** | `ensureAgentVM` in `cmd/aegisclaw/chat_handlers.go` lazily creates and starts the agent VM on first use, starts the per-VM LLM proxy, and caches the VM ID. Automatically restarts the VM if it crashes. |
-| D3 | PRD | Approved skill should trigger builder pipeline automatically. | **Resolved** | Court review handler auto-transitions approved proposals to `implementing` status, connecting to builder pipeline. See `cmd/aegisclaw/start.go`. |
+| D3 | PRD | Approved skill should trigger builder pipeline automatically. | **Open** | Court review handler (`makeCourtReviewHandler` in `cmd/aegisclaw/start.go`) performs auto-transition from `approved` → `implementing` on successful verdict and updates the store. **However, it does not invoke `internal/builder.Pipeline.Execute` or launch the code-generation + security-gate pipeline.** The `Pipeline` type and `Execute` method exist and require an approved/implementing proposal + `SkillSpec`, but no automatic trigger is wired after the status change. This is the current roadblock for "approved → code generated". See detailed analysis below. |
 | D4 | PRD | Skill runtime should execute reviewed, versioned artifacts. | **Resolved** | Skill activation resolves artifact manifests from the builder output directory. See `cmd/aegisclaw/start.go`. |
 | D5 | PRD, CLI | Secrets must use secure prompt and runtime injection. | **Resolved** | `aegisclaw secrets add` uses secure terminal prompt (no echo). Activation resolves proposal-linked secrets for injection. See `cmd/aegisclaw/secrets_cmd.go`. |
 | D6 | PRD, CLI | All actions covered by audit log with `audit log` and `audit why`. | **Resolved** | `audit log` with filters (--since, --skill, --limit) and `audit why` with chain verification. Skill invoke/deactivate audit-logged. See `cmd/aegisclaw/audit_log.go`. |
@@ -51,7 +53,7 @@ Summary:
 ## Resolution Summary
 
 ### Resolved or substantially improved:
-D1, D2-b, D2-c, D3, D4, D5, D6, D8, D10, D13, D14, D15, D16, DC — fully resolved
+D1, D2-b, D2-c, D4, D5, D6, D8, D10, D13, D14, D15, D16, DC — fully resolved
 D2 (partially), D7, D9, D12 — partially resolved / improved
 DA, DB — substantially resolved (ACL enforced in hub, central tool registry exists)
 
@@ -64,9 +66,11 @@ D11 — clear path documented, implementation deferred
 ### Open:
 D2-a — agent VM full ReAct loop not yet internalized (outer loop driven by daemon)
 D2-c-cli — CLI ExecuteTool callbacks still run tool handlers in CLI process
+**D3** — Automatic builder pipeline trigger after Court approval (status transition exists; invocation of `Pipeline.Execute` does not)
 
 ### Future work required:
 D9 (partial) — SBOM and provenance emission
+D3 — Wire automatic post-approval builder execution
 
 ## Observations That Reduce Risk But Do Not Close Gaps
 
@@ -79,7 +83,7 @@ D9 (partial) — SBOM and provenance emission
 ## Root Causes (Updated)
 
 1. ~~The live product path still favors host-side fallbacks over PRD-mandated sandbox boundaries.~~ **Resolved**: `DirectLauncher` deleted — no fallback from microVM isolation exists anywhere in the codebase. Court reviewers use `FirecrackerLauncher` exclusively (D1). The daemon forwards chat turns to an agent microVM instead of calling Ollama directly (D2-b). AegisHub microVM is a **required** component — daemon fails with a fatal error if the AegisHub rootfs is missing (DA-hub). The outer ReAct loop is still driven by the daemon (D2-a open). CLI `ExecuteTool` callbacks still execute on the host for the natural-language path (D2-c-cli open).
-2. ~~Proposal, Court, builder, activation, and runtime subsystems were implemented as separate capabilities but not connected into one enforced workflow.~~ **Addressed**: Court approval auto-triggers the builder pipeline. Skill activation resolves artifacts. Versioned composition manifests track every deployment (D10).
+2. ~~Proposal, Court, builder, activation, and runtime subsystems were implemented as separate capabilities but not connected into one enforced workflow.~~ **Partially addressed**: Court approval auto-transitions status to `implementing`. **The critical missing piece is automatic invocation of the builder pipeline (`internal/builder.Pipeline.Execute`) after the transition.** Skill activation resolves artifacts. Versioned composition manifests track every deployment (D10).
 3. ~~Supply-chain, policy, and explanation requirements were modeled conceptually but not yet turned into launch-time or operator-facing enforcement.~~ **Substantially addressed**: Mandatory SAST/SCA/secrets/policy gates in the builder pipeline (D8). Versioned composition manifests with automatic rollback on health failures (D10). Structured audit log/why/verify commands (D6). ACL enforcement in the message bus (DA).
 4. ~~The published CLI design is aspirational relative to the current implementation.~~ **Resolved**: CLI surface matches the published specification (D13–D16).
 5. ~~The daemon's privileged TCB is larger than necessary — it owns the entire routing/ACL plane.~~ **Resolved**: AegisHub microVM introduced and made a required core component. The in-process hub fallback has been eliminated. The daemon now fails hard if AegisHub is unavailable. Build with `sudo ./scripts/build-microvms-docker.sh --target=aegishub`. AegisHub is registered in the versioned composition manifest on every startup (DA-hub resolved).
