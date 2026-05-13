@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+type Message struct {
+	Source      string      `json:"source"`
+	Destination string      `json:"destination"`
+	Command     string      `json:"command"`
+	Payload     interface{} `json:"payload"`
+	Timestamp   string      `json:"timestamp"`
+	Signature   string      `json:"signature"`
+}
+
 func TestUserJourney03CollaborativeTaskExecution(t *testing.T) {
 	if os.Getenv("AEGIS_RUN_MULTI_PROCESS_JOURNEYS") == "" {
 		t.Skip("set AEGIS_RUN_MULTI_PROCESS_JOURNEYS=1 to run multi-process journey tests")
@@ -310,7 +319,8 @@ func TestUserJourney09AddingDiscordMonitorSkill(t *testing.T) {
 }
 
 func testDaemonStatus(t *testing.T) {
-	socket := expandPath("~/.aegis/daemon.sock")
+	home, _ := os.UserHomeDir()
+	socket := home + "/.aegis/daemon.sock"
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
 		t.Fatalf("Failed to connect to daemon: %v", err)
