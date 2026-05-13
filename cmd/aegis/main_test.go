@@ -63,16 +63,16 @@ func waitForUnixSocket(t *testing.T, socketPath string, timeout time.Duration) {
 func TestDaemonStartAndStatus(t *testing.T) {
 	// Test daemon binary existence and basic functionality
 	// Root-required portions are skipped if not root
-	
+
 	rootDir := repoRoot(t)
 	aegisBinary := filepath.Join(rootDir, "bin", "aegis")
-	
+
 	// Test 1: Verify binary exists
 	if _, err := os.Stat(aegisBinary); err != nil {
 		t.Fatalf("aegis binary not found at %s", aegisBinary)
 	}
 	t.Logf("✓ Daemon binary found: %s", aegisBinary)
-	
+
 	// Test 2: Verify help command works
 	cmd := exec.Command(aegisBinary, "help")
 	output, err := cmd.CombinedOutput()
@@ -83,7 +83,7 @@ func TestDaemonStartAndStatus(t *testing.T) {
 		t.Errorf("help output should contain 'aegis', got: %s", string(output))
 	}
 	t.Logf("✓ Help command works")
-	
+
 	// Test 3: Verify doctor command works
 	cmd = exec.Command(aegisBinary, "doctor")
 	output, err = cmd.CombinedOutput()
@@ -94,16 +94,16 @@ func TestDaemonStartAndStatus(t *testing.T) {
 		t.Errorf("doctor output should contain 'Health checks'")
 	}
 	t.Logf("✓ Doctor command works")
-	
+
 	// Root-only tests
 	if os.Getuid() != 0 {
 		t.Logf("Skipping root-only tests (status, start, stop)")
 		return
 	}
-	
+
 	// Clean up
 	os.Remove(testSocketPath)
-	
+
 	// Test 4 (root only): Status command works
 	cmd = exec.Command(aegisBinary, "status")
 	output, _ = cmd.CombinedOutput()
@@ -117,46 +117,46 @@ func TestDaemonStartAndStatus(t *testing.T) {
 func TestIsDaemonRunning(t *testing.T) {
 	// This test verifies isDaemonRunning behavior through the status command
 	// Most of it can run without root, but start/stop requires sudo
-	
+
 	// Skip if not root and sudo requires password
 	if os.Getuid() != 0 {
 		t.Logf("Skipping root-only daemon lifecycle tests (use 'sudo go test' to run)")
 		return
 	}
-	
+
 	// Ensure no daemon is running by trying to stop
 	stopCmd := exec.Command("./bin/aegis", "stop")
 	_ = stopCmd.Run()
 	time.Sleep(500 * time.Millisecond)
-	
+
 	// Clean up any stale PID file
 	os.Remove("/tmp/aegis/daemon.pid")
 	time.Sleep(100 * time.Millisecond)
-	
+
 	// Test 1: Daemon should not be running
 	cmd := exec.Command("./bin/aegis", "status")
 	output, _ := cmd.CombinedOutput()
 	status := string(output)
-	
+
 	if !strings.Contains(status, "daemon is not running") {
 		t.Logf("Initial status: %s", strings.TrimSpace(status))
 	}
-	
+
 	// Test 2: After starting daemon, status should show running
 	startCmd := exec.Command("./bin/aegis", "start")
 	_ = startCmd.Run()
 	time.Sleep(2 * time.Second)
-	
+
 	cmd = exec.Command("./bin/aegis", "status")
 	output, _ = cmd.CombinedOutput()
 	status = string(output)
-	
+
 	if !strings.Contains(status, "daemon is running") {
 		t.Logf("After starting, status: %s", strings.TrimSpace(status))
 	} else {
 		t.Logf("✓ Daemon correctly reports as running after start")
 	}
-	
+
 	// Cleanup
 	stopCmd = exec.Command("./bin/aegis", "stop")
 	_ = stopCmd.Run()
@@ -201,18 +201,18 @@ func TestStatusJSON(t *testing.T) {
 func TestGetOriginalUser(t *testing.T) {
 	// This test verifies the ability to get the original user when running with sudo
 	// In a test environment, we can verify this works even when not using sudo
-	
+
 	user := os.Getenv("USER")
 	if user == "" {
 		user = os.Getenv("LOGNAME")
 	}
-	
+
 	if user == "" {
 		t.Skip("USER/LOGNAME environment variable not set")
 	}
-	
+
 	t.Logf("Current user: %s", user)
-	
+
 	// Verify we can determine a user (this would be more complex with sudo)
 	if user != "root" {
 		t.Logf("Running as non-root user: %s", user)
@@ -227,7 +227,7 @@ func TestExpandPath(t *testing.T) {
 	if result != absPath {
 		t.Errorf("Absolute path should not change, got %s", result)
 	}
-	
+
 	// Test 2: Relative paths should be usable with filepath.Join
 	relPath := "test/path"
 	joined := filepath.Join(os.TempDir(), relPath)
@@ -235,13 +235,13 @@ func TestExpandPath(t *testing.T) {
 		t.Errorf("Joined path should be absolute, got %s", joined)
 	}
 	t.Logf("Relative path test: %s -> %s", relPath, joined)
-	
+
 	// Test 3: Verify HOME directory exists
 	home := os.Getenv("HOME")
 	if home == "" {
 		t.Skip("HOME environment variable not set")
 	}
-	
+
 	if _, err := os.Stat(home); err != nil {
 		t.Errorf("HOME directory should exist: %v", err)
 	}
@@ -255,18 +255,18 @@ func TestVMConfig(t *testing.T) {
 	if cfg == nil {
 		t.Errorf("Config should not be nil")
 	}
-	
+
 	// Test 2: Verify key config fields
 	if cfg.Platform == "" {
 		t.Errorf("Platform should not be empty")
 	}
 	t.Logf("Platform: %s", cfg.Platform)
-	
+
 	if cfg.SandboxType == "" {
 		t.Errorf("SandboxType should not be empty")
 	}
 	t.Logf("Sandbox Type: %s", cfg.SandboxType)
-	
+
 	// Test 3: Verify state directory is set
 	if cfg.StateDir == "" {
 		t.Errorf("StateDir should not be empty")
