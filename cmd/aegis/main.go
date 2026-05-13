@@ -23,19 +23,19 @@ import (
 )
 
 var (
-	socketPath string
-	pidFile string
+	socketPath   string
+	pidFile      string
 	orchestrator *runtime.Orchestrator
-	cfg *config.Config
+	cfg          *config.Config
 )
 
 func init() {
 	cfg = config.New()
-	
+
 	// Use /tmp for the PID file so it's accessible to both root and non-root users
 	// This avoids issues where sudo runs as root but status checks as regular user
 	stateDir := filepath.Join("/tmp", "aegis")
-	
+
 	socketPath = filepath.Join(stateDir, "daemon.sock")
 	pidFile = filepath.Join(stateDir, "daemon.pid")
 }
@@ -61,7 +61,7 @@ func setupLogging() error {
 
 func ensureStateDir() error {
 	stateDir := filepath.Join("/tmp", "aegis")
-	
+
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
@@ -115,12 +115,12 @@ func writePIDFile() error {
 	if err := os.MkdirAll(filepath.Dir(pidFile), 0777); err != nil {
 		return fmt.Errorf("failed to create PID directory: %w", err)
 	}
-	
+
 	// Write PID file with world-readable permissions so non-root can clean it up if stale
 	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0666); err != nil {
 		return err
 	}
-	
+
 	// Make directory writable by all so PID file can be cleaned up
 	return os.Chmod(filepath.Dir(pidFile), 0777)
 }
@@ -270,7 +270,7 @@ func stopDaemon(cmd *cobra.Command, args []string) {
 	// If still running, try SIGKILL
 	process.Signal(syscall.SIGKILL)
 	time.Sleep(500 * time.Millisecond)
-	
+
 	fmt.Println("daemon stopped (forced)")
 	removePIDFile()
 }

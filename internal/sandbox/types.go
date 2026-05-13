@@ -8,19 +8,19 @@ import (
 
 // VMConfig contains configuration for starting a sandbox VM.
 type VMConfig struct {
-	ID              string
-	Image           string
-	KernelPath      string
-	RootfsPath      string
-	Memory          uint64 // Memory in MB
-	VCpus           int
-	PublicKey       ed25519.PublicKey
-	NetworkConfig   *NetworkConfig
+	ID            string
+	Image         string
+	KernelPath    string
+	RootfsPath    string
+	Memory        uint64 // Memory in MB
+	VCpus         int
+	PublicKey     ed25519.PublicKey
+	NetworkConfig *NetworkConfig
 }
 
 // NetworkConfig specifies network setup for the VM.
 type NetworkConfig struct {
-	VsockPort uint32
+	VsockPort    uint32
 	ExposedPorts []string // e.g., "8080:8080"
 }
 
@@ -51,7 +51,7 @@ const (
 type VMInfo struct {
 	ID        string
 	Status    Status
-	Uptime    int64 // seconds
+	Uptime    int64  // seconds
 	Memory    uint64 // in MB
-	CreatedAt int64 // Unix timestamp
+	CreatedAt int64  // Unix timestamp
 }

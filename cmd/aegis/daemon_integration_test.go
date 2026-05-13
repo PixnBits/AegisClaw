@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package main
@@ -143,7 +144,7 @@ func TestDaemonDoctor(t *testing.T) {
 func TestWebPortalConnectivity(t *testing.T) {
 	// Note: This test assumes web portal is running on localhost:8080
 	// It's a basic connectivity test, not a full functional test
-	
+
 	webPortalURL := "http://localhost:8080"
 	timeout := 5 * time.Second
 
@@ -314,7 +315,7 @@ func TestLocalCurlToWebPortal(t *testing.T) {
 	if response == "" || err != nil {
 		t.Skipf("Web portal not running at %s - skipping curl test", webPortalURL)
 	}
-	
+
 	if !strings.Contains(response, "HTTP/") {
 		t.Errorf("Expected HTTP response, got: %s", response)
 		return

@@ -15,12 +15,12 @@ import (
 
 // Orchestrator manages the lifecycle of all sandboxes.
 type Orchestrator struct {
-	config      *config.Config
-	backend     sandbox.Backend
-	secMgr      *security.Manager
-	mu          sync.RWMutex
-	vms         map[string]*VMLifecycle
-	startTime   int64
+	config    *config.Config
+	backend   sandbox.Backend
+	secMgr    *security.Manager
+	mu        sync.RWMutex
+	vms       map[string]*VMLifecycle
+	startTime int64
 }
 
 // VMLifecycle tracks the lifecycle of a VM instance.

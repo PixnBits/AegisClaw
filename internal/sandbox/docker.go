@@ -1,3 +1,4 @@
+//go:build darwin || windows
 // +build darwin windows
 
 package sandbox
@@ -21,9 +22,9 @@ type DockerBackend struct {
 }
 
 type dockerSandbox struct {
-	config    VMConfig
+	config      VMConfig
 	containerID string
-	startTime time.Time
+	startTime   time.Time
 }
 
 // NewDockerBackend creates a new Docker Sandbox backend.

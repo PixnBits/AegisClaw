@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 package sandbox
@@ -67,9 +68,9 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 			},
 		},
 		"machine-config": map[string]interface{}{
-			"vcpu_count": config.VCpus,
+			"vcpu_count":   config.VCpus,
 			"mem_size_mib": config.Memory,
-			"ht_enabled": false,
+			"ht_enabled":   false,
 		},
 		"iommu": false,
 	}
