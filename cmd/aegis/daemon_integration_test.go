@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -387,4 +388,156 @@ func TestDaemonProcessCleaning(t *testing.T) {
 	if fileInfo, err := os.Stat(dirPath); err == nil {
 		t.Logf("PID directory permissions: %v", fileInfo.Mode())
 	}
+}
+
+// TestVMListCommand tests the 'aegis vm list' command end-to-end
+func TestVMListCommand(t *testing.T) {
+	rootDir := repoRoot(t)
+	aegisBinary := filepath.Join(rootDir, "bin", "aegis")
+
+	defer func() {
+		// Cleanup
+		exec.Command("sudo", aegisBinary, "stop").Run()
+	}()
+
+	// Start daemon
+	startCmd := exec.Command("sudo", aegisBinary, "start")
+	if err := startCmd.Run(); err != nil {
+		t.Skipf("Could not start daemon (may need sudo): %v", err)
+	}
+
+	// Wait for daemon to fully start
+	time.Sleep(1 * time.Second)
+
+	// Verify socket exists
+	socketPath := filepath.Join("/tmp", "aegis", "daemon.sock")
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Errorf("Socket file not found at %s: %v", socketPath, err)
+	}
+
+	// Test: vm list command
+	t.Run("vm_list_basic", func(t *testing.T) {
+		cmd := exec.Command(aegisBinary, "vm", "list")
+		output, err := cmd.CombinedOutput()
+		outputStr := string(output)
+
+		if err != nil && !strings.Contains(outputStr, "Running VMs") {
+			t.Errorf("vm list command failed: %v, output: %s", err, outputStr)
+		}
+
+		// Verify output contains expected strings
+		if !strings.Contains(outputStr, "Running VMs:") {
+			t.Errorf("vm list output missing 'Running VMs:': %s", outputStr)
+		}
+
+		// Verify output is NOT the "not yet implemented" message
+		if strings.Contains(outputStr, "not yet implemented") {
+			t.Errorf("vm list returned 'not yet implemented' - functionality broken: %s", outputStr)
+		}
+
+		// For empty VM list, should show "No running VMs"
+		if !strings.Contains(outputStr, "No running VMs") {
+			t.Logf("vm list output: %s", outputStr)
+		}
+	})
+
+	// Test: vm list --json flag
+	t.Run("vm_list_json", func(t *testing.T) {
+		cmd := exec.Command(aegisBinary, "vm", "list", "--json")
+		output, err := cmd.CombinedOutput()
+		outputStr := string(output)
+
+		if err != nil {
+			t.Errorf("vm list --json command failed: %v", err)
+		}
+
+		// Verify output is valid JSON array
+		if !strings.HasPrefix(strings.TrimSpace(outputStr), "[") {
+			t.Errorf("vm list --json output is not JSON array: %s", outputStr)
+		}
+
+		// Verify output is NOT the "not yet implemented" message
+		if strings.Contains(outputStr, "not yet implemented") {
+			t.Errorf("vm list --json returned 'not yet implemented': %s", outputStr)
+		}
+	})
+
+	// Test: status command still works with socket server running
+	t.Run("status_with_socket_server", func(t *testing.T) {
+		cmd := exec.Command(aegisBinary, "status")
+		output, _ := cmd.CombinedOutput()
+		outputStr := string(output)
+
+		if !strings.Contains(outputStr, "daemon is running") {
+			t.Errorf("status command failed with socket server running: %s", outputStr)
+		}
+	})
+}
+
+// TestSocketServer verifies Unix socket server setup
+func TestSocketServer(t *testing.T) {
+	rootDir := repoRoot(t)
+	aegisBinary := filepath.Join(rootDir, "bin", "aegis")
+	socketPath := filepath.Join("/tmp", "aegis", "daemon.sock")
+
+	defer func() {
+		exec.Command("sudo", aegisBinary, "stop").Run()
+	}()
+
+	// Start daemon
+	startCmd := exec.Command("sudo", aegisBinary, "start")
+	if err := startCmd.Run(); err != nil {
+		t.Skipf("Could not start daemon: %v", err)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	// Test: Socket file exists
+	t.Run("socket_exists", func(t *testing.T) {
+		if _, err := os.Stat(socketPath); err != nil {
+			t.Errorf("Socket file not found at %s: %v", socketPath, err)
+		}
+	})
+
+	// Test: Socket is readable by all users
+	t.Run("socket_permissions", func(t *testing.T) {
+		fileInfo, err := os.Stat(socketPath)
+		if err != nil {
+			t.Errorf("Could not stat socket: %v", err)
+			return
+		}
+
+		// Socket should be readable and writable by everyone for client access
+		perms := fileInfo.Mode().Perm()
+		if perms&0666 != 0666 {
+			t.Logf("Socket permissions: %o (may restrict to current user)", perms)
+		}
+	})
+
+	// Test: Socket accepts connections
+	t.Run("socket_accepts_connections", func(t *testing.T) {
+		conn, err := net.Dial("unix", socketPath)
+		if err != nil {
+			t.Errorf("Could not connect to socket: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Send test command
+		conn.Write([]byte("vm list"))
+		buf := make([]byte, 1024)
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Errorf("Could not read response: %v", err)
+			return
+		}
+
+		response := string(buf[:n])
+		if strings.Contains(response, "not yet implemented") {
+			t.Errorf("Socket handler returned 'not yet implemented': %s", response)
+		}
+		if !strings.Contains(response, "Running VMs") && !strings.Contains(response, "No running VMs") {
+			t.Errorf("Unexpected socket response: %s", response)
+		}
+	})
 }

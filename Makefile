@@ -62,7 +62,7 @@ test:
 
 # Run daemon integration tests
 test-integration:
-	go test -v -tags=integration ./cmd/aegis -run "TestDaemon|TestCLI|TestVersion|TestProcessCleaning" -count=1 -timeout 90s
+	go test -v -tags=integration ./cmd/aegis -run "TestDaemon|TestCLI|TestVersion|TestProcessCleaning|TestVMList|TestSocket" -count=1 -timeout 90s
 
 # Run E2E tests
 test-e2e:
