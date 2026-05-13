@@ -94,20 +94,10 @@ func isDaemonRunning() bool {
 		return true
 	}
 
-	// If /proc doesn't work (non-Linux), try sending signal 0 to test if process exists
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	signalErr := process.Signal(syscall.Signal(0))
-	if signalErr == nil {
-		return true
-	}
-
-	// Check if error indicates process doesn't exist (vs permission error)
-	errStr := signalErr.Error()
-	return !strings.Contains(errStr, "no such process")
+	// If /proc check failed (non-Linux or process doesn't exist), clean up stale PID file
+	// This is conservative: if we can't verify the process, assume it's stale
+	_ = os.Remove(pidFile)
+	return false
 }
 
 func writePIDFile() error {
