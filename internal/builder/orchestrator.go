@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/events"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
@@ -23,8 +22,8 @@ type BuildOrchestrator struct {
 	logger     *zap.Logger
 	dispatcher *events.ProposalEventDispatcher
 
-	mu        sync.Mutex
-	active    map[string]bool // proposalID -> build in progress
+	mu     sync.Mutex
+	active map[string]bool // proposalID -> build in progress
 }
 
 // NewBuildOrchestrator creates a new orchestrator.
@@ -116,7 +115,7 @@ func (o *BuildOrchestrator) runBuild(ctx context.Context, proposalID string) {
 		return
 	}
 
-	o.logger.Info("orchestrator: builder pipeline completed successfully", 
+	o.logger.Info("orchestrator: builder pipeline completed successfully",
 		zap.String("proposal_id", proposalID),
 		zap.String("commit", result.CommitHash),
 		zap.String("branch", result.Branch),
