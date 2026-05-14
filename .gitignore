@@ -4,5 +4,10 @@
 /REPO_SUMMARY.md
 /shared/ollama/id_ed25519*
 /guest-agent
+/builder-agent
 *.log
 /logs
+
+# git archives
+*.tar.gz
+*.tgz
