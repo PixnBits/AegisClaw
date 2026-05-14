@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,9 @@ func TestWebPortalFullSDLC_Autonomous(t *testing.T) {
 	// This test requires a live daemon + web portal. Skip in CI unless explicitly enabled.
 	if testing.Short() {
 		t.Skip("skipping live portal E2E test in short mode")
+	}
+	if os.Getenv("AEGIS_RUN_PORTAL_E2E") != "1" {
+		t.Skip("skipping live portal E2E test (set AEGIS_RUN_PORTAL_E2E=1 to enable)")
 	}
 
 	ctx := testutil.NewTestContext(t)
