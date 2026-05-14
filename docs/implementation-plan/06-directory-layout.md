@@ -1,48 +1,51 @@
 # 06 - Directory & Filesystem Layout Implementation
 
-**Goal**: Implement the single-root `~/.aegis/` layout defined in the new specification `docs/specs/directory-layout.md`. All paths must be created with correct paranoid-security permissions on first run.
+**Goal**: Implement the security-conscious layout defined in `docs/specs/directory-layout.md`, with special handling for the two highest-risk items: the privileged daemon socket and the secrets vault.
 
-## Why This Matters
-Users should only ever see **one** new directory (`~/.aegis/`). Scattering files across `~/.config/`, `~/.local/share/`, `~/.cache/`, etc. creates surprise and increases the chance of misconfiguration or accidental exposure. Security requires strict permission enforcement from day one.
+## Security Context (Why This Step Exists)
+Putting everything under `~/.aegis/` is great for user experience, but creates real attack surface for root-privileged components. This task ensures we apply **extra protection** where it matters most.
 
 ## Tasks
 
-1. **Create centralized path constants**
-   - Add `internal/paths/` package with constants:
-     - `AegisRoot`, `ConfigDir`, `SocketDir`, `VMDir`, `GitDir`, `LogsDir`, `DataDir`, `SecretsDir`, `WorkspaceDir`, `CacheDir`, `RunDir`
-   - Support XDG fallbacks where they don't conflict with security.
+1. **Implement path constants with security distinctions**
+   - `internal/paths/` package with two categories:
+     - User-writable: `ConfigDir`, `WorkspaceDir`, `CacheDir`, `LogsDir`, `GitDir`, `VMDir`, `DataDir`
+     - High-sensitivity / privileged: `SecretsDir`, `SocketPath` (points to `/run/user/$UID/aegis/daemon.sock` or abstract socket)
 
-2. **Implement directory creation helper**
-   - `EnsureDirectories()` function called early in daemon startup.
-   - Create all required dirs with **exact permissions** from the spec table.
-   - Use `os.MkdirAll` with explicit mode + `chmod` + ownership checks.
-   - Add `aegis doctor --fix-permissions` command (from CLI step 01).
+2. **Socket placement (critical)**
+   - On Linux: Create and bind socket at `/run/user/$UID/aegis/daemon.sock` (tmpfs).
+   - Fall back to `~/.aegis/run/daemon.sock` only on non-Linux with strict ACLs.
+   - **Never** place the privileged socket directly under `~/.aegis/`.
 
-3. **Wire existing components to new paths**
-   - Update Host Daemon, AegisHub, Store VM, etc. to use the new constants.
-   - Migrate any hard-coded paths from v1.
-   - Update `configuration-management.md` references if needed.
+3. **Secrets vault protection (critical)**
+   - Create `~/.aegis/secrets/` as 0700 owned by daemon/`aegis` group.
+   - On **every access** (including startup):
+     - Use `O_NOFOLLOW`
+     - Verify ownership + permissions
+     - Refuse + emit audit event if incorrect
+   - (Future) Consider moving vault to `/var/lib/aegis/secrets/` for even stronger protection.
 
-4. **Secrets & sensitive data protection**
-   - `secrets/` must be created as 0700 and owned by the daemon process/group.
-   - Daemon must refuse to start (or enter safe-mode) if `secrets/` or `data/store/` have world-readable permissions.
-   - Add runtime check + audit event on startup.
+4. **Directory creation + enforcement helper**
+   - `EnsureSecureDirectories()` called early in daemon startup.
+   - Runtime checks on `secrets/`, `data/store/`, `data/audit/`.
+   - Daemon refuses to start (or enters safe-mode) on insecure permissions.
+   - Add `aegis doctor --fix-permissions` support.
 
 5. **Tests**
-   - Unit tests for path constants and permission enforcement.
-   - Integration test: fresh install → verify exact directory tree + permissions.
-   - Security test: attempt to start daemon with overly permissive `secrets/` → startup fails + clear error.
-   - `aegis doctor` test for permission repair.
+   - Permission creation + enforcement tests.
+   - TOCTOU / symlink attack resistance test for socket location.
+   - Secrets vault access control test (wrong permissions → refusal + audit).
+   - Non-root CLI still works with new socket location.
 
 ## Acceptance Criteria
-- All AegisClaw data lives under a single `~/.aegis/` root (no user surprise).
-- Every directory is created with the exact permissions and ownership defined in `docs/specs/directory-layout.md`.
-- Daemon refuses to start on insecure permissions for `secrets/` or `data/store/`.
-- `aegis doctor --fix-permissions` works reliably.
-- Full test coverage for path creation and security checks.
+- Most user data lives under single `~/.aegis/` root.
+- Privileged socket is **never** under `~/.aegis/` (uses `/run/user/$UID/aegis/` or abstract socket).
+- Secrets vault has **mandatory runtime ownership/permission enforcement** on every access.
+- Daemon refuses to start on insecure permissions for high-sensitivity directories.
+- Full test coverage including attack scenarios.
 
-**Dependencies**: Follows 02 (daemon refactor) and 05 (socket hardening). Can run in parallel with workspace customization (future step 07).
-**Estimated effort**: 1 day.
+**Dependencies**: Follows 02 (daemon refactor) and 05 (socket hardening).
+**Estimated effort**: 1–1.5 days.
 
 **Owner**: TBD
-**Status**: Ready to start
+**Status**: Ready to start (directly addresses socket & secrets security implications)
