@@ -4,71 +4,93 @@
 **Last Updated:** May 2026
 
 ## Goal
-Provide a single, predictable, security-first home for all AegisClaw data under `~/.aegis/`. This avoids user surprise from scattered directories while enforcing **paranoid security** (least privilege, no unnecessary exposure, clear separation of concerns).
+Provide a single, predictable, **security-first** home for AegisClaw while acknowledging that not everything can safely live under a user-controlled `~/.aegis/`. Paranoid security takes precedence over convenience.
 
-## Root Directory
+## Core Principle
+**User experience**: One primary directory (`~/.aegis/`) for most things.
+**Security reality**: The two highest-risk items (privileged daemon socket + secrets vault) require extra protection beyond what a normal home directory provides.
 
-**Location:** `~/.aegis/` (per-user, XDG-compliant where possible)
-
-All components **must** live under this single root unless a strong security or platform reason exists (e.g., `/run/user/$UID/aegis/` for runtime state on Linux).
-
-## Recommended Layout
+## Recommended Layout (Security-Conscious)
 
 ```text
-~/.aegis/
-├── config/                  # Layered configuration (see configuration-management.md)
-│   ├── config.yaml          # Main user config
-│   └── profiles/            # Per-agent or per-environment overrides
-├── socket/                  # Hardened Unix socket(s) — see step 05
-├── vm/                      # Firecracker / Docker Sandbox images & kernels
-│   ├── images/              # .img, .ext4, rootfs snapshots
-│   └── kernels/             # vmlinux, initrd
-├── git/                     # Cloned skill repositories & proposals (read-only where possible)
-├── logs/                    # Structured JSON logs + rotation (0700 recommended)
-├── data/                    # Persistent application data
-│   ├── store/               # Encrypted Store VM backing
-│   ├── audit/               # Merkle tree roots + signed audit logs
-│   ├── registry/            # Skill registry, proposals, composition history
-│   └── sbom/                # Generated SBOMs (CycloneDX)
-├── secrets/                 # Encrypted secrets vault (age + HKDF)
-│   └── vault.age            # Main encrypted store (0700, daemon/group owned)
-├── workspace/               # User customization files (AGENTS.md, SOUL.md, TOOLS.md, SKILL.md)
-├── cache/                   # Temporary downloads, compiled artifacts, LLM caches
-└── run/                     # Runtime state (locks, PID files, temp sockets)
-    └── (symlink to /run/user/$UID/aegis/ on Linux for better security)
+~/.aegis/                                   # Primary user root (most things live here)
+├── config/                                 # Layered configuration
+├── workspace/                              # AGENTS.md, SOUL.md, TOOLS.md, SKILL.md
+├── cache/                                  # Downloads, builds, LLM caches
+├── logs/                                   # Structured logs (0750)
+├── git/                                    # Cloned skill/proposal repos (0750)
+├── vm/                                     # Firecracker images & kernels (0750)
+├── data/                                   # Persistent data
+│   ├── store/                              # Encrypted Store VM backing (0700)
+│   ├── audit/                              # Merkle tree roots + signed logs (0700)
+│   ├── registry/                           # Skill registry & proposals
+│   └── sbom/                               # Generated SBOMs
+│
+# === HIGH-SENSITIVITY ITEMS (extra protection required) ===
+├── secrets/                                # Encrypted vault (see below)
+│   └── vault.age                           # Main encrypted store
+│
+# Runtime / privileged items (NOT under ~/.aegis/)
+/run/user/$UID/aegis/                       # Linux tmpfs (recommended for socket)
+└── daemon.sock                             # Privileged daemon socket (0750, aesis group)
 ```
 
-## Security Requirements (Paranoid-by-Design)
+## Detailed Security Analysis & Recommendations
 
-| Directory     | Permissions | Ownership                  | Rationale                                      |
-|---------------|-------------|----------------------------|------------------------------------------------|
-| `secrets/`    | 0700        | Daemon process / `aegis` group | Never world-readable; only daemon may write   |
-| `data/store/` | 0700        | Daemon / `aegis` group     | Encrypted persistent state; tamper-evident    |
-| `data/audit/` | 0700        | Daemon / `aegis` group     | Merkle tree must be protected                 |
-| `socket/`     | 0750        | `aegis` group              | Follows Unix Socket Hardening (step 05)       |
-| `logs/`       | 0750        | `aegis` group              | Readable by operators, not world-readable     |
-| `workspace/`  | 0755        | User                       | User-editable customization files             |
-| `vm/`         | 0750        | `aegis` group              | VM images should not be world-readable        |
-| `git/`        | 0750        | `aegis` group              | Cloned repos may contain untrusted code       |
+### 1. Daemon Socket (Highest Risk)
 
-- All sensitive directories **must** be created with correct permissions on first run.
-- The daemon **must** refuse to start if permissions are too permissive on `secrets/` or `data/store/`.
-- Use `umask 0077` or explicit `os.Mkdir` with mode when creating directories.
-- Never store secrets or private keys outside `secrets/`.
+**Problem with `~/.aegis/socket/`**:
+- `~/.aegis/` is fully user-controlled. A compromised user process (or malware) can:
+  - `chmod 777 ~/.aegis`
+  - Replace the socket with a symlink (TOCTOU attack)
+  - Point it at sensitive files (`/etc/shadow`, etc.)
+- Even with `SO_PEERCRED` + 0750, the **parent directory** remains an attack surface.
 
-## Platform Notes
+**Recommended Solution**:
+- **Primary**: Use `/run/user/$UID/aegis/daemon.sock` on Linux (tmpfs, auto-cleaned on logout, root can still create it via capabilities or setuid helper).
+- **Strong alternative**: Abstract Unix socket (`@aegis-daemon-$UID`) — no filesystem entry at all.
+- **Fallback** (macOS/Windows): `~/.aegis/run/daemon.sock` with strict ACLs + runtime checks.
 
-- **Linux**: Prefer `/run/user/$UID/aegis/` for `run/` (tmpfs, auto-cleaned on logout).
-- **macOS/Windows**: Fall back to `~/.aegis/run/` with appropriate ACLs.
-- XDG Base Directory spec is followed for `config/`, `cache/`, `data/` where it does not conflict with security grouping.
+The socket **must never** live directly under `~/.aegis/` if the daemon runs with root privileges.
+
+### 2. Secrets Vault (Critical)
+
+**Risk if placed naively in `~/.aegis/secrets/`**:
+- User (or attacker as user) can change permissions, replace the file, or read metadata.
+- Even encrypted (`age`), offline attacks + metadata leakage are possible.
+
+**Recommended Protections** (in order of strength):
+1. **Runtime enforcement** (mandatory):
+   - Daemon creates `~/.aegis/secrets/` as **0700** owned by daemon process / `aegis` group.
+   - On **every access**: `open(..., O_NOFOLLOW)`, verify ownership + permissions, refuse + audit if wrong.
+   - Use `fs.protected_regular` sysctl + `protected_fifos` on Linux.
+2. **Preferred location** (stronger):
+   - Move vault to `/var/lib/aegis/secrets/` (system directory, protected by root).
+   - Or keep in `~/.aegis/secrets/` but treat it as "user-visible encrypted blob only" — actual decryption happens only inside the daemon after privilege checks.
+
+### 3. Other Sensitive Directories
+
+| Directory       | Recommended Location      | Permissions | Extra Protection                     |
+|-----------------|---------------------------|-------------|--------------------------------------|
+| `data/store/`   | `~/.aegis/data/store/`    | 0700        | Runtime ownership check on startup   |
+| `data/audit/`   | `~/.aegis/data/audit/`    | 0700        | Merkle signing + runtime check       |
+| `socket/`       | `/run/user/$UID/aegis/`   | 0750        | **Never under ~/.aegis/**            |
+| `secrets/`      | `~/.aegis/secrets/` + runtime checks | 0700 | **Strongest possible enforcement**   |
+
+## Implementation Rules
+
+- The daemon **must** create all directories with correct permissions on first run.
+- The daemon **must refuse to start** (or enter safe-mode) if `secrets/`, `data/store/`, or `data/audit/` have insecure permissions.
+- All path constants live in `internal/paths/`.
+- `aegis doctor --fix-permissions` must be able to repair common issues.
 
 ## Related Documents
 
-- `host-daemon.md` (Unix socket & lifecycle)
-- `configuration-management.md` (already references `~/.aegis/config.yaml`)
+- `host-daemon.md`
+- `configuration-management.md`
 - `secrets-vault.md` (future)
 - `implementation-plan/05-unix-socket-hardening.md`
-- `implementation-plan/06-directory-layout.md` (paired task)
+- `implementation-plan/06-directory-layout.md`
 
 ## Traceability
-**Driven by:** User request for single predictable root + paranoid security requirement to minimize attack surface and user surprise.
+**Driven by:** Paranoid security analysis of home-directory attack surface + user request for single predictable root.
