@@ -6,6 +6,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -15,13 +18,74 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// sdlcStatus is the portal-reported status of a proposal going through the full SDLC.
+type sdlcStatus struct {
+	Phase         string `json:"phase"`
+	CourtApproved bool   `json:"court_approved"`
+	CodeGenerated bool   `json:"code_generated"`
+	PRURL         string `json:"pr_url"`
+	Deployed      bool   `json:"deployed"`
+	Error         string `json:"error"`
+}
+
+// extractProposalID reads a proposal ID from an HTTP response body.
+func extractProposalID(resp *http.Response) string {
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var v struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(body, &v) //nolint:errcheck
+	return v.ID
+}
+
+// getPortalSDLCStatus polls the portal for the current SDLC status of a proposal.
+func getPortalSDLCStatus(ctx context.Context, baseURL, proposalID string) (sdlcStatus, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/api/proposals/%s/status", baseURL, proposalID), nil)
+	if err != nil {
+		return sdlcStatus{}, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return sdlcStatus{}, err
+	}
+	defer resp.Body.Close()
+	var s sdlcStatus
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return sdlcStatus{}, err
+	}
+	return s, nil
+}
+
+// getPortalAuditLog fetches the audit log for a proposal from the portal.
+func getPortalAuditLog(ctx context.Context, baseURL, proposalID string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/api/proposals/%s/audit", baseURL, proposalID), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	return string(body), err
+}
+
 func TestWebPortalFullSDLC_Autonomous(t *testing.T) {
+	// This test requires a live daemon + web portal. Skip in CI unless explicitly enabled.
+	if testing.Short() {
+		t.Skip("skipping live portal E2E test in short mode")
+	}
+
 	ctx := testutil.NewTestContext(t)
 	defer ctx.Cleanup()
 
 	// Start full system with portal (real daemon, no shortcuts)
-	srv := testutil.StartAegisClawWithPortal(ctx) // assumes this helper exists or is easy to add
-	defer srv.Shutdown(ctx)
+	srv := testutil.StartAegisClawWithPortal(ctx)
+	defer func() { _ = srv }()
 
 	// 1. Submit proposal exactly as a user would via portal
 	propPayload := `{"title":"Autonomous Vision Skill","description":"Secure multimodal perception skill","permissions":["read-image","read-audio"]}`
@@ -29,15 +93,16 @@ func TestWebPortalFullSDLC_Autonomous(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
-	proposalID := extractProposalID(resp) // helper to parse JSON
+	proposalID := extractProposalID(resp)
 
 	// 2. Poll portal status — this is the key: we observe what the *system* does
-	var status SDLCStatus
+	bgCtx := context.Background()
+	var status sdlcStatus
 	for i := 0; i < 60; i++ { // generous timeout for real builder/court
-		status, err = getPortalSDLCStatus(ctx, srv.URL, proposalID)
+		status, err = getPortalSDLCStatus(bgCtx, srv.URL, proposalID)
 		require.NoError(t, err)
 
-		t.Logf("SDLC Phase: %s | CodeGen: %v | Court: %v | Deployed: %v", 
+		t.Logf("SDLC Phase: %s | CodeGen: %v | Court: %v | Deployed: %v",
 			status.Phase, status.CodeGenerated, status.CourtApproved, status.Deployed)
 
 		if status.Phase == "completed" || status.Error != "" {
@@ -53,14 +118,9 @@ func TestWebPortalFullSDLC_Autonomous(t *testing.T) {
 	require.True(t, status.Deployed, "Skill must reach deployment")
 
 	// Audit trail visibility
-	audit, err := getPortalAuditLog(ctx, srv.URL, proposalID)
+	audit, err := getPortalAuditLog(bgCtx, srv.URL, proposalID)
 	require.NoError(t, err)
 	require.Contains(t, audit, "builder.pipeline.completed")
 	require.Contains(t, audit, "court.code_review.passed")
 	require.Contains(t, audit, "deployment.success")
 }
-
-// TODO: Add these helpers to internal/testutil if missing:
-// - StartAegisClawWithPortal
-// - getPortalSDLCStatus, getPortalAuditLog, extractProposalID
-// - type SDLCStatus struct { Phase string; CourtApproved, CodeGenerated, Deployed bool; PRURL, Error string }
