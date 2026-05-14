@@ -179,3 +179,23 @@ func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) 
 	env.Logger.Info("BuildOrchestrator initialized successfully (event-driven builder trigger active)")
 	return orch, nil
 }
+
+// === Stubs for functions defined in other files in this package ===
+// These are declared here so the package compiles while the real implementations
+// live in their respective files (chat.go, tool_registry.go, etc.)
+
+func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, string, error) {
+	return nil, "", fmt.Errorf("launchAegisHub not implemented in this build context")
+}
+
+func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		return &api.Response{Error: "court.vote not implemented in this build context"}
+	}
+}
+
+func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		return &api.Response{Error: "skill.activate not implemented in this build context"}
+	}
+}
