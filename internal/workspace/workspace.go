@@ -1,114 +1,96 @@
-// Package workspace loads optional prompt-injection files from the user's
-// AegisClaw workspace directory (~/.aegisclaw/workspace/ by default).
-//
-// Inspired by OpenClaw's workspace model, users can place the following files
-// in the workspace directory to customise agent behaviour without modifying
-// code or going through the full Governance Court SDLC:
-//
-//   - AGENTS.md  — custom agent persona / identity overrides
-//   - SOUL.md    — guiding principles and values for the agent
-//   - TOOLS.md   — hints about which tools to prefer or avoid
-//   - SKILL.md   — per-skill context injected during skill builds
-//
-// All files are optional; missing files are silently ignored. File size is
-// capped to prevent prompt-stuffing attacks.
 package workspace
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
+"fmt"
+"os"
+"path/filepath"
+"strings"
 )
 
-// maxFileBytes is the per-file size cap applied when reading workspace files.
-// Large files would balloon the LLM context without meaningful benefit and
-// could be used to hijack the model via prompt injection.
-const maxFileBytes = 16 * 1024 // 16 KiB
+// maxFileBytes is the maximum size for any single workspace file.
+const maxFileBytes = 256 * 1024 // 256 KiB
 
-// Content holds the parsed contents of the workspace directory.
-// Fields are empty strings when the corresponding file is absent.
+// Content holds the parsed content of a workspace directory.
+// Each field corresponds to a well-known file in the workspace.
 type Content struct {
-	// Agents is the content of AGENTS.md — agent persona/identity overrides.
-	Agents string
-	// Soul is the content of SOUL.md — guiding principles and values.
-	Soul string
-	// Tools is the content of TOOLS.md — tool preference hints.
-	Tools string
-	// Skill is the content of SKILL.md — context injected during skill builds.
-	Skill string
+Path   string
+Data   []byte
+Soul   string // SOUL.md
+Agents string // AGENTS.md
+Tools  string // TOOLS.md
+Skill  string // SKILL.md
 }
 
-// IsEmpty returns true when no workspace files were found.
+// IsEmpty returns true if none of the named workspace files are present.
 func (c *Content) IsEmpty() bool {
-	return c.Agents == "" && c.Soul == "" && c.Tools == "" && c.Skill == ""
+return c == nil || (c.Soul == "" && c.Agents == "" && c.Tools == "" && c.Skill == "")
 }
 
-// Load reads workspace prompt files from dir. Missing files are silently
-// skipped; read errors on existing files are returned. The directory itself
-// need not exist — Load returns an empty Content in that case.
+// fileMap maps file names to the Content field they populate.
+var fileMap = []struct {
+name   string
+setter func(*Content, string)
+}{
+{"AGENTS.md", func(c *Content, v string) { c.Agents = v }},
+{"SOUL.md", func(c *Content, v string) { c.Soul = v }},
+{"TOOLS.md", func(c *Content, v string) { c.Tools = v }},
+{"SKILL.md", func(c *Content, v string) { c.Skill = v }},
+}
+
+// Load reads the well-known workspace files from dir.
+// If dir is empty or does not exist, an empty Content is returned without error.
+// If dir exists but is not a directory, an error is returned.
+// If any file exceeds maxFileBytes, an error is returned.
 func Load(dir string) (*Content, error) {
-	if dir == "" {
-		return &Content{}, nil
-	}
-
-	info, err := os.Stat(dir)
-	if os.IsNotExist(err) {
-		return &Content{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("workspace: stat %s: %w", dir, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("workspace: %s is not a directory", dir)
-	}
-
-	c := &Content{}
-	files := map[string]*string{
-		"AGENTS.md": &c.Agents,
-		"SOUL.md":   &c.Soul,
-		"TOOLS.md":  &c.Tools,
-		"SKILL.md":  &c.Skill,
-	}
-
-	for name, dest := range files {
-		text, err := readCapped(filepath.Join(dir, name))
-		if err != nil {
-			return nil, fmt.Errorf("workspace: read %s: %w", name, err)
-		}
-		*dest = text
-	}
-
-	return c, nil
+if dir == "" {
+return &Content{}, nil
 }
 
-// readCapped reads the file at path and returns its contents as a trimmed
-// string. Returns ("", nil) if the file does not exist. Returns an error if
-// the file exceeds maxFileBytes to guard against prompt-stuffing.
-func readCapped(path string) (string, error) {
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
+info, err := os.Stat(dir)
+if os.IsNotExist(err) {
+return &Content{}, nil
+}
+if err != nil {
+return nil, err
+}
+if !info.IsDir() {
+return nil, fmt.Errorf("workspace path %q is not a directory", dir)
+}
 
-	info, err := f.Stat()
-	if err != nil {
-		return "", err
-	}
-	if info.Size() > maxFileBytes {
-		return "", fmt.Errorf("%s exceeds %d-byte workspace file limit (%d bytes)",
-			filepath.Base(path), maxFileBytes, info.Size())
-	}
+c := &Content{Path: dir}
+for _, f := range fileMap {
+raw, err := os.ReadFile(filepath.Join(dir, f.name))
+if os.IsNotExist(err) {
+continue
+}
+if err != nil {
+return nil, fmt.Errorf("reading %s: %w", f.name, err)
+}
+if len(raw) > maxFileBytes {
+return nil, fmt.Errorf("%s exceeds maximum size of %d bytes", f.name, maxFileBytes)
+}
+f.setter(c, strings.TrimSpace(string(raw)))
+}
+return c, nil
+}
 
-	buf := make([]byte, info.Size())
-	n, err := f.Read(buf)
-	if err != nil {
-		return "", err
-	}
+// Workspace holds a reference to a workspace directory.
+type Workspace struct {
+dir string
+}
 
-	return strings.TrimSpace(string(buf[:n])), nil
+// New returns a Workspace rooted at the given directory path.
+func New(dir string) *Workspace {
+return &Workspace{dir: dir}
+}
+
+// Load loads the workspace content.
+func (w *Workspace) Load() (*Content, error) {
+return Load(w.dir)
+}
+
+// Edit represents a file edit to apply to a workspace.
+type Edit struct {
+Path    string
+Content string
 }

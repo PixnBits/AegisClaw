@@ -3,6 +3,23 @@
         "go": true,
         "mkdir": true,
         "./aegisclaw": true,
-        "git add": true
+        "git add": true,
+        "/^sudo \\./scripts/build-rootfs\\.sh --target=portal$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^sudo \\./scripts/build-builder-rootfs\\.sh$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "./scripts/cleanup-stale-builder.sh": true,
+        "/^sudo \\./aegisclaw start &> aegisclaw\\.log$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^sudo \\./scripts/build-rootfs\\.sh$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }
