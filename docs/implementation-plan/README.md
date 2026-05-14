@@ -25,35 +25,39 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 - `02-daemon-minimal-tcb-refactor.md` — Refactor Host Daemon to strictly match `docs/specs/host-daemon.md` (remove all non-TCB logic; target <2000 LOC, <20MB idle)
 - `03-sandbox-lifecycle-containment.md` — Enforce daemon-only lifecycle management + crash containment + watchdog for AegisHub/Store/Network Boundary
 - `04-audit-merkle-signing-hardening.md` — Isolate Merkle root signing; add static-binary verification and capability dropping
-- `05-unix-socket-hardening.md` — **Avoid Docker single-socket risks**: per-client verification, strict permissions, SO_PEERCRED, non-root CLI, input validation (NEW)
+- `05-unix-socket-hardening.md` — **Avoid Docker single-socket risks**: per-client verification, strict permissions, SO_PEERCRED, non-root CLI, input validation
+
+### Filesystem & Configuration (NEW)
+- `06-directory-layout.md` — Implement single `~/.aegis/` root with paranoid permissions (paired with new `docs/specs/directory-layout.md`)
 
 ### Additional Requirements (from specs/additional-requirements-and-gaps.md)
-- `06-skill-tool-discovery.md` — Implement `list_skills()`, `list_tools()`, semantic search in Agent Runtime
-- `07-workspace-customization.md` — Load AGENTS.md, SOUL.md, TOOLS.md, SKILL.md from `~/.aegis/workspace/`
-- `08-secrets-vault.md` — Full CLI secrets lifecycle + encrypted storage + Network Boundary injection
-- `09-advanced-builder-gates.md` — SAST/SCA/secrets scanning, policy-as-code, SBOM (already partial), health checks
-- `10-eventbus-background.md` — Internal EventBus, timers, signals, approval queues
+- `07-skill-tool-discovery.md` — Implement `list_skills()`, `list_tools()`, semantic search in Agent Runtime
+- `08-workspace-customization.md` — Load AGENTS.md, SOUL.md, TOOLS.md, SKILL.md from `~/.aegis/workspace/`
+- `09-secrets-vault.md` — Full CLI secrets lifecycle + encrypted storage + Network Boundary injection
+- `10-advanced-builder-gates.md` — SAST/SCA/secrets scanning, policy-as-code, SBOM (already partial), health checks
+- `11-eventbus-background.md` — Internal EventBus, timers, signals, approval queues
 
 ### Core Component Hardening (Gaps)
-- `11-host-daemon-hardening.md` — (Now covered by 02-05; keep for remaining socket tests)
-- `12-aegishub-acl-reload.md` — Hot reload, denied-message audit, fuller handshake
-- `13-web-portal-completion.md` — Skills/proposals/court/autonomy flows + stable selectors for E2E
-- `14-operational-scripts.md` — image-build and live-test scripts under `scripts/`
+- `12-host-daemon-hardening.md` — (Now covered by 02-05; keep for remaining socket tests)
+- `13-aegishub-acl-reload.md` — Hot reload, denied-message audit, fuller handshake
+- `14-web-portal-completion.md` — Skills/proposals/court/autonomy flows + stable selectors for E2E
+- `15-operational-scripts.md` — image-build and live-test scripts under `scripts/`
 
 ### Later Phases Alignment
-- `15-phase-1-journeys.md` — Journeys #4 and #9 (Governance & SDLC heavy)
-- `16-multi-agent-teams.md` — Journey #8 (Phase 3)
-- `17-autonomy-controls.md` — Journey #7
-- `18-final-polish.md` — Performance, resource limits, security review (Phase 4)
+- `16-phase-1-journeys.md` — Journeys #4 and #9 (Governance & SDLC heavy)
+- `17-multi-agent-teams.md` — Journey #8 (Phase 3)
+- `18-autonomy-controls.md` — Journey #7
+- `19-final-polish.md` — Performance, resource limits, security review (Phase 4)
 
 ## Acceptance Criteria
 - All 9 User Journeys have automated tests (Playwright + integration)
 - 90%+ coverage on new/changed code
 - **Host Daemon strictly limited to spec** (no business logic, minimal privileges, static binary, <20MB idle)
 - **Unix socket is hardened** (no single-socket privilege escalation path like Docker)
+- **Single predictable `~/.aegis/` root** with correct paranoid permissions on all sensitive directories
 - No bypass of security gates
 - Full alignment with `docs/specs/` and `docs/prd/`
 
-**Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `02-daemon-minimal-tcb-refactor.md` → `05-unix-socket-hardening.md`
+**Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `02-daemon-minimal-tcb-refactor.md` → `05-unix-socket-hardening.md` → `06-directory-layout.md`
 
-*Generated to resolve delta between implementation and updated docs (May 2026). Socket hardening step added per user request to avoid Docker single-socket risks.*
+*Generated to resolve delta between implementation and updated docs (May 2026). Directory layout spec + task added per user request for single `~/.aegis/` root with paranoid security.*
