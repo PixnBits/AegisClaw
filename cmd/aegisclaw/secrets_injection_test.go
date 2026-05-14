@@ -393,10 +393,6 @@ func injectSecretsIntoVM(ctx context.Context, env *runtimeEnv, sandboxID, skillN
 	return doInjectSecrets(ctx, env, sandboxID, skillName, secrets, nil)
 }
 
-func checkSecretsBeforeActivate(skillName string, env *runtimeEnv) error {
-	return nil // minimal stub
-}
-
 func makeSecretsRefreshHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		return &api.Response{Success: true}
