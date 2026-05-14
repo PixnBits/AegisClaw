@@ -10,10 +10,12 @@ import (
 	"sync/atomic"
 
 	"filippo.io/age"
+	"github.com/PixnBits/AegisClaw/internal/builder"
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
+	"github.com/PixnBits/AegisClaw/internal/events"
 	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
@@ -116,6 +118,14 @@ type runtimeEnv struct {
 	// portalVMMu and lazily started when dashboard.enabled is true.
 	PortalVMID string
 	portalVMMu sync.Mutex
+
+	// ProposalEventDispatcher enables event-driven reactions to proposal lifecycle changes
+	// (e.g. automatic builder pipeline trigger on "implementing" status).
+	ProposalEventDispatcher *events.ProposalEventDispatcher
+
+	// BuildOrchestrator coordinates automatic builder pipeline execution when proposals
+	// reach implementing status after Court approval.
+	BuildOrchestrator *builder.BuildOrchestrator
 }
 
 func initRuntime() (*runtimeEnv, error) {

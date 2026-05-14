@@ -45,6 +45,7 @@ daemon will not start without it and there is no fallback mode.
 |---|---|
 | **Linux** (x86_64 or aarch64) | Firecracker requires KVM — `/dev/kvm` must be accessible. The daemon will not start without it. |
 | **Go 1.25+** | Build from source |
+| **Docker** | Required for building cacheable microVM rootfs templates |
 | **Firecracker + jailer** | MicroVM runtime — see install instructions below |
 | **Ollama** | LLM inference — install from [ollama.com](https://ollama.com) |
 
