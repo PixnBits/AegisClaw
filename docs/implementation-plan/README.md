@@ -28,20 +28,18 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 - `05-unix-socket-hardening.md` — **Avoid Docker single-socket risks**: per-client verification, strict permissions, SO_PEERCRED, non-root CLI, input validation
 
 ### Filesystem & Configuration (NEW)
-- `06-directory-layout.md` — Implement single `~/.aegis/` root with paranoid permissions (paired with new `docs/specs/directory-layout.md`)
+- `06-directory-layout.md` — Implement single `~/.aegis/` root with paranoid permissions + move privileged socket out of home dir
 
-### Additional Requirements (from specs/additional-requirements-and-gaps.md)
-- `07-skill-tool-discovery.md` — Implement `list_skills()`, `list_tools()`, semantic search in Agent Runtime
-- `08-workspace-customization.md` — Load AGENTS.md, SOUL.md, TOOLS.md, SKILL.md from `~/.aegis/workspace/`
-- `09-secrets-vault.md` — Full CLI secrets lifecycle + encrypted storage + Network Boundary injection
-- `10-advanced-builder-gates.md` — SAST/SCA/secrets scanning, policy-as-code, SBOM (already partial), health checks
-- `11-eventbus-background.md` — Internal EventBus, timers, signals, approval queues
-
-### Core Component Hardening (Gaps)
-- `12-host-daemon-hardening.md` — (Now covered by 02-05; keep for remaining socket tests)
-- `13-aegishub-acl-reload.md` — Hot reload, denied-message audit, fuller handshake
-- `14-web-portal-completion.md` — Skills/proposals/court/autonomy flows + stable selectors for E2E
-- `15-operational-scripts.md` — image-build and live-test scripts under `scripts/`
+### Codebase Divergences & Security Posture (Deep Analysis — NEW)
+- `07-daemon-tcb-extraction.md` — Extract business logic (court, builder, dashboard, event dispatcher) out of daemon into AegisHub / dedicated components
+- `08-runtime-permission-enforcement.md` — Add O_NOFOLLOW + ownership/permission checks on secrets/, data/store/, data/audit/ on every access
+- `09-missing-cli-verbs.md` — Implement remaining CLI verbs: team *, autonomy grant/revoke/reset, court decisions show, full restart, skills status
+- `10-semantic-skill-discovery.md` — Implement list_skills() / list_tools() with vector semantic search in Agent Runtime
+- `11-workspace-customization.md` — Load AGENTS.md, SOUL.md, TOOLS.md, SKILL.md from ~/.aegis/workspace/ on agent start
+- `12-eventbus-full-background.md` — Complete EventBus with timers, signals, approval queues, background service management
+- `13-governance-court-full.md` — Implement full 7-persona Court + Court Scribe integration per specs/governance-court.md
+- `14-builder-advanced-gates.md` — Add full SAST/SCA/policy-as-code enforcement + health checks (beyond current SBOM)
+- `15-user-journey-automation.md` — Automate remaining User Journeys #2–#9 (Playwright + integration tests)
 
 ### Later Phases Alignment
 - `16-phase-1-journeys.md` — Journeys #4 and #9 (Governance & SDLC heavy)
@@ -54,10 +52,10 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 - 90%+ coverage on new/changed code
 - **Host Daemon strictly limited to spec** (no business logic, minimal privileges, static binary, <20MB idle)
 - **Unix socket is hardened** (no single-socket privilege escalation path like Docker)
-- **Single predictable `~/.aegis/` root** with correct paranoid permissions on all sensitive directories
+- **Single predictable `~/.aegis/` root** with correct paranoid permissions + runtime enforcement on secrets
 - No bypass of security gates
 - Full alignment with `docs/specs/` and `docs/prd/`
 
-**Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `02-daemon-minimal-tcb-refactor.md` → `05-unix-socket-hardening.md` → `06-directory-layout.md`
+**Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `02-daemon-minimal-tcb-refactor.md` → `06-directory-layout.md` → `07-daemon-tcb-extraction.md`
 
-*Generated to resolve delta between implementation and updated docs (May 2026). Directory layout spec + task added per user request for single `~/.aegis/` root with paranoid security.*
+*Generated from deep code analysis (May 2026). Includes divergences, stubs, and security posture issues found in cmd/aegisclaw/ and internal/.*
