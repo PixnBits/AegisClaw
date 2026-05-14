@@ -10,7 +10,7 @@ import (
 )
 
 // testProposalStore creates a temporary proposal store for use in tests.
-func testProposalStore(t *testing.T) *proposal.Store {
+func snpTestProposalStore(t *testing.T) *proposal.Store {
 	t.Helper()
 	dir := t.TempDir()
 	logger, _ := zap.NewDevelopment()
@@ -23,7 +23,7 @@ func testProposalStore(t *testing.T) *proposal.Store {
 
 // makeApprovedProposal is a helper that creates and imports a proposal in
 // approved state for use in capability enforcement tests.
-func makeApprovedProposal(t *testing.T, store *proposal.Store, skillName string, caps *proposal.SkillCapabilities, np *proposal.ProposalNetworkPolicy) {
+func snpMakeApprovedProposal(t *testing.T, store *proposal.Store, skillName string, caps *proposal.SkillCapabilities, np *proposal.ProposalNetworkPolicy) {
 	t.Helper()
 	p, err := proposal.NewProposal("test skill "+skillName, "test description", proposal.CategoryNewSkill, "tester")
 	if err != nil {
@@ -54,7 +54,7 @@ func TestSkillNetworkPolicy_NilStore(t *testing.T) {
 // TestSkillNetworkPolicy_NoProposal verifies that an empty store also defaults
 // to no-network.
 func TestSkillNetworkPolicy_NoProposal(t *testing.T) {
-	store := testProposalStore(t)
+	store := snpTestProposalStore(t)
 	env := &runtimeEnv{ProposalStore: store}
 	pol := skillNetworkPolicy("my-skill", env)
 	if !pol.NoNetwork {
@@ -65,8 +65,8 @@ func TestSkillNetworkPolicy_NoProposal(t *testing.T) {
 // TestSkillNetworkPolicy_ApprovedNoNetworkCap verifies that an approved proposal
 // with Capabilities.Network=false still produces NoNetwork policy.
 func TestSkillNetworkPolicy_ApprovedNoNetworkCap(t *testing.T) {
-	store := testProposalStore(t)
-	makeApprovedProposal(t, store, "safe-skill",
+	store := snpTestProposalStore(t)
+	snpMakeApprovedProposal(t, store, "safe-skill",
 		&proposal.SkillCapabilities{Network: false},
 		nil,
 	)
@@ -81,8 +81,8 @@ func TestSkillNetworkPolicy_ApprovedNoNetworkCap(t *testing.T) {
 // proposal with Capabilities.Network=true and an explicit NetworkPolicy is
 // translated into a permissive SandboxNetworkPolicy.
 func TestSkillNetworkPolicy_ApprovedWithNetworkCap(t *testing.T) {
-	store := testProposalStore(t)
-	makeApprovedProposal(t, store, "net-skill",
+	store := snpTestProposalStore(t)
+	snpMakeApprovedProposal(t, store, "net-skill",
 		&proposal.SkillCapabilities{Network: true},
 		&proposal.ProposalNetworkPolicy{
 			DefaultDeny:  true,
@@ -110,8 +110,8 @@ func TestSkillNetworkPolicy_ApprovedWithNetworkCap(t *testing.T) {
 // TestSkillNetworkPolicy_WrongSkillName verifies that a proposal for a
 // different skill does not affect the policy for the requested skill.
 func TestSkillNetworkPolicy_WrongSkillName(t *testing.T) {
-	store := testProposalStore(t)
-	makeApprovedProposal(t, store, "other-skill",
+	store := snpTestProposalStore(t)
+	snpMakeApprovedProposal(t, store, "other-skill",
 		&proposal.SkillCapabilities{Network: true},
 		nil,
 	)
@@ -148,22 +148,22 @@ func TestSkillNetworkPolicy_NeverReturnsUnsafeZeroValue(t *testing.T) {
 		{
 			name: "empty store",
 			setup: func(t *testing.T) *runtimeEnv {
-				return &runtimeEnv{ProposalStore: testProposalStore(t)}
+				return &runtimeEnv{ProposalStore: snpTestProposalStore(t)}
 			},
 		},
 		{
 			name: "no-network capability",
 			setup: func(t *testing.T) *runtimeEnv {
-				store := testProposalStore(t)
-				makeApprovedProposal(t, store, "s", &proposal.SkillCapabilities{Network: false}, nil)
+				store := snpTestProposalStore(t)
+				snpMakeApprovedProposal(t, store, "s", &proposal.SkillCapabilities{Network: false}, nil)
 				return &runtimeEnv{ProposalStore: store}
 			},
 		},
 		{
 			name: "network capability with policy",
 			setup: func(t *testing.T) *runtimeEnv {
-				store := testProposalStore(t)
-				makeApprovedProposal(t, store, "s",
+				store := snpTestProposalStore(t)
+				snpMakeApprovedProposal(t, store, "s",
 					&proposal.SkillCapabilities{Network: true},
 					&proposal.ProposalNetworkPolicy{DefaultDeny: true, AllowedHosts: []string{"a.example.com"}},
 				)

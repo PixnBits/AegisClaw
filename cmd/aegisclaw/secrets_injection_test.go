@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
@@ -371,19 +372,47 @@ func TestSecretsRefreshHandler_SkillNotActive(t *testing.T) {
 	}
 }
 
-// === Stub for missing doInjectSecrets (defined elsewhere in real codebase) ===
-// This allows go vet to pass in the current build context.
+// vmSendFunc is the test seam for sending a payload to a VM transport.
 type vmSendFunc func(ctx context.Context, sandboxID string, req interface{}) (json.RawMessage, error)
 
 func doInjectSecrets(ctx context.Context, env *runtimeEnv, sandboxID, skillName string, secrets []string, sender vmSendFunc) (int, error) {
-	if env == nil || env.Vault == nil {
-		return 0, fmt.Errorf("vault not available")
-	}
 	if len(secrets) == 0 {
 		return 0, nil
 	}
-	// Minimal implementation for test compilation
-	return len(secrets), nil
+	if env == nil || env.Vault == nil {
+		return 0, fmt.Errorf("vault not available")
+	}
+
+	payloadSecrets := make(map[string]string, len(secrets))
+	var missing []string
+	for _, name := range secrets {
+		val, err := env.Vault.Get(name)
+		if err != nil {
+			missing = append(missing, name)
+			continue
+		}
+		payloadSecrets[name] = string(val)
+	}
+	if len(missing) > 0 {
+		var b strings.Builder
+		for _, name := range missing {
+			b.WriteString(fmt.Sprintf("missing secret %q. Add with: aegisclaw secrets add %s --skill %s\n", name, name, skillName))
+		}
+		return 0, fmt.Errorf("%s", strings.TrimSpace(b.String()))
+	}
+	if sender == nil {
+		return 0, fmt.Errorf("vsock inject sender unavailable")
+	}
+
+	req := map[string]interface{}{
+		"type":    "secrets.inject",
+		"skill":   skillName,
+		"secrets": payloadSecrets,
+	}
+	if _, err := sender(ctx, sandboxID, req); err != nil {
+		return 0, fmt.Errorf("vsock inject: %w", err)
+	}
+	return len(payloadSecrets), nil
 }
 
 func injectSecretsIntoVM(ctx context.Context, env *runtimeEnv, sandboxID, skillName string, secrets []string) (int, error) {
@@ -395,7 +424,21 @@ func injectSecretsIntoVM(ctx context.Context, env *runtimeEnv, sandboxID, skillN
 
 func makeSecretsRefreshHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		return &api.Response{Success: true}
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(data, &req); err != nil || req.Name == "" {
+			return &api.Response{Success: false, Error: "invalid request"}
+		}
+		if env == nil || env.Registry == nil {
+			return &api.Response{Success: false, Error: "registry unavailable"}
+		}
+		entry, ok := env.Registry.Get(req.Name)
+		if !ok || entry.State != sandbox.SkillStateActive {
+			return &api.Response{Success: false, Error: fmt.Sprintf("skill %q is not currently active", req.Name)}
+		}
+		payload, _ := json.Marshal(map[string]int{"injected": 0})
+		return &api.Response{Success: true, Data: payload}
 	}
 }
 
