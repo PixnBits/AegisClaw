@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"net/http/httptest"
-	"testing"
 
 	"github.com/PixnBits/AegisClaw/internal/testutil"
 )
