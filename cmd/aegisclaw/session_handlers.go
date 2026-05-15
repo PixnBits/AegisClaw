@@ -130,6 +130,12 @@ func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Ha
 			return &api.Response{Error: "message is required"}
 		}
 
+		if env.Sessions != nil {
+			if rec, ok := env.Sessions.Get(req.SessionID); ok && rec.Status == sessions.StatusPaused {
+				return &api.Response{Error: "session is paused — resume with: aegisclaw sessions resume " + req.SessionID}
+			}
+		}
+
 		// Look up the session to include its history so the agent has context.
 		var history []api.ChatHistoryItem
 		if env.Sessions != nil {

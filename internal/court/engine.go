@@ -537,6 +537,22 @@ func (e *Engine) ActiveSessions() []*Session {
 	return active
 }
 
+// ListSessions returns every known court session (including completed),
+// sorted by StartedAt descending (newest first). Returned pointers must
+// not be mutated by callers.
+func (e *Engine) ListSessions() []*Session {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]*Session, 0, len(e.sessions))
+	for _, s := range e.sessions {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].StartedAt.After(out[j].StartedAt)
+	})
+	return out
+}
+
 // RiskHeatmap returns the heatmap from the latest round of a session.
 func (e *Engine) RiskHeatmap(sessionID string) (map[string]float64, error) {
 	s, ok := e.sessions[sessionID]

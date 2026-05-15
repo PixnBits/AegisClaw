@@ -206,6 +206,50 @@ func TestMerkleLog_WrongKeyDetection(t *testing.T) {
 	}
 }
 
+func TestVerifyChainThroughHashPrefix(t *testing.T) {
+	priv, pub := testKeys(t)
+	path := testLogPath(t)
+
+	ml, err := NewMerkleLog(path, priv, pub, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewMerkleLog: %v", err)
+	}
+	var targetHash string
+	for i := 0; i < 5; i++ {
+		payload, _ := json.Marshal(map[string]int{"index": i})
+		_, hash, err := ml.Append(payload)
+		if err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		if i == 2 {
+			targetHash = hash
+		}
+	}
+	ml.Close()
+
+	verified, err := VerifyChainThroughHashPrefix(path, pub, targetHash)
+	if err != nil {
+		t.Fatalf("VerifyChainThroughHashPrefix exact: %v", err)
+	}
+	if verified != 3 {
+		t.Fatalf("expected 3 entries through match, got %d", verified)
+	}
+
+	prefix := targetHash[:12]
+	verified, err = VerifyChainThroughHashPrefix(path, pub, prefix)
+	if err != nil {
+		t.Fatalf("VerifyChainThroughHashPrefix prefix: %v", err)
+	}
+	if verified != 3 {
+		t.Fatalf("expected 3 entries for prefix, got %d", verified)
+	}
+
+	_, err = VerifyChainThroughHashPrefix(path, pub, "deadbeef")
+	if err == nil {
+		t.Fatal("expected error for unknown hash")
+	}
+}
+
 func TestMerkleLog_EmptyLogVerifies(t *testing.T) {
 	_, pub := testKeys(t)
 	path := testLogPath(t)

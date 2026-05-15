@@ -126,6 +126,12 @@ type runtimeEnv struct {
 	// BuildOrchestrator coordinates automatic builder pipeline execution when proposals
 	// reach implementing status after Court approval.
 	BuildOrchestrator *builder.BuildOrchestrator
+
+	// TeamRegistry persists lightweight team metadata for the multi-agent CLI.
+	TeamRegistry *teamRegistry
+
+	// AutonomyRegistry stores per-session autonomy grants for CLI/portal parity.
+	AutonomyRegistry *autonomyRegistry
 }
 
 func initRuntime() (*runtimeEnv, error) {

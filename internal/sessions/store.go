@@ -46,6 +46,10 @@ const (
 
 	// StatusClosed means the session has been closed / its VM stopped.
 	StatusClosed Status = "closed"
+
+	// StatusPaused means the session is intentionally paused; no messages
+	// are processed until resumed.
+	StatusPaused Status = "paused"
 )
 
 // Message is a single conversation turn stored in a session.

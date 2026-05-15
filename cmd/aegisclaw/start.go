@@ -85,6 +85,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	courtEngine.ResumeStalled(cmd.Context())
 
+	regDir := filepath.Join(filepath.Dir(env.Config.Audit.Dir), "cli-registry")
+	if teamReg, err := newTeamRegistry(regDir); err != nil {
+		env.Logger.Warn("team registry disabled", zap.Error(err))
+	} else {
+		env.TeamRegistry = teamReg
+	}
+	if autoReg, err := newAutonomyRegistry(regDir); err != nil {
+		env.Logger.Warn("autonomy registry disabled", zap.Error(err))
+	} else {
+		env.AutonomyRegistry = autoReg
+	}
+
 	// === Event-driven builder trigger (D3) ===
 	env.ProposalEventDispatcher = events.NewProposalEventDispatcher()
 
@@ -127,11 +139,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("dashboard.pr.detail", makeDashboardPRDetailHandler(env))
 	apiSrv.Handle("dashboard.pr.stats", makeDashboardPRStatsHandler(env))
 
-	// Phase 1 (OpenClaw integration): Session routing handlers.
-	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
-	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
-	apiSrv.Handle("sessions.send", makeSessionsSendHandler(env, toolRegistry))
-	apiSrv.Handle("sessions.spawn", makeSessionsSpawnHandler(env, toolRegistry))
+	daemonQuit := make(chan struct{})
+	registerExtendedDaemonAPI(apiSrv, env, toolRegistry, hub, daemonQuit)
+
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
 		return fmt.Errorf("failed to start API server: %w", err)
@@ -140,7 +150,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	startDashboard(cmd.Context(), env, apiSrv)
 
 	fmt.Println("AegisClaw kernel started.")
-	<-make(chan struct{})
+	<-daemonQuit
+	env.Logger.Info("daemon exiting after shutdown request")
 	return nil
 }
 
@@ -381,13 +392,6 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 // live in their respective files (chat.go, tool_registry.go, etc.)
 
 func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
-	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		return &api.Response{Error: "court.vote not implemented in this build context"}
-	}
-}
-
-func makeSkillActivateHandler(env *runtimeEnv) api.Handler {
-	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		return &api.Response{Error: "skill.activate not implemented in this build context"}
-	}
+	_ = engine
+	return makeUnimplementedHandler("court.vote")
 }
