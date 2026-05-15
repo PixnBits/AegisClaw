@@ -75,7 +75,7 @@ func runRestart(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("daemon start command launched (pid %d) but daemon did not become reachable in time", startProc.Process.Pid)
+	return fmt.Errorf("daemon start command launched (pid %d) but daemon did not become reachable within 10 seconds", startProc.Process.Pid)
 }
 
 var sessionsCmd = &cobra.Command{

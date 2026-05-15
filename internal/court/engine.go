@@ -560,15 +560,48 @@ func cloneSessionSnapshot(s *Session) *Session {
 	if s == nil {
 		return nil
 	}
-	b, err := json.Marshal(s)
-	if err != nil {
-		cp := *s
-		return &cp
+	cp := *s
+	if s.Personas != nil {
+		cp.Personas = append([]string(nil), s.Personas...)
 	}
-	var cp Session
-	if err := json.Unmarshal(b, &cp); err != nil {
-		fallback := *s
-		return &fallback
+	if s.EndedAt != nil {
+		ended := *s.EndedAt
+		cp.EndedAt = &ended
+	}
+	if s.PriorFeedback != nil {
+		feedback := *s.PriorFeedback
+		feedback.Questions = append([]string(nil), s.PriorFeedback.Questions...)
+		feedback.Concerns = append([]string(nil), s.PriorFeedback.Concerns...)
+		cp.PriorFeedback = &feedback
+	}
+	if s.Results != nil {
+		cp.Results = make([]RoundResult, len(s.Results))
+		for i, rr := range s.Results {
+			rrCopy := rr
+			if rr.Reviews != nil {
+				rrCopy.Reviews = make([]proposal.Review, len(rr.Reviews))
+				for j, review := range rr.Reviews {
+					reviewCopy := review
+					reviewCopy.Evidence = append([]string(nil), review.Evidence...)
+					reviewCopy.Questions = append([]string(nil), review.Questions...)
+					reviewCopy.Raw = append(json.RawMessage(nil), review.Raw...)
+					rrCopy.Reviews[j] = reviewCopy
+				}
+			}
+			if rr.Heatmap != nil {
+				rrCopy.Heatmap = make(map[string]float64, len(rr.Heatmap))
+				for k, v := range rr.Heatmap {
+					rrCopy.Heatmap[k] = v
+				}
+			}
+			if rr.Feedback != nil {
+				feedback := *rr.Feedback
+				feedback.Questions = append([]string(nil), rr.Feedback.Questions...)
+				feedback.Concerns = append([]string(nil), rr.Feedback.Concerns...)
+				rrCopy.Feedback = &feedback
+			}
+			cp.Results[i] = rrCopy
+		}
 	}
 	return &cp
 }

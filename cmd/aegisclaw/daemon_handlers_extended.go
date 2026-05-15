@@ -635,7 +635,7 @@ func makeAutonomyGrantHandler(env *runtimeEnv) api.Handler {
 				return &api.Response{Error: "invalid duration: " + err.Error()}
 			}
 			if d <= 0 {
-				return &api.Response{Error: "duration must be > 0"}
+				return &api.Response{Error: "duration must be greater than 0"}
 			}
 			until = time.Now().Add(d)
 		}
