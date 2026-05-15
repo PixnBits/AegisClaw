@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
 )
 
@@ -106,6 +108,62 @@ func TestTeamHandlersRoundTrip(t *testing.T) {
 	resp = callVaultHandler(t, statusH, map[string]string{"team_id": team.ID})
 	if !resp.Success {
 		t.Fatalf("status: %s", resp.Error)
+	}
+}
+
+func TestTeamAutonomyHandlersRegisteredWithoutRegistry(t *testing.T) {
+	env := &runtimeEnv{}
+	srv := api.NewServer("", nil)
+	registerExtendedDaemonAPI(srv, env, nil, nil, nil)
+
+	for _, action := range []string{"team.list", "team.create", "team.join", "team.leave", "team.status"} {
+		resp := srv.CallDirect(context.Background(), action, nil)
+		if resp == nil || resp.Success {
+			t.Fatalf("%s: expected initialization error, got %+v", action, resp)
+		}
+		if !strings.Contains(resp.Error, "team registry not initialized") {
+			t.Fatalf("%s: unexpected error: %q", action, resp.Error)
+		}
+	}
+	for _, action := range []string{"autonomy.show", "autonomy.grant", "autonomy.revoke", "autonomy.reset"} {
+		resp := srv.CallDirect(context.Background(), action, nil)
+		if resp == nil || resp.Success {
+			t.Fatalf("%s: expected initialization error, got %+v", action, resp)
+		}
+		if !strings.Contains(resp.Error, "autonomy registry not initialized") {
+			t.Fatalf("%s: unexpected error: %q", action, resp.Error)
+		}
+	}
+}
+
+func TestSessionsResumeRejectsClosedSession(t *testing.T) {
+	env := testEnvWithSessions(t)
+	env.Sessions.Open("sess-closed", "vm-1")
+	env.Sessions.Close("sess-closed")
+	resumeH := makeSessionsResumeHandler(env)
+	resp := callVaultHandler(t, resumeH, map[string]string{"session_id": "sess-closed"})
+	if resp.Success {
+		t.Fatal("expected resume to fail for closed session")
+	}
+	if !strings.Contains(resp.Error, "not paused") {
+		t.Fatalf("unexpected error: %q", resp.Error)
+	}
+}
+
+func TestSessionsSendRejectsClosedSession(t *testing.T) {
+	env := testEnvWithSessions(t)
+	env.Sessions.Open("sess-closed", "vm-1")
+	env.Sessions.Close("sess-closed")
+	sendH := makeSessionsSendHandler(env, nil)
+	resp := sendH(context.Background(), mustMarshalJSON(t, map[string]string{
+		"session_id": "sess-closed",
+		"message":    "hello",
+	}))
+	if resp.Success {
+		t.Fatal("expected send to fail for closed session")
+	}
+	if !strings.Contains(resp.Error, "session is closed") {
+		t.Fatalf("unexpected error: %q", resp.Error)
 	}
 }
 

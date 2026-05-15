@@ -267,6 +267,9 @@ func (a *autonomyRegistry) revoke(sessionID string) error {
 
 func (a *autonomyRegistry) reset(sessionID string) error {
 	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.Items, sessionID)

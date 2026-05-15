@@ -521,7 +521,10 @@ func (e *Engine) GetSession(id string) (*Session, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	s, ok := e.sessions[id]
-	return s, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneSessionSnapshot(s), true
 }
 
 // ActiveSessions returns all non-finalized sessions.
@@ -545,12 +548,29 @@ func (e *Engine) ListSessions() []*Session {
 	defer e.mu.Unlock()
 	out := make([]*Session, 0, len(e.sessions))
 	for _, s := range e.sessions {
-		out = append(out, s)
+		out = append(out, cloneSessionSnapshot(s))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].StartedAt.After(out[j].StartedAt)
 	})
 	return out
+}
+
+func cloneSessionSnapshot(s *Session) *Session {
+	if s == nil {
+		return nil
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		cp := *s
+		return &cp
+	}
+	var cp Session
+	if err := json.Unmarshal(b, &cp); err != nil {
+		fallback := *s
+		return &fallback
+	}
+	return &cp
 }
 
 // RiskHeatmap returns the heatmap from the latest round of a session.

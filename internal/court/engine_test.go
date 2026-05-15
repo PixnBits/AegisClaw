@@ -208,6 +208,32 @@ func TestEngineGetSession(t *testing.T) {
 	}
 }
 
+func TestEngineSessionSnapshotsAreDetached(t *testing.T) {
+	engine, store := setupTestEngine(t, allApproveReviewer())
+	p := createTestProposal(t, store)
+	session, _ := engine.Review(context.Background(), p.ID)
+
+	snap, ok := engine.GetSession(session.ID)
+	if !ok {
+		t.Fatal("session not found")
+	}
+	snap.State = SessionRejected
+	snap.Personas = append(snap.Personas, "mutated")
+
+	snap2, ok := engine.GetSession(session.ID)
+	if !ok {
+		t.Fatal("session not found on second read")
+	}
+	if snap2.State == SessionRejected {
+		t.Fatal("session snapshot mutation leaked into engine state")
+	}
+	for _, persona := range snap2.Personas {
+		if persona == "mutated" {
+			t.Fatal("persona mutation leaked into engine state")
+		}
+	}
+}
+
 func TestEngineRiskHeatmap(t *testing.T) {
 	engine, store := setupTestEngine(t, allApproveReviewer())
 	p := createTestProposal(t, store)
@@ -566,5 +592,3 @@ func TestResumeStalled(t *testing.T) {
 	// Give time for the review to complete before cleanup
 	time.Sleep(2 * time.Second)
 }
-
-

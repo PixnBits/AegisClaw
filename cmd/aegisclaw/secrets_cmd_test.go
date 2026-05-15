@@ -69,3 +69,28 @@ func TestReadSecretPayloadRejectsBothStdinAndFile(t *testing.T) {
 		t.Fatalf("expected mutual exclusion error, got %v", err)
 	}
 }
+
+func TestReadSecretPayloadStdinTooLarge(t *testing.T) {
+	cmd := &cobra.Command{}
+	registerSecretsInputFlags(cmd)
+	secretsFromStdin = true
+	t.Cleanup(func() { secretsFromStdin = false })
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = old })
+
+	go func() {
+		_, _ = w.WriteString(strings.Repeat("a", maxSecretFileBytes+1))
+		w.Close()
+	}()
+
+	_, err = readSecretPayload(cmd, "ignored: ")
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected size error, got %v", err)
+	}
+}

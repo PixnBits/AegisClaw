@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -33,12 +34,8 @@ func registerCLISpecCommands() {
 
 var restartCmd = &cobra.Command{
 	Use:   "restart [component]",
-	Short: "Stop the coordinator daemon (restart requires start)",
-	Long: `Stops the Host Daemon cleanly via the control socket. This is the safe
-half of a restart: start the daemon again with:
-
-  sudo aegisclaw start
-
+	Short: "Restart the coordinator daemon",
+	Long: `Stops and starts the Host Daemon via the control socket and start command.
 Optional component is accepted for forward compatibility (only "daemon"
 and "coordinator" are recognised today).`,
 	Args: cobra.MaximumNArgs(1),
@@ -60,8 +57,25 @@ func runRestart(cmd *cobra.Command, args []string) error {
 	if !resp.Success {
 		return fmt.Errorf("restart (shutdown) failed: %s", resp.Error)
 	}
-	fmt.Println("Daemon stopped. Start again with: sudo aegisclaw start")
-	return nil
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	startProc := exec.Command(exePath, "start")
+	if err := startProc.Start(); err != nil {
+		return fmt.Errorf("restart failed to start daemon: %w", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		if pingErr := client.Ping(cmd.Context()); pingErr == nil {
+			fmt.Println("Daemon restarted.")
+			return nil
+		}
+	}
+	return fmt.Errorf("daemon start command launched (pid %d) but daemon did not become reachable in time", startProc.Process.Pid)
 }
 
 var sessionsCmd = &cobra.Command{

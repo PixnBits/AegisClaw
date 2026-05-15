@@ -16,6 +16,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/llm"
 	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/tui"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -106,6 +107,15 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		if req.Input == "" {
 			return &api.Response{Error: "input is required"}
 		}
+		sessionID := strings.TrimSpace(req.SessionID)
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(req.StreamID)
+		}
+		if sessionID != "" && env.Sessions != nil {
+			if err := validateSessionForMessage(env.Sessions, sessionID, false); err != nil {
+				return &api.Response{Error: err.Error()}
+			}
+		}
 		if env.ToolEvents == nil {
 			env.ToolEvents = NewToolEventBuffer(400)
 		}
@@ -122,17 +132,18 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		// Determine the session ID for this request.  Prefer req.SessionID,
 		// fall back to StreamID, then generate a stable one for the lifetime
 		// of this VM.
-		sessionID := strings.TrimSpace(req.SessionID)
-		if sessionID == "" {
-			sessionID = strings.TrimSpace(req.StreamID)
-		}
 		if sessionID == "" {
 			// Use the agent VM ID as a stable per-VM session key.
 			sessionID = agentVMID
 		}
 		if env.Sessions != nil {
-			env.Sessions.Open(sessionID, agentVMID)
-			env.Sessions.SetStatus(sessionID, "active")
+			if err := validateSessionForMessage(env.Sessions, sessionID, false); err != nil {
+				return &api.Response{Error: err.Error()}
+			}
+			if _, ok := env.Sessions.Get(sessionID); !ok {
+				env.Sessions.Open(sessionID, agentVMID)
+			}
+			env.Sessions.SetStatus(sessionID, sessions.StatusActive)
 			env.Sessions.AppendMessage(sessionID, agentVMID, "user", req.Input)
 		}
 
@@ -262,7 +273,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				})
 				if env.Sessions != nil {
 					env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", finalContent)
-					env.Sessions.SetStatus(sessionID, "idle")
+					env.Sessions.SetStatus(sessionID, sessions.StatusIdle)
 				}
 				return &api.Response{Success: true, Data: respData}
 
@@ -359,7 +370,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		})
 		if env.Sessions != nil {
 			env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", limitContent)
-			env.Sessions.SetStatus(sessionID, "idle")
+			env.Sessions.SetStatus(sessionID, sessions.StatusIdle)
 		}
 		return &api.Response{Success: true, Data: respData}
 	}

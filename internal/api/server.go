@@ -10,7 +10,18 @@ import (
 	"sync"
 
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
+
+type peerUIDContextKey struct{}
+
+// PeerUIDFromContext returns the Unix peer UID when the request arrived via the
+// daemon's Unix socket transport.
+func PeerUIDFromContext(ctx context.Context) (int, bool) {
+	v := ctx.Value(peerUIDContextKey{})
+	uid, ok := v.(int)
+	return uid, ok
+}
 
 // Handler processes an API action and returns a response.
 type Handler func(ctx context.Context, data json.RawMessage) *Response
@@ -64,9 +75,9 @@ type SkillDeactivateRequest struct {
 // The CLI sends user input and conversation history; the daemon handles LLM
 // interaction inside a sandboxed agent boundary.
 type ChatMessageRequest struct {
-	Input     string            `json:"input"`
-	History   []ChatHistoryItem `json:"history,omitempty"`
-	StreamID  string            `json:"stream_id,omitempty"`
+	Input    string            `json:"input"`
+	History  []ChatHistoryItem `json:"history,omitempty"`
+	StreamID string            `json:"stream_id,omitempty"`
 	// SessionID is an optional stable identifier for this conversation.
 	// When provided it is used for session routing (sessions_list, sessions_history,
 	// sessions_send, sessions_spawn).  If empty the daemon uses StreamID as a
@@ -187,7 +198,33 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api", s.handleAPI)
 
-	go http.Serve(ln, mux)
+	srv := &http.Server{
+		Handler: mux,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			uc, ok := c.(*net.UnixConn)
+			if !ok {
+				return ctx
+			}
+			raw, err := uc.SyscallConn()
+			if err != nil {
+				return ctx
+			}
+			var uid int
+			var okUID bool
+			_ = raw.Control(func(fd uintptr) {
+				cred, credErr := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+				if credErr == nil {
+					uid = int(cred.Uid)
+					okUID = true
+				}
+			})
+			if !okUID {
+				return ctx
+			}
+			return context.WithValue(ctx, peerUIDContextKey{}, uid)
+		},
+	}
+	go srv.Serve(ln)
 	s.logger.Info("API server listening", zap.String("socket", s.socketPath))
 	return nil
 }

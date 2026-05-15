@@ -176,9 +176,13 @@ func readSecretPayload(cmd *cobra.Command, prompt string) (string, error) {
 		return readSecretFromFileNoFollow(secretsFromFile)
 	}
 	if secretsFromStdin {
-		b, err := io.ReadAll(os.Stdin)
+		limited := io.LimitReader(os.Stdin, maxSecretFileBytes+1)
+		b, err := io.ReadAll(limited)
 		if err != nil {
 			return "", fmt.Errorf("read stdin: %w", err)
+		}
+		if len(b) > maxSecretFileBytes {
+			return "", fmt.Errorf("stdin secret exceeds maximum size (%d bytes)", maxSecretFileBytes)
 		}
 		return strings.TrimRight(string(b), "\n\r"), nil
 	}

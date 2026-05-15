@@ -92,3 +92,13 @@ func TestAutonomyGrantRevokeReset(t *testing.T) {
 		t.Fatalf("expected empty autonomy after reset persist, got %d", len(reg2.Items))
 	}
 }
+
+func TestAutonomyResetRequiresSessionID(t *testing.T) {
+	reg, err := newAutonomyRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.reset("   "); err == nil {
+		t.Fatal("expected session_id validation error")
+	}
+}
