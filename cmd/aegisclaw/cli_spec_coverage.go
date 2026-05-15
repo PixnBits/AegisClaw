@@ -20,6 +20,7 @@ import (
 // clients over the local Unix socket API except where noted.
 func registerCLISpecCommands() {
 	rootCmd.AddCommand(restartCmd)
+	rootCmd.AddCommand(vmCmd)
 	rootCmd.AddCommand(sessionsCmd)
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(teamCmd)
@@ -30,6 +31,7 @@ func registerCLISpecCommands() {
 	skillCmd.Aliases = []string{"skills"}
 
 	skillCmd.AddCommand(skillStatusCmd)
+	skillCmd.AddCommand(skillProposeCmd)
 }
 
 var restartCmd = &cobra.Command{
@@ -97,9 +99,18 @@ var sessionsStatusCmd = &cobra.Command{
 	RunE:  runSessionsStatus,
 }
 
+var sessionsStatusWatch bool
+
 var sessionsCancelCmd = &cobra.Command{
 	Use:   "cancel <session-id>",
 	Short: "Mark a session as closed (same intent as sessions kill)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSessionsCancel,
+}
+
+var sessionsKillCmd = &cobra.Command{
+	Use:   "kill <session-id>",
+	Short: "Alias for sessions cancel",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runSessionsCancel,
 }
@@ -138,6 +149,8 @@ var tasksStatusCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTasksStatus,
 }
+
+var tasksStatusWatch bool
 
 var tasksPauseCmd = &cobra.Command{
 	Use:   "pause <task-id>",
@@ -179,6 +192,13 @@ var teamCreateCmd = &cobra.Command{
 	RunE:  runTeamCreate,
 }
 
+var teamNewCmd = &cobra.Command{
+	Use:   "new <goal>",
+	Short: "Alias for team create",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTeamCreate,
+}
+
 var teamJoinCmd = &cobra.Command{
 	Use:   "join <team-id> <member>",
 	Short: "Add a member to a team",
@@ -198,6 +218,16 @@ var teamStatusCmd = &cobra.Command{
 	Short: "Show team details",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTeamStatus,
+}
+
+var teamMessageCmd = &cobra.Command{
+	Use:   "message <team-id> <role> <message>",
+	Short: "Send a message to a team role (placeholder)",
+	Args:  cobra.MinimumNArgs(3),
+	RunE: func(_ *cobra.Command, args []string) error {
+		_ = args
+		return fmt.Errorf("team.message is not implemented in this build")
+	},
 }
 
 var courtCmd = &cobra.Command{
@@ -253,6 +283,8 @@ var autonomyRevokeCmd = &cobra.Command{
 	RunE:  runAutonomyRevoke,
 }
 
+var autonomyRevokeScope string
+
 var autonomyResetCmd = &cobra.Command{
 	Use:   "reset <session-id>",
 	Short: "Reset autonomy state for a session",
@@ -265,6 +297,24 @@ var skillStatusCmd = &cobra.Command{
 	Short: "Show live skill status from the daemon",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runSkillStatus,
+}
+
+var skillProposeCmd = &cobra.Command{
+	Use:   "propose <natural language description>",
+	Short: "Alias for skill add",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSkillAdd,
+}
+
+var vmCmd = &cobra.Command{
+	Use:   "vm",
+	Short: "Inspect sandbox VMs",
+}
+
+var vmListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List runtime sandboxes",
+	RunE:  runVMList,
 }
 
 var completionCmd = &cobra.Command{
@@ -287,8 +337,10 @@ func init() {
 	sessionsCmd.AddCommand(sessionsListCmd)
 	sessionsCmd.AddCommand(sessionsStatusCmd)
 	sessionsCmd.AddCommand(sessionsCancelCmd)
+	sessionsCmd.AddCommand(sessionsKillCmd)
 	sessionsCmd.AddCommand(sessionsPauseCmd)
 	sessionsCmd.AddCommand(sessionsResumeCmd)
+	sessionsStatusCmd.Flags().BoolVar(&sessionsStatusWatch, "watch", false, "Poll status continuously until interrupted")
 
 	tasksCmd.AddCommand(tasksListCmd)
 	tasksCmd.AddCommand(tasksStatusCmd)
@@ -296,12 +348,15 @@ func init() {
 	tasksCmd.AddCommand(tasksResumeCmd)
 	tasksCmd.AddCommand(tasksCancelCmd)
 	tasksListCmd.Flags().BoolVar(&tasksActiveOnly, "active", false, "Only active workers")
+	tasksStatusCmd.Flags().BoolVar(&tasksStatusWatch, "watch", false, "Poll status continuously until interrupted")
 
 	teamCmd.AddCommand(teamListCmd)
 	teamCmd.AddCommand(teamCreateCmd)
+	teamCmd.AddCommand(teamNewCmd)
 	teamCmd.AddCommand(teamJoinCmd)
 	teamCmd.AddCommand(teamLeaveCmd)
 	teamCmd.AddCommand(teamStatusCmd)
+	teamCmd.AddCommand(teamMessageCmd)
 
 	courtCmd.AddCommand(courtDecisionsCmd)
 	courtDecisionsCmd.AddCommand(courtDecisionsListCmd)
@@ -313,6 +368,9 @@ func init() {
 	autonomyCmd.AddCommand(autonomyResetCmd)
 	autonomyGrantCmd.Flags().StringVar(&autonomyGrantPreset, "preset", "default", "Named autonomy preset")
 	autonomyGrantCmd.Flags().DurationVar(&autonomyGrantDuration, "duration", 0, "Optional time-bound grant (e.g. 30m)")
+	autonomyRevokeCmd.Flags().StringVar(&autonomyRevokeScope, "scope", "", "Optional scope to revoke")
+
+	vmCmd.AddCommand(vmListCmd)
 }
 
 func runCompletion(cmd *cobra.Command, args []string) error {
@@ -376,21 +434,30 @@ func runSessionsList(cmd *cobra.Command, _ []string) error {
 }
 
 func runSessionsStatus(cmd *cobra.Command, args []string) error {
-	resp, err := daemonCall(cmd.Context(), "sessions.status", map[string]string{"session_id": args[0]})
-	if err != nil {
-		return fmt.Errorf("daemon: %w", err)
+	for {
+		resp, err := daemonCall(cmd.Context(), "sessions.status", map[string]string{"session_id": args[0]})
+		if err != nil {
+			return fmt.Errorf("daemon: %w", err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("sessions.status: %s", resp.Error)
+		}
+		if globalJSON {
+			fmt.Println(string(resp.Data))
+		} else {
+			var m map[string]interface{}
+			_ = json.Unmarshal(resp.Data, &m)
+			fmt.Printf("Session %v\n  status: %v\n  messages: %v\n  sandbox: %v\n", m["session_id"], m["status"], m["message_count"], m["sandbox_id"])
+		}
+		if !sessionsStatusWatch {
+			return nil
+		}
+		select {
+		case <-cmd.Context().Done():
+			return nil
+		case <-time.After(2 * time.Second):
+		}
 	}
-	if !resp.Success {
-		return fmt.Errorf("sessions.status: %s", resp.Error)
-	}
-	if globalJSON {
-		fmt.Println(string(resp.Data))
-		return nil
-	}
-	var m map[string]interface{}
-	_ = json.Unmarshal(resp.Data, &m)
-	fmt.Printf("Session %v\n  status: %v\n  messages: %v\n  sandbox: %v\n", m["session_id"], m["status"], m["message_count"], m["sandbox_id"])
-	return nil
 }
 
 func runSessionsCancel(cmd *cobra.Command, args []string) error {
@@ -459,19 +526,28 @@ func runTasksList(cmd *cobra.Command, _ []string) error {
 }
 
 func runTasksStatus(cmd *cobra.Command, args []string) error {
-	resp, err := daemonCall(cmd.Context(), "tasks.status", map[string]string{"task_id": args[0]})
-	if err != nil {
-		return fmt.Errorf("daemon: %w", err)
+	for {
+		resp, err := daemonCall(cmd.Context(), "tasks.status", map[string]string{"task_id": args[0]})
+		if err != nil {
+			return fmt.Errorf("daemon: %w", err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("tasks.status: %s", resp.Error)
+		}
+		if globalJSON {
+			fmt.Println(string(resp.Data))
+		} else {
+			fmt.Println(string(resp.Data))
+		}
+		if !tasksStatusWatch {
+			return nil
+		}
+		select {
+		case <-cmd.Context().Done():
+			return nil
+		case <-time.After(2 * time.Second):
+		}
 	}
-	if !resp.Success {
-		return fmt.Errorf("tasks.status: %s", resp.Error)
-	}
-	if globalJSON {
-		fmt.Println(string(resp.Data))
-		return nil
-	}
-	fmt.Println(string(resp.Data))
-	return nil
 }
 
 func runTasksPause(cmd *cobra.Command, args []string) error {
@@ -669,7 +745,11 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) error {
 }
 
 func runAutonomyRevoke(cmd *cobra.Command, args []string) error {
-	resp, err := daemonCall(cmd.Context(), "autonomy.revoke", map[string]string{"session_id": args[0]})
+	req := map[string]string{"session_id": args[0]}
+	if strings.TrimSpace(autonomyRevokeScope) != "" {
+		req["scope"] = strings.TrimSpace(autonomyRevokeScope)
+	}
+	resp, err := daemonCall(cmd.Context(), "autonomy.revoke", req)
 	if err != nil {
 		return fmt.Errorf("daemon: %w", err)
 	}
@@ -677,6 +757,37 @@ func runAutonomyRevoke(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("autonomy.revoke: %s", resp.Error)
 	}
 	fmt.Println("Autonomy revoked.")
+	return nil
+}
+
+func runVMList(cmd *cobra.Command, _ []string) error {
+	env, err := initRuntime()
+	if err != nil {
+		return err
+	}
+	defer env.Logger.Sync()
+	if env.Runtime == nil {
+		return fmt.Errorf("runtime not initialized")
+	}
+	all, err := env.Runtime.List(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("list VMs: %w", err)
+	}
+	if globalJSON {
+		raw, _ := json.Marshal(all)
+		fmt.Println(string(raw))
+		return nil
+	}
+	if len(all) == 0 {
+		fmt.Println("No VMs.")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tSTATE\tPID")
+	for _, sb := range all {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", sb.Spec.ID, sb.Spec.Name, sb.State, sb.PID)
+	}
+	w.Flush()
 	return nil
 }
 

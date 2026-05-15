@@ -10,10 +10,10 @@ import (
 	"sync"
 
 	"go.uber.org/zap"
-	"golang.org/x/sys/unix"
 )
 
 type peerUIDContextKey struct{}
+type trustedCallerContextKey struct{}
 
 // PeerUIDFromContext returns the Unix peer UID when the request arrived via the
 // daemon's Unix socket transport.
@@ -21,6 +21,20 @@ func PeerUIDFromContext(ctx context.Context) (int, bool) {
 	v := ctx.Value(peerUIDContextKey{})
 	uid, ok := v.(int)
 	return uid, ok
+}
+
+// WithTrustedCaller marks a context as originating from a trusted in-process
+// caller (for example daemon-owned portal bridges) when no socket peer UID
+// exists.
+func WithTrustedCaller(ctx context.Context) context.Context {
+	return context.WithValue(ctx, trustedCallerContextKey{}, true)
+}
+
+// IsTrustedCaller reports whether the context is explicitly marked as trusted.
+func IsTrustedCaller(ctx context.Context) bool {
+	v := ctx.Value(trustedCallerContextKey{})
+	trusted, ok := v.(bool)
+	return ok && trusted
 }
 
 // Handler processes an API action and returns a response.
@@ -209,15 +223,7 @@ func (s *Server) Start() error {
 			if err != nil {
 				return ctx
 			}
-			var uid int
-			var okUID bool
-			_ = raw.Control(func(fd uintptr) {
-				cred, credErr := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-				if credErr == nil {
-					uid = int(cred.Uid)
-					okUID = true
-				}
-			})
+			uid, okUID := peerUIDFromRawConn(raw)
 			if !okUID {
 				return ctx
 			}

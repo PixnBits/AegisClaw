@@ -273,7 +273,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				})
 				if env.Sessions != nil {
 					env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", finalContent)
-					env.Sessions.SetStatus(sessionID, sessions.StatusIdle)
+					env.Sessions.SetStatusIf(sessionID, sessions.StatusActive, sessions.StatusIdle)
 				}
 				return &api.Response{Success: true, Data: respData}
 
@@ -370,7 +370,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		})
 		if env.Sessions != nil {
 			env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", limitContent)
-			env.Sessions.SetStatus(sessionID, sessions.StatusIdle)
+			env.Sessions.SetStatusIf(sessionID, sessions.StatusActive, sessions.StatusIdle)
 		}
 		return &api.Response{Success: true, Data: respData}
 	}

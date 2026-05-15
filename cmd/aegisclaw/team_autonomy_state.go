@@ -97,8 +97,10 @@ func (r *teamRegistry) create(name string) (*teamRecord, error) {
 		Members:   nil,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
+	prev := append([]teamRecord(nil), r.Teams...)
 	r.Teams = append(r.Teams, rec)
 	if err := r.saveLocked(); err != nil {
+		r.Teams = prev
 		return nil, err
 	}
 	return &rec, nil
@@ -120,8 +122,13 @@ func (r *teamRegistry) join(teamID, member string) error {
 				return nil
 			}
 		}
+		prevMembers := append([]string(nil), r.Teams[i].Members...)
 		r.Teams[i].Members = append(r.Teams[i].Members, member)
-		return r.saveLocked()
+		if err := r.saveLocked(); err != nil {
+			r.Teams[i].Members = prevMembers
+			return err
+		}
+		return nil
 	}
 	return fmt.Errorf("team %q not found", teamID)
 }
@@ -143,8 +150,13 @@ func (r *teamRegistry) leave(teamID, member string) error {
 				kept = append(kept, m)
 			}
 		}
+		prevMembers := append([]string(nil), r.Teams[i].Members...)
 		r.Teams[i].Members = kept
-		return r.saveLocked()
+		if err := r.saveLocked(); err != nil {
+			r.Teams[i].Members = prevMembers
+			return err
+		}
+		return nil
 	}
 	return fmt.Errorf("team %q not found", teamID)
 }
@@ -227,6 +239,7 @@ func (a *autonomyRegistry) show(sessionID string) (autonomyRecord, bool) {
 	sessionID = strings.TrimSpace(sessionID)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.expireLocked(sessionID)
 	r, ok := a.Items[sessionID]
 	return r, ok
 }
@@ -247,22 +260,42 @@ func (a *autonomyRegistry) grant(sessionID, preset, scope string, until time.Tim
 	if !until.IsZero() {
 		rec.ExpiresAt = until.UTC().Format(time.RFC3339)
 	}
+	prev, hadPrev := a.Items[sessionID]
 	a.Items[sessionID] = rec
-	return a.saveLocked()
+	if err := a.saveLocked(); err != nil {
+		if hadPrev {
+			a.Items[sessionID] = prev
+		} else {
+			delete(a.Items, sessionID)
+		}
+		return err
+	}
+	return nil
 }
 
-func (a *autonomyRegistry) revoke(sessionID string) error {
+func (a *autonomyRegistry) revoke(sessionID, scope string) error {
 	sessionID = strings.TrimSpace(sessionID)
+	scope = strings.TrimSpace(scope)
 	if sessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, ok := a.Items[sessionID]; !ok {
+	a.expireLocked(sessionID)
+	rec, ok := a.Items[sessionID]
+	if !ok {
 		return fmt.Errorf("no autonomy state for session %q", sessionID)
 	}
+	if scope != "" && rec.Scope != "" && rec.Scope != scope {
+		return fmt.Errorf("autonomy scope mismatch for session %q", sessionID)
+	}
+	prev := rec
 	delete(a.Items, sessionID)
-	return a.saveLocked()
+	if err := a.saveLocked(); err != nil {
+		a.Items[sessionID] = prev
+		return err
+	}
+	return nil
 }
 
 func (a *autonomyRegistry) reset(sessionID string) error {
@@ -272,6 +305,29 @@ func (a *autonomyRegistry) reset(sessionID string) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	prev, hadPrev := a.Items[sessionID]
 	delete(a.Items, sessionID)
-	return a.saveLocked()
+	if err := a.saveLocked(); err != nil {
+		if hadPrev {
+			a.Items[sessionID] = prev
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *autonomyRegistry) expireLocked(sessionID string) {
+	rec, ok := a.Items[sessionID]
+	if !ok || strings.TrimSpace(rec.ExpiresAt) == "" {
+		return
+	}
+	expiry, err := time.Parse(time.RFC3339, rec.ExpiresAt)
+	if err != nil {
+		return
+	}
+	if !time.Now().UTC().After(expiry) {
+		return
+	}
+	delete(a.Items, sessionID)
+	_ = a.saveLocked()
 }

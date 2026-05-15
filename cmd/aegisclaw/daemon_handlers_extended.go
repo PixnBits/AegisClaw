@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,35 +30,35 @@ func registerExtendedDaemonAPI(
 	hub *ipc.MessageHub,
 	daemonQuit chan struct{},
 ) {
-	apiSrv.Handle("vault.secret.add", makeVaultSecretAddHandler(env))
+	apiSrv.Handle("vault.secret.add", withAuthorizedCaller(env, "vault.secret.add", makeVaultSecretAddHandler(env)))
 	apiSrv.Handle("vault.secret.list", makeVaultSecretListHandler(env))
-	apiSrv.Handle("vault.secret.delete", makeVaultSecretDeleteHandler(env))
-	apiSrv.Handle("vault.secret.rotate", makeVaultSecretRotateHandler(env))
+	apiSrv.Handle("vault.secret.delete", withAuthorizedCaller(env, "vault.secret.delete", makeVaultSecretDeleteHandler(env)))
+	apiSrv.Handle("vault.secret.rotate", withAuthorizedCaller(env, "vault.secret.rotate", makeVaultSecretRotateHandler(env)))
 
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
 
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
 	apiSrv.Handle("skill.status", makeSkillStatusHandler(env))
-	apiSrv.Handle("skill.deactivate", makeSkillDeactivateHandler(env))
+	apiSrv.Handle("skill.deactivate", withAuthorizedCaller(env, "skill.deactivate", makeSkillDeactivateHandler(env)))
 	apiSrv.Handle("skill.activate", makeSkillActivateHandler(env))
 	apiSrv.Handle("skill.secrets.refresh", makeSkillSecretsRefreshHandler(env))
 
 	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
-	apiSrv.Handle("chat.tool", makeChatToolExecHandler(env, toolRegistry))
+	apiSrv.Handle("chat.tool", withAuthorizedCaller(env, "chat.tool", makeChatToolExecHandler(env, toolRegistry)))
 	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
 
 	apiSrv.Handle("kernel.shutdown", makeKernelShutdownHandler(env, hub, apiSrv, daemonQuit))
 
 	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
 	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
-	apiSrv.Handle("sessions.send", makeSessionsSendHandler(env, toolRegistry))
-	apiSrv.Handle("sessions.spawn", makeSessionsSpawnHandler(env, toolRegistry))
+	apiSrv.Handle("sessions.send", withAuthorizedCaller(env, "sessions.send", makeSessionsSendHandler(env, toolRegistry)))
+	apiSrv.Handle("sessions.spawn", withAuthorizedCaller(env, "sessions.spawn", makeSessionsSpawnHandler(env, toolRegistry)))
 	apiSrv.Handle("sessions.status", makeSessionsStatusHandler(env))
-	apiSrv.Handle("sessions.pause", makeSessionsPauseHandler(env))
-	apiSrv.Handle("sessions.resume", makeSessionsResumeHandler(env))
-	apiSrv.Handle("sessions.cancel", makeSessionsCancelHandler(env))
+	apiSrv.Handle("sessions.pause", withAuthorizedCaller(env, "sessions.pause", makeSessionsPauseHandler(env)))
+	apiSrv.Handle("sessions.resume", withAuthorizedCaller(env, "sessions.resume", makeSessionsResumeHandler(env)))
+	apiSrv.Handle("sessions.cancel", withAuthorizedCaller(env, "sessions.cancel", makeSessionsCancelHandler(env)))
 
 	apiSrv.Handle("tasks.list", makeTasksListHandler(env))
 	apiSrv.Handle("tasks.status", makeTasksStatusHandler(env))
@@ -78,6 +79,44 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("autonomy.grant", makeAutonomyGrantHandler(env))
 	apiSrv.Handle("autonomy.revoke", makeAutonomyRevokeHandler(env))
 	apiSrv.Handle("autonomy.reset", makeAutonomyResetHandler(env))
+}
+
+func daemonOwnerUID() int {
+	if raw := strings.TrimSpace(os.Getenv("AEGIS_DAEMON_OWNER_UID")); raw != "" {
+		if uid, err := strconv.Atoi(raw); err == nil && uid >= 0 {
+			return uid
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("SUDO_UID")); raw != "" {
+		if uid, err := strconv.Atoi(raw); err == nil && uid >= 0 {
+			return uid
+		}
+	}
+	return os.Geteuid()
+}
+
+func authorizeCaller(_ *runtimeEnv, action string, ctx context.Context) error {
+	if api.IsTrustedCaller(ctx) {
+		return nil
+	}
+	uid, ok := api.PeerUIDFromContext(ctx)
+	if !ok {
+		return fmt.Errorf("%s requires an authenticated local caller identity", action)
+	}
+	ownerUID := daemonOwnerUID()
+	if uid == 0 || uid == ownerUID {
+		return nil
+	}
+	return fmt.Errorf("%s is restricted to daemon owner UID %d", action, ownerUID)
+}
+
+func withAuthorizedCaller(env *runtimeEnv, action string, h api.Handler) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		if err := authorizeCaller(env, action, ctx); err != nil {
+			return &api.Response{Error: err.Error()}
+		}
+		return h(ctx, data)
+	}
 }
 
 // makeUnimplementedHandler returns a registered handler that fails with an
@@ -178,59 +217,57 @@ func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
 }
 
 func makeKernelShutdownHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api.Server, daemonQuit chan struct{}) api.Handler {
-	var once sync.Once
-	var shutdownErr error
+	var mu sync.Mutex
+	shutdownStarted := false
 	return func(ctx context.Context, _ json.RawMessage) *api.Response {
-		if uid, ok := api.PeerUIDFromContext(ctx); ok && uid != 0 && uid != os.Geteuid() {
-			return &api.Response{Error: "kernel.shutdown is restricted to the daemon owner (run with sudo)"}
+		if err := authorizeCaller(env, "kernel.shutdown", ctx); err != nil {
+			return &api.Response{Error: err.Error()}
 		}
-		once.Do(func() {
-			payload, _ := json.Marshal(map[string]string{"reason": "kernel.shutdown"})
-			action := kernel.NewAction(kernel.ActionKernelStop, "cli", payload)
-			if _, err := env.Kernel.SignAndLog(action); err != nil {
-				env.Logger.Error("failed to log kernel shutdown", zap.Error(err))
-			}
-
-			if env.Runtime != nil {
-				sandboxes, err := env.Runtime.List(ctx)
-				if err != nil {
-					shutdownErr = fmt.Errorf("list sandboxes: %w", err)
-					return
-				}
-				for _, sb := range sandboxes {
-					id := strings.TrimSpace(sb.Spec.ID)
-					if id == "" {
-						continue
-					}
-					if sb.State == sandbox.StateRunning {
-						if err := env.Runtime.Stop(ctx, id); err != nil {
-							shutdownErr = fmt.Errorf("stop sandbox %s: %w", id, err)
-							return
-						}
-					}
-					if err := env.Runtime.Delete(ctx, id); err != nil {
-						shutdownErr = fmt.Errorf("delete sandbox %s: %w", id, err)
-						return
-					}
-				}
-			}
-
-			go func() {
-				time.Sleep(50 * time.Millisecond)
-				if hub != nil {
-					hub.Stop()
-				}
-				if apiSrv != nil {
-					apiSrv.Stop()
-				}
-				if daemonQuit != nil {
-					close(daemonQuit)
-				}
-			}()
-		})
-		if shutdownErr != nil {
-			return &api.Response{Error: shutdownErr.Error()}
+		mu.Lock()
+		defer mu.Unlock()
+		if shutdownStarted {
+			return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "shutdown already in progress"})}
 		}
+		payload, _ := json.Marshal(map[string]string{"reason": "kernel.shutdown"})
+		action := kernel.NewAction(kernel.ActionKernelStop, "cli", payload)
+		if _, err := env.Kernel.SignAndLog(action); err != nil {
+			env.Logger.Error("failed to log kernel shutdown", zap.Error(err))
+		}
+
+		if env.Runtime != nil {
+			sandboxes, err := env.Runtime.List(ctx)
+			if err != nil {
+				return &api.Response{Error: fmt.Errorf("list sandboxes: %w", err).Error()}
+			}
+			for _, sb := range sandboxes {
+				id := strings.TrimSpace(sb.Spec.ID)
+				if id == "" {
+					continue
+				}
+				if sb.State == sandbox.StateRunning {
+					if err := env.Runtime.Stop(ctx, id); err != nil {
+						return &api.Response{Error: fmt.Errorf("stop sandbox %s: %w", id, err).Error()}
+					}
+				}
+				if err := env.Runtime.Delete(ctx, id); err != nil {
+					return &api.Response{Error: fmt.Errorf("delete sandbox %s: %w", id, err).Error()}
+				}
+			}
+		}
+
+		shutdownStarted = true
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			if hub != nil {
+				hub.Stop()
+			}
+			if apiSrv != nil {
+				apiSrv.Stop()
+			}
+			if daemonQuit != nil {
+				close(daemonQuit)
+			}
+		}()
 		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "shutdown initiated"})}
 	}
 }
@@ -286,6 +323,9 @@ func makeSessionsPauseHandler(env *runtimeEnv) api.Handler {
 		rec, ok := env.Sessions.Get(req.SessionID)
 		if !ok {
 			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
+		}
+		if rec.Status == sessions.StatusActive {
+			return &api.Response{Error: "cannot pause an active session; wait for current turn to finish"}
 		}
 		if rec.Status == sessions.StatusClosed {
 			return &api.Response{Error: "session is closed"}
@@ -628,6 +668,12 @@ func makeAutonomyGrantHandler(env *runtimeEnv) api.Handler {
 		if strings.TrimSpace(req.SessionID) == "" {
 			return &api.Response{Error: "session_id is required"}
 		}
+		if env.Sessions == nil {
+			return &api.Response{Error: "session store not initialized"}
+		}
+		if _, ok := env.Sessions.Get(req.SessionID); !ok {
+			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
+		}
 		var until time.Time
 		if strings.TrimSpace(req.Duration) != "" {
 			d, err := time.ParseDuration(req.Duration)
@@ -653,11 +699,12 @@ func makeAutonomyRevokeHandler(env *runtimeEnv) api.Handler {
 		}
 		var req struct {
 			SessionID string `json:"session_id"`
+			Scope     string `json:"scope"`
 		}
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
 		}
-		if err := env.AutonomyRegistry.revoke(req.SessionID); err != nil {
+		if err := env.AutonomyRegistry.revoke(req.SessionID, req.Scope); err != nil {
 			return &api.Response{Error: err.Error()}
 		}
 		return &api.Response{Success: true}

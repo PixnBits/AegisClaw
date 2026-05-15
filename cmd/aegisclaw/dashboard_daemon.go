@@ -205,6 +205,7 @@ func handlePortalAPIBridgeConn(env *runtimeEnv, apiSrv *api.Server, conn net.Con
 
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
+	ctx = api.WithTrustedCaller(ctx)
 
 	resp := apiSrv.CallDirect(ctx, req.Action, req.Payload)
 	if resp == nil {

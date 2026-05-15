@@ -155,17 +155,25 @@ func (s *Store) Open(id, sandboxID string) *Record {
 	return r
 }
 
-// evictOldestIdleLocked removes the oldest idle (or closed) session.
+// evictOldestIdleLocked removes the oldest evictable session.
+// Priority order is idle/paused/closed; if none exist it evicts the oldest
+// remaining session to preserve the maxSessions bound.
 // Must be called with s.mu held for writing.
 func (s *Store) evictOldestIdleLocked() {
 	for i, id := range s.order {
 		r := s.sessions[id]
-		if r != nil && (r.Status == StatusIdle || r.Status == StatusClosed) {
+		if r != nil && (r.Status == StatusIdle || r.Status == StatusPaused || r.Status == StatusClosed) {
 			delete(s.sessions, id)
 			s.order = append(s.order[:i], s.order[i+1:]...)
 			return
 		}
 	}
+	if len(s.order) == 0 {
+		return
+	}
+	oldest := s.order[0]
+	delete(s.sessions, oldest)
+	s.order = s.order[1:]
 }
 
 // Get returns the record for id, or (nil, false) if not found.
@@ -240,6 +248,19 @@ func (s *Store) SetStatus(id string, status Status) {
 	if r, ok := s.sessions[id]; ok {
 		r.Status = status
 	}
+}
+
+// SetStatusIf updates a session's status only when its current status matches
+// expected. Returns true when an update occurred.
+func (s *Store) SetStatusIf(id string, expected, next Status) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.sessions[id]
+	if !ok || r.Status != expected {
+		return false
+	}
+	r.Status = next
+	return true
 }
 
 // Close marks the session as closed.  If the session does not exist it is
