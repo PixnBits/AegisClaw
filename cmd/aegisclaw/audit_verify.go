@@ -45,10 +45,23 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	entries, readErr := audit.ReadEntries(auditPath)
-	if readErr != nil || verified == 0 || int(verified) > len(entries) {
-		fmt.Printf("  Verified head (prefix target): %s (partial verification)\n", strings.ToLower(target))
-		return nil
+	if readErr != nil {
+		return fmt.Errorf("verified chain but failed to read audit entries for matched head: %w", readErr)
+	}
+	if verified == 0 || int(verified) > len(entries) {
+		return fmt.Errorf("verified count %d is outside audit entry bounds (%d)", verified, len(entries))
+	}
+	if entries[verified-1].Hash == "" {
+		return fmt.Errorf("verified entry %d has empty hash", verified)
+	}
+	if !strings.HasPrefix(entries[verified-1].Hash, strings.ToLower(target)) {
+		return fmt.Errorf("verified head %q does not match requested prefix %q", entries[verified-1].Hash, strings.ToLower(target))
 	}
 	fmt.Printf("  Verified head (prefix target): %s (partial verification)\n", entries[verified-1].Hash)
+	if int(verified) != len(entries) {
+		fmt.Printf("  Latest chain head: %s (not part of this partial verification)\n", entries[len(entries)-1].Hash)
+	} else {
+		fmt.Printf("  Latest chain head: %s\n", entries[len(entries)-1].Hash)
+	}
 	return nil
 }

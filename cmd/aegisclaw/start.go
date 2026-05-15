@@ -43,6 +43,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 			childArgs = append(childArgs, "--model", startModelFlag)
 		}
 		proc := exec.Command(exePath, childArgs...)
+		proc.Stdout = os.Stdout
+		proc.Stderr = os.Stderr
 		if err := proc.Start(); err != nil {
 			return fmt.Errorf("start daemon in background: %w", err)
 		}
