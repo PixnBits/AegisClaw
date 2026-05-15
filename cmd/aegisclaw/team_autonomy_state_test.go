@@ -64,7 +64,7 @@ func TestAutonomyGrantRevokeReset(t *testing.T) {
 	if !ok || rec.Preset != "researcher" {
 		t.Fatalf("grant: %+v ok=%v", rec, ok)
 	}
-	if err := reg.revoke(sid); err != nil {
+	if err := reg.revoke(sid, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := reg.show(sid); ok {
@@ -100,5 +100,19 @@ func TestAutonomyResetRequiresSessionID(t *testing.T) {
 	}
 	if err := reg.reset("   "); err == nil {
 		t.Fatal("expected session_id validation error")
+	}
+}
+
+func TestAutonomyShowExpiresPastGrant(t *testing.T) {
+	reg, err := newAutonomyRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := "session-expired"
+	if err := reg.grant(sid, "default", "", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.show(sid); ok {
+		t.Fatal("expected expired autonomy grant to be removed")
 	}
 }

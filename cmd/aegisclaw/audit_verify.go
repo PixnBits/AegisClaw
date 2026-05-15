@@ -40,6 +40,15 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("  OK: %d entries verified\n", verified)
-	fmt.Printf("  Chain head: %s\n", env.Kernel.AuditLog().LastHash())
+	if target == "" || strings.EqualFold(target, "latest") {
+		fmt.Printf("  Chain head: %s\n", env.Kernel.AuditLog().LastHash())
+		return nil
+	}
+	entries, readErr := audit.ReadEntries(auditPath)
+	if readErr != nil || verified == 0 || int(verified) > len(entries) {
+		fmt.Printf("  Verified head (prefix target): %s (partial verification)\n", strings.ToLower(target))
+		return nil
+	}
+	fmt.Printf("  Verified head (prefix target): %s (partial verification)\n", entries[verified-1].Hash)
 	return nil
 }

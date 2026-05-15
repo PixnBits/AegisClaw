@@ -13,18 +13,26 @@ import (
 func TestCLISpecCommandsRegistered(t *testing.T) {
 	specPaths := [][]string{
 		{"restart"},
+		{"vm", "list"},
 		{"sessions", "list"},
 		{"sessions", "status", "sess-1"},
+		{"sessions", "status", "sess-1", "--watch"},
 		{"sessions", "pause", "sess-1"},
 		{"sessions", "resume", "sess-1"},
 		{"sessions", "cancel", "sess-1"},
+		{"sessions", "kill", "sess-1"},
 		{"tasks", "list"},
 		{"tasks", "status", "task-1"},
+		{"tasks", "status", "task-1", "--watch"},
 		{"team", "list"},
 		{"team", "create", "alpha"},
+		{"team", "new", "mission"},
+		{"team", "message", "team-1", "@researcher", "hello"},
 		{"court", "decisions", "list"},
 		{"court", "decisions", "show", "dec-1"},
 		{"autonomy", "show", "sess-1"},
+		{"autonomy", "revoke", "sess-1", "--scope=tools"},
+		{"skills", "propose", "hello skill"},
 		{"skill", "status"},
 		{"skills", "status", "my-skill"},
 		{"audit", "verify"},
@@ -92,7 +100,7 @@ func TestRootHasExtendedChildren(t *testing.T) {
 	for _, c := range rootCmd.Commands() {
 		names[c.Name()] = true
 	}
-	for _, want := range []string{"restart", "sessions", "tasks", "team", "court", "autonomy", "completion"} {
+	for _, want := range []string{"restart", "vm", "sessions", "tasks", "team", "court", "autonomy", "completion"} {
 		if !names[want] {
 			t.Errorf("root missing child %q", want)
 		}
@@ -100,7 +108,7 @@ func TestRootHasExtendedChildren(t *testing.T) {
 }
 
 func TestSessionsSubcommands(t *testing.T) {
-	assertSubcommands(t, sessionsCmd, "list", "status", "cancel", "pause", "resume")
+	assertSubcommands(t, sessionsCmd, "list", "status", "cancel", "kill", "pause", "resume")
 }
 
 func TestCourtDecisionsSubcommands(t *testing.T) {

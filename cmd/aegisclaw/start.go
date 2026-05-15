@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -24,10 +25,31 @@ import (
 
 var safeModeFlag bool
 var startModelFlag string
+var startForeground bool
 
 const aegisHubRootfsEnvKey = "AEGISCLAW_HUB_ROOTFS"
 
 func runStart(cmd *cobra.Command, args []string) error {
+	if !startForeground {
+		exePath, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("resolve executable path: %w", err)
+		}
+		childArgs := []string{"start", "--foreground"}
+		if safeModeFlag {
+			childArgs = append(childArgs, "--safe")
+		}
+		if startModelFlag != "" {
+			childArgs = append(childArgs, "--model", startModelFlag)
+		}
+		proc := exec.Command(exePath, childArgs...)
+		if err := proc.Start(); err != nil {
+			return fmt.Errorf("start daemon in background: %w", err)
+		}
+		fmt.Printf("AegisClaw daemon started in background (pid %d).\n", proc.Process.Pid)
+		return nil
+	}
+
 	env, err := initRuntime()
 	if err != nil {
 		return err

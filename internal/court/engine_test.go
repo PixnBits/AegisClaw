@@ -234,6 +234,32 @@ func TestEngineSessionSnapshotsAreDetached(t *testing.T) {
 	}
 }
 
+func TestEngineListSessionsReturnsNewestFirstIncludingCompleted(t *testing.T) {
+	engine, store := setupTestEngine(t, allApproveReviewer())
+	p1 := createTestProposal(t, store)
+	s1, err := engine.Review(context.Background(), p1.ID)
+	if err != nil {
+		t.Fatalf("first review failed: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	p2 := createTestProposal(t, store)
+	s2, err := engine.Review(context.Background(), p2.ID)
+	if err != nil {
+		t.Fatalf("second review failed: %v", err)
+	}
+
+	all := engine.ListSessions()
+	if len(all) < 2 {
+		t.Fatalf("expected at least 2 sessions, got %d", len(all))
+	}
+	if all[0].ID != s2.ID || all[1].ID != s1.ID {
+		t.Fatalf("expected newest-first order [%s, %s], got [%s, %s]", s2.ID, s1.ID, all[0].ID, all[1].ID)
+	}
+	if all[0].EndedAt == nil || all[1].EndedAt == nil {
+		t.Fatal("expected completed sessions to be included in list")
+	}
+}
+
 func TestEngineRiskHeatmap(t *testing.T) {
 	engine, store := setupTestEngine(t, allApproveReviewer())
 	p := createTestProposal(t, store)

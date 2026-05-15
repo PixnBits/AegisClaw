@@ -23,6 +23,9 @@ type endpointImpl string
 const (
 	implReady endpointImpl = "ready" // must return Success
 	implStub  endpointImpl = "stub"  // must be registered and return an explicit not-implemented style error
+	// implRegistered verifies endpoint registration even when the current test
+	// environment cannot exercise a successful runtime path.
+	implRegistered endpointImpl = "registered"
 )
 
 // daemonEndpointContract is the source of truth for CLI↔daemon wiring tests.
@@ -84,7 +87,8 @@ var daemonEndpointContract = []struct {
 		return b
 	}},
 
-	// Sessions (ready) — list/history/send/spawn registered with extended API
+	// Sessions (ready) — list/history/status/pause/resume/cancel.
+	// send/spawn are validated as registered in this test environment.
 	{"sessions.list", implReady, func(*testing.T, *runtimeEnv) json.RawMessage { return nil }},
 	{"sessions.history", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		env.Sessions.Open("sess-h", "vm-1")
@@ -111,6 +115,15 @@ var daemonEndpointContract = []struct {
 	{"sessions.cancel", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		env.Sessions.Open("sess-c", "vm-1")
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-c"})
+		return b
+	}},
+	{"sessions.send", implRegistered, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+		env.Sessions.Open("sess-send", "vm-1")
+		b, _ := json.Marshal(map[string]string{"session_id": "sess-send", "message": "hello"})
+		return b
+	}},
+	{"sessions.spawn", implRegistered, func(*testing.T, *runtimeEnv) json.RawMessage {
+		b, _ := json.Marshal(map[string]string{"task_description": "contract"})
 		return b
 	}},
 
@@ -174,7 +187,8 @@ var daemonEndpointContract = []struct {
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-a"})
 		return b
 	}},
-	{"autonomy.grant", implReady, func(*testing.T, *runtimeEnv) json.RawMessage {
+	{"autonomy.grant", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+		env.Sessions.Open("sess-g", "vm-1")
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-g", "preset": "researcher"})
 		return b
 	}},
@@ -207,7 +221,7 @@ var startOnlyDaemonContract = []struct {
 
 func TestDaemonAPI_EndpointContract(t *testing.T) {
 	srv, env := newContractAPIServer(t)
-	ctx := context.Background()
+	ctx := api.WithTrustedCaller(context.Background())
 
 	for _, tc := range daemonEndpointContract {
 		tc := tc
@@ -224,7 +238,7 @@ func TestDaemonAPI_EndpointContract(t *testing.T) {
 
 func TestDaemonAPI_StartOnlyEndpointContract(t *testing.T) {
 	srv, env := newContractAPIServer(t)
-	ctx := context.Background()
+	ctx := api.WithTrustedCaller(context.Background())
 	// court.vote is registered in start.go, not registerExtendedDaemonAPI.
 	srv.Handle("court.vote", makeCourtVoteHandler(env, env.Court))
 
@@ -363,6 +377,11 @@ func assertContractResponse(t *testing.T, action string, impl endpointImpl, resp
 		if !resp.Success {
 			t.Fatalf("%s: expected success, got error: %s", action, resp.Error)
 		}
+	case implRegistered:
+		// Registration was already validated by unknown-action check above.
+		// Keep this mode for endpoints whose runtime dependencies are outside
+		// this contract test fixture.
+		return
 	case implStub:
 		if resp.Success {
 			t.Fatalf("%s: expected stub error, got success", action)

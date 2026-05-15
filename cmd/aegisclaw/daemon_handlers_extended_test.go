@@ -167,6 +167,24 @@ func TestSessionsSendRejectsClosedSession(t *testing.T) {
 	}
 }
 
+func TestKernelShutdownRequiresCallerIdentity(t *testing.T) {
+	env := testEnvWithVaultAndKernel(t)
+	h := makeKernelShutdownHandler(env, nil, nil, make(chan struct{}))
+
+	resp := h(context.Background(), nil)
+	if resp.Success {
+		t.Fatal("expected shutdown to fail without caller identity")
+	}
+	if !strings.Contains(resp.Error, "authenticated local caller identity") {
+		t.Fatalf("unexpected error: %q", resp.Error)
+	}
+
+	resp = h(api.WithTrustedCaller(context.Background()), nil)
+	if !resp.Success {
+		t.Fatalf("expected trusted caller to be allowed, got %q", resp.Error)
+	}
+}
+
 func mustMarshalJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

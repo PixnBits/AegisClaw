@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -53,6 +54,28 @@ func TestReadSecretPayloadFileNoFollow(t *testing.T) {
 	}
 	if val != "file-secret" {
 		t.Fatalf("got %q", val)
+	}
+}
+
+func TestReadSecretPayloadFileRejectsSymlinkOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only O_NOFOLLOW behavior")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := &cobra.Command{}
+	secretsFromFile = link
+	t.Cleanup(func() { secretsFromFile = "" })
+	if _, err := readSecretPayload(cmd, ""); err == nil {
+		t.Fatal("expected symlink input to be rejected on linux")
 	}
 }
 
