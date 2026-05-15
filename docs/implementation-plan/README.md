@@ -16,30 +16,32 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 6. Run full test suite and `./aegisclaw eval run` before marking complete.
 7. When a step is done, update its status or move to `docs/implementation-plan/completed/` (create if needed).
 
-## Current Priority Order (Aligned to Roadmap Phases & Gaps)
+## Recommended Order (Dependencies & Risk Minimized)
 
-### Phase 0 Completion & CLI Gaps
-- `01-cli-full-coverage.md` — Implement missing CLI verbs from specs/cli.md and gaps.md
+### Phase 0 / Quick Wins
+- `01-cli-full-coverage.md` — Implement missing CLI verbs (unblocks testing & doctor command)
 
-### Paranoid Security & TCB Hardening (NEW — High Priority)
-- `02-daemon-minimal-tcb-refactor.md` — Refactor Host Daemon to strictly match `docs/specs/host-daemon.md` (remove all non-TCB logic; target <2000 LOC, <20MB idle)
-- `03-sandbox-lifecycle-containment.md` — Enforce daemon-only lifecycle management + crash containment + watchdog for AegisHub/Store/Network Boundary
-- `04-audit-merkle-signing-hardening.md` — Isolate Merkle root signing; add static-binary verification and capability dropping
-- `05-unix-socket-hardening.md` — **Avoid Docker single-socket risks**: per-client verification, strict permissions, SO_PEERCRED, non-root CLI, input validation
+### Core Infrastructure (Do These First — Everything Depends On Them)
+- `06-directory-layout.md` — Single `~/.aegis/` root + move privileged socket to `/run/user/$UID/aegis/`
+- `02-daemon-minimal-tcb-refactor.md` — Clean minimal daemon base (remove business logic)
+- `05-unix-socket-hardening.md` — SO_PEERCRED, non-root CLI, strict permissions (now that layout exists)
+- `08-runtime-permission-enforcement.md` — O_NOFOLLOW + ownership checks on secrets/, data/store/, data/audit/ on every access
 
-### Filesystem & Configuration (NEW)
-- `06-directory-layout.md` — Implement single `~/.aegis/` root with paranoid permissions + move privileged socket out of home dir
+### Paranoid Security Hardening
+- `03-sandbox-lifecycle-containment.md` — Daemon-only lifecycle + crash containment + watchdog
+- `04-audit-merkle-signing-hardening.md` — Isolated signing + static-binary verification + capability dropping
 
-### Codebase Divergences & Security Posture (Deep Analysis — NEW)
-- `07-daemon-tcb-extraction.md` — Extract business logic (court, builder, dashboard, event dispatcher) out of daemon into AegisHub / dedicated components
-- `08-runtime-permission-enforcement.md` — Add O_NOFOLLOW + ownership/permission checks on secrets/, data/store/, data/audit/ on every access
-- `09-missing-cli-verbs.md` — Implement remaining CLI verbs: team *, autonomy grant/revoke/reset, court decisions show, full restart, skills status
-- `10-semantic-skill-discovery.md` — Implement list_skills() / list_tools() with vector semantic search in Agent Runtime
-- `11-workspace-customization.md` — Load AGENTS.md, SOUL.md, TOOLS.md, SKILL.md from ~/.aegis/workspace/ on agent start
-- `12-eventbus-full-background.md` — Complete EventBus with timers, signals, approval queues, background service management
-- `13-governance-court-full.md` — Implement full 7-persona Court + Court Scribe integration per specs/governance-court.md
-- `14-builder-advanced-gates.md` — Add full SAST/SCA/policy-as-code enforcement + health checks (beyond current SBOM)
-- `15-user-journey-automation.md` — Automate remaining User Journeys #2–#9 (Playwright + integration tests)
+### Extraction & Cleanup
+- `07-daemon-tcb-extraction.md` — Extract court, builder, dashboard, event dispatcher out of daemon (now safe)
+
+### Feature Implementation (Parallelizable After Core Is Solid)
+- `09-missing-cli-verbs.md` — Remaining verbs: team *, autonomy grant/revoke/reset, court decisions show, skills status
+- `10-semantic-skill-discovery.md` — list_skills() / list_tools() with vector semantic search
+- `11-workspace-customization.md` — Load AGENTS.md, SOUL.md, TOOLS.md, SKILL.md from ~/.aegis/workspace/
+- `12-eventbus-full-background.md` — Timers, signals, approval queues, background services
+- `13-governance-court-full.md` — Full 7-persona Court + Court Scribe
+- `14-builder-advanced-gates.md` — Full SAST/SCA/policy-as-code + health checks + rollback
+- `15-user-journey-automation.md` — Automate Journeys #2–#9 (Playwright + integration)
 
 ### Later Phases Alignment
 - `16-phase-1-journeys.md` — Journeys #4 and #9 (Governance & SDLC heavy)
@@ -56,6 +58,6 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 - No bypass of security gates
 - Full alignment with `docs/specs/` and `docs/prd/`
 
-**Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `02-daemon-minimal-tcb-refactor.md` → `06-directory-layout.md` → `07-daemon-tcb-extraction.md`
+**Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `06-directory-layout.md` → `02-daemon-minimal-tcb-refactor.md` → `05-unix-socket-hardening.md` → `08-runtime-permission-enforcement.md`
 
-*Generated from deep code analysis (May 2026). Includes divergences, stubs, and security posture issues found in cmd/aegisclaw/ and internal/.*
+*Reordered for optimal dependencies and minimal rework (May 2026).*
