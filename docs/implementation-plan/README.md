@@ -43,11 +43,16 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 - `14-builder-advanced-gates.md` — Full SAST/SCA/policy-as-code + health checks + rollback
 - `15-user-journey-automation.md` — Automate Journeys #2–#9 (Playwright + integration)
 
+### Additional Gaps & Hardening (NEW)
+- `16-resource-quotas-host-protection.md` — Prevent resource exhaustion and protect the host
+- `17-threat-model-validation.md` — Implement and validate against `docs/specs/threat-model.md`
+- `18-skill-dependency-management.md` — Proper dependency tracking, versioning, and secure composition
+
 ### Later Phases Alignment
-- `16-phase-1-journeys.md` — Journeys #4 and #9 (Governance & SDLC heavy)
-- `17-multi-agent-teams.md` — Journey #8 (Phase 3)
-- `18-autonomy-controls.md` — Journey #7
-- `19-final-polish.md` — Performance, resource limits, security review (Phase 4)
+- `19-phase-1-journeys.md` — Journeys #4 and #9 (Governance & SDLC heavy)
+- `20-multi-agent-teams.md` — Journey #8 (Phase 3)
+- `21-autonomy-controls.md` — Journey #7
+- `22-final-polish.md` — Performance, resource limits, security review (Phase 4)
 
 ## Acceptance Criteria
 - All 9 User Journeys have automated tests (Playwright + integration)
@@ -60,4 +65,4 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 
 **Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `02-directory-layout.md` → `03-daemon-minimal-tcb-refactor.md` → `04-unix-socket-hardening.md` → `05-runtime-permission-enforcement.md`
 
-*Reordered for optimal dependencies and minimal rework (May 2026). All file names updated.*
+*Reordered for optimal dependencies and minimal rework (May 2026). Includes additional gaps from deep analysis.*
