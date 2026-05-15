@@ -22,17 +22,17 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 - `01-cli-full-coverage.md` — Implement missing CLI verbs (unblocks testing & doctor command)
 
 ### Core Infrastructure (Do These First — Everything Depends On Them)
-- `06-directory-layout.md` — Single `~/.aegis/` root + move privileged socket to `/run/user/$UID/aegis/`
-- `02-daemon-minimal-tcb-refactor.md` — Clean minimal daemon base (remove business logic)
-- `05-unix-socket-hardening.md` — SO_PEERCRED, non-root CLI, strict permissions (now that layout exists)
-- `08-runtime-permission-enforcement.md` — O_NOFOLLOW + ownership checks on secrets/, data/store/, data/audit/ on every access
+- `02-directory-layout.md` — Single `~/.aegis/` root + move privileged socket to `/run/user/$UID/aegis/`
+- `03-daemon-minimal-tcb-refactor.md` — Clean minimal daemon base (remove business logic)
+- `04-unix-socket-hardening.md` — SO_PEERCRED, non-root CLI, strict permissions (now that layout exists)
+- `05-runtime-permission-enforcement.md` — O_NOFOLLOW + ownership checks on secrets/, data/store/, data/audit/ on every access
 
 ### Paranoid Security Hardening
-- `03-sandbox-lifecycle-containment.md` — Daemon-only lifecycle + crash containment + watchdog
-- `04-audit-merkle-signing-hardening.md` — Isolated signing + static-binary verification + capability dropping
+- `06-sandbox-lifecycle-containment.md` — Daemon-only lifecycle + crash containment + watchdog
+- `07-audit-merkle-signing-hardening.md` — Isolated signing + static-binary verification + capability dropping
 
 ### Extraction & Cleanup
-- `07-daemon-tcb-extraction.md` — Extract court, builder, dashboard, event dispatcher out of daemon (now safe)
+- `08-daemon-tcb-extraction.md` — Extract court, builder, dashboard, event dispatcher out of daemon (now safe)
 
 ### Feature Implementation (Parallelizable After Core Is Solid)
 - `09-missing-cli-verbs.md` — Remaining verbs: team *, autonomy grant/revoke/reset, court decisions show, skills status
@@ -58,6 +58,6 @@ This plan supersedes the historical one from the `docs/lessons-learned` branch. 
 - No bypass of security gates
 - Full alignment with `docs/specs/` and `docs/prd/`
 
-**Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `06-directory-layout.md` → `02-daemon-minimal-tcb-refactor.md` → `05-unix-socket-hardening.md` → `08-runtime-permission-enforcement.md`
+**Next Step**: Start with `01-cli-full-coverage.md`, then immediately tackle `02-directory-layout.md` → `03-daemon-minimal-tcb-refactor.md` → `04-unix-socket-hardening.md` → `05-runtime-permission-enforcement.md`
 
-*Reordered for optimal dependencies and minimal rework (May 2026).*
+*Reordered for optimal dependencies and minimal rework (May 2026). All file names updated.*
