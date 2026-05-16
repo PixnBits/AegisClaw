@@ -235,7 +235,7 @@ func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
 			if err := env.Runtime.Delete(ctx, entry.SandboxID); err != nil {
 				return &api.Response{Error: "delete sandbox: " + err.Error()}
 			}
-	}
+		}
 		if err := env.Registry.Deactivate(req.Name); err != nil {
 			return &api.Response{Error: err.Error()}
 		}
@@ -366,6 +366,8 @@ func restartChildEnv() []string {
 		userKey       = "USER="
 		shellKey      = "SHELL="
 		tmpKey        = "TMPDIR="
+		langKey       = "LANG="
+		xdgRuntimeKey = "XDG_RUNTIME_DIR="
 		sudoUIDKey    = "SUDO_UID="
 		sudoGIDKey    = "SUDO_GID="
 		sudoUserKey   = "SUDO_USER="
@@ -536,10 +538,10 @@ func makeTasksListHandler(env *runtimeEnv) api.Handler {
 				TaskID:          tid,
 				WorkerID:        w.WorkerID,
 				Status:          w.Status,
-				Role:            w.Role         `json:"role"`
-				TaskDescription string              `json:"task_description"`
-			SpawnedAt       string              `json:"spawned_at"`
-		}
+				Role:            w.Role,
+				TaskDescription: w.TaskDescription,
+				SpawnedAt:       w.SpawnedAt.UTC().Format(time.RFC3339),
+			})
 		}
 		raw, err := json.Marshal(out)
 		if err != nil {
@@ -702,17 +704,17 @@ func makeTeamJoinHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
 		if env.TeamRegistry == nil {
 			return &api.Response{Error: "team registry not initialized"}
-	}
+		}
 		var req struct {
 			TeamID string `json:"team_id"`
 			Member string `json:"member"`
 		}
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
-	}
+		}
 		if err := env.TeamRegistry.join(req.TeamID, req.Member); err != nil {
 			return &api.Response{Error: err.Error()}
-	}
+		}
 		return &api.Response{Success: true}
 	}
 }
@@ -721,17 +723,17 @@ func makeTeamLeaveHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
 		if env.TeamRegistry == nil {
 			return &api.Response{Error: "team registry not initialized"}
-	}
+		}
 		var req struct {
 			TeamID string `json:"team_id"`
 			Member string `json:"member"`
 		}
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
-	}
+		}
 		if err := env.TeamRegistry.leave(req.TeamID, req.Member); err != nil {
 			return &api.Response{Error: err.Error()}
-	}
+		}
 		return &api.Response{Success: true}
 	}
 }
@@ -740,17 +742,17 @@ func makeTeamStatusHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
 		if env.TeamRegistry == nil {
 			return &api.Response{Error: "team registry not initialized"}
-	}
+		}
 		var req struct {
 			TeamID string `json:"team_id"`
 		}
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
-	}
+		}
 		rec, ok := env.TeamRegistry.get(req.TeamID)
 		if !ok {
 			return &api.Response{Error: "team not found"}
-	}
+		}
 		raw, _ := json.Marshal(rec)
 		return &api.Response{Success: true, Data: raw}
 	}
@@ -760,20 +762,20 @@ func makeAutonomyShowHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
 		if env.AutonomyRegistry == nil {
 			return &api.Response{Error: "autonomy registry not initialized"}
-	}
+		}
 		var req struct {
 			SessionID string `json:"session_id"`
 		}
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
-	}
+		}
 		rec, ok, err := env.AutonomyRegistry.show(req.SessionID)
 		if err != nil {
 			return &api.Response{Error: err.Error()}
-	}
+		}
 		if !ok {
 			return &api.Response{Error: "no autonomy record for session"}
-	}
+		}
 		raw, _ := json.Marshal(rec)
 		return &api.Response{Success: true, Data: raw}
 	}
@@ -783,39 +785,39 @@ func makeAutonomyGrantHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
 		if env.AutonomyRegistry == nil {
 			return &api.Response{Error: "autonomy registry not initialized"}
-	}
+		}
 		var req struct {
 			SessionID string `json:"session_id"`
 			Preset    string `json:"preset"`
 			Duration  string `json:"duration"`
 			Scope     string `json:"scope"`
-	}
+		}
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
-	}
+		}
 		if strings.TrimSpace(req.SessionID) == "" {
 			return &api.Response{Error: "session_id is required"}
-	}
+		}
 		if env.Sessions == nil {
 			return &api.Response{Error: "session store not initialized"}
-	}
+		}
 		if _, ok := env.Sessions.Get(req.SessionID); !ok {
 			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-	}
+		}
 		var until time.Time
 		if strings.TrimSpace(req.Duration) != "" {
 			d, err := time.ParseDuration(req.Duration)
 			if err != nil {
 				return &api.Response{Error: "invalid duration: " + err.Error()}
-	}
+			}
 			if d <= 0 {
 				return &api.Response{Error: "duration must be greater than 0"}
-	}
+			}
 			until = time.Now().Add(d)
-	}
+		}
 		if err := env.AutonomyRegistry.grant(req.SessionID, req.Preset, req.Scope, until); err != nil {
 			return &api.Response{Error: err.Error()}
-	}
+		}
 		return &api.Response{Success: true}
 	}
 }
@@ -824,17 +826,17 @@ func makeAutonomyRevokeHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
 		if env.AutonomyRegistry == nil {
 			return &api.Response{Error: "autonomy registry not initialized"}
-	}
+		}
 		var req struct {
 			SessionID string `json:"session_id"`
 			Scope     string `json:"scope"`
-	}
+		}
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
-	}
+		}
 		if err := env.AutonomyRegistry.revoke(req.SessionID, req.Scope); err != nil {
 			return &api.Response{Error: err.Error()}
-	}
+		}
 		return &api.Response{Success: true}
 	}
 }
@@ -843,20 +845,19 @@ func makeAutonomyResetHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
 		if env.AutonomyRegistry == nil {
 			return &api.Response{Error: "autonomy registry not initialized"}
-	}
+		}
 		var req struct {
 			SessionID string `json:"session_id"`
-	}
-	}
-	if err := json.Unmarshal(data, &req); err != nil {
+		}
+		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
-	}
+		}
 		if strings.TrimSpace(req.SessionID) == "" {
 			return &api.Response{Error: "session_id is required"}
-	}
+		}
 		if err := env.AutonomyRegistry.reset(req.SessionID); err != nil {
 			return &api.Response{Error: err.Error()}
-	}
+		}
 		return &api.Response{Success: true}
 	}
 }
