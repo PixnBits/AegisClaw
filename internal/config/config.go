@@ -556,7 +556,8 @@ func migrateLegacyPath(name, current, legacyDefault, secureDefault string, logge
 	if current != legacyDefault {
 		return current
 	}
-	if _, err := os.Stat(legacyDefault); err == nil {
+	hasData, err := legacyPathHasReadableData(legacyDefault)
+	if err == nil && hasData {
 		if logger != nil {
 			logger.Warn("using readable legacy path; migrate data to ~/.aegis to complete directory-layout migration",
 				zap.String("name", name),
@@ -566,6 +567,14 @@ func migrateLegacyPath(name, current, legacyDefault, secureDefault string, logge
 		}
 		return current
 	}
+	if logger != nil && err != nil && !os.IsNotExist(err) {
+		logger.Warn("legacy path is not readable; using secure default",
+			zap.String("name", name),
+			zap.String("legacy_path", legacyDefault),
+			zap.String("secure_default", secureDefault),
+			zap.Error(err),
+		)
+	}
 	if logger != nil {
 		logger.Warn("migrating legacy default path to secure layout",
 			zap.String("name", name),
@@ -574,6 +583,32 @@ func migrateLegacyPath(name, current, legacyDefault, secureDefault string, logge
 		)
 	}
 	return secureDefault
+}
+
+func legacyPathHasReadableData(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("legacy path %s must not be a symlink", path)
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return false, err
+		}
+		return len(entries) > 0, nil
+	}
+	if info.Mode().IsRegular() {
+		f, err := os.Open(path)
+		if err != nil {
+			return false, err
+		}
+		defer f.Close()
+		return info.Size() > 0, nil
+	}
+	return false, fmt.Errorf("legacy path %s is neither a directory nor regular file", path)
 }
 
 // getConfigDir returns the path to ~/.aegis/config.

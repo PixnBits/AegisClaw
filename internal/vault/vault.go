@@ -223,16 +223,6 @@ func (v *Vault) Delete(name string) error {
 	return nil
 }
 
-// List returns metadata for all stored secrets.
-func (v *Vault) List() []*SecretEntry {
-	entries, err := v.ListChecked()
-	if err != nil {
-		v.logger.Error("vault directory security check failed", zap.Error(err))
-		return nil
-	}
-	return entries
-}
-
 // ListChecked returns metadata for all stored secrets or an error if the vault
 // directory fails runtime security checks.
 func (v *Vault) ListChecked() ([]*SecretEntry, error) {
@@ -246,16 +236,6 @@ func (v *Vault) ListChecked() ([]*SecretEntry, error) {
 		entries = append(entries, e)
 	}
 	return entries, nil
-}
-
-// ListForSkill returns metadata for secrets associated with a specific skill.
-func (v *Vault) ListForSkill(skillID string) []*SecretEntry {
-	entries, err := v.ListForSkillChecked(skillID)
-	if err != nil {
-		v.logger.Error("vault directory security check failed", zap.Error(err))
-		return nil
-	}
-	return entries
 }
 
 // ListForSkillChecked returns secret metadata for one skill or an error if the
@@ -275,16 +255,6 @@ func (v *Vault) ListForSkillChecked(skillID string) ([]*SecretEntry, error) {
 	return entries, nil
 }
 
-// Has checks if a secret exists.
-func (v *Vault) Has(name string) bool {
-	ok, err := v.HasChecked(name)
-	if err != nil {
-		v.logger.Error("vault directory security check failed", zap.Error(err))
-		return false
-	}
-	return ok
-}
-
 // HasChecked checks if a secret exists or returns an error if the vault
 // directory fails runtime security checks.
 func (v *Vault) HasChecked(name string) (bool, error) {
@@ -295,16 +265,6 @@ func (v *Vault) HasChecked(name string) (bool, error) {
 	}
 	_, exists := v.entries[name]
 	return exists, nil
-}
-
-// GetEntry returns the metadata entry for a secret (no decryption).
-func (v *Vault) GetEntry(name string) (*SecretEntry, bool) {
-	entry, ok, err := v.GetEntryChecked(name)
-	if err != nil {
-		v.logger.Error("vault directory security check failed", zap.Error(err))
-		return nil, false
-	}
-	return entry, ok
 }
 
 // GetEntryChecked returns secret metadata or an error if the vault directory

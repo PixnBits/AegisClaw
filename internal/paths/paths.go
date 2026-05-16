@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -17,7 +18,7 @@ const (
 	UserDirPerm      os.FileMode = 0700
 	UserSharedPerm   os.FileMode = 0750
 	SensitiveDirPerm os.FileMode = 0700
-	RuntimeDirPerm   os.FileMode = 0750
+	RuntimeDirPerm   os.FileMode = 0700
 )
 
 // Layout contains the security-conscious filesystem layout from
@@ -112,7 +113,8 @@ func DefaultSocketPath() (string, error) {
 }
 
 // RuntimeSocketOwner returns the intended owner of /run/user/$UID/aegis and
-// daemon.sock.
+// daemon.sock. Access is owner-only; the GID is retained only so root can set a
+// consistent ownership tuple without granting group access.
 func RuntimeSocketOwner() (RuntimeOwner, error) {
 	uid, gid := os.Getuid(), os.Getgid()
 	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
@@ -174,8 +176,8 @@ func EnsureRuntimeDir(dir string) error {
 	return nil
 }
 
-// SetRuntimeSocketOwner applies the runtime owner and strict permissions to the
-// bound daemon socket.
+// SetRuntimeSocketOwner applies the runtime owner and strict owner-only
+// permissions to the bound daemon socket.
 func SetRuntimeSocketOwner(path string) error {
 	owner, err := RuntimeSocketOwner()
 	if err != nil {
@@ -184,7 +186,7 @@ func SetRuntimeSocketOwner(path string) error {
 	if err := chownIfRoot(path, owner); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0660)
+	return os.Chmod(path, 0600)
 }
 
 // VerifySensitiveDir enforces ownership, mode, and O_NOFOLLOW traversal for
@@ -277,9 +279,12 @@ func ensureDir(path string, perm os.FileMode, repair bool) error {
 	if path == "" {
 		return nil
 	}
+	if err := verifyPathParentsNoSymlinks(path); err != nil {
+		return err
+	}
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		if err := os.MkdirAll(path, perm); err != nil {
+		if err := mkdirAllNoSymlinks(path, perm); err != nil {
 			return fmt.Errorf("create %s: %w", path, err)
 		}
 		return os.Chmod(path, perm)
@@ -302,6 +307,73 @@ func ensureDir(path string, perm os.FileMode, repair bool) error {
 		}
 	}
 	return nil
+}
+
+func mkdirAllNoSymlinks(path string, perm os.FileMode) error {
+	clean, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(clean)
+	rest := clean[len(volume):]
+	current := volume + string(filepath.Separator)
+	for _, part := range splitPath(rest) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(current, perm); err != nil && !os.IsExist(err) {
+				return err
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s must not be a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", current)
+		}
+	}
+	return nil
+}
+
+func verifyPathParentsNoSymlinks(path string) error {
+	clean, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(clean)
+	volume := filepath.VolumeName(parent)
+	rest := parent[len(volume):]
+	current := volume + string(filepath.Separator)
+	for _, part := range splitPath(rest) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s must not be a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", current)
+		}
+	}
+	return nil
+}
+
+func splitPath(path string) []string {
+	trimmed := filepath.Clean(path)
+	trimmed = strings.TrimPrefix(trimmed, string(filepath.Separator))
+	if trimmed == "." || trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, string(filepath.Separator))
 }
 
 func chownIfRoot(path string, owner RuntimeOwner) error {

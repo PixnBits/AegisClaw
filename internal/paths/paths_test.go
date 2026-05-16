@@ -133,6 +133,57 @@ func TestEnsureRuntimeDirRejectsSymlinkBeforeChmod(t *testing.T) {
 	}
 }
 
+func TestEnsureSecureDirectoriesRejectsSymlinkedParentBeforeMkdirAll(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked-parent")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	layout := testLayout(root)
+	layout.RootDir = filepath.Join(link, ".aegis")
+	layout.ConfigDir = filepath.Join(layout.RootDir, "config")
+	layout.WorkspaceDir = filepath.Join(layout.RootDir, "workspace")
+	layout.CacheDir = filepath.Join(layout.RootDir, "cache")
+	layout.LogsDir = filepath.Join(layout.RootDir, "logs")
+	layout.GitDir = filepath.Join(layout.RootDir, "git")
+	layout.VMDir = filepath.Join(layout.RootDir, "vm")
+	layout.DataDir = filepath.Join(layout.RootDir, "data")
+	layout.StoreDir = filepath.Join(layout.DataDir, "store")
+	layout.AuditDir = filepath.Join(layout.DataDir, "audit")
+	layout.RegistryDir = filepath.Join(layout.DataDir, "registry")
+	layout.ProposalDir = filepath.Join(layout.RegistryDir, "proposals")
+	layout.SBOMDir = filepath.Join(layout.DataDir, "sbom")
+	layout.SecretsDir = filepath.Join(layout.RootDir, "secrets")
+
+	if err := EnsureSecureDirectories(layout); err == nil {
+		t.Fatal("expected symlinked parent to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(target, ".aegis")); !os.IsNotExist(err) {
+		t.Fatalf("MkdirAll followed symlinked parent; stat err=%v", err)
+	}
+}
+
+func TestSetRuntimeSocketOwnerUsesOwnerOnlyMode(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "daemon.sock")
+	if err := os.WriteFile(socket, []byte{}, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetRuntimeSocketOwner(socket); err != nil {
+		t.Fatalf("SetRuntimeSocketOwner: %v", err)
+	}
+	info, err := os.Stat(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("socket mode = %04o, want 0600", got)
+	}
+}
+
 func TestDefaultSocketPathLinuxNotUnderHome(t *testing.T) {
 	path, err := DefaultSocketPath()
 	if err != nil {

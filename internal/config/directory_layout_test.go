@@ -99,6 +99,9 @@ func TestNormalizeConfigPathsPreservesReadableLegacyData(t *testing.T) {
 	if err := os.MkdirAll(oldAudit, 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(oldAudit, "kernel.merkle.jsonl"), []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := defaults
 	cfg.Audit.Dir = oldAudit
 
@@ -106,5 +109,48 @@ func TestNormalizeConfigPathsPreservesReadableLegacyData(t *testing.T) {
 
 	if cfg.Audit.Dir != oldAudit {
 		t.Fatalf("readable legacy audit path was not preserved: got %q want %q", cfg.Audit.Dir, oldAudit)
+	}
+}
+
+func TestNormalizeConfigPathsMigratesEmptyLegacyDir(t *testing.T) {
+	t.Setenv("SUDO_USER", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	defaults := DefaultConfig()
+	oldAudit := filepath.Join(home, ".local", "share", "aegisclaw", "audit")
+	if err := os.MkdirAll(oldAudit, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults
+	cfg.Audit.Dir = oldAudit
+
+	normalizeConfigPaths(&cfg, defaults, nil)
+
+	if cfg.Audit.Dir != defaults.Audit.Dir {
+		t.Fatalf("empty legacy audit path = %q, want secure default %q", cfg.Audit.Dir, defaults.Audit.Dir)
+	}
+}
+
+func TestNormalizeConfigPathsMigratesLegacySymlink(t *testing.T) {
+	t.Setenv("SUDO_USER", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	defaults := DefaultConfig()
+	oldAudit := filepath.Join(home, ".local", "share", "aegisclaw", "audit")
+	if err := os.MkdirAll(filepath.Dir(oldAudit), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), oldAudit); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults
+	cfg.Audit.Dir = oldAudit
+
+	normalizeConfigPaths(&cfg, defaults, nil)
+
+	if cfg.Audit.Dir != defaults.Audit.Dir {
+		t.Fatalf("symlink legacy audit path = %q, want secure default %q", cfg.Audit.Dir, defaults.Audit.Dir)
 	}
 }

@@ -59,7 +59,11 @@ func TestVaultSecretAddHandler_HappyPath(t *testing.T) {
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %s", resp.Error)
 	}
-	if !env.Vault.Has("mytoken") {
+	ok, err := env.Vault.HasChecked("mytoken")
+	if err != nil {
+		t.Fatalf("HasChecked: %v", err)
+	}
+	if !ok {
 		t.Fatal("expected secret to be stored in vault")
 	}
 }
@@ -145,7 +149,10 @@ func TestVaultSecretRotateHandler_PreservesSkillID(t *testing.T) {
 		t.Fatalf("expected success, got: %s", resp.Error)
 	}
 
-	entry, ok := env.Vault.GetEntry("apikey")
+	entry, ok, err := env.Vault.GetEntryChecked("apikey")
+	if err != nil {
+		t.Fatalf("GetEntryChecked: %v", err)
+	}
 	if !ok {
 		t.Fatal("entry should still exist after rotate")
 	}
@@ -256,7 +263,11 @@ func TestVaultSecretDeleteHandler_HappyPath(t *testing.T) {
 	if !resp.Success {
 		t.Fatalf("expected success, got: %s", resp.Error)
 	}
-	if env.Vault.Has("todel") {
+	ok, err := env.Vault.HasChecked("todel")
+	if err != nil {
+		t.Fatalf("HasChecked: %v", err)
+	}
+	if ok {
 		t.Fatal("secret should be removed after delete")
 	}
 }

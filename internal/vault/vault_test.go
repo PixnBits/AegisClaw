@@ -198,7 +198,10 @@ func TestVault_AddUpdate(t *testing.T) {
 		t.Fatalf("expected %q, got %q", "v2", string(got))
 	}
 
-	entry, ok := v.GetEntry("token")
+	entry, ok, err := v.GetEntryChecked("token")
+	if err != nil {
+		t.Fatalf("GetEntryChecked: %v", err)
+	}
 	if !ok {
 		t.Fatal("GetEntry returned false")
 	}
@@ -224,7 +227,11 @@ func TestVault_Delete(t *testing.T) {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	if v.Has("ephemeral") {
+	ok, err := v.HasChecked("ephemeral")
+	if err != nil {
+		t.Fatalf("HasChecked: %v", err)
+	}
+	if ok {
 		t.Fatal("secret should be gone after delete")
 	}
 
@@ -258,7 +265,11 @@ func TestVault_List(t *testing.T) {
 		t.Fatalf("NewVault failed: %v", err)
 	}
 
-	if entries := v.List(); len(entries) != 0 {
+	entries, err := v.ListChecked()
+	if err != nil {
+		t.Fatalf("ListChecked: %v", err)
+	}
+	if len(entries) != 0 {
 		t.Fatalf("expected 0 entries, got %d", len(entries))
 	}
 
@@ -266,7 +277,10 @@ func TestVault_List(t *testing.T) {
 	v.Add("b", "s1", []byte("data-b"))
 	v.Add("c", "s2", []byte("data-c"))
 
-	entries := v.List()
+	entries, err = v.ListChecked()
+	if err != nil {
+		t.Fatalf("ListChecked: %v", err)
+	}
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
@@ -285,17 +299,26 @@ func TestVault_ListForSkill(t *testing.T) {
 	v.Add("y", "skill-alpha", []byte("2"))
 	v.Add("z", "skill-beta", []byte("3"))
 
-	alpha := v.ListForSkill("skill-alpha")
+	alpha, err := v.ListForSkillChecked("skill-alpha")
+	if err != nil {
+		t.Fatalf("ListForSkillChecked: %v", err)
+	}
 	if len(alpha) != 2 {
 		t.Fatalf("expected 2 for skill-alpha, got %d", len(alpha))
 	}
 
-	beta := v.ListForSkill("skill-beta")
+	beta, err := v.ListForSkillChecked("skill-beta")
+	if err != nil {
+		t.Fatalf("ListForSkillChecked: %v", err)
+	}
 	if len(beta) != 1 {
 		t.Fatalf("expected 1 for skill-beta, got %d", len(beta))
 	}
 
-	none := v.ListForSkill("skill-gamma")
+	none, err := v.ListForSkillChecked("skill-gamma")
+	if err != nil {
+		t.Fatalf("ListForSkillChecked: %v", err)
+	}
 	if len(none) != 0 {
 		t.Fatalf("expected 0 for skill-gamma, got %d", len(none))
 	}
@@ -310,13 +333,21 @@ func TestVault_Has(t *testing.T) {
 		t.Fatalf("NewVault failed: %v", err)
 	}
 
-	if v.Has("missing") {
+	ok, err := v.HasChecked("missing")
+	if err != nil {
+		t.Fatalf("HasChecked: %v", err)
+	}
+	if ok {
 		t.Fatal("Has should be false for missing secret")
 	}
 
 	v.Add("present", "s1", []byte("val"))
 
-	if !v.Has("present") {
+	ok, err = v.HasChecked("present")
+	if err != nil {
+		t.Fatalf("HasChecked: %v", err)
+	}
+	if !ok {
 		t.Fatal("Has should be true for added secret")
 	}
 }
@@ -332,7 +363,10 @@ func TestVault_GetEntry(t *testing.T) {
 
 	v.Add("meta", "skill-m", []byte("data"))
 
-	entry, ok := v.GetEntry("meta")
+	entry, ok, err := v.GetEntryChecked("meta")
+	if err != nil {
+		t.Fatalf("GetEntryChecked: %v", err)
+	}
 	if !ok {
 		t.Fatal("GetEntry returned false")
 	}
@@ -349,7 +383,10 @@ func TestVault_GetEntry(t *testing.T) {
 		t.Fatal("CreatedAt should not be zero")
 	}
 
-	_, ok = v.GetEntry("nope")
+	_, ok, err = v.GetEntryChecked("nope")
+	if err != nil {
+		t.Fatalf("GetEntryChecked: %v", err)
+	}
 	if ok {
 		t.Fatal("GetEntry should return false for missing")
 	}
@@ -520,7 +557,7 @@ func TestVault_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = v.List()
+			_, _ = v.ListChecked()
 		}()
 	}
 
@@ -568,12 +605,18 @@ func TestVault_IndexPersistence(t *testing.T) {
 		t.Fatalf("reopen NewVault failed: %v", err)
 	}
 
-	entries := v2.List()
+	entries, err := v2.ListChecked()
+	if err != nil {
+		t.Fatalf("ListChecked: %v", err)
+	}
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries after reopen, got %d", len(entries))
 	}
 
-	s1 := v2.ListForSkill("s1")
+	s1, err := v2.ListForSkillChecked("s1")
+	if err != nil {
+		t.Fatalf("ListForSkillChecked: %v", err)
+	}
 	if len(s1) != 2 {
 		t.Fatalf("expected 2 for s1, got %d", len(s1))
 	}
