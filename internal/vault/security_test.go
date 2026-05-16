@@ -33,7 +33,9 @@ func TestSecrets_NeverInLogs(t *testing.T) {
 	v.Get("apitoken")
 	v.Delete("apitoken")
 	v.Add("readdedtoken", "skill-log", []byte(secretValue))
-	v.List()
+	if _, err := v.ListChecked(); err != nil {
+		t.Fatalf("ListChecked: %v", err)
+	}
 
 	for _, entry := range observed.All() {
 		msg := entry.Message
@@ -143,7 +145,11 @@ func TestSecrets_DifferentVaultsIsolated(t *testing.T) {
 	v2, _ := NewVault(dir2, priv2, logger)
 
 	// v2 should not have v1's secret
-	if v2.Has("shared") {
+	ok, err := v2.HasChecked("shared")
+	if err != nil {
+		t.Fatalf("HasChecked: %v", err)
+	}
+	if ok {
 		t.Fatal("vault2 should not have vault1's secret")
 	}
 
@@ -154,7 +160,7 @@ func TestSecrets_DifferentVaultsIsolated(t *testing.T) {
 	os.WriteFile(dstFile, data, 0600)
 
 	// v2 still cannot decrypt (wrong age identity)
-	_, err := v2.decrypt(data)
+	_, err = v2.decrypt(data)
 	if err == nil {
 		t.Fatal("vault2 should not be able to decrypt vault1's secret")
 	}

@@ -119,14 +119,23 @@ var auditCmd = &cobra.Command{
 
 // auditVerifyCmd verifies the integrity of the Merkle audit chain.
 var auditVerifyCmd = &cobra.Command{
-	Use:   "verify",
+	Use:   "verify [latest|hash]",
+	Args:  cobra.MaximumNArgs(1),
 	Short: "Verify the Merkle audit chain integrity",
-	Long: `Reads the entire audit log and verifies:
+	Long: `Reads the audit log and verifies:
   - Each entry's SHA-256 hash is correct for its contents
   - Each entry's prev_hash links to the previous entry's hash
-  - Each entry's Ed25519 signature is valid`,
+  - Each entry's Ed25519 signature is valid
+
+With a hash argument (or prefix of at least 8 hex chars), verifies the chain
+up to and including the matching entry. The keyword "latest" verifies the
+full chain (default when no argument is given).
+
+Use --all as an explicit alias for full-chain verification (docs/specs/cli.md).`,
 	RunE: runAuditVerify,
 }
+
+var auditVerifyAll bool
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
@@ -134,6 +143,8 @@ func Execute() {
 }
 
 func init() {
+	auditVerifyCmd.Flags().BoolVar(&auditVerifyAll, "all", false, "Verify the entire chain (same as latest)")
+
 	// Global flags (CLI spec §2).
 	rootCmd.PersistentFlags().BoolVar(&globalJSON, "json", false, "Output in structured JSON (for scripting)")
 	rootCmd.PersistentFlags().BoolVarP(&globalVerbose, "verbose", "v", false, "Increase verbosity")
@@ -195,4 +206,7 @@ func init() {
 	statusCmd.Flags().BoolVar(&statusTUI, "tui", false, "Launch interactive TUI dashboard")
 	startCmd.Flags().BoolVar(&safeModeFlag, "safe", false, "Start in Safe Mode: minimal recovery environment, no skills, no Court, no LLM")
 	startCmd.Flags().StringVar(&startModelFlag, "model", "", "Override the default LLM model for this session (must be in the registry)")
+	startCmd.Flags().BoolVar(&startForeground, "foreground", false, "Run daemon in foreground (default starts in background)")
+	startCmd.Flags().BoolVar(&startAllowExistingDaemon, "allow-existing-daemon", false, "Internal: allow start when daemon is already running")
+	_ = startCmd.Flags().MarkHidden("allow-existing-daemon")
 }

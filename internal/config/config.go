@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
@@ -29,7 +30,7 @@ type GatewayChannelConfig struct {
 	Extra map[string]string `yaml:"extra" mapstructure:"extra"`
 }
 
-// Config holds the application configuration loaded from ~/.config/aegisclaw/config.yaml
+// Config holds the application configuration loaded from ~/.aegis/config/config.yaml
 // Security: All paths are validated to prevent directory traversal attacks.
 // Defaults are set to secure, isolated locations with no host filesystem access.
 type Config struct {
@@ -69,7 +70,7 @@ type Config struct {
 		MaxConcurrentBuilds int    `yaml:"max_concurrent_builds" mapstructure:"max_concurrent_builds"`
 		BuildTimeoutMinutes int    `yaml:"build_timeout_minutes" mapstructure:"build_timeout_minutes"`
 		// SBOMDir is where sbom.json files are written after a successful build.
-		// Defaults to ~/.local/share/aegisclaw/sbom.
+		// Defaults to ~/.aegis/data/sbom.
 		// Set to "" to disable SBOM generation.
 		SBOMDir string `yaml:"sbom_dir" mapstructure:"sbom_dir"`
 	} `yaml:"builder" mapstructure:"builder"`
@@ -103,12 +104,12 @@ type Config struct {
 	Snapshot struct {
 		// Dir is where VM snapshots (memory + disk state) are stored.
 		// Snapshots are used for fast Orchestrator wakeups and Worker spawning.
-		// Defaults to ~/.local/share/aegisclaw/snapshots.
+		// Defaults to ~/.aegis/vm/snapshots.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"snapshot" mapstructure:"snapshot"`
 	Memory struct {
 		// Dir is where the encrypted Memory Store vault file is stored.
-		// Defaults to ~/.local/share/aegisclaw/memory.
+		// Defaults to ~/.aegis/data/memory.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 		// EmbeddingModel is the Ollama model used for semantic embeddings.
 		// Defaults to nomic-embed-text.
@@ -128,7 +129,7 @@ type Config struct {
 	} `yaml:"memory" mapstructure:"memory"`
 	EventBus struct {
 		// Dir is where event bus state (timers, subscriptions, approvals) is stored.
-		// Defaults to ~/.local/share/aegisclaw/eventbus.
+		// Defaults to ~/.aegis/data/eventbus.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 		// MaxPendingTimers is the hard cap on active timers. Defaults to 20.
 		MaxPendingTimers int `yaml:"max_pending_timers" mapstructure:"max_pending_timers"`
@@ -137,7 +138,7 @@ type Config struct {
 	} `yaml:"eventbus" mapstructure:"eventbus"`
 	Worker struct {
 		// Dir is where worker records are persisted.
-		// Defaults to ~/.local/share/aegisclaw/workers.
+		// Defaults to ~/.aegis/data/workers.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 		// MaxConcurrent is the hard cap on simultaneously running Worker VMs.
 		// Defaults to 4.
@@ -162,7 +163,7 @@ type Config struct {
 		// injection files (AGENTS.md, SOUL.md, TOOLS.md, SKILL.md).
 		// When the directory exists, its contents are injected into the agent
 		// system prompt and, for SKILL.md, into skill build prompts.
-		// Defaults to ~/.aegisclaw/workspace.
+		// Defaults to ~/.aegis/workspace.
 		// Set to "" to disable workspace prompt injection entirely.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"workspace" mapstructure:"workspace"`
@@ -193,7 +194,7 @@ type Config struct {
 	Lookup struct {
 		// Dir is the directory where the persistent chromem-go vector database
 		// for the dynamic semantic tool-lookup skill is stored.
-		// Defaults to ~/.local/share/aegisclaw/vectordb.
+		// Defaults to ~/.aegis/data/vectordb.
 		Dir string `yaml:"dir" mapstructure:"dir"`
 	} `yaml:"lookup" mapstructure:"lookup"`
 }
@@ -202,10 +203,27 @@ type Config struct {
 // Security: Defaults enforce isolation - Firecracker binaries in system paths,
 // rootfs templates in dedicated directory, audit logs in user space.
 func DefaultConfig() Config {
-	home, err := resolveConfigHome()
+	layout, err := aegispaths.DefaultLayout()
 	if err != nil {
-		// Fallback to /tmp if home dir unavailable - not ideal but prevents panic
-		home = "/tmp"
+		// Fallback to /tmp if home dir unavailable - not ideal but prevents panic.
+		tmpRoot := filepath.Join("/tmp", ".aegis")
+		layout = aegispaths.Layout{
+			RootDir:      tmpRoot,
+			ConfigDir:    filepath.Join(tmpRoot, "config"),
+			WorkspaceDir: filepath.Join(tmpRoot, "workspace"),
+			CacheDir:     filepath.Join(tmpRoot, "cache"),
+			LogsDir:      filepath.Join(tmpRoot, "logs"),
+			GitDir:       filepath.Join(tmpRoot, "git"),
+			VMDir:        filepath.Join(tmpRoot, "vm"),
+			DataDir:      filepath.Join(tmpRoot, "data"),
+			StoreDir:     filepath.Join(tmpRoot, "data", "store"),
+			AuditDir:     filepath.Join(tmpRoot, "data", "audit"),
+			RegistryDir:  filepath.Join(tmpRoot, "data", "registry"),
+			ProposalDir:  filepath.Join(tmpRoot, "data", "registry", "proposals"),
+			SBOMDir:      filepath.Join(tmpRoot, "data", "sbom"),
+			SecretsDir:   filepath.Join(tmpRoot, "secrets"),
+			SocketPath:   filepath.Join(tmpRoot, "run", "aegis", "daemon.sock"),
+		}
 	}
 
 	return Config{
@@ -227,7 +245,7 @@ func DefaultConfig() Config {
 		Audit: struct {
 			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
-			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "audit"),
+			Dir: layout.AuditDir,
 		},
 		Sandbox: struct {
 			StateDir      string `yaml:"state_dir" mapstructure:"state_dir"`
@@ -236,23 +254,23 @@ func DefaultConfig() Config {
 			RegistryPath  string `yaml:"registry_path" mapstructure:"registry_path"`
 			IsolationMode string `yaml:"isolation_mode" mapstructure:"isolation_mode"`
 		}{
-			StateDir:      filepath.Join(home, ".local", "share", "aegisclaw", "sandboxes"),
-			ChrootBase:    filepath.Join(home, ".local", "share", "aegisclaw", "jailer"),
+			StateDir:      filepath.Join(layout.VMDir, "sandboxes"),
+			ChrootBase:    filepath.Join(layout.VMDir, "jailer"),
 			KernelImage:   "/var/lib/aegisclaw/vmlinux-5.10.225",
-			RegistryPath:  filepath.Join(home, ".local", "share", "aegisclaw", "registry.json"),
+			RegistryPath:  filepath.Join(layout.RegistryDir, "skills.json"),
 			IsolationMode: "firecracker",
 		},
 		Proposal: struct {
 			StoreDir string `yaml:"store_dir" mapstructure:"store_dir"`
 		}{
-			StoreDir: filepath.Join(home, ".local", "share", "aegisclaw", "proposals"),
+			StoreDir: layout.ProposalDir,
 		},
 		Court: struct {
 			PersonaDir string `yaml:"persona_dir" mapstructure:"persona_dir"`
 			SessionDir string `yaml:"session_dir" mapstructure:"session_dir"`
 		}{
-			PersonaDir: filepath.Join(home, ".config", "aegisclaw", "personas"),
-			SessionDir: filepath.Join(home, ".local", "share", "aegisclaw", "court-sessions"),
+			PersonaDir: filepath.Join(layout.ConfigDir, "personas"),
+			SessionDir: filepath.Join(layout.DataDir, "court-sessions"),
 		},
 		Builder: struct {
 			RootfsTemplate      string `yaml:"rootfs_template" mapstructure:"rootfs_template"`
@@ -262,15 +280,15 @@ func DefaultConfig() Config {
 			SBOMDir             string `yaml:"sbom_dir" mapstructure:"sbom_dir"`
 		}{
 			RootfsTemplate:      "/var/lib/aegisclaw/rootfs-templates/builder.ext4",
-			WorkspaceBaseDir:    filepath.Join(home, ".local", "share", "aegisclaw", "workspaces"),
+			WorkspaceBaseDir:    filepath.Join(layout.CacheDir, "workspaces"),
 			MaxConcurrentBuilds: 2,
 			BuildTimeoutMinutes: 10,
-			SBOMDir:             filepath.Join(home, ".local", "share", "aegisclaw", "sbom"),
+			SBOMDir:             layout.SBOMDir,
 		},
 		Vault: struct {
 			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
-			Dir: filepath.Join(home, ".config", "aegisclaw", "secrets"),
+			Dir: layout.SecretsDir,
 		},
 		Ollama: struct {
 			Endpoint     string `yaml:"endpoint" mapstructure:"endpoint"`
@@ -281,19 +299,19 @@ func DefaultConfig() Config {
 		}{
 			Endpoint:     "http://127.0.0.1:11434",
 			TimeoutSecs:  300,
-			RegistryPath: filepath.Join(home, ".local", "share", "aegisclaw", "model-registry.json"),
-			ModelDir:     filepath.Join(home, ".local", "share", "aegisclaw", "models"),
+			RegistryPath: filepath.Join(layout.DataDir, "model-registry.json"),
+			ModelDir:     filepath.Join(layout.CacheDir, "models"),
 			DefaultModel: "gemma4:26b",
 		},
 		Daemon: struct {
 			SocketPath string `yaml:"socket_path" mapstructure:"socket_path"`
 		}{
-			SocketPath: "/run/aegisclaw.sock",
+			SocketPath: layout.SocketPath,
 		},
 		Composition: struct {
 			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
-			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "composition"),
+			Dir: filepath.Join(layout.DataDir, "composition"),
 		},
 		Agent: struct {
 			RootfsPath       string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
@@ -305,7 +323,7 @@ func DefaultConfig() Config {
 		Snapshot: struct {
 			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
-			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "snapshots"),
+			Dir: filepath.Join(layout.VMDir, "snapshots"),
 		},
 		Memory: struct {
 			Dir              string `yaml:"dir" mapstructure:"dir"`
@@ -315,7 +333,7 @@ func DefaultConfig() Config {
 			CompactOnStartup bool   `yaml:"compact_on_startup" mapstructure:"compact_on_startup"`
 			PIIRedaction     bool   `yaml:"pii_redaction" mapstructure:"pii_redaction"`
 		}{
-			Dir:              filepath.Join(home, ".local", "share", "aegisclaw", "memory"),
+			Dir:              filepath.Join(layout.DataDir, "memory"),
 			EmbeddingModel:   "nomic-embed-text",
 			MaxSizeMB:        2048,
 			DefaultTTL:       "90d",
@@ -327,7 +345,7 @@ func DefaultConfig() Config {
 			MaxPendingTimers int    `yaml:"max_pending_timers" mapstructure:"max_pending_timers"`
 			MaxSubscriptions int    `yaml:"max_subscriptions" mapstructure:"max_subscriptions"`
 		}{
-			Dir:              filepath.Join(home, ".local", "share", "aegisclaw", "eventbus"),
+			Dir:              filepath.Join(layout.DataDir, "eventbus"),
 			MaxPendingTimers: 20,
 			MaxSubscriptions: 20,
 		},
@@ -337,7 +355,7 @@ func DefaultConfig() Config {
 			DefaultTimeoutMins int    `yaml:"default_timeout_mins" mapstructure:"default_timeout_mins"`
 			RootfsPath         string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
 		}{
-			Dir:                filepath.Join(home, ".local", "share", "aegisclaw", "workers"),
+			Dir:                filepath.Join(layout.DataDir, "workers"),
 			MaxConcurrent:      4,
 			DefaultTimeoutMins: 20,
 			RootfsPath:         "/var/lib/aegisclaw/rootfs-templates/alpine.ext4",
@@ -352,7 +370,7 @@ func DefaultConfig() Config {
 		Workspace: struct {
 			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
-			Dir: filepath.Join(home, ".aegisclaw", "workspace"),
+			Dir: layout.WorkspaceDir,
 		},
 		Gateway: struct {
 			Enabled  bool                   `yaml:"enabled" mapstructure:"enabled"`
@@ -369,7 +387,7 @@ func DefaultConfig() Config {
 		Lookup: struct {
 			Dir string `yaml:"dir" mapstructure:"dir"`
 		}{
-			Dir: filepath.Join(home, ".local", "share", "aegisclaw", "vectordb"),
+			Dir: filepath.Join(layout.DataDir, "vectordb"),
 		},
 	}
 }
@@ -384,7 +402,7 @@ func resolveConfigHome() (string, error) {
 	return os.UserHomeDir()
 }
 
-// Load reads configuration from ~/.config/aegisclaw/config.yaml
+// Load reads configuration from ~/.aegis/config/config.yaml
 // Creates the config directory and file with defaults if they don't exist.
 // Security: Validates all paths are absolute and within expected directories.
 // Uses viper for safe YAML parsing with no code execution.
@@ -423,6 +441,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("builder.workspace_base_dir", defaults.Builder.WorkspaceBaseDir)
 	viper.SetDefault("builder.max_concurrent_builds", defaults.Builder.MaxConcurrentBuilds)
 	viper.SetDefault("builder.build_timeout_minutes", defaults.Builder.BuildTimeoutMinutes)
+	viper.SetDefault("builder.sbom_dir", defaults.Builder.SBOMDir)
 	viper.SetDefault("vault.dir", defaults.Vault.Dir)
 	viper.SetDefault("ollama.endpoint", defaults.Ollama.Endpoint)
 	viper.SetDefault("ollama.timeout_secs", defaults.Ollama.TimeoutSecs)
@@ -439,6 +458,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("memory.max_size_mb", defaults.Memory.MaxSizeMB)
 	viper.SetDefault("memory.default_ttl", defaults.Memory.DefaultTTL)
 	viper.SetDefault("memory.compact_on_startup", defaults.Memory.CompactOnStartup)
+	viper.SetDefault("memory.pii_redaction", defaults.Memory.PIIRedaction)
 	viper.SetDefault("eventbus.dir", defaults.EventBus.Dir)
 	viper.SetDefault("eventbus.max_pending_timers", defaults.EventBus.MaxPendingTimers)
 	viper.SetDefault("eventbus.max_subscriptions", defaults.EventBus.MaxSubscriptions)
@@ -469,6 +489,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+	normalizeConfigPaths(&config, defaults, logger)
 
 	// Validate configuration
 	if err := validateConfig(&config); err != nil {
@@ -484,13 +505,171 @@ func Load(logger *zap.Logger) (*Config, error) {
 	return &config, nil
 }
 
-// getConfigDir returns the path to ~/.config/aegisclaw
-func getConfigDir() (string, error) {
+func normalizeConfigPaths(config *Config, defaults Config, logger *zap.Logger) {
+	if config == nil {
+		return
+	}
 	home, err := resolveConfigHome()
+	if err != nil {
+		home = ""
+	}
+	oldConfigRoot := filepath.Join(home, ".config", "aegisclaw")
+	oldDataRoot := filepath.Join(home, ".local", "share", "aegisclaw")
+	oldWorkspaceRoot := filepath.Join(home, ".aegisclaw")
+
+	config.Audit.Dir = migrateLegacyPath("audit.dir", config.Audit.Dir, filepath.Join(oldDataRoot, "audit"), defaults.Audit.Dir, logger)
+	config.Sandbox.StateDir = migrateLegacyPath("sandbox.state_dir", config.Sandbox.StateDir, filepath.Join(oldDataRoot, "sandboxes"), defaults.Sandbox.StateDir, logger)
+	config.Sandbox.ChrootBase = migrateLegacyPath("sandbox.chroot_base", config.Sandbox.ChrootBase, filepath.Join(oldDataRoot, "jailer"), defaults.Sandbox.ChrootBase, logger)
+	config.Sandbox.RegistryPath = migrateLegacyPath("sandbox.registry_path", config.Sandbox.RegistryPath, filepath.Join(oldDataRoot, "registry.json"), defaults.Sandbox.RegistryPath, logger)
+	config.Proposal.StoreDir = migrateLegacyPath("proposal.store_dir", config.Proposal.StoreDir, filepath.Join(oldDataRoot, "proposals"), defaults.Proposal.StoreDir, logger)
+	config.Court.PersonaDir = migrateLegacyPath("court.persona_dir", config.Court.PersonaDir, filepath.Join(oldConfigRoot, "personas"), defaults.Court.PersonaDir, logger)
+	config.Court.SessionDir = migrateLegacyPath("court.session_dir", config.Court.SessionDir, filepath.Join(oldDataRoot, "court-sessions"), defaults.Court.SessionDir, logger)
+	config.Builder.WorkspaceBaseDir = migrateLegacyPath("builder.workspace_base_dir", config.Builder.WorkspaceBaseDir, filepath.Join(oldDataRoot, "workspaces"), defaults.Builder.WorkspaceBaseDir, logger)
+	config.Builder.SBOMDir = migrateLegacyPath("builder.sbom_dir", config.Builder.SBOMDir, filepath.Join(oldDataRoot, "sbom"), defaults.Builder.SBOMDir, logger)
+	config.Vault.Dir = migrateLegacyPath("vault.dir", config.Vault.Dir, filepath.Join(oldConfigRoot, "secrets"), defaults.Vault.Dir, logger)
+	config.Ollama.RegistryPath = migrateLegacyPath("ollama.registry_path", config.Ollama.RegistryPath, filepath.Join(oldDataRoot, "model-registry.json"), defaults.Ollama.RegistryPath, logger)
+	config.Ollama.ModelDir = migrateLegacyPath("ollama.model_dir", config.Ollama.ModelDir, filepath.Join(oldDataRoot, "models"), defaults.Ollama.ModelDir, logger)
+	config.Composition.Dir = migrateLegacyPath("composition.dir", config.Composition.Dir, filepath.Join(oldDataRoot, "composition"), defaults.Composition.Dir, logger)
+	config.Snapshot.Dir = migrateLegacyPath("snapshot.dir", config.Snapshot.Dir, filepath.Join(oldDataRoot, "snapshots"), defaults.Snapshot.Dir, logger)
+	config.Memory.Dir = migrateLegacyPath("memory.dir", config.Memory.Dir, filepath.Join(oldDataRoot, "memory"), defaults.Memory.Dir, logger)
+	config.EventBus.Dir = migrateLegacyPath("eventbus.dir", config.EventBus.Dir, filepath.Join(oldDataRoot, "eventbus"), defaults.EventBus.Dir, logger)
+	config.Worker.Dir = migrateLegacyPath("worker.dir", config.Worker.Dir, filepath.Join(oldDataRoot, "workers"), defaults.Worker.Dir, logger)
+	config.Workspace.Dir = migrateLegacyPath("workspace.dir", config.Workspace.Dir, filepath.Join(oldWorkspaceRoot, "workspace"), defaults.Workspace.Dir, logger)
+	config.Lookup.Dir = migrateLegacyPath("lookup.dir", config.Lookup.Dir, filepath.Join(oldDataRoot, "vectordb"), defaults.Lookup.Dir, logger)
+	// Migrate the pre-directory-layout socket default. Binding directly under
+	// /run is too broad; the secure default is /run/user/$UID/aegis/daemon.sock.
+	if config.Daemon.SocketPath == "" || config.Daemon.SocketPath == "/run/aegisclaw.sock" {
+		if logger != nil && config.Daemon.SocketPath == "/run/aegisclaw.sock" {
+			logger.Warn("migrating insecure legacy daemon socket path",
+				zap.String("old_path", config.Daemon.SocketPath),
+				zap.String("new_path", defaults.Daemon.SocketPath),
+			)
+		}
+		config.Daemon.SocketPath = defaults.Daemon.SocketPath
+	}
+}
+
+func migrateLegacyPath(name, current, legacyDefault, secureDefault string, logger *zap.Logger) string {
+	if current == "" {
+		return secureDefault
+	}
+	if current != legacyDefault {
+		return current
+	}
+	hasData, err := legacyPathHasReadableData(name, legacyDefault)
+	if err == nil && hasData {
+		if logger != nil {
+			logger.Warn("using readable legacy path; migrate data to ~/.aegis to complete directory-layout migration",
+				zap.String("name", name),
+				zap.String("legacy_path", legacyDefault),
+				zap.String("secure_default", secureDefault),
+			)
+		}
+		return current
+	}
+	if logger != nil && err != nil && !os.IsNotExist(err) {
+		logger.Warn("legacy path is not readable; using secure default",
+			zap.String("name", name),
+			zap.String("legacy_path", legacyDefault),
+			zap.String("secure_default", secureDefault),
+			zap.Error(err),
+		)
+	}
+	if logger != nil {
+		logger.Warn("migrating legacy default path to secure layout",
+			zap.String("name", name),
+			zap.String("legacy_path", legacyDefault),
+			zap.String("secure_default", secureDefault),
+		)
+	}
+	return secureDefault
+}
+
+func legacyPathHasReadableData(name, path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("legacy path %s must not be a symlink", path)
+	}
+	if info.IsDir() {
+		return legacyDirHasRecognizedData(name, path)
+	}
+	if info.Mode().IsRegular() {
+		f, err := os.Open(path)
+		if err != nil {
+			return false, err
+		}
+		defer f.Close()
+		return info.Size() > 0, nil
+	}
+	return false, fmt.Errorf("legacy path %s is neither a directory nor regular file", path)
+}
+
+func legacyDirHasRecognizedData(name, path string) (bool, error) {
+	switch name {
+	case "audit.dir":
+		return dirContainsAny(path, "kernel.merkle.jsonl", "*.jsonl")
+	case "vault.dir":
+		return dirContainsAny(path, "index.json", "*.age")
+	case "sandbox.state_dir":
+		return dirContainsAny(path, "sandboxes.json", "*.json")
+	case "proposal.store_dir":
+		return dirContainsAny(path, ".git", "*.json")
+	case "court.persona_dir":
+		return dirContainsAny(path, "*.yaml", "*.yml", "*.json")
+	case "court.session_dir":
+		return dirContainsAny(path, "*.json")
+	case "builder.workspace_base_dir", "ollama.model_dir", "composition.dir", "snapshot.dir", "memory.dir", "eventbus.dir", "worker.dir", "workspace.dir", "lookup.dir":
+		return dirContainsRegularFile(path)
+	default:
+		return dirContainsRegularFile(path)
+	}
+}
+
+func dirContainsAny(path string, patterns ...string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		for _, pattern := range patterns {
+			match, err := filepath.Match(pattern, entry.Name())
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func dirContainsRegularFile(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// getConfigDir returns the path to ~/.aegis/config.
+func getConfigDir() (string, error) {
+	layout, err := aegispaths.DefaultLayout()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".config", "aegisclaw"), nil
+	return layout.ConfigDir, nil
 }
 
 // validateConfig checks that all paths are absolute and point to expected locations
@@ -507,9 +686,12 @@ func validateConfig(config *Config) error {
 		"sandbox.registry_path":      config.Sandbox.RegistryPath,
 		"proposal.store_dir":         config.Proposal.StoreDir,
 		"court.persona_dir":          config.Court.PersonaDir,
+		"court.session_dir":          config.Court.SessionDir,
 		"builder.rootfs_template":    config.Builder.RootfsTemplate,
 		"builder.workspace_base_dir": config.Builder.WorkspaceBaseDir,
+		"builder.sbom_dir":           config.Builder.SBOMDir,
 		"vault.dir":                  config.Vault.Dir,
+		"daemon.socket_path":         config.Daemon.SocketPath,
 		"composition.dir":            config.Composition.Dir,
 		"ollama.registry_path":       config.Ollama.RegistryPath,
 		"ollama.model_dir":           config.Ollama.ModelDir,
@@ -518,6 +700,8 @@ func validateConfig(config *Config) error {
 		"eventbus.dir":               config.EventBus.Dir,
 		"worker.dir":                 config.Worker.Dir,
 		"worker.rootfs_path":         config.Worker.RootfsPath,
+		"workspace.dir":              config.Workspace.Dir,
+		"lookup.dir":                 config.Lookup.Dir,
 	}
 
 	for name, path := range paths {

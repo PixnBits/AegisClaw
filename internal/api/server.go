@@ -6,11 +6,38 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"go.uber.org/zap"
 )
+
+type peerUIDContextKey struct{}
+type trustedCallerContextKey struct{}
+
+// PeerUIDFromContext returns the Unix peer UID when the request arrived via the
+// daemon's Unix socket transport.
+func PeerUIDFromContext(ctx context.Context) (int, bool) {
+	v := ctx.Value(peerUIDContextKey{})
+	uid, ok := v.(int)
+	return uid, ok
+}
+
+// WithTrustedCaller marks a context as originating from a trusted in-process
+// caller (for example daemon-owned portal bridges) when no socket peer UID
+// exists.
+func WithTrustedCaller(ctx context.Context) context.Context {
+	return context.WithValue(ctx, trustedCallerContextKey{}, true)
+}
+
+// IsTrustedCaller reports whether the context is explicitly marked as trusted.
+func IsTrustedCaller(ctx context.Context) bool {
+	v := ctx.Value(trustedCallerContextKey{})
+	trusted, ok := v.(bool)
+	return ok && trusted
+}
 
 // Handler processes an API action and returns a response.
 type Handler func(ctx context.Context, data json.RawMessage) *Response
@@ -64,9 +91,9 @@ type SkillDeactivateRequest struct {
 // The CLI sends user input and conversation history; the daemon handles LLM
 // interaction inside a sandboxed agent boundary.
 type ChatMessageRequest struct {
-	Input     string            `json:"input"`
-	History   []ChatHistoryItem `json:"history,omitempty"`
-	StreamID  string            `json:"stream_id,omitempty"`
+	Input    string            `json:"input"`
+	History  []ChatHistoryItem `json:"history,omitempty"`
+	StreamID string            `json:"stream_id,omitempty"`
 	// SessionID is an optional stable identifier for this conversation.
 	// When provided it is used for session routing (sessions_list, sessions_history,
 	// sessions_send, sessions_spawn).  If empty the daemon uses StreamID as a
@@ -137,11 +164,13 @@ type VaultSecretDeleteRequest struct {
 	Name string `json:"name"`
 }
 
-// DefaultSocketPath returns the default daemon socket path.
-// Uses a fixed, well-known location so the root daemon and unprivileged CLI
-// always agree — similar to Docker's /var/run/docker.sock.
+// DefaultSocketPath returns the security-conscious default daemon socket path.
 func DefaultSocketPath() string {
-	return "/run/aegisclaw.sock"
+	path, err := aegispaths.DefaultSocketPath()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "aegis", "daemon.sock")
+	}
+	return path
 }
 
 // Server listens on a Unix socket and dispatches incoming requests to
@@ -170,9 +199,13 @@ func (s *Server) Handle(action string, h Handler) {
 	s.handlers[action] = h
 }
 
-// Start begins listening on the Unix socket. It removes any stale socket
-// file and sets permissions so that group members can connect.
+// Start begins listening on the Unix socket. The parent directory is verified
+// before binding so a privileged daemon never binds inside a user-controlled
+// ~/.aegis socket directory on Linux.
 func (s *Server) Start() error {
+	if err := aegispaths.EnsureRuntimeDir(filepath.Dir(s.socketPath)); err != nil {
+		return err
+	}
 	// Remove stale socket if it exists.
 	os.Remove(s.socketPath)
 
@@ -180,14 +213,34 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	// Allow any local user to connect (like Docker's default socket).
-	os.Chmod(s.socketPath, 0666)
+	if err := aegispaths.SetRuntimeSocketOwner(s.socketPath); err != nil {
+		ln.Close() //nolint:errcheck
+		return err
+	}
 	s.listener = ln
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api", s.handleAPI)
 
-	go http.Serve(ln, mux)
+	srv := &http.Server{
+		Handler: mux,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			uc, ok := c.(*net.UnixConn)
+			if !ok {
+				return ctx
+			}
+			raw, err := uc.SyscallConn()
+			if err != nil {
+				return ctx
+			}
+			uid, okUID := peerUIDFromRawConn(raw)
+			if !okUID {
+				return ctx
+			}
+			return context.WithValue(ctx, peerUIDContextKey{}, uid)
+		},
+	}
+	go srv.Serve(ln)
 	s.logger.Info("API server listening", zap.String("socket", s.socketPath))
 	return nil
 }

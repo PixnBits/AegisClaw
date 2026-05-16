@@ -5,6 +5,7 @@ import (
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/config"
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -32,11 +33,13 @@ func runStopDaemon(cmd *cobra.Command, args []string) error {
 }
 
 func resolveDaemonSocketPath() string {
-	const fallback = "/run/aegisclaw.sock"
-
 	cfg, err := config.Load(zap.NewNop())
 	if err != nil || cfg == nil || cfg.Daemon.SocketPath == "" {
-		return fallback
+		fallback, fallbackErr := aegispaths.DefaultSocketPath()
+		if fallbackErr == nil {
+			return fallback
+		}
+		return "/tmp/aegis-daemon.sock"
 	}
 	return cfg.Daemon.SocketPath
 }

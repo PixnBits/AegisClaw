@@ -130,6 +130,10 @@ func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Ha
 			return &api.Response{Error: "message is required"}
 		}
 
+		if err := validateSessionForMessage(env.Sessions, req.SessionID, true); err != nil {
+			return &api.Response{Error: err.Error()}
+		}
+
 		// Look up the session to include its history so the agent has context.
 		var history []api.ChatHistoryItem
 		if env.Sessions != nil {
@@ -171,6 +175,27 @@ func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Ha
 			"ok":         true,
 		})
 		return &api.Response{Success: true, Data: out}
+	}
+}
+
+func validateSessionForMessage(store *sessions.Store, sessionID string, requireExisting bool) error {
+	if store == nil {
+		return fmt.Errorf("session store not initialized")
+	}
+	rec, ok := store.Get(sessionID)
+	if !ok {
+		if requireExisting {
+			return fmt.Errorf("session %q not found", sessionID)
+		}
+		return nil
+	}
+	switch rec.Status {
+	case sessions.StatusPaused:
+		return fmt.Errorf("session is paused — resume with: aegisclaw sessions resume %s", sessionID)
+	case sessions.StatusClosed:
+		return fmt.Errorf("session is closed — spawn a new session with: aegisclaw sessions spawn")
+	default:
+		return nil
 	}
 }
 

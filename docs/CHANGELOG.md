@@ -4,6 +4,13 @@
 
 ### Phase 6: Security Hardening, Privacy & Self-Hosting
 
+#### Directory Layout Hardening
+- **`internal/paths`**: New canonical directory layout with most state under `~/.aegis/` and the Linux daemon socket under `/run/user/$UID/aegis/daemon.sock`.
+- **Secure startup enforcement**: daemon startup now verifies `secrets/`, `data/store/`, and `data/audit/` before opening privileged state.
+- **Vault hardening**: secret vault directory is mode-checked on every access and vault files are opened with `O_NOFOLLOW`.
+- **Doctor repair**: `aegisclaw doctor --fix-permissions` repairs common directory permission drift.
+- **Tests**: added coverage for layout creation, socket placement, symlink rejection, insecure permission refusal, and config migration from the old `/run/aegisclaw.sock` default.
+
 #### Software Bill of Materials (SBOM)
 - **`internal/sbom`**: New package that generates CycloneDX 1.4 JSON SBOMs from builder output.
 - `Generate(BuildInfo)` detects Go module dependencies from `go.mod` or import-scan fallback.

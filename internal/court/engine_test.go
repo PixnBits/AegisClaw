@@ -208,6 +208,58 @@ func TestEngineGetSession(t *testing.T) {
 	}
 }
 
+func TestEngineSessionSnapshotsAreDetached(t *testing.T) {
+	engine, store := setupTestEngine(t, allApproveReviewer())
+	p := createTestProposal(t, store)
+	session, _ := engine.Review(context.Background(), p.ID)
+
+	snap, ok := engine.GetSession(session.ID)
+	if !ok {
+		t.Fatal("session not found")
+	}
+	snap.State = SessionRejected
+	snap.Personas = append(snap.Personas, "mutated")
+
+	snap2, ok := engine.GetSession(session.ID)
+	if !ok {
+		t.Fatal("session not found on second read")
+	}
+	if snap2.State == SessionRejected {
+		t.Fatal("session snapshot mutation leaked into engine state")
+	}
+	for _, persona := range snap2.Personas {
+		if persona == "mutated" {
+			t.Fatal("persona mutation leaked into engine state")
+		}
+	}
+}
+
+func TestEngineListSessionsReturnsNewestFirstIncludingCompleted(t *testing.T) {
+	engine, store := setupTestEngine(t, allApproveReviewer())
+	p1 := createTestProposal(t, store)
+	s1, err := engine.Review(context.Background(), p1.ID)
+	if err != nil {
+		t.Fatalf("first review failed: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	p2 := createTestProposal(t, store)
+	s2, err := engine.Review(context.Background(), p2.ID)
+	if err != nil {
+		t.Fatalf("second review failed: %v", err)
+	}
+
+	all := engine.ListSessions()
+	if len(all) < 2 {
+		t.Fatalf("expected at least 2 sessions, got %d", len(all))
+	}
+	if all[0].ID != s2.ID || all[1].ID != s1.ID {
+		t.Fatalf("expected newest-first order [%s, %s], got [%s, %s]", s2.ID, s1.ID, all[0].ID, all[1].ID)
+	}
+	if all[0].EndedAt == nil || all[1].EndedAt == nil {
+		t.Fatal("expected completed sessions to be included in list")
+	}
+}
+
 func TestEngineRiskHeatmap(t *testing.T) {
 	engine, store := setupTestEngine(t, allApproveReviewer())
 	p := createTestProposal(t, store)
@@ -566,5 +618,3 @@ func TestResumeStalled(t *testing.T) {
 	// Give time for the review to complete before cleanup
 	time.Sleep(2 * time.Second)
 }
-
-

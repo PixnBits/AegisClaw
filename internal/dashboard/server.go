@@ -1327,7 +1327,7 @@ const settingsTmpl = `
   <div class="section-header">System Settings</div>
   <div style="padding:1rem">
     <p style="color:#8b949e;font-size:.875rem;margin-bottom:1rem">
-      Configuration: <code>~/.config/aegisclaw/config.yaml</code>. Restart daemon after changes.
+      Configuration: <code>~/.aegis/config/config.yaml</code>. Restart daemon after changes.
     </p>
     <table style="width:auto">
       <tr><th style="width:260px">Setting</th><th>Description</th></tr>

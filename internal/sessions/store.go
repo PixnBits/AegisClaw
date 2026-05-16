@@ -46,6 +46,10 @@ const (
 
 	// StatusClosed means the session has been closed / its VM stopped.
 	StatusClosed Status = "closed"
+
+	// StatusPaused means the session is intentionally paused; no messages
+	// are processed until resumed.
+	StatusPaused Status = "paused"
 )
 
 // Message is a single conversation turn stored in a session.
@@ -151,17 +155,19 @@ func (s *Store) Open(id, sandboxID string) *Record {
 	return r
 }
 
-// evictOldestIdleLocked removes the oldest idle (or closed) session.
+// evictOldestIdleLocked removes the oldest evictable session.
+// Priority order is idle/paused/closed. Returns true if one was evicted.
 // Must be called with s.mu held for writing.
-func (s *Store) evictOldestIdleLocked() {
+func (s *Store) evictOldestIdleLocked() bool {
 	for i, id := range s.order {
 		r := s.sessions[id]
-		if r != nil && (r.Status == StatusIdle || r.Status == StatusClosed) {
+		if r != nil && (r.Status == StatusIdle || r.Status == StatusPaused || r.Status == StatusClosed) {
 			delete(s.sessions, id)
 			s.order = append(s.order[:i], s.order[i+1:]...)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 // Get returns the record for id, or (nil, false) if not found.
@@ -236,6 +242,19 @@ func (s *Store) SetStatus(id string, status Status) {
 	if r, ok := s.sessions[id]; ok {
 		r.Status = status
 	}
+}
+
+// SetStatusIf updates a session's status only when its current status matches
+// expected. Returns true when an update occurred.
+func (s *Store) SetStatusIf(id string, expected, next Status) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.sessions[id]
+	if !ok || r.Status != expected {
+		return false
+	}
+	r.Status = next
+	return true
 }
 
 // Close marks the session as closed.  If the session does not exist it is

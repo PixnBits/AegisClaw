@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"filippo.io/age"
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/hkdf"
+	"golang.org/x/sys/unix"
 )
 
 // maxSecretBytes is an upper bound on a single secret's plaintext size.
@@ -59,8 +61,14 @@ func NewVault(storeDir string, privateKey ed25519.PrivateKey, logger *zap.Logger
 		return nil, fmt.Errorf("invalid Ed25519 private key size: expected %d, got %d", ed25519.PrivateKeySize, len(privateKey))
 	}
 
-	if err := os.MkdirAll(storeDir, 0700); err != nil {
+	if err := os.MkdirAll(storeDir, aegispaths.SensitiveDirPerm); err != nil {
 		return nil, fmt.Errorf("failed to create vault directory %s: %w", storeDir, err)
+	}
+	if err := os.Chmod(storeDir, aegispaths.SensitiveDirPerm); err != nil {
+		return nil, fmt.Errorf("failed to secure vault directory %s: %w", storeDir, err)
+	}
+	if err := aegispaths.VerifySensitiveDir(storeDir); err != nil {
+		return nil, fmt.Errorf("vault directory security check failed: %w", err)
 	}
 
 	identity, err := deriveAgeIdentity(privateKey)
@@ -105,6 +113,9 @@ func (v *Vault) Add(name, skillID string, plaintext []byte) error {
 
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if err := v.verifyStoreDir(); err != nil {
+		return err
+	}
 
 	// Encrypt with age
 	encrypted, err := v.encrypt(plaintext)
@@ -114,7 +125,7 @@ func (v *Vault) Add(name, skillID string, plaintext []byte) error {
 
 	// Write encrypted file
 	secretPath := v.secretPath(name)
-	if err := os.WriteFile(secretPath, encrypted, 0600); err != nil {
+	if err := writeFileNoFollow(secretPath, encrypted, 0600); err != nil {
 		return fmt.Errorf("failed to write secret %q: %w", name, err)
 	}
 
@@ -157,6 +168,9 @@ func (v *Vault) Get(name string) ([]byte, error) {
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	if err := v.verifyStoreDir(); err != nil {
+		return nil, err
+	}
 
 	_, exists := v.entries[name]
 	if !exists {
@@ -164,7 +178,7 @@ func (v *Vault) Get(name string) ([]byte, error) {
 	}
 
 	secretPath := v.secretPath(name)
-	encrypted, err := os.ReadFile(secretPath)
+	encrypted, err := readFileNoFollow(secretPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read secret %q: %w", name, err)
 	}
@@ -185,6 +199,9 @@ func (v *Vault) Delete(name string) error {
 
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if err := v.verifyStoreDir(); err != nil {
+		return err
+	}
 
 	_, exists := v.entries[name]
 	if !exists {
@@ -206,46 +223,60 @@ func (v *Vault) Delete(name string) error {
 	return nil
 }
 
-// List returns metadata for all stored secrets.
-func (v *Vault) List() []*SecretEntry {
+// ListChecked returns metadata for all stored secrets or an error if the vault
+// directory fails runtime security checks.
+func (v *Vault) ListChecked() ([]*SecretEntry, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-
+	if err := v.verifyStoreDir(); err != nil {
+		return nil, err
+	}
 	entries := make([]*SecretEntry, 0, len(v.entries))
 	for _, e := range v.entries {
 		entries = append(entries, e)
 	}
-	return entries
+	return entries, nil
 }
 
-// ListForSkill returns metadata for secrets associated with a specific skill.
-func (v *Vault) ListForSkill(skillID string) []*SecretEntry {
+// ListForSkillChecked returns secret metadata for one skill or an error if the
+// vault directory fails runtime security checks.
+func (v *Vault) ListForSkillChecked(skillID string) ([]*SecretEntry, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-
+	if err := v.verifyStoreDir(); err != nil {
+		return nil, err
+	}
 	var entries []*SecretEntry
 	for _, e := range v.entries {
 		if e.SkillID == skillID {
 			entries = append(entries, e)
 		}
 	}
-	return entries
+	return entries, nil
 }
 
-// Has checks if a secret exists.
-func (v *Vault) Has(name string) bool {
+// HasChecked checks if a secret exists or returns an error if the vault
+// directory fails runtime security checks.
+func (v *Vault) HasChecked(name string) (bool, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	if err := v.verifyStoreDir(); err != nil {
+		return false, err
+	}
 	_, exists := v.entries[name]
-	return exists
+	return exists, nil
 }
 
-// GetEntry returns the metadata entry for a secret (no decryption).
-func (v *Vault) GetEntry(name string) (*SecretEntry, bool) {
+// GetEntryChecked returns secret metadata or an error if the vault directory
+// fails runtime security checks.
+func (v *Vault) GetEntryChecked(name string) (*SecretEntry, bool, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	if err := v.verifyStoreDir(); err != nil {
+		return nil, false, err
+	}
 	e, ok := v.entries[name]
-	return e, ok
+	return e, ok, nil
 }
 
 // encrypt encrypts plaintext using the vault's age recipient.
@@ -289,8 +320,11 @@ func (v *Vault) secretPath(name string) string {
 
 // loadEntries reads the metadata index from disk.
 func (v *Vault) loadEntries() error {
+	if err := v.verifyStoreDir(); err != nil {
+		return err
+	}
 	indexPath := filepath.Join(v.storeDir, "index.json")
-	data, err := os.ReadFile(indexPath)
+	data, err := readFileNoFollow(indexPath)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -322,7 +356,37 @@ func (v *Vault) saveEntries() error {
 	}
 
 	indexPath := filepath.Join(v.storeDir, "index.json")
-	return os.WriteFile(indexPath, data, 0600)
+	if err := v.verifyStoreDir(); err != nil {
+		return err
+	}
+	return writeFileNoFollow(indexPath, data, 0600)
+}
+
+func (v *Vault) verifyStoreDir() error {
+	return aegispaths.VerifySensitiveDir(v.storeDir)
+}
+
+func readFileNoFollow(path string) ([]byte, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(perm))
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	return f.Chmod(perm)
 }
 
 // deriveAgeIdentity derives a deterministic age X25519 encryption identity from

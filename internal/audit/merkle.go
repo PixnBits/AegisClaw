@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -276,6 +277,71 @@ func VerifyChain(path string, pubKey ed25519.PublicKey) (uint64, error) {
 	}
 
 	return count, nil
+}
+
+// VerifyChainThroughHashPrefix verifies the Merkle chain from the first entry
+// through the first entry whose Hash equals hashTarget or has the given prefix
+// (when len(hashTarget) >= 8, prefix match requires hashTarget to be a prefix
+// of the entry hash). It returns the number of verified entries inclusive of
+// the matched entry. If no entry matches, the full chain is verified and an
+// error describing the miss is returned.
+func VerifyChainThroughHashPrefix(path string, pubKey ed25519.PublicKey, hashTarget string) (uint64, error) {
+	if hashTarget == "" {
+		return VerifyChain(path, pubKey)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open audit log for verification: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	var count uint64
+	var prevHash string
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var entry MerkleEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return count, fmt.Errorf("failed to parse entry %d: %w", count+1, err)
+		}
+
+		if err := entry.Verify(); err != nil {
+			return count, fmt.Errorf("entry %d: %w", count+1, err)
+		}
+
+		if entry.PrevHash != prevHash {
+			return count, fmt.Errorf("chain break at entry %d (%s): expected prev_hash %q, got %q",
+				count+1, entry.ID, prevHash, entry.PrevHash)
+		}
+
+		if err := entry.VerifySignature(pubKey); err != nil {
+			return count, fmt.Errorf("entry %d: %w", count+1, err)
+		}
+
+		prevHash = entry.Hash
+		count++
+
+		match := entry.Hash == hashTarget
+		if !match && len(hashTarget) >= 8 && len(entry.Hash) >= len(hashTarget) {
+			match = strings.HasPrefix(entry.Hash, strings.ToLower(hashTarget))
+		}
+		if match {
+			return count, nil
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return count, fmt.Errorf("scanner error at entry %d: %w", count+1, err)
+	}
+
+	return count, fmt.Errorf("no audit entry matched hash %q (verified %d entries)", hashTarget, count)
 }
 
 // recoverChainState reads the existing log file to find the last hash

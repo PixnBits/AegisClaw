@@ -198,23 +198,19 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			zap.Bool("has_prior_feedback", session.PriorFeedback != nil && session.PriorFeedback.HasQuestions),
 		)
 
-		// If prior feedback exists, include it in the proposal copy passed to reviewers
-		reviewTarget := p
+		// PHASE 4: Always work on a defensive copy of the proposal for reviewers.
+		// This prevents pointer aliasing / shared mutable state across rounds
+		// and goroutines (especially important when PriorFeedback is injected).
+		reviewTarget := cloneProposalForReview(p)
 		if session.PriorFeedback != nil {
-			// Create a shallow copy and append formatted feedback to the description
-			tmp := *p
 			fb := session.PriorFeedback.FormatFeedbackPrompt()
-			if fb != "" {
-				if strings.Contains(tmp.Description, fb) {
-					// Feedback may already be persisted on the proposal from a prior
-					// iteration update; avoid doubling prompt size with duplicate blocks.
-				} else if tmp.Description == "" {
-					tmp.Description = fb
+			if fb != "" && !strings.Contains(reviewTarget.Description, fb) {
+				if reviewTarget.Description == "" {
+					reviewTarget.Description = fb
 				} else {
-					tmp.Description = tmp.Description + "\n\n" + fb
+					reviewTarget.Description = reviewTarget.Description + "\n\n" + fb
 				}
 			}
-			reviewTarget = &tmp
 		}
 
 		result, err := e.runRound(ctx, reviewTarget, session.Round)
@@ -521,20 +517,106 @@ func (e *Engine) GetSession(id string) (*Session, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	s, ok := e.sessions[id]
-	return s, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneSessionSnapshot(s), true
 }
 
 // ActiveSessions returns all non-finalized sessions.
+// PHASE 4: Returns cloned snapshots for safety (consistent with ListSessions/GetSession).
+// Callers must not mutate the returned sessions.
 func (e *Engine) ActiveSessions() []*Session {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var active []*Session
 	for _, s := range e.sessions {
 		if s.EndedAt == nil {
-			active = append(active, s)
+			active = append(active, cloneSessionSnapshot(s))
 		}
 	}
 	return active
+}
+
+// ListSessions returns every known court session (including completed),
+// sorted by StartedAt descending (newest first). Returned pointers must
+// not be mutated by callers.
+func (e *Engine) ListSessions() []*Session {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]*Session, 0, len(e.sessions))
+	for _, s := range e.sessions {
+		out = append(out, cloneSessionSnapshot(s))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].StartedAt.After(out[j].StartedAt)
+	})
+	return out
+}
+
+func cloneSessionSnapshot(s *Session) *Session {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	if s.Personas != nil {
+		cp.Personas = append([]string(nil), s.Personas...)
+	}
+	if s.EndedAt != nil {
+		ended := *s.EndedAt
+		cp.EndedAt = &ended
+	}
+	if s.PriorFeedback != nil {
+		feedback := *s.PriorFeedback
+		feedback.Questions = append([]string(nil), s.PriorFeedback.Questions...)
+		feedback.Concerns = append([]string(nil), s.PriorFeedback.Concerns...)
+		cp.PriorFeedback = &feedback
+	}
+	if s.Results != nil {
+		cp.Results = make([]RoundResult, len(s.Results))
+		for i, rr := range s.Results {
+			rrCopy := rr
+			if rr.Reviews != nil {
+				rrCopy.Reviews = make([]proposal.Review, len(rr.Reviews))
+				for j, review := range rr.Reviews {
+					reviewCopy := review
+					reviewCopy.Evidence = append([]string(nil), review.Evidence...)
+					reviewCopy.Questions = append([]string(nil), review.Questions...)
+					reviewCopy.Raw = append(json.RawMessage(nil), review.Raw...)
+					rrCopy.Reviews[j] = reviewCopy
+				}
+			}
+			if rr.Heatmap != nil {
+				rrCopy.Heatmap = make(map[string]float64, len(rr.Heatmap))
+				for k, v := range rr.Heatmap {
+					rrCopy.Heatmap[k] = v
+				}
+			}
+			if rr.Feedback != nil {
+				feedback := *rr.Feedback
+				feedback.Questions = append([]string(nil), rr.Feedback.Questions...)
+				feedback.Concerns = append([]string(nil), rr.Feedback.Concerns...)
+				rrCopy.Feedback = &feedback
+			}
+			cp.Results[i] = rrCopy
+		}
+	}
+	return &cp
+}
+
+// cloneProposalForReview creates a defensive copy of a proposal for use in review rounds.
+// This is the Phase 4 snapshot safety measure to avoid pointer aliasing when
+// injecting feedback or running concurrent reviewers.
+func cloneProposalForReview(p *proposal.Proposal) *proposal.Proposal {
+	if p == nil {
+		return nil
+	}
+	// Shallow copy is acceptable here because proposal fields that are mutated
+	// during review (Description, reviews, etc.) are handled via explicit methods
+	// or replaced entirely. Deep clone can be added later if proposal grows
+	// complex pointer fields.
+	cp := *p
+	return &cp
 }
 
 // RiskHeatmap returns the heatmap from the latest round of a session.
@@ -749,7 +831,7 @@ func (e *Engine) ResumeStalled(ctx context.Context) int {
 	e.logger.Info("ResumeStalled: re-queued stalled proposals", zap.Int("count", len(toResume)))
 
 	// Limit concurrency: run at most 2 reviews in parallel to avoid
-	// overwhelming the host with Firecracker VMs and LLM calls.
+	// overwhelming system resources.
 	const maxConcurrent = 2
 	sem := make(chan struct{}, maxConcurrent)
 

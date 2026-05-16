@@ -39,7 +39,11 @@ func makeVaultSecretAddHandler(env *runtimeEnv) api.Handler {
 
 		if req.Rotate {
 			// Rotate requires the secret to exist already.
-			if !env.Vault.Has(req.Name) {
+			exists, err := env.Vault.HasChecked(req.Name)
+			if err != nil {
+				return &api.Response{Error: "vault security check failed: " + err.Error()}
+			}
+			if !exists {
 				return &api.Response{Error: fmt.Sprintf("secret %q not found — use 'secrets add' to create it", req.Name)}
 			}
 		}
@@ -80,9 +84,17 @@ func makeVaultSecretListHandler(env *runtimeEnv) api.Handler {
 
 		var rawEntries interface{}
 		if req.SkillID != "" {
-			rawEntries = env.Vault.ListForSkill(req.SkillID)
+			entries, err := env.Vault.ListForSkillChecked(req.SkillID)
+			if err != nil {
+				return &api.Response{Error: "vault security check failed: " + err.Error()}
+			}
+			rawEntries = entries
 		} else {
-			rawEntries = env.Vault.List()
+			entries, err := env.Vault.ListChecked()
+			if err != nil {
+				return &api.Response{Error: "vault security check failed: " + err.Error()}
+			}
+			rawEntries = entries
 		}
 
 		// Convert to the API type (avoids leaking vault internals).
@@ -144,7 +156,10 @@ func makeVaultSecretRotateHandler(env *runtimeEnv) api.Handler {
 		}
 
 		// Rotate requires the secret to already exist.
-		existing, ok := env.Vault.GetEntry(req.Name)
+		existing, ok, err := env.Vault.GetEntryChecked(req.Name)
+		if err != nil {
+			return &api.Response{Error: "vault security check failed: " + err.Error()}
+		}
 		if !ok {
 			return &api.Response{Error: fmt.Sprintf("secret %q not found — use 'secrets add' to create it", req.Name)}
 		}

@@ -692,6 +692,7 @@ func registerEventBusTools(reg *ToolRegistry, env *runtimeEnv) {
 				Name      string          `json:"name"`
 				TriggerAt string          `json:"trigger_at"` // ISO8601 for one-shot
 				Cron      string          `json:"cron"`
+				Schedule  string          `json:"schedule"` // compatibility alias for cron
 				Payload   json.RawMessage `json:"payload"`
 				TaskID    string          `json:"task_id"`
 			}
@@ -708,6 +709,9 @@ func registerEventBusTools(reg *ToolRegistry, env *runtimeEnv) {
 				Payload: params.Payload,
 				TaskID:  params.TaskID,
 				Owner:   "agent",
+			}
+			if p.Cron == "" && params.Schedule != "" {
+				p.Cron = params.Schedule
 			}
 			if params.TriggerAt != "" {
 				t, err := time.Parse(time.RFC3339, params.TriggerAt)

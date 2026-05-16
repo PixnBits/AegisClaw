@@ -16,6 +16,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/llm"
 	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/tui"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -106,6 +107,15 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		if req.Input == "" {
 			return &api.Response{Error: "input is required"}
 		}
+		sessionID := strings.TrimSpace(req.SessionID)
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(req.StreamID)
+		}
+		if sessionID != "" && env.Sessions != nil {
+			if err := validateSessionForMessage(env.Sessions, sessionID, false); err != nil {
+				return &api.Response{Error: err.Error()}
+			}
+		}
 		if env.ToolEvents == nil {
 			env.ToolEvents = NewToolEventBuffer(400)
 		}
@@ -122,17 +132,32 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		// Determine the session ID for this request.  Prefer req.SessionID,
 		// fall back to StreamID, then generate a stable one for the lifetime
 		// of this VM.
-		sessionID := strings.TrimSpace(req.SessionID)
-		if sessionID == "" {
-			sessionID = strings.TrimSpace(req.StreamID)
-		}
 		if sessionID == "" {
 			// Use the agent VM ID as a stable per-VM session key.
 			sessionID = agentVMID
 		}
 		if env.Sessions != nil {
-			env.Sessions.Open(sessionID, agentVMID)
-			env.Sessions.SetStatus(sessionID, "active")
+			// EARLY atomic status check + transition (Phase 2 fix)
+			if !env.Sessions.SetStatusIf(sessionID, sessions.StatusIdle, sessions.StatusActive) {
+				rec, ok := env.Sessions.Get(sessionID)
+				if !ok {
+					return &api.Response{Error: fmt.Sprintf("session %q not found", sessionID)}
+				}
+				switch rec.Status {
+				case sessions.StatusPaused:
+					return &api.Response{Error: fmt.Sprintf("session is paused — resume with: aegisclaw sessions resume %s", sessionID)}
+				case sessions.StatusClosed:
+					return &api.Response{Error: fmt.Sprintf("session is closed — spawn a new session with: aegisclaw sessions spawn")}
+				case sessions.StatusActive:
+					return &api.Response{Error: fmt.Sprintf("session %q is already processing a request", sessionID)}
+				default:
+					return &api.Response{Error: fmt.Sprintf("session %q is not ready for messaging (status=%s)", sessionID, rec.Status)}
+				}
+			}
+			// Status is now Active — proceed
+			if _, ok := env.Sessions.Get(sessionID); !ok {
+				env.Sessions.Open(sessionID, agentVMID)
+			}
 			env.Sessions.AppendMessage(sessionID, agentVMID, "user", req.Input)
 		}
 
@@ -215,6 +240,10 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 
 			chatResp, err := env.TaskExecutor.ExecuteTurn(ctx, execReq)
 			if err != nil {
+				// On error, restore Idle state
+				if env.Sessions != nil {
+					env.Sessions.SetStatusIf(sessionID, sessions.StatusActive, sessions.StatusIdle)
+				}
 				return &api.Response{Error: "agent executor error: " + err.Error()}
 			}
 
@@ -262,7 +291,8 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				})
 				if env.Sessions != nil {
 					env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", finalContent)
-					env.Sessions.SetStatus(sessionID, "idle")
+					// Always restore to Idle on completion (respects concurrent pause/cancel via SetStatusIf)
+					env.Sessions.SetStatusIf(sessionID, sessions.StatusActive, sessions.StatusIdle)
 				}
 				return &api.Response{Success: true, Data: respData}
 
@@ -341,6 +371,10 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 				)
 
 			default:
+				// Restore Idle on unexpected status
+				if env.Sessions != nil {
+					env.Sessions.SetStatusIf(sessionID, sessions.StatusActive, sessions.StatusIdle)
+				}
 				return &api.Response{Error: fmt.Sprintf("unexpected agent status: %q", chatResp.Status)}
 			}
 		}
@@ -359,7 +393,7 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 		})
 		if env.Sessions != nil {
 			env.Sessions.AppendMessage(sessionID, agentVMID, "assistant", limitContent)
-			env.Sessions.SetStatus(sessionID, "idle")
+			env.Sessions.SetStatusIf(sessionID, sessions.StatusActive, sessions.StatusIdle)
 		}
 		return &api.Response{Success: true, Data: respData}
 	}
@@ -852,7 +886,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- Skills can safely integrate external services: Discord, Telegram, Slack, GitHub, shell automation, databases, REST APIs, voice — anything declared and approved.\n")
 	b.WriteString("- Multi-channel gateway: when enabled, messages from Discord bots, Telegram, webhooks, and other adapters all arrive here just like chat messages.\n")
 	b.WriteString("- Async timers and signals: schedule recurring work, subscribe to external events, delegate subtasks to worker agents.\n")
-	b.WriteString("- Workspace customisation: SOUL.md, AGENTS.md, TOOLS.md files in ~/.aegisclaw/workspace/ let the user tailor platform behaviour.\n\n")
+	b.WriteString("- Workspace customisation: SOUL.md, AGENTS.md, TOOLS.md files in ~/.aegis/workspace/ let the user tailor platform behaviour.\n\n")
 
 	// Critical intent pattern: skill-addition requests.
 	b.WriteString("WHEN A USER ASKS TO ADD, INTEGRATE, AUTOMATE, OR CONNECT TO SOMETHING NEW:\n")
