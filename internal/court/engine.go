@@ -198,23 +198,19 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			zap.Bool("has_prior_feedback", session.PriorFeedback != nil && session.PriorFeedback.HasQuestions),
 		)
 
-		// If prior feedback exists, include it in the proposal copy passed to reviewers
-		reviewTarget := p
+		// PHASE 4: Always work on a defensive copy of the proposal for reviewers.
+		// This prevents pointer aliasing / shared mutable state across rounds
+		// and goroutines (especially important when PriorFeedback is injected).
+		reviewTarget := cloneProposalForReview(p)
 		if session.PriorFeedback != nil {
-			// Create a shallow copy and append formatted feedback to the description
-			tmp := *p
 			fb := session.PriorFeedback.FormatFeedbackPrompt()
-			if fb != "" {
-				if strings.Contains(tmp.Description, fb) {
-					// Feedback may already be persisted on the proposal from a prior
-					// iteration update; avoid doubling prompt size with duplicate blocks.
-				} else if tmp.Description == "" {
-					tmp.Description = fb
+			if fb != "" && !strings.Contains(reviewTarget.Description, fb) {
+				if reviewTarget.Description == "" {
+					reviewTarget.Description = fb
 				} else {
-					tmp.Description = tmp.Description + "\n\n" + fb
+					reviewTarget.Description = reviewTarget.Description + "\n\n" + fb
 				}
 			}
-			reviewTarget = &tmp
 		}
 
 		result, err := e.runRound(ctx, reviewTarget, session.Round)
@@ -273,7 +269,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 					zap.String("proposal_id", proposalID),
 					zap.Int("round", session.Round),
 					zap.Error(updateErr),
-				)
+					)
 				session.State = SessionEscalated
 				session.Verdict = "escalated"
 				reason := fmt.Sprintf("round %d: agent update failed: %v", session.Round, updateErr)
@@ -284,7 +280,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 					zap.String("proposal_id", proposalID),
 					zap.Int("round", session.Round),
 					zap.Int("version_before", beforeVersion),
-				)
+					)
 				session.State = SessionEscalated
 				session.Verdict = "escalated"
 				reason := fmt.Sprintf("round %d: proposal version not advanced after update", session.Round)
@@ -313,7 +309,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 				session.Round,
 				questionCount,
 				concernCount,
-			)
+				)
 			if err := p.ApplyFeedback(compact, "court-engine", fmt.Sprintf("feedback for round %d", session.Round)); err != nil {
 				e.logger.Error("failed to apply feedback to proposal", zap.Error(err))
 			} else {
@@ -332,7 +328,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			zap.Float64("approval_rate", consensus.ApprovalRate),
 			zap.Float64("avg_risk", result.AvgRisk),
 			zap.Int("questions", len(consensus.Feedback.Questions)),
-		)
+			)
 	}
 
 	// Max rounds exhausted without consensus
@@ -402,7 +398,7 @@ func (e *Engine) runRound(ctx context.Context, p *proposal.Proposal, round int) 
 			return reviews[i].Model < reviews[j].Model
 		}
 		return reviews[i].Persona < reviews[j].Persona
-	})
+	}
 
 	// Consensus evaluation is done in Review() via EvaluateConsensus.
 	// Here we just return the raw reviews; heatmap/consensus are populated by caller.
@@ -528,13 +524,15 @@ func (e *Engine) GetSession(id string) (*Session, bool) {
 }
 
 // ActiveSessions returns all non-finalized sessions.
+// PHASE 4: Returns cloned snapshots for safety (consistent with ListSessions/GetSession).
+// Callers must not mutate the returned sessions.
 func (e *Engine) ActiveSessions() []*Session {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var active []*Session
 	for _, s := range e.sessions {
 		if s.EndedAt == nil {
-			active = append(active, s)
+			active = append(active, cloneSessionSnapshot(s))
 		}
 	}
 	return active
@@ -585,7 +583,7 @@ func cloneSessionSnapshot(s *Session) *Session {
 					reviewCopy.Evidence = append([]string(nil), review.Evidence...)
 					reviewCopy.Questions = append([]string(nil), review.Questions...)
 					reviewCopy.Raw = append(json.RawMessage(nil), review.Raw...)
-					rrCopy.Reviews[j] = reviewCopy
+				rrCopy.Reviews[j] = reviewCopy
 				}
 			}
 			if rr.Heatmap != nil {
@@ -603,6 +601,21 @@ func cloneSessionSnapshot(s *Session) *Session {
 			cp.Results[i] = rrCopy
 		}
 	}
+	return &cp
+}
+
+// cloneProposalForReview creates a defensive copy of a proposal for use in review rounds.
+// This is the Phase 4 snapshot safety measure to avoid pointer aliasing when
+// injecting feedback or running concurrent reviewers.
+func cloneProposalForReview(p *proposal.Proposal) *proposal.Proposal {
+	if p == nil {
+		return nil
+	}
+	// Shallow copy is acceptable here because proposal fields that are mutated
+	// during review (Description, reviews, etc.) are handled via explicit methods
+	// or replaced entirely. Deep clone can be added later if proposal grows
+	// complex pointer fields.
+	cp := *p
 	return &cp
 }
 
@@ -753,7 +766,7 @@ func (e *Engine) loadSessions() error {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(e.sessionDir, entry.Name()))
-		if err != nil {
+	if err != nil {
 			e.logger.Warn("failed to read session file", zap.String("file", entry.Name()), zap.Error(err))
 			continue
 		}
@@ -818,7 +831,7 @@ func (e *Engine) ResumeStalled(ctx context.Context) int {
 	e.logger.Info("ResumeStalled: re-queued stalled proposals", zap.Int("count", len(toResume)))
 
 	// Limit concurrency: run at most 2 reviews in parallel to avoid
-	// overwhelming the host with Firecracker VMs and LLM calls.
+	// overwhelming system resources.
 	const maxConcurrent = 2
 	sem := make(chan struct{}, maxConcurrent)
 
@@ -835,7 +848,7 @@ func (e *Engine) ResumeStalled(ctx context.Context) int {
 				e.logger.Error("ResumeStalled: review failed",
 					zap.String("proposal_id", pid),
 					zap.Error(err),
-				)
+					)
 				return
 			}
 			e.logger.Info("ResumeStalled: review completed",
