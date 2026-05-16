@@ -14,7 +14,7 @@ import (
 )
 
 func TestUnixSocketRequestCarriesPeerUID(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	socketPath := filepath.Join(t.TempDir(), "aegis", "daemon.sock")
 	srv := NewServer(socketPath, zap.NewNop())
 	srv.Handle("peer.uid", func(ctx context.Context, _ json.RawMessage) *Response {
 		uid, ok := PeerUIDFromContext(ctx)

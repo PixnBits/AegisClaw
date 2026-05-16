@@ -222,7 +222,7 @@ func DefaultConfig() Config {
 			ProposalDir:  filepath.Join(tmpRoot, "data", "registry", "proposals"),
 			SBOMDir:      filepath.Join(tmpRoot, "data", "sbom"),
 			SecretsDir:   filepath.Join(tmpRoot, "secrets"),
-			SocketPath:   filepath.Join(tmpRoot, "run", "daemon.sock"),
+			SocketPath:   filepath.Join(tmpRoot, "run", "aegis", "daemon.sock"),
 		}
 	}
 
@@ -556,7 +556,7 @@ func migrateLegacyPath(name, current, legacyDefault, secureDefault string, logge
 	if current != legacyDefault {
 		return current
 	}
-	hasData, err := legacyPathHasReadableData(legacyDefault)
+	hasData, err := legacyPathHasReadableData(name, legacyDefault)
 	if err == nil && hasData {
 		if logger != nil {
 			logger.Warn("using readable legacy path; migrate data to ~/.aegis to complete directory-layout migration",
@@ -585,7 +585,7 @@ func migrateLegacyPath(name, current, legacyDefault, secureDefault string, logge
 	return secureDefault
 }
 
-func legacyPathHasReadableData(path string) (bool, error) {
+func legacyPathHasReadableData(name, path string) (bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return false, err
@@ -594,11 +594,7 @@ func legacyPathHasReadableData(path string) (bool, error) {
 		return false, fmt.Errorf("legacy path %s must not be a symlink", path)
 	}
 	if info.IsDir() {
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			return false, err
-		}
-		return len(entries) > 0, nil
+		return legacyDirHasRecognizedData(name, path)
 	}
 	if info.Mode().IsRegular() {
 		f, err := os.Open(path)
@@ -609,6 +605,62 @@ func legacyPathHasReadableData(path string) (bool, error) {
 		return info.Size() > 0, nil
 	}
 	return false, fmt.Errorf("legacy path %s is neither a directory nor regular file", path)
+}
+
+func legacyDirHasRecognizedData(name, path string) (bool, error) {
+	switch name {
+	case "audit.dir":
+		return dirContainsAny(path, "kernel.merkle.jsonl", "*.jsonl")
+	case "vault.dir":
+		return dirContainsAny(path, "index.json", "*.age")
+	case "sandbox.state_dir":
+		return dirContainsAny(path, "sandboxes.json", "*.json")
+	case "proposal.store_dir":
+		return dirContainsAny(path, ".git", "*.json")
+	case "court.persona_dir":
+		return dirContainsAny(path, "*.yaml", "*.yml", "*.json")
+	case "court.session_dir":
+		return dirContainsAny(path, "*.json")
+	case "builder.workspace_base_dir", "ollama.model_dir", "composition.dir", "snapshot.dir", "memory.dir", "eventbus.dir", "worker.dir", "workspace.dir", "lookup.dir":
+		return dirContainsRegularFile(path)
+	default:
+		return dirContainsRegularFile(path)
+	}
+}
+
+func dirContainsAny(path string, patterns ...string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		for _, pattern := range patterns {
+			match, err := filepath.Match(pattern, entry.Name())
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func dirContainsRegularFile(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // getConfigDir returns the path to ~/.aegis/config.

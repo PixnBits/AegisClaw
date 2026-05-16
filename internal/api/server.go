@@ -168,7 +168,7 @@ type VaultSecretDeleteRequest struct {
 func DefaultSocketPath() string {
 	path, err := aegispaths.DefaultSocketPath()
 	if err != nil {
-		return "/tmp/aegis-daemon.sock"
+		return filepath.Join(os.TempDir(), "aegis", "daemon.sock")
 	}
 	return path
 }

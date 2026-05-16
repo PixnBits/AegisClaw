@@ -19,6 +19,9 @@ const (
 	UserSharedPerm   os.FileMode = 0750
 	SensitiveDirPerm os.FileMode = 0700
 	RuntimeDirPerm   os.FileMode = 0700
+
+	RuntimeUIDEnv = "AEGIS_RUNTIME_UID"
+	RuntimeGIDEnv = "AEGIS_RUNTIME_GID"
 )
 
 // Layout contains the security-conscious filesystem layout from
@@ -117,6 +120,27 @@ func DefaultSocketPath() (string, error) {
 // consistent ownership tuple without granting group access.
 func RuntimeSocketOwner() (RuntimeOwner, error) {
 	uid, gid := os.Getuid(), os.Getgid()
+	if explicitUID := os.Getenv(RuntimeUIDEnv); explicitUID != "" {
+		parsedUID, err := strconv.Atoi(explicitUID)
+		if err != nil {
+			return RuntimeOwner{}, fmt.Errorf("parse %s: %w", RuntimeUIDEnv, err)
+		}
+		uid = parsedUID
+		if explicitGID := os.Getenv(RuntimeGIDEnv); explicitGID != "" {
+			parsedGID, err := strconv.Atoi(explicitGID)
+			if err != nil {
+				return RuntimeOwner{}, fmt.Errorf("parse %s: %w", RuntimeGIDEnv, err)
+			}
+			gid = parsedGID
+		} else if u, err := user.LookupId(explicitUID); err == nil {
+			parsedGID, err := strconv.Atoi(u.Gid)
+			if err != nil {
+				return RuntimeOwner{}, fmt.Errorf("parse gid for uid %q: %w", explicitUID, err)
+			}
+			gid = parsedGID
+		}
+		return RuntimeOwner{UID: uid, GID: gid}, nil
+	}
 	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
 		u, err := user.Lookup(sudoUser)
 		if err != nil {
@@ -137,10 +161,10 @@ func RuntimeSocketOwner() (RuntimeOwner, error) {
 
 // EnsureSecureDirectories creates missing directories and verifies existing
 // high-sensitivity directories before privileged components use them. It never
-// repairs insecure existing directories; use FixSecurePermissions for that.
+// repairs insecure existing sensitive directories; use FixSecurePermissions for that.
 func EnsureSecureDirectories(layout Layout) error {
 	for _, d := range layoutDirs(layout) {
-		if err := ensureDir(d.path, d.perm, false); err != nil {
+		if err := ensureDir(d.path, d.perm, false, d.strict); err != nil {
 			return err
 		}
 	}
@@ -156,7 +180,8 @@ func EnsureSecureDirectories(layout Layout) error {
 }
 
 // EnsureRuntimeDir creates the daemon socket parent and verifies it is not a
-// symlink. On Linux, this path must be outside ~/.aegis.
+// symlink. On Linux, the parent must be a dedicated "aegis" directory so startup
+// never repairs broad parents such as /tmp or /run/user/$UID.
 func EnsureRuntimeDir(dir string) error {
 	if dir == "" {
 		return fmt.Errorf("runtime dir is required")
@@ -165,13 +190,8 @@ func EnsureRuntimeDir(dir string) error {
 	if runtime.GOOS == "linux" && clean == "/run" {
 		return fmt.Errorf("runtime dir must be /run/user/$UID/aegis, not /run")
 	}
-	if err := ensureDir(dir, RuntimeDirPerm, true); err != nil {
+	if err := ensureRuntimeDir(dir); err != nil {
 		return err
-	}
-	if owner, err := RuntimeSocketOwner(); err == nil {
-		if err := chownIfRoot(dir, owner); err != nil {
-			return fmt.Errorf("set runtime dir owner %s: %w", dir, err)
-		}
 	}
 	return nil
 }
@@ -222,7 +242,7 @@ func VerifySensitiveDir(path string) error {
 // FixSecurePermissions repairs common permission drift for known directories.
 func FixSecurePermissions(layout Layout) error {
 	for _, d := range layoutDirs(layout) {
-		if err := ensureDir(d.path, d.perm, true); err != nil {
+		if err := ensureDir(d.path, d.perm, true, d.strict); err != nil {
 			return err
 		}
 	}
@@ -240,131 +260,124 @@ func fixRuntimeDir(dir string) error {
 	if runtime.GOOS == "linux" && clean == "/run" {
 		return fmt.Errorf("runtime dir must be /run/user/$UID/aegis, not /run")
 	}
-	if err := ensureDir(dir, RuntimeDirPerm, true); err != nil {
+	if err := ensureRuntimeDir(dir); err != nil {
 		return err
-	}
-	if owner, err := RuntimeSocketOwner(); err == nil {
-		if err := chownIfRoot(dir, owner); err != nil {
-			return fmt.Errorf("set runtime dir owner %s: %w", dir, err)
-		}
 	}
 	return nil
 }
 
 type layoutDir struct {
-	path string
-	perm os.FileMode
+	path   string
+	perm   os.FileMode
+	strict bool
 }
 
 func layoutDirs(layout Layout) []layoutDir {
 	return []layoutDir{
-		{layout.RootDir, UserDirPerm},
-		{layout.ConfigDir, UserDirPerm},
-		{layout.WorkspaceDir, UserDirPerm},
-		{layout.CacheDir, UserDirPerm},
-		{layout.LogsDir, UserSharedPerm},
-		{layout.GitDir, UserSharedPerm},
-		{layout.VMDir, UserSharedPerm},
-		{layout.DataDir, UserDirPerm},
-		{layout.StoreDir, SensitiveDirPerm},
-		{layout.AuditDir, SensitiveDirPerm},
-		{layout.RegistryDir, UserDirPerm},
-		{layout.ProposalDir, UserDirPerm},
-		{layout.SBOMDir, UserDirPerm},
-		{layout.SecretsDir, SensitiveDirPerm},
+		{layout.RootDir, UserDirPerm, false},
+		{layout.ConfigDir, UserDirPerm, false},
+		{layout.WorkspaceDir, UserDirPerm, false},
+		{layout.CacheDir, UserDirPerm, false},
+		{layout.LogsDir, UserSharedPerm, false},
+		{layout.GitDir, UserSharedPerm, false},
+		{layout.VMDir, UserSharedPerm, false},
+		{layout.DataDir, UserDirPerm, false},
+		{layout.StoreDir, SensitiveDirPerm, true},
+		{layout.AuditDir, SensitiveDirPerm, true},
+		{layout.RegistryDir, UserDirPerm, false},
+		{layout.ProposalDir, UserDirPerm, false},
+		{layout.SBOMDir, UserDirPerm, false},
+		{layout.SecretsDir, SensitiveDirPerm, true},
 	}
 }
 
-func ensureDir(path string, perm os.FileMode, repair bool) error {
+func ensureDir(path string, perm os.FileMode, repair, strict bool) error {
 	if path == "" {
 		return nil
 	}
-	if err := verifyPathParentsNoSymlinks(path); err != nil {
+	fd, created, err := openOrCreateDirNoFollow(path, perm)
+	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		if err := mkdirAllNoSymlinks(path, perm); err != nil {
-			return fmt.Errorf("create %s: %w", path, err)
-		}
-		return os.Chmod(path, perm)
+	defer unix.Close(fd) //nolint:errcheck
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
 	}
+	got := os.FileMode(stat.Mode).Perm()
+	if created || got != perm {
+		if !created && strict && !repair {
+			return fmt.Errorf("%s has mode %04o, want %04o", path, got, perm)
+		}
+		if (created || repair) && got != perm {
+			if err := unix.Fchmod(fd, uint32(perm)); err != nil {
+				return fmt.Errorf("chmod %s: %w", path, err)
+			}
+		}
+	}
+	return nil
+}
+
+func ensureRuntimeDir(path string) error {
+	if runtime.GOOS == "linux" && filepath.Base(filepath.Clean(path)) != "aegis" {
+		return fmt.Errorf("runtime dir must be a dedicated 'aegis' directory, got %s", path)
+	}
+	fd, created, err := openOrCreateDirNoFollow(path, RuntimeDirPerm)
 	if err != nil {
-		return fmt.Errorf("lstat %s: %w", path, err)
+		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s must not be a symlink", path)
+	defer unix.Close(fd) //nolint:errcheck
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return fmt.Errorf("stat runtime dir %s: %w", path, err)
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", path)
-	}
-	if info.Mode().Perm() != perm {
-		if !repair {
-			return fmt.Errorf("%s has mode %04o, want %04o", path, info.Mode().Perm(), perm)
-		}
-		if err := os.Chmod(path, perm); err != nil {
+	if got := os.FileMode(stat.Mode).Perm(); created || got != RuntimeDirPerm {
+		if err := unix.Fchmod(fd, uint32(RuntimeDirPerm)); err != nil {
 			return fmt.Errorf("chmod %s: %w", path, err)
 		}
 	}
-	return nil
-}
-
-func mkdirAllNoSymlinks(path string, perm os.FileMode) error {
-	clean, err := filepath.Abs(filepath.Clean(path))
+	owner, err := RuntimeSocketOwner()
 	if err != nil {
 		return err
 	}
-	volume := filepath.VolumeName(clean)
-	rest := clean[len(volume):]
-	current := volume + string(filepath.Separator)
+	if os.Geteuid() == 0 {
+		if err := unix.Fchown(fd, owner.UID, owner.GID); err != nil {
+			return fmt.Errorf("set runtime dir owner %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func openOrCreateDirNoFollow(path string, perm os.FileMode) (int, bool, error) {
+	clean, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return -1, false, err
+	}
+	root, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, false, err
+	}
+	parent := root
+	created := false
+	rest := clean[len(filepath.VolumeName(clean)):]
 	for _, part := range splitPath(rest) {
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if os.IsNotExist(err) {
-			if err := os.Mkdir(current, perm); err != nil && !os.IsExist(err) {
-				return err
+		next, err := unix.Openat(parent, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil && os.IsNotExist(err) {
+			if mkdirErr := unix.Mkdirat(parent, part, uint32(perm)); mkdirErr != nil && !os.IsExist(mkdirErr) {
+				unix.Close(parent) //nolint:errcheck
+				return -1, false, fmt.Errorf("create %s: %w", clean, mkdirErr)
 			}
-			info, err = os.Lstat(current)
+			created = true
+			next, err = unix.Openat(parent, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		}
 		if err != nil {
-			return err
+			unix.Close(parent) //nolint:errcheck
+			return -1, false, fmt.Errorf("open %s without following symlinks: %w", clean, err)
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s must not be a symlink", current)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("%s is not a directory", current)
-		}
+		unix.Close(parent) //nolint:errcheck
+		parent = next
 	}
-	return nil
-}
-
-func verifyPathParentsNoSymlinks(path string) error {
-	clean, err := filepath.Abs(filepath.Clean(path))
-	if err != nil {
-		return err
-	}
-	parent := filepath.Dir(clean)
-	volume := filepath.VolumeName(parent)
-	rest := parent[len(volume):]
-	current := volume + string(filepath.Separator)
-	for _, part := range splitPath(rest) {
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s must not be a symlink", current)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("%s is not a directory", current)
-		}
-	}
-	return nil
+	return parent, created, nil
 }
 
 func splitPath(path string) []string {

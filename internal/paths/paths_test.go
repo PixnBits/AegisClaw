@@ -90,6 +90,27 @@ func TestEnsureSecureDirectoriesDoesNotRepairExistingLoosePermissions(t *testing
 	}
 }
 
+func TestEnsureSecureDirectoriesAllowsLooseNonSensitiveDir(t *testing.T) {
+	root := t.TempDir()
+	layout := testLayout(root)
+	if err := EnsureSecureDirectories(layout); err != nil {
+		t.Fatalf("initial ensure: %v", err)
+	}
+	if err := os.Chmod(layout.LogsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSecureDirectories(layout); err != nil {
+		t.Fatalf("non-sensitive mode drift should not block startup: %v", err)
+	}
+	info, err := os.Stat(layout.LogsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Fatalf("non-sensitive dir was repaired during startup to %04o", got)
+	}
+}
+
 func TestFixSecurePermissionsRepairsLoosePermissions(t *testing.T) {
 	root := t.TempDir()
 	layout := testLayout(root)
@@ -117,7 +138,7 @@ func TestEnsureRuntimeDirRejectsSymlinkBeforeChmod(t *testing.T) {
 	if err := os.Mkdir(target, 0700); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(root, "runtime")
+	link := filepath.Join(root, "aegis")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
@@ -204,12 +225,47 @@ func TestDefaultSocketPathLinuxNotUnderHome(t *testing.T) {
 	}
 }
 
+func TestDefaultSocketPathUsesExplicitRuntimeUID(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-specific socket placement")
+	}
+	t.Setenv("SUDO_USER", "")
+	t.Setenv(RuntimeUIDEnv, "4242")
+	t.Setenv(RuntimeGIDEnv, "4243")
+
+	path, err := DefaultSocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("/run", "user", "4242", "aegis", "daemon.sock")
+	if path != want {
+		t.Fatalf("socket path = %q, want %q", path, want)
+	}
+}
+
 func TestEnsureRuntimeDirRejectsBareRun(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux-specific runtime dir policy")
 	}
 	if err := EnsureRuntimeDir("/run"); err == nil {
 		t.Fatal("expected /run runtime dir to be rejected")
+	}
+}
+
+func TestEnsureRuntimeDirRejectsNonDedicatedParentWithoutChmod(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureRuntimeDir(dir); err == nil {
+		t.Fatal("expected non-dedicated runtime dir to be rejected")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Fatalf("rejected runtime dir was chmodded to %04o", got)
 	}
 }
 

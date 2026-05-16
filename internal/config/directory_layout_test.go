@@ -132,6 +132,43 @@ func TestNormalizeConfigPathsMigratesEmptyLegacyDir(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigPathsMigratesUnrecognizedLegacyAuditDir(t *testing.T) {
+	t.Setenv("SUDO_USER", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	defaults := DefaultConfig()
+	oldAudit := filepath.Join(home, ".local", "share", "aegisclaw", "audit")
+	if err := os.MkdirAll(oldAudit, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldAudit, "random.txt"), []byte("not audit data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults
+	cfg.Audit.Dir = oldAudit
+
+	normalizeConfigPaths(&cfg, defaults, nil)
+
+	if cfg.Audit.Dir != defaults.Audit.Dir {
+		t.Fatalf("unrecognized legacy audit path = %q, want secure default %q", cfg.Audit.Dir, defaults.Audit.Dir)
+	}
+}
+
+func TestLegacyPathHasReadableDataRecognizesLegacyAuditFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kernel.merkle.jsonl"), []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := legacyPathHasReadableData("audit.dir", dir)
+	if err != nil {
+		t.Fatalf("legacyPathHasReadableData: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected audit marker to be recognized")
+	}
+}
+
 func TestNormalizeConfigPathsMigratesLegacySymlink(t *testing.T) {
 	t.Setenv("SUDO_USER", "")
 	home := t.TempDir()
