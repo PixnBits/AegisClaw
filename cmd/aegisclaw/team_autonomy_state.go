@@ -235,6 +235,21 @@ func (a *autonomyRegistry) saveLocked() error {
 	return os.Rename(tmp, a.path)
 }
 
+// validateAutonomyInput performs basic sanitization and checks for autonomy operations.
+func validateAutonomyInput(sessionID, preset, scope string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	if len(sessionID) > 128 {
+		return fmt.Errorf("session_id too long")
+	}
+	preset = strings.TrimSpace(preset)
+	scope = strings.TrimSpace(scope)
+	// Optional: add whitelist checks for preset/scope in future if needed
+	return nil
+}
+
 func (a *autonomyRegistry) show(sessionID string) (autonomyRecord, bool, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	a.mu.Lock()
@@ -247,9 +262,8 @@ func (a *autonomyRegistry) show(sessionID string) (autonomyRecord, bool, error) 
 }
 
 func (a *autonomyRegistry) grant(sessionID, preset, scope string, until time.Time) error {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return fmt.Errorf("session_id is required")
+	if err := validateAutonomyInput(sessionID, preset, scope); err != nil {
+		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -260,6 +274,9 @@ func (a *autonomyRegistry) grant(sessionID, preset, scope string, until time.Tim
 		GrantedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if !until.IsZero() {
+		if until.Before(time.Now().UTC()) {
+			return fmt.Errorf("expiration time must be in the future")
+		}
 		rec.ExpiresAt = until.UTC().Format(time.RFC3339)
 	}
 	prev, hadPrev := a.Items[sessionID]
@@ -276,10 +293,8 @@ func (a *autonomyRegistry) grant(sessionID, preset, scope string, until time.Tim
 }
 
 func (a *autonomyRegistry) revoke(sessionID, scope string) error {
-	sessionID = strings.TrimSpace(sessionID)
-	scope = strings.TrimSpace(scope)
-	if sessionID == "" {
-		return fmt.Errorf("session_id is required")
+	if err := validateAutonomyInput(sessionID, "", scope); err != nil {
+		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -303,9 +318,8 @@ func (a *autonomyRegistry) revoke(sessionID, scope string) error {
 }
 
 func (a *autonomyRegistry) reset(sessionID string) error {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return fmt.Errorf("session_id is required")
+	if err := validateAutonomyInput(sessionID, "", ""); err != nil {
+		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
