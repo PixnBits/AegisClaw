@@ -237,17 +237,22 @@ func (a *autonomyRegistry) saveLocked() error {
 
 // validateAutonomyInput performs basic sanitization and checks for autonomy operations.
 func validateAutonomyInput(sessionID, preset, scope string) error {
+	_, _, _, err := normalizeAutonomyInput(sessionID, preset, scope)
+	return err
+}
+
+func normalizeAutonomyInput(sessionID, preset, scope string) (string, string, string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return fmt.Errorf("session_id is required")
+		return "", "", "", fmt.Errorf("session_id is required")
 	}
 	if len(sessionID) > 128 {
-		return fmt.Errorf("session_id too long")
+		return "", "", "", fmt.Errorf("session_id too long")
 	}
 	preset = strings.TrimSpace(preset)
 	scope = strings.TrimSpace(scope)
 	// Optional: add whitelist checks for preset/scope in future if needed
-	return nil
+	return sessionID, preset, scope, nil
 }
 
 func (a *autonomyRegistry) show(sessionID string) (autonomyRecord, bool, error) {
@@ -262,7 +267,9 @@ func (a *autonomyRegistry) show(sessionID string) (autonomyRecord, bool, error) 
 }
 
 func (a *autonomyRegistry) grant(sessionID, preset, scope string, until time.Time) error {
-	if err := validateAutonomyInput(sessionID, preset, scope); err != nil {
+	var err error
+	sessionID, preset, scope, err = normalizeAutonomyInput(sessionID, preset, scope)
+	if err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -293,7 +300,9 @@ func (a *autonomyRegistry) grant(sessionID, preset, scope string, until time.Tim
 }
 
 func (a *autonomyRegistry) revoke(sessionID, scope string) error {
-	if err := validateAutonomyInput(sessionID, "", scope); err != nil {
+	var err error
+	sessionID, _, scope, err = normalizeAutonomyInput(sessionID, "", scope)
+	if err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -318,7 +327,9 @@ func (a *autonomyRegistry) revoke(sessionID, scope string) error {
 }
 
 func (a *autonomyRegistry) reset(sessionID string) error {
-	if err := validateAutonomyInput(sessionID, "", ""); err != nil {
+	var err error
+	sessionID, _, _, err = normalizeAutonomyInput(sessionID, "", "")
+	if err != nil {
 		return err
 	}
 	a.mu.Lock()

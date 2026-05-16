@@ -116,12 +116,51 @@ func TestAutonomyShowExpiresPastGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	sid := "session-expired"
-	if err := reg.grant(sid, "default", "", time.Now().Add(-time.Minute)); err != nil {
+	reg.mu.Lock()
+	reg.Items[sid] = autonomyRecord{
+		SessionID: sid,
+		Preset:    "default",
+		GrantedAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+	}
+	if err := reg.saveLocked(); err != nil {
+		reg.mu.Unlock()
 		t.Fatal(err)
 	}
+	reg.mu.Unlock()
 	if _, ok, err := reg.show(sid); err != nil {
 		t.Fatal(err)
 	} else if ok {
 		t.Fatal("expected expired autonomy grant to be removed")
+	}
+}
+
+func TestAutonomyGrantRejectsPastExpiration(t *testing.T) {
+	reg, err := newAutonomyRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.grant("session-past", "default", "", time.Now().Add(-time.Minute)); err == nil {
+		t.Fatal("expected past expiration to be rejected")
+	}
+}
+
+func TestAutonomyGrantTrimsInputs(t *testing.T) {
+	reg, err := newAutonomyRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.grant(" session-trim ", " researcher ", " tools ", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok, err := reg.show("session-trim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected trimmed session id to be stored")
+	}
+	if rec.SessionID != "session-trim" || rec.Preset != "researcher" || rec.Scope != "tools" {
+		t.Fatalf("inputs were not trimmed: %+v", rec)
 	}
 }
