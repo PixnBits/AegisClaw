@@ -269,7 +269,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 					zap.String("proposal_id", proposalID),
 					zap.Int("round", session.Round),
 					zap.Error(updateErr),
-					)
+				)
 				session.State = SessionEscalated
 				session.Verdict = "escalated"
 				reason := fmt.Sprintf("round %d: agent update failed: %v", session.Round, updateErr)
@@ -280,7 +280,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 					zap.String("proposal_id", proposalID),
 					zap.Int("round", session.Round),
 					zap.Int("version_before", beforeVersion),
-					)
+				)
 				session.State = SessionEscalated
 				session.Verdict = "escalated"
 				reason := fmt.Sprintf("round %d: proposal version not advanced after update", session.Round)
@@ -309,7 +309,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 				session.Round,
 				questionCount,
 				concernCount,
-				)
+			)
 			if err := p.ApplyFeedback(compact, "court-engine", fmt.Sprintf("feedback for round %d", session.Round)); err != nil {
 				e.logger.Error("failed to apply feedback to proposal", zap.Error(err))
 			} else {
@@ -328,7 +328,7 @@ func (e *Engine) Review(ctx context.Context, proposalID string) (*Session, error
 			zap.Float64("approval_rate", consensus.ApprovalRate),
 			zap.Float64("avg_risk", result.AvgRisk),
 			zap.Int("questions", len(consensus.Feedback.Questions)),
-			)
+		)
 	}
 
 	// Max rounds exhausted without consensus
@@ -398,7 +398,7 @@ func (e *Engine) runRound(ctx context.Context, p *proposal.Proposal, round int) 
 			return reviews[i].Model < reviews[j].Model
 		}
 		return reviews[i].Persona < reviews[j].Persona
-	}
+	})
 
 	// Consensus evaluation is done in Review() via EvaluateConsensus.
 	// Here we just return the raw reviews; heatmap/consensus are populated by caller.
@@ -583,7 +583,7 @@ func cloneSessionSnapshot(s *Session) *Session {
 					reviewCopy.Evidence = append([]string(nil), review.Evidence...)
 					reviewCopy.Questions = append([]string(nil), review.Questions...)
 					reviewCopy.Raw = append(json.RawMessage(nil), review.Raw...)
-				rrCopy.Reviews[j] = reviewCopy
+					rrCopy.Reviews[j] = reviewCopy
 				}
 			}
 			if rr.Heatmap != nil {
@@ -766,7 +766,7 @@ func (e *Engine) loadSessions() error {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(e.sessionDir, entry.Name()))
-	if err != nil {
+		if err != nil {
 			e.logger.Warn("failed to read session file", zap.String("file", entry.Name()), zap.Error(err))
 			continue
 		}
@@ -848,7 +848,7 @@ func (e *Engine) ResumeStalled(ctx context.Context) int {
 				e.logger.Error("ResumeStalled: review failed",
 					zap.String("proposal_id", pid),
 					zap.Error(err),
-					)
+				)
 				return
 			}
 			e.logger.Info("ResumeStalled: review completed",
