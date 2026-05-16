@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -20,7 +21,7 @@ var onboardCmd = &cobra.Command{
 
 Onboarding performs the following steps:
   1. Check system prerequisites (firecracker, jailer, KVM access)
-  2. Create the workspace directory (~/.aegisclaw/workspace/)
+  2. Create the workspace directory (~/.aegis/workspace/)
   3. Write starter AGENTS.md, SOUL.md, TOOLS.md, and SKILL.md templates
   4. Run aegisclaw init if not already initialized
   5. Print next steps
@@ -99,8 +100,9 @@ func runOnboard(_ *cobra.Command, _ []string) error {
 	fmt.Println("\n[2/5] Setting up workspace directory...")
 	wsDir := cfg.Workspace.Dir
 	if wsDir == "" {
-		home, _ := os.UserHomeDir()
-		wsDir = filepath.Join(home, ".aegisclaw", "workspace")
+		if layout, err := aegispaths.DefaultLayout(); err == nil {
+			wsDir = layout.WorkspaceDir
+		}
 	}
 	if err := os.MkdirAll(wsDir, 0700); err != nil {
 		fmt.Printf("  ✗  Could not create workspace dir %s: %v\n", wsDir, err)

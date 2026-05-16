@@ -878,7 +878,7 @@ func buildDaemonSystemPrompt(env *runtimeEnv) string {
 	b.WriteString("- Skills can safely integrate external services: Discord, Telegram, Slack, GitHub, shell automation, databases, REST APIs, voice — anything declared and approved.\n")
 	b.WriteString("- Multi-channel gateway: when enabled, messages from Discord bots, Telegram, webhooks, and other adapters all arrive here just like chat messages.\n")
 	b.WriteString("- Async timers and signals: schedule recurring work, subscribe to external events, delegate subtasks to worker agents.\n")
-	b.WriteString("- Workspace customisation: SOUL.md, AGENTS.md, TOOLS.md files in ~/.aegisclaw/workspace/ let the user tailor platform behaviour.\n\n")
+	b.WriteString("- Workspace customisation: SOUL.md, AGENTS.md, TOOLS.md files in ~/.aegis/workspace/ let the user tailor platform behaviour.\n\n")
 
 	// Critical intent pattern: skill-addition requests.
 	b.WriteString("WHEN A USER ASKS TO ADD, INTEGRATE, AUTOMATE, OR CONNECT TO SOMETHING NEW:\n")

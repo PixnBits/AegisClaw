@@ -6,9 +6,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"go.uber.org/zap"
 )
 
@@ -162,11 +164,13 @@ type VaultSecretDeleteRequest struct {
 	Name string `json:"name"`
 }
 
-// DefaultSocketPath returns the default daemon socket path.
-// Uses a fixed, well-known location so the root daemon and unprivileged CLI
-// always agree — similar to Docker's /var/run/docker.sock.
+// DefaultSocketPath returns the security-conscious default daemon socket path.
 func DefaultSocketPath() string {
-	return "/run/aegisclaw.sock"
+	path, err := aegispaths.DefaultSocketPath()
+	if err != nil {
+		return "/tmp/aegis-daemon.sock"
+	}
+	return path
 }
 
 // Server listens on a Unix socket and dispatches incoming requests to
@@ -195,9 +199,13 @@ func (s *Server) Handle(action string, h Handler) {
 	s.handlers[action] = h
 }
 
-// Start begins listening on the Unix socket. It removes any stale socket
-// file and sets permissions so that group members can connect.
+// Start begins listening on the Unix socket. The parent directory is verified
+// before binding so a privileged daemon never binds inside a user-controlled
+// ~/.aegis socket directory on Linux.
 func (s *Server) Start() error {
+	if err := aegispaths.EnsureRuntimeDir(filepath.Dir(s.socketPath)); err != nil {
+		return err
+	}
 	// Remove stale socket if it exists.
 	os.Remove(s.socketPath)
 
@@ -205,8 +213,7 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	// Allow any local user to connect (like Docker's default socket).
-	os.Chmod(s.socketPath, 0666)
+	os.Chmod(s.socketPath, 0660)
 	s.listener = ln
 
 	mux := http.NewServeMux()

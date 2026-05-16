@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
+
+var doctorFixPermissions bool
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
@@ -36,6 +39,7 @@ Exits with code 0 when all checks pass, 1 when any check fails.`,
 }
 
 func init() {
+	doctorCmd.Flags().BoolVar(&doctorFixPermissions, "fix-permissions", false, "Repair AegisClaw directory permissions where possible")
 	rootCmd.AddCommand(doctorCmd)
 }
 
@@ -55,6 +59,14 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		fmt.Fprintf(os.Stderr, "doctor: failed to load config: %v\n", err)
 		def := config.DefaultConfig()
 		cfg = &def
+	}
+	layout := layoutFromConfig(cfg)
+	if doctorFixPermissions {
+		if err := aegispaths.FixSecurePermissions(layout); err != nil {
+			fmt.Fprintf(os.Stderr, "doctor: failed to fix permissions: %v\n", err)
+		} else {
+			fmt.Println("Repaired AegisClaw directory permissions.")
+		}
 	}
 
 	var checks []check
@@ -78,15 +90,17 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	// ── Kernel image ─────────────────────────────────────────────────────────
 	checks = append(checks, checkFile("kernel image", cfg.Sandbox.KernelImage))
 
-	// ── Config directory ─────────────────────────────────────────────────────
-	home, _ := os.UserHomeDir()
-	checks = append(checks, checkDir("config dir", filepath.Join(home, ".config", "aegisclaw")))
-
-	// ── Data directory ───────────────────────────────────────────────────────
-	checks = append(checks, checkDir("data dir", filepath.Join(home, ".local", "share", "aegisclaw")))
+	// ── Layout directories ───────────────────────────────────────────────────
+	checks = append(checks, checkDir("config dir", layout.ConfigDir))
+	checks = append(checks, checkDir("data dir", layout.DataDir))
+	checks = append(checks, checkDir("secrets dir", layout.SecretsDir))
+	checks = append(checks, checkDir("runtime dir", filepath.Dir(layout.SocketPath)))
 
 	// ── Audit directory ──────────────────────────────────────────────────────
 	checks = append(checks, checkDir("audit dir", cfg.Audit.Dir))
+	checks = append(checks, checkSensitiveDir("secrets permissions", layout.SecretsDir))
+	checks = append(checks, checkSensitiveDir("store permissions", layout.StoreDir))
+	checks = append(checks, checkSensitiveDir("audit permissions", layout.AuditDir))
 
 	// ── Workspace directory (optional) ───────────────────────────────────────
 	if cfg.Workspace.Dir != "" {
@@ -180,6 +194,13 @@ func checkDir(label, path string) check {
 	}
 	if !info.IsDir() {
 		return check{label: label, ok: false, detail: "not a directory: " + path}
+	}
+	return check{label: label, ok: true, detail: path}
+}
+
+func checkSensitiveDir(label, path string) check {
+	if err := aegispaths.VerifySensitiveDir(path); err != nil {
+		return check{label: label, ok: false, detail: err.Error()}
 	}
 	return check{label: label, ok: true, detail: path}
 }

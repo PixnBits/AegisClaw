@@ -21,6 +21,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/llm"
 	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/PixnBits/AegisClaw/internal/memory"
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
 	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
@@ -90,7 +91,7 @@ type runtimeEnv struct {
 	EgressProxy *llm.EgressProxy
 
 	// Workspace holds content loaded from the user's workspace directory
-	// (~/.aegisclaw/workspace by default). Fields are empty when the
+	// (~/.aegis/workspace by default). Fields are empty when the
 	// corresponding workspace files are absent or the directory doesn't exist.
 	Workspace *workspace.Content
 
@@ -143,6 +144,9 @@ func initRuntime() (*runtimeEnv, error) {
 	cfg, err := config.Load(logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+	if err := aegispaths.EnsureSecureDirectories(layoutFromConfig(cfg)); err != nil {
+		return nil, fmt.Errorf("secure directory layout check failed: %w", err)
 	}
 
 	kern, err := kernel.GetInstance(logger, cfg.Audit.Dir)
@@ -258,6 +262,32 @@ func initRuntime() (*runtimeEnv, error) {
 		Workspace:        loadWorkspace(cfg, logger),
 		Sessions:         sessions.NewStore(),
 	}, nil
+}
+
+func layoutFromConfig(cfg *config.Config) aegispaths.Layout {
+	defaultLayout, _ := aegispaths.DefaultLayout()
+	layout := defaultLayout
+	if cfg == nil {
+		return layout
+	}
+	layout.SocketPath = cfg.Daemon.SocketPath
+	layout.AuditDir = cfg.Audit.Dir
+	layout.StoreDir = filepath.Join(filepath.Dir(cfg.Audit.Dir), "store")
+	layout.SecretsDir = cfg.Vault.Dir
+	if cfg.Vault.Dir != "" {
+		layout.RootDir = filepath.Dir(cfg.Vault.Dir)
+		layout.ConfigDir = filepath.Join(layout.RootDir, "config")
+		layout.CacheDir = filepath.Join(layout.RootDir, "cache")
+		layout.LogsDir = filepath.Join(layout.RootDir, "logs")
+	}
+	layout.WorkspaceDir = cfg.Workspace.Dir
+	layout.GitDir = filepath.Join(filepath.Dir(cfg.Audit.Dir), "git")
+	layout.VMDir = filepath.Dir(cfg.Sandbox.StateDir)
+	layout.DataDir = filepath.Dir(cfg.Audit.Dir)
+	layout.RegistryDir = filepath.Dir(cfg.Sandbox.RegistryPath)
+	layout.ProposalDir = cfg.Proposal.StoreDir
+	layout.SBOMDir = cfg.Builder.SBOMDir
+	return layout
 }
 
 // resetRuntimeSingletons zeros all package-level singleton state so that a

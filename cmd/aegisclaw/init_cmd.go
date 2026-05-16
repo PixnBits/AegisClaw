@@ -2,11 +2,10 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -17,8 +16,7 @@ var initStrictness string
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize AegisClaw (first-time setup)",
-	Long: `One-time setup: creates the ~/.config/aegisclaw/ and
-~/.local/share/aegisclaw/ directory structures, loads default configuration,
+	Long: `One-time setup: creates the ~/.aegis/ directory structure, loads default configuration,
 generates an Ed25519 keypair, and opens the Merkle-tree audit log.
 
 Use --profile to select a user profile which determines the default
@@ -50,35 +48,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	homeDir, err := os.UserHomeDir()
+	layout, err := aegispaths.DefaultLayout()
 	if err != nil {
-		return fmt.Errorf("failed to determine home directory: %w", err)
+		return fmt.Errorf("failed to determine AegisClaw layout: %w", err)
 	}
-
-	aegisDir := filepath.Join(homeDir, ".aegisclaw")
 
 	fmt.Println("Initializing AegisClaw...")
 	fmt.Printf("  Profile:    %s\n", initProfile)
 	fmt.Printf("  Strictness: %s\n", initStrictness)
-	fmt.Printf("  Directory:  %s\n", aegisDir)
+	fmt.Printf("  Directory:  %s\n", layout.RootDir)
 
 	// Create directory structure.
-	dirs := []string{
-		filepath.Join(homeDir, ".config", "aegisclaw"),
-		filepath.Join(homeDir, ".config", "aegisclaw", "personas"),
-		filepath.Join(homeDir, ".config", "aegisclaw", "secrets"),
-		filepath.Join(homeDir, ".local", "share", "aegisclaw"),
-		filepath.Join(homeDir, ".local", "share", "aegisclaw", "audit"),
-		filepath.Join(homeDir, ".local", "share", "aegisclaw", "proposals"),
-		filepath.Join(homeDir, ".local", "share", "aegisclaw", "sandboxes"),
-		filepath.Join(homeDir, ".local", "share", "aegisclaw", "registry"),
-		filepath.Join(homeDir, ".local", "share", "aegisclaw", "builder"),
-	}
-
-	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0700); err != nil {
-			return fmt.Errorf("failed to create %s: %w", d, err)
-		}
+	if err := aegispaths.EnsureSecureDirectories(layout); err != nil {
+		return fmt.Errorf("failed to create secure directory layout: %w", err)
 	}
 
 	// Load config (creates defaults if needed).

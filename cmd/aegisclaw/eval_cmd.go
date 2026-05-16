@@ -145,10 +145,12 @@ func (p *cliEvalProbe) AuditContains(_ context.Context, actionType string, since
 	for _, e := range entries {
 		// Parse the action type from the payload JSON.
 		var payload struct {
-			ActionType string `json:"action_type"`
+			Action struct {
+				Type string `json:"type"`
+			} `json:"action"`
 		}
 		if jsonErr := json.Unmarshal(e.Payload, &payload); jsonErr == nil {
-			if payload.ActionType == actionType && e.Timestamp.After(since) {
+			if payload.Action.Type == actionType && !e.Timestamp.Before(since) {
 				return true, nil
 			}
 		}
