@@ -225,60 +225,98 @@ func (v *Vault) Delete(name string) error {
 
 // List returns metadata for all stored secrets.
 func (v *Vault) List() []*SecretEntry {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	if err := v.verifyStoreDir(); err != nil {
+	entries, err := v.ListChecked()
+	if err != nil {
 		v.logger.Error("vault directory security check failed", zap.Error(err))
 		return nil
-	}
-
-	entries := make([]*SecretEntry, 0, len(v.entries))
-	for _, e := range v.entries {
-		entries = append(entries, e)
 	}
 	return entries
 }
 
-// ListForSkill returns metadata for secrets associated with a specific skill.
-func (v *Vault) ListForSkill(skillID string) []*SecretEntry {
+// ListChecked returns metadata for all stored secrets or an error if the vault
+// directory fails runtime security checks.
+func (v *Vault) ListChecked() ([]*SecretEntry, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	if err := v.verifyStoreDir(); err != nil {
+		return nil, err
+	}
+	entries := make([]*SecretEntry, 0, len(v.entries))
+	for _, e := range v.entries {
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+// ListForSkill returns metadata for secrets associated with a specific skill.
+func (v *Vault) ListForSkill(skillID string) []*SecretEntry {
+	entries, err := v.ListForSkillChecked(skillID)
+	if err != nil {
 		v.logger.Error("vault directory security check failed", zap.Error(err))
 		return nil
 	}
+	return entries
+}
 
+// ListForSkillChecked returns secret metadata for one skill or an error if the
+// vault directory fails runtime security checks.
+func (v *Vault) ListForSkillChecked(skillID string) ([]*SecretEntry, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if err := v.verifyStoreDir(); err != nil {
+		return nil, err
+	}
 	var entries []*SecretEntry
 	for _, e := range v.entries {
 		if e.SkillID == skillID {
 			entries = append(entries, e)
 		}
 	}
-	return entries
+	return entries, nil
 }
 
 // Has checks if a secret exists.
 func (v *Vault) Has(name string) bool {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	if err := v.verifyStoreDir(); err != nil {
+	ok, err := v.HasChecked(name)
+	if err != nil {
 		v.logger.Error("vault directory security check failed", zap.Error(err))
 		return false
 	}
+	return ok
+}
+
+// HasChecked checks if a secret exists or returns an error if the vault
+// directory fails runtime security checks.
+func (v *Vault) HasChecked(name string) (bool, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if err := v.verifyStoreDir(); err != nil {
+		return false, err
+	}
 	_, exists := v.entries[name]
-	return exists
+	return exists, nil
 }
 
 // GetEntry returns the metadata entry for a secret (no decryption).
 func (v *Vault) GetEntry(name string) (*SecretEntry, bool) {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	if err := v.verifyStoreDir(); err != nil {
+	entry, ok, err := v.GetEntryChecked(name)
+	if err != nil {
 		v.logger.Error("vault directory security check failed", zap.Error(err))
 		return nil, false
 	}
+	return entry, ok
+}
+
+// GetEntryChecked returns secret metadata or an error if the vault directory
+// fails runtime security checks.
+func (v *Vault) GetEntryChecked(name string) (*SecretEntry, bool, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if err := v.verifyStoreDir(); err != nil {
+		return nil, false, err
+	}
 	e, ok := v.entries[name]
-	return e, ok
+	return e, ok, nil
 }
 
 // encrypt encrypts plaintext using the vault's age recipient.

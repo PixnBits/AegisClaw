@@ -69,6 +69,70 @@ func TestVerifySensitiveDirRejectsLoosePermissions(t *testing.T) {
 	}
 }
 
+func TestEnsureSecureDirectoriesDoesNotRepairExistingLoosePermissions(t *testing.T) {
+	root := t.TempDir()
+	layout := testLayout(root)
+	if err := EnsureSecureDirectories(layout); err != nil {
+		t.Fatalf("initial ensure: %v", err)
+	}
+	if err := os.Chmod(layout.SecretsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSecureDirectories(layout); err == nil {
+		t.Fatal("expected insecure existing secrets dir to be refused, not repaired")
+	}
+	info, err := os.Stat(layout.SecretsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Fatalf("EnsureSecureDirectories repaired mode to %04o; want unchanged 0755", got)
+	}
+}
+
+func TestFixSecurePermissionsRepairsLoosePermissions(t *testing.T) {
+	root := t.TempDir()
+	layout := testLayout(root)
+	if err := EnsureSecureDirectories(layout); err != nil {
+		t.Fatalf("initial ensure: %v", err)
+	}
+	if err := os.Chmod(layout.SecretsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := FixSecurePermissions(layout); err != nil {
+		t.Fatalf("FixSecurePermissions: %v", err)
+	}
+	info, err := os.Stat(layout.SecretsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != SensitiveDirPerm {
+		t.Fatalf("mode = %04o, want %04o", got, SensitiveDirPerm)
+	}
+}
+
+func TestEnsureRuntimeDirRejectsSymlinkBeforeChmod(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "runtime")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureRuntimeDir(link); err == nil {
+		t.Fatal("expected runtime symlink to be rejected")
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0700 {
+		t.Fatalf("target mode changed through symlink to %04o", got)
+	}
+}
+
 func TestDefaultSocketPathLinuxNotUnderHome(t *testing.T) {
 	path, err := DefaultSocketPath()
 	if err != nil {
@@ -95,5 +159,25 @@ func TestEnsureRuntimeDirRejectsBareRun(t *testing.T) {
 	}
 	if err := EnsureRuntimeDir("/run"); err == nil {
 		t.Fatal("expected /run runtime dir to be rejected")
+	}
+}
+
+func testLayout(root string) Layout {
+	return Layout{
+		RootDir:      filepath.Join(root, ".aegis"),
+		ConfigDir:    filepath.Join(root, ".aegis", "config"),
+		WorkspaceDir: filepath.Join(root, ".aegis", "workspace"),
+		CacheDir:     filepath.Join(root, ".aegis", "cache"),
+		LogsDir:      filepath.Join(root, ".aegis", "logs"),
+		GitDir:       filepath.Join(root, ".aegis", "git"),
+		VMDir:        filepath.Join(root, ".aegis", "vm"),
+		DataDir:      filepath.Join(root, ".aegis", "data"),
+		StoreDir:     filepath.Join(root, ".aegis", "data", "store"),
+		AuditDir:     filepath.Join(root, ".aegis", "data", "audit"),
+		RegistryDir:  filepath.Join(root, ".aegis", "data", "registry"),
+		ProposalDir:  filepath.Join(root, ".aegis", "data", "registry", "proposals"),
+		SBOMDir:      filepath.Join(root, ".aegis", "data", "sbom"),
+		SecretsDir:   filepath.Join(root, ".aegis", "secrets"),
+		SocketPath:   filepath.Join(root, "run", "aegis", "daemon.sock"),
 	}
 }

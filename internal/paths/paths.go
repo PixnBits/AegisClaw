@@ -40,6 +40,14 @@ type Layout struct {
 	SocketPath   string
 }
 
+// RuntimeOwner is the user that should own the per-user runtime directory and
+// socket. When a root daemon is launched via sudo, this is SUDO_USER so the
+// unprivileged CLI can connect without making the socket world-writable.
+type RuntimeOwner struct {
+	UID int
+	GID int
+}
+
 // DefaultLayout returns the per-user default layout. Most data lives under
 // ~/.aegis, while the privileged daemon socket is outside the home tree on
 // Linux.
@@ -90,15 +98,11 @@ func ResolveHome() (string, error) {
 // platforms fall back to ~/.aegis/run/daemon.sock for compatibility.
 func DefaultSocketPath() (string, error) {
 	if runtime.GOOS == "linux" {
-		uid := os.Getuid()
-		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-			if u, err := user.Lookup(sudoUser); err == nil {
-				if parsed, parseErr := strconv.Atoi(u.Uid); parseErr == nil {
-					uid = parsed
-				}
-			}
+		owner, err := RuntimeSocketOwner()
+		if err != nil {
+			return "", err
 		}
-		return filepath.Join("/run", "user", strconv.Itoa(uid), "aegis", "daemon.sock"), nil
+		return filepath.Join("/run", "user", strconv.Itoa(owner.UID), "aegis", "daemon.sock"), nil
 	}
 	home, err := ResolveHome()
 	if err != nil {
@@ -107,37 +111,35 @@ func DefaultSocketPath() (string, error) {
 	return filepath.Join(home, AppDirName, "run", "daemon.sock"), nil
 }
 
-// EnsureSecureDirectories creates all known directories and verifies high
-// sensitivity directories before privileged components use them.
-func EnsureSecureDirectories(layout Layout) error {
-	dirs := []struct {
-		path string
-		perm os.FileMode
-	}{
-		{layout.RootDir, UserDirPerm},
-		{layout.ConfigDir, UserDirPerm},
-		{layout.WorkspaceDir, UserDirPerm},
-		{layout.CacheDir, UserDirPerm},
-		{layout.LogsDir, UserSharedPerm},
-		{layout.GitDir, UserSharedPerm},
-		{layout.VMDir, UserSharedPerm},
-		{layout.DataDir, UserDirPerm},
-		{layout.StoreDir, SensitiveDirPerm},
-		{layout.AuditDir, SensitiveDirPerm},
-		{layout.RegistryDir, UserDirPerm},
-		{layout.ProposalDir, UserDirPerm},
-		{layout.SBOMDir, UserDirPerm},
-		{layout.SecretsDir, SensitiveDirPerm},
+// RuntimeSocketOwner returns the intended owner of /run/user/$UID/aegis and
+// daemon.sock.
+func RuntimeSocketOwner() (RuntimeOwner, error) {
+	uid, gid := os.Getuid(), os.Getgid()
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		u, err := user.Lookup(sudoUser)
+		if err != nil {
+			return RuntimeOwner{}, fmt.Errorf("lookup sudo user %q: %w", sudoUser, err)
+		}
+		parsedUID, err := strconv.Atoi(u.Uid)
+		if err != nil {
+			return RuntimeOwner{}, fmt.Errorf("parse uid for %q: %w", sudoUser, err)
+		}
+		parsedGID, err := strconv.Atoi(u.Gid)
+		if err != nil {
+			return RuntimeOwner{}, fmt.Errorf("parse gid for %q: %w", sudoUser, err)
+		}
+		uid, gid = parsedUID, parsedGID
 	}
-	for _, d := range dirs {
-		if d.path == "" {
-			continue
-		}
-		if err := os.MkdirAll(d.path, d.perm); err != nil {
-			return fmt.Errorf("create %s: %w", d.path, err)
-		}
-		if err := os.Chmod(d.path, d.perm); err != nil {
-			return fmt.Errorf("chmod %s: %w", d.path, err)
+	return RuntimeOwner{UID: uid, GID: gid}, nil
+}
+
+// EnsureSecureDirectories creates missing directories and verifies existing
+// high-sensitivity directories before privileged components use them. It never
+// repairs insecure existing directories; use FixSecurePermissions for that.
+func EnsureSecureDirectories(layout Layout) error {
+	for _, d := range layoutDirs(layout) {
+		if err := ensureDir(d.path, d.perm, false); err != nil {
+			return err
 		}
 	}
 	if err := EnsureRuntimeDir(filepath.Dir(layout.SocketPath)); err != nil {
@@ -161,20 +163,28 @@ func EnsureRuntimeDir(dir string) error {
 	if runtime.GOOS == "linux" && clean == "/run" {
 		return fmt.Errorf("runtime dir must be /run/user/$UID/aegis, not /run")
 	}
-	if err := os.MkdirAll(dir, RuntimeDirPerm); err != nil {
-		return fmt.Errorf("create runtime dir %s: %w", dir, err)
+	if err := ensureDir(dir, RuntimeDirPerm, true); err != nil {
+		return err
 	}
-	if err := os.Chmod(dir, RuntimeDirPerm); err != nil {
-		return fmt.Errorf("chmod runtime dir %s: %w", dir, err)
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return fmt.Errorf("lstat runtime dir %s: %w", dir, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("runtime dir %s must not be a symlink", dir)
+	if owner, err := RuntimeSocketOwner(); err == nil {
+		if err := chownIfRoot(dir, owner); err != nil {
+			return fmt.Errorf("set runtime dir owner %s: %w", dir, err)
+		}
 	}
 	return nil
+}
+
+// SetRuntimeSocketOwner applies the runtime owner and strict permissions to the
+// bound daemon socket.
+func SetRuntimeSocketOwner(path string) error {
+	owner, err := RuntimeSocketOwner()
+	if err != nil {
+		return err
+	}
+	if err := chownIfRoot(path, owner); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0660)
 }
 
 // VerifySensitiveDir enforces ownership, mode, and O_NOFOLLOW traversal for
@@ -209,7 +219,96 @@ func VerifySensitiveDir(path string) error {
 
 // FixSecurePermissions repairs common permission drift for known directories.
 func FixSecurePermissions(layout Layout) error {
-	return EnsureSecureDirectories(layout)
+	for _, d := range layoutDirs(layout) {
+		if err := ensureDir(d.path, d.perm, true); err != nil {
+			return err
+		}
+	}
+	if err := fixRuntimeDir(filepath.Dir(layout.SocketPath)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fixRuntimeDir(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("runtime dir is required")
+	}
+	clean := filepath.Clean(dir)
+	if runtime.GOOS == "linux" && clean == "/run" {
+		return fmt.Errorf("runtime dir must be /run/user/$UID/aegis, not /run")
+	}
+	if err := ensureDir(dir, RuntimeDirPerm, true); err != nil {
+		return err
+	}
+	if owner, err := RuntimeSocketOwner(); err == nil {
+		if err := chownIfRoot(dir, owner); err != nil {
+			return fmt.Errorf("set runtime dir owner %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+type layoutDir struct {
+	path string
+	perm os.FileMode
+}
+
+func layoutDirs(layout Layout) []layoutDir {
+	return []layoutDir{
+		{layout.RootDir, UserDirPerm},
+		{layout.ConfigDir, UserDirPerm},
+		{layout.WorkspaceDir, UserDirPerm},
+		{layout.CacheDir, UserDirPerm},
+		{layout.LogsDir, UserSharedPerm},
+		{layout.GitDir, UserSharedPerm},
+		{layout.VMDir, UserSharedPerm},
+		{layout.DataDir, UserDirPerm},
+		{layout.StoreDir, SensitiveDirPerm},
+		{layout.AuditDir, SensitiveDirPerm},
+		{layout.RegistryDir, UserDirPerm},
+		{layout.ProposalDir, UserDirPerm},
+		{layout.SBOMDir, UserDirPerm},
+		{layout.SecretsDir, SensitiveDirPerm},
+	}
+}
+
+func ensureDir(path string, perm os.FileMode, repair bool) error {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(path, perm); err != nil {
+			return fmt.Errorf("create %s: %w", path, err)
+		}
+		return os.Chmod(path, perm)
+	}
+	if err != nil {
+		return fmt.Errorf("lstat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	if info.Mode().Perm() != perm {
+		if !repair {
+			return fmt.Errorf("%s has mode %04o, want %04o", path, info.Mode().Perm(), perm)
+		}
+		if err := os.Chmod(path, perm); err != nil {
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func chownIfRoot(path string, owner RuntimeOwner) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	return os.Chown(path, owner.UID, owner.GID)
 }
 
 func verifyOwner(path string, uid int) error {

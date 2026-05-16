@@ -617,7 +617,11 @@ func checkSecretsBeforeActivate(skillName string, env *runtimeEnv) error {
 
 	var missing []string
 	for _, ref := range secretsRefs {
-		if !v.Has(ref) {
+		ok, hasErr := v.HasChecked(ref)
+		if hasErr != nil {
+			return fmt.Errorf("vault security check failed before activating skill %q: %w", skillName, hasErr)
+		}
+		if !ok {
 			missing = append(missing, ref)
 		}
 	}

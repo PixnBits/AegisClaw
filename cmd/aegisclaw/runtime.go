@@ -272,18 +272,9 @@ func layoutFromConfig(cfg *config.Config) aegispaths.Layout {
 	}
 	layout.SocketPath = cfg.Daemon.SocketPath
 	layout.AuditDir = cfg.Audit.Dir
-	layout.StoreDir = filepath.Join(filepath.Dir(cfg.Audit.Dir), "store")
 	layout.SecretsDir = cfg.Vault.Dir
-	if cfg.Vault.Dir != "" {
-		layout.RootDir = filepath.Dir(cfg.Vault.Dir)
-		layout.ConfigDir = filepath.Join(layout.RootDir, "config")
-		layout.CacheDir = filepath.Join(layout.RootDir, "cache")
-		layout.LogsDir = filepath.Join(layout.RootDir, "logs")
-	}
 	layout.WorkspaceDir = cfg.Workspace.Dir
-	layout.GitDir = filepath.Join(filepath.Dir(cfg.Audit.Dir), "git")
 	layout.VMDir = filepath.Dir(cfg.Sandbox.StateDir)
-	layout.DataDir = filepath.Dir(cfg.Audit.Dir)
 	layout.RegistryDir = filepath.Dir(cfg.Sandbox.RegistryPath)
 	layout.ProposalDir = cfg.Proposal.StoreDir
 	layout.SBOMDir = cfg.Builder.SBOMDir

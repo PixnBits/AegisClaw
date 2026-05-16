@@ -489,7 +489,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-	normalizeConfigPaths(&config, defaults)
+	normalizeConfigPaths(&config, defaults, logger)
 
 	// Validate configuration
 	if err := validateConfig(&config); err != nil {
@@ -505,7 +505,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	return &config, nil
 }
 
-func normalizeConfigPaths(config *Config, defaults Config) {
+func normalizeConfigPaths(config *Config, defaults Config, logger *zap.Logger) {
 	if config == nil {
 		return
 	}
@@ -517,68 +517,63 @@ func normalizeConfigPaths(config *Config, defaults Config) {
 	oldDataRoot := filepath.Join(home, ".local", "share", "aegisclaw")
 	oldWorkspaceRoot := filepath.Join(home, ".aegisclaw")
 
-	if config.Audit.Dir == "" || config.Audit.Dir == filepath.Join(oldDataRoot, "audit") {
-		config.Audit.Dir = defaults.Audit.Dir
-	}
-	if config.Sandbox.StateDir == "" || config.Sandbox.StateDir == filepath.Join(oldDataRoot, "sandboxes") {
-		config.Sandbox.StateDir = defaults.Sandbox.StateDir
-	}
-	if config.Sandbox.ChrootBase == "" || config.Sandbox.ChrootBase == filepath.Join(oldDataRoot, "jailer") {
-		config.Sandbox.ChrootBase = defaults.Sandbox.ChrootBase
-	}
-	if config.Sandbox.RegistryPath == "" || config.Sandbox.RegistryPath == filepath.Join(oldDataRoot, "registry.json") {
-		config.Sandbox.RegistryPath = defaults.Sandbox.RegistryPath
-	}
-	if config.Proposal.StoreDir == "" || config.Proposal.StoreDir == filepath.Join(oldDataRoot, "proposals") {
-		config.Proposal.StoreDir = defaults.Proposal.StoreDir
-	}
-	if config.Court.PersonaDir == "" || config.Court.PersonaDir == filepath.Join(oldConfigRoot, "personas") {
-		config.Court.PersonaDir = defaults.Court.PersonaDir
-	}
-	if config.Court.SessionDir == "" || config.Court.SessionDir == filepath.Join(oldDataRoot, "court-sessions") {
-		config.Court.SessionDir = defaults.Court.SessionDir
-	}
-	if config.Builder.WorkspaceBaseDir == "" || config.Builder.WorkspaceBaseDir == filepath.Join(oldDataRoot, "workspaces") {
-		config.Builder.WorkspaceBaseDir = defaults.Builder.WorkspaceBaseDir
-	}
-	if config.Builder.SBOMDir == "" || config.Builder.SBOMDir == filepath.Join(oldDataRoot, "sbom") {
-		config.Builder.SBOMDir = defaults.Builder.SBOMDir
-	}
-	if config.Vault.Dir == "" || config.Vault.Dir == filepath.Join(oldConfigRoot, "secrets") {
-		config.Vault.Dir = defaults.Vault.Dir
-	}
-	if config.Ollama.RegistryPath == "" || config.Ollama.RegistryPath == filepath.Join(oldDataRoot, "model-registry.json") {
-		config.Ollama.RegistryPath = defaults.Ollama.RegistryPath
-	}
-	if config.Ollama.ModelDir == "" || config.Ollama.ModelDir == filepath.Join(oldDataRoot, "models") {
-		config.Ollama.ModelDir = defaults.Ollama.ModelDir
-	}
-	if config.Composition.Dir == "" || config.Composition.Dir == filepath.Join(oldDataRoot, "composition") {
-		config.Composition.Dir = defaults.Composition.Dir
-	}
-	if config.Snapshot.Dir == "" || config.Snapshot.Dir == filepath.Join(oldDataRoot, "snapshots") {
-		config.Snapshot.Dir = defaults.Snapshot.Dir
-	}
-	if config.Memory.Dir == "" || config.Memory.Dir == filepath.Join(oldDataRoot, "memory") {
-		config.Memory.Dir = defaults.Memory.Dir
-	}
-	if config.EventBus.Dir == "" || config.EventBus.Dir == filepath.Join(oldDataRoot, "eventbus") {
-		config.EventBus.Dir = defaults.EventBus.Dir
-	}
-	if config.Worker.Dir == "" || config.Worker.Dir == filepath.Join(oldDataRoot, "workers") {
-		config.Worker.Dir = defaults.Worker.Dir
-	}
-	if config.Workspace.Dir == "" || config.Workspace.Dir == filepath.Join(oldWorkspaceRoot, "workspace") {
-		config.Workspace.Dir = defaults.Workspace.Dir
-	}
-	if config.Lookup.Dir == "" || config.Lookup.Dir == filepath.Join(oldDataRoot, "vectordb") {
-		config.Lookup.Dir = defaults.Lookup.Dir
-	}
+	config.Audit.Dir = migrateLegacyPath("audit.dir", config.Audit.Dir, filepath.Join(oldDataRoot, "audit"), defaults.Audit.Dir, logger)
+	config.Sandbox.StateDir = migrateLegacyPath("sandbox.state_dir", config.Sandbox.StateDir, filepath.Join(oldDataRoot, "sandboxes"), defaults.Sandbox.StateDir, logger)
+	config.Sandbox.ChrootBase = migrateLegacyPath("sandbox.chroot_base", config.Sandbox.ChrootBase, filepath.Join(oldDataRoot, "jailer"), defaults.Sandbox.ChrootBase, logger)
+	config.Sandbox.RegistryPath = migrateLegacyPath("sandbox.registry_path", config.Sandbox.RegistryPath, filepath.Join(oldDataRoot, "registry.json"), defaults.Sandbox.RegistryPath, logger)
+	config.Proposal.StoreDir = migrateLegacyPath("proposal.store_dir", config.Proposal.StoreDir, filepath.Join(oldDataRoot, "proposals"), defaults.Proposal.StoreDir, logger)
+	config.Court.PersonaDir = migrateLegacyPath("court.persona_dir", config.Court.PersonaDir, filepath.Join(oldConfigRoot, "personas"), defaults.Court.PersonaDir, logger)
+	config.Court.SessionDir = migrateLegacyPath("court.session_dir", config.Court.SessionDir, filepath.Join(oldDataRoot, "court-sessions"), defaults.Court.SessionDir, logger)
+	config.Builder.WorkspaceBaseDir = migrateLegacyPath("builder.workspace_base_dir", config.Builder.WorkspaceBaseDir, filepath.Join(oldDataRoot, "workspaces"), defaults.Builder.WorkspaceBaseDir, logger)
+	config.Builder.SBOMDir = migrateLegacyPath("builder.sbom_dir", config.Builder.SBOMDir, filepath.Join(oldDataRoot, "sbom"), defaults.Builder.SBOMDir, logger)
+	config.Vault.Dir = migrateLegacyPath("vault.dir", config.Vault.Dir, filepath.Join(oldConfigRoot, "secrets"), defaults.Vault.Dir, logger)
+	config.Ollama.RegistryPath = migrateLegacyPath("ollama.registry_path", config.Ollama.RegistryPath, filepath.Join(oldDataRoot, "model-registry.json"), defaults.Ollama.RegistryPath, logger)
+	config.Ollama.ModelDir = migrateLegacyPath("ollama.model_dir", config.Ollama.ModelDir, filepath.Join(oldDataRoot, "models"), defaults.Ollama.ModelDir, logger)
+	config.Composition.Dir = migrateLegacyPath("composition.dir", config.Composition.Dir, filepath.Join(oldDataRoot, "composition"), defaults.Composition.Dir, logger)
+	config.Snapshot.Dir = migrateLegacyPath("snapshot.dir", config.Snapshot.Dir, filepath.Join(oldDataRoot, "snapshots"), defaults.Snapshot.Dir, logger)
+	config.Memory.Dir = migrateLegacyPath("memory.dir", config.Memory.Dir, filepath.Join(oldDataRoot, "memory"), defaults.Memory.Dir, logger)
+	config.EventBus.Dir = migrateLegacyPath("eventbus.dir", config.EventBus.Dir, filepath.Join(oldDataRoot, "eventbus"), defaults.EventBus.Dir, logger)
+	config.Worker.Dir = migrateLegacyPath("worker.dir", config.Worker.Dir, filepath.Join(oldDataRoot, "workers"), defaults.Worker.Dir, logger)
+	config.Workspace.Dir = migrateLegacyPath("workspace.dir", config.Workspace.Dir, filepath.Join(oldWorkspaceRoot, "workspace"), defaults.Workspace.Dir, logger)
+	config.Lookup.Dir = migrateLegacyPath("lookup.dir", config.Lookup.Dir, filepath.Join(oldDataRoot, "vectordb"), defaults.Lookup.Dir, logger)
 	// Migrate the pre-directory-layout socket default. Binding directly under
 	// /run is too broad; the secure default is /run/user/$UID/aegis/daemon.sock.
 	if config.Daemon.SocketPath == "" || config.Daemon.SocketPath == "/run/aegisclaw.sock" {
+		if logger != nil && config.Daemon.SocketPath == "/run/aegisclaw.sock" {
+			logger.Warn("migrating insecure legacy daemon socket path",
+				zap.String("old_path", config.Daemon.SocketPath),
+				zap.String("new_path", defaults.Daemon.SocketPath),
+			)
+		}
 		config.Daemon.SocketPath = defaults.Daemon.SocketPath
 	}
+}
+
+func migrateLegacyPath(name, current, legacyDefault, secureDefault string, logger *zap.Logger) string {
+	if current == "" {
+		return secureDefault
+	}
+	if current != legacyDefault {
+		return current
+	}
+	if _, err := os.Stat(legacyDefault); err == nil {
+		if logger != nil {
+			logger.Warn("using readable legacy path; migrate data to ~/.aegis to complete directory-layout migration",
+				zap.String("name", name),
+				zap.String("legacy_path", legacyDefault),
+				zap.String("secure_default", secureDefault),
+			)
+		}
+		return current
+	}
+	if logger != nil {
+		logger.Warn("migrating legacy default path to secure layout",
+			zap.String("name", name),
+			zap.String("legacy_path", legacyDefault),
+			zap.String("secure_default", secureDefault),
+		)
+	}
+	return secureDefault
 }
 
 // getConfigDir returns the path to ~/.aegis/config.

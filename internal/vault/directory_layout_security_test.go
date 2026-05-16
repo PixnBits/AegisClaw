@@ -25,6 +25,12 @@ func TestVaultRejectsLooseStorePermissionsOnAccess(t *testing.T) {
 	if v.Has("apitoken") {
 		t.Fatal("Has should fail closed when vault directory permissions are insecure")
 	}
+	if _, err := v.ListChecked(); err == nil {
+		t.Fatal("ListChecked should expose insecure vault directory error")
+	}
+	if _, err := v.HasChecked("apitoken"); err == nil {
+		t.Fatal("HasChecked should expose insecure vault directory error")
+	}
 }
 
 func TestVaultRejectsSymlinkSecretRead(t *testing.T) {

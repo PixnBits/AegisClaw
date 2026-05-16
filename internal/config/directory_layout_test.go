@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -42,7 +43,7 @@ func TestNormalizeConfigPathsMigratesOldRunSocket(t *testing.T) {
 	cfg := defaults
 	cfg.Daemon.SocketPath = "/run/aegisclaw.sock"
 
-	normalizeConfigPaths(&cfg, defaults)
+	normalizeConfigPaths(&cfg, defaults, nil)
 
 	if cfg.Daemon.SocketPath == "/run/aegisclaw.sock" {
 		t.Fatal("old /run/aegisclaw.sock default was not migrated")
@@ -70,19 +71,40 @@ func TestNormalizeConfigPathsMigratesOldDefaultDirs(t *testing.T) {
 	cfg.Vault.Dir = filepath.Join(oldConfig, "secrets")
 	cfg.Workspace.Dir = filepath.Join(oldWorkspace, "workspace")
 
-	normalizeConfigPaths(&cfg, defaults)
+	normalizeConfigPaths(&cfg, defaults, nil)
 
 	for name, gotWant := range map[string][2]string{
-		"audit.dir":            {cfg.Audit.Dir, defaults.Audit.Dir},
-		"sandbox.state_dir":    {cfg.Sandbox.StateDir, defaults.Sandbox.StateDir},
-		"sandbox.registry":     {cfg.Sandbox.RegistryPath, defaults.Sandbox.RegistryPath},
-		"proposal.store_dir":   {cfg.Proposal.StoreDir, defaults.Proposal.StoreDir},
-		"court.persona_dir":    {cfg.Court.PersonaDir, defaults.Court.PersonaDir},
-		"vault.dir":            {cfg.Vault.Dir, defaults.Vault.Dir},
-		"workspace.dir":        {cfg.Workspace.Dir, defaults.Workspace.Dir},
+		"audit.dir":          {cfg.Audit.Dir, defaults.Audit.Dir},
+		"sandbox.state_dir":  {cfg.Sandbox.StateDir, defaults.Sandbox.StateDir},
+		"sandbox.registry":   {cfg.Sandbox.RegistryPath, defaults.Sandbox.RegistryPath},
+		"proposal.store_dir": {cfg.Proposal.StoreDir, defaults.Proposal.StoreDir},
+		"court.persona_dir":  {cfg.Court.PersonaDir, defaults.Court.PersonaDir},
+		"vault.dir":          {cfg.Vault.Dir, defaults.Vault.Dir},
+		"workspace.dir":      {cfg.Workspace.Dir, defaults.Workspace.Dir},
 	} {
 		if gotWant[0] != gotWant[1] {
 			t.Fatalf("%s = %q, want %q", name, gotWant[0], gotWant[1])
 		}
+	}
+}
+
+func TestNormalizeConfigPathsPreservesReadableLegacyData(t *testing.T) {
+	t.Setenv("SUDO_USER", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	defaults := DefaultConfig()
+	oldData := filepath.Join(home, ".local", "share", "aegisclaw")
+	oldAudit := filepath.Join(oldData, "audit")
+	if err := os.MkdirAll(oldAudit, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults
+	cfg.Audit.Dir = oldAudit
+
+	normalizeConfigPaths(&cfg, defaults, nil)
+
+	if cfg.Audit.Dir != oldAudit {
+		t.Fatalf("readable legacy audit path was not preserved: got %q want %q", cfg.Audit.Dir, oldAudit)
 	}
 }

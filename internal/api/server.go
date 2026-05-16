@@ -213,7 +213,10 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	os.Chmod(s.socketPath, 0660)
+	if err := aegispaths.SetRuntimeSocketOwner(s.socketPath); err != nil {
+		ln.Close() //nolint:errcheck
+		return err
+	}
 	s.listener = ln
 
 	mux := http.NewServeMux()
