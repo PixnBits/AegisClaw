@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -44,24 +47,44 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Chain head: %s\n", env.Kernel.AuditLog().LastHash())
 		return nil
 	}
-	entries, readErr := audit.ReadEntries(auditPath)
-	if readErr != nil {
-		return fmt.Errorf("verified chain but failed to read audit entries for matched head: %w", readErr)
+	verifiedHead, headErr := readMerkleHashAtIndex(auditPath, verified)
+	if headErr != nil {
+		return fmt.Errorf("verified chain but failed to read matched head: %w", headErr)
 	}
-	if verified == 0 || int(verified) > len(entries) {
-		return fmt.Errorf("verified count %d is outside audit entry bounds (%d)", verified, len(entries))
-	}
-	if entries[verified-1].Hash == "" {
-		return fmt.Errorf("verified entry %d has empty hash", verified)
-	}
-	if !strings.HasPrefix(entries[verified-1].Hash, strings.ToLower(target)) {
-		return fmt.Errorf("verified head %q does not match requested prefix %q", entries[verified-1].Hash, strings.ToLower(target))
-	}
-	fmt.Printf("  Verified head (prefix target): %s (partial verification)\n", entries[verified-1].Hash)
-	if int(verified) != len(entries) {
-		fmt.Printf("  Latest chain head: %s (not part of this partial verification)\n", entries[len(entries)-1].Hash)
-	} else {
-		fmt.Printf("  Latest chain head: %s\n", entries[len(entries)-1].Hash)
-	}
+	fmt.Printf("  Verified head (prefix target): %s (partial verification)\n", verifiedHead)
 	return nil
+}
+
+func readMerkleHashAtIndex(path string, index uint64) (string, error) {
+	if index == 0 {
+		return "", fmt.Errorf("index must be greater than 0")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open audit log: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	lineNo := uint64(0)
+	for scanner.Scan() {
+		lineNo++
+		if lineNo != index {
+			continue
+		}
+		var row struct {
+			Hash string `json:"hash"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+			return "", fmt.Errorf("decode entry %d: %w", lineNo, err)
+		}
+		if strings.TrimSpace(row.Hash) == "" {
+			return "", fmt.Errorf("entry %d has empty hash", lineNo)
+		}
+		return row.Hash, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan audit log: %w", err)
+	}
+	return "", fmt.Errorf("entry %d not found", index)
 }
