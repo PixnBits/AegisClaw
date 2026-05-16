@@ -117,7 +117,7 @@ func TestTeamAutonomyHandlersRegisteredWithoutRegistry(t *testing.T) {
 	registerExtendedDaemonAPI(srv, env, nil, nil, nil)
 
 	for _, action := range []string{"team.list", "team.create", "team.join", "team.leave", "team.status"} {
-		resp := srv.CallDirect(context.Background(), action, nil)
+		resp := srv.CallDirect(api.WithTrustedCaller(context.Background()), action, nil)
 		if resp == nil || resp.Success {
 			t.Fatalf("%s: expected initialization error, got %+v", action, resp)
 		}
@@ -126,7 +126,7 @@ func TestTeamAutonomyHandlersRegisteredWithoutRegistry(t *testing.T) {
 		}
 	}
 	for _, action := range []string{"autonomy.show", "autonomy.grant", "autonomy.revoke", "autonomy.reset"} {
-		resp := srv.CallDirect(context.Background(), action, nil)
+		resp := srv.CallDirect(api.WithTrustedCaller(context.Background()), action, nil)
 		if resp == nil || resp.Success {
 			t.Fatalf("%s: expected initialization error, got %+v", action, resp)
 		}

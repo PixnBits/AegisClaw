@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -52,21 +51,12 @@ func runRestart(cmd *cobra.Command, args []string) error {
 		}
 	}
 	client := api.NewClient(resolveDaemonSocketPath())
-	resp, err := client.Call(cmd.Context(), "kernel.shutdown", nil)
+	resp, err := client.Call(cmd.Context(), "kernel.restart", nil)
 	if err != nil {
 		return fmt.Errorf("failed to contact daemon: %w\n(Is the daemon running?)", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("restart (shutdown) failed: %s", resp.Error)
-	}
-
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
-	}
-	startProc := exec.Command(exePath, "start")
-	if err := startProc.Start(); err != nil {
-		return fmt.Errorf("restart failed to start daemon: %w", err)
+		return fmt.Errorf("restart failed: %s", resp.Error)
 	}
 
 	deadline := time.Now().Add(10 * time.Second)
@@ -77,7 +67,7 @@ func runRestart(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("daemon start command launched (pid %d) but daemon did not become reachable within 10 seconds", startProc.Process.Pid)
+	return fmt.Errorf("daemon restart initiated but daemon did not become reachable within 10 seconds")
 }
 
 var sessionsCmd = &cobra.Command{

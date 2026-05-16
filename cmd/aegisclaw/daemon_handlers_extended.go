@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,7 +32,7 @@ func registerExtendedDaemonAPI(
 	daemonQuit chan struct{},
 ) {
 	apiSrv.Handle("vault.secret.add", withAuthorizedCaller(env, "vault.secret.add", makeVaultSecretAddHandler(env)))
-	apiSrv.Handle("vault.secret.list", makeVaultSecretListHandler(env))
+	apiSrv.Handle("vault.secret.list", withAuthorizedCaller(env, "vault.secret.list", makeVaultSecretListHandler(env)))
 	apiSrv.Handle("vault.secret.delete", withAuthorizedCaller(env, "vault.secret.delete", makeVaultSecretDeleteHandler(env)))
 	apiSrv.Handle("vault.secret.rotate", withAuthorizedCaller(env, "vault.secret.rotate", makeVaultSecretRotateHandler(env)))
 
@@ -41,8 +42,8 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
 	apiSrv.Handle("skill.status", makeSkillStatusHandler(env))
 	apiSrv.Handle("skill.deactivate", withAuthorizedCaller(env, "skill.deactivate", makeSkillDeactivateHandler(env)))
-	apiSrv.Handle("skill.activate", makeSkillActivateHandler(env))
-	apiSrv.Handle("skill.secrets.refresh", makeSkillSecretsRefreshHandler(env))
+	apiSrv.Handle("skill.activate", withAuthorizedCaller(env, "skill.activate", makeSkillActivateHandler(env)))
+	apiSrv.Handle("skill.secrets.refresh", withAuthorizedCaller(env, "skill.secrets.refresh", makeSkillSecretsRefreshHandler(env)))
 
 	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
@@ -50,9 +51,10 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
 
 	apiSrv.Handle("kernel.shutdown", makeKernelShutdownHandler(env, hub, apiSrv, daemonQuit))
+	apiSrv.Handle("kernel.restart", makeKernelRestartHandler(env, hub, apiSrv, daemonQuit))
 
-	apiSrv.Handle("sessions.list", makeSessionsListHandler(env))
-	apiSrv.Handle("sessions.history", makeSessionsHistoryHandler(env))
+	apiSrv.Handle("sessions.list", withAuthorizedCaller(env, "sessions.list", makeSessionsListHandler(env)))
+	apiSrv.Handle("sessions.history", withAuthorizedCaller(env, "sessions.history", makeSessionsHistoryHandler(env)))
 	apiSrv.Handle("sessions.send", withAuthorizedCaller(env, "sessions.send", makeSessionsSendHandler(env, toolRegistry)))
 	apiSrv.Handle("sessions.spawn", withAuthorizedCaller(env, "sessions.spawn", makeSessionsSpawnHandler(env, toolRegistry)))
 	apiSrv.Handle("sessions.status", withAuthorizedCaller(env, "sessions.status", makeSessionsStatusHandler(env)))
@@ -69,16 +71,16 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("court.decisions.list", makeCourtDecisionsListHandler(env))
 	apiSrv.Handle("court.decisions.show", makeCourtDecisionsShowHandler(env))
 
-	apiSrv.Handle("team.list", makeTeamListHandler(env))
-	apiSrv.Handle("team.create", makeTeamCreateHandler(env))
-	apiSrv.Handle("team.join", makeTeamJoinHandler(env))
-	apiSrv.Handle("team.leave", makeTeamLeaveHandler(env))
-	apiSrv.Handle("team.status", makeTeamStatusHandler(env))
+	apiSrv.Handle("team.list", withAuthorizedCaller(env, "team.list", makeTeamListHandler(env)))
+	apiSrv.Handle("team.create", withAuthorizedCaller(env, "team.create", makeTeamCreateHandler(env)))
+	apiSrv.Handle("team.join", withAuthorizedCaller(env, "team.join", makeTeamJoinHandler(env)))
+	apiSrv.Handle("team.leave", withAuthorizedCaller(env, "team.leave", makeTeamLeaveHandler(env)))
+	apiSrv.Handle("team.status", withAuthorizedCaller(env, "team.status", makeTeamStatusHandler(env)))
 
-	apiSrv.Handle("autonomy.show", makeAutonomyShowHandler(env))
-	apiSrv.Handle("autonomy.grant", makeAutonomyGrantHandler(env))
-	apiSrv.Handle("autonomy.revoke", makeAutonomyRevokeHandler(env))
-	apiSrv.Handle("autonomy.reset", makeAutonomyResetHandler(env))
+	apiSrv.Handle("autonomy.show", withAuthorizedCaller(env, "autonomy.show", makeAutonomyShowHandler(env)))
+	apiSrv.Handle("autonomy.grant", withAuthorizedCaller(env, "autonomy.grant", makeAutonomyGrantHandler(env)))
+	apiSrv.Handle("autonomy.revoke", withAuthorizedCaller(env, "autonomy.revoke", makeAutonomyRevokeHandler(env)))
+	apiSrv.Handle("autonomy.reset", withAuthorizedCaller(env, "autonomy.reset", makeAutonomyResetHandler(env)))
 }
 
 func daemonOwnerUID() int {
@@ -234,42 +236,137 @@ func makeKernelShutdownHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api
 			env.Logger.Error("failed to log kernel shutdown", zap.Error(err))
 		}
 
-		if env.Runtime != nil {
-			sandboxes, err := env.Runtime.List(ctx)
-			if err != nil {
-				return &api.Response{Error: fmt.Errorf("list sandboxes: %w", err).Error()}
-			}
-			for _, sb := range sandboxes {
-				id := strings.TrimSpace(sb.Spec.ID)
-				if id == "" {
-					continue
-				}
-				if sb.State == sandbox.StateRunning {
-					if err := env.Runtime.Stop(ctx, id); err != nil {
-						return &api.Response{Error: fmt.Errorf("stop sandbox %s: %w", id, err).Error()}
-					}
-				}
-				if err := env.Runtime.Delete(ctx, id); err != nil {
-					return &api.Response{Error: fmt.Errorf("delete sandbox %s: %w", id, err).Error()}
-				}
-			}
+		if err := shutdownRuntimeSandboxes(ctx, env); err != nil {
+			return &api.Response{Error: err.Error()}
 		}
 
 		shutdownStarted = true
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			if hub != nil {
-				hub.Stop()
-			}
-			if apiSrv != nil {
-				apiSrv.Stop()
-			}
-			if daemonQuit != nil {
-				close(daemonQuit)
-			}
-		}()
+		scheduleDaemonExit(hub, apiSrv, daemonQuit)
 		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "shutdown initiated"})}
 	}
+}
+
+func makeKernelRestartHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api.Server, daemonQuit chan struct{}) api.Handler {
+	var mu sync.Mutex
+	restartStarted := false
+	return func(ctx context.Context, _ json.RawMessage) *api.Response {
+		if err := authorizeCaller(env, "kernel.restart", ctx); err != nil {
+			return &api.Response{Error: err.Error()}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if restartStarted {
+			return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "restart already in progress"})}
+		}
+		if err := shutdownRuntimeSandboxes(ctx, env); err != nil {
+			return &api.Response{Error: err.Error()}
+		}
+		exePath, err := os.Executable()
+		if err != nil {
+			return &api.Response{Error: fmt.Errorf("resolve executable path: %w", err).Error()}
+		}
+		restartProc := exec.Command(exePath, "start", "--foreground", "--allow-existing-daemon")
+		restartProc.Stdout = os.Stdout
+		restartProc.Stderr = os.Stderr
+		restartProc.Env = restartChildEnv()
+		if err := restartProc.Start(); err != nil {
+			return &api.Response{Error: fmt.Errorf("start replacement daemon: %w", err).Error()}
+		}
+		payload, _ := json.Marshal(map[string]string{"reason": "kernel.restart"})
+		action := kernel.NewAction(kernel.ActionKernelStop, "cli", payload)
+		if _, err := env.Kernel.SignAndLog(action); err != nil {
+			env.Logger.Error("failed to log kernel restart", zap.Error(err))
+		}
+		restartStarted = true
+		scheduleDaemonExit(hub, apiSrv, daemonQuit)
+		return &api.Response{Success: true, Data: mustMarshal(map[string]interface{}{
+			"message": "restart initiated",
+			"pid":     restartProc.Process.Pid,
+		})}
+	}
+}
+
+func shutdownRuntimeSandboxes(ctx context.Context, env *runtimeEnv) error {
+	if env == nil || env.Runtime == nil {
+		return nil
+	}
+	sandboxes, err := env.Runtime.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list sandboxes: %w", err)
+	}
+	for _, sb := range sandboxes {
+		id := strings.TrimSpace(sb.Spec.ID)
+		if id == "" {
+			continue
+		}
+		if sb.State == sandbox.StateRunning {
+			if err := env.Runtime.Stop(ctx, id); err != nil {
+				return fmt.Errorf("stop sandbox %s: %w", id, err)
+			}
+		}
+		if err := env.Runtime.Delete(ctx, id); err != nil {
+			return fmt.Errorf("delete sandbox %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func scheduleDaemonExit(hub *ipc.MessageHub, apiSrv *api.Server, daemonQuit chan struct{}) {
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if hub != nil {
+			hub.Stop()
+		}
+		if apiSrv != nil {
+			apiSrv.Stop()
+		}
+		if daemonQuit != nil {
+			func() {
+				defer func() { _ = recover() }()
+				close(daemonQuit)
+			}()
+		}
+	}()
+}
+
+func restartChildEnv() []string {
+	const (
+		pathKey       = "PATH="
+		homeKey       = "HOME="
+		userKey       = "USER="
+		shellKey      = "SHELL="
+		tmpKey        = "TMPDIR="
+		langKey       = "LANG="
+		xdgRuntimeKey = "XDG_RUNTIME_DIR="
+		sudoUIDKey    = "SUDO_UID="
+		sudoGIDKey    = "SUDO_GID="
+		sudoUserKey   = "SUDO_USER="
+	)
+	allowPrefixes := []string{
+		"AEGIS_",
+		"LC_",
+	}
+	allowExact := []string{
+		pathKey, homeKey, userKey, shellKey, tmpKey, langKey,
+		xdgRuntimeKey, sudoUIDKey, sudoGIDKey, sudoUserKey,
+	}
+	env := make([]string, 0, 16)
+outer:
+	for _, kv := range os.Environ() {
+		for _, key := range allowExact {
+			if strings.HasPrefix(kv, key) {
+				env = append(env, kv)
+				continue outer
+			}
+		}
+		for _, prefix := range allowPrefixes {
+			if strings.HasPrefix(kv, prefix) {
+				env = append(env, kv)
+				continue outer
+			}
+		}
+	}
+	return env
 }
 
 func makeSessionsStatusHandler(env *runtimeEnv) api.Handler {
@@ -642,7 +739,10 @@ func makeAutonomyShowHandler(env *runtimeEnv) api.Handler {
 		if err := json.Unmarshal(data, &req); err != nil {
 			return &api.Response{Error: "invalid request: " + err.Error()}
 		}
-		rec, ok := env.AutonomyRegistry.show(req.SessionID)
+		rec, ok, err := env.AutonomyRegistry.show(req.SessionID)
+		if err != nil {
+			return &api.Response{Error: err.Error()}
+		}
 		if !ok {
 			return &api.Response{Error: "no autonomy record for session"}
 		}

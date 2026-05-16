@@ -235,13 +235,15 @@ func (a *autonomyRegistry) saveLocked() error {
 	return os.Rename(tmp, a.path)
 }
 
-func (a *autonomyRegistry) show(sessionID string) (autonomyRecord, bool) {
+func (a *autonomyRegistry) show(sessionID string) (autonomyRecord, bool, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.expireLocked(sessionID)
+	if err := a.expireLocked(sessionID); err != nil {
+		return autonomyRecord{}, false, err
+	}
 	r, ok := a.Items[sessionID]
-	return r, ok
+	return r, ok, nil
 }
 
 func (a *autonomyRegistry) grant(sessionID, preset, scope string, until time.Time) error {
@@ -281,7 +283,9 @@ func (a *autonomyRegistry) revoke(sessionID, scope string) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.expireLocked(sessionID)
+	if err := a.expireLocked(sessionID); err != nil {
+		return err
+	}
 	rec, ok := a.Items[sessionID]
 	if !ok {
 		return fmt.Errorf("no autonomy state for session %q", sessionID)
@@ -316,18 +320,22 @@ func (a *autonomyRegistry) reset(sessionID string) error {
 	return nil
 }
 
-func (a *autonomyRegistry) expireLocked(sessionID string) {
+func (a *autonomyRegistry) expireLocked(sessionID string) error {
 	rec, ok := a.Items[sessionID]
 	if !ok || strings.TrimSpace(rec.ExpiresAt) == "" {
-		return
+		return nil
 	}
 	expiry, err := time.Parse(time.RFC3339, rec.ExpiresAt)
 	if err != nil {
-		return
+		return nil
 	}
 	if !time.Now().UTC().After(expiry) {
-		return
+		return nil
 	}
 	delete(a.Items, sessionID)
-	_ = a.saveLocked()
+	if err := a.saveLocked(); err != nil {
+		a.Items[sessionID] = rec
+		return fmt.Errorf("persist autonomy expiry for session %q: %w", sessionID, err)
+	}
+	return nil
 }

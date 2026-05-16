@@ -205,7 +205,9 @@ func handlePortalAPIBridgeConn(env *runtimeEnv, apiSrv *api.Server, conn net.Con
 
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
-	ctx = api.WithTrustedCaller(ctx)
+	if isTrustedPortalBridgeAction(req.Action) {
+		ctx = api.WithTrustedCaller(ctx)
+	}
 
 	resp := apiSrv.CallDirect(ctx, req.Action, req.Payload)
 	if resp == nil {
@@ -221,6 +223,37 @@ func handlePortalAPIBridgeConn(env *runtimeEnv, apiSrv *api.Server, conn net.Con
 			zap.String("action", req.Action),
 			zap.Error(err),
 		)
+	}
+}
+
+func isTrustedPortalBridgeAction(action string) bool {
+	switch strings.TrimSpace(action) {
+	case "chat.message",
+		"chat.summarize",
+		"worker.list",
+		"worker.status",
+		"sandbox.list",
+		"memory.list",
+		"memory.search",
+		"system.stats",
+		"dashboard.skills",
+		"dashboard.proposal",
+		"event.approvals.decide",
+		"skill.list",
+		"git.branches",
+		"git.browse",
+		"git.commits",
+		"git.diff",
+		"workspace.list",
+		"workspace.write",
+		"sessions.list",
+		"sessions.history",
+		"sessions.status",
+		"pr.list",
+		"pr.get":
+		return true
+	default:
+		return false
 	}
 }
 

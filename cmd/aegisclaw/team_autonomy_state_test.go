@@ -60,14 +60,19 @@ func TestAutonomyGrantRevokeReset(t *testing.T) {
 	if err := reg.grant(sid, "researcher", "tools", until); err != nil {
 		t.Fatal(err)
 	}
-	rec, ok := reg.show(sid)
+	rec, ok, err := reg.show(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok || rec.Preset != "researcher" {
 		t.Fatalf("grant: %+v ok=%v", rec, ok)
 	}
 	if err := reg.revoke(sid, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reg.show(sid); ok {
+	if _, ok, err := reg.show(sid); err != nil {
+		t.Fatal(err)
+	} else if ok {
 		t.Fatal("expected revoked")
 	}
 	if err := reg.grant(sid, "default", "", time.Time{}); err != nil {
@@ -76,7 +81,9 @@ func TestAutonomyGrantRevokeReset(t *testing.T) {
 	if err := reg.reset(sid); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reg.show(sid); ok {
+	if _, ok, err := reg.show(sid); err != nil {
+		t.Fatal(err)
+	} else if ok {
 		t.Fatal("expected reset")
 	}
 
@@ -112,7 +119,9 @@ func TestAutonomyShowExpiresPastGrant(t *testing.T) {
 	if err := reg.grant(sid, "default", "", time.Now().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reg.show(sid); ok {
+	if _, ok, err := reg.show(sid); err != nil {
+		t.Fatal(err)
+	} else if ok {
 		t.Fatal("expected expired autonomy grant to be removed")
 	}
 }

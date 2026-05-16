@@ -7,13 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/spf13/cobra"
-	"golang.org/x/sys/unix"
 )
 
 var secretsSkillID string
@@ -121,13 +119,10 @@ func readSecretFromTerminal(prompt string) (string, error) {
 
 	// Try to disable terminal echo for secure input.
 	fd := int(os.Stdin.Fd())
-	oldState, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	restoreEcho, err := disableTerminalEcho(fd)
 	if err == nil {
-		newState := *oldState
-		newState.Lflag &^= unix.ECHO
-		unix.IoctlSetTermios(fd, unix.TCSETS, &newState)
 		defer func() {
-			unix.IoctlSetTermios(fd, unix.TCSETS, oldState)
+			restoreEcho()
 			fmt.Println() // newline after hidden input
 		}()
 	}
@@ -146,12 +141,7 @@ func readSecretFromFileNoFollow(path string) (string, error) {
 		return "", fmt.Errorf("invalid file path")
 	}
 	var f *os.File
-	var err error
-	if runtime.GOOS == "linux" {
-		f, err = os.OpenFile(clean, os.O_RDONLY|unix.O_NOFOLLOW, 0)
-	} else {
-		f, err = os.Open(clean)
-	}
+	f, err := openSecretFileNoFollow(clean)
 	if err != nil {
 		return "", fmt.Errorf("open secret file: %w", err)
 	}

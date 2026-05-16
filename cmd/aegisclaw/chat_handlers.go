@@ -143,7 +143,22 @@ func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Han
 			if _, ok := env.Sessions.Get(sessionID); !ok {
 				env.Sessions.Open(sessionID, agentVMID)
 			}
-			env.Sessions.SetStatus(sessionID, sessions.StatusActive)
+			if !env.Sessions.SetStatusIf(sessionID, sessions.StatusIdle, sessions.StatusActive) {
+				rec, ok := env.Sessions.Get(sessionID)
+				if !ok {
+					return &api.Response{Error: fmt.Sprintf("session %q not found", sessionID)}
+				}
+				switch rec.Status {
+				case sessions.StatusPaused:
+					return &api.Response{Error: fmt.Sprintf("session is paused — resume with: aegisclaw sessions resume %s", sessionID)}
+				case sessions.StatusClosed:
+					return &api.Response{Error: fmt.Sprintf("session is closed — spawn a new session with: aegisclaw sessions spawn")}
+				case sessions.StatusActive:
+					return &api.Response{Error: fmt.Sprintf("session %q is already processing a request", sessionID)}
+				default:
+					return &api.Response{Error: fmt.Sprintf("session %q is not ready for messaging (status=%s)", sessionID, rec.Status)}
+				}
+			}
 			env.Sessions.AppendMessage(sessionID, agentVMID, "user", req.Input)
 		}
 

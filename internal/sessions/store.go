@@ -156,24 +156,18 @@ func (s *Store) Open(id, sandboxID string) *Record {
 }
 
 // evictOldestIdleLocked removes the oldest evictable session.
-// Priority order is idle/paused/closed; if none exist it evicts the oldest
-// remaining session to preserve the maxSessions bound.
+// Priority order is idle/paused/closed. Returns true if one was evicted.
 // Must be called with s.mu held for writing.
-func (s *Store) evictOldestIdleLocked() {
+func (s *Store) evictOldestIdleLocked() bool {
 	for i, id := range s.order {
 		r := s.sessions[id]
 		if r != nil && (r.Status == StatusIdle || r.Status == StatusPaused || r.Status == StatusClosed) {
 			delete(s.sessions, id)
 			s.order = append(s.order[:i], s.order[i+1:]...)
-			return
+			return true
 		}
 	}
-	if len(s.order) == 0 {
-		return
-	}
-	oldest := s.order[0]
-	delete(s.sessions, oldest)
-	s.order = s.order[1:]
+	return false
 }
 
 // Get returns the record for id, or (nil, false) if not found.

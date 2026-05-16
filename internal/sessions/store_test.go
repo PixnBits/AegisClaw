@@ -174,6 +174,20 @@ func TestStore_Eviction(t *testing.T) {
 	}
 }
 
+func TestStore_DoesNotEvictActiveWhenAtCapacity(t *testing.T) {
+	s := NewStore()
+	for i := 0; i < maxSessions; i++ {
+		id := GenerateID()
+		s.Open(id, "")
+		s.SetStatus(id, StatusActive)
+	}
+	oldestID := s.order[0]
+	s.Open(GenerateID(), "")
+	if _, ok := s.Get(oldestID); !ok {
+		t.Fatal("expected oldest active session to remain; active sessions must not be silently evicted")
+	}
+}
+
 func TestStore_LastActiveAt(t *testing.T) {
 	s := NewStore()
 	s.Open("s1", "vm1")

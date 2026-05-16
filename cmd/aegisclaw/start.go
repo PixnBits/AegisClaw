@@ -26,10 +26,14 @@ import (
 var safeModeFlag bool
 var startModelFlag string
 var startForeground bool
+var startAllowExistingDaemon bool
 
 const aegisHubRootfsEnvKey = "AEGISCLAW_HUB_ROOTFS"
 
 func runStart(cmd *cobra.Command, args []string) error {
+	if err := ensureDaemonNotRunning(cmd.Context(), startAllowExistingDaemon); err != nil {
+		return err
+	}
 	if !startForeground {
 		exePath, err := os.Executable()
 		if err != nil {
@@ -176,6 +180,19 @@ func runStart(cmd *cobra.Command, args []string) error {
 	fmt.Println("AegisClaw kernel started.")
 	<-daemonQuit
 	env.Logger.Info("daemon exiting after shutdown request")
+	return nil
+}
+
+func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
+	if allowExisting {
+		return nil
+	}
+	client := api.NewClient(resolveDaemonSocketPath())
+	pingCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
+	defer cancel()
+	if err := client.Ping(pingCtx); err == nil {
+		return fmt.Errorf("daemon already running (use: aegisclaw restart)")
+	}
 	return nil
 }
 
