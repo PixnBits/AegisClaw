@@ -1,8 +1,9 @@
 package main
 
-// This file has been heavily neutralized as part of the aggressive Court extraction.
-// Most Court logic now lives (or will live) in dedicated Court components.
-// The Host Daemon should no longer execute governance or round-updater logic.
+// Court initialization stubs for the Host Daemon Minimal TCB.
+// Real Court logic (review, voting, round updates) now runs in dedicated Court VMs
+// and is orchestrated by the Court Scribe. The Host Daemon only forwards requests
+// via CourtClient.
 
 import (
 	"context"
@@ -11,28 +12,22 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 )
 
-// initCourtEngine is disabled.
+// initCourtEngine returns a nil engine; Court logic lives in Court VMs + Court Scribe.
 func initCourtEngine(env *runtimeEnv, toolRegistry *ToolRegistry) (*court.Engine, error) {
 	return nil, nil
 }
 
-// makeCourtRoundUpdater is disabled.
+// makeCourtRoundUpdater returns a no-op updater; real round logic is in Court VMs.
 func makeCourtRoundUpdater(env *runtimeEnv, toolRegistry *ToolRegistry) court.RoundUpdateFunc {
 	return func(ctx context.Context, p *proposal.Proposal, feedback *court.IterationFeedback) (*proposal.Proposal, error) {
 		return nil, nil
 	}
 }
 
-// initCourtLauncher is disabled.
+// initCourtLauncher returns nil; sandbox launching for Court is handled externally.
 func initCourtLauncher(env *runtimeEnv) (court.SandboxLauncher, error) {
 	return nil, nil
 }
 
-// The following helper functions are also disabled during extraction:
-// - buildRoundUpdaterSystemPrompt
-// - buildRoundUpdaterUserPrompt
-// - buildRoundUpdaterNudge
-// - truncate
-// - extractToolCallFromContent
-//
-// They can be removed or relocated once the Court extraction is complete.
+// Note: legacy helpers (buildRoundUpdaterSystemPrompt, etc.) were removed during
+// the Minimal TCB refactor; Court responsibilities have moved out of the Host Daemon.

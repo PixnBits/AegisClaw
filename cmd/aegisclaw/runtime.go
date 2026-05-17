@@ -63,9 +63,9 @@ type runtimeEnv struct {
 	CourtClient   court.Client
 	BuilderClient builder.Client
 
-	// Deprecated during aggressive Phase 1 stripping (Court Engine removed from TCB)
-	// Court *court.Engine — fully removed; all governance routes through CourtClient
-	// BuildOrchestrator — removed; builder coordination now lives in AegisHub / Builder VMs
+	// Court Engine removed from Host Daemon TCB.
+	// All governance now routes through CourtClient to Court VMs + Court Scribe.
+	// BuildOrchestrator removed; coordination lives in AegisHub / Builder VMs.
 	ProposalEventDispatcher *events.ProposalEventDispatcher
 
 	LLMProxy         *llm.OllamaProxy

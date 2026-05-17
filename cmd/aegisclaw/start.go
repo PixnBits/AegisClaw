@@ -221,7 +221,8 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 	}
 }
 
-// makeCourtReviewHandler uses env.CourtClient during the Court extraction transition.
+// makeCourtReviewHandler forwards Court review requests via CourtClient.
+// Real review logic executes in Court VMs orchestrated by Court Scribe.
 func makeCourtReviewHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		_ = env.CourtClient
@@ -229,7 +230,8 @@ func makeCourtReviewHandler(env *runtimeEnv) api.Handler {
 	}
 }
 
-// makeCourtVoteHandler uses env.CourtClient during the Court extraction transition.
+// makeCourtVoteHandler forwards Court vote requests via CourtClient.
+// Real voting and consensus logic executes in Court VMs + Court Scribe.
 func makeCourtVoteHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		_ = env.CourtClient
