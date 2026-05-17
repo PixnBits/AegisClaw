@@ -170,8 +170,8 @@ var teamCmd = &cobra.Command{
 }
 
 var teamListCmd = &cobra.Command{
-	Use:   "list",
-	RunE:  runTeamList,
+	Use:  "list",
+	RunE: runTeamList,
 }
 
 var teamCreateCmd = &cobra.Command{
@@ -417,6 +417,7 @@ func runSessionsList(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(w, "ID\tSTATUS\tMESSAGES\tSANDBOX")
 	for _, s := range parsed.Sessions {
 		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", s.ID, s.Status, s.MessageCount, s.SandboxID)
+	}
 	w.Flush()
 	return nil
 }
@@ -510,6 +511,7 @@ func runTasksList(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(w, "TASK_ID\tWORKER_ID\tSTATUS\tROLE")
 	for _, r := range rows {
 		fmt.Fprintf(w, "%v\t%v\t%v\t%v\n", r["task_id"], r["worker_id"], r["status"], r["role"])
+	}
 	w.Flush()
 	return nil
 }
@@ -599,6 +601,7 @@ func runTeamList(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(w, "ID\tNAME\tMEMBERS")
 	for _, t := range teams {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", t.ID, t.Name, strings.Join(t.Members, ","))
+	}
 	w.Flush()
 	return nil
 }
@@ -679,6 +682,7 @@ func runCourtDecisionsList(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(w, "ID\tPROPOSAL\tSTATE\tVERDICT")
 	for _, r := range rows {
 		fmt.Fprintf(w, "%v\t%v\t%v\t%v\n", r["id"], r["proposal_id"], r["state"], r["verdict"])
+	}
 	w.Flush()
 	return nil
 }
@@ -773,6 +777,7 @@ func runVMList(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(w, "ID\tNAME\tSTATE\tPID")
 	for _, sb := range all {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", sb.Spec.ID, sb.Spec.Name, sb.State, sb.PID)
+	}
 	w.Flush()
 	return nil
 }
@@ -806,6 +811,14 @@ func runSkillStatus(cmd *cobra.Command, args []string) error {
 		if globalJSON {
 			fmt.Println(string(resp.Data))
 			return nil
+		}
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, resp.Data, "", "  "); err != nil {
+			fmt.Println(string(resp.Data))
+			return nil
+		}
+		fmt.Println(buf.String())
+		return nil
 	}
 	resp, err := daemonCall(cmd.Context(), "skill.status", map[string]string{"name": name})
 	if err != nil {
