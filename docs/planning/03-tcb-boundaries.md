@@ -227,4 +227,37 @@ This allows the same interface to be used whether the backing store is local (du
 
 ---
 
+## Minimal Phase 2 – Store VM Groundwork (Phase 2.1–2.5)
+
+### Store VM Responsibilities (Target)
+
+The Store VM will become the **sole owner** of all persistent state. The Host Daemon's role will shrink to:
+
+- Launching and monitoring the Store VM (similar to how it launches AegisHub today)
+- Obtaining a narrow client/seam to the stores (via `env.Store`)
+- Never directly constructing or holding ProposalStore, PRStore, MemoryStore, etc.
+
+This aligns with the strict TCB boundary: persistent state must live outside the privileged daemon.
+
+### Minimal Phase 2 Outcome
+
+- Introduced `internal/store/store_vm.go` with `StoreVM` interface (`Start`/`Stop`) and `stubStoreVM`.
+- Added `StoreVM store.StoreVM` field to `runtimeEnv`.
+- `initRuntime()` now creates the stub and keeps `store.NewLocal(...)` temporarily behind a clear "transitional" comment.
+- Added deprecation comments on the legacy `*Inst` globals and store-related fields.
+- Documentation updated with Store VM boundaries and roadmap.
+
+The daemon still functions; the Store VM seam is now visible for future replacement.
+
+## Store VM Roadmap (Future Work)
+
+1. Real Store VM microVM definition (Firecracker spec, rootfs with store binary).
+2. vsock-based protocol + client implementation in `internal/store/remote.go`.
+3. Move all `NewStore` calls inside `StoreVM.Start()` (or the VM binary itself).
+4. Replace `env.Store` usage with a remote client when talking to the live Store VM.
+5. Remove the last direct store globals and the `store.NewLocal` path from the Host Daemon.
+6. Update AegisHub to route store requests through the Store VM.
+
+---
+
 **This document will be updated as we make decisions during Task 03.**

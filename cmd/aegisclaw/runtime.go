@@ -38,12 +38,12 @@ var (
 	runtimeOnce     sync.Once
 	runtimeInst     *sandbox.FirecrackerRuntime
 	registryInst    *sandbox.SkillRegistry
-	proposalInst    *proposal.Store
-	prStoreInst     *pullrequest.Store
-	compositionInst *composition.Store
-	memoryInst      *memory.Store
+	proposalInst    *proposal.Store // Deprecated (Minimal Phase 2): will be owned by Store VM
+	prStoreInst     *pullrequest.Store // Deprecated (Minimal Phase 2): will be owned by Store VM
+	compositionInst *composition.Store // Deprecated (Minimal Phase 2): will be owned by Store VM
+	memoryInst      *memory.Store      // Deprecated (Minimal Phase 2): will be owned by Store VM
 	eventBusInst    *eventbus.Bus
-	workerStoreInst *worker.Store
+	workerStoreInst *worker.Store // Deprecated (Minimal Phase 2): will be owned by Store VM
 	// vaultInst removed — Host Daemon no longer opens or operates on secrets vault.
 	// Secret handling is the responsibility of the Network Boundary VM only.
 	lookupInst      *lookup.Store
@@ -98,6 +98,11 @@ type runtimeEnv struct {
 
 	TeamRegistry     *teamRegistry     // Deprecated (Phase 3.4): team logic moved to AegisHub / Store VM
 	AutonomyRegistry *autonomyRegistry // Deprecated (Phase 3.4): autonomy grants moved out of daemon TCB
+
+	// StoreVM is the abstraction over persistent state ownership.
+	// Host Daemon no longer directly constructs stores; it will eventually
+	// only launch/monitor the Store VM (stub for now).
+	StoreVM store.StoreVM
 }
 
 func initRuntime() (*runtimeEnv, error) {
@@ -196,6 +201,11 @@ func initRuntime() (*runtimeEnv, error) {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
 	}
 
+	// TEMPORARY during Minimal Phase 2 Store VM groundwork:
+	// Direct construction of proposal/pr/composition/memory/worker stores still
+	// happens here so that env.Store remains functional. Once the real Store VM
+	// exists, this block will move inside StoreVM.Start() and the Host Daemon
+	// will only obtain a client/seam to the remote stores.
 	unifiedStore := store.NewLocal(
 		proposalInst,
 		prStoreInst,
@@ -226,6 +236,7 @@ func initRuntime() (*runtimeEnv, error) {
 		ThoughtEvents: NewThoughtEventBuffer(600),
 		Workspace:     loadWorkspace(cfg, logger),
 		Sessions:      sessions.NewStore(),
+		StoreVM:       store.NewStubStoreVM(),
 	}, nil
 }
 
