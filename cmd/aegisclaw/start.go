@@ -308,3 +308,9 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 
 	return hub, hubVMID, nil
 }
+
+// initBuildOrchestrator is disabled during the aggressive BuildOrchestrator extraction.
+// The Host Daemon no longer owns builder pipeline logic.
+func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
+	return nil, nil // intentionally disabled during extraction
+}
