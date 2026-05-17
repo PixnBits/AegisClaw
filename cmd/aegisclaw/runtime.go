@@ -27,6 +27,7 @@ import (
 	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
+	"github.com/PixnBits/AegisClaw/internal/store" // NEW
 	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/PixnBits/AegisClaw/internal/workspace"
@@ -71,6 +72,11 @@ type runtimeEnv struct {
 	SafeMode           atomic.Bool
 	TestLLMTemperature *float64
 	TestLLMSeed        int64
+
+	// NEW: Unified store abstraction
+	// This is the seam we will use to move persistent state ownership
+	// out of the Host Daemon and toward a future Store VM.
+	Store store.Store
 
 	// TaskExecutor handles one turn of the agent ReAct loop.
 	// The default (production) implementation is FirecrackerTaskExecutor which
@@ -240,6 +246,17 @@ func initRuntime() (*runtimeEnv, error) {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
 	}
 
+	// NEW: Wrap the individual stores in our unified Store abstraction.
+	// This is the first step toward removing direct store ownership from the daemon.
+	unifiedStore := store.NewLocal(
+		proposalInst,
+		prStoreInst,
+		compositionInst,
+		memoryInst,
+		workerStoreInst,
+		nil, // EventStore placeholder for now
+	)
+
 	return &runtimeEnv{
 		Logger:           logger,
 		Config:           cfg,
@@ -261,6 +278,7 @@ func initRuntime() (*runtimeEnv, error) {
 		ThoughtEvents:    NewThoughtEventBuffer(600),
 		Workspace:        loadWorkspace(cfg, logger),
 		Sessions:         sessions.NewStore(),
+		Store:            unifiedStore, // NEW
 	}, nil
 }
 
