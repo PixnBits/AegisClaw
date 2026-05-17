@@ -1,6 +1,6 @@
 # Task 03: Host Daemon TCB Boundaries
 
-**Status**: Draft (Phase 0)
+**Status**: Draft (Phase 0 - Interfaces Added)
 **Last Updated**: May 2026
 **Related**: `docs/specs/host-daemon.md`, `docs/architecture.md`, `docs/lessons-learned` branch
 
@@ -103,6 +103,97 @@ We will actively work on the following in this task:
 4. **Network Boundary VM** — At least define role and remove secret handling from daemon
 
 Court VMs and Builder VMs will be addressed at a high level but may be completed in later tasks.
+
+## Designed Interfaces (for Persistent State)
+
+These interfaces are designed to be introduced early so we can progressively remove direct store ownership from the Host Daemon. They are intended to be implementable both in-process initially and later backed by a real **Store VM** (via AegisHub).
+
+### Top-Level Store Interface
+
+```go
+// Package store defines the interfaces for persistent state access.
+// Most components should depend on these interfaces rather than concrete stores.
+package store
+
+// Store is the main aggregator for all persistent state.
+// Components that need access to multiple stores should use this.
+type Store interface {
+	Proposals() ProposalStore
+	PullRequests() PullRequestStore
+	Composition() CompositionStore
+	Memory() MemoryStore
+	Workers() WorkerStore
+	Events() EventStore
+
+	// Close releases any resources held by the store implementation.
+	Close() error
+}
+```
+
+### Individual Store Interfaces (Narrow)
+
+```go
+// ProposalStore manages skill and governance proposals.
+type ProposalStore interface {
+	Create(ctx context.Context, p *proposal.Proposal) error
+	Get(ctx context.Context, id string) (*proposal.Proposal, error)
+	Update(ctx context.Context, p *proposal.Proposal) error
+	List(ctx context.Context, filter proposal.Filter) ([]*proposal.Proposal, error)
+	Import(p *proposal.Proposal) error // for importing from CLI
+}
+
+// PullRequestStore manages pull request metadata.
+type PullRequestStore interface {
+	Create(ctx context.Context, pr *pullrequest.PullRequest) error
+	Get(ctx context.Context, id string) (*pullrequest.PullRequest, error)
+	List(ctx context.Context, filter pullrequest.Filter) ([]*pullrequest.PullRequest, error)
+	Update(ctx context.Context, pr *pullrequest.PullRequest) error
+}
+
+// CompositionStore manages published composition manifests.
+type CompositionStore interface {
+	Publish(components map[string]composition.Component, actor, reason string) error
+	GetLatest(ctx context.Context) (*composition.Manifest, error)
+}
+
+// MemoryStore manages per-agent long-term and short-term memory.
+type MemoryStore interface {
+	Store(ctx context.Context, entry *memory.Entry) error
+	Search(ctx context.Context, query memory.Query) ([]*memory.Entry, error)
+	Get(ctx context.Context, id string) (*memory.Entry, error)
+}
+
+// WorkerStore manages worker lifecycle records.
+type WorkerStore interface {
+	Create(ctx context.Context, record *worker.Record) error
+	Get(ctx context.Context, id string) (*worker.Record, error)
+	ListActive(ctx context.Context) ([]*worker.Record, error)
+	Update(ctx context.Context, record *worker.Record) error
+}
+
+// EventStore handles persistent timers, subscriptions, and approval queues.
+type EventStore interface {
+	// Timer and subscription methods will be defined here.
+	// For now this acts as a placeholder for EventBus persistence.
+}
+```
+
+### Future Remote Implementation Path
+
+Later, we can create implementations such as:
+
+```go
+// remote/store_client.go
+
+type remoteStore struct {
+	aegisHubClient aegisHubClient // or vsock client
+}
+
+func (r *remoteStore) Proposals() ProposalStore { ... }
+// etc.
+```
+
+This allows the same interface to be used whether the backing store is local (during transition) or remote in the Store VM.
 
 ## Measurement Baseline (to be updated)
 
