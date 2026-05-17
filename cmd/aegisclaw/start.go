@@ -104,14 +104,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	toolRegistry := buildToolRegistry(env)
 
-	courtEngine, err := initCourtEngine(env, toolRegistry)
-	if err != nil {
-		hub.Stop()
-		return fmt.Errorf("failed to init court engine: %w", err)
-	}
-	env.Court = courtEngine
+	// === COURT EXTRACTION (AGGRESSIVE) ===
+	// Court initialization has been removed from the Host Daemon.
+	// We are moving toward dedicated Court components.
+	// For now we use a stub client so the rest of the system can compile.
+	courtClient := &court.StubClient{}
+	_ = courtClient // placeholder until we wire real routing via AegisHub
 
-	courtEngine.ResumeStalled(cmd.Context())
+	// Note: ResumeStalled and full Court engine initialization removed.
+	// This is intentional as part of Minimal TCB refactor.
 
 	regDir := filepath.Join(filepath.Dir(env.Config.Audit.Dir), "cli-registry")
 	if teamReg, err := newTeamRegistry(regDir); err != nil {
@@ -144,8 +145,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Ensure default script runner is active
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
-	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtEngine))
-	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtEngine))
+	// Court handlers now use the stub client during transition.
+	// Real implementation will route through AegisHub to dedicated Court components.
+	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtClient))
+	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtClient))
 
 	// Git/Source Code API endpoints (Phase 2: Source Code Viewer)
 	apiSrv.Handle("git.browse", makeGitBrowseHandler(env))
@@ -199,8 +202,6 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 // reconcileApprovedProposals upgrades legacy approved proposals to implementing.
 // This is a startup recovery path for proposals approved before auto-transition
 // logic was added in chat/API review handlers.
-//
-// UPDATED: Now uses env.Store.Proposals() to prove the new abstraction.
 func reconcileApprovedProposals(env *runtimeEnv) {
 	ctx := context.Background()
 
@@ -248,54 +249,21 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 	}
 }
 
-// makeCourtReviewHandler returns an API handler that runs the full court review
-// inside the daemon process (which has root privileges for sandbox operations).
-// Per D3: If the court approves the proposal, the builder pipeline is
-// automatically triggered without requiring manual intervention.
-func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
+// makeCourtReviewHandler is temporarily updated during aggressive Court extraction.
+// It currently uses the stub client. Real implementation will route through AegisHub.
+func makeCourtReviewHandler(env *runtimeEnv, client *court.StubClient) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		var req api.CourtReviewRequest
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if req.ProposalID == "" {
-			return &api.Response{Error: "proposal_id is required"}
-		}
+		// TODO: Route court.review through AegisHub to dedicated Court components.
+		// For now this is a stub during the aggressive Minimal TCB refactor.
+		return &api.Response{Success: true, Data: []byte(`{"status":"stubbed","message":"Court extraction in progress"}`)}
+	}
+}
 
-		// Import the proposal from the CLI client into the daemon's store
-		// so the court engine can load it by ID.
-		if len(req.ProposalData) > 0 {
-			p, err := proposal.UnmarshalProposal(req.ProposalData)
-			if err != nil {
-				return &api.Response{Error: "invalid proposal data: " + err.Error()}
-			}
-			if err := env.ProposalStore.Import(p); err != nil {
-				return &api.Response{Error: "failed to import proposal: " + err.Error()}
-			}
-		}
-
-		reviewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-
-		session, err := engine.Review(reviewCtx, req.ProposalID)
-		if err != nil {
-			return &api.Response{Error: "court review failed: " + err.Error()}
-		}
-
-		if session.Verdict == "approved" {
-			p, pErr := env.ProposalStore.Get(reviewCtx, req.ProposalID)
-			if pErr == nil && p.Status == proposal.StatusApproved {
-				if tErr := p.Transition(proposal.StatusImplementing, "auto-triggered by court approval", "daemon"); tErr == nil {
-					env.ProposalStore.Update(reviewCtx, p)
-					if env.ProposalEventDispatcher != nil {
-						env.ProposalEventDispatcher.EmitStatusChanged(p, proposal.StatusApproved, proposal.StatusImplementing, "auto-triggered by court approval", "daemon")
-					}
-				}
-			}
-		}
-
-		respData, _ := json.Marshal(session)
-		return &api.Response{Success: true, Data: respData}
+// makeCourtVoteHandler is temporarily stubbed during aggressive Court extraction.
+func makeCourtVoteHandler(env *runtimeEnv, client *court.StubClient) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		// TODO: Route court.vote through AegisHub to dedicated Court components.
+		return &api.Response{Success: true}
 	}
 }
 
@@ -303,7 +271,7 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 // This is a best-effort implementation to make the event-driven trigger functional.
 // A fuller extraction of builder initialization is planned as future work.
 func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
-	if env == nil || env.Kernel == nil || env.Runtime == nil || env.ProposalStore == nil || env.GitManager == nil {
+	if env == nil || env.Kernel == nil || env.Runtime == nil || env.GitManager == nil {
 		env.Logger.Warn("BuildOrchestrator: missing required runtime dependencies, skipping")
 		return nil, nil
 	}
@@ -324,14 +292,14 @@ func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) 
 	}
 
 	// 3. Create Pipeline (Analyzer is optional for now)
-	pipe, err := builder.NewPipeline(builderRT, codeGen, env.GitManager, nil, env.Kernel, env.ProposalStore, env.Logger)
+	pipe, err := builder.NewPipeline(builderRT, codeGen, env.GitManager, nil, env.Kernel, env.Logger)
 	if err != nil {
 		env.Logger.Error("failed to create Pipeline", zap.Error(err))
 		return nil, fmt.Errorf("create Pipeline: %w", err)
 	}
 
 	// 4. Create the BuildOrchestrator
-	orch, err := builder.NewBuildOrchestrator(pipe, env.ProposalStore, env.Kernel, env.Logger, env.ProposalEventDispatcher)
+	orch, err := builder.NewBuildOrchestrator(pipe, env.Logger, env.ProposalEventDispatcher)
 	if err != nil {
 		env.Logger.Error("failed to create BuildOrchestrator", zap.Error(err))
 		return nil, fmt.Errorf("create BuildOrchestrator: %w", err)
@@ -343,17 +311,7 @@ func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) 
 
 // launchAegisHub starts the AegisHub system microVM and returns the in-process
 // MessageHub used by the IPC bridge, together with the VM ID.
-//
-// Launch sequence (architecture.md §13.3):
-//  1. Resolve AegisHub rootfs from AEGISCLAW_HUB_ROOTFS env var or the default
-//     path next to the standard rootfs template. Fatal if missing — there is no
-//     in-process fallback (DA-hub resolved).
-//  2. Create and start the AegisHub microVM with InitPath=/sbin/aegishub.
-//  3. Build an in-process MessageHub for the IPC bridge (vsock routing plane).
-//  4. Register the AegisHub VM identity as RoleHub before any other VM is started.
-//  5. Publish the AegisHub component to the versioned composition manifest.
 func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, string, error) {
-	// 1. Resolve rootfs path.
 	rootfsPath := os.Getenv(aegisHubRootfsEnvKey)
 	if rootfsPath == "" {
 		rootfsPath = filepath.Join(filepath.Dir(env.Config.Rootfs.Template), "aegishub-rootfs.ext4")
@@ -365,7 +323,6 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 		)
 	}
 
-	// 2. Create and start the AegisHub microVM.
 	hubVMID := generateVMID("aegishub")
 	spec := sandbox.SandboxSpec{
 		ID:   hubVMID,
@@ -374,8 +331,6 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 			VCPUs:    1,
 			MemoryMB: 256,
 		},
-		// AegisHub communicates with the daemon exclusively over vsock; no
-		// network interface is required.
 		NetworkPolicy: sandbox.NetworkPolicy{
 			NoNetwork:   true,
 			DefaultDeny: true,
@@ -399,17 +354,14 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 		zap.String("rootfs", rootfsPath),
 	)
 
-	// 3. Create in-process MessageHub (used by the IPC bridge for vsock routing).
 	hub := ipc.NewMessageHub(env.Kernel, env.Logger)
 
-	// 4. Register the AegisHub VM as RoleHub before any other VM is launched.
 	if err := hub.RegisterVM(hubVMID, ipc.RoleHub); err != nil {
 		_ = env.Runtime.Stop(ctx, hubVMID)
 		_ = env.Runtime.Delete(ctx, hubVMID)
 		return nil, "", fmt.Errorf("register AegisHub VM identity: %w", err)
 	}
 
-	// 5. Publish AegisHub to the versioned composition manifest.
 	if env.CompositionStore != nil {
 		components := map[string]composition.Component{
 			"aegishub": {
@@ -428,10 +380,6 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 
 	return hub, hubVMID, nil
 }
-
-// === Stubs for functions defined in other files in this package ===
-// These are declared here so the package compiles while the real implementations
-// live in their respective files (chat.go, tool_registry.go, etc.)
 
 func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 	_ = engine
