@@ -116,11 +116,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 		env.AutonomyRegistry = autoReg
 	}
 
-	// === Event-driven builder trigger removed during aggressive extraction ===
-	// BuildOrchestrator no longer initialized in the Host Daemon.
-	// We use a stub client during the transition.
-	builderClient := &builder.StubClient{}
-	_ = builderClient // placeholder - will route via AegisHub later
+	// BuildOrchestrator removed from daemon during aggressive extraction.
+	// Using env.BuilderClient (stub) during transition.
+	_ = env.BuilderClient
 
 	// Reconcile any approved proposals from before event-driven trigger was added
 	reconcileApprovedProposals(env)
@@ -128,11 +126,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Ensure default script runner is active
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
-	// Court handlers
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env))
 
-	// Git/Source Code API endpoints
 	apiSrv.Handle("git.browse", makeGitBrowseHandler(env))
 	apiSrv.Handle("git.branches", makeGitListBranchesHandler(env))
 	apiSrv.Handle("git.commits", makeGitCommitHistoryHandler(env))
@@ -141,13 +137,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("workspace.write", makeWorkspaceWriteHandler(env))
 	apiSrv.Handle("workspace.list", makeWorkspaceListHandler(env))
 
-	// Pull request handlers
 	apiSrv.Handle("pr.list", makePRListHandler(env))
 	apiSrv.Handle("pr.get", makePRGetHandler(env))
 	apiSrv.Handle("pr.approve", makePRApproveHandler(env))
 	apiSrv.Handle("pr.close", makePRCloseHandler(env))
 	apiSrv.Handle("pr.merge", makePRMergeHandler(env))
-	// Dashboard PR handlers
 	apiSrv.Handle("dashboard.pr.list", makeDashboardPRListHandler(env))
 	apiSrv.Handle("dashboard.pr.detail", makeDashboardPRDetailHandler(env))
 	apiSrv.Handle("dashboard.pr.stats", makeDashboardPRStatsHandler(env))
@@ -182,8 +176,6 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 }
 
 // reconcileApprovedProposals upgrades legacy approved proposals to implementing.
-// This is a startup recovery path for proposals approved before auto-transition
-// logic was added in chat/API review handlers.
 func reconcileApprovedProposals(env *runtimeEnv) {
 	ctx := context.Background()
 
