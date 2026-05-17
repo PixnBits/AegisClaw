@@ -1,7 +1,7 @@
 # Task 03: Host Daemon TCB Boundaries
 
-**Status**: Phase 0 complete (interfaces + boundaries defined; ready for aggressive extraction in Phase 1)
-**Last Updated**: May 17, 2026 (Phase 0 finalized after directory simplification chore)
+**Status**: Phase 3 complete (aggressive daemon surface reduction across Phases 3.1–3.5)
+**Last Updated**: May 17, 2026 (Phase 3.5 final cleanup + doc update)
 **Related**: `docs/specs/host-daemon.md`, `docs/architecture.md`, `docs/lessons-learned` branch
 
 ## Purpose
@@ -9,6 +9,18 @@
 This document defines the **target responsibilities** for the Host Daemon and the major sandboxed components. It serves as the north star for the aggressive Minimal TCB refactor in Task 03.
 
 We are intentionally moving toward the multi-VM architecture described in the `docs/lessons-learned` branch.
+
+## Phase 3 Outcome (Daemon Surface Reduction)
+
+Phases 3.1–3.5 completed aggressive reduction of the Host Daemon API surface and startup logic:
+
+- **3.1**: Stubbed all `pr.*`, `dashboard.pr.*`, `git.*`, and `workspace.*` handlers.
+- **3.2**: Made `chat.*` handlers thin proxies (chat.message and chat.tool prioritized as highest risk).
+- **3.3**: Fully removed Sessions handlers and related logic from daemon API surface.
+- **3.4**: Stubbed Skills, Workers, Tasks, Team, and Autonomy handlers.
+- **3.5**: Final cleanup – neutralized remaining reconciliation, tool registry construction, and dashboard startup; updated this document.
+
+Most extended API handlers are now thin stubs returning clear "moved out of TCB" errors directing callers to AegisHub + Store VM / Agent Runtime VMs. The daemon retains only core sandbox lifecycle, Unix socket, key distribution, Merkle signing, and AegisHub watchdog responsibilities.
 
 ## Final Host Daemon Responsibilities (Strict)
 

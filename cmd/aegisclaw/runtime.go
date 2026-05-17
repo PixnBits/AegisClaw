@@ -85,9 +85,8 @@ type runtimeEnv struct {
 	Workspace   *workspace.Content
 	GitManager  *gitmanager.Manager
 	// Sessions is deprecated for daemon API surface (Phase 3.3 TCB reduction).
-	// Still referenced by some tool paths and autonomy grant validation;
-	// full removal will happen when those also migrate out of daemon.
-	Sessions    *sessions.Store
+	// Session management fully moved to AegisHub + Session VMs.
+	Sessions    *sessions.Store // Deprecated – only transitional references remain
 
 	AgentVMID string
 	agentVMMu sync.Mutex
@@ -97,8 +96,8 @@ type runtimeEnv struct {
 	PortalVMID string
 	portalVMMu sync.Mutex
 
-	TeamRegistry     *teamRegistry
-	AutonomyRegistry *autonomyRegistry
+	TeamRegistry     *teamRegistry     // Deprecated (Phase 3.4): team logic moved to AegisHub / Store VM
+	AutonomyRegistry *autonomyRegistry // Deprecated (Phase 3.4): autonomy grants moved out of daemon TCB
 }
 
 func initRuntime() (*runtimeEnv, error) {
