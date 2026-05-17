@@ -84,7 +84,7 @@ var sessionsListCmd = &cobra.Command{
 
 var sessionsStatusCmd = &cobra.Command{
 	Use:   "status <session-id>",
-	Short: "Show status for a session",
+	Short: "Show status for a session (supports --watch)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runSessionsStatus,
 }
@@ -135,7 +135,7 @@ var tasksActiveOnly bool
 
 var tasksStatusCmd = &cobra.Command{
 	Use:   "status <task-id>",
-	Short: "Show status for a task (matches worker task_id or worker_id)",
+	Short: "Show status for a task (supports --watch)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTasksStatus,
 }
@@ -170,9 +170,8 @@ var teamCmd = &cobra.Command{
 }
 
 var teamListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List teams",
-	RunE:  runTeamList,
+	Use:  "list",
+	RunE: runTeamList,
 }
 
 var teamCreateCmd = &cobra.Command{
@@ -330,7 +329,7 @@ func init() {
 	sessionsCmd.AddCommand(sessionsKillCmd)
 	sessionsCmd.AddCommand(sessionsPauseCmd)
 	sessionsCmd.AddCommand(sessionsResumeCmd)
-	sessionsStatusCmd.Flags().BoolVar(&sessionsStatusWatch, "watch", false, "Poll status continuously until interrupted")
+	sessionsStatusCmd.Flags().BoolVar(&sessionsStatusWatch, "watch", false, "Poll status continuously (press Ctrl+C to stop)")
 
 	tasksCmd.AddCommand(tasksListCmd)
 	tasksCmd.AddCommand(tasksStatusCmd)
@@ -338,7 +337,7 @@ func init() {
 	tasksCmd.AddCommand(tasksResumeCmd)
 	tasksCmd.AddCommand(tasksCancelCmd)
 	tasksListCmd.Flags().BoolVar(&tasksActiveOnly, "active", false, "Only active workers")
-	tasksStatusCmd.Flags().BoolVar(&tasksStatusWatch, "watch", false, "Poll status continuously until interrupted")
+	tasksStatusCmd.Flags().BoolVar(&tasksStatusWatch, "watch", false, "Poll status continuously (press Ctrl+C to stop)")
 
 	teamCmd.AddCommand(teamListCmd)
 	teamCmd.AddCommand(teamCreateCmd)
@@ -437,7 +436,9 @@ func runSessionsStatus(cmd *cobra.Command, args []string) error {
 		} else {
 			var m map[string]interface{}
 			_ = json.Unmarshal(resp.Data, &m)
-			fmt.Printf("Session %v\n  status: %v\n  messages: %v\n  sandbox: %v\n", m["session_id"], m["status"], m["message_count"], m["sandbox_id"])
+			timestamp := time.Now().Format("15:04:05")
+			fmt.Printf("[%s] Session %v | status: %v | messages: %v | sandbox: %v\n",
+				timestamp, m["session_id"], m["status"], m["message_count"], m["sandbox_id"])
 		}
 		if !sessionsStatusWatch {
 			return nil
@@ -527,7 +528,11 @@ func runTasksStatus(cmd *cobra.Command, args []string) error {
 		if globalJSON {
 			fmt.Println(string(resp.Data))
 		} else {
-			fmt.Println(string(resp.Data))
+			var m map[string]interface{}
+			_ = json.Unmarshal(resp.Data, &m)
+			timestamp := time.Now().Format("15:04:05")
+			fmt.Printf("[%s] Task %v | status: %v | worker: %v | role: %v\n",
+				timestamp, m["task_id"], m["status"], m["worker_id"], m["role"])
 		}
 		if !tasksStatusWatch {
 			return nil
@@ -811,7 +816,12 @@ func runSkillStatus(cmd *cobra.Command, args []string) error {
 			fmt.Println(string(resp.Data))
 			return nil
 		}
-		fmt.Println(string(resp.Data))
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, resp.Data, "", "  "); err != nil {
+			fmt.Println(string(resp.Data))
+			return nil
+		}
+		fmt.Println(buf.String())
 		return nil
 	}
 	resp, err := daemonCall(cmd.Context(), "skill.status", map[string]string{"name": name})
