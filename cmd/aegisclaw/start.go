@@ -199,8 +199,12 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 // reconcileApprovedProposals upgrades legacy approved proposals to implementing.
 // This is a startup recovery path for proposals approved before auto-transition
 // logic was added in chat/API review handlers.
+//
+// UPDATED: Now uses env.Store.Proposals() to prove the new abstraction.
 func reconcileApprovedProposals(env *runtimeEnv) {
-	summaries, err := env.ProposalStore.List()
+	ctx := context.Background()
+
+	summaries, err := env.Store.Proposals().List(ctx, proposal.Filter{})
 	if err != nil {
 		env.Logger.Warn("failed to list proposals for approved->implementing reconciliation", zap.Error(err))
 		return
@@ -211,12 +215,11 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 			continue
 		}
 
-		p, getErr := env.ProposalStore.Get(summary.ID)
+		p, getErr := env.Store.Proposals().Get(ctx, summary.ID)
 		if getErr != nil {
 			env.Logger.Warn("failed to load approved proposal during reconciliation",
 				zap.String("proposal_id", summary.ID),
-				zap.Error(getErr),
-			)
+				zap.Error(getErr))
 			continue
 		}
 
@@ -227,16 +230,14 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 		if tErr := p.Transition(proposal.StatusImplementing, "startup recovery: approved proposal queued for builder", "daemon"); tErr != nil {
 			env.Logger.Warn("failed to transition approved proposal during reconciliation",
 				zap.String("proposal_id", p.ID),
-				zap.Error(tErr),
-			)
+				zap.Error(tErr))
 			continue
 		}
 
-		if uErr := env.ProposalStore.Update(p); uErr != nil {
+		if uErr := env.Store.Proposals().Update(ctx, p); uErr != nil {
 			env.Logger.Warn("failed to persist reconciled proposal status",
 				zap.String("proposal_id", p.ID),
-				zap.Error(uErr),
-			)
+				zap.Error(uErr))
 			continue
 		}
 
@@ -282,10 +283,10 @@ func makeCourtReviewHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
 		}
 
 		if session.Verdict == "approved" {
-			p, pErr := env.ProposalStore.Get(req.ProposalID)
+			p, pErr := env.ProposalStore.Get(reviewCtx, req.ProposalID)
 			if pErr == nil && p.Status == proposal.StatusApproved {
 				if tErr := p.Transition(proposal.StatusImplementing, "auto-triggered by court approval", "daemon"); tErr == nil {
-					env.ProposalStore.Update(p)
+					env.ProposalStore.Update(reviewCtx, p)
 					if env.ProposalEventDispatcher != nil {
 						env.ProposalEventDispatcher.EmitStatusChanged(p, proposal.StatusApproved, proposal.StatusImplementing, "auto-triggered by court approval", "daemon")
 					}
@@ -347,7 +348,7 @@ func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) 
 //  1. Resolve AegisHub rootfs from AEGISCLAW_HUB_ROOTFS env var or the default
 //     path next to the standard rootfs template. Fatal if missing — there is no
 //     in-process fallback (DA-hub resolved).
-//  2. Create and start the AegisHub Firecracker microVM with InitPath=/sbin/aegishub.
+//  2. Create and start the AegisHub microVM with InitPath=/sbin/aegishub.
 //  3. Build an in-process MessageHub for the IPC bridge (vsock routing plane).
 //  4. Register the AegisHub VM identity as RoleHub before any other VM is started.
 //  5. Publish the AegisHub component to the versioned composition manifest.
