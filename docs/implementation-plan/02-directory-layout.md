@@ -48,4 +48,20 @@ Putting everything under `~/.aegis/` is great for user experience, but creates r
 **Estimated effort**: 1–1.5 days.
 
 **Owner**: TBD
-**Status**: Ready to start (directly addresses socket & secrets security implications)
+**Status**: **Completed** (implementation already present in `internal/paths/`, `internal/config/`, `cmd/aegisclaw/`, and `internal/api/`; verified against spec; legacy migration code removed for pre-release simplification)
+
+---
+
+## Completion Notes (May 2026)
+
+The core implementation was already in place and aligned with the paranoid security requirements:
+
+- `internal/paths/paths.go` provides the canonical `Layout`, `DefaultLayout()`, `DefaultSocketPath()` (Linux: `/run/user/$UID/aegis/daemon.sock`), `EnsureSecureDirectories()`, `VerifySensitiveDir()` (O_NOFOLLOW + ownership + mode checks), `FixSecurePermissions()`, and attack-resistant directory creation.
+- Integrated at daemon startup (`runtime.go`), in `doctor --fix-permissions`, and API server socket binding.
+- Config uses the paths package for all defaults; single `~/.aegis/` root enforced.
+
+As a final pre-release simplification step on this branch:
+- Removed all legacy path migration code (`normalizeConfigPaths`, `migrateLegacyPath`, etc.) and related tests from `internal/config/`.
+- This reduces code in the config loading path with no impact on new installs (all configs are now created fresh with secure defaults).
+
+All acceptance criteria met. Task 02 is complete and unblocks `03-daemon-minimal-tcb-refactor.md`.

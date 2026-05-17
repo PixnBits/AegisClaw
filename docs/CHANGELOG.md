@@ -4,12 +4,14 @@
 
 ### Phase 6: Security Hardening, Privacy & Self-Hosting
 
-#### Directory Layout Hardening
-- **`internal/paths`**: New canonical directory layout with most state under `~/.aegis/` and the Linux daemon socket under `/run/user/$UID/aegis/daemon.sock`.
-- **Secure startup enforcement**: daemon startup now verifies `secrets/`, `data/store/`, and `data/audit/` before opening privileged state.
-- **Vault hardening**: secret vault directory is mode-checked on every access and vault files are opened with `O_NOFOLLOW`.
-- **Doctor repair**: `aegisclaw doctor --fix-permissions` repairs common directory permission drift.
-- **Tests**: added coverage for layout creation, socket placement, symlink rejection, insecure permission refusal, and config migration from the old `/run/aegisclaw.sock` default.
+#### Directory Layout Hardening (Task 02)
+- **`internal/paths`**: Canonical directory layout with most state under `~/.aegis/` and the Linux daemon socket under `/run/user/$UID/aegis/daemon.sock` (tmpfs, never under home dir).
+- **Secure startup enforcement**: `EnsureSecureDirectories()` + `VerifySensitiveDir()` (O_NOFOLLOW, ownership, exact 0700 mode) called early; daemon refuses on insecure `secrets/`, `data/store/`, `data/audit/`.
+- **Vault & sensitive dir hardening**: Every access verifies permissions and rejects symlinks.
+- **Doctor repair**: `aegisclaw doctor --fix-permissions` repairs common drift.
+- **Pre-release simplification** (this branch): Removed all legacy migration code (`normalizeConfigPaths`, `migrateLegacyPath`, legacy data detection helpers) and related tests from `internal/config/`. New installs always get clean `~/.aegis/` layout; reduces TCB surface with no user impact.
+- Full test coverage for layout creation, socket placement, symlink/TOCTOU resistance, permission refusal, and runtime enforcement.
+- **Status**: Task `02-directory-layout.md` complete. Unblocks minimal TCB refactor and socket hardening tasks.
 
 #### Software Bill of Materials (SBOM)
 - **`internal/sbom`**: New package that generates CycloneDX 1.4 JSON SBOMs from builder output.
