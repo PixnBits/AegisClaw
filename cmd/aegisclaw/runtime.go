@@ -84,6 +84,9 @@ type runtimeEnv struct {
 	EgressProxy *llm.EgressProxy
 	Workspace   *workspace.Content
 	GitManager  *gitmanager.Manager
+	// Sessions is deprecated for daemon API surface (Phase 3.3 TCB reduction).
+	// Still referenced by some tool paths and autonomy grant validation;
+	// full removal will happen when those also migrate out of daemon.
 	Sessions    *sessions.Store
 
 	AgentVMID string

@@ -17,7 +17,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
-	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"go.uber.org/zap"
 )
@@ -68,16 +67,37 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("kernel.shutdown", withAuthorizedCaller(env, "kernel.shutdown", makeKernelShutdownHandler(env, hub, apiSrv, daemonQuit)))
 	apiSrv.Handle("kernel.restart", withAuthorizedCaller(env, "kernel.restart", makeKernelRestartHandler(env, hub, apiSrv, daemonQuit)))
 
-	// Sessions (all should be authorized)
-	apiSrv.Handle("sessions.list", withAuthorizedCaller(env, "sessions.list", makeSessionsListHandler(env)))
-	apiSrv.Handle("sessions.history", withAuthorizedCaller(env, "sessions.history", makeSessionsHistoryHandler(env)))
-	apiSrv.Handle("sessions.send", withAuthorizedCaller(env, "sessions.send", makeSessionsSendHandler(env, toolRegistry)))
-	apiSrv.Handle("sessions.spawn", withAuthorizedCaller(env, "sessions.spawn", makeSessionsSpawnHandler(env, toolRegistry)))
-	apiSrv.Handle("sessions.status", withAuthorizedCaller(env, "sessions.status", makeSessionsStatusHandler(env)))
-	apiSrv.Handle("sessions.pause", withAuthorizedCaller(env, "sessions.pause", makeSessionsPauseHandler(env)))
-	apiSrv.Handle("sessions.resume", withAuthorizedCaller(env, "sessions.resume", makeSessionsResumeHandler(env)))
-	apiSrv.Handle("sessions.cancel", withAuthorizedCaller(env, "sessions.cancel", makeSessionsCancelHandler(env)))
-	apiSrv.Handle("sessions.kill", withAuthorizedCaller(env, "sessions.kill", makeSessionsKillHandler(env))) // alias for cancel
+	// Sessions handlers aggressively stubbed/removed — session management has moved
+	// out of the Host Daemon TCB (now via AegisHub + Session VMs). All sessions.*
+	// operations return a clear error directing callers to the new surface.
+	const sessionsMovedMsg = "sessions.* operations are no longer handled by the Host Daemon. Session management has moved out of the TCB."
+	apiSrv.Handle("sessions.list", withAuthorizedCaller(env, "sessions.list", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
+	apiSrv.Handle("sessions.history", withAuthorizedCaller(env, "sessions.history", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
+	apiSrv.Handle("sessions.send", withAuthorizedCaller(env, "sessions.send", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
+	apiSrv.Handle("sessions.spawn", withAuthorizedCaller(env, "sessions.spawn", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
+	apiSrv.Handle("sessions.status", withAuthorizedCaller(env, "sessions.status", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
+	apiSrv.Handle("sessions.pause", withAuthorizedCaller(env, "sessions.pause", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
+	apiSrv.Handle("sessions.resume", withAuthorizedCaller(env, "sessions.resume", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
+	apiSrv.Handle("sessions.cancel", withAuthorizedCaller(env, "sessions.cancel", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
+	apiSrv.Handle("sessions.kill", withAuthorizedCaller(env, "sessions.kill", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: sessionsMovedMsg}
+	}))
 
 	// Tasks (stubs)
 	apiSrv.Handle("tasks.list", makeTasksListHandler(env))
@@ -408,136 +428,6 @@ outer:
 		}
 	}
 	return env
-}
-
-func makeSessionsStatusHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		rec, ok := env.Sessions.Get(req.SessionID)
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		msgs, _ := env.Sessions.History(req.SessionID, 0)
-		out, err := json.Marshal(map[string]interface{}{
-			"session_id":     rec.ID,
-			"sandbox_id":     rec.SandboxID,
-			"status":         rec.Status,
-			"started_at":     rec.StartedAt.UTC().Format(time.RFC3339),
-			"last_active_at": rec.LastActiveAt.UTC().Format(time.RFC3339),
-			"message_count":  len(msgs),
-		})
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: out}
-	}
-}
-
-// makeSessionsPauseHandler rejects attempts to pause active sessions and
-// only allows transitioning from Idle → Paused.
-func makeSessionsPauseHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		rec, ok := env.Sessions.Get(req.SessionID)
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		if rec.Status == sessions.StatusActive {
-			return &api.Response{Error: "cannot pause an active session; wait for current turn to finish"}
-		}
-		if rec.Status == sessions.StatusClosed {
-			return &api.Response{Error: "session is closed"}
-		}
-		if rec.Status == sessions.StatusPaused {
-			return &api.Response{Success: true, Data: mustMarshal(map[string]string{"status": string(sessions.StatusPaused)})}
-		}
-		// Only allow Idle → Paused
-		if !env.Sessions.SetStatusIf(req.SessionID, sessions.StatusIdle, sessions.StatusPaused) {
-			return &api.Response{Error: "failed to pause session"}
-		}
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"status": string(sessions.StatusPaused)})}
-	}
-}
-
-// makeSessionsResumeHandler only resumes sessions that are currently Paused.
-func makeSessionsResumeHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		rec, ok := env.Sessions.Get(req.SessionID)
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		if rec.Status != sessions.StatusPaused {
-			return &api.Response{Error: fmt.Sprintf("session %q is not paused (current status: %s)", req.SessionID, rec.Status)}
-		}
-		if !env.Sessions.SetStatusIf(req.SessionID, sessions.StatusPaused, sessions.StatusIdle) {
-			return &api.Response{Error: "failed to resume session"}
-		}
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"status": string(sessions.StatusIdle)})}
-	}
-}
-
-// makeSessionsCancelHandler marks a session as closed. For active sessions it
-// still marks them closed (the in-flight turn will complete but no new turns
-// should be accepted after).
-func makeSessionsCancelHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		if _, ok := env.Sessions.Get(req.SessionID); !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		env.Sessions.Close(req.SessionID)
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"status": string(sessions.StatusClosed)})}
-	}
-}
-
-// makeSessionsKillHandler is an alias for cancel (matches CLI spec "sessions kill").
-func makeSessionsKillHandler(env *runtimeEnv) api.Handler {
-	return makeSessionsCancelHandler(env)
 }
 
 func makeTasksListHandler(env *runtimeEnv) api.Handler {
