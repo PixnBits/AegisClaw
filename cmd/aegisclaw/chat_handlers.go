@@ -98,138 +98,21 @@ type agentChatResponse struct {
 //  4. If status=="tool_call": execute via toolRegistry, append result, go to 2.
 //  5. If status=="final": return the assistant content to the CLI.
 //  6. If max iterations reached: return a polite error.
+// makeChatMessageHandler is now a thin stub.
+// The full ReAct loop, tool orchestration, streaming, and agent VM interaction
+// have moved out of the Host Daemon TCB into the Agent Runtime VM + AegisHub.
+// This handler is intentionally minimal during the Minimal TCB refactor (Phase 3.2).
+// NOTE: chat.message was the highest-risk handler due to its size and ReAct logic.
 func makeChatMessageHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Handler {
-	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		var req api.ChatMessageRequest
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if req.Input == "" {
-			return &api.Response{Error: "input is required"}
-		}
-		sessionID := strings.TrimSpace(req.SessionID)
-		if sessionID == "" {
-			sessionID = strings.TrimSpace(req.StreamID)
-		}
-		if sessionID != "" && env.Sessions != nil {
-			if err := validateSessionForMessage(env.Sessions, sessionID, false); err != nil {
-				return &api.Response{Error: err.Error()}
-			}
-		}
-		if env.ToolEvents == nil {
-			env.ToolEvents = NewToolEventBuffer(400)
-		}
-		if env.ThoughtEvents == nil {
-			env.ThoughtEvents = NewThoughtEventBuffer(600)
-		}
-
-		agentVMID, err := ensureAgentVM(ctx, env)
-		if err != nil {
-			return &api.Response{Error: "agent VM unavailable: " + err.Error()}
-		}
-
-		// Session tracking (Phase 1 – session routing tools).
-		// Determine the session ID for this request.  Prefer req.SessionID,
-		// fall back to StreamID, then generate a stable one for the lifetime
-		// of this VM.
-		if sessionID == "" {
-			// Use the agent VM ID as a stable per-VM session key.
-			sessionID = agentVMID
-		}
-		if env.Sessions != nil {
-			// EARLY atomic status check + transition (Phase 2 fix)
-			if !env.Sessions.SetStatusIf(sessionID, sessions.StatusIdle, sessions.StatusActive) {
-				rec, ok := env.Sessions.Get(sessionID)
-				if !ok {
-					return &api.Response{Error: fmt.Sprintf("session %q not found", sessionID)}
-				}
-				switch rec.Status {
-				case sessions.StatusPaused:
-					return &api.Response{Error: fmt.Sprintf("session is paused — resume with: aegisclaw sessions resume %s", sessionID)}
-				case sessions.StatusClosed:
-					return &api.Response{Error: fmt.Sprintf("session is closed — spawn a new session with: aegisclaw sessions spawn")}
+	return func(ctx context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "chat.message has moved out of the Host Daemon TCB (see AegisHub + Agent Runtime VM)"}
+	}
+}
 				case sessions.StatusActive:
 					return &api.Response{Error: fmt.Sprintf("session %q is already processing a request", sessionID)}
 				default:
 					return &api.Response{Error: fmt.Sprintf("session %q is not ready for messaging (status=%s)", sessionID, rec.Status)}
 				}
-			}
-			// Status is now Active — proceed
-			if _, ok := env.Sessions.Get(sessionID); !ok {
-				env.Sessions.Open(sessionID, agentVMID)
-			}
-			env.Sessions.AppendMessage(sessionID, agentVMID, "user", req.Input)
-		}
-
-		model := env.Config.Ollama.DefaultModel
-		systemPrompt := buildDaemonSystemPrompt(env)
-		systemPrompt += buildMemoryStatusGuard(env)
-
-		// Phase 1: Auto-inject a compact memory summary at the top of every
-		// new conversation turn so the agent has immediate context from prior
-		// sessions.  Only retrieve on the first turn (empty history) to avoid
-		// ballooning the context on subsequent turns.
-		if len(req.History) == 0 && env.MemoryStore != nil {
-			if summary := buildMemorySummary(env, req.Input); summary != "" {
-				systemPrompt += "\n\nRELEVANT MEMORY CONTEXT (from prior sessions):\n" + summary + "\n"
-			}
-		}
-
-		// Phase 2: Inject pending async items summary on the first turn.
-		if len(req.History) == 0 && env.EventBus != nil {
-			if pending := env.EventBus.PendingSummary(); pending != "" {
-				systemPrompt += "\n\nPENDING ASYNC ITEMS: " + pending + "\nUse `list_pending_async` to see details.\n"
-			}
-		}
-
-		// Seed conversation with system prompt + prior history + new user turn.
-		msgs := make([]agentChatMsg, 0, len(req.History)+2)
-		msgs = append(msgs, agentChatMsg{Role: "system", Content: systemPrompt})
-		for _, h := range req.History {
-			if h.Role == "system" {
-				continue
-			}
-			msgs = append(msgs, agentChatMsg{Role: h.Role, Content: h.Content})
-		}
-		// Only append req.Input if it's not already the last message in
-		// history. The TUI appends the user message to the chat log before
-		// calling SendMessage (so it renders immediately), which means the
-		// history already contains the current input.
-		alreadyInHistory := false
-		if n := len(msgs); n > 0 && msgs[n-1].Role == "user" && msgs[n-1].Content == req.Input {
-			alreadyInHistory = true
-		}
-		if !alreadyInHistory {
-			msgs = append(msgs, agentChatMsg{Role: "user", Content: req.Input})
-		}
-
-		memoryToolEvidence := false
-		toolTrace := make([]map[string]interface{}, 0)
-		thinkingTrace := make([]map[string]interface{}, 0)
-
-		// Correlation/trace ID for this request — propagated through executor,
-		// tool events, thought events, and logger so the full ReAct loop can be
-		// correlated in logs and the portal.
-		traceID := uuid.New().String()
-		env.Logger.Info("chat.message: starting ReAct loop",
-			zap.String("trace_id", traceID),
-			zap.String("session_id", sessionID),
-			zap.String("agent_vm_id", agentVMID),
-		)
-
-		for i := 0; i < reactMaxIterations; i++ {
-			// Convert agentChatMsg slice → rtexec.AgentMessage for the executor.
-			execMsgs := make([]rtexec.AgentMessage, len(msgs))
-			for j, m := range msgs {
-				execMsgs[j] = rtexec.AgentMessage{Role: m.Role, Content: m.Content, Name: m.Name}
-			}
-
-			execReq := rtexec.AgentTurnRequest{
-				Messages:         execMsgs,
-				Model:            model,
-				StreamID:         req.StreamID,
-				StructuredOutput: env.Config.Agent.StructuredOutput,
-				TraceID:          traceID,
 			}
 			if env.TestLLMTemperature != nil {
 				execReq.Temperature = *env.TestLLMTemperature
@@ -584,19 +467,14 @@ func ensureAgentVM(ctx context.Context, env *runtimeEnv) (string, error) {
 	return agentID, nil
 }
 
-// makeChatSlashHandler processes slash commands inside the daemon (D2).
+// makeChatSlashHandler is now a thin stub.
+// Slash command handling (including /call for skills) has moved to the
+// Agent Runtime VM / AegisHub as part of Minimal TCB (Phase 3.2).
 func makeChatSlashHandler(env *runtimeEnv) api.Handler {
-	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		var req api.ChatSlashRequest
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if req.Command == "" {
-			return &api.Response{Error: "command is required"}
-		}
-
-		parts := strings.Fields(req.Command)
-		cmd := parts[0]
+	return func(ctx context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "chat.slash has moved out of the Host Daemon TCB (see AegisHub + Agent Runtime VM)"}
+	}
+}
 
 		var content string
 		switch cmd {
@@ -773,89 +651,22 @@ Example: /call hello.greet "world"`
 	}
 }
 
-// makeChatToolExecHandler returns an API handler for "chat.tool": executes a
-// tool by name via the tool registry. This is the daemon-side counterpart of
-// the CLI's model.ExecuteTool callback.
+// makeChatToolExecHandler is now a thin stub (highest priority for TCB reduction).
+// Tool execution via chat.tool is a high-risk surface (arbitrary code paths).
+// Real tool dispatch now belongs in the Agent Runtime VM.
 func makeChatToolExecHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Handler {
-	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		var req api.ChatToolExecRequest
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if req.Name == "" {
-			return &api.Response{Error: "tool name is required"}
-		}
-
-		result, err := toolRegistry.Execute(ctx, req.Name, req.Args)
-		if err != nil {
-			return &api.Response{Error: err.Error()}
-		}
-
-		respData, _ := json.Marshal(map[string]string{"result": result})
-		return &api.Response{Success: true, Data: respData}
+	return func(ctx context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "chat.tool has moved out of the Host Daemon TCB (see AegisHub + Agent Runtime VM)"}
 	}
 }
 
-// makeChatSummarizeHandler returns an API handler for "chat.summarize": sends
-// a tool result back through the agent VM so the LLM can produce a
-// human-readable summary.
+// makeChatSummarizeHandler is now a thin stub.
+// Summarization after tool calls has moved to Agent Runtime VM.
 func makeChatSummarizeHandler(env *runtimeEnv) api.Handler {
-	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		var req api.ChatSummarizeRequest
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-
-		agentVMID, err := ensureAgentVM(ctx, env)
-		if err != nil {
-			return &api.Response{Error: "agent VM unavailable: " + err.Error()}
-		}
-
-		model := env.Config.Ollama.DefaultModel
-		systemPrompt := buildDaemonSystemPrompt(env)
-
-		msgs := make([]agentChatMsg, 0, len(req.History)+3)
-		msgs = append(msgs, agentChatMsg{Role: "system", Content: systemPrompt})
-		for _, h := range req.History {
-			if h.Role == "system" {
-				continue
-			}
-			msgs = append(msgs, agentChatMsg{Role: h.Role, Content: h.Content})
-		}
-		msgs = append(msgs, agentChatMsg{
-			Role:    "tool",
-			Name:    req.ToolName,
-			Content: req.ToolResult,
-		})
-		msgs = append(msgs, agentChatMsg{
-			Role:    "user",
-			Content: fmt.Sprintf("The tool %q returned the above result. Please summarize it for the user.", req.ToolName),
-		})
-
-		payloadBytes, _ := json.Marshal(agentChatPayload{Messages: msgs, Model: model})
-		vmReq := agentVMRequest{
-			ID:      uuid.New().String(),
-			Type:    "chat.message",
-			Payload: json.RawMessage(payloadBytes),
-		}
-
-		raw, err := env.Runtime.SendToVM(ctx, agentVMID, vmReq)
-		if err != nil {
-			return &api.Response{Error: "agent VM error: " + err.Error()}
-		}
-
-		var vmResp agentVMResponse
-		if err := json.Unmarshal(raw, &vmResp); err != nil {
-			return &api.Response{Error: "malformed agent response: " + err.Error()}
-		}
-		if !vmResp.Success {
-			return &api.Response{Error: "agent error: " + vmResp.Error}
-		}
-
-		var chatResp agentChatResponse
-		if err := json.Unmarshal(vmResp.Data, &chatResp); err != nil {
-			return &api.Response{Error: "malformed agent chat response: " + err.Error()}
-		}
+	return func(ctx context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "chat.summarize has moved out of the Host Daemon TCB (see AegisHub + Agent Runtime VM)"}
+	}
+}
 
 		respData, _ := json.Marshal(api.ChatMessageResponse{
 			Role:    "assistant",

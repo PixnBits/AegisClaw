@@ -57,7 +57,9 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("skill.activate", withAuthorizedCaller(env, "skill.activate", makeSkillActivateHandler(env)))
 	apiSrv.Handle("skill.secrets.refresh", withAuthorizedCaller(env, "skill.secrets.refresh", makeSkillSecretsRefreshHandler(env)))
 
-	// Chat – message is public for portal/CLI, tool is gated
+	// Chat handlers are now thin stubs (Phase 3.2 Minimal TCB).
+	// Real chat orchestration, ReAct, tool dispatch, and summarization live in
+	// AegisHub + Agent Runtime VMs. These are transitional thin entrypoints.
 	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
 	apiSrv.Handle("chat.tool", withAuthorizedCaller(env, "chat.tool", makeChatToolExecHandler(env, toolRegistry)))
