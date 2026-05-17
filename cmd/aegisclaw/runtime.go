@@ -59,10 +59,14 @@ type runtimeEnv struct {
 	Registry *sandbox.SkillRegistry
 
 	// Store is the unified abstraction over all persistent state.
-	// The Host Daemon should ideally only interact with state through this.
 	Store store.Store
 
-	Court              *court.Engine
+	// CourtClient is the abstraction for interacting with the Governance Court.
+	// During the aggressive extraction, this is backed by a stub. Later it will
+	// route through AegisHub to dedicated Court components.
+	CourtClient court.Client
+
+	Court              *court.Engine // TEMP: being phased out during Court extraction
 	LLMProxy           *llm.OllamaProxy
 	OllamaHTTPClient   *http.Client
 	ToolEvents         *ToolEventBuffer
@@ -73,8 +77,6 @@ type runtimeEnv struct {
 
 	TaskExecutor rtexec.TaskExecutor
 
-	// Vault is kept for now because secrets handling will move to Network Boundary VM.
-	// Long term this should also leave the daemon.
 	Vault *vault.Vault
 
 	EgressProxy *llm.EgressProxy
@@ -194,26 +196,29 @@ func initRuntime() (*runtimeEnv, error) {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
 	}
 
-	// Create the unified store abstraction
 	unifiedStore := store.NewLocal(
 		proposalInst,
 		prStoreInst,
 		compositionInst,
 		memoryInst,
 		workerStoreInst,
-		nil, // EventStore - placeholder
+		nil,
 	)
 
+	// Temporary stub during aggressive Court extraction
+	courtClient := &court.StubClient{}
+
 	return &runtimeEnv{
-		Logger:   logger,
-		Config:   cfg,
-		Kernel:   kern,
-		Runtime:  runtimeInst,
-		Registry: registryInst,
-		Store:    unifiedStore,
-		Vault:    vaultInst,
+		Logger:      logger,
+		Config:      cfg,
+		Kernel:      kern,
+		Runtime:     runtimeInst,
+		Registry:    registryInst,
+		Store:       unifiedStore,
+		CourtClient: courtClient,
+		Vault:       vaultInst,
 		EgressProxy: llm.NewEgressProxy(logger),
-		LookupStore: lookupInst, // kept temporarily for lookup functionality
+		LookupStore: lookupInst,
 		GitManager:  gitManagerInst,
 		LLMProxy:    llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
 		ToolEvents:  NewToolEventBuffer(400),
