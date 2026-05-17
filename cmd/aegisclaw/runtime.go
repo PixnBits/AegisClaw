@@ -62,12 +62,14 @@ type runtimeEnv struct {
 	Store store.Store
 
 	// CourtClient is the abstraction for interacting with the Governance Court.
-	// The real implementation will eventually route through AegisHub to dedicated Court components.
 	CourtClient court.Client
 
+	// BuilderClient is the abstraction for builder/orchestrator functionality.
+	// The real implementation will eventually live outside the Host Daemon.
+	BuilderClient builder.Client
+
 	// Court is being phased out during the aggressive Court extraction.
-	// Do not add new usage of this field.
-	Court *court.Engine // DEPRECATED - being removed
+	Court *court.Engine // DEPRECATED
 
 	LLMProxy         *llm.OllamaProxy
 	OllamaHTTPClient *http.Client
@@ -95,7 +97,7 @@ type runtimeEnv struct {
 	portalVMMu sync.Mutex
 
 	ProposalEventDispatcher *events.ProposalEventDispatcher
-	BuildOrchestrator         *builder.BuildOrchestrator
+	BuildOrchestrator         *builder.BuildOrchestrator // DEPRECATED - being extracted
 
 	TeamRegistry     *teamRegistry
 	AutonomyRegistry *autonomyRegistry
@@ -208,24 +210,26 @@ func initRuntime() (*runtimeEnv, error) {
 	)
 
 	courtClient := &court.StubClient{}
+	builderClient := &builder.StubClient{}
 
 	return &runtimeEnv{
-		Logger:      logger,
-		Config:      cfg,
-		Kernel:      kern,
-		Runtime:     runtimeInst,
-		Registry:    registryInst,
-		Store:       unifiedStore,
-		CourtClient: courtClient,
-		Vault:       vaultInst,
-		EgressProxy: llm.NewEgressProxy(logger),
-		LookupStore: lookupInst,
-		GitManager:  gitManagerInst,
-		LLMProxy:    llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
-		ToolEvents:  NewToolEventBuffer(400),
+		Logger:        logger,
+		Config:        cfg,
+		Kernel:        kern,
+		Runtime:       runtimeInst,
+		Registry:      registryInst,
+		Store:         unifiedStore,
+		CourtClient:   courtClient,
+		BuilderClient: builderClient,
+		Vault:         vaultInst,
+		EgressProxy:   llm.NewEgressProxy(logger),
+		LookupStore:   lookupInst,
+		GitManager:    gitManagerInst,
+		LLMProxy:      llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
+		ToolEvents:    NewToolEventBuffer(400),
 		ThoughtEvents: NewThoughtEventBuffer(600),
-		Workspace:   loadWorkspace(cfg, logger),
-		Sessions:    sessions.NewStore(),
+		Workspace:     loadWorkspace(cfg, logger),
+		Sessions:      sessions.NewStore(),
 	}, nil
 }
 
