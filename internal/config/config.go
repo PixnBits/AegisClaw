@@ -92,7 +92,7 @@ type Config struct {
 	} `yaml:"composition" mapstructure:"composition"`
 	Agent struct {
 		// RootfsPath is the ext4 rootfs image used for the main agent microVM.
-		// It must contain the guest-agent binary at /sbin/init or as PID-1.
+		// It must contain the guest-agent binary at /sbin/aegishub or as PID-1.
 		// Defaults to /var/lib/aegisclaw/rootfs-templates/alpine.ext4.
 		RootfsPath string `yaml:"rootfs_path" mapstructure:"rootfs_path"`
 		// StructuredOutput enables Ollama JSON-mode enforcement in the agent VM
@@ -423,7 +423,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetConfigFile(configPath)
 	viper.SetConfigType("yaml")
 
-	// Set defaults
+	// Set defaults from the secure paths package
 	defaults := DefaultConfig()
 	viper.SetDefault("firecracker.bin", defaults.Firecracker.Bin)
 	viper.SetDefault("jailer.bin", defaults.Jailer.Bin)
@@ -472,6 +472,7 @@ func Load(logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("gateway.enabled", defaults.Gateway.Enabled)
 	viper.SetDefault("registry.url", defaults.Registry.URL)
 	viper.SetDefault("lookup.dir", defaults.Lookup.Dir)
+
 	// Read config file, create with defaults if missing
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Config file doesn't exist, write defaults
@@ -489,7 +490,9 @@ func Load(logger *zap.Logger) (*Config, error) {
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-	normalizeConfigPaths(&config, defaults, logger)
+
+	// No legacy migration code (pre-release project - simplification)
+	// All new configs use the secure ~/.aegis/ layout from internal/paths
 
 	// Validate configuration
 	if err := validateConfig(&config); err != nil {
@@ -503,164 +506,6 @@ func Load(logger *zap.Logger) (*Config, error) {
 		zap.String("audit_dir", config.Audit.Dir))
 
 	return &config, nil
-}
-
-func normalizeConfigPaths(config *Config, defaults Config, logger *zap.Logger) {
-	if config == nil {
-		return
-	}
-	home, err := resolveConfigHome()
-	if err != nil {
-		home = ""
-	}
-	oldConfigRoot := filepath.Join(home, ".config", "aegisclaw")
-	oldDataRoot := filepath.Join(home, ".local", "share", "aegisclaw")
-	oldWorkspaceRoot := filepath.Join(home, ".aegisclaw")
-
-	config.Audit.Dir = migrateLegacyPath("audit.dir", config.Audit.Dir, filepath.Join(oldDataRoot, "audit"), defaults.Audit.Dir, logger)
-	config.Sandbox.StateDir = migrateLegacyPath("sandbox.state_dir", config.Sandbox.StateDir, filepath.Join(oldDataRoot, "sandboxes"), defaults.Sandbox.StateDir, logger)
-	config.Sandbox.ChrootBase = migrateLegacyPath("sandbox.chroot_base", config.Sandbox.ChrootBase, filepath.Join(oldDataRoot, "jailer"), defaults.Sandbox.ChrootBase, logger)
-	config.Sandbox.RegistryPath = migrateLegacyPath("sandbox.registry_path", config.Sandbox.RegistryPath, filepath.Join(oldDataRoot, "registry.json"), defaults.Sandbox.RegistryPath, logger)
-	config.Proposal.StoreDir = migrateLegacyPath("proposal.store_dir", config.Proposal.StoreDir, filepath.Join(oldDataRoot, "proposals"), defaults.Proposal.StoreDir, logger)
-	config.Court.PersonaDir = migrateLegacyPath("court.persona_dir", config.Court.PersonaDir, filepath.Join(oldConfigRoot, "personas"), defaults.Court.PersonaDir, logger)
-	config.Court.SessionDir = migrateLegacyPath("court.session_dir", config.Court.SessionDir, filepath.Join(oldDataRoot, "court-sessions"), defaults.Court.SessionDir, logger)
-	config.Builder.WorkspaceBaseDir = migrateLegacyPath("builder.workspace_base_dir", config.Builder.WorkspaceBaseDir, filepath.Join(oldDataRoot, "workspaces"), defaults.Builder.WorkspaceBaseDir, logger)
-	config.Builder.SBOMDir = migrateLegacyPath("builder.sbom_dir", config.Builder.SBOMDir, filepath.Join(oldDataRoot, "sbom"), defaults.Builder.SBOMDir, logger)
-	config.Vault.Dir = migrateLegacyPath("vault.dir", config.Vault.Dir, filepath.Join(oldConfigRoot, "secrets"), defaults.Vault.Dir, logger)
-	config.Ollama.RegistryPath = migrateLegacyPath("ollama.registry_path", config.Ollama.RegistryPath, filepath.Join(oldDataRoot, "model-registry.json"), defaults.Ollama.RegistryPath, logger)
-	config.Ollama.ModelDir = migrateLegacyPath("ollama.model_dir", config.Ollama.ModelDir, filepath.Join(oldDataRoot, "models"), defaults.Ollama.ModelDir, logger)
-	config.Composition.Dir = migrateLegacyPath("composition.dir", config.Composition.Dir, filepath.Join(oldDataRoot, "composition"), defaults.Composition.Dir, logger)
-	config.Snapshot.Dir = migrateLegacyPath("snapshot.dir", config.Snapshot.Dir, filepath.Join(oldDataRoot, "snapshots"), defaults.Snapshot.Dir, logger)
-	config.Memory.Dir = migrateLegacyPath("memory.dir", config.Memory.Dir, filepath.Join(oldDataRoot, "memory"), defaults.Memory.Dir, logger)
-	config.EventBus.Dir = migrateLegacyPath("eventbus.dir", config.EventBus.Dir, filepath.Join(oldDataRoot, "eventbus"), defaults.EventBus.Dir, logger)
-	config.Worker.Dir = migrateLegacyPath("worker.dir", config.Worker.Dir, filepath.Join(oldDataRoot, "workers"), defaults.Worker.Dir, logger)
-	config.Workspace.Dir = migrateLegacyPath("workspace.dir", config.Workspace.Dir, filepath.Join(oldWorkspaceRoot, "workspace"), defaults.Workspace.Dir, logger)
-	config.Lookup.Dir = migrateLegacyPath("lookup.dir", config.Lookup.Dir, filepath.Join(oldDataRoot, "vectordb"), defaults.Lookup.Dir, logger)
-	// Migrate the pre-directory-layout socket default. Binding directly under
-	// /run is too broad; the secure default is /run/user/$UID/aegis/daemon.sock.
-	if config.Daemon.SocketPath == "" || config.Daemon.SocketPath == "/run/aegisclaw.sock" {
-		if logger != nil && config.Daemon.SocketPath == "/run/aegisclaw.sock" {
-			logger.Warn("migrating insecure legacy daemon socket path",
-				zap.String("old_path", config.Daemon.SocketPath),
-				zap.String("new_path", defaults.Daemon.SocketPath),
-			)
-		}
-		config.Daemon.SocketPath = defaults.Daemon.SocketPath
-	}
-}
-
-func migrateLegacyPath(name, current, legacyDefault, secureDefault string, logger *zap.Logger) string {
-	if current == "" {
-		return secureDefault
-	}
-	if current != legacyDefault {
-		return current
-	}
-	hasData, err := legacyPathHasReadableData(name, legacyDefault)
-	if err == nil && hasData {
-		if logger != nil {
-			logger.Warn("using readable legacy path; migrate data to ~/.aegis to complete directory-layout migration",
-				zap.String("name", name),
-				zap.String("legacy_path", legacyDefault),
-				zap.String("secure_default", secureDefault),
-			)
-		}
-		return current
-	}
-	if logger != nil && err != nil && !os.IsNotExist(err) {
-		logger.Warn("legacy path is not readable; using secure default",
-			zap.String("name", name),
-			zap.String("legacy_path", legacyDefault),
-			zap.String("secure_default", secureDefault),
-			zap.Error(err),
-		)
-	}
-	if logger != nil {
-		logger.Warn("migrating legacy default path to secure layout",
-			zap.String("name", name),
-			zap.String("legacy_path", legacyDefault),
-			zap.String("secure_default", secureDefault),
-		)
-	}
-	return secureDefault
-}
-
-func legacyPathHasReadableData(name, path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return false, fmt.Errorf("legacy path %s must not be a symlink", path)
-	}
-	if info.IsDir() {
-		return legacyDirHasRecognizedData(name, path)
-	}
-	if info.Mode().IsRegular() {
-		f, err := os.Open(path)
-		if err != nil {
-			return false, err
-		}
-		defer f.Close()
-		return info.Size() > 0, nil
-	}
-	return false, fmt.Errorf("legacy path %s is neither a directory nor regular file", path)
-}
-
-func legacyDirHasRecognizedData(name, path string) (bool, error) {
-	switch name {
-	case "audit.dir":
-		return dirContainsAny(path, "kernel.merkle.jsonl", "*.jsonl")
-	case "vault.dir":
-		return dirContainsAny(path, "index.json", "*.age")
-	case "sandbox.state_dir":
-		return dirContainsAny(path, "sandboxes.json", "*.json")
-	case "proposal.store_dir":
-		return dirContainsAny(path, ".git", "*.json")
-	case "court.persona_dir":
-		return dirContainsAny(path, "*.yaml", "*.yml", "*.json")
-	case "court.session_dir":
-		return dirContainsAny(path, "*.json")
-	case "builder.workspace_base_dir", "ollama.model_dir", "composition.dir", "snapshot.dir", "memory.dir", "eventbus.dir", "worker.dir", "workspace.dir", "lookup.dir":
-		return dirContainsRegularFile(path)
-	default:
-		return dirContainsRegularFile(path)
-	}
-}
-
-func dirContainsAny(path string, patterns ...string) (bool, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink != 0 {
-			continue
-		}
-		for _, pattern := range patterns {
-			match, err := filepath.Match(pattern, entry.Name())
-			if err != nil {
-				return false, err
-			}
-			if match {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-func dirContainsRegularFile(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range entries {
-		if entry.Type().IsRegular() {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // getConfigDir returns the path to ~/.aegis/config.
