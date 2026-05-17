@@ -9,41 +9,48 @@ The daemon runs with root/host privileges. Any extra responsibility dramatically
 - Make governance decisions
 - Execute generated code
 
-Current implementation likely violates this (user concern + gaps in `additional-requirements-and-gaps.md`).
+Current implementation significantly violates this.
 
 ## Tasks
 
-1. **Audit current daemon code**
-   - Identify all non-TCB logic (config loading beyond bootstrap, logging beyond minimal, any API serving, tool registry, etc.)
-   - Measure current LOC and idle memory.
-2. **Move non-TCB responsibilities**:
-   - Business logic (e.g., any ReAct loops, worker management, eval harness) → AegisHub or dedicated sandboxes
-   - Complex config → AegisHub or Store VM
-   - Any secret-related code → Network Boundary VM only
-3. **Enforce strict boundaries**:
-   - Keep only: sandbox lifecycle (Firecracker/Docker `sbx`), Unix socket management, Ed25519 keypair distribution to VMs, Merkle root signing, basic watchdog.
-   - Implement `SandboxBackend` interface cleanly (already partially there).
-4. **Add security hardening in daemon**:
-   - Capability dropping (drop all but needed for Firecracker/socket)
-   - seccomp-bpf filter
-   - Static binary compilation (already required)
-   - Memory limits and no dynamic deps
-5. **Update tests** (from `docs/specs/host-daemon.md`):
-   - Minimal Privilege test
-   - No Secret Handling test
-   - Lifecycle Containment test (daemon crash → all VMs terminated)
-   - Memory < 20 MB idle
-   - Static binary verification
+We are taking an **aggressive** approach toward the multi-VM architecture in the `docs/lessons-learned` branch.
+
+See the living boundary document: `docs/planning/03-tcb-boundaries.md`
+
+### Phase 0: Foundations (In Progress)
+- Create TCB boundaries document
+- High-level audit of current daemon responsibilities
+- Decide initial microVM scope (Host Daemon, AegisHub, Store VM, Network Boundary VM)
+
+### Phase 1: Aggressive Stripping of Host Daemon
+- Remove Court, BuildOrchestrator, persistent stores, vault handling, most API handlers, etc.
+- Move ownership to Store VM, AegisHub, Court components, Network Boundary VM
+
+### Phase 2: Introduce / Realize Store VM
+- Establish Store VM as owner of persistent state
+- Define protocol between AegisHub ↔ Store VM
+
+### Phase 3: Strengthen AegisHub
+- Move more control-plane logic into AegisHub
+
+### Phase 4: Host Daemon Hardening
+- Capability dropping, seccomp, lifecycle containment
+
+### Phase 5: Verification
+- Implement required tests from `host-daemon.md`
+- Measure LOC and memory
+- Final review for forbidden patterns
 
 ## Acceptance Criteria
-- Daemon binary < 2000 LOC (excluding tests)
-- Idle memory < 20 MB
-- Passes all 8 test requirements in `docs/specs/host-daemon.md`
-- No business logic remains in daemon (verified by code review + grep for forbidden patterns)
-- `aegis status` and basic start/stop still work perfectly
+- Daemon binary significantly reduced
+- Idle memory target approached
+- Passes core tests from `docs/specs/host-daemon.md`
+- No business logic / governance / secret handling remains in daemon
+- Store VM exists and owns persistent state
+- Clear boundaries documented
 
-**Dependencies**: Can start after basic CLI coverage (01) and directory layout (02)
-**Estimated effort**: 2–3 days (high value for security).
+**Dependencies**: Task 01 + Task 02 complete
+**Estimated effort**: Significant (aggressive track)
 
 **Owner**: TBD
-**Status**: Ready to start (highest security priority after CLI basics)
+**Status**: **Phase 0 started** — See `docs/planning/03-tcb-boundaries.md` for current boundary decisions and migration map.
