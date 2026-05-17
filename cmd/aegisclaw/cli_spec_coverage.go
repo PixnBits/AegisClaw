@@ -528,7 +528,11 @@ func runTasksStatus(cmd *cobra.Command, args []string) error {
 		if globalJSON {
 			fmt.Println(string(resp.Data))
 		} else {
-			fmt.Println(string(resp.Data))
+			var m map[string]interface{}
+			_ = json.Unmarshal(resp.Data, &m)
+			timestamp := time.Now().Format("15:04:05")
+			fmt.Printf("[%s] Task %v | status: %v | worker: %v | role: %v\n",
+				timestamp, m["task_id"], m["status"], m["worker_id"], m["role"])
 		}
 		if !tasksStatusWatch {
 			return nil
