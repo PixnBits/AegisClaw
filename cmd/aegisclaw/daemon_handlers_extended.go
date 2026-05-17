@@ -46,16 +46,32 @@ func registerExtendedDaemonAPI(
 		return &api.Response{Error: "vault operations are no longer handled by the Host Daemon (Network Boundary VM owns secrets)"}
 	})
 
-	// Workers (read-only but still good to gate if needed)
+	// Workers, Skills, Team & Autonomy handlers stubbed (Phase 3.4 Minimal TCB).
+	// All of these responsibilities (skill lifecycle, worker management, team
+	// coordination, autonomy grants) have moved out of the Host Daemon TCB into
+	// AegisHub + dedicated VMs / Store VM. Handlers are now thin entrypoints.
+	const movedMsg = "operations have moved out of the Host Daemon TCB (see AegisHub + Store VM)"
+
+	// Workers
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
 	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
 
-	// Skills
-	apiSrv.Handle("skill.list", makeSkillListHandler(env))
-	apiSrv.Handle("skill.status", makeSkillStatusHandler(env))
-	apiSrv.Handle("skill.deactivate", withAuthorizedCaller(env, "skill.deactivate", makeSkillDeactivateHandler(env)))
-	apiSrv.Handle("skill.activate", withAuthorizedCaller(env, "skill.activate", makeSkillActivateHandler(env)))
-	apiSrv.Handle("skill.secrets.refresh", withAuthorizedCaller(env, "skill.secrets.refresh", makeSkillSecretsRefreshHandler(env)))
+	// Skills (skill.deactivate previously touched env.Runtime + env.Registry)
+	apiSrv.Handle("skill.list", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "skill.list " + movedMsg}
+	})
+	apiSrv.Handle("skill.status", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "skill.status " + movedMsg}
+	})
+	apiSrv.Handle("skill.deactivate", withAuthorizedCaller(env, "skill.deactivate", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "skill.deactivate " + movedMsg}
+	}))
+	apiSrv.Handle("skill.activate", withAuthorizedCaller(env, "skill.activate", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "skill.activate " + movedMsg}
+	}))
+	apiSrv.Handle("skill.secrets.refresh", withAuthorizedCaller(env, "skill.secrets.refresh", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "skill.secrets.refresh " + movedMsg}
+	}))
 
 	// Chat handlers are now thin stubs (Phase 3.2 Minimal TCB).
 	// Real chat orchestration, ReAct, tool dispatch, and summarization live in
@@ -101,29 +117,60 @@ func registerExtendedDaemonAPI(
 		return &api.Response{Error: sessionsMovedMsg}
 	}))
 
-	// Tasks (stubs)
-	apiSrv.Handle("tasks.list", makeTasksListHandler(env))
-	apiSrv.Handle("tasks.status", makeTasksStatusHandler(env))
-	apiSrv.Handle("tasks.pause", makeTasksPauseStubHandler())
-	apiSrv.Handle("tasks.resume", makeTasksResumeStubHandler())
-	apiSrv.Handle("tasks.cancel", makeTasksCancelStubHandler())
+	// Tasks handlers stubbed (Phase 3.4). Task/worker state management has moved.
+	apiSrv.Handle("tasks.list", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "tasks.list " + movedMsg}
+	})
+	apiSrv.Handle("tasks.status", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "tasks.status " + movedMsg}
+	})
+	apiSrv.Handle("tasks.pause", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "tasks.pause " + movedMsg}
+	})
+	apiSrv.Handle("tasks.resume", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "tasks.resume " + movedMsg}
+	})
+	apiSrv.Handle("tasks.cancel", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "tasks.cancel " + movedMsg}
+	})
 
 	// Court
 	apiSrv.Handle("court.decisions.list", makeCourtDecisionsListHandler(env))
 	apiSrv.Handle("court.decisions.show", makeCourtDecisionsShowHandler(env))
 
-	// Team & Autonomy (new)
-	apiSrv.Handle("team.list", withAuthorizedCaller(env, "team.list", makeTeamListHandler(env)))
-	apiSrv.Handle("team.create", withAuthorizedCaller(env, "team.create", makeTeamCreateHandler(env)))
-	apiSrv.Handle("team.new", withAuthorizedCaller(env, "team.new", makeTeamCreateHandler(env))) // alias for create per CLI spec
-	apiSrv.Handle("team.join", withAuthorizedCaller(env, "team.join", makeTeamJoinHandler(env)))
-	apiSrv.Handle("team.leave", withAuthorizedCaller(env, "team.leave", makeTeamLeaveHandler(env)))
-	apiSrv.Handle("team.status", withAuthorizedCaller(env, "team.status", makeTeamStatusHandler(env)))
+	// Team & Autonomy handlers stubbed (Phase 3.4). Real team coordination and
+	// autonomy grant/revoke logic now lives outside the Host Daemon TCB.
+	apiSrv.Handle("team.list", withAuthorizedCaller(env, "team.list", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "team.list " + movedMsg}
+	}))
+	apiSrv.Handle("team.create", withAuthorizedCaller(env, "team.create", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "team.create " + movedMsg}
+	}))
+	apiSrv.Handle("team.new", withAuthorizedCaller(env, "team.new", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "team.new " + movedMsg}
+	}))
+	apiSrv.Handle("team.join", withAuthorizedCaller(env, "team.join", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "team.join " + movedMsg}
+	}))
+	apiSrv.Handle("team.leave", withAuthorizedCaller(env, "team.leave", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "team.leave " + movedMsg}
+	}))
+	apiSrv.Handle("team.status", withAuthorizedCaller(env, "team.status", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "team.status " + movedMsg}
+	}))
 
-	apiSrv.Handle("autonomy.show", withAuthorizedCaller(env, "autonomy.show", makeAutonomyShowHandler(env)))
-	apiSrv.Handle("autonomy.grant", withAuthorizedCaller(env, "autonomy.grant", makeAutonomyGrantHandler(env)))
-	apiSrv.Handle("autonomy.revoke", withAuthorizedCaller(env, "autonomy.revoke", makeAutonomyRevokeHandler(env)))
-	apiSrv.Handle("autonomy.reset", withAuthorizedCaller(env, "autonomy.reset", makeAutonomyResetHandler(env)))
+	apiSrv.Handle("autonomy.show", withAuthorizedCaller(env, "autonomy.show", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "autonomy.show " + movedMsg}
+	}))
+	apiSrv.Handle("autonomy.grant", withAuthorizedCaller(env, "autonomy.grant", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "autonomy.grant " + movedMsg}
+	}))
+	apiSrv.Handle("autonomy.revoke", withAuthorizedCaller(env, "autonomy.revoke", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "autonomy.revoke " + movedMsg}
+	}))
+	apiSrv.Handle("autonomy.reset", withAuthorizedCaller(env, "autonomy.reset", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "autonomy.reset " + movedMsg}
+	}))
 }
 
 // daemonOwnerUID returns the UID that should be treated as the daemon owner.
