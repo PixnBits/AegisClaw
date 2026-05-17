@@ -115,7 +115,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		env.AutonomyRegistry = autoReg
 	}
 
-	// BuildOrchestrator removed from daemon during aggressive extraction.
+	// BuildOrchestrator removed during aggressive extraction.
 	_ = env.BuilderClient
 
 	// Reconcile any approved proposals from before event-driven trigger was added
@@ -310,7 +310,6 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 }
 
 // initBuildOrchestrator is disabled during the aggressive BuildOrchestrator extraction.
-// The Host Daemon no longer owns builder pipeline logic.
 func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
-	return nil, nil // intentionally disabled during extraction
+	return nil, nil
 }
