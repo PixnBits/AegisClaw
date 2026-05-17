@@ -104,16 +104,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	toolRegistry := buildToolRegistry(env)
 
-	// === COURT EXTRACTION (AGGRESSIVE) ===
-	// Court initialization has been removed from the Host Daemon.
-	// We are moving toward dedicated Court components.
-	// For now we use a stub client so the rest of the system can compile.
-	courtClient := &court.StubClient{}
-	_ = courtClient // placeholder until we wire real routing via AegisHub
-
-	// Note: ResumeStalled and full Court engine initialization removed.
-	// This is intentional as part of Minimal TCB refactor.
-
 	regDir := filepath.Join(filepath.Dir(env.Config.Audit.Dir), "cli-registry")
 	if teamReg, err := newTeamRegistry(regDir); err != nil {
 		env.Logger.Warn("team registry disabled", zap.Error(err))
@@ -145,10 +135,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Ensure default script runner is active
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
-	// Court handlers now use the stub client during transition.
-	// Real implementation will route through AegisHub to dedicated Court components.
-	apiSrv.Handle("court.review", makeCourtReviewHandler(env, courtClient))
-	apiSrv.Handle("court.vote", makeCourtVoteHandler(env, courtClient))
+	// Court handlers now use env.CourtClient (stub during aggressive extraction)
+	apiSrv.Handle("court.review", makeCourtReviewHandler(env))
+	apiSrv.Handle("court.vote", makeCourtVoteHandler(env))
 
 	// Git/Source Code API endpoints (Phase 2: Source Code Viewer)
 	apiSrv.Handle("git.browse", makeGitBrowseHandler(env))
@@ -249,34 +238,30 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 	}
 }
 
-// makeCourtReviewHandler is temporarily updated during aggressive Court extraction.
-// It currently uses the stub client. Real implementation will route through AegisHub.
-func makeCourtReviewHandler(env *runtimeEnv, client *court.StubClient) api.Handler {
+// makeCourtReviewHandler uses env.CourtClient during the Court extraction transition.
+func makeCourtReviewHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		// TODO: Route court.review through AegisHub to dedicated Court components.
-		// For now this is a stub during the aggressive Minimal TCB refactor.
-		return &api.Response{Success: true, Data: []byte(`{"status":"stubbed","message":"Court extraction in progress"}`)}
+		// TODO: Implement real routing through AegisHub to dedicated Court components.
+		_ = env.CourtClient
+		return &api.Response{Success: true, Data: []byte(`{"status":"stubbed"}`)}
 	}
 }
 
-// makeCourtVoteHandler is temporarily stubbed during aggressive Court extraction.
-func makeCourtVoteHandler(env *runtimeEnv, client *court.StubClient) api.Handler {
+// makeCourtVoteHandler uses env.CourtClient during the Court extraction transition.
+func makeCourtVoteHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		// TODO: Route court.vote through AegisHub to dedicated Court components.
+		_ = env.CourtClient
 		return &api.Response{Success: true}
 	}
 }
 
 // initBuildOrchestrator creates the BuildOrchestrator and wires it with a Pipeline.
-// This is a best-effort implementation to make the event-driven trigger functional.
-// A fuller extraction of builder initialization is planned as future work.
 func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
 	if env == nil || env.Kernel == nil || env.Runtime == nil || env.GitManager == nil {
 		env.Logger.Warn("BuildOrchestrator: missing required runtime dependencies, skipping")
 		return nil, nil
 	}
 
-	// 1. Create BuilderRuntime
 	bcfg := builder.DefaultBuilderConfig()
 	builderRT, err := builder.NewBuilderRuntime(bcfg, env.Runtime, env.Kernel, env.Logger)
 	if err != nil {
@@ -284,21 +269,18 @@ func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) 
 		return nil, fmt.Errorf("create BuilderRuntime: %w", err)
 	}
 
-	// 2. Create CodeGenerator with default templates
 	codeGen, err := builder.NewCodeGenerator(builderRT, env.Kernel, env.Logger, builder.DefaultTemplates())
 	if err != nil {
 		env.Logger.Error("failed to create CodeGenerator", zap.Error(err))
 		return nil, fmt.Errorf("create CodeGenerator: %w", err)
 	}
 
-	// 3. Create Pipeline (Analyzer is optional for now)
 	pipe, err := builder.NewPipeline(builderRT, codeGen, env.GitManager, nil, env.Kernel, env.Logger)
 	if err != nil {
 		env.Logger.Error("failed to create Pipeline", zap.Error(err))
 		return nil, fmt.Errorf("create Pipeline: %w", err)
 	}
 
-	// 4. Create the BuildOrchestrator
 	orch, err := builder.NewBuildOrchestrator(pipe, env.Logger, env.ProposalEventDispatcher)
 	if err != nil {
 		env.Logger.Error("failed to create BuildOrchestrator", zap.Error(err))
@@ -379,9 +361,4 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 	}
 
 	return hub, hubVMID, nil
-}
-
-func makeCourtVoteHandler(env *runtimeEnv, engine *court.Engine) api.Handler {
-	_ = engine
-	return makeUnimplementedHandler("court.vote")
 }
