@@ -17,14 +17,18 @@ We are taking an **aggressive** approach toward the multi-VM architecture in the
 
 See the living boundary document: `docs/planning/03-tcb-boundaries.md`
 
-### Phase 0: Foundations (In Progress)
-- Create TCB boundaries document
-- High-level audit of current daemon responsibilities
+### Phase 0: Foundations (Completed)
+- Create TCB boundaries document (`docs/planning/03-tcb-boundaries.md`)
+- High-level audit of current daemon responsibilities + migration map
 - Decide initial microVM scope (Host Daemon, AegisHub, Store VM, Network Boundary VM)
+- Baseline LOC/memory measurement recorded in boundaries doc
+- Prerequisite chore (simplify-directory-layout-remove-legacy-migrations) completed (legacy path migration code removed)
 
-### Phase 1: Aggressive Stripping of Host Daemon
-- Remove Court, BuildOrchestrator, persistent stores, vault handling, most API handlers, etc.
-- Move ownership to Store VM, AegisHub, Court components, Network Boundary VM
+### Phase 1: Aggressive Stripping of Host Daemon (In Progress)
+- **Store migration seam complete**: unified `Store` interface + `runtimeEnv.Store` in place.
+- **Court Engine extraction started**: Real `court.Engine` initialization disabled (`court_init.go` neutralized). Direct `env.Court` field removed from `runtimeEnv`. Court decision list/show handlers stubbed with "moved to Court Scribe" messages. Direct Court calls in `chat.go`, `pr_autocreate.go`, and handlers now go through `CourtClient` (currently StubClient → later Court VMs). Governance surface dramatically reduced in the daemon.
+- **Vault / secret handling extraction started**: `vault.NewVault` + `kern.PrivateKeyBytes()` for secrets removed from `initRuntime`. `env.Vault` field removed. Vault API handlers (`vault.secret.*`) stubbed to "secrets handled by Network Boundary VM". Daemon no longer opens or operates on the encrypted vault.
+- **BuildOrchestrator extraction started**: `initBuildOrchestrator` neutralized, `env.BuildOrchestrator` field removed. `builder_daemon.go` dispatch loop disabled (`startBuilderDispatchDaemon` / `processImplementingProposals` are now no-ops). Builder coordination responsibility moved to AegisHub / Builder VMs via `BuilderClient`.
 
 ### Phase 2: Introduce / Realize Store VM
 - Establish Store VM as owner of persistent state
@@ -53,4 +57,4 @@ See the living boundary document: `docs/planning/03-tcb-boundaries.md`
 **Estimated effort**: Significant (aggressive track)
 
 **Owner**: TBD
-**Status**: **Phase 0 started** — See `docs/planning/03-tcb-boundaries.md` for current boundary decisions and migration map.
+**Status**: **Phase 0 complete** — Boundary document + migration map ready. Ready for Phase 1. (Chore finished.) — See `docs/planning/03-tcb-boundaries.md` for current boundary decisions and migration map.

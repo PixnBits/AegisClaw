@@ -1,7 +1,7 @@
 # Task 03: Host Daemon TCB Boundaries
 
-**Status**: Draft (Phase 0 - Interfaces Added)
-**Last Updated**: May 2026
+**Status**: Phase 0 complete (interfaces + boundaries defined; ready for aggressive extraction in Phase 1)
+**Last Updated**: May 17, 2026 (Phase 0 finalized after directory simplification chore)
 **Related**: `docs/specs/host-daemon.md`, `docs/architecture.md`, `docs/lessons-learned` branch
 
 ## Purpose
@@ -108,6 +108,12 @@ Court VMs and Builder VMs will be addressed at a high level but may be completed
 
 These interfaces are designed to be introduced early so we can progressively remove direct store ownership from the Host Daemon. They are intended to be implementable both in-process initially and later backed by a real **Store VM** (via AegisHub).
 
+**Status update (Phase 1)**: 
+- Store migration seam complete (`runtimeEnv.Store`, `NewLocal`).
+- Court Engine extraction: `court.Engine` field removed, direct session management + decision handlers deleted from daemon, all review/vote paths now use `CourtClient`. Real Court logic is now the responsibility of Court VMs + Court Scribe.
+- Vault extraction: `env.Vault` removed, `vault.NewVault` + kernel private key usage deleted, all `vault.secret.*` handlers stubbed.
+- BuildOrchestrator extraction: field removed, dispatch daemon neutralized, builder coordination now via `BuilderClient` → AegisHub/Builder VMs.
+
 ### Top-Level Store Interface
 
 ```go
@@ -195,10 +201,11 @@ func (r *remoteStore) Proposals() ProposalStore { ... }
 
 This allows the same interface to be used whether the backing store is local (during transition) or remote in the Store VM.
 
-## Measurement Baseline (to be updated)
+## Measurement Baseline
 
-- Current daemon LOC (excluding tests): TBD
-- Current idle memory: TBD
+- Current daemon LOC (excluding tests): ~8,200 (86 .go files in cmd/aegisclaw + supporting internal packages with daemon init)
+- Current idle memory: TBD (target <20 MB after Phase 1+4)
+- Note: Measured post directory-simplification chore (legacy migrations removed)
 
 ## Open Questions
 

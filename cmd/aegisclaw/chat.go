@@ -1450,32 +1450,14 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 	result := fmt.Sprintf("Proposal submitted for court review.\n  ID: %s\n  Title: %s\n  Status: %s\n\nIMPORTANT: Tell the user the proposal ID (%s) so they can track it.", p.ID, p.Title, p.Status, p.ID)
 
 	// Trigger court review inline if the court engine is available.
-	if env.Court != nil {
-		reviewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-
-		session, reviewErr := env.Court.Review(reviewCtx, p.ID)
-		if reviewErr != nil {
-			result += fmt.Sprintf("\n\nCourt review could not start automatically: %v\nRecovery: proposal remains in_review and will be auto-resumed on next daemon start (aegisclaw stop; aegisclaw start).\nUse proposal.status / proposal.reviews with ID %s to track progress.", reviewErr, p.ID)
-		} else {
-			result += fmt.Sprintf("\n\nCourt review completed.\n  State: %s\n  Verdict: %s\n  Risk: %.1f",
-				session.State, session.Verdict, session.RiskScore)
-			env.Logger.Info("court review completed (direct)",
-				zap.String("proposal_id", p.ID),
-				zap.String("verdict", session.Verdict),
-				zap.String("state", string(session.State)),
-				zap.Float64("risk_score", session.RiskScore),
-			)
-
-			// Auto-transition approved proposals to trigger builder (aligns direct path with API handler)
-			if session.Verdict == "approved" {
-				updatedP, pErr := env.ProposalStore.Get(p.ID)
-				if pErr == nil && updatedP.Status == proposal.StatusApproved {
-					if tErr := updatedP.Transition(proposal.StatusImplementing, "auto-triggered by court approval (direct)", "daemon"); tErr == nil {
-						if uErr := env.ProposalStore.Update(updatedP); uErr == nil {
-							env.Logger.Info("proposal auto-transitioned to implementing (direct)",
-								zap.String("proposal_id", p.ID),
-								zap.String("status", string(updatedP.Status)),
+	// Court review is now requested via CourtClient (real work happens in Court VMs / Scribe).
+	reviewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if err := env.CourtClient.Review(reviewCtx, p.ID); err != nil {
+		result += fmt.Sprintf("\n\nCourt review request sent via CourtClient: %v", err)
+	} else {
+		result += "\n\nCourt review requested (governance logic lives outside Host Daemon TCB)."
+	}
 							)
 						} else {
 							env.Logger.Warn("failed to update proposal after transition (direct)", zap.Error(uErr))
@@ -1570,19 +1552,13 @@ func handleProposalVote(env *runtimeEnv, ctx context.Context, argsJSON string) (
 		return "", err
 	}
 
-	if env.Court == nil {
-		return "", fmt.Errorf("court engine not available")
+	// Vote via CourtClient (real vote handling lives in Court components).
+	if err := env.CourtClient.Vote(ctx, fullID, "chat-user", fmt.Sprintf("%t", args.Approve), args.Reason); err != nil {
+		return "", fmt.Errorf("vote request failed: %w", err)
 	}
-
-	session, err := env.Court.VoteOnProposal(ctx, fullID, "chat-user", args.Approve, args.Reason)
-	if err != nil {
-		return "", fmt.Errorf("vote failed: %w", err)
-	}
-
 	action := "approved"
 	if !args.Approve {
 		action = "rejected"
 	}
-	return fmt.Sprintf("Vote recorded: %s\n  Proposal: %s\n  Verdict: %s\n  State: %s",
-		action, fullID[:8], session.Verdict, session.State), nil
+	return fmt.Sprintf("Vote recorded via CourtClient: %s\n  Proposal: %s", action, fullID[:8]), nil
 }

@@ -28,7 +28,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/store"
-	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/PixnBits/AegisClaw/internal/workspace"
 	"github.com/google/uuid"
@@ -45,7 +44,8 @@ var (
 	memoryInst      *memory.Store
 	eventBusInst    *eventbus.Bus
 	workerStoreInst *worker.Store
-	vaultInst       *vault.Vault
+	// vaultInst removed — Host Daemon no longer opens or operates on secrets vault.
+	// Secret handling is the responsibility of the Network Boundary VM only.
 	lookupInst      *lookup.Store
 	gitManagerInst  *gitmanager.Manager
 	runtimeInitErr  error
@@ -63,9 +63,9 @@ type runtimeEnv struct {
 	CourtClient   court.Client
 	BuilderClient builder.Client
 
-	// Deprecated during aggressive Phase 1 stripping
-	Court                 *court.Engine
-	BuildOrchestrator     *builder.BuildOrchestrator
+	// Deprecated during aggressive Phase 1 stripping (Court Engine removed from TCB)
+	// Court *court.Engine — fully removed; all governance routes through CourtClient
+	// BuildOrchestrator — removed; builder coordination now lives in AegisHub / Builder VMs
 	ProposalEventDispatcher *events.ProposalEventDispatcher
 
 	LLMProxy         *llm.OllamaProxy
@@ -78,7 +78,8 @@ type runtimeEnv struct {
 
 	TaskExecutor rtexec.TaskExecutor
 
-	Vault *vault.Vault
+	// Vault field removed — Host Daemon must never open or operate on the secrets vault.
+	// All secret operations are delegated to the Network Boundary VM.
 
 	EgressProxy *llm.EgressProxy
 	Workspace   *workspace.Content
@@ -176,10 +177,9 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		vaultInst, runtimeInitErr = vault.NewVault(cfg.Vault.Dir, kern.PrivateKeyBytes(), logger)
-		if runtimeInitErr != nil {
-			return
-		}
+		// Vault initialization removed from Host Daemon (TCB rule: never handle secrets).
+		// The encrypted vault at cfg.Vault.Dir is now owned exclusively by Network Boundary VM.
+		// Daemon only ensures the directory exists with correct 0700 permissions via EnsureSecureDirectories.
 		lookupInst, runtimeInitErr = lookup.NewStore(lookup.StoreConfig{
 			Dir:    cfg.Lookup.Dir,
 			Logger: logger,
@@ -215,7 +215,7 @@ func initRuntime() (*runtimeEnv, error) {
 		Store:         unifiedStore,
 		CourtClient:   courtClient,
 		BuilderClient: builderClient,
-		Vault:         vaultInst,
+		// Vault: removed — secrets never touched by Host Daemon TCB
 		EgressProxy:   llm.NewEgressProxy(logger),
 		LookupStore:   lookupInst,
 		GitManager:    gitManagerInst,

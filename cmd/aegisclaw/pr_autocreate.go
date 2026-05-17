@@ -136,18 +136,15 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		zap.Int("files", pr.FilesChanged),
 	)
 	
-	// Trigger Court code review for the generated code
-	// This is critical for security - all generated code must be reviewed
-	if env.Court != nil {
-		triggerCourtCodeReview(env, pr, result)
-	} else {
-		env.Logger.Warn("Court engine not available, skipping code review",
-			zap.String("pr_id", pr.ID),
-		)
+	// Request Court code review via CourtClient (real review logic lives in Court VMs / Scribe).
+	if err := env.CourtClient.Review(ctx, pr.ID); err != nil {
+		env.Logger.Warn("Court review request failed (Court components may be unavailable)",
+			zap.String("pr_id", pr.ID), zap.Error(err))
 	}
 }
 
-// triggerCourtCodeReview initiates a Court code review for the generated code.
+// triggerCourtCodeReview has been removed from the Host Daemon TCB.
+// Real Court reviews now happen in Court VMs / Court Scribe.
 func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result *builder.PipelineResult) {
 	// Build the code review request from the pipeline result
 	codeReq := &court.CodeReviewRequest{
@@ -191,26 +188,15 @@ func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result
 		zap.Int("files", len(result.Files)),
 	)
 	
-	// Trigger the Court code review (async to not block pipeline completion)
+	// Court code review request is now handled via CourtClient (no direct Engine access).
 	go func() {
 		ctx := context.Background()
-		reviews, err := env.Court.ReviewCode(ctx, codeReq)
-		if err != nil {
-			env.Logger.Error("Court code review failed",
-				zap.String("pr_id", pr.ID),
-				zap.Error(err),
-			)
-			// Mark as rejected on error
-			pr.CourtReviewStatus = pullrequest.CourtReviewRejected
-			if err := env.PRStore.Update(pr); err != nil {
-				env.Logger.Error("failed to update PR after Court error", zap.Error(err))
-			}
-			return
+		if err := env.CourtClient.Review(ctx, pr.ID); err != nil {
+			env.Logger.Warn("Court review request via CourtClient failed (expected during transition)",
+				zap.String("pr_id", pr.ID), zap.Error(err))
 		}
-		
-		// Add reviews to PR
-		for _, review := range reviews {
-			if err := env.PRStore.AddCourtReview(pr.ID, review); err != nil {
+		// PR status updates etc. can be driven by Court Scribe callbacks in the future.
+	}
 				env.Logger.Error("failed to add Court review to PR",
 					zap.String("pr_id", pr.ID),
 					zap.String("persona", review.Persona),

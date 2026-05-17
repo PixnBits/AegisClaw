@@ -19,43 +19,22 @@ import (
 
 var builderDispatchInFlight sync.Map
 
+// startBuilderDispatchDaemon has been neutralized during aggressive BuildOrchestrator extraction.
+// Builder coordination (dispatching implementing proposals, running pipelines, git commits)
+// now belongs to AegisHub and dedicated Builder VMs, not the Host Daemon TCB.
+// The BuilderClient seam is used for requesting builds; this loop no longer runs.
 func startBuilderDispatchDaemon(ctx context.Context, env *runtimeEnv) {
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-
-		env.Logger.Info("builder dispatch daemon started")
-		for {
-			select {
-			case <-ctx.Done():
-				env.Logger.Info("builder dispatch daemon stopped")
-				return
-			case <-ticker.C:
-				processImplementingProposals(ctx, env)
-			}
-		}
-	}()
+	env.Logger.Info("builder dispatch daemon disabled (BuildOrchestrator extraction)")
+	// No-op: builder event loop removed from Host Daemon.
+	// Future: AegisHub will coordinate Builder VMs for proposal implementation.
 }
 
+// processImplementingProposals has been neutralized.
+// Builder dispatch logic moved out of Host Daemon (AegisHub / Builder VM ownership).
 func processImplementingProposals(ctx context.Context, env *runtimeEnv) {
-	summaries, err := env.ProposalStore.List()
-	if err != nil {
-		env.Logger.Warn("builder dispatcher failed to list proposals", gozap.Error(err))
-		return
-	}
-
-	for _, summary := range summaries {
-		if _, loaded := builderDispatchInFlight.LoadOrStore(summary.ID, struct{}{}); loaded {
-			continue
-		}
-
-		go func(proposalID string) {
-			defer builderDispatchInFlight.Delete(proposalID)
-			if buildErr := buildImplementingProposal(ctx, env, proposalID); buildErr != nil {
-				env.Logger.Error("builder dispatcher failed", gozap.String("proposal_id", proposalID), gozap.Error(buildErr))
-			}
-		}(summary.ID)
-	}
+	// No-op during aggressive extraction.
+	_ = ctx
+	_ = env
 }
 
 func buildImplementingProposal(ctx context.Context, env *runtimeEnv, proposalID string) error {

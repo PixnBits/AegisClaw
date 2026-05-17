@@ -239,7 +239,7 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("list_proposals",
 		"List all proposals with their title, status, and risk level.",
 		func(_ context.Context, _ string) (string, error) {
-			summaries, err := env.ProposalStore.List()
+			summaries, err := env.Store.Proposals().List(ctx)
 			if err != nil {
 				return "", fmt.Errorf("list proposals: %w", err)
 			}

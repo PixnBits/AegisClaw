@@ -32,11 +32,20 @@ func registerExtendedDaemonAPI(
 	hub *ipc.MessageHub,
 	daemonQuit chan struct{},
 ) {
-	// Vault – secrets are sensitive
-	apiSrv.Handle("vault.secret.add", withAuthorizedCaller(env, "vault.secret.add", makeVaultSecretAddHandler(env)))
-	apiSrv.Handle("vault.secret.list", withAuthorizedCaller(env, "vault.secret.list", makeVaultSecretListHandler(env)))
-	apiSrv.Handle("vault.secret.delete", withAuthorizedCaller(env, "vault.secret.delete", makeVaultSecretDeleteHandler(env)))
-	apiSrv.Handle("vault.secret.rotate", withAuthorizedCaller(env, "vault.secret.rotate", makeVaultSecretRotateHandler(env)))
+	// Vault handlers stubbed — secrets handling has been removed from Host Daemon TCB.
+	// All vault operations are now the responsibility of the Network Boundary VM only.
+	apiSrv.Handle("vault.secret.add", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "vault operations are no longer handled by the Host Daemon (Network Boundary VM owns secrets)"}
+	})
+	apiSrv.Handle("vault.secret.list", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "vault operations are no longer handled by the Host Daemon (Network Boundary VM owns secrets)"}
+	})
+	apiSrv.Handle("vault.secret.delete", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "vault operations are no longer handled by the Host Daemon (Network Boundary VM owns secrets)"}
+	})
+	apiSrv.Handle("vault.secret.rotate", func(_ context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Error: "vault operations are no longer handled by the Host Daemon (Network Boundary VM owns secrets)"}
+	})
 
 	// Workers (read-only but still good to gate if needed)
 	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
@@ -621,70 +630,16 @@ func makeTasksCancelStubHandler() api.Handler {
 
 func makeCourtDecisionsListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.Court == nil {
-			return &api.Response{Error: "court engine not initialized"}
-		}
-		all := env.Court.ListSessions()
-		type row struct {
-			ID         string             `json:"id"`
-			ProposalID string             `json:"proposal_id"`
-			State      court.SessionState `json:"state"`
-			Verdict    string             `json:"verdict,omitempty"`
-			RiskScore  float64            `json:"risk_score"`
-			StartedAt  string             `json:"started_at"`
-			EndedAt    string             `json:"ended_at,omitempty"`
-		}
-		var rows []row
-		for _, s := range all {
-			if s == nil {
-				continue
-			}
-			r := row{
-				ID:         s.ID,
-				ProposalID: s.ProposalID,
-				State:      s.State,
-				Verdict:    s.Verdict,
-				RiskScore:  s.RiskScore,
-				StartedAt:  s.StartedAt.UTC().Format(time.RFC3339),
-			}
-			if s.EndedAt != nil {
-				r.EndedAt = s.EndedAt.UTC().Format(time.RFC3339)
-			}
-			rows = append(rows, r)
-		}
-		raw, err := json.Marshal(rows)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: raw}
+		// Court decision listing has moved out of the Host Daemon TCB.
+		// This is now the responsibility of Court Scribe / dedicated Court VMs.
+		return &api.Response{Error: "court decisions are no longer served by the Host Daemon (see Court Scribe / AegisHub)"}
 	}
 }
 
 func makeCourtDecisionsShowHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		req.ID = strings.TrimSpace(req.ID)
-		if req.ID == "" {
-			return &api.Response{Error: "id is required"}
-		}
-		if env.Court == nil {
-			return &api.Response{Error: "court engine not initialized"}
-		}
-		s, ok := env.Court.GetSession(req.ID)
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("decision session %q not found", req.ID)}
-		}
-		// Return a clone for safety (Phase 4/6 improvement)
-		raw, err := json.Marshal(s)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: raw}
+		// Court decision details have moved out of the Host Daemon TCB.
+		return &api.Response{Error: "court decision details are no longer served by the Host Daemon (see Court Scribe / AegisHub)"}
 	}
 }
 
