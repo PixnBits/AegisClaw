@@ -13,7 +13,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/builder"
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/court"
-	"github.com/PixnBits/AegisClaw/internal/events"
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
@@ -117,7 +116,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// BuildOrchestrator removed from daemon during aggressive extraction.
-	// Using env.BuilderClient (stub) during transition.
 	_ = env.BuilderClient
 
 	// Reconcile any approved proposals from before event-driven trigger was added
