@@ -67,8 +67,11 @@ type runtimeEnv struct {
 	// BuilderClient is the abstraction for builder/orchestrator functionality.
 	BuilderClient builder.Client
 
-	// Court is being phased out during the aggressive Court extraction.
-	Court *court.Engine // DEPRECATED
+	// Deprecated fields from previous monolithic design.
+	// These are being phased out during the Minimal TCB refactor.
+	Court                 *court.Engine             // DEPRECATED
+	BuildOrchestrator     *builder.BuildOrchestrator // DEPRECATED
+	ProposalEventDispatcher *events.ProposalEventDispatcher // DEPRECATED
 
 	LLMProxy         *llm.OllamaProxy
 	OllamaHTTPClient *http.Client
@@ -94,11 +97,6 @@ type runtimeEnv struct {
 
 	PortalVMID string
 	portalVMMu sync.Mutex
-
-	ProposalEventDispatcher *events.ProposalEventDispatcher // being phased out with BuildOrchestrator
-
-	// BuildOrchestrator is being extracted from the Host Daemon.
-	BuildOrchestrator *builder.BuildOrchestrator // DEPRECATED
 
 	TeamRegistry     *teamRegistry
 	AutonomyRegistry *autonomyRegistry
