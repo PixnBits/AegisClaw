@@ -65,7 +65,6 @@ type runtimeEnv struct {
 	CourtClient court.Client
 
 	// BuilderClient is the abstraction for builder/orchestrator functionality.
-	// The real implementation will eventually live outside the Host Daemon.
 	BuilderClient builder.Client
 
 	// Court is being phased out during the aggressive Court extraction.
@@ -96,8 +95,10 @@ type runtimeEnv struct {
 	PortalVMID string
 	portalVMMu sync.Mutex
 
-	ProposalEventDispatcher *events.ProposalEventDispatcher
-	BuildOrchestrator         *builder.BuildOrchestrator // DEPRECATED - being extracted
+	ProposalEventDispatcher *events.ProposalEventDispatcher // being phased out with BuildOrchestrator
+
+	// BuildOrchestrator is being extracted from the Host Daemon.
+	BuildOrchestrator *builder.BuildOrchestrator // DEPRECATED
 
 	TeamRegistry     *teamRegistry
 	AutonomyRegistry *autonomyRegistry
