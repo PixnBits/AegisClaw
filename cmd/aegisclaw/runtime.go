@@ -27,7 +27,7 @@ import (
 	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
-	"github.com/PixnBits/AegisClaw/internal/store" // NEW
+	"github.com/PixnBits/AegisClaw/internal/store"
 	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/PixnBits/AegisClaw/internal/workspace"
@@ -52,18 +52,16 @@ var (
 )
 
 type runtimeEnv struct {
-	Logger             *zap.Logger
-	Config             *config.Config
-	Kernel             *kernel.Kernel
-	Runtime            *sandbox.FirecrackerRuntime
-	Registry           *sandbox.SkillRegistry
-	ProposalStore      *proposal.Store
-	PRStore            *pullrequest.Store
-	CompositionStore   *composition.Store
-	MemoryStore        *memory.Store
-	EventBus           *eventbus.Bus
-	WorkerStore        *worker.Store
-	LookupStore        *lookup.Store
+	Logger   *zap.Logger
+	Config   *config.Config
+	Kernel   *kernel.Kernel
+	Runtime  *sandbox.FirecrackerRuntime
+	Registry *sandbox.SkillRegistry
+
+	// Store is the unified abstraction over all persistent state.
+	// The Host Daemon should ideally only interact with state through this.
+	Store store.Store
+
 	Court              *court.Engine
 	LLMProxy           *llm.OllamaProxy
 	OllamaHTTPClient   *http.Client
@@ -73,71 +71,29 @@ type runtimeEnv struct {
 	TestLLMTemperature *float64
 	TestLLMSeed        int64
 
-	// NEW: Unified store abstraction
-	// This is the seam we will use to move persistent state ownership
-	// out of the Host Daemon and toward a future Store VM.
-	Store store.Store
-
-	// TaskExecutor handles one turn of the agent ReAct loop.
-	// The default (production) implementation is FirecrackerTaskExecutor which
-	// routes calls through the Firecracker microVM.  Tests compiled with the
-	// "inprocesstest" build tag may substitute InProcessTaskExecutor.
-	// TaskExecutor is set lazily on the first chat.message request (alongside
-	// AgentVMID) and is nil until then.
 	TaskExecutor rtexec.TaskExecutor
 
-	// Vault holds the age-encrypted secret store.  Opened once at daemon
-	// startup; nil only if the vault directory could not be initialised
-	// (daemon logs a warning and continues in degraded mode without secret
-	// injection).
+	// Vault is kept for now because secrets handling will move to Network Boundary VM.
+	// Long term this should also leave the daemon.
 	Vault *vault.Vault
 
-	// EgressProxy is the per-VM SNI-validating TCP tunnel proxy.  Started for
-	// each skill VM whose approved proposal declares egress_mode "proxy".
 	EgressProxy *llm.EgressProxy
+	Workspace   *workspace.Content
+	GitManager  *gitmanager.Manager
+	Sessions    *sessions.Store
 
-	// Workspace holds content loaded from the user's workspace directory
-	// (~/.aegis/workspace by default). Fields are empty when the
-	// corresponding workspace files are absent or the directory doesn't exist.
-	Workspace *workspace.Content
-
-	// GitManager manages the skills and self git repositories.
-	GitManager *gitmanager.Manager
-
-	// Sessions tracks all active and recent chat sessions for the session
-	// routing tools (sessions_list, sessions_history, sessions_send,
-	// sessions_spawn).  It is initialised once at daemon start and shared
-	// across all API handler goroutines.
-	Sessions *sessions.Store
-
-	// AgentVMID is the ID of the main agent microVM. Protected by agentVMMu.
-	// Set once by ensureAgentVM on the first chat.message request.
 	AgentVMID string
 	agentVMMu sync.Mutex
 
-	// AegisHubVMID is the ID of the AegisHub system microVM launched at daemon
-	// startup. AegisHub is the sole IPC router for the system; all inter-VM
-	// traffic routes through it for ACL enforcement and audit logging.
-	// The daemon registers it before starting any other VM.
 	AegisHubVMID string
 
-	// PortalVMID is the ID of the dashboard portal microVM. Protected by
-	// portalVMMu and lazily started when dashboard.enabled is true.
 	PortalVMID string
 	portalVMMu sync.Mutex
 
-	// ProposalEventDispatcher enables event-driven reactions to proposal lifecycle changes
-	// (e.g. automatic builder pipeline trigger on "implementing" status).
 	ProposalEventDispatcher *events.ProposalEventDispatcher
+	BuildOrchestrator         *builder.BuildOrchestrator
 
-	// BuildOrchestrator coordinates automatic builder pipeline execution when proposals
-	// reach implementing status after Court approval.
-	BuildOrchestrator *builder.BuildOrchestrator
-
-	// TeamRegistry persists lightweight team metadata for the multi-agent CLI.
-	TeamRegistry *teamRegistry
-
-	// AutonomyRegistry stores per-session autonomy grants for CLI/portal parity.
+	TeamRegistry     *teamRegistry
 	AutonomyRegistry *autonomyRegistry
 }
 
@@ -181,7 +137,6 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		// Pull Request Store: stores PR metadata for code review workflow.
 		prStorePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "pullrequests")
 		prStoreInst, runtimeInitErr = pullrequest.NewStore(prStorePath, logger)
 		if runtimeInitErr != nil {
@@ -191,7 +146,6 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		// Memory Store: load or create the age identity from the memory directory.
 		memIdentity, memIDErr := loadOrCreateMemoryIdentity(cfg.Memory.Dir)
 		if memIDErr != nil {
 			runtimeInitErr = memIDErr
@@ -210,7 +164,6 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		// Event Bus: persistent timer/subscription/approval store.
 		eventBusInst, runtimeInitErr = eventbus.New(eventbus.Config{
 			Dir:              cfg.EventBus.Dir,
 			MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
@@ -219,18 +172,14 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		// Worker Store: persist worker lifecycle records.
 		workerStoreInst, runtimeInitErr = worker.NewStore(cfg.Worker.Dir)
 		if runtimeInitErr != nil {
 			return
 		}
-		// Vault: open the age-encrypted secret store once at daemon startup.
-		// The private key is derived from the kernel's Ed25519 identity.
 		vaultInst, runtimeInitErr = vault.NewVault(cfg.Vault.Dir, kern.PrivateKeyBytes(), logger)
 		if runtimeInitErr != nil {
 			return
 		}
-		// Lookup Store: persistent semantic vector index for dynamic tool lookup.
 		lookupInst, runtimeInitErr = lookup.NewStore(lookup.StoreConfig{
 			Dir:    cfg.Lookup.Dir,
 			Logger: logger,
@@ -238,7 +187,6 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		// Git Manager: manages skills and self repositories.
 		gitBasePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "git")
 		gitManagerInst, runtimeInitErr = gitmanager.NewManager(gitBasePath, kern, logger)
 	})
@@ -246,39 +194,32 @@ func initRuntime() (*runtimeEnv, error) {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
 	}
 
-	// NEW: Wrap the individual stores in our unified Store abstraction.
-	// This is the first step toward removing direct store ownership from the daemon.
+	// Create the unified store abstraction
 	unifiedStore := store.NewLocal(
 		proposalInst,
 		prStoreInst,
 		compositionInst,
 		memoryInst,
 		workerStoreInst,
-		nil, // EventStore placeholder for now
+		nil, // EventStore - placeholder
 	)
 
 	return &runtimeEnv{
-		Logger:           logger,
-		Config:           cfg,
-		Kernel:           kern,
-		Runtime:          runtimeInst,
-		Registry:         registryInst,
-		ProposalStore:    proposalInst,
-		PRStore:          prStoreInst,
-		CompositionStore: compositionInst,
-		MemoryStore:      memoryInst,
-		EventBus:         eventBusInst,
-		WorkerStore:      workerStoreInst,
-		Vault:            vaultInst,
-		EgressProxy:      llm.NewEgressProxy(logger),
-		LookupStore:      lookupInst,
-		GitManager:       gitManagerInst,
-		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
-		ToolEvents:       NewToolEventBuffer(400),
-		ThoughtEvents:    NewThoughtEventBuffer(600),
-		Workspace:        loadWorkspace(cfg, logger),
-		Sessions:         sessions.NewStore(),
-		Store:            unifiedStore, // NEW
+		Logger:   logger,
+		Config:   cfg,
+		Kernel:   kern,
+		Runtime:  runtimeInst,
+		Registry: registryInst,
+		Store:    unifiedStore,
+		Vault:    vaultInst,
+		EgressProxy: llm.NewEgressProxy(logger),
+		LookupStore: lookupInst, // kept temporarily for lookup functionality
+		GitManager:  gitManagerInst,
+		LLMProxy:    llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
+		ToolEvents:  NewToolEventBuffer(400),
+		ThoughtEvents: NewThoughtEventBuffer(600),
+		Workspace:   loadWorkspace(cfg, logger),
+		Sessions:    sessions.NewStore(),
 	}, nil
 }
 
@@ -299,13 +240,6 @@ func layoutFromConfig(cfg *config.Config) aegispaths.Layout {
 	return layout
 }
 
-// resetRuntimeSingletons zeros all package-level singleton state so that a
-// subsequent initRuntime call starts fresh.  This is used by live integration
-// tests that must run multiple scenarios in the same process without sharing
-// state from a prior initRuntime invocation.
-//
-// Must be called before kernel.ResetInstance() because the kernel itself is
-// tracked outside this package.
 func resetRuntimeSingletons() {
 	runtimeOnce = sync.Once{}
 	runtimeInst = nil
@@ -322,9 +256,6 @@ func resetRuntimeSingletons() {
 	runtimeInitErr = nil
 }
 
-// loadWorkspace loads workspace prompt files from cfg.Workspace.Dir.
-// Errors are logged and a non-nil empty Content is returned so the daemon
-// continues to function without workspace content.
 func loadWorkspace(cfg *config.Config, logger *zap.Logger) *workspace.Content {
 	dir := cfg.Workspace.Dir
 	if dir == "" {
@@ -348,9 +279,6 @@ func loadWorkspace(cfg *config.Config, logger *zap.Logger) *workspace.Content {
 	return c
 }
 
-// loadOrCreateMemoryIdentity loads the age X25519 identity for the memory store
-// from <dir>/.memory-age-identity, creating a new one if it doesn't exist.
-// This is the same pattern used by the secrets vault.
 func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create memory dir %s: %w", dir, err)
@@ -378,10 +306,6 @@ func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
 	return id, nil
 }
 
-// generateVMID produces a short, human-readable VM identifier with the given
-// prefix (e.g. "aegishub", "agent", "court") and a random 8-character suffix.
-// The format is: "<prefix>-<8-hex-chars>". All VM IDs in the daemon use this
-// helper so the format stays consistent and is easy to change in one place.
 func generateVMID(prefix string) string {
 	return prefix + "-" + uuid.New().String()[:8]
 }
