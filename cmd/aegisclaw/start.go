@@ -241,7 +241,6 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 // makeCourtReviewHandler uses env.CourtClient during the Court extraction transition.
 func makeCourtReviewHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		// TODO: Implement real routing through AegisHub to dedicated Court components.
 		_ = env.CourtClient
 		return &api.Response{Success: true, Data: []byte(`{"status":"stubbed"}`)}
 	}
@@ -344,7 +343,8 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 		return nil, "", fmt.Errorf("register AegisHub VM identity: %w", err)
 	}
 
-	if env.CompositionStore != nil {
+	// Use the new Store abstraction instead of direct CompositionStore
+	if compStore := env.Store.Composition(); compStore != nil {
 		components := map[string]composition.Component{
 			"aegishub": {
 				Name:        "aegishub",
@@ -355,7 +355,7 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 				Health:      composition.HealthHealthy,
 			},
 		}
-		if _, err := env.CompositionStore.Publish(components, "daemon", "AegisHub microVM launched"); err != nil {
+		if _, err := compStore.Publish(components, "daemon", "AegisHub microVM launched"); err != nil {
 			env.Logger.Warn("failed to register AegisHub in composition manifest", zap.Error(err))
 		}
 	}
