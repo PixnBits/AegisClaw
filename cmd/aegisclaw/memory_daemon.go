@@ -20,18 +20,15 @@ const (
 // Config.Memory.CompactOnStartup is set it also runs once immediately.
 //
 // The goroutine exits when ctx is cancelled (daemon shutdown).
+//
+// NEUTRALIZED: Memory compaction now belongs to Memory VM / Store VM.
+// Host Daemon no longer runs background memory maintenance.
 func startMemoryCompactionDaemon(ctx context.Context, env *runtimeEnv) {
-	if env.MemoryStore == nil {
-		return
-	}
-
-	runCompact := func() {
-		result, err := env.MemoryStore.CompactAll()
-		if err != nil {
-			env.Logger.Error("memory compaction failed", zap.Error(err))
-			return
-		}
-		if result.Compacted > 0 || result.Examined > 0 {
+	// Memory compaction daemon disabled during aggressive extraction.
+	// Memory lifecycle ownership moved to Memory VM / Store VM.
+	_ = ctx
+	_ = env
+}
 			// Audit-log the compaction run.
 			auditPayload, _ := json.Marshal(map[string]interface{}{
 				"source":    "daemon-cron",

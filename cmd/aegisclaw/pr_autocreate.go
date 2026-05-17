@@ -28,7 +28,7 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 	}
 	
 	// Get the proposal to extract metadata
-	prop, err := env.ProposalStore.Get(proposalID)
+	prop, err := env.Store.Proposals().Get(proposalID)
 	if err != nil {
 		env.Logger.Error("failed to get proposal for PR creation",
 			zap.String("proposal_id", proposalID),
@@ -104,7 +104,7 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 	pr.CourtReviewRequired = true
 	
 	// Save the PR
-	if err := env.PRStore.Create(pr); err != nil {
+	if err := env.Store.PullRequests().Create(pr); err != nil {
 		env.Logger.Error("failed to create pull request",
 			zap.String("proposal_id", proposalID),
 			zap.String("branch", branch),
@@ -171,7 +171,7 @@ func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result
 		)
 		// Mark Court review as failed
 		pr.CourtReviewStatus = pullrequest.CourtReviewRejected
-		if err := env.PRStore.Update(pr); err != nil {
+		if err := env.Store.PullRequests().Update(pr); err != nil {
 			env.Logger.Error("failed to update PR status", zap.Error(err))
 		}
 		return
@@ -179,7 +179,7 @@ func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result
 	
 	// Update status to in-progress
 	pr.CourtReviewStatus = pullrequest.CourtReviewInProgress
-	if err := env.PRStore.Update(pr); err != nil {
+	if err := env.Store.PullRequests().Update(pr); err != nil {
 		env.Logger.Warn("failed to update PR status to in-progress", zap.Error(err))
 	}
 	
@@ -229,7 +229,7 @@ func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result
 			pr.CourtReviewStatus = pullrequest.CourtReviewRejected
 		}
 		
-		if err := env.PRStore.Update(pr); err != nil {
+		if err := env.Store.PullRequests().Update(pr); err != nil {
 			env.Logger.Error("failed to update PR with Court verdict",
 				zap.String("pr_id", pr.ID),
 				zap.Error(err),

@@ -364,7 +364,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	model.CheckProposalStatus = func(id string) (string, string, error) {
-		p, err := env.ProposalStore.Get(id)
+		p, err := env.Store.Proposals().Get(ctx, id)
 		if err != nil {
 			return "", "", err
 		}
@@ -721,7 +721,7 @@ func toolCallFriendlyLabel(name string) string {
 
 // resolveProposalID expands a prefix (or full UUID) to the full proposal ID.
 func resolveProposalID(env *runtimeEnv, idOrPrefix string) (string, error) {
-	return env.ProposalStore.ResolveID(idOrPrefix)
+	return env.Store.Proposals().ResolveID(idOrPrefix)
 }
 
 // resolveEgressMode returns the egress mode to use for a network policy.
@@ -947,7 +947,7 @@ func handleProposalCreateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 	}
 	p.Capabilities = caps
 
-	if err := env.ProposalStore.Create(p); err != nil {
+	if err := env.Store.Proposals().Create(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
@@ -1044,7 +1044,7 @@ func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 		return "", err
 	}
 
-	p, err := env.ProposalStore.Get(fullID)
+	p, err := env.Store.Proposals().Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("proposal not found: %w", err)
 	}
@@ -1160,7 +1160,7 @@ func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 
 	p.BumpVersion()
 
-	if err := env.ProposalStore.Update(p); err != nil {
+	if err := env.Store.Proposals().Update(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
@@ -1235,7 +1235,7 @@ func handleProposalGetDraft(env *runtimeEnv, ctx context.Context, argsJSON strin
 		return "", err
 	}
 
-	p, err := env.ProposalStore.Get(fullID)
+	p, err := env.Store.Proposals().Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1276,7 +1276,7 @@ func handleProposalGetDraft(env *runtimeEnv, ctx context.Context, argsJSON strin
 
 // handleProposalListDrafts returns all proposals, showing drafts prominently.
 func handleProposalListDrafts(env *runtimeEnv, ctx context.Context) (string, error) {
-	summaries, err := env.ProposalStore.List()
+	summaries, err := env.Store.Proposals().List()
 	if err != nil {
 		return "", err
 	}
@@ -1308,7 +1308,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 		return "", err
 	}
 
-	p, err := env.ProposalStore.Get(fullID)
+	p, err := env.Store.Proposals().Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1319,7 +1319,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 	if err := p.Transition(proposal.StatusSubmitted, "submitted for court review", "operator"); err != nil {
 		return "", fmt.Errorf("transition failed: %w", err)
 	}
-	if err := env.ProposalStore.Update(p); err != nil {
+	if err := env.Store.Proposals().Update(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
@@ -1333,7 +1333,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 	result := fmt.Sprintf("Proposal submitted for court review.\n  ID: %s\n  Title: %s\n  Status: %s\n\nIMPORTANT: Tell the user the proposal ID (%s) so they can track it.", p.ID, p.Title, p.Status, p.ID)
 
 	// Verify the submission was persisted.
-	verified, verifyErr := env.ProposalStore.Get(p.ID)
+	verified, verifyErr := env.Store.Proposals().Get(p.ID)
 	if verifyErr != nil {
 		result += fmt.Sprintf("\n\nWarning: could not verify submission: %v", verifyErr)
 	} else if verified.Status == proposal.StatusDraft {
@@ -1383,7 +1383,7 @@ func handleProposalStatus(env *runtimeEnv, ctx context.Context, argsJSON string)
 		return "", err
 	}
 
-	p, err := env.ProposalStore.Get(fullID)
+	p, err := env.Store.Proposals().Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1425,7 +1425,7 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 		return "", err
 	}
 
-	p, err := env.ProposalStore.Get(fullID)
+	p, err := env.Store.Proposals().Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1436,7 +1436,7 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 	if err := p.Transition(proposal.StatusSubmitted, "submitted for court review", "agent"); err != nil {
 		return "", fmt.Errorf("transition failed: %w", err)
 	}
-	if err := env.ProposalStore.Update(p); err != nil {
+	if err := env.Store.Proposals().Update(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
@@ -1490,7 +1490,7 @@ func handleProposalReviews(env *runtimeEnv, ctx context.Context, argsJSON string
 		return "", err
 	}
 
-	p, err := env.ProposalStore.Get(fullID)
+	p, err := env.Store.Proposals().Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}

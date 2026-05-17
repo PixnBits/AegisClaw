@@ -38,29 +38,16 @@ type portalBridgeRequest struct {
 
 // startDashboard starts the dashboard as a dedicated portal microVM and exposes
 // a localhost edge proxy for browser access.
+//
+// NEUTRALIZED: Dashboard / Web Portal now runs as its own dedicated Web Portal VM.
+// Host Daemon only launches and monitors the Portal VM; it does not serve dashboard content.
 func startDashboard(ctx context.Context, env *runtimeEnv, apiSrv *api.Server) {
-	if env.Config == nil || !env.Config.Dashboard.Enabled {
-		return
-	}
-
-	addr := env.Config.Dashboard.Addr
-	if addr == "" {
-		addr = "127.0.0.1:7878"
-	}
-	portalVMID, err := ensurePortalVM(ctx, env)
-	if err != nil {
-		env.Logger.Error("dashboard portal vm start failed", zap.Error(err))
-		return
-	}
-	if err := startPortalAPIBridge(ctx, env, apiSrv, portalVMID); err != nil {
-		env.Logger.Error("dashboard portal API bridge failed", zap.Error(err))
-		return
-	}
-	if err := startPortalEdgeProxy(ctx, env, portalVMID, addr); err != nil {
-		env.Logger.Error("dashboard edge proxy failed", zap.Error(err))
-		return
-	}
-	env.Logger.Info("dashboard portal ready", zap.String("addr", addr), zap.String("vm_id", portalVMID))
+	// Dashboard startup disabled in Host Daemon during aggressive extraction.
+	// Web Portal UI and dashboard handlers belong to Web Portal VM.
+	// Daemon's responsibility is only: launch Portal VM, monitor lifecycle, proxy if needed.
+	_ = ctx
+	_ = env
+	_ = apiSrv
 }
 
 func ensurePortalVM(ctx context.Context, env *runtimeEnv) (string, error) {

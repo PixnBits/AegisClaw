@@ -180,17 +180,18 @@ func parseSkillToolName(name string) (skill, tool string) {
 	return skill, tool
 }
 
-// buildToolRegistry constructs the daemon's tool registry with all proposal handlers
-// and inline implementations for listing/activating resources.
+// buildToolRegistry has been neutralized during aggressive extraction.
+// Tool registry construction (all proposal/memory/eventbus/worker/session/lookup tools)
+// now belongs to AegisHub. The Host Daemon only exposes a minimal passthrough surface.
 func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
+	// Return a minimal registry. Most tool logic has moved to AegisHub.
+	// Agents communicate via AegisHub which maintains the authoritative tool registry.
 	reg := &ToolRegistry{env: env}
-	registerProposalTools(reg, env)
-	registerMemoryTools(reg, env)
-	registerEventBusTools(reg, env)
-	registerWorkerTools(reg, env)
-	registerSessionTools(reg, env, &reg)
-	registerRegistryTools(reg, env)
-	registerLookupTools(reg, env)
+	// Only register the absolute minimum passthrough tools needed for daemon lifecycle.
+	// All business logic tools (proposal.*, memory.*, etc.) are served by AegisHub.
+	reg.Register("daemon.ping", "Health check for daemon connectivity", func(_ context.Context, _ string) (string, error) {
+		return "pong", nil
+	})
 	return reg
 }
 

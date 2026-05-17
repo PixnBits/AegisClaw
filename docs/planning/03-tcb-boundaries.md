@@ -108,11 +108,12 @@ Court VMs and Builder VMs will be addressed at a high level but may be completed
 
 These interfaces are designed to be introduced early so we can progressively remove direct store ownership from the Host Daemon. They are intended to be implementable both in-process initially and later backed by a real **Store VM** (via AegisHub).
 
-**Status update (Phase 1)**: 
+**Status update (Phase 1 complete)**: 
 - Store migration seam complete (`runtimeEnv.Store`, `NewLocal`).
 - Court Engine extraction: `court.Engine` field removed, direct session management + decision handlers deleted from daemon, all review/vote paths now use `CourtClient`. Real Court logic is now the responsibility of Court VMs + Court Scribe.
 - Vault extraction: `env.Vault` removed, `vault.NewVault` + kernel private key usage deleted, all `vault.secret.*` handlers stubbed.
 - BuildOrchestrator extraction: field removed, dispatch daemon neutralized, builder coordination now via `BuilderClient` → AegisHub/Builder VMs.
+- Team/Autonomy, Tool Registry, Memory/EventBus/Dashboard/Gateway daemons extracted. Host Daemon is now limited to: VM lifecycle, Unix socket, Ed25519 key distribution, Merkle signing, AegisHub watchdog, and basic containment.
 
 ### Top-Level Store Interface
 

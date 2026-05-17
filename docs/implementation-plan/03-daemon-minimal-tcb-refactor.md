@@ -29,6 +29,9 @@ See the living boundary document: `docs/planning/03-tcb-boundaries.md`
 - **Court Engine extraction started**: Real `court.Engine` initialization disabled (`court_init.go` neutralized). Direct `env.Court` field removed from `runtimeEnv`. Court decision list/show handlers stubbed with "moved to Court Scribe" messages. Direct Court calls in `chat.go`, `pr_autocreate.go`, and handlers now go through `CourtClient` (currently StubClient → later Court VMs). Governance surface dramatically reduced in the daemon.
 - **Vault / secret handling extraction started**: `vault.NewVault` + `kern.PrivateKeyBytes()` for secrets removed from `initRuntime`. `env.Vault` field removed. Vault API handlers (`vault.secret.*`) stubbed to "secrets handled by Network Boundary VM". Daemon no longer opens or operates on the encrypted vault.
 - **BuildOrchestrator extraction started**: `initBuildOrchestrator` neutralized, `env.BuildOrchestrator` field removed. `builder_daemon.go` dispatch loop disabled (`startBuilderDispatchDaemon` / `processImplementingProposals` are now no-ops). Builder coordination responsibility moved to AegisHub / Builder VMs via `BuilderClient`.
+- **Team/Autonomy registries extracted**: `newTeamRegistry` / `newAutonomyRegistry` neutralized (return nil). Team membership and autonomy grants no longer maintained in daemon; state ownership moved to Store VM / AegisHub.
+- **Tool Registry construction extracted**: `buildToolRegistry` now returns a minimal passthrough registry only. All proposal/memory/eventbus/worker/session/lookup tool implementations moved to AegisHub.
+- **Background daemons extracted**: `startMemoryCompactionDaemon`, `startEventBusDaemon`, `startDashboard`, `startGateway` neutralized. Memory compaction, EventBus timers/approvals, Web Portal UI, and multi-channel Gateway now belong to dedicated VMs or AegisHub mediation.
 
 ### Phase 2: Introduce / Realize Store VM
 - Establish Store VM as owner of persistent state
