@@ -62,16 +62,18 @@ type runtimeEnv struct {
 	Store store.Store
 
 	// CourtClient is the abstraction for interacting with the Governance Court.
-	// During the aggressive extraction, this is backed by a stub. Later it will
-	// route through AegisHub to dedicated Court components.
+	// The real implementation will eventually route through AegisHub to dedicated Court components.
 	CourtClient court.Client
 
-	Court              *court.Engine // TEMP: being phased out during Court extraction
-	LLMProxy           *llm.OllamaProxy
-	OllamaHTTPClient   *http.Client
-	ToolEvents         *ToolEventBuffer
-	ThoughtEvents      *ThoughtEventBuffer
-	SafeMode           atomic.Bool
+	// Court is being phased out during the aggressive Court extraction.
+	// Do not add new usage of this field.
+	Court *court.Engine // DEPRECATED - being removed
+
+	LLMProxy         *llm.OllamaProxy
+	OllamaHTTPClient *http.Client
+	ToolEvents       *ToolEventBuffer
+	ThoughtEvents    *ThoughtEventBuffer
+	SafeMode         atomic.Bool
 	TestLLMTemperature *float64
 	TestLLMSeed        int64
 
@@ -205,7 +207,6 @@ func initRuntime() (*runtimeEnv, error) {
 		nil,
 	)
 
-	// Temporary stub during aggressive Court extraction
 	courtClient := &court.StubClient{}
 
 	return &runtimeEnv{
