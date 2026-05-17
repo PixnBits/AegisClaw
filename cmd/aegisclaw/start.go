@@ -116,18 +116,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 		env.AutonomyRegistry = autoReg
 	}
 
-	// === Event-driven builder trigger (D3) ===
-	env.ProposalEventDispatcher = events.NewProposalEventDispatcher()
-
-	buildOrch, err := initBuildOrchestrator(env)
-	if err != nil {
-		hub.Stop()
-		return fmt.Errorf("failed to init build orchestrator: %w", err)
-	}
-	if buildOrch != nil {
-		buildOrch.Start(cmd.Context())
-		env.BuildOrchestrator = buildOrch
-	}
+	// === Event-driven builder trigger removed during aggressive extraction ===
+	// BuildOrchestrator no longer initialized in the Host Daemon.
+	// We use a stub client during the transition.
+	builderClient := &builder.StubClient{}
+	_ = builderClient // placeholder - will route via AegisHub later
 
 	// Reconcile any approved proposals from before event-driven trigger was added
 	reconcileApprovedProposals(env)
@@ -135,11 +128,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Ensure default script runner is active
 	ensureDefaultScriptRunnerActive(cmd.Context(), env)
 
-	// Court handlers now use env.CourtClient (stub during aggressive extraction)
+	// Court handlers
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env))
 
-	// Git/Source Code API endpoints (Phase 2: Source Code Viewer)
+	// Git/Source Code API endpoints
 	apiSrv.Handle("git.browse", makeGitBrowseHandler(env))
 	apiSrv.Handle("git.branches", makeGitListBranchesHandler(env))
 	apiSrv.Handle("git.commits", makeGitCommitHistoryHandler(env))
@@ -148,13 +141,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 	apiSrv.Handle("workspace.write", makeWorkspaceWriteHandler(env))
 	apiSrv.Handle("workspace.list", makeWorkspaceListHandler(env))
 
-	// Pull request handlers (Phase 4: Pull Request System)
+	// Pull request handlers
 	apiSrv.Handle("pr.list", makePRListHandler(env))
 	apiSrv.Handle("pr.get", makePRGetHandler(env))
 	apiSrv.Handle("pr.approve", makePRApproveHandler(env))
 	apiSrv.Handle("pr.close", makePRCloseHandler(env))
 	apiSrv.Handle("pr.merge", makePRMergeHandler(env))
-	// Dashboard PR handlers for enhanced UI
+	// Dashboard PR handlers
 	apiSrv.Handle("dashboard.pr.list", makeDashboardPRListHandler(env))
 	apiSrv.Handle("dashboard.pr.detail", makeDashboardPRDetailHandler(env))
 	apiSrv.Handle("dashboard.pr.stats", makeDashboardPRStatsHandler(env))
@@ -254,42 +247,6 @@ func makeCourtVoteHandler(env *runtimeEnv) api.Handler {
 	}
 }
 
-// initBuildOrchestrator creates the BuildOrchestrator and wires it with a Pipeline.
-func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
-	if env == nil || env.Kernel == nil || env.Runtime == nil || env.GitManager == nil {
-		env.Logger.Warn("BuildOrchestrator: missing required runtime dependencies, skipping")
-		return nil, nil
-	}
-
-	bcfg := builder.DefaultBuilderConfig()
-	builderRT, err := builder.NewBuilderRuntime(bcfg, env.Runtime, env.Kernel, env.Logger)
-	if err != nil {
-		env.Logger.Error("failed to create BuilderRuntime", zap.Error(err))
-		return nil, fmt.Errorf("create BuilderRuntime: %w", err)
-	}
-
-	codeGen, err := builder.NewCodeGenerator(builderRT, env.Kernel, env.Logger, builder.DefaultTemplates())
-	if err != nil {
-		env.Logger.Error("failed to create CodeGenerator", zap.Error(err))
-		return nil, fmt.Errorf("create CodeGenerator: %w", err)
-	}
-
-	pipe, err := builder.NewPipeline(builderRT, codeGen, env.GitManager, nil, env.Kernel, env.Logger)
-	if err != nil {
-		env.Logger.Error("failed to create Pipeline", zap.Error(err))
-		return nil, fmt.Errorf("create Pipeline: %w", err)
-	}
-
-	orch, err := builder.NewBuildOrchestrator(pipe, env.Logger, env.ProposalEventDispatcher)
-	if err != nil {
-		env.Logger.Error("failed to create BuildOrchestrator", zap.Error(err))
-		return nil, fmt.Errorf("create BuildOrchestrator: %w", err)
-	}
-
-	env.Logger.Info("BuildOrchestrator initialized successfully (event-driven builder trigger active)")
-	return orch, nil
-}
-
 // launchAegisHub starts the AegisHub system microVM and returns the in-process
 // MessageHub used by the IPC bridge, together with the VM ID.
 func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, string, error) {
@@ -343,7 +300,6 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 		return nil, "", fmt.Errorf("register AegisHub VM identity: %w", err)
 	}
 
-	// Use the new Store abstraction instead of direct CompositionStore
 	if compStore := env.Store.Composition(); compStore != nil {
 		components := map[string]composition.Component{
 			"aegishub": {
