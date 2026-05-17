@@ -58,20 +58,15 @@ type runtimeEnv struct {
 	Runtime  *sandbox.FirecrackerRuntime
 	Registry *sandbox.SkillRegistry
 
-	// Store is the unified abstraction over all persistent state.
-	Store store.Store
-
-	// CourtClient is the abstraction for interacting with the Governance Court.
-	CourtClient court.Client
-
-	// BuilderClient is the abstraction for builder/orchestrator functionality.
+	// === New Abstractions (Phase 1 progress) ===
+	Store         store.Store
+	CourtClient   court.Client
 	BuilderClient builder.Client
 
-	// Deprecated fields from previous monolithic design.
-	// These are being phased out during the Minimal TCB refactor.
-	Court                 *court.Engine             // DEPRECATED
-	BuildOrchestrator     *builder.BuildOrchestrator // DEPRECATED
-	ProposalEventDispatcher *events.ProposalEventDispatcher // DEPRECATED
+	// === Deprecated (being removed during aggressive Phase 1 stripping) ===
+	Court                 *court.Engine
+	BuildOrchestrator     *builder.BuildOrchestrator
+	ProposalEventDispatcher *events.ProposalEventDispatcher
 
 	LLMProxy         *llm.OllamaProxy
 	OllamaHTTPClient *http.Client
