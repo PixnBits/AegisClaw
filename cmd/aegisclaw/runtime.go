@@ -58,12 +58,12 @@ type runtimeEnv struct {
 	Runtime  *sandbox.FirecrackerRuntime
 	Registry *sandbox.SkillRegistry
 
-	// === New Abstractions (Phase 1 progress) ===
+	// New clean abstractions (Phase 1)
 	Store         store.Store
 	CourtClient   court.Client
 	BuilderClient builder.Client
 
-	// === Deprecated (being removed during aggressive Phase 1 stripping) ===
+	// Deprecated - being removed during aggressive Phase 1 stripping
 	Court                 *court.Engine
 	BuildOrchestrator     *builder.BuildOrchestrator
 	ProposalEventDispatcher *events.ProposalEventDispatcher
