@@ -1,7 +1,8 @@
-# Phase 3.5 - Real Health Check Added
+# Phase 3.5 - Restart-on-Failure Added
 
-- `AegisHubClient.Health()` now performs an actual request to AegisHub.
-- Health loop in `AegisHubMonitor` calls the real health check every 30s.
-- Failures are logged (restart logic can be layered on top).
+- `AegisHubMonitor` now tracks consecutive health failures.
+- After reaching threshold, it calls `restart()`.
+- Basic restart skeleton in place (full VM re-creation TODO).
+- Health recovery resets the failure counter.
 
-Health checking is now functional (pending AegisHub-side `health.ping` handler).
+Restart logic is now active (can be hardened further with full re-launch).
