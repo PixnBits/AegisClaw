@@ -1,47 +1,39 @@
 package main
 
-func (m *AegisHubMonitor) restart() {
-	m.logger.Info("Attempting to restart AegisHub VM")
+import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
 
-	// Stop existing VM if present
-	if m.vm != nil {
-		_ = m.vm.Stop()
-	}
+	"go.uber.org/zap"
+)
 
-	// Re-launch AegisHub
-	spec := sandbox.DefaultAegisHubVMSpec()
+// setupLifecycleContainment registers signal handlers and ensures VMs are terminated
+// when the daemon exits (normal shutdown or termination).
+func setupLifecycleContainment(env *runtimeEnv, logger *zap.Logger) {
+	 sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
-	rtCfg := sandbox.RuntimeConfig{
-		FirecrackerBin: "/usr/local/bin/firecracker",
-		JailerBin:      "/usr/local/bin/jailer",
-		KernelImage:    spec.KernelImage,
-		RootfsTemplate: spec.RootfsPath,
-		ChrootBaseDir:  "/var/lib/aegisclaw/jailer",
-		StateDir:       "/var/lib/aegisclaw/vm/aegishub",
-	}
+	go func() {
+		<-sigs
+		logger.Warn("Received termination signal - initiating aggressive VM cleanup")
 
-	rt, err := sandbox.NewFirecrackerRuntime(rtCfg, nil, m.logger)
-	if err != nil {
-		m.logger.Error("Failed to create runtime for restart", zap.Error(err))
-		return
-	}
+		// Stop AegisHub if running
+		if env.AegisHubMonitor != nil {
+			env.AegisHubMonitor.Stop()
+		}
 
-	vmCfg := sandbox.VMConfig{
-		CPUs:     spec.CPUs,
-		MemoryMB: spec.MemoryMB,
-	}
+		// TODO: Add Store VM cleanup here when StoreVM monitor is available
+		// if env.StoreVMMonitor != nil { env.StoreVMMonitor.Stop() }
 
-	newVM, err := rt.CreateVM(vmCfg)
-	if err != nil {
-		m.logger.Error("Failed to create new VM during restart", zap.Error(err))
-		return
-	}
+		// Additional: best-effort cleanup of any remaining sandboxes
+		if env.Runtime != nil {
+			ctx := context.Background()
+			_ = shutdownRuntimeSandboxes(ctx, env) // from earlier helper
+		}
 
-	if err := newVM.Start(); err != nil {
-		m.logger.Error("Failed to start new AegisHub VM", zap.Error(err))
-		return
-	}
-
-	m.vm = newVM
-	m.logger.Info("AegisHub VM successfully restarted")
+		logger.Info("Lifecycle containment cleanup complete")
+		os.Exit(0)
+	}()
 }
