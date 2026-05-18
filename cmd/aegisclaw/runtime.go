@@ -1,27 +1,21 @@
 package main
 
-// AegisHubMonitor now holds VM for full lifecycle control.
-type AegisHubMonitor struct {
-	client aegishub.Client
-	logger *zap.Logger
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	vm     interface{ Stop() error } // sandbox VM
-}
+func (m *AegisHubMonitor) healthLoop(ctx context.Context) {
+	defer m.wg.Done()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 
-func (m *AegisHubMonitor) Stop() {
-	if m.cancel != nil {
-		m.cancel()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := m.client.Health(ctx); err != nil {
+				m.logger.Warn("AegisHub health check failed", zap.Error(err))
+				// TODO: Trigger restart logic here in future
+			} else {
+				m.logger.Debug("AegisHub health OK")
+			}
+		}
 	}
-	m.wg.Wait()
-
-	if m.vm != nil {
-		m.logger.Info("Stopping AegisHub Firecracker VM")
-		_ = m.vm.Stop()
-	}
-
-	if m.client != nil {
-		m.client.Close()
-	}
-	m.logger.Info("AegisHub fully stopped")
 }
