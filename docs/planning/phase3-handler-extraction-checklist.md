@@ -1,10 +1,10 @@
-# Phase 3.4 Progress Update
+# Phase 3.4 Progress
 
-**Completed in this iteration:**
-- Extended `AegisHubClient` with `ForwardApprovalsList` and `ForwardApprovalsDecide`
-- Created `makeApprovalsListProxy` and `makeApprovalsDecideProxy`
-- Registered the new proxies
+**Completed:**
+- Approvals handlers (list + decide) ✅
+- Timers list handler ✅
+- Signals list handler ✅
 
-**EventBus Approvals handlers are now proxied to AegisHub.**
+**EventBus handlers are now fully proxied to AegisHub.**
 
-Next: Timers and Signals handlers.
+Next priority: Sessions handlers.
