@@ -1,7 +1,10 @@
-# Phase 4.4 Static Binary Compilation - Done
+# Phase 4.5 Unix Socket Hardening - Done
 
-- Added `Makefile` with `build-static` target.
-- Uses `CGO_ENABLED=0` + `-ldflags "-s -w"` for fully static binaries.
-- Recommended build command: `make build-static`.
+- Added `createSecureSocket()` helper:
+  - Creates parent directory with `0700` permissions.
+  - Sets socket file to `0600`.
+  - Removes stale socket on startup.
+- Strengthened documentation around peer UID authorization.
+- Socket creation is now more secure by default.
 
-Static compilation is now the encouraged (and easy) default.
+Unix socket handling has been hardened.
