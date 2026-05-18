@@ -1,16 +1,11 @@
 package aegishub
 
-// ForwardSessionsHistory forwards session history requests.
-func (c *Client) ForwardSessionsHistory(ctx context.Context, data json.RawMessage) (*api.Response, error) {
-	return c.sendRequest("sessions.history", data)
+// ForwardWorkerList forwards worker listing requests.
+func (c *Client) ForwardWorkerList(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return c.sendRequest("worker.list", data)
 }
 
-// ForwardSessionsSend forwards sending a message to a session.
-func (c *Client) ForwardSessionsSend(ctx context.Context, data json.RawMessage) (*api.Response, error) {
-	return c.sendRequest("sessions.send", data)
-}
-
-// ForwardSessionsSpawn forwards spawning a new session.
-func (c *Client) ForwardSessionsSpawn(ctx context.Context, data json.RawMessage) (*api.Response, error) {
-	return c.sendRequest("sessions.spawn", data)
+// ForwardWorkerStatus forwards worker status requests.
+func (c *Client) ForwardWorkerStatus(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return c.sendRequest("worker.status", data)
 }
