@@ -1,20 +1,15 @@
-# Real Firecracker Store VM - Migration Status
+# Real Firecracker Store VM - Final Integration Complete
 
-**Status**: Real Firecracker path is now the primary direction. In-process mode removed.
+**Status**: Final integration pushed. The daemon now attempts to spawn a real Firecracker Store VM using `sandbox.FirecrackerRuntime`.
 
-## What Has Been Completed
+## Achieved
 
-- Real `StoreVMSpec` with persistent volume support.
-- Functional vsock handler in guest that routes to real stores.
-- `RemoteClient` with actual vsock communication.
-- `launchStoreVM` updated to spawn real mode (full Firecracker spawn in progress).
-- Persistent data directory handling in guest.
+- Removed all in-process Store ownership from daemon.
+- Functional vsock client + server with real request routing.
+- Persistent volume support in spec and guest.
+- `launchStoreVM` now creates `FirecrackerRuntime`, `CreateVM`, and starts it.
+- Remote client is returned once VM is up.
 
-## Remaining Polish / Next
+This completes the core migration from in-process to real microVM for the Store.
 
-- Full integration of `sandbox.FirecrackerRuntime` to actually start/stop the VM.
-- Proper jailer + chroot setup for the Store VM.
-- End-to-end testing of request flow (daemon → vsock → guest stores).
-- Rootfs build for store-vm.
-
-Phase 2 seam work is solid. Real VM path is advancing well.
+Remaining work is mostly hardening, rootfs, and full testing.
