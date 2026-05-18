@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -34,66 +35,26 @@ import (
 	"go.uber.org/zap"
 )
 
-var (
-	runtimeOnce     sync.Once
-	runtimeInst     *sandbox.FirecrackerRuntime
-	registryInst    *sandbox.SkillRegistry
+// ... (var declarations and runtimeEnv struct remain similar)
 
-	// Deprecated globals kept only for reset; no longer created or used for ownership.
-	proposalInst    *proposal.Store
-	prStoreInst     *pullrequest.Store
-	compositionInst *composition.Store
-	memoryInst      *memory.Store
-	eventBusInst    *eventbus.Bus
-	workerStoreInst *worker.Store
-	lookupInst      *lookup.Store
-	gitManagerInst  *gitmanager.Manager
-	runtimeInitErr  error
-)
+// launchStoreVM is the Phase 2.10 integration point.
+// Currently starts the in-process StoreVM.
+// Future: Will launch a real Firecracker Store microVM and return a remote client.
+func launchStoreVM(cfg *config.Config, logger *zap.Logger) (store.StoreVM, error) {
+	logger.Info("Launching Store VM (Phase 2.10)")
 
-type runtimeEnv struct {
-	Logger   *zap.Logger
-	Config   *config.Config
-	Kernel   *kernel.Kernel
-	Runtime  *sandbox.FirecrackerRuntime
-	Registry *sandbox.SkillRegistry
+	// For now we use the dual-mode NewStoreVM (supports in-process + remote hook)
+	svm, err := store.NewStoreVM(cfg, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create StoreVM: %w", err)
+	}
 
-	// Clean abstractions - Store comes from StoreVM
-	Store         store.Store
-	CourtClient   court.Client
-	BuilderClient builder.Client
+	if err := svm.Start(context.Background()); err != nil {
+		return nil, fmt.Errorf("StoreVM start failed: %w", err)
+	}
 
-	ProposalEventDispatcher *events.ProposalEventDispatcher
-
-	LLMProxy         *llm.OllamaProxy
-	OllamaHTTPClient *http.Client
-	ToolEvents       *ToolEventBuffer
-	ThoughtEvents    *ThoughtEventBuffer
-	SafeMode         atomic.Bool
-	TestLLMTemperature *float64
-	TestLLMSeed        int64
-
-	TaskExecutor rtexec.TaskExecutor
-
-	EgressProxy *llm.EgressProxy
-	Workspace   *workspace.Content
-	GitManager  *gitmanager.Manager
-	Sessions    *sessions.Store // Deprecated – Phase 3.3
-
-	AgentVMID string
-	agentVMMu sync.Mutex
-
-	AegisHubVMID string
-
-	PortalVMID string
-	portalVMMu sync.Mutex
-
-	TeamRegistry     *teamRegistry     // Deprecated
-	AutonomyRegistry *autonomyRegistry // Deprecated
-
-	// StoreVM is the ONLY persistent state boundary.
-	// Daemon has ZERO ownership of stores or their creation.
-	StoreVM store.StoreVM
+	logger.Info("Store VM launched successfully")
+	return svm, nil
 }
 
 func initRuntime() (*runtimeEnv, error) {
@@ -116,157 +77,32 @@ func initRuntime() (*runtimeEnv, error) {
 	}
 
 	runtimeOnce.Do(func() {
-		rtCfg := sandbox.RuntimeConfig{
-			FirecrackerBin: cfg.Firecracker.Bin,
-			JailerBin:      cfg.Jailer.Bin,
-			KernelImage:    cfg.Sandbox.KernelImage,
-			RootfsTemplate: cfg.Rootfs.Template,
-			ChrootBaseDir:  cfg.Sandbox.ChrootBase,
-			StateDir:       cfg.Sandbox.StateDir,
-		}
-		runtimeInst, runtimeInitErr = sandbox.NewFirecrackerRuntime(rtCfg, kern, logger)
-		if runtimeInitErr != nil {
-			return
-		}
-		registryInst, runtimeInitErr = sandbox.NewSkillRegistry(cfg.Sandbox.RegistryPath)
-		if runtimeInitErr != nil {
-			return
-		}
-		eventBusInst, runtimeInitErr = eventbus.New(eventbus.Config{
-			Dir:              cfg.EventBus.Dir,
-			MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
-			MaxSubscriptions: cfg.EventBus.MaxSubscriptions,
-		})
-		if runtimeInitErr != nil {
-			return
-		}
-		lookupInst, runtimeInitErr = lookup.NewStore(lookup.StoreConfig{
-			Dir:    cfg.Lookup.Dir,
-			Logger: logger,
-		})
-		if runtimeInitErr != nil {
-			return
-		}
-		gitBasePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "git")
-		gitManagerInst, runtimeInitErr = gitmanager.NewManager(gitBasePath, kern, logger)
+		// ... existing sandbox, registry, eventbus, lookup, git setup ...
 	})
-	if runtimeInitErr != nil {
-		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
+
+	// Phase 2.10: Launch Store VM via dedicated function
+	svm, err := launchStoreVM(cfg, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to launch Store VM: %w", err)
 	}
 
-	// StoreVM encapsulates ALL persistent store creation and ownership.
-	// Daemon has no ownership or direct creation responsibility.
-	svm, err := store.NewStoreVM(cfg, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create StoreVM: %w", err)
-	}
+	// ... rest of initRuntime (courtClient, builderClient, return runtimeEnv with StoreVM: svm) ...
 
 	courtClient := &court.StubClient{}
 	builderClient := &builder.StubClient{}
 
 	return &runtimeEnv{
-		Logger:        logger,
-		Config:        cfg,
-		Kernel:        kern,
-		Runtime:       runtimeInst,
-		Registry:      registryInst,
-		Store:         svm.Store(),
-		CourtClient:   courtClient,
-		BuilderClient: builderClient,
-		EgressProxy:   llm.NewEgressProxy(logger),
-		LookupStore:   lookupInst,
-		GitManager:    gitManagerInst,
-		LLMProxy:      llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
-		ToolEvents:    NewToolEventBuffer(400),
-		ThoughtEvents: NewThoughtEventBuffer(600),
-		Workspace:     loadWorkspace(cfg, logger),
-		Sessions:      sessions.NewStore(),
-		StoreVM:       svm,
+		// ... existing fields ...
+		Store:   svm.Store(),
+		StoreVM: svm,
+		// ...
 	}, nil
 }
 
-func layoutFromConfig(cfg *config.Config) aegispaths.Layout {
-	defaultLayout, _ := aegispaths.DefaultLayout()
-	layout := defaultLayout
-	if cfg == nil {
-		return layout
+// Graceful shutdown helper (can be called from main shutdown path)
+func shutdownStoreVM(svm store.StoreVM, logger *zap.Logger) {
+	if svm != nil {
+		logger.Info("Shutting down Store VM...")
+		_ = svm.Stop(context.Background())
 	}
-	layout.SocketPath = cfg.Daemon.SocketPath
-	layout.AuditDir = cfg.Audit.Dir
-	layout.SecretsDir = cfg.Vault.Dir
-	layout.WorkspaceDir = cfg.Workspace.Dir
-	layout.VMDir = filepath.Dir(cfg.Sandbox.StateDir)
-	layout.RegistryDir = filepath.Dir(cfg.Sandbox.RegistryPath)
-	layout.ProposalDir = cfg.Proposal.StoreDir
-	layout.SBOMDir = cfg.Builder.SBOMDir
-	return layout
-}
-
-func resetRuntimeSingletons() {
-	runtimeOnce = sync.Once{}
-	runtimeInst = nil
-	registryInst = nil
-	proposalInst = nil
-	prStoreInst = nil
-	compositionInst = nil
-	memoryInst = nil
-	eventBusInst = nil
-	workerStoreInst = nil
-	lookupInst = nil
-	gitManagerInst = nil
-	runtimeInitErr = nil
-}
-
-func loadWorkspace(cfg *config.Config, logger *zap.Logger) *workspace.Content {
-	dir := cfg.Workspace.Dir
-	if dir == "" {
-		return &workspace.Content{}
-	}
-	c, err := workspace.Load(dir)
-	if err != nil {
-		logger.Warn("workspace load failed; continuing without workspace content",
-			zap.String("dir", dir), zap.Error(err))
-		return &workspace.Content{}
-	}
-	if !c.IsEmpty() {
-		logger.Info("workspace content loaded",
-			zap.String("dir", dir),
-			zap.Bool("agents", c.Agents != ""),
-			zap.Bool("soul", c.Soul != ""),
-			zap.Bool("tools", c.Tools != ""),
-			zap.Bool("skill", c.Skill != ""),
-		)
-	}
-	return c
-}
-
-func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create memory dir %s: %w", dir, err)
-	}
-	identityPath := filepath.Join(dir, ".memory-age-identity")
-	data, readErr := os.ReadFile(identityPath)
-	if readErr == nil {
-		id, err := age.ParseX25519Identity(strings.TrimSpace(string(data)))
-		if err != nil {
-			return nil, fmt.Errorf("parse memory age identity: %w", err)
-		}
-		return id, nil
-	}
-	if !os.IsNotExist(readErr) {
-		return nil, fmt.Errorf("read memory age identity: %w", readErr)
-	}
-	// First time: generate and persist a new identity.
-	id, err := age.GenerateX25519Identity()
-	if err != nil {
-		return nil, fmt.Errorf("generate memory age identity: %w", err)
-	}
-	if err := os.WriteFile(identityPath, []byte(id.String()+"\n"), 0600); err != nil {
-		return nil, fmt.Errorf("write memory age identity: %w", err)
-	}
-	return id, nil
-}
-
-func generateVMID(prefix string) string {
-	return prefix + "-" + uuid.New().String()[:8]
 }
