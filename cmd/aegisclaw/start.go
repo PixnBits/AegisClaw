@@ -298,7 +298,11 @@ func launchStoreVM(ctx context.Context, env *runtimeEnv) (string, error) {
 		zap.String("rootfs", rootfsPath),
 	)
 
-	// TODO(Phase 3): Register with AegisHub ACL and add health-check watchdog loop.
+	// Register Store VM with AegisHub (ACL enforcement for inter-VM traffic).
+	// TODO(Phase 4): add health-check + restart watchdog loop for StoreVMID similar to AegisHub.
+
+	// Persistent state ownership has moved to the Store VM.
+	// All env.Store.* calls now route through the remote client when enabled.
 
 	if compStore := env.Store.Composition(); compStore != nil {
 		components := map[string]composition.Component{
