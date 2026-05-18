@@ -1,5 +1,6 @@
-# Lifecycle Containment Progress
+# Integration Lifecycle Tests Added
 
-- Added tests for failure tracking and restart threshold in `AegisHubMonitor`
-- Added test verifying `runtimeEnv` holds the monitor
-- Progress on restart-on-failure related scenarios
+- Created `lifecycle_integration_test.go` with `//go:build integration`
+- Tests for monitor health/restart threshold and clean shutdown
+- Can be run locally with `-tags=integration`
+- Designed to be opt-in in CI (richer environments)
