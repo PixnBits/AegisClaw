@@ -1,36 +1,33 @@
-# Additional Testing Strategies
+# Additional High-Value Testing Techniques
 
-## Fuzz Testing
+## Recommended Additions
 
-**Recommendation**: Yes, fuzz testing should be added for high-risk surfaces.
+### 1. Chaos / Fault Injection Testing
+**Why it matters**: Directly validates **Lifecycle Containment**.
+- Kill the daemon process and verify all managed VMs are terminated.
+- Simulate AegisHub or Store VM crashes and test watchdog behavior.
+- Use tools like `chaos-mesh`, `litmus`, or simple process killing in integration tests.
 
-### High-Value Targets for Fuzzing
+### 2. Contract / Interface Testing
+**Why it matters**: Protects the seams we created (`AegisHubClient`, `StoreVM`, `SandboxBackend`).
+- Test that clients and backends adhere to their interfaces.
+- Use interface mocks + behavior verification.
+- Prevents regressions when we evolve the daemon ↔ VM communication.
 
-- Unix domain socket request parsing and handling
-- Authorization / peer credential validation logic
-- Any message deserialization over the control socket
-- VM specification / configuration parsing
-- Key distribution message formats
+### 3. Golden File / Snapshot Testing
+**Why it matters**: Good for verifying hardening state.
+- Snapshot expected socket permissions, capability sets, or seccomp filter state.
+- Makes it obvious when hardening behavior changes unintentionally.
 
-### How to Implement
+### 4. Threat-Model-Driven Testing
+**Why it matters**: Ensures we test what actually matters.
+- Maintain a lightweight threat model for the Host Daemon.
+- Derive test cases from STRIDE or attack trees (especially around the Unix socket and VM lifecycle).
+- Prioritize tests based on real attack scenarios rather than just code coverage.
 
-- Use Go 1.18+ native fuzzing (`testing.F`)
-- Start with the socket message handler and authorization paths
-- Run fuzzing regularly in CI (or nightly)
-- Seed with known-good and malformed inputs
+### 5. Dependency & Supply Chain Testing
+- Regular `govulncheck` runs.
+- Dependency pinning + SBOM generation (future).
+- Verify minimal dependency set is maintained.
 
-Fuzzing is especially valuable here because the daemon accepts untrusted input over the Unix socket from CLI/TUI clients.
-
-## Other Advanced Strategies to Consider
-
-| Strategy              | Value for Host Daemon                  | Recommendation | Effort |
-|-----------------------|----------------------------------------|----------------|--------|
-| Fuzz Testing          | High (socket input, auth)              | Adopt          | Medium |
-| Property-Based Testing| Medium (authorization rules, lifecycle)| Consider       | Low    |
-| Chaos / Fault Injection | High (lifecycle containment)         | Consider       | Medium |
-| Mutation Testing      | Medium (test quality)                  | Later          | High   |
-| Formal Verification   | Very High but heavy                    | Not yet        | Very High |
-
-## Updated Recommendation
-
-Add **native Go fuzzing** targeting the Unix socket layer and authorization logic as a priority. This directly addresses the attack surface exposed to CLI/TUI clients.
+These techniques complement fuzzing and static analysis well for a security-sensitive component like the Host Daemon.
