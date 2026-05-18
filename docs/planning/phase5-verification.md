@@ -1,14 +1,13 @@
-# Phase 5: Verification - Expanded Tests
+# Phase 5: Concrete Tests Added
 
-## Test Coverage (cmd/aegisclaw/daemon_test.go)
+## New Tests in `cmd/aegisclaw/daemon_test.go`
 
-- `TestSecureSocketCreation` — verifies strict `0600` permissions on socket files.
-- `TestLifecycleContainmentSignalHandling` — ensures signal handlers can be registered.
-- `TestCapabilityDroppingDoesNotPanic` — hardening functions are callable.
-- `TestSeccompFilterApplication` — seccomp can be applied.
-- `TestNoObviousSecretPatterns` — reminder + policy test.
+- `TestCreateSecureSocket_SetsStrictPermissions` — verifies socket gets `0600`
+- `TestCreateSecureSocket_CreatesParentDirWith0700` — verifies directory permissions
+- `TestLifecycleContainment_RegistersSignalHandlers`
+- `TestDropCapabilities_DoesNotPanic`
+- `TestApplySeccompFilter_DoesNotPanic`
+- `TestNoBusinessLogicInDaemon` (policy guard)
+- `TestNoSecretHandlingInDaemon` (policy guard)
 
-These tests provide basic runtime confidence. Full paranoid verification still relies on:
-- Code review
-- CI static analysis (gosec, etc.)
-- Build-time checks (static binary, memory)
+These provide concrete, runnable verification for the most critical hardening properties.
