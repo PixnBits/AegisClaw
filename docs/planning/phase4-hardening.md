@@ -1,9 +1,7 @@
-# Phase 4.3 seccomp-bpf Filter - Done
+# Phase 4.4 Static Binary Compilation - Done
 
-- Added comprehensive `applySeccompFilter()` using `libseccomp-golang`.
-- Default action: `ActKillProcess` on violation.
-- Large allowlist of commonly needed syscalls.
-- Applied early in `initRuntime()` (after capability dropping).
-- Non-fatal during initial rollout (logs warning on failure).
+- Added `Makefile` with `build-static` target.
+- Uses `CGO_ENABLED=0` + `-ldflags "-s -w"` for fully static binaries.
+- Recommended build command: `make build-static`.
 
-seccomp-bpf is now active.
+Static compilation is now the encouraged (and easy) default.
