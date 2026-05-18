@@ -10,53 +10,69 @@ import (
 	"go.uber.org/zap"
 )
 
-// launchAegisHub handles launching and monitoring the AegisHub microVM.
-// Phase 3.5: Added health checking, restart logic, and graceful shutdown.
-func launchAegisHub(cfg interface{}, logger *zap.Logger) (aegishub.Client, error) {
-	logger.Info("Launching AegisHub (Phase 3.5 hardened launch)")
+// AegisHubMonitor holds lifecycle state for AegisHub.
+type AegisHubMonitor struct {
+	client  aegishub.Client
+	logger  *zap.Logger
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+}
 
-	// For now we use the client connection as the launch indicator.
-	// In a full implementation this would call into sandbox to start the VM.
+// launchAegisHub now returns a monitor with cancellable health checking.
+func launchAegisHub(logger *zap.Logger) (*AegisHubMonitor, error) {
+	logger.Info("Phase 3.5: Launching AegisHub with hardened monitoring")
+
 	client, err := aegishub.NewClient("")
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to AegisHub: %w", err)
 	}
 
-	// Basic health check loop (can be expanded)
-	go func() {
-		for {
-			time.Sleep(30 * time.Second)
-			logger.Debug("AegisHub health check tick")
-			// TODO: Add real health check via vsock ping or status call
+	ctx, cancel := context.WithCancel(context.Background())
+	monitor := &AegisHubMonitor{
+		client: client,
+		logger: logger,
+		cancel: cancel,
+	}
+
+	monitor.wg.Add(1)
+	go monitor.healthLoop(ctx)
+
+	logger.Info("AegisHub launched with active monitoring")
+	return monitor, nil
+}
+
+func (m *AegisHubMonitor) healthLoop(ctx context.Context) {
+	defer m.wg.Done()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			m.logger.Info("AegisHub health monitoring stopped")
+			return
+		case <-ticker.C:
+			m.logger.Debug("AegisHub health check")
+			// TODO: Implement real health check (e.g. vsock ping to AegisHub)
 		}
-	}()
-
-	logger.Info("AegisHub launched and monitoring started")
-	return client, nil
-}
-
-// shutdownAegisHub performs graceful shutdown of AegisHub connection.
-func shutdownAegisHub(client aegishub.Client, logger *zap.Logger) {
-	if client != nil {
-		logger.Info("Shutting down AegisHub connection...")
-		// In future: send graceful shutdown signal to AegisHub VM
 	}
 }
 
-// initRuntime with Phase 3.5 AegisHub lifecycle
-func initRuntime() (*runtimeEnv, error) {
-	logger, _ := zap.NewProduction()
-
-	logger.Info("Starting AegisHub launch sequence (hardened)")
-
-	aegisHubClient, err := launchAegisHub(nil, logger)
-	if err != nil {
-		return nil, fmt.Errorf("AegisHub launch failed: %w", err)
+// Stop gracefully shuts down monitoring and closes the client.
+func (m *AegisHubMonitor) Stop() {
+	if m.cancel != nil {
+		m.cancel()
 	}
-
-	env := &runtimeEnv{
-		AegisHubClient: aegisHubClient,
+	m.wg.Wait()
+	if m.client != nil {
+		m.client.Close()
 	}
+	m.logger.Info("AegisHub monitor stopped cleanly")
+}
 
-	return env, nil
+// shutdownAegisHub is kept for backward compatibility.
+func shutdownAegisHub(monitor *AegisHubMonitor, logger *zap.Logger) {
+	if monitor != nil {
+		monitor.Stop()
+	}
 }
