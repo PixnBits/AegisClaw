@@ -1,6 +1,9 @@
-# Fuzz Testing Progress
+# Aggressive Expansion Update
 
-- Improved `daemon_fuzz_test.go` skeleton
-- Added `make fuzz` target
-- Initial target: `FuzzWithAuthorizedCaller` (authorization logic)
-- Ready for expansion with real logic
+Added several more scenarios:
+- Authorization with nil environment
+- Error handling for invalid socket paths
+- Monitor initial state verification
+- Explicit policy reinforcement tests
+
+Continuing to increase coverage on critical paths and invariants.
