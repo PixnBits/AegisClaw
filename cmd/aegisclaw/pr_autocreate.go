@@ -26,9 +26,9 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		env.Logger.Warn("PR store not available, skipping auto-create")
 		return
 	}
-	
+
 	// Get the proposal to extract metadata
-	prop, err := env.Store.Proposals().Get(proposalID)
+	prop, err := env.ProposalStore.Get(proposalID)
 	if err != nil {
 		env.Logger.Error("failed to get proposal for PR creation",
 			zap.String("proposal_id", proposalID),
@@ -36,16 +36,16 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		)
 		return
 	}
-	
+
 	// Extract skill name from proposal's TargetSkill field
 	skillName := prop.TargetSkill
 	if skillName == "" {
 		skillName = "unknown-skill"
 	}
-	
+
 	// Generate PR title from proposal
 	title := fmt.Sprintf("[%s] %s", skillName, prop.Title)
-	
+
 	// Create the base PR using the constructor
 	pr, err := pullrequest.NewPullRequest(proposalID, title, "builder-pipeline", branch, commitHash)
 	if err != nil {
@@ -55,7 +55,7 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		)
 		return
 	}
-	
+
 	// Set additional fields from pipeline result
 	pr.Description = fmt.Sprintf(`Auto-generated pull request from builder pipeline.
 
@@ -90,21 +90,21 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		result.CompletedAt.Format(time.RFC3339),
 		result.Duration.String(),
 	)
-	
+
 	// Set build and security results
 	pr.AnalysisPassed = result.Analysis != nil
 	pr.SecurityGatesPassed = result.SecurityGateResult != nil && result.SecurityGateResult.Passed
-	
+
 	// Parse diff to get file stats
 	pr.FilesChanged = len(result.Files)
 	// Note: result.Diff is a string, not a structured diff object
 	// We could parse it to count additions/deletions, but for now just set files changed
-	
+
 	// Always require Court review for generated code
 	pr.CourtReviewRequired = true
-	
+
 	// Save the PR
-	if err := env.Store.PullRequests().Create(pr); err != nil {
+	if err := env.PRStore.Create(pr); err != nil {
 		env.Logger.Error("failed to create pull request",
 			zap.String("proposal_id", proposalID),
 			zap.String("branch", branch),
@@ -112,22 +112,22 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		)
 		return
 	}
-	
+
 	// Log PR creation to kernel audit trail
 	auditPayload, _ := json.Marshal(map[string]interface{}{
-		"pr_id":            pr.ID,
-		"proposal_id":      proposalID,
-		"branch":           branch,
-		"commit":           commitHash,
-		"files":            pr.FilesChanged,
-		"analysis_passed":  pr.AnalysisPassed,
-		"security_passed":  pr.SecurityGatesPassed,
+		"pr_id":           pr.ID,
+		"proposal_id":     proposalID,
+		"branch":          branch,
+		"commit":          commitHash,
+		"files":           pr.FilesChanged,
+		"analysis_passed": pr.AnalysisPassed,
+		"security_passed": pr.SecurityGatesPassed,
 	})
 	action := kernel.NewAction(kernel.ActionType("pr.create"), "pipeline", auditPayload)
 	if _, err := env.Kernel.SignAndLog(action); err != nil {
 		env.Logger.Warn("failed to log PR creation", zap.Error(err))
 	}
-	
+
 	env.Logger.Info("pull request created from pipeline",
 		zap.String("pr_id", pr.ID),
 		zap.String("proposal_id", proposalID),
@@ -135,11 +135,13 @@ func createPRFromPipelineResult(env *runtimeEnv, proposalID, branch, commitHash 
 		zap.String("commit", truncateCommitHash(commitHash)),
 		zap.Int("files", pr.FilesChanged),
 	)
-	
+
 	// Request Court code review via CourtClient (real review logic lives in Court VMs / Scribe).
-	if err := env.CourtClient.Review(ctx, pr.ID); err != nil {
-		env.Logger.Warn("Court review request failed (Court components may be unavailable)",
-			zap.String("pr_id", pr.ID), zap.Error(err))
+	if env.CourtClient != nil {
+		if err := env.CourtClient.Review(context.Background(), pr.ID); err != nil {
+			env.Logger.Warn("Court review request failed (Court components may be unavailable)",
+				zap.String("pr_id", pr.ID), zap.Error(err))
+		}
 	}
 }
 
@@ -162,7 +164,7 @@ func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result
 		AnalysisPassed:      pr.AnalysisPassed,
 		SecurityGatesPassed: pr.SecurityGatesPassed,
 	}
-	
+
 	// Validate the request before sending to Court
 	if err := codeReq.Validate(); err != nil {
 		env.Logger.Error("invalid code review request",
@@ -171,79 +173,34 @@ func triggerCourtCodeReview(env *runtimeEnv, pr *pullrequest.PullRequest, result
 		)
 		// Mark Court review as failed
 		pr.CourtReviewStatus = pullrequest.CourtReviewRejected
-		if err := env.Store.PullRequests().Update(pr); err != nil {
+		if err := env.PRStore.Update(pr); err != nil {
 			env.Logger.Error("failed to update PR status", zap.Error(err))
 		}
 		return
 	}
-	
+
 	// Update status to in-progress
 	pr.CourtReviewStatus = pullrequest.CourtReviewInProgress
-	if err := env.Store.PullRequests().Update(pr); err != nil {
+	if err := env.PRStore.Update(pr); err != nil {
 		env.Logger.Warn("failed to update PR status to in-progress", zap.Error(err))
 	}
-	
+
 	env.Logger.Info("triggering Court code review",
 		zap.String("pr_id", pr.ID),
 		zap.Int("files", len(result.Files)),
 	)
-	
+
 	// Court code review request is now handled via CourtClient (no direct Engine access).
 	go func() {
+		if env.CourtClient == nil {
+			return
+		}
 		ctx := context.Background()
 		if err := env.CourtClient.Review(ctx, pr.ID); err != nil {
 			env.Logger.Warn("Court review request via CourtClient failed (expected during transition)",
 				zap.String("pr_id", pr.ID), zap.Error(err))
 		}
 		// PR status updates etc. can be driven by Court Scribe callbacks in the future.
-	}
-				env.Logger.Error("failed to add Court review to PR",
-					zap.String("pr_id", pr.ID),
-					zap.String("persona", review.Persona),
-					zap.Error(err),
-				)
-			}
-		}
-		
-		// Determine overall verdict from reviews
-		approvalCount := 0
-		rejectCount := 0
-		totalRisk := 0.0
-		
-		for _, review := range reviews {
-			switch review.Verdict {
-			case "approve":
-				approvalCount++
-			case "reject":
-				rejectCount++
-			}
-			totalRisk += review.RiskScore
-		}
-		
-		avgRisk := totalRisk / float64(len(reviews))
-		
-		// Require majority approval and low risk (below configured threshold)
-		if approvalCount > len(reviews)/2 && avgRisk < riskThresholdForApproval {
-			pr.CourtReviewStatus = pullrequest.CourtReviewApproved
-		} else {
-			pr.CourtReviewStatus = pullrequest.CourtReviewRejected
-		}
-		
-		if err := env.Store.PullRequests().Update(pr); err != nil {
-			env.Logger.Error("failed to update PR with Court verdict",
-				zap.String("pr_id", pr.ID),
-				zap.Error(err),
-			)
-		}
-		
-		env.Logger.Info("Court code review completed",
-			zap.String("pr_id", pr.ID),
-			zap.Int("reviews", len(reviews)),
-			zap.Int("approvals", approvalCount),
-			zap.Int("rejections", rejectCount),
-			zap.Float64("avg_risk", avgRisk),
-			zap.String("verdict", string(pr.CourtReviewStatus)),
-		)
 	}()
 }
 

@@ -38,17 +38,25 @@ import (
 //
 // apiSrv must be fully initialised (all handlers registered) before this is
 // called, because the route function calls apiSrv.CallDirect.
-//
-// NEUTRALIZED: Gateway (webhook, Slack, Discord, etc.) integration now belongs
-// to a dedicated Gateway component or is mediated by AegisHub.
-// Host Daemon only handles core VM lifecycle + privileged socket.
 func startGateway(ctx context.Context, env *runtimeEnv, apiSrv *api.Server) {
-	// Gateway startup disabled in Host Daemon during aggressive extraction.
-	// Multi-channel ingress (Slack, Discord, webhooks) ownership moved out of TCB.
-	_ = ctx
-	_ = env
-	_ = apiSrv
-}
+	if env.Config == nil || !env.Config.Gateway.Enabled {
+		return
+	}
+
+	// Build the route function: every inbound message becomes a chat.message
+	// request dispatched in-process via CallDirect.
+	routeFunc := func(rctx context.Context, msg gateway.Message) (string, error) {
+		payload, err := json.Marshal(api.ChatMessageRequest{
+			Input:     msg.Text,
+			SessionID: msg.SenderID,
+		})
+		if err != nil {
+			return "", fmt.Errorf("gateway: marshal chat request: %w", err)
+		}
+
+		resp := apiSrv.CallDirect(rctx, "chat.message", payload)
+		if resp == nil {
+			return "", fmt.Errorf("gateway: nil response from chat handler")
 		}
 		if !resp.Success {
 			return "", fmt.Errorf("gateway: chat error: %s", resp.Error)

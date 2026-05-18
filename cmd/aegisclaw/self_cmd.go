@@ -87,7 +87,7 @@ func runSelfPropose(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid proposal: %w", err)
 	}
 
-	if err := env.Store.Proposals().Create(p); err != nil {
+	if err := env.ProposalStore.Create(p); err != nil {
 		return fmt.Errorf("failed to create proposal: %w", err)
 	}
 
@@ -95,7 +95,7 @@ func runSelfPropose(cmd *cobra.Command, args []string) error {
 	if err := p.Transition(proposal.StatusSubmitted, "submitted for review", "system"); err != nil {
 		return fmt.Errorf("cannot submit: %w", err)
 	}
-	if err := env.Store.Proposals().Update(p); err != nil {
+	if err := env.ProposalStore.Update(p); err != nil {
 		return fmt.Errorf("failed to persist: %w", err)
 	}
 
@@ -124,7 +124,7 @@ func runSelfStatus(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
-	proposals, err := env.Store.Proposals().List()
+	proposals, err := env.ProposalStore.List()
 	if err != nil {
 		return fmt.Errorf("failed to list proposals: %w", err)
 	}
@@ -147,9 +147,9 @@ func runSelfStatus(cmd *cobra.Command, args []string) error {
 
 // diagnoseCheck holds the result of a single system health check.
 type diagnoseCheck struct {
-	Name    string
-	OK      bool
-	Detail  string
+	Name   string
+	OK     bool
+	Detail string
 }
 
 func (c diagnoseCheck) status() string {
@@ -421,4 +421,3 @@ func int8SliceToString(s []int8) string {
 	}
 	return string(b)
 }
-

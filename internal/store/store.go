@@ -1,8 +1,6 @@
 package store
 
 import (
-	"context"
-
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
@@ -26,40 +24,46 @@ type Store interface {
 
 // ProposalStore manages skill and governance proposals.
 type ProposalStore interface {
-	Create(ctx context.Context, p *proposal.Proposal) error
-	Get(ctx context.Context, id string) (*proposal.Proposal, error)
-	Update(ctx context.Context, p *proposal.Proposal) error
-	List(ctx context.Context, filter proposal.Filter) ([]*proposal.Proposal, error)
+	Create(p *proposal.Proposal) error
+	Get(id string) (*proposal.Proposal, error)
+	Update(p *proposal.Proposal) error
+	List() ([]proposal.ProposalSummary, error)
+	ListByStatus(status proposal.Status) ([]proposal.ProposalSummary, error)
+	ResolveID(prefix string) (string, error)
 	Import(p *proposal.Proposal) error // used when importing from CLI
 }
 
 // PullRequestStore manages pull request metadata.
 type PullRequestStore interface {
-	Create(ctx context.Context, pr *pullrequest.PullRequest) error
-	Get(ctx context.Context, id string) (*pullrequest.PullRequest, error)
-	List(ctx context.Context, filter pullrequest.Filter) ([]*pullrequest.PullRequest, error)
-	Update(ctx context.Context, pr *pullrequest.PullRequest) error
+	Create(pr *pullrequest.PullRequest) error
+	Get(id string) (*pullrequest.PullRequest, error)
+	GetByProposalID(proposalID string) (*pullrequest.PullRequest, error)
+	List(status *pullrequest.Status) ([]*pullrequest.PullRequest, error)
+	Update(pr *pullrequest.PullRequest) error
+	Approve(prID, approvedBy string) error
+	Close(prID string) error
+	MarkMerged(prID string) error
 }
 
 // CompositionStore manages published composition manifests.
 type CompositionStore interface {
-	Publish(components map[string]composition.Component, actor, reason string) error
-	GetLatest(ctx context.Context) (*composition.Manifest, error)
+	Publish(components map[string]composition.Component, actor, reason string) (*composition.Manifest, error)
+	Current() *composition.Manifest
+	Get(version int) (*composition.Manifest, error)
 }
 
 // MemoryStore manages per-agent long-term and short-term memory.
 type MemoryStore interface {
-	Store(ctx context.Context, entry *memory.Entry) error
-	Search(ctx context.Context, query memory.Query) ([]*memory.Entry, error)
-	Get(ctx context.Context, id string) (*memory.Entry, error)
+	Store(entry *memory.MemoryEntry) (string, error)
+	Retrieve(query string, k int, taskID string) ([]*memory.MemoryEntry, error)
+	List(tier memory.TTLTier) ([]memory.StoreSummary, error)
 }
 
 // WorkerStore manages worker lifecycle records.
 type WorkerStore interface {
-	Create(ctx context.Context, record *worker.Record) error
-	Get(ctx context.Context, id string) (*worker.Record, error)
-	ListActive(ctx context.Context) ([]*worker.Record, error)
-	Update(ctx context.Context, record *worker.Record) error
+	Upsert(record *worker.WorkerRecord) error
+	Get(id string) (*worker.WorkerRecord, bool)
+	List(activeOnly bool) []*worker.WorkerRecord
 }
 
 // EventStore is a placeholder for persistent event/timer/subscription storage.

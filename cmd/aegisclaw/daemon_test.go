@@ -1,5 +1,16 @@
 package main
 
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/PixnBits/AegisClaw/internal/api"
+	"go.uber.org/zap"
+)
+
 // === Deep Expansion: Error Paths, Invariants, and Trust ===
 
 func TestCreateSecureSocket_PermissionAfterCreation(t *testing.T) {
@@ -31,7 +42,6 @@ func TestAegisHubMonitor_DefaultRestartThreshold(t *testing.T) {
 }
 
 func TestWithAuthorizedCaller_EmptyAction(t *testing.T) {
-	logger, _ := zap.NewDevelopment()
 	env := &runtimeEnv{}
 
 	wrapped := withAuthorizedCaller(env, "", func(ctx context.Context, data json.RawMessage) *api.Response {

@@ -42,15 +42,31 @@ type timerSpawnPayload struct {
 // stores a memory entry for each wakeup so the agent has context on restart.
 //
 // The goroutine exits when ctx is cancelled (daemon shutdown).
-//
-// NEUTRALIZED: EventBus timer/approval queue ownership moved to Store VM / AegisHub.
-// Host Daemon no longer runs background event processing.
 func startEventBusDaemon(ctx context.Context, env *runtimeEnv) {
-	// EventBus daemon disabled during aggressive extraction.
-	// Timer, subscription, and approval queue processing now belong to Store VM.
-	_ = ctx
-	_ = env
-}
+	if env.EventBus == nil {
+		return
+	}
+
+	// Register the wakeup dispatcher: called synchronously by CheckAndFire
+	// for each fired timer.
+	env.EventBus.SetWakeupFunc(func(e eventbus.FiredEvent) {
+		dispatchTimerWakeup(env, e)
+	})
+
+	go func() {
+		// Run once immediately to catch any timers that fired while the daemon
+		// was offline (at-least-once semantics).
+		env.EventBus.CheckAndFire()
+
+		ticker := time.NewTicker(eventbus.TimerCheckInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				env.EventBus.CheckAndFire()
+			}
 		}
 	}()
 }

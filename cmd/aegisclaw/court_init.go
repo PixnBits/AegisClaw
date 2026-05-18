@@ -12,6 +12,21 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 )
 
+// CourtClient is the daemon-side seam for forwarding Court work outside the
+// Host Daemon TCB. The no-op implementation keeps local builds and tests
+// deterministic until the Court VM transport is wired in.
+type CourtClient interface {
+	Review(ctx context.Context, proposalID string) error
+	Vote(ctx context.Context, proposalID, voter, approve, reason string) error
+}
+
+type noopCourtClient struct{}
+
+func (noopCourtClient) Review(context.Context, string) error { return nil }
+func (noopCourtClient) Vote(context.Context, string, string, string, string) error {
+	return nil
+}
+
 // initCourtEngine is a stub. The real Court engine runs in Court VMs.
 func initCourtEngine(env *runtimeEnv, toolRegistry *ToolRegistry) (*court.Engine, error) {
 	return nil, nil

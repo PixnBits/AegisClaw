@@ -364,7 +364,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	model.CheckProposalStatus = func(id string) (string, string, error) {
-		p, err := env.Store.Proposals().Get(ctx, id)
+		p, err := env.ProposalStore.Get(id)
 		if err != nil {
 			return "", "", err
 		}
@@ -721,7 +721,7 @@ func toolCallFriendlyLabel(name string) string {
 
 // resolveProposalID expands a prefix (or full UUID) to the full proposal ID.
 func resolveProposalID(env *runtimeEnv, idOrPrefix string) (string, error) {
-	return env.Store.Proposals().ResolveID(idOrPrefix)
+	return env.ProposalStore.ResolveID(idOrPrefix)
 }
 
 // resolveEgressMode returns the egress mode to use for a network policy.
@@ -947,7 +947,7 @@ func handleProposalCreateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 	}
 	p.Capabilities = caps
 
-	if err := env.Store.Proposals().Create(p); err != nil {
+	if err := env.ProposalStore.Create(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
@@ -1044,7 +1044,7 @@ func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 		return "", err
 	}
 
-	p, err := env.Store.Proposals().Get(fullID)
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("proposal not found: %w", err)
 	}
@@ -1160,7 +1160,7 @@ func handleProposalUpdateDraft(env *runtimeEnv, ctx context.Context, argsJSON st
 
 	p.BumpVersion()
 
-	if err := env.Store.Proposals().Update(p); err != nil {
+	if err := env.ProposalStore.Update(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
@@ -1235,7 +1235,7 @@ func handleProposalGetDraft(env *runtimeEnv, ctx context.Context, argsJSON strin
 		return "", err
 	}
 
-	p, err := env.Store.Proposals().Get(fullID)
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1276,7 +1276,7 @@ func handleProposalGetDraft(env *runtimeEnv, ctx context.Context, argsJSON strin
 
 // handleProposalListDrafts returns all proposals, showing drafts prominently.
 func handleProposalListDrafts(env *runtimeEnv, ctx context.Context) (string, error) {
-	summaries, err := env.Store.Proposals().List()
+	summaries, err := env.ProposalStore.List()
 	if err != nil {
 		return "", err
 	}
@@ -1308,7 +1308,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 		return "", err
 	}
 
-	p, err := env.Store.Proposals().Get(fullID)
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1319,7 +1319,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 	if err := p.Transition(proposal.StatusSubmitted, "submitted for court review", "operator"); err != nil {
 		return "", fmt.Errorf("transition failed: %w", err)
 	}
-	if err := env.Store.Proposals().Update(p); err != nil {
+	if err := env.ProposalStore.Update(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
@@ -1333,7 +1333,7 @@ func handleProposalSubmit(env *runtimeEnv, daemonClient *api.Client, ctx context
 	result := fmt.Sprintf("Proposal submitted for court review.\n  ID: %s\n  Title: %s\n  Status: %s\n\nIMPORTANT: Tell the user the proposal ID (%s) so they can track it.", p.ID, p.Title, p.Status, p.ID)
 
 	// Verify the submission was persisted.
-	verified, verifyErr := env.Store.Proposals().Get(p.ID)
+	verified, verifyErr := env.ProposalStore.Get(p.ID)
 	if verifyErr != nil {
 		result += fmt.Sprintf("\n\nWarning: could not verify submission: %v", verifyErr)
 	} else if verified.Status == proposal.StatusDraft {
@@ -1383,7 +1383,7 @@ func handleProposalStatus(env *runtimeEnv, ctx context.Context, argsJSON string)
 		return "", err
 	}
 
-	p, err := env.Store.Proposals().Get(fullID)
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1425,7 +1425,7 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 		return "", err
 	}
 
-	p, err := env.Store.Proposals().Get(fullID)
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1436,7 +1436,7 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 	if err := p.Transition(proposal.StatusSubmitted, "submitted for court review", "agent"); err != nil {
 		return "", fmt.Errorf("transition failed: %w", err)
 	}
-	if err := env.Store.Proposals().Update(p); err != nil {
+	if err := env.ProposalStore.Update(p); err != nil {
 		return "", fmt.Errorf("failed to save: %w", err)
 	}
 
@@ -1453,20 +1453,11 @@ func handleProposalSubmitDirect(env *runtimeEnv, ctx context.Context, argsJSON s
 	// Court review is now requested via CourtClient (real work happens in Court VMs / Scribe).
 	reviewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if err := env.CourtClient.Review(reviewCtx, p.ID); err != nil {
-		result += fmt.Sprintf("\n\nCourt review request sent via CourtClient: %v", err)
-	} else {
-		result += "\n\nCourt review requested (governance logic lives outside Host Daemon TCB)."
-	}
-							)
-						} else {
-							env.Logger.Warn("failed to update proposal after transition (direct)", zap.Error(uErr))
-						}
-					} else {
-						env.Logger.Warn("failed to transition proposal to implementing (direct)", zap.Error(tErr))
-					}
-				}
-			}
+	if env.CourtClient != nil {
+		if err := env.CourtClient.Review(reviewCtx, p.ID); err != nil {
+			result += fmt.Sprintf("\n\nCourt review request sent via CourtClient: %v", err)
+		} else {
+			result += "\n\nCourt review requested (governance logic lives outside Host Daemon TCB)."
 		}
 	}
 
@@ -1490,7 +1481,7 @@ func handleProposalReviews(env *runtimeEnv, ctx context.Context, argsJSON string
 		return "", err
 	}
 
-	p, err := env.Store.Proposals().Get(fullID)
+	p, err := env.ProposalStore.Get(fullID)
 	if err != nil {
 		return "", fmt.Errorf("not found: %w", err)
 	}
@@ -1553,8 +1544,10 @@ func handleProposalVote(env *runtimeEnv, ctx context.Context, argsJSON string) (
 	}
 
 	// Vote via CourtClient (real vote handling lives in Court components).
-	if err := env.CourtClient.Vote(ctx, fullID, "chat-user", fmt.Sprintf("%t", args.Approve), args.Reason); err != nil {
-		return "", fmt.Errorf("vote request failed: %w", err)
+	if env.CourtClient != nil {
+		if err := env.CourtClient.Vote(ctx, fullID, "chat-user", fmt.Sprintf("%t", args.Approve), args.Reason); err != nil {
+			return "", fmt.Errorf("vote request failed: %w", err)
+		}
 	}
 	action := "approved"
 	if !args.Approve {

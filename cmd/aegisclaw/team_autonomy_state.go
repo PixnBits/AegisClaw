@@ -28,10 +28,14 @@ type teamRegistry struct {
 }
 
 func newTeamRegistry(dir string) (*teamRegistry, error) {
-	// Team registry has been extracted from Host Daemon TCB.
-	// Team state ownership moved to Store VM / AegisHub.
-	// Daemon no longer maintains team membership or autonomy grants.
-	return nil, nil
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("team registry dir: %w", err)
+	}
+	r := &teamRegistry{path: filepath.Join(dir, "teams.json")}
+	if err := r.load(); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 func (r *teamRegistry) load() error {
@@ -186,9 +190,17 @@ type autonomyRegistry struct {
 }
 
 func newAutonomyRegistry(dir string) (*autonomyRegistry, error) {
-	// Autonomy registry has been extracted from Host Daemon TCB.
-	// Autonomy grant/revoke state moved to Store VM / AegisHub.
-	return nil, nil
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("autonomy registry dir: %w", err)
+	}
+	a := &autonomyRegistry{
+		path:  filepath.Join(dir, "autonomy.json"),
+		Items: make(map[string]autonomyRecord),
+	}
+	if err := a.load(); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 func (a *autonomyRegistry) load() error {

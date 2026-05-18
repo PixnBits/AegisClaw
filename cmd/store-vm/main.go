@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"net"
 	"os"
@@ -39,7 +38,7 @@ func main() {
 	}
 	_ = svm.Start(context.Background())
 
-	listener, err := vsock.Listen(3, 9999)
+	listener, err := vsock.Listen(9999, nil)
 	if err != nil {
 		logger.Fatal("vsock listen failed", zap.Error(err))
 	}

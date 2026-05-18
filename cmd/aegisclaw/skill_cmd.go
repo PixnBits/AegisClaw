@@ -116,7 +116,7 @@ func runSkillAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := env.Store.Proposals().Create(p); err != nil {
+	if err := env.ProposalStore.Create(p); err != nil {
 		return fmt.Errorf("failed to create proposal: %w", err)
 	}
 
@@ -124,7 +124,7 @@ func runSkillAdd(cmd *cobra.Command, args []string) error {
 	if err := p.Transition(proposal.StatusSubmitted, "submitted for review", "operator"); err != nil {
 		return fmt.Errorf("cannot submit: %w", err)
 	}
-	if err := env.Store.Proposals().Update(p); err != nil {
+	if err := env.ProposalStore.Update(p); err != nil {
 		return fmt.Errorf("failed to persist: %w", err)
 	}
 
@@ -467,7 +467,7 @@ func runSkillSBOM(_ *cobra.Command, args []string) error {
 	}
 
 	// Try by skill name: scan all proposals.
-	proposals, listErr := env.Store.Proposals().List()
+	proposals, listErr := env.ProposalStore.List()
 	if listErr != nil {
 		return fmt.Errorf("list proposals: %w", listErr)
 	}
@@ -577,14 +577,14 @@ func runSkillActivate(cmd *cobra.Command, args []string) error {
 // verifies all declared secrets_refs exist in the vault.  Returns a descriptive
 // error listing missing secrets and the CLI command to add each one.
 func checkSecretsBeforeActivate(skillName string, env *runtimeEnv) error {
-	summaries, err := env.Store.Proposals().List()
+	summaries, err := env.ProposalStore.List()
 	if err != nil {
 		return nil // can't check — proceed optimistically
 	}
 
 	var secretsRefs []string
 	for _, s := range summaries {
-		full, err := env.Store.Proposals().Get(s.ID)
+		full, err := env.ProposalStore.Get(s.ID)
 		if err != nil || full == nil {
 			continue
 		}

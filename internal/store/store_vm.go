@@ -30,7 +30,7 @@ type StoreVM interface {
 func NewStoreVM(cfg *config.Config, logger *zap.Logger) (StoreVM, error) {
 	// Phase 2.9+ hook for remote mode
 	if os.Getenv("STORE_MODE") == "remote" {
-		addr := "vsock://2:9999" // placeholder
+		addr := "vsock://2:9999"                  // placeholder
 		client, err := remoteClientFromAddr(addr) // helper below
 		if err != nil {
 			return nil, err
@@ -104,6 +104,11 @@ func newInProcessStoreVM(cfg *config.Config, logger *zap.Logger) (*inProcessStor
 	}, nil
 }
 
+type inProcessStoreVM struct {
+	store  Store
+	logger *zap.Logger
+}
+
 func (vm *inProcessStoreVM) Start(ctx context.Context) error {
 	if vm.logger != nil {
 		vm.logger.Info("In-process StoreVM started")
@@ -131,7 +136,7 @@ type remoteStoreVMAdapter struct {
 
 func (a *remoteStoreVMAdapter) Start(ctx context.Context) error { return nil }
 func (a *remoteStoreVMAdapter) Stop(ctx context.Context) error  { return nil }
-func (a *remoteStoreVMAdapter) Store() Store                { return a.client.Store() }
+func (a *remoteStoreVMAdapter) Store() Store                    { return a.client.Store() }
 
 var _ StoreVM = (*remoteStoreVMAdapter)(nil)
 
@@ -144,7 +149,7 @@ func remoteClientFromAddr(addr string) (interface{ Store() Store }, error) {
 // loadOrCreateMemoryIdentity (kept here for self-contained in-process creation)
 func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create memory dir: %w", dir, err)
+		return nil, fmt.Errorf("create memory dir %s: %w", dir, err)
 	}
 	identityPath := filepath.Join(dir, ".memory-age-identity")
 	data, readErr := os.ReadFile(identityPath)
