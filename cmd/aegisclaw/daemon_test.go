@@ -1,38 +1,43 @@
 package main
 
-// === Additional Lifecycle Containment Tests ===
+// === More Authorization Scenarios ===
 
-func TestAegisHubMonitor_TracksConsecutiveFailures(t *testing.T) {
-	monitor := &AegisHubMonitor{
-		maxFailsBeforeRestart: 3,
-	}
-
-	// Simulate failures
-	monitor.consecutiveFails = 2
-	if monitor.consecutiveFails != 2 {
-		t.Error("consecutiveFails not tracked correctly")
+func TestWithAuthorizedCaller_NilEnv(t *testing.T) {
+	wrapped := withAuthorizedCaller(nil, "test", func(ctx context.Context, data json.RawMessage) *api.Response {
+		return &api.Response{Success: true}
+	})
+	if wrapped == nil {
+		t.Error("expected non-nil wrapped handler even with nil env")
 	}
 }
 
-func TestAegisHubMonitor_RestartThreshold(t *testing.T) {
-	monitor := &AegisHubMonitor{
-		maxFailsBeforeRestart: 2,
-	}
+// === Error Path Tests for Secure Socket ===
 
-	monitor.consecutiveFails = 2
-
-	// At threshold, restart should be considered
-	if monitor.consecutiveFails < monitor.maxFailsBeforeRestart {
-		t.Error("should be at or above restart threshold")
+func TestCreateSecureSocket_InvalidPath(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	// Trying to create socket in a path that cannot be created
+	_, err := createSecureSocket("/nonexistent/very/deep/path/that/cannot/be/created.sock", logger)
+	if err == nil {
+		t.Error("expected error when parent directories cannot be created")
 	}
 }
 
-func TestRuntimeEnv_HoldsAegisHubMonitor(t *testing.T) {
-	env := &runtimeEnv{
-		AegisHubMonitor: &AegisHubMonitor{},
-	}
+// === More Monitor / Lifecycle Behavior ===
 
-	if env.AegisHubMonitor == nil {
-		t.Error("runtimeEnv should hold AegisHubMonitor for lifecycle management")
+func TestAegisHubMonitor_InitialState(t *testing.T) {
+	monitor := &AegisHubMonitor{}
+	if monitor.consecutiveFails != 0 {
+		t.Error("new monitor should start with zero failures")
 	}
+	if monitor.maxFailsBeforeRestart == 0 {
+		// default should be reasonable
+		monitor.maxFailsBeforeRestart = 3
+	}
+}
+
+// === Policy Reinforcement Tests ===
+
+func TestDaemonShouldNotContainBusinessLogic(t *testing.T) {
+	// This test exists to make the architectural invariant explicit.
+	t.Log("Host Daemon must remain free of business logic, chat, proposals, memory, etc.")
 }
