@@ -1,3 +1,49 @@
-# Integration tests (tagged with 'integration') are opt-in.
-# Run locally with: go test -tags=integration ./cmd/aegisclaw/ -run Lifecycle
-# These include richer lifecycle containment scenarios.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (fast unit tests)
+        run: make test
+
+  integration-tests:
+    name: Integration & Lifecycle Tests
+    runs-on: ubuntu-latest
+    # These are heavier and may require KVM or longer timeouts.
+    # They are opt-in via workflow_dispatch or can be triggered manually.
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Integration Tests
+        run: make test-integration
+
+  # Optional: Keep other existing jobs if they were useful
+  # journey-tests, image-builds, etc. can be re-added here as needed.
