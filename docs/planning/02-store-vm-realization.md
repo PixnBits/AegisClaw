@@ -1,19 +1,20 @@
-# Phase 2+: Real Firecracker Store VM Implementation (Started)
+# Real Firecracker Store VM - Migration Status
 
-**Status**: Real Firecracker Store VM work has begun.
+**Status**: Real Firecracker path is now the primary direction. In-process mode removed.
 
-## What Was Started
+## What Has Been Completed
 
-- Added `internal/sandbox/store_vm_spec.go` with `StoreVMSpec` and defaults.
-- Enhanced `cmd/store-vm/main.go` to act as a real vsock server (listens on vsock, handles basic JSON requests).
-- Uses `vsock.Listen` and basic request routing.
+- Real `StoreVMSpec` with persistent volume support.
+- Functional vsock handler in guest that routes to real stores.
+- `RemoteClient` with actual vsock communication.
+- `launchStoreVM` updated to spawn real mode (full Firecracker spawn in progress).
+- Persistent data directory handling in guest.
 
-## Next Steps for Real Store VM
+## Remaining Polish / Next
 
-1. Build minimal rootfs for store-vm.
-2. Wire actual request routing in `handleConnection` to call real store methods.
-3. Update `launchStoreVM` in daemon to spawn real Firecracker VM using the spec.
-4. Make remote client in `internal/store/remote` actually connect over vsock.
-5. End-to-end test: daemon launches Store VM → communicates via vsock.
+- Full integration of `sandbox.FirecrackerRuntime` to actually start/stop the VM.
+- Proper jailer + chroot setup for the Store VM.
+- End-to-end testing of request flow (daemon → vsock → guest stores).
+- Rootfs build for store-vm.
 
-Phase 2 seam work is complete. This is the realization phase.
+Phase 2 seam work is solid. Real VM path is advancing well.
