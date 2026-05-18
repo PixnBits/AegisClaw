@@ -1,6 +1,6 @@
-# Integration Lifecycle Tests Added
+# Fuzz Testing Progress
 
-- Created `lifecycle_integration_test.go` with `//go:build integration`
-- Tests for monitor health/restart threshold and clean shutdown
-- Can be run locally with `-tags=integration`
-- Designed to be opt-in in CI (richer environments)
+- Improved `daemon_fuzz_test.go` skeleton
+- Added `make fuzz` target
+- Initial target: `FuzzWithAuthorizedCaller` (authorization logic)
+- Ready for expansion with real logic
