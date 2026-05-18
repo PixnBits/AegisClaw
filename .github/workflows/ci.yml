@@ -1,4 +1,3 @@
-# Note: The main 'build-and-test' job runs `go test ./...`
-# This automatically includes all tests in cmd/aegisclaw/daemon_test.go
-# (lifecycle containment, secure socket, capability/seccomp stability, policy guards).
-# No changes needed to the test step itself.
+# Integration tests (tagged with 'integration') are opt-in.
+# Run locally with: go test -tags=integration ./cmd/aegisclaw/ -run Lifecycle
+# These include richer lifecycle containment scenarios.
