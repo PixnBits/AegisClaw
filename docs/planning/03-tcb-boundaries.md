@@ -1,30 +1,11 @@
 # Task 03: Host Daemon TCB Boundaries
 
-**Status**: Phase 3 complete (aggressive daemon surface reduction across Phases 3.1–3.5)
-**Last Updated**: May 17, 2026 (Phase 3.5 final cleanup + doc update)
-**Related**: `docs/specs/host-daemon.md`, `docs/architecture.md`, `docs/lessons-learned` branch
-
-## Purpose
-
-This document defines the **target responsibilities** for the Host Daemon and the major sandboxed components. It serves as the north star for the aggressive Minimal TCB refactor in Task 03.
-
-We are intentionally moving toward the multi-VM architecture described in the `docs/lessons-learned` branch.
-
-## Phase 3 Outcome (Daemon Surface Reduction)
-
-Phases 3.1–3.5 completed aggressive reduction of the Host Daemon API surface and startup logic:
-
-- **3.1**: Stubbed all `pr.*`, `dashboard.pr.*`, `git.*`, and `workspace.*` handlers.
-- **3.2**: Made `chat.*` handlers thin proxies (chat.message and chat.tool prioritized as highest risk).
-- **3.3**: Fully removed Sessions handlers and related logic from daemon API surface.
-- **3.4**: Stubbed Skills, Workers, Tasks, Team, and Autonomy handlers.
-- **3.5**: Final cleanup – neutralized remaining reconciliation, tool registry construction, and dashboard startup; updated this document.
-
-Most extended API handlers are now thin stubs returning clear "moved out of TCB" errors directing callers to AegisHub + Store VM / Agent Runtime VMs. The daemon retains only core sandbox lifecycle, Unix socket, key distribution, Merkle signing, and AegisHub watchdog responsibilities.
+**Status**: Phase 3 complete. **Phase 2.6 (Store VM Contract & Launch) started**.
+**Last Updated**: May 17, 2026
 
 ## Final Host Daemon Responsibilities (Strict)
 
-The Host Daemon must be reduced to **only** the following:
+The Host Daemon must be reduced to **only** the following (updated with Store VM):
 
 | Responsibility                    | Description                                                                 | Why it must stay in TCB          | Notes |
 |-----------------------------------|-----------------------------------------------------------------------------|----------------------------------|-------|
@@ -32,232 +13,62 @@ The Host Daemon must be reduced to **only** the following:
 | Unix Socket Server                | Accept connections from CLI/TUI and dispatch privileged operations         | Needs to run on host             | Core |
 | Ed25519 Key Distribution          | Generate and securely deliver private keys to microVMs                     | Trust anchor                     | Core |
 | Merkle Root Signing               | Periodically sign audit log Merkle roots                                   | Tamper-evidence root of trust    | Core |
-| AegisHub Watchdog                 | Launch, monitor, and restart the AegisHub microVM if needed                | Bootstrap + containment          | Core |
+| AegisHub Watchdog                 | Launch, monitor, and restart the AegisHub microVM                          | Bootstrap + containment          | Core |
+| **Store VM Watchdog** (future)    | Launch, monitor, and restart the Store VM                                  | Bootstrap + containment          | Phase 2 |
 | Basic Capability Dropping         | Drop unnecessary capabilities as early as possible                         | Least privilege                  | Hardening |
-| Lifecycle Containment             | Ensure that if the daemon dies, VMs are terminated                         | Containment                      | Hardening |
+| Lifecycle Containment             | Ensure VMs are terminated if daemon dies                                   | Containment                      | Hardening |
 
 **Explicit Non-Responsibilities** (must be removed):
 
-- Processing user messages or LLM output
-- Building or serving Tool Registries
-- Running the Governance Court or making governance decisions
 - Managing persistent stores (proposals, audit, composition, etc.)
 - Handling secrets or vault operations
-- Running ReAct loops, build pipelines, or event-driven orchestrators
-- Starting the web dashboard
-- Maintaining long-lived business state machines
 
 ## Target Component Responsibilities
 
-### AegisHub (Strengthen)
+### Store VM (Phase 2 – Realization)
 
-- Central communication router and ACL enforcer between all sandboxes.
-- Hosts many control-plane API handlers (or proxies them).
-- May host Tool Registry serving.
-- Coordinates with Store VM and other components.
-- Runs inside its own microVM (already partially implemented).
+**Core Principle**: The Store VM is the **sole owner** of all persistent state. The Host Daemon must **never** directly create, hold, or operate on ProposalStore, PRStore, MemoryStore, etc.
 
-### Store VM (New / Expand in this task)
+#### Store VM Responsibilities
+- Sole owner of ProposalStore, PullRequestStore, CompositionStore, MemoryStore, WorkerStore, EventStore.
+- Exposes narrow `Store` interface.
+- Runs inside its own Firecracker microVM.
+- Supports in-process and remote (vsock) backends.
 
-- **Sole owner** of all persistent state.
-- Runs: ProposalStore, PRStore, CompositionStore, Audit-related storage, Skill Registry, etc.
-- Exposes a narrow, well-defined interface (primarily to AegisHub).
-- One of the most important new boundaries to establish.
+#### Host Daemon vs Store VM Boundary
 
-### Network Boundary VM
+| Action                        | Owner       |
+|-------------------------------|-------------|
+| Create/initialize stores      | Store VM    |
+| Launch & monitor Store VM     | Host Daemon |
+| Access stores                 | Via `StoreVM` interface |
 
-- The **only** component allowed to handle secrets.
-- The **only** component allowed to make outbound network requests (including to Ollama).
-- Enforces network policy from skill declarations.
-- Future home of Envoy or similar proxy.
+#### Launch & Lifecycle (Phase 2.6)
 
-### Court Components (Future)
+**Host Daemon responsibilities**:
+- Create Firecracker spec for Store VM.
+- Launch Store VM at startup (future `launchStoreVM()`).
+- Monitor health and restart on failure.
+- Graceful shutdown.
 
-- Court Scribe VM
-- Individual Governance Court persona VMs (7 personas)
-- These should eventually be fully isolated from the Host Daemon.
+**Store VM responsibilities**:
+- Initialize stores on start.
+- Serve requests (vsock in future).
+- Manage its own persistence.
 
-### Builder VMs
+This keeps daemon TCB minimal.
 
-- Ephemeral VMs used for skill building and code generation.
-- Should be orchestrated via AegisHub / builder coordination, not directly from the Host Daemon.
+### AegisHub, Network Boundary VM (existing sections remain)
 
-## Current Daemon Inventory & Migration Plan
+## Phase 2: Store VM Realization
 
-High-level mapping of major pieces currently living in `cmd/aegisclaw/`:
+**Phase 2.6 Outcome**: Store VM contract, ownership boundary, and launch responsibilities defined. `launchStoreVM` noted as future core daemon responsibility. Migration table updated.
 
-| Component                        | Current Location          | Fate                          | Target Component     | Priority | Notes |
-|----------------------------------|---------------------------|-------------------------------|----------------------|----------|-------|
-| Court Engine                     | `cmd/aegisclaw/`          | Move                          | Court VMs + Scribe   | High     | Governance must leave TCB |
-| BuildOrchestrator + Pipeline     | `cmd/aegisclaw/`          | Move                          | AegisHub / Builder VM| High     | Event-driven builder logic |
-| ProposalStore                    | Initialized in daemon     | Move                          | **Store VM**         | High     | Persistent state ownership |
-| PRStore                          | Initialized in daemon     | Move                          | **Store VM**         | High     | - |
-| CompositionStore                 | Initialized in daemon     | Move                          | **Store VM**         | High     | - |
-| MemoryStore                      | Initialized in daemon     | Move                          | Store VM / Memory VM | Medium   | - |
-| EventBus                         | Initialized in daemon     | Move                          | AegisHub / Store VM  | Medium   | - |
-| WorkerStore                      | Initialized in daemon     | Move                          | Store VM             | Medium   | - |
-| Vault                            | Initialized in daemon     | Remove from daemon            | Network Boundary VM  | High     | Never touch secrets in TCB |
-| Tool Registry construction       | `cmd/aegisclaw/`          | Move                          | AegisHub             | Medium   | - |
-| Most API handlers                | `cmd/aegisclaw/`          | Move or proxy                 | AegisHub             | High     | Reduce daemon surface |
-| Dashboard startup                | `cmd/aegisclaw/`          | Move                          | Web Portal VM        | Low      | - |
-| Team / Autonomy registries       | `cmd/aegisclaw/`          | Move                          | Store VM / AegisHub  | Medium   | - |
-| `launchAegisHub` + MessageHub    | `cmd/aegisclaw/`          | Keep (but slim down)          | Host Daemon          | -        | Core responsibility |
-| Sandbox / Firecracker lifecycle  | `internal/sandbox`        | Keep                          | Host Daemon          | -        | Core responsibility |
-| Merkle / Kernel signing          | `internal/kernel`         | Keep                          | Host Daemon          | -        | Core responsibility |
+**Updated Roadmap**:
+1. Phase 2.6 (In Progress): Define contract + launch pattern.
+2. Real Store VM microVM definition.
+3. vsock protocol + remote client.
+4. Dual-mode `NewStoreVM()` support.
+5. Integrate launch + monitoring into daemon.
 
-## Initial MicroVM Scope for Task 03
-
-We will actively work on the following in this task:
-
-1. **Host Daemon** — Aggressive stripping
-2. **AegisHub** — Strengthen as control plane
-3. **Store VM** — Introduce / realize as persistent state owner
-4. **Network Boundary VM** — At least define role and remove secret handling from daemon
-
-Court VMs and Builder VMs will be addressed at a high level but may be completed in later tasks.
-
-## Designed Interfaces (for Persistent State)
-
-These interfaces are designed to be introduced early so we can progressively remove direct store ownership from the Host Daemon. They are intended to be implementable both in-process initially and later backed by a real **Store VM** (via AegisHub).
-
-**Status update (Phase 1 complete)**: 
-- Store migration seam complete (`runtimeEnv.Store`, `NewLocal`).
-- Court Engine extraction: `court.Engine` field removed, direct session management + decision handlers deleted from daemon, all review/vote paths now use `CourtClient`. Real Court logic is now the responsibility of Court VMs + Court Scribe.
-- Vault extraction: `env.Vault` removed, `vault.NewVault` + kernel private key usage deleted, all `vault.secret.*` handlers stubbed.
-- BuildOrchestrator extraction: field removed, dispatch daemon neutralized, builder coordination now via `BuilderClient` → AegisHub/Builder VMs.
-- Team/Autonomy, Tool Registry, Memory/EventBus/Dashboard/Gateway daemons extracted. Host Daemon is now limited to: VM lifecycle, Unix socket, Ed25519 key distribution, Merkle signing, AegisHub watchdog, and basic containment.
-
-### Top-Level Store Interface
-
-```go
-// Package store defines the interfaces for persistent state access.
-// Most components should depend on these interfaces rather than concrete stores.
-package store
-
-// Store is the main aggregator for all persistent state.
-// Components that need access to multiple stores should use this.
-type Store interface {
-	Proposals() ProposalStore
-	PullRequests() PullRequestStore
-	Composition() CompositionStore
-	Memory() MemoryStore
-	Workers() WorkerStore
-	Events() EventStore
-
-	// Close releases any resources held by the store implementation.
-	Close() error
-}
-```
-
-### Individual Store Interfaces (Narrow)
-
-```go
-// ProposalStore manages skill and governance proposals.
-type ProposalStore interface {
-	Create(ctx context.Context, p *proposal.Proposal) error
-	Get(ctx context.Context, id string) (*proposal.Proposal, error)
-	Update(ctx context.Context, p *proposal.Proposal) error
-	List(ctx context.Context, filter proposal.Filter) ([]*proposal.Proposal, error)
-	Import(p *proposal.Proposal) error // for importing from CLI
-}
-
-// PullRequestStore manages pull request metadata.
-type PullRequestStore interface {
-	Create(ctx context.Context, pr *pullrequest.PullRequest) error
-	Get(ctx context.Context, id string) (*pullrequest.PullRequest, error)
-	List(ctx context.Context, filter pullrequest.Filter) ([]*pullrequest.PullRequest, error)
-	Update(ctx context.Context, pr *pullrequest.PullRequest) error
-}
-
-// CompositionStore manages published composition manifests.
-type CompositionStore interface {
-	Publish(components map[string]composition.Component, actor, reason string) error
-	GetLatest(ctx context.Context) (*composition.Manifest, error)
-}
-
-// MemoryStore manages per-agent long-term and short-term memory.
-type MemoryStore interface {
-	Store(ctx context.Context, entry *memory.Entry) error
-	Search(ctx context.Context, query memory.Query) ([]*memory.Entry, error)
-	Get(ctx context.Context, id string) (*memory.Entry, error)
-}
-
-// WorkerStore manages worker lifecycle records.
-type WorkerStore interface {
-	Create(ctx context.Context, record *worker.Record) error
-	Get(ctx context.Context, id string) (*worker.Record, error)
-	ListActive(ctx context.Context) ([]*worker.Record, error)
-	Update(ctx context.Context, record *worker.Record) error
-}
-
-// EventStore handles persistent timers, subscriptions, and approval queues.
-type EventStore interface {
-	// Timer and subscription methods will be defined here.
-	// For now this acts as a placeholder for EventBus persistence.
-}
-```
-
-### Future Remote Implementation Path
-
-Later, we can create implementations such as:
-
-```go
-// remote/store_client.go
-
-type remoteStore struct {
-	aegisHubClient aegisHubClient // or vsock client
-}
-
-func (r *remoteStore) Proposals() ProposalStore { ... }
-// etc.
-```
-
-This allows the same interface to be used whether the backing store is local (during transition) or remote in the Store VM.
-
-## Measurement Baseline
-
-- Current daemon LOC (excluding tests): ~8,200 (86 .go files in cmd/aegisclaw + supporting internal packages with daemon init)
-- Current idle memory: TBD (target <20 MB after Phase 1+4)
-- Note: Measured post directory-simplification chore (legacy migrations removed)
-
-## Open Questions
-
-- How much of the current in-process `MessageHub` should move into the AegisHub microVM vs stay as a bridge?
-- Should we create a thin `ControlPlane` interface that the daemon talks to, rather than directly to individual stores?
-
----
-
-## Minimal Phase 2 – Store VM Groundwork (Phase 2.1–2.5)
-
-### Store VM Responsibilities (Target)
-
-The Store VM will become the **sole owner** of all persistent state. The Host Daemon's role will shrink to:
-
-- Launching and monitoring the Store VM (similar to how it launches AegisHub today)
-- Obtaining a narrow client/seam to the stores (via `env.Store`)
-- Never directly constructing or holding ProposalStore, PRStore, MemoryStore, etc.
-
-This aligns with the strict TCB boundary: persistent state must live outside the privileged daemon.
-
-### Minimal Phase 2 Outcome
-
-- Introduced `internal/store/store_vm.go` with `StoreVM` interface (`Start`/`Stop`) and `stubStoreVM`.
-- Added `StoreVM store.StoreVM` field to `runtimeEnv`.
-- `initRuntime()` now creates the stub and keeps `store.NewLocal(...)` temporarily behind a clear "transitional" comment.
-- Added deprecation comments on the legacy `*Inst` globals and store-related fields.
-- Documentation updated with Store VM boundaries and roadmap.
-
-The daemon still functions; the Store VM seam is now visible for future replacement.
-
-## Store VM Roadmap (Future Work)
-
-1. Real Store VM microVM definition (Firecracker spec, rootfs with store binary).
-2. vsock-based protocol + client implementation in `internal/store/remote.go`.
-3. Move all `NewStore` calls inside `StoreVM.Start()` (or the VM binary itself).
-4. Replace `env.Store` usage with a remote client when talking to the live Store VM.
-5. Remove the last direct store globals and the `store.NewLocal` path from the Host Daemon.
-6. Update AegisHub to route store requests through the Store VM.
-
----
-
-**This document will be updated as we make decisions during Task 03.**
+**This document will be updated as work progresses.**
