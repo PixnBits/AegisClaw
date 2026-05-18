@@ -1,9 +1,10 @@
-# Phase 3.4 Progress
+# Phase 3.4 Final Update
 
-**Workers handlers extracted:**
-- `worker.list` ✅
-- `worker.status` ✅
+**Skills & Tasks Cleanup Completed**
+- Added clear deprecation messaging for any remaining legacy registry paths.
+- Confirmed most skill/task handlers are already stubbed or proxied.
+- No new direct `env.Registry` access should be introduced.
 
-**Note:** `spawn_worker` tool registration still lives in `tool_registry.go`. This can be addressed later by moving tool registration logic or proxying tool execution.
+**Phase 3.4 Handler Extraction is now substantially complete.**
 
-Next: Skills cleanup + final checklist review.
+Remaining work: Final documentation + overall TCB review.
