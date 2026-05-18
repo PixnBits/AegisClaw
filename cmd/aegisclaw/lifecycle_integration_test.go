@@ -4,9 +4,7 @@
 package main
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"go.uber.org/zap"
 )
@@ -27,9 +25,6 @@ func TestLifecycleContainment_MonitorHealthAndRestart(t *testing.T) {
 		logger:                logger,
 		maxFailsBeforeRestart: 2,
 	}
-
-	// Simulate health check failures
-	ctx := context.Background()
 
 	// First failure
 	monitor.consecutiveFails = 1
