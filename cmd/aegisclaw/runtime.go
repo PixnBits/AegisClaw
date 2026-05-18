@@ -1,55 +1,47 @@
 package main
 
-// AegisHubMonitor now includes restart-on-failure logic.
-type AegisHubMonitor struct {
-	client            aegishub.Client
-	logger            *zap.Logger
-	cancel            context.CancelFunc
-	wg                sync.WaitGroup
-	vm                interface{ Stop() error }
-	consecutiveFails  int
-	maxFailsBeforeRestart int
-}
-
-func NewAegisHubMonitor(...) { /* ... */ }
-
-func (m *AegisHubMonitor) healthLoop(ctx context.Context) {
-	defer m.wg.Done()
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := m.client.Health(ctx); err != nil {
-				m.consecutiveFails++
-				m.logger.Warn("AegisHub health failed", zap.Int("consecutive", m.consecutiveFails), zap.Error(err))
-
-				if m.consecutiveFails >= m.maxFailsBeforeRestart {
-					m.logger.Error("AegisHub health degraded - attempting restart")
-					m.restart()
-					m.consecutiveFails = 0
-				}
-			} else {
-				if m.consecutiveFails > 0 {
-					m.logger.Info("AegisHub health recovered")
-				}
-				m.consecutiveFails = 0
-			}
-		}
-	}
-}
-
 func (m *AegisHubMonitor) restart() {
-	m.logger.Info("Restarting AegisHub VM...")
+	m.logger.Info("Attempting to restart AegisHub VM")
 
+	// Stop existing VM if present
 	if m.vm != nil {
 		_ = m.vm.Stop()
 	}
 
-	// TODO: Re-create and start new VM using sandbox
-	// For now we just log the intent
-	m.logger.Warn("AegisHub restart requested (full re-launch not yet wired)")
+	// Re-launch AegisHub
+	spec := sandbox.DefaultAegisHubVMSpec()
+
+	rtCfg := sandbox.RuntimeConfig{
+		FirecrackerBin: "/usr/local/bin/firecracker",
+		JailerBin:      "/usr/local/bin/jailer",
+		KernelImage:    spec.KernelImage,
+		RootfsTemplate: spec.RootfsPath,
+		ChrootBaseDir:  "/var/lib/aegisclaw/jailer",
+		StateDir:       "/var/lib/aegisclaw/vm/aegishub",
+	}
+
+	rt, err := sandbox.NewFirecrackerRuntime(rtCfg, nil, m.logger)
+	if err != nil {
+		m.logger.Error("Failed to create runtime for restart", zap.Error(err))
+		return
+	}
+
+	vmCfg := sandbox.VMConfig{
+		CPUs:     spec.CPUs,
+		MemoryMB: spec.MemoryMB,
+	}
+
+	newVM, err := rt.CreateVM(vmCfg)
+	if err != nil {
+		m.logger.Error("Failed to create new VM during restart", zap.Error(err))
+		return
+	}
+
+	if err := newVM.Start(); err != nil {
+		m.logger.Error("Failed to start new AegisHub VM", zap.Error(err))
+		return
+	}
+
+	m.vm = newVM
+	m.logger.Info("AegisHub VM successfully restarted")
 }
