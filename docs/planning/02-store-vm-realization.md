@@ -1,35 +1,19 @@
-# Phase 2: Store VM Realization - COMPLETE
+# Phase 2+: Real Firecracker Store VM Implementation (Started)
 
-**Status**: ✅ **Phase 2 Complete** (after cleanup/verification pass)
-**Date**: May 17, 2026
+**Status**: Real Firecracker Store VM work has begun.
 
-## Summary
+## What Was Started
 
-Phase 2 successfully delivered a clean boundary for persistent state ownership:
+- Added `internal/sandbox/store_vm_spec.go` with `StoreVMSpec` and defaults.
+- Enhanced `cmd/store-vm/main.go` to act as a real vsock server (listens on vsock, handles basic JSON requests).
+- Uses `vsock.Listen` and basic request routing.
 
-- Full ownership of stores moved out of the Host Daemon.
-- `StoreVM` interface with dual-mode support (in-process + remote hook).
-- Store VM binary scaffold ready for real Firecracker implementation.
-- Remote client skeleton + protocol types in place.
-- Daemon launch + lifecycle integration (`launchStoreVM`).
+## Next Steps for Real Store VM
 
-## Completed Phases
+1. Build minimal rootfs for store-vm.
+2. Wire actual request routing in `handleConnection` to call real store methods.
+3. Update `launchStoreVM` in daemon to spawn real Firecracker VM using the spec.
+4. Make remote client in `internal/store/remote` actually connect over vsock.
+5. End-to-end test: daemon launches Store VM → communicates via vsock.
 
-| Phase | Focus                              | Status |
-|-------|------------------------------------|--------|
-| 2.6   | Contract + Launch responsibilities | ✅     |
-| 2.7   | Store VM binary scaffold           | ✅     |
-| 2.8   | vsock protocol + RemoteClient      | ✅     |
-| 2.9   | Dual-mode support                  | ✅     |
-| 2.10  | Daemon launch + lifecycle          | ✅     |
-
-## Cleanup Pass Results
-
-- Restored full in-process store creation logic inside `newInProcessStoreVM`.
-- Cleaned up placeholder code and TODOs.
-- Ensured `NewStoreVM` works in default mode.
-- Documentation updated.
-
-**Phase 2 is ready for use and further extension (real Store VM, vsock, etc.).**
-
-Next: Phase 3 (AegisHub strengthening) or Phase 4 (Hardening).
+Phase 2 seam work is complete. This is the realization phase.
