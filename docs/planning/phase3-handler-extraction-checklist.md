@@ -1,10 +1,11 @@
-# Phase 3.4 Progress
+# Phase 3.4 Progress Update
 
-**Completed:**
-- Approvals handlers (list + decide) ✅
-- Timers list handler ✅
-- Signals list handler ✅
+**Sessions handlers fully extracted:**
+- `sessions.list` ✅
+- `sessions.history` ✅
+- `sessions.send` ✅
+- `sessions.spawn` ✅
 
-**EventBus handlers are now fully proxied to AegisHub.**
+All major Sessions operations are now proxied to AegisHub.
 
-Next priority: Sessions handlers.
+**Next:** Workers handlers.
