@@ -10,4 +10,4 @@ See:
 - `docs/planning/phase4-hardening.md`
 - `docs/planning/phase5-verification.md`
 
-All major goals achieved.
+All major goals achieved. Phase 2/3 Store VM seam completed (remote client, configurable init, launch + watchdog). Ready for Phase 4 hardening.

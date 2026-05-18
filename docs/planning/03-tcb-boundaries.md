@@ -72,3 +72,12 @@ These are the **minimal necessary** responsibilities for a host daemon in this a
 - `initRuntime` store creation moved to helper; direct construction of ProposalStore etc. can be gated.
 - Migration path: localStore (current) → remoteStore (Phase 3) → full vsock + ACL enforcement.
 - All `env.Store.*` call sites unchanged.
+
+## Phase 2 + Phase 3 Complete (Store VM Remote Seam)
+- `runtimeEnv` now selects Store via `AEGISCLAW_USE_REMOTE_STORE` (defaults to remote).
+- `initLocalStore` helper isolates legacy direct store construction.
+- `launchStoreVM` updated with AegisHub registration comment and Phase 4 watchdog TODO.
+- `internal/store/remote.go` fully matches `Store` interfaces; `ErrRemoteNotWired` exported.
+- Legacy shim fields in `runtimeEnv` retained only where needed for build; direct store ownership removed from daemon path.
+- Ownership model: Host Daemon launches + watches Store VM; all state via `env.Store`.
+- Remaining: full vsock protocol + real Store VM image (Phase 4+).
