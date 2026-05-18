@@ -1,10 +1,16 @@
-# Phase 3.3 Update
+# Phase 3.5: AegisHub Launch & Lifecycle Hardening
 
-**AegisHub communication is now mandatory**.
+**Status**: Started
 
-- Real vsock-based `AegisHubClient` is wired by default in `initRuntime()`.
-- Stub / in-process fallback has been removed.
-- Multiple chat and session handlers have been converted to proxies that forward to AegisHub.
-- The Host Daemon no longer executes chat orchestration or tool dispatch logic directly for these paths.
+## Changes Made
+- Introduced `launchAegisHub()` with basic health monitoring goroutine.
+- Added `shutdownAegisHub()` helper for graceful shutdown.
+- Integrated into `initRuntime()`.
 
-This significantly reduces the control-plane surface in the privileged daemon.
+## Remaining Work
+- Full VM launch via `sandbox.FirecrackerRuntime` for AegisHub.
+- Real health check implementation (vsock ping).
+- Restart-on-failure logic.
+- Metrics / observability hooks.
+
+This completes the main Phase 3 handler extraction + AegisHub lifecycle work.
