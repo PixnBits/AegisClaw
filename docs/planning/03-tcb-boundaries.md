@@ -59,4 +59,9 @@ These are the **minimal necessary** responsibilities for a host daemon in this a
 - `launchAegisHub` kept minimal (core VM lifecycle + Store-backed composition publish).
 - `daemon_tcb_test.go` strengthened with `TestNoNonTCBInitializations`.
 - `runtimeEnv` confirmed minimal (no shims, only `Store` + thin clients).
+- Removed unused `buildToolRegistry` call from `runStart`; `buildToolRegistry` retained only for tests.
+- Removed `initBuildOrchestrator` stub and its `builder` import.
+- Removed unused `proposal` import.
+- Court handlers (`makeCourtReviewHandler`, `makeCourtVoteHandler`) kept for test compatibility but clearly documented as disabled non-TCB stubs.
+- Cleaned `registerCoreTCBHandlers` signature (removed unused `toolRegistry` parameter).
 - This shape prepares the daemon for Phase 4 capability dropping, seccomp, and syscall filtering with no vestiges of business logic.

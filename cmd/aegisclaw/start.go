@@ -10,11 +10,9 @@ import (
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
-	"github.com/PixnBits/AegisClaw/internal/builder"
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
-	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/provision"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/spf13/cobra"
@@ -100,7 +98,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return &api.Response{Success: true}
 	})
 
-	toolRegistry := buildToolRegistry(env)
+	// toolRegistry removed; buildToolRegistry retained only for tests/other
+	// entrypoints (non-TCB in daemon core path).
 
 	// === MINIMAL TCB API SURFACE ===
 	// Per docs/specs/host-daemon.md, the Host Daemon exposes ONLY its core
@@ -117,7 +116,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// disabled for TCB minimization (legacy recovery/bootstrap moved out).
 
 	daemonQuit := make(chan struct{})
-	registerCoreTCBHandlers(apiSrv, env, toolRegistry, hub, daemonQuit)
+	registerCoreTCBHandlers(apiSrv, env, hub, daemonQuit)
 
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
@@ -154,8 +153,9 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 	// intentionally no-op
 }
 
-// makeCourtReviewHandler forwards Court review requests via CourtClient.
-// Real review logic executes in Court VMs orchestrated by Court Scribe.
+// makeCourtReviewHandler / makeCourtVoteHandler are disabled non-TCB stubs.
+// Real Court logic runs in Court VMs orchestrated by Court Scribe.
+// These handlers are intentionally not registered in registerCoreTCBHandlers.
 func makeCourtReviewHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		_ = env.CourtClient
@@ -163,8 +163,9 @@ func makeCourtReviewHandler(env *runtimeEnv) api.Handler {
 	}
 }
 
-// makeCourtVoteHandler forwards Court vote requests via CourtClient.
-// Real voting and consensus logic executes in Court VMs + Court Scribe.
+// makeCourtReviewHandler / makeCourtVoteHandler are disabled non-TCB stubs.
+// Real Court logic runs in Court VMs orchestrated by Court Scribe.
+// These handlers are intentionally not registered in registerCoreTCBHandlers.
 func makeCourtVoteHandler(env *runtimeEnv, _ ...interface{}) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		_ = env.CourtClient
@@ -244,18 +245,12 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 	return hub, hubVMID, nil
 }
 
-// initBuildOrchestrator is disabled during the aggressive BuildOrchestrator extraction.
-func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
-	return nil, nil
-}
-
 // registerCoreTCBHandlers wires ONLY the minimal handlers required for the
 // Host Daemon's TCB responsibilities. All non-core surface (git, pr, workspace,
 // dashboard, court, chat, extended CLI) has been removed.
 func registerCoreTCBHandlers(
 	apiSrv *api.Server,
 	env *runtimeEnv,
-	toolRegistry *ToolRegistry,
 	hub *ipc.MessageHub,
 	daemonQuit chan struct{},
 ) {
