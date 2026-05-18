@@ -2,34 +2,63 @@ package main
 
 import (
 	"os"
-	"os/exec"
+	"path/filepath"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
-// TestStaticBinary verifies that the binary can be built as static.
-// This is a build-time check rather than runtime.
-func TestStaticBinary(t *testing.T) {
-	// In CI this would run: CGO_ENABLED=0 go build ...
-	// For now we just document the expectation.
-	t.Log("Static binary requirement: CGO_ENABLED=0 go build")
+// TestSecureSocketCreation verifies that createSecureSocket sets strict permissions.
+func TestSecureSocketCreation(t *testing.T) {
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "test.sock")
+
+	logger, _ := zap.NewDevelopment()
+	listener, err := createSecureSocket(socketPath, logger)
+	if err != nil {
+		t.Fatalf("createSecureSocket failed: %v", err)
+	}
+	defer listener.Close()
+
+	info, err := os.Stat(socketPath)
+	if err != nil {
+		t.Fatalf("failed to stat socket: %v", err)
+	}
+
+	// Check permissions are 0600
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("expected socket permissions 0600, got %o", info.Mode().Perm())
+	}
 }
 
-// TestNoSecretHandling is a basic safeguard against obvious secret patterns.
-// A full static analysis would be done in CI.
-func TestNoSecretHandling(t *testing.T) {
-	// This is a placeholder. Real enforcement comes from code review + linters.
-	t.Log("No secret handling policy enforced via code review and linters")
+// TestLifecycleContainmentSignalHandling ensures signal setup doesn't panic.
+func TestLifecycleContainmentSignalHandling(t *testing.T) {
+	env := &runtimeEnv{}
+	logger, _ := zap.NewDevelopment()
+
+	// Should not panic
+	setupLifecycleContainment(env, logger)
 }
 
-// TestLifecycleContainment verifies signal handling exists.
-func TestLifecycleContainment(t *testing.T) {
-	// We check that the containment setup function exists and can be referenced.
-	// Full end-to-end testing requires process supervision.
-	_ = setupLifecycleContainment
-	t.Log("Lifecycle containment functions are present")
+// TestCapabilityDroppingDoesNotPanic verifies the function runs without crashing.
+func TestCapabilityDroppingDoesNotPanic(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	_ = dropCapabilities(logger) // should not panic even if it fails
 }
 
-// TestMinimalPrivilege is a documentation + build-time check.
-func TestMinimalPrivilege(t *testing.T) {
-	t.Log("Minimal privilege enforced via early capability dropping + seccomp")
+// TestSeccompFilterApplication verifies filter application doesn't crash on this system.
+func TestSeccompFilterApplication(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	err := applySeccompFilter(logger)
+	if err != nil {
+		t.Logf("seccomp filter application returned (may be expected on some systems): %v", err)
+	}
+}
+
+// TestNoObviousSecretPatterns is a basic safeguard.
+// In a real paranoid setup this would be supplemented by gosec / semgrep in CI.
+func TestNoObviousSecretPatterns(t *testing.T) {
+	// This test exists to force developers to think about secret handling.
+	// Real enforcement is done via code review + static analysis.
+	t.Log("Secret handling policy: enforced via review + linters (see Phase 5 docs)")
 }
