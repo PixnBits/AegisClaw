@@ -1,11 +1,11 @@
 package aegishub
 
-// ForwardApprovalsList forwards approval listing requests to AegisHub.
-func (c *Client) ForwardApprovalsList(ctx context.Context, data json.RawMessage) (*api.Response, error) {
-	return c.sendRequest("approvals.list", data)
+// ForwardTimersList forwards timer listing to AegisHub.
+func (c *Client) ForwardTimersList(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return c.sendRequest("timers.list", data)
 }
 
-// ForwardApprovalsDecide forwards approval decision requests to AegisHub.
-func (c *Client) ForwardApprovalsDecide(ctx context.Context, data json.RawMessage) (*api.Response, error) {
-	return c.sendRequest("approvals.decide", data)
+// ForwardSignalsList forwards signal listing to AegisHub.
+func (c *Client) ForwardSignalsList(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return c.sendRequest("signals.list", data)
 }
