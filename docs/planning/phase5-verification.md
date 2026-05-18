@@ -1,1 +1,3 @@
-- Added `TestAuthorizeCallerExists` and `TestRuntimeEnvHasAegisHubMonitor` for authorization and lifecycle tracking.
+- Added contract checks for `AegisHubClient` and `ToolRegistryClient`
+- Added stability tests for `AegisHubMonitor.Stop` and stale VM cleanup
+- Added test for stale socket handling in `createSecureSocket`
