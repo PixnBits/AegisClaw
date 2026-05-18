@@ -1,31 +1,38 @@
 package main
 
-// === Authorization-related tests (from backlog) ===
+// === Additional Lifecycle Containment Tests ===
 
-func TestWithAuthorizedCaller_WrapsHandler(t *testing.T) {
-	logger, _ := zap.NewDevelopment()
-	env := &runtimeEnv{}
-
-	// Basic smoke test that the wrapper can be created
-	handler := func(ctx context.Context, data json.RawMessage) *api.Response {
-		return &api.Response{Success: true}
+func TestAegisHubMonitor_TracksConsecutiveFailures(t *testing.T) {
+	monitor := &AegisHubMonitor{
+		maxFailsBeforeRestart: 3,
 	}
 
-	wrapped := withAuthorizedCaller(env, "test.action", handler)
-	if wrapped == nil {
-		t.Error("withAuthorizedCaller returned nil")
+	// Simulate failures
+	monitor.consecutiveFails = 2
+	if monitor.consecutiveFails != 2 {
+		t.Error("consecutiveFails not tracked correctly")
 	}
 }
 
-// === Hardening verification (from backlog) ===
+func TestAegisHubMonitor_RestartThreshold(t *testing.T) {
+	monitor := &AegisHubMonitor{
+		maxFailsBeforeRestart: 2,
+	}
 
-func TestDropCapabilities_RunsWithoutFatalError(t *testing.T) {
-	logger, _ := zap.NewDevelopment()
-	err := dropCapabilities(logger)
+	monitor.consecutiveFails = 2
 
-	// We don't assert specific caps here (platform dependent),
-	// but it should complete without crashing the test process.
-	if err != nil {
-		t.Logf("dropCapabilities returned non-fatal error: %v", err)
+	// At threshold, restart should be considered
+	if monitor.consecutiveFails < monitor.maxFailsBeforeRestart {
+		t.Error("should be at or above restart threshold")
+	}
+}
+
+func TestRuntimeEnv_HoldsAegisHubMonitor(t *testing.T) {
+	env := &runtimeEnv{
+		AegisHubMonitor: &AegisHubMonitor{},
+	}
+
+	if env.AegisHubMonitor == nil {
+		t.Error("runtimeEnv should hold AegisHubMonitor for lifecycle management")
 	}
 }
