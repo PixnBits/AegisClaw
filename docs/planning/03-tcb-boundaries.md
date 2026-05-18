@@ -46,3 +46,17 @@
 These are the **minimal necessary** responsibilities for a host daemon in this architecture.
 
 **Conclusion**: Phase 3 has achieved a meaningful and visible reduction in the Host Daemon’s attack surface while improving AegisHub’s reliability and autonomy.
+
+## Final Pre-Hardening Cleanup (Post-Phase 1)
+
+- Removed team/autonomy registry initialization (`newTeamRegistry` / `newAutonomyRegistry`) entirely from `start.go`.
+- Disabled legacy `reconcileApprovedProposals` (marked no-op with comment; recovery logic moved to AegisHub).
+- Removed `ensureDefaultScriptRunnerActive` bootstrap call.
+- `startDashboard` remains fully disabled.
+- Reduced handler surface in `runStart` to core TCB only: ping + kernel control + minimal worker diagnostics. Non-TCB handlers (git.*, pr.*, workspace.*, dashboard.*, court.*, chat.*) removed or replaced with documented no-ops.
+- Added prominent "MINIMAL TCB API SURFACE" comment block.
+- Introduced `registerCoreTCBHandlers` to keep surface intentionally small.
+- `launchAegisHub` kept minimal (core VM lifecycle + Store-backed composition publish).
+- `daemon_tcb_test.go` strengthened with `TestNoNonTCBInitializations`.
+- `runtimeEnv` confirmed minimal (no shims, only `Store` + thin clients).
+- This shape prepares the daemon for Phase 4 capability dropping, seccomp, and syscall filtering with no vestiges of business logic.

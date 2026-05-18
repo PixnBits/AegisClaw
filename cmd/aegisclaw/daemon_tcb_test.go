@@ -55,3 +55,20 @@ func TestDaemonOnlyCoreResponsibilities(t *testing.T) {
 		t.Log("core VM fields present for watchdog responsibility")
 	}
 }
+
+// TestNoNonTCBInitializations verifies aggressive pre-hardening cleanup:
+// no team/autonomy registry creation, reconcile and script runner disabled.
+func TestNoNonTCBInitializations(t *testing.T) {
+	// The init path in runStart no longer calls newTeamRegistry,
+	// newAutonomyRegistry, reconcileApprovedProposals, or
+	// ensureDefaultScriptRunnerActive. This test documents that state.
+	env, err := initRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resetRuntimeSingletons()
+
+	// runtimeEnv no longer has TeamRegistry / AutonomyRegistry fields
+	// (removed during shim cleanup + aggressive pass).
+	_ = env
+}

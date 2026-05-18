@@ -12,11 +12,14 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
+	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
+	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
+	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/store"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/google/uuid"
@@ -59,6 +62,26 @@ type runtimeEnv struct {
 
 	// SafeMode is retained for minimal operational control during startup.
 	SafeMode atomic.Bool
+
+	// team/autonomy shims removed in final cleanup; referenced by extended
+	// handlers are now nil to keep build green while surface is reduced.
+	TeamRegistry     *teamRegistry
+	AutonomyRegistry *autonomyRegistry
+
+	// Additional legacy shims retained only to keep the tree buildable
+	// during aggressive surface reduction. These will be removed in Phase 4.
+	Sessions   *sessions.Store
+	portalVMMu sync.Mutex
+	PortalVMID string
+
+	// ProposalStore shim retained for remaining dashboard handler references
+	// during surface reduction.
+	ProposalStore *proposal.Store
+	PRStore       *pullrequest.Store
+	MemoryStore   *memory.Store
+	EventBus      *eventbus.Bus
+	GitManager    *gitmanager.Manager
+	LookupStore   *lookup.Store
 }
 
 func initRuntime() (*runtimeEnv, error) {

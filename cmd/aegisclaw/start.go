@@ -102,39 +102,22 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	toolRegistry := buildToolRegistry(env)
 
-	regDir := filepath.Join(filepath.Dir(env.Config.Audit.Dir), "cli-registry")
-	if teamReg, err := newTeamRegistry(regDir); err != nil {
-		env.Logger.Warn("team registry disabled", zap.Error(err))
-	} else {
-		env.TeamRegistry = teamReg
-	}
-	if autoReg, err := newAutonomyRegistry(regDir); err != nil {
-		env.Logger.Warn("autonomy registry disabled", zap.Error(err))
-	} else {
-		env.AutonomyRegistry = autoReg
-	}
+	// === MINIMAL TCB API SURFACE ===
+	// Per docs/specs/host-daemon.md, the Host Daemon exposes ONLY its core
+	// responsibilities: VM lifecycle (Firecracker), Unix socket, AegisHub
+	// watchdog, Ed25519 key distribution, and Merkle signing.
+	// All other concerns (team/autonomy registries, proposal reconciliation,
+	// script runner bootstrap, git/workspace/pr/dashboard/court/chat handlers)
+	// have been aggressively removed or replaced with documented no-ops.
+	// Extended business surface lives behind AegisHub in later phases.
+	// This is the final pre-hardening shape.
 
-	// Reconcile any approved proposals from before event-driven trigger was added
-	// Uses env.Store per Phase 1 Store abstraction.
-	reconcileApprovedProposals(env)
-
-	// Non-TCB registrations below are stubbed or proxied.
-	// Only core TCB (VM lifecycle, socket, AegisHub watchdog, Merkle) remain active.
-	// Business handlers (git, workspace, pr, dashboard, court, chat) are either
-	// thin proxies to AegisHub or return stub responses.
-
-	_ = ensureDefaultScriptRunnerActive // stubbed non-TCB
-
-	apiSrv.Handle("court.review", makeCourtReviewHandler(env))
-	apiSrv.Handle("court.vote", makeCourtVoteHandler(env))
-
-	// git.*, workspace.*, pr.*, dashboard.* handlers registered but many are
-	// now shims or will be moved behind IPC to AegisHub in later phases.
-	apiSrv.Handle("git.browse", makeGitBrowseHandler(env))
-	// ... (similar for other git/workspace/pr/dashboard)
+	// Note: team/autonomy registry initialization removed entirely.
+	// Note: reconcileApprovedProposals and ensureDefaultScriptRunnerActive
+	// disabled for TCB minimization (legacy recovery/bootstrap moved out).
 
 	daemonQuit := make(chan struct{})
-	registerExtendedDaemonAPI(apiSrv, env, toolRegistry, hub, daemonQuit)
+	registerCoreTCBHandlers(apiSrv, env, toolRegistry, hub, daemonQuit)
 
 	if err := apiSrv.Start(); err != nil {
 		hub.Stop()
@@ -163,53 +146,12 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 	return nil
 }
 
-// reconcileApprovedProposals upgrades legacy approved proposals to implementing.
-// All access now goes through env.Store.Proposals() to enforce the single
-// Store abstraction (no more direct ProposalStore field on runtimeEnv).
+// reconcileApprovedProposals is disabled for TCB minimization.
+// Legacy recovery logic moved to AegisHub. Kept as stub to avoid
+// breaking external references during transition.
 func reconcileApprovedProposals(env *runtimeEnv) {
-	propAPI := env.Store.Proposals()
-	summaries, err := propAPI.List()
-	if err != nil {
-		env.Logger.Warn("failed to list proposals for approved->implementing reconciliation", zap.Error(err))
-		return
-	}
-
-	for _, summary := range summaries {
-		if summary.Status != proposal.StatusApproved {
-			continue
-		}
-
-		p, getErr := propAPI.Get(summary.ID)
-		if getErr != nil {
-			env.Logger.Warn("failed to load approved proposal during reconciliation",
-				zap.String("proposal_id", summary.ID),
-				zap.Error(getErr))
-			continue
-		}
-
-		if p.Status != proposal.StatusApproved {
-			continue
-		}
-
-		if tErr := p.Transition(proposal.StatusImplementing, "startup recovery: approved proposal queued for builder", "daemon"); tErr != nil {
-			env.Logger.Warn("failed to transition approved proposal during reconciliation",
-				zap.String("proposal_id", p.ID),
-				zap.Error(tErr))
-			continue
-		}
-
-		if uErr := propAPI.Update(p); uErr != nil {
-			env.Logger.Warn("failed to persist reconciled proposal status",
-				zap.String("proposal_id", p.ID),
-				zap.Error(uErr))
-			continue
-		}
-
-		env.Logger.Info("reconciled approved proposal to implementing",
-			zap.String("proposal_id", p.ID),
-			zap.String("status", string(p.Status)),
-		)
-	}
+	_ = env
+	// intentionally no-op
 }
 
 // makeCourtReviewHandler forwards Court review requests via CourtClient.
@@ -305,4 +247,28 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 // initBuildOrchestrator is disabled during the aggressive BuildOrchestrator extraction.
 func initBuildOrchestrator(env *runtimeEnv) (*builder.BuildOrchestrator, error) {
 	return nil, nil
+}
+
+// registerCoreTCBHandlers wires ONLY the minimal handlers required for the
+// Host Daemon's TCB responsibilities. All non-core surface (git, pr, workspace,
+// dashboard, court, chat, extended CLI) has been removed.
+func registerCoreTCBHandlers(
+	apiSrv *api.Server,
+	env *runtimeEnv,
+	toolRegistry *ToolRegistry,
+	hub *ipc.MessageHub,
+	daemonQuit chan struct{},
+) {
+	// ping is the only public unauthenticated probe
+	apiSrv.Handle("ping", func(ctx context.Context, _ json.RawMessage) *api.Response {
+		return &api.Response{Success: true}
+	})
+
+	// kernel control remains for watchdog / graceful shutdown
+	apiSrv.Handle("kernel.shutdown", withAuthorizedCaller(env, "kernel.shutdown", makeKernelShutdownHandler(env, hub, apiSrv, daemonQuit)))
+	apiSrv.Handle("kernel.restart", withAuthorizedCaller(env, "kernel.restart", makeKernelRestartHandler(env, hub, apiSrv, daemonQuit)))
+
+	// worker list/status kept minimal (read-only, useful for diagnostics)
+	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
+	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
 }
