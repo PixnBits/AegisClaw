@@ -1,10 +1,10 @@
-# Phase 3.5 Progress Update
+# Phase 3.5 Update - Actual Firecracker Launch
 
-**Improved AegisHub Lifecycle Management**
+**Major Progress:**
 
-- Introduced `AegisHubMonitor` with cancellable context-based health loop.
-- Added clean `Stop()` method for graceful shutdown.
-- Wired into `runtimeEnv` for centralized lifecycle control.
-- Health monitoring now properly stops on daemon shutdown.
+- Added `internal/sandbox/aegishub_vm_spec.go` with `DefaultAegisHubVMSpec()`.
+- `launchAegisHub()` now performs real Firecracker VM creation and start using `sandbox.FirecrackerRuntime`.
+- `AegisHubMonitor` stores VM reference for proper shutdown.
+- Client connection happens after successful VM launch.
 
-This provides a much stronger foundation for AegisHub observability and reliability.
+This brings AegisHub launch in line with the Store VM pattern.
