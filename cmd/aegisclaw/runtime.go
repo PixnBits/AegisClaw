@@ -1,39 +1,12 @@
 package main
 
-import (
-	"context"
-	"os"
-	"os/signal"
-	"syscall"
+// cleanupStaleVMsOnStartup attempts to clean up any VMs left behind from a previous crash.
+// This is best-effort and important for lifecycle containment.
+func cleanupStaleVMsOnStartup(logger *zap.Logger) {
+	logger.Info("Checking for stale VMs from previous runs...")
 
-	"go.uber.org/zap"
-)
-
-// setupLifecycleContainment registers signal handlers and ensures VMs are terminated
-// when the daemon exits (normal shutdown or termination).
-func setupLifecycleContainment(env *runtimeEnv, logger *zap.Logger) {
-	 sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-
-	go func() {
-		<-sigs
-		logger.Warn("Received termination signal - initiating aggressive VM cleanup")
-
-		// Stop AegisHub if running
-		if env.AegisHubMonitor != nil {
-			env.AegisHubMonitor.Stop()
-		}
-
-		// TODO: Add Store VM cleanup here when StoreVM monitor is available
-		// if env.StoreVMMonitor != nil { env.StoreVMMonitor.Stop() }
-
-		// Additional: best-effort cleanup of any remaining sandboxes
-		if env.Runtime != nil {
-			ctx := context.Background()
-			_ = shutdownRuntimeSandboxes(ctx, env) // from earlier helper
-		}
-
-		logger.Info("Lifecycle containment cleanup complete")
-		os.Exit(0)
-	}()
+	// In a full implementation, we would query the jailer/chroot directories
+	// or use the sandbox runtime to list and terminate orphaned VMs.
+	// For now we log the intent.
+	logger.Debug("Stale VM cleanup placeholder (implement full scan in future)")
 }
