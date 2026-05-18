@@ -1,5 +1,7 @@
 package main
 
-// Timers and Signals now proxied (Phase 3.4)
-apiSrv.Handle("timers.list", makeTimersListProxy(env))
-apiSrv.Handle("signals.list", makeSignalsListProxy(env))
+// Sessions handlers now fully proxied to AegisHub (Phase 3.4)
+apiSrv.Handle("sessions.list", makeSessionsListProxy(env))
+apiSrv.Handle("sessions.history", makeSessionsHistoryProxy(env))
+apiSrv.Handle("sessions.send", makeSessionsSendProxy(env))
+apiSrv.Handle("sessions.spawn", makeSessionsSpawnProxy(env))

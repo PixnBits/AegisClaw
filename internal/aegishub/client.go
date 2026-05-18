@@ -1,11 +1,16 @@
 package aegishub
 
-// ForwardTimersList forwards timer listing to AegisHub.
-func (c *Client) ForwardTimersList(ctx context.Context, data json.RawMessage) (*api.Response, error) {
-	return c.sendRequest("timers.list", data)
+// ForwardSessionsHistory forwards session history requests.
+func (c *Client) ForwardSessionsHistory(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return c.sendRequest("sessions.history", data)
 }
 
-// ForwardSignalsList forwards signal listing to AegisHub.
-func (c *Client) ForwardSignalsList(ctx context.Context, data json.RawMessage) (*api.Response, error) {
-	return c.sendRequest("signals.list", data)
+// ForwardSessionsSend forwards sending a message to a session.
+func (c *Client) ForwardSessionsSend(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return c.sendRequest("sessions.send", data)
+}
+
+// ForwardSessionsSpawn forwards spawning a new session.
+func (c *Client) ForwardSessionsSpawn(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return c.sendRequest("sessions.spawn", data)
 }
