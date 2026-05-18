@@ -1,7 +1,6 @@
 package sandbox
 
-// StoreVMSpec defines the Firecracker configuration for the Store microVM.
-// This is the start of the real Firecracker Store VM implementation.
+// StoreVMSpec for the real Firecracker Store microVM.
 type StoreVMSpec struct {
 	KernelImage     string
 	RootfsPath      string
@@ -9,18 +8,19 @@ type StoreVMSpec struct {
 	MemoryMB        int
 	VsockCID        uint32
 	VsockPort       uint32
-	DataDir         string // where persistent stores live inside the VM
+	DataDir         string // mounted persistent volume inside guest
+	DataVolumePath  string // host path for persistent data
 }
 
-// DefaultStoreVMSpec returns a reasonable default spec for the Store VM.
 func DefaultStoreVMSpec() StoreVMSpec {
 	return StoreVMSpec{
-		KernelImage: "/var/lib/aegisclaw/vmlinux-5.10.225",
-		RootfsPath:  "/var/lib/aegisclaw/rootfs-templates/store.ext4", // to be built
-		CPUs:        1,
-		MemoryMB:    512,
-		VsockCID:    3,   // dedicated CID for Store VM
-		VsockPort:   9999,
-		DataDir:     "/data",
+		KernelImage:    "/var/lib/aegisclaw/vmlinux-5.10.225",
+		RootfsPath:   "/var/lib/aegisclaw/rootfs-templates/store.ext4",
+		CPUs:         1,
+		MemoryMB:     512,
+		VsockCID:     3,
+		VsockPort:    9999,
+		DataDir:      "/data",
+		DataVolumePath: "/var/lib/aegisclaw/data/store", // persistent on host
 	}
 }
