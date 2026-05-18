@@ -1,10 +1,8 @@
-# Phase 4: Host Daemon Hardening
+# Phase 4.2 Capability Dropping - Done
 
-## 4.1 Lifecycle Containment - Done
+- Added `dropCapabilities()` using `prctl` + `capset`.
+- Keeps minimal set: `CAP_SYS_ADMIN`, `CAP_NET_ADMIN`, `CAP_SYS_CHROOT`, `CAP_DAC_OVERRIDE`.
+- Called very early in `initRuntime()`.
+- Non-fatal on failure (logs warning).
 
-- Added signal handling for SIGINT/SIGTERM/SIGQUIT.
-- On termination: stops AegisHubMonitor (which stops the VM).
-- Added best-effort stale VM cleanup on startup (crash recovery).
-- Wired into `initRuntime()`.
-
-This ensures VMs are not left running if the daemon is killed.
+Capabilities are now dropped to a much smaller set.
