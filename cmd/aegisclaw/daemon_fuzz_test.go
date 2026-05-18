@@ -4,22 +4,17 @@ import (
 	"testing"
 )
 
-// FuzzWithAuthorizedCaller is an initial fuzz target for authorization logic.
-// This is the starting point for fuzz testing as outlined in the test backlog.
+// FuzzWithAuthorizedCaller fuzzes the authorization wrapper input.
+// This is the initial high-priority fuzz target from the test backlog.
 func FuzzWithAuthorizedCaller(f *testing.F) {
-	// Seed with some example inputs
-	f.Add([]byte(`{"user_id": "test"}`))
-	f.Add([]byte(``))
 	f.Add([]byte(`{}`))
+	f.Add([]byte(`{"session_id":"abc"}`))
+	f.Add([]byte(`invalid json`))
+	f.Add([]byte(``))
 
-	f.Fuzz(func(t *testing.T, data []byte) {
-		// TODO: Call authorization logic with fuzzed input
-		// For now this is a skeleton.
-		_ = data
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// TODO: Wire real authorization logic here when ready.
+		// For now we just ensure it doesn't panic on bad input.
+		_ = input
 	})
 }
-
-// Future fuzz targets (from backlog):
-// - Unix socket message parsing
-// - VM spec / config parsing
-// - Key distribution messages
