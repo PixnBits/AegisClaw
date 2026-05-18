@@ -1,13 +1,29 @@
 package main
 
-// In registerExtendedDaemonAPI, switch to proxies (Phase 3.3):
+func makeChatSummarizeProxy(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		if env.AegisHubClient == nil {
+			return &api.Response{Error: "AegisHubClient not available"}
+		}
+		// For now we reuse ForwardChatMessage as a generic forwarder.
+		// A dedicated ForwardChatSummarize can be added later.
+		resp, err := env.AegisHubClient.ForwardChatMessage(ctx, data)
+		if err != nil {
+			return &api.Response{Error: err.Error()}
+		}
+		return resp
+	}
+}
 
-// OLD (kept for reference during transition):
-// apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
-// apiSrv.Handle("chat.tool", withAuthorizedCaller(env, "chat.tool", makeChatToolExecHandler(env, toolRegistry)))
-
-// NEW - Phase 3.3 proxies:
-apiSrv.Handle("chat.message", makeChatMessageProxy(env))
-apiSrv.Handle("chat.tool", withAuthorizedCaller(env, "chat.tool", makeChatToolProxy(env)))
-
-// Note: makeChatSlashHandler and makeChatSummarizeHandler can follow the same pattern.
+func makeChatSlashProxy(env *runtimeEnv) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		if env.AegisHubClient == nil {
+			return &api.Response{Error: "AegisHubClient not available"}
+		}
+		resp, err := env.AegisHubClient.ForwardChatMessage(ctx, data)
+		if err != nil {
+			return &api.Response{Error: err.Error()}
+		}
+		return resp
+	}
+}
