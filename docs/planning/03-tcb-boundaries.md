@@ -1,8 +1,12 @@
-# Phase 3.5 - Restart-on-Failure Added
+# Phase 3 Complete
 
-- `AegisHubMonitor` now tracks consecutive health failures.
-- After reaching threshold, it calls `restart()`.
-- Basic restart skeleton in place (full VM re-creation TODO).
-- Health recovery resets the failure counter.
+**Phase 3.5 (AegisHub Launch, Monitoring & Lifecycle) is now closed out.**
 
-Restart logic is now active (can be hardened further with full re-launch).
+### Final Deliverables
+- Actual Firecracker launch for AegisHub
+- Real health checking via vsock
+- Cancellable monitoring loop
+- Graceful shutdown
+- Restart-on-failure with VM re-creation
+
+All major placeholders have been implemented. Phase 3 is ready for review.
