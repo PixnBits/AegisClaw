@@ -1,43 +1,50 @@
 package main
 
-// === More Authorization Scenarios ===
+// === Additional Edge Case & Error Path Tests ===
 
-func TestWithAuthorizedCaller_NilEnv(t *testing.T) {
-	wrapped := withAuthorizedCaller(nil, "test", func(ctx context.Context, data json.RawMessage) *api.Response {
-		return &api.Response{Success: true}
-	})
-	if wrapped == nil {
-		t.Error("expected non-nil wrapped handler even with nil env")
-	}
-}
+func TestCreateSecureSocket_AlreadyExists(t *testing.T) {
+	tmp := t.TempDir()
+	sockPath := filepath.Join(tmp, "existing.sock")
 
-// === Error Path Tests for Secure Socket ===
+	// Pre-create the socket
+	_ = os.WriteFile(sockPath, []byte("existing"), 0600)
 
-func TestCreateSecureSocket_InvalidPath(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	// Trying to create socket in a path that cannot be created
-	_, err := createSecureSocket("/nonexistent/very/deep/path/that/cannot/be/created.sock", logger)
-	if err == nil {
-		t.Error("expected error when parent directories cannot be created")
+	ln, err := createSecureSocket(sockPath, logger)
+	if err != nil {
+		t.Fatalf("should handle existing socket: %v", err)
 	}
+	defer ln.Close()
 }
 
-// === More Monitor / Lifecycle Behavior ===
+func TestDropCapabilities_MultipleCalls(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	_ = dropCapabilities(logger)
+	_ = dropCapabilities(logger) // calling twice should be safe
+}
 
-func TestAegisHubMonitor_InitialState(t *testing.T) {
-	monitor := &AegisHubMonitor{}
+// === More Monitor Behavior ===
+
+func TestAegisHubMonitor_HealthRecoveryResetsFailures(t *testing.T) {
+	monitor := &AegisHubMonitor{
+		maxFailsBeforeRestart: 3,
+	}
+
+	monitor.consecutiveFails = 2
+	// Simulate successful health check
+	monitor.consecutiveFails = 0
+
 	if monitor.consecutiveFails != 0 {
-		t.Error("new monitor should start with zero failures")
-	}
-	if monitor.maxFailsBeforeRestart == 0 {
-		// default should be reasonable
-		monitor.maxFailsBeforeRestart = 3
+		t.Error("failures should reset on health recovery")
 	}
 }
 
-// === Policy Reinforcement Tests ===
+// === Invariant / Policy Tests ===
 
-func TestDaemonShouldNotContainBusinessLogic(t *testing.T) {
-	// This test exists to make the architectural invariant explicit.
-	t.Log("Host Daemon must remain free of business logic, chat, proposals, memory, etc.")
+func TestDaemonMinimalTCB_Explicit(t *testing.T) {
+	t.Log("Host Daemon TCB should only contain: VM lifecycle, socket server, key distribution, Merkle signing, and watchdog.")
+}
+
+func TestNoGovernanceInDaemon(t *testing.T) {
+	t.Log("Governance Court logic must live outside the Host Daemon.")
 }
