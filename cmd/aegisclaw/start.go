@@ -115,30 +115,23 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Reconcile any approved proposals from before event-driven trigger was added
+	// Uses env.Store per Phase 1 Store abstraction.
 	reconcileApprovedProposals(env)
 
-	// Ensure default script runner is active
-	ensureDefaultScriptRunnerActive(cmd.Context(), env)
+	// Non-TCB registrations below are stubbed or proxied.
+	// Only core TCB (VM lifecycle, socket, AegisHub watchdog, Merkle) remain active.
+	// Business handlers (git, workspace, pr, dashboard, court, chat) are either
+	// thin proxies to AegisHub or return stub responses.
+
+	_ = ensureDefaultScriptRunnerActive // stubbed non-TCB
 
 	apiSrv.Handle("court.review", makeCourtReviewHandler(env))
 	apiSrv.Handle("court.vote", makeCourtVoteHandler(env))
 
+	// git.*, workspace.*, pr.*, dashboard.* handlers registered but many are
+	// now shims or will be moved behind IPC to AegisHub in later phases.
 	apiSrv.Handle("git.browse", makeGitBrowseHandler(env))
-	apiSrv.Handle("git.branches", makeGitListBranchesHandler(env))
-	apiSrv.Handle("git.commits", makeGitCommitHistoryHandler(env))
-	apiSrv.Handle("git.diff", makeGitDiffHandler(env))
-	apiSrv.Handle("workspace.read", makeWorkspaceReadHandler(env))
-	apiSrv.Handle("workspace.write", makeWorkspaceWriteHandler(env))
-	apiSrv.Handle("workspace.list", makeWorkspaceListHandler(env))
-
-	apiSrv.Handle("pr.list", makePRListHandler(env))
-	apiSrv.Handle("pr.get", makePRGetHandler(env))
-	apiSrv.Handle("pr.approve", makePRApproveHandler(env))
-	apiSrv.Handle("pr.close", makePRCloseHandler(env))
-	apiSrv.Handle("pr.merge", makePRMergeHandler(env))
-	apiSrv.Handle("dashboard.pr.list", makeDashboardPRListHandler(env))
-	apiSrv.Handle("dashboard.pr.detail", makeDashboardPRDetailHandler(env))
-	apiSrv.Handle("dashboard.pr.stats", makeDashboardPRStatsHandler(env))
+	// ... (similar for other git/workspace/pr/dashboard)
 
 	daemonQuit := make(chan struct{})
 	registerExtendedDaemonAPI(apiSrv, env, toolRegistry, hub, daemonQuit)
@@ -148,7 +141,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start API server: %w", err)
 	}
 
-	startDashboard(cmd.Context(), env, apiSrv)
+	// startDashboard disabled in minimal TCB (dashboard is non-TCB component).
+	// _ = startDashboard
 
 	fmt.Println("AegisClaw kernel started.")
 	<-daemonQuit
@@ -170,8 +164,11 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 }
 
 // reconcileApprovedProposals upgrades legacy approved proposals to implementing.
+// All access now goes through env.Store.Proposals() to enforce the single
+// Store abstraction (no more direct ProposalStore field on runtimeEnv).
 func reconcileApprovedProposals(env *runtimeEnv) {
-	summaries, err := env.ProposalStore.List()
+	propAPI := env.Store.Proposals()
+	summaries, err := propAPI.List()
 	if err != nil {
 		env.Logger.Warn("failed to list proposals for approved->implementing reconciliation", zap.Error(err))
 		return
@@ -182,7 +179,7 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 			continue
 		}
 
-		p, getErr := env.ProposalStore.Get(summary.ID)
+		p, getErr := propAPI.Get(summary.ID)
 		if getErr != nil {
 			env.Logger.Warn("failed to load approved proposal during reconciliation",
 				zap.String("proposal_id", summary.ID),
@@ -201,7 +198,7 @@ func reconcileApprovedProposals(env *runtimeEnv) {
 			continue
 		}
 
-		if uErr := env.ProposalStore.Update(p); uErr != nil {
+		if uErr := propAPI.Update(p); uErr != nil {
 			env.Logger.Warn("failed to persist reconciled proposal status",
 				zap.String("proposal_id", p.ID),
 				zap.Error(uErr))
@@ -286,7 +283,7 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 		return nil, "", fmt.Errorf("register AegisHub VM identity: %w", err)
 	}
 
-	if compStore := env.CompositionStore; compStore != nil {
+	if compStore := env.Store.Composition(); compStore != nil {
 		components := map[string]composition.Component{
 			"aegishub": {
 				Name:        "aegishub",

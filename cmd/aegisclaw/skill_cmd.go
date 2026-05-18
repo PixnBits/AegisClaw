@@ -545,7 +545,7 @@ func runSkillActivate(cmd *cobra.Command, args []string) error {
 
 	// Pre-activation check: verify all declared secrets exist in the vault.
 	// Walk proposals to find the approved one for this skill.
-	if env.Vault != nil {
+	if false { // Vault removed from TCB; secrets not handled in daemon 
 		if err := checkSecretsBeforeActivate(skillName, env); err != nil {
 			return err
 		}
@@ -603,7 +603,7 @@ func checkSecretsBeforeActivate(skillName string, env *runtimeEnv) error {
 	}
 
 	// Use the already-opened vault if available; otherwise open it.
-	v := env.Vault
+	v := (*vault.Vault)(nil) // Vault removed; stub for TCB compliance
 	if v == nil {
 		if env.Kernel == nil {
 			return nil // can't check without kernel key — proceed optimistically

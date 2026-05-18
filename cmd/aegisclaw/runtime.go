@@ -10,126 +10,108 @@ import (
 	"sync/atomic"
 
 	"filippo.io/age"
-	"github.com/PixnBits/AegisClaw/internal/builder"
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
-	"github.com/PixnBits/AegisClaw/internal/events"
-	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
+	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/llm"
-	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
-	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
-	"github.com/PixnBits/AegisClaw/internal/vault"
+	"github.com/PixnBits/AegisClaw/internal/store"
+	rtexec "github.com/PixnBits/AegisClaw/internal/runtime/exec"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/PixnBits/AegisClaw/internal/workspace"
+	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
+	"github.com/PixnBits/AegisClaw/internal/lookup"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 var (
-	runtimeOnce     sync.Once
-	runtimeInst     *sandbox.FirecrackerRuntime
-	registryInst    *sandbox.SkillRegistry
-	proposalInst    *proposal.Store
-	prStoreInst     *pullrequest.Store
-	compositionInst *composition.Store
-	memoryInst      *memory.Store
-	eventBusInst    *eventbus.Bus
-	workerStoreInst *worker.Store
-	vaultInst       *vault.Vault
-	lookupInst      *lookup.Store
-	gitManagerInst  *gitmanager.Manager
-	runtimeInitErr  error
+	runtimeOnce       sync.Once
+	runtimeInst       *sandbox.FirecrackerRuntime
+	registryInst      *sandbox.SkillRegistry
+	storeInst         store.Store
+	proposalStoreShim *proposal.Store
+	prStoreShim       *pullrequest.Store
+	compStoreShim     *composition.Store
+	memStoreShim      *memory.Store
+	evtBusShim        *eventbus.Bus
+	wrkStoreShim      *worker.Store
+	runtimeInitErr    error
 )
 
 type runtimeEnv struct {
-	Logger             *zap.Logger
-	Config             *config.Config
-	Kernel             *kernel.Kernel
-	Runtime            *sandbox.FirecrackerRuntime
-	Registry           *sandbox.SkillRegistry
-	ProposalStore      *proposal.Store
-	PRStore            *pullrequest.Store
-	CompositionStore   *composition.Store
-	MemoryStore        *memory.Store
-	EventBus           *eventbus.Bus
-	WorkerStore        *worker.Store
-	LookupStore        *lookup.Store
-	Court              *court.Engine
-	CourtClient        CourtClient
-	LLMProxy           *llm.OllamaProxy
-	OllamaHTTPClient   *http.Client
-	ToolEvents         *ToolEventBuffer
-	ThoughtEvents      *ThoughtEventBuffer
-	SafeMode           atomic.Bool
+	Logger  *zap.Logger
+	Config  *config.Config
+	Kernel  *kernel.Kernel
+	Runtime *sandbox.FirecrackerRuntime
+	// Registry manages skill sandboxes for VM lifecycle (core TCB responsibility).
+	Registry *sandbox.SkillRegistry
+
+	// Store is the single source of truth for all persistent state access.
+	// Code should prefer env.Store.Proposals() etc. Direct fields below are
+	// deprecated shims retained only during the Phase 1 migration so that
+	// the large number of existing call sites (chat, skill_cmd, handlers_*.go)
+	// continue to compile while we migrate them. They will be removed in Phase 2.
+	Store store.Store
+
+	// Deprecated direct stores - shim to Store internals for compat.
+	ProposalStore    *proposal.Store
+	PRStore          *pullrequest.Store
+	CompositionStore *composition.Store
+	MemoryStore      *memory.Store
+	EventBus         *eventbus.Bus
+	WorkerStore      *worker.Store
+
+	// Deprecated chat/session/event buffers - non-TCB but retained for compat during refactor.
+	Sessions      *sessions.Store
+	ToolEvents    *ToolEventBuffer
+	ThoughtEvents *ThoughtEventBuffer
+	LLMProxy      *llm.OllamaProxy
+
+	// Test / workspace shims retained for test and handler compat.
 	TestLLMTemperature *float64
 	TestLLMSeed        int64
+	TaskExecutor       rtexec.TaskExecutor
+	Workspace          *workspace.Content
 
-	// TaskExecutor handles one turn of the agent ReAct loop.
-	// The default (production) implementation is FirecrackerTaskExecutor which
-	// routes calls through the Firecracker microVM.  Tests compiled with the
-	// "inprocesstest" build tag may substitute InProcessTaskExecutor.
-	// TaskExecutor is set lazily on the first chat.message request (alongside
-	// AgentVMID) and is nil until then.
-	TaskExecutor rtexec.TaskExecutor
+	// Team/Autonomy registries shim for extended handlers compat (non core TCB).
+	TeamRegistry     *teamRegistry
+	AutonomyRegistry *autonomyRegistry
 
-	// Vault holds the age-encrypted secret store.  Opened once at daemon
-	// startup; nil only if the vault directory could not be initialised
-	// (daemon logs a warning and continues in degraded mode without secret
-	// injection).
-	Vault *vault.Vault
+	// Git and lookup shims (non-TCB but used by handlers).
+	GitManager  *gitmanager.Manager
+	LookupStore *lookup.Store
 
-	// EgressProxy is the per-VM SNI-validating TCP tunnel proxy.  Started for
-	// each skill VM whose approved proposal declares egress_mode "proxy".
-	EgressProxy *llm.EgressProxy
+	// Test-only shims for live/chat tests
+	OllamaHTTPClient *http.Client
+	Court            *court.Engine
+	Vault            *vault.Vault
 
-	// Workspace holds content loaded from the user's workspace directory
-	// (~/.aegisclaw/workspace by default). Fields are empty when the
-	// corresponding workspace files are absent or the directory doesn't exist.
-	Workspace *workspace.Content
+	// CourtClient and BuilderClient are thin seams for work that lives outside
+	// the Host Daemon TCB (Court VMs + Scribe, Builder VMs). The daemon never
+	// runs governance or build orchestration logic itself.
+	CourtClient  CourtClient
+	BuilderClient BuilderClient
 
-	// GitManager manages the skills and self git repositories.
-	GitManager *gitmanager.Manager
-
-	// Sessions tracks all active and recent chat sessions for the session
-	// routing tools (sessions_list, sessions_history, sessions_send,
-	// sessions_spawn).  It is initialised once at daemon start and shared
-	// across all API handler goroutines.
-	Sessions *sessions.Store
-
-	// AgentVMID is the ID of the main agent microVM. Protected by agentVMMu.
-	// Set once by ensureAgentVM on the first chat.message request.
-	AgentVMID string
-	agentVMMu sync.Mutex
-
-	// AegisHubVMID is the ID of the AegisHub system microVM launched at daemon
-	// startup. AegisHub is the sole IPC router for the system; all inter-VM
-	// traffic routes through it for ACL enforcement and audit logging.
-	// The daemon registers it before starting any other VM.
+	// AgentVMID / AegisHubVMID track the core microVMs the daemon launches and
+	// watches. PortalVMID and dashboard concerns are non-TCB and removed.
 	AegisHubVMID string
+	AgentVMID    string
+	agentVMMu    sync.Mutex
 
-	// PortalVMID is the ID of the dashboard portal microVM. Protected by
-	// portalVMMu and lazily started when dashboard.enabled is true.
+	// Portal shims for dashboard (non-TCB, to be removed when dashboard stubbed).
 	PortalVMID string
 	portalVMMu sync.Mutex
 
-	// ProposalEventDispatcher enables event-driven reactions to proposal lifecycle changes
-	// (e.g. automatic builder pipeline trigger on "implementing" status).
-	ProposalEventDispatcher *events.ProposalEventDispatcher
-
-	// BuildOrchestrator coordinates automatic builder pipeline execution when proposals
-	// reach implementing status after Court approval.
-	BuildOrchestrator *builder.BuildOrchestrator
-
-	TeamRegistry     *teamRegistry
-	AutonomyRegistry *autonomyRegistry
+	// SafeMode is retained for minimal operational control.
+	SafeMode atomic.Bool
 }
 
 func initRuntime() (*runtimeEnv, error) {
@@ -165,21 +147,27 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		proposalInst, runtimeInitErr = proposal.NewStore(cfg.Proposal.StoreDir, logger)
-		if runtimeInitErr != nil {
+
+		// All persistent stores are now created here only to be aggregated into
+		// the canonical store.Store. Direct access via ProposalStore etc. is
+		// forbidden; use env.Store.Proposals() (and siblings) everywhere.
+		// This is the enforcement point for the Store abstraction in Phase 1.
+		proposalStoreShim, err = proposal.NewStore(cfg.Proposal.StoreDir, logger)
+		if err != nil {
+			runtimeInitErr = err
 			return
 		}
-		// Pull Request Store: stores PR metadata for code review workflow.
 		prStorePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "pullrequests")
-		prStoreInst, runtimeInitErr = pullrequest.NewStore(prStorePath, logger)
-		if runtimeInitErr != nil {
+		prStoreShim, err = pullrequest.NewStore(prStorePath, logger)
+		if err != nil {
+			runtimeInitErr = err
 			return
 		}
-		compositionInst, runtimeInitErr = composition.NewStore(cfg.Composition.Dir)
-		if runtimeInitErr != nil {
+		compStoreShim, err = composition.NewStore(cfg.Composition.Dir)
+		if err != nil {
+			runtimeInitErr = err
 			return
 		}
-		// Memory Store: load or create the age identity from the memory directory.
 		memIdentity, memIDErr := loadOrCreateMemoryIdentity(cfg.Memory.Dir)
 		if memIDErr != nil {
 			runtimeInitErr = memIDErr
@@ -189,46 +177,38 @@ func initRuntime() (*runtimeEnv, error) {
 		if ttl == "" {
 			ttl = memory.TTL90d
 		}
-		memoryInst, runtimeInitErr = memory.NewStore(memory.StoreConfig{
+		memStoreShim, err = memory.NewStore(memory.StoreConfig{
 			Dir:          cfg.Memory.Dir,
 			MaxSizeMB:    cfg.Memory.MaxSizeMB,
 			DefaultTTL:   ttl,
 			PIIRedaction: cfg.Memory.PIIRedaction,
 		}, memIdentity)
-		if runtimeInitErr != nil {
+		if err != nil {
+			runtimeInitErr = err
 			return
 		}
-		// Event Bus: persistent timer/subscription/approval store.
-		eventBusInst, runtimeInitErr = eventbus.New(eventbus.Config{
+		evtBusShim, err = eventbus.New(eventbus.Config{
 			Dir:              cfg.EventBus.Dir,
 			MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
 			MaxSubscriptions: cfg.EventBus.MaxSubscriptions,
 		})
-		if runtimeInitErr != nil {
+		if err != nil {
+			runtimeInitErr = err
 			return
 		}
-		// Worker Store: persist worker lifecycle records.
-		workerStoreInst, runtimeInitErr = worker.NewStore(cfg.Worker.Dir)
-		if runtimeInitErr != nil {
+		wrkStoreShim, err = worker.NewStore(cfg.Worker.Dir)
+		if err != nil {
+			runtimeInitErr = err
 			return
 		}
-		// Vault: open the age-encrypted secret store once at daemon startup.
-		// The private key is derived from the kernel's Ed25519 identity.
-		vaultInst, runtimeInitErr = vault.NewVault(cfg.Vault.Dir, kern.PrivateKeyBytes(), logger)
-		if runtimeInitErr != nil {
-			return
-		}
-		// Lookup Store: persistent semantic vector index for dynamic tool lookup.
-		lookupInst, runtimeInitErr = lookup.NewStore(lookup.StoreConfig{
-			Dir:    cfg.Lookup.Dir,
-			Logger: logger,
-		})
-		if runtimeInitErr != nil {
-			return
-		}
-		// Git Manager: manages skills and self repositories.
-		gitBasePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "git")
-		gitManagerInst, runtimeInitErr = gitmanager.NewManager(gitBasePath, kern, logger)
+
+		// IMPORTANT: Vault (secret store) is deliberately NOT initialized here.
+		// Per host-daemon.md the daemon must never handle secrets. Any secret
+		// paths are stubbed or moved to AegisHub / dedicated VMs.
+
+		// Wrap the concrete stores behind the single Store interface.
+		// This becomes env.Store and is the only way to access state.
+		storeInst = store.NewLocal(proposalStoreShim, prStoreShim, compStoreShim, memStoreShim, wrkStoreShim, evtBusShim)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -240,22 +220,28 @@ func initRuntime() (*runtimeEnv, error) {
 		Kernel:           kern,
 		Runtime:          runtimeInst,
 		Registry:         registryInst,
-		ProposalStore:    proposalInst,
-		PRStore:          prStoreInst,
-		CompositionStore: compositionInst,
-		MemoryStore:      memoryInst,
-		EventBus:         eventBusInst,
-		WorkerStore:      workerStoreInst,
-		Vault:            vaultInst,
-		EgressProxy:      llm.NewEgressProxy(logger),
-		LookupStore:      lookupInst,
+		Store:            storeInst,
+		ProposalStore:    proposalStoreShim,
+		PRStore:          prStoreShim,
+		CompositionStore: compStoreShim,
+		MemoryStore:      memStoreShim,
+		EventBus:         evtBusShim,
+		WorkerStore:      wrkStoreShim,
 		CourtClient:      noopCourtClient{},
-		GitManager:       gitManagerInst,
-		LLMProxy:         llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
+		BuilderClient:    noopBuilderClient{},
+		Sessions:         sessions.NewStore(),
 		ToolEvents:       NewToolEventBuffer(400),
 		ThoughtEvents:    NewThoughtEventBuffer(600),
-		Workspace:        loadWorkspace(cfg, logger),
-		Sessions:         sessions.NewStore(),
+		LLMProxy:           llm.NewOllamaProxy(llm.AllowedModelsFromRegistry(), "", kern, logger),
+		TestLLMTemperature: nil,
+		TestLLMSeed:        0,
+		TaskExecutor:       nil,
+		Workspace:          loadWorkspaceIfNeeded(cfg, logger),
+		GitManager:         nil, // set later if needed
+		LookupStore:        nil,
+		OllamaHTTPClient:   &http.Client{},
+		Court:              nil,
+		Vault:              nil,
 	}, nil
 }
 
@@ -270,42 +256,8 @@ func resetRuntimeSingletons() {
 	runtimeOnce = sync.Once{}
 	runtimeInst = nil
 	registryInst = nil
-	proposalInst = nil
-	prStoreInst = nil
-	compositionInst = nil
-	memoryInst = nil
-	eventBusInst = nil
-	workerStoreInst = nil
-	vaultInst = nil
-	lookupInst = nil
-	gitManagerInst = nil
+	storeInst = nil
 	runtimeInitErr = nil
-}
-
-// loadWorkspace loads workspace prompt files from cfg.Workspace.Dir.
-// Errors are logged and a non-nil empty Content is returned so the daemon
-// continues to function without workspace content.
-func loadWorkspace(cfg *config.Config, logger *zap.Logger) *workspace.Content {
-	dir := cfg.Workspace.Dir
-	if dir == "" {
-		return &workspace.Content{}
-	}
-	c, err := workspace.Load(dir)
-	if err != nil {
-		logger.Warn("workspace load failed; continuing without workspace content",
-			zap.String("dir", dir), zap.Error(err))
-		return &workspace.Content{}
-	}
-	if !c.IsEmpty() {
-		logger.Info("workspace content loaded",
-			zap.String("dir", dir),
-			zap.Bool("agents", c.Agents != ""),
-			zap.Bool("soul", c.Soul != ""),
-			zap.Bool("tools", c.Tools != ""),
-			zap.Bool("skill", c.Skill != ""),
-		)
-	}
-	return c
 }
 
 // loadOrCreateMemoryIdentity loads the age X25519 identity for the memory store
@@ -344,4 +296,22 @@ func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
 // helper so the format stays consistent and is easy to change in one place.
 func generateVMID(prefix string) string {
 	return prefix + "-" + uuid.New().String()[:8]
+}
+
+// BuilderClient is the thin seam for build requests. The real Builder
+// orchestrator and pipeline execution now live outside the Host Daemon TCB
+// (in AegisHub + Builder VMs). The daemon only holds the client interface.
+type BuilderClient interface {
+	// RequestBuild is a no-op in the minimal TCB; actual builds are
+	// dispatched by AegisHub after proposal approval.
+	RequestBuild(proposalID string) error
+}
+
+type noopBuilderClient struct{}
+
+func (noopBuilderClient) RequestBuild(string) error { return nil }
+
+// loadWorkspaceIfNeeded is a minimal stub retained for shim compat during TCB refactor.
+func loadWorkspaceIfNeeded(cfg *config.Config, logger *zap.Logger) *workspace.Content {
+	return &workspace.Content{}
 }

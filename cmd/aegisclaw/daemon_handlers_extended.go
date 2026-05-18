@@ -243,7 +243,8 @@ func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
 		if _, err := env.Kernel.SignAndLog(action); err != nil {
 			env.Logger.Error("failed to audit log skill deactivate", zap.Error(err))
 		}
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "deactivated " + req.Name})}
+		respData, _ := json.Marshal(map[string]string{"message": "deactivated " + req.Name})
+		return &api.Response{Success: true, Data: respData}
 	}
 }
 
@@ -257,7 +258,8 @@ func makeKernelShutdownHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api
 		mu.Lock()
 		defer mu.Unlock()
 		if shutdownStarted {
-			return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "shutdown already in progress"})}
+			data, _ := json.Marshal(map[string]string{"message": "shutdown already in progress"})
+			return &api.Response{Success: true, Data: data}
 		}
 		payload, _ := json.Marshal(map[string]string{"reason": "kernel.shutdown"})
 		action := kernel.NewAction(kernel.ActionKernelStop, "cli", payload)
@@ -271,7 +273,8 @@ func makeKernelShutdownHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api
 
 		shutdownStarted = true
 		scheduleDaemonExit(hub, apiSrv, daemonQuit)
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "shutdown initiated"})}
+		data, _ := json.Marshal(map[string]string{"message": "shutdown initiated"})
+		return &api.Response{Success: true, Data: data}
 	}
 }
 
@@ -285,7 +288,8 @@ func makeKernelRestartHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api.
 		mu.Lock()
 		defer mu.Unlock()
 		if restartStarted {
-			return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "restart already in progress"})}
+			data, _ := json.Marshal(map[string]string{"message": "restart already in progress"})
+			return &api.Response{Success: true, Data: data}
 		}
 		if err := shutdownRuntimeSandboxes(ctx, env); err != nil {
 			return &api.Response{Error: err.Error()}
@@ -308,10 +312,11 @@ func makeKernelRestartHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api.
 		}
 		restartStarted = true
 		scheduleDaemonExit(hub, apiSrv, daemonQuit)
-		return &api.Response{Success: true, Data: mustMarshal(map[string]interface{}{
+		data, _ := json.Marshal(map[string]interface{}{
 			"message": "restart initiated",
 			"pid":     restartProc.Process.Pid,
-		})}
+		})
+		return &api.Response{Success: true, Data: data}
 	}
 }
 
@@ -488,40 +493,19 @@ func makeTasksCancelStubHandler() api.Handler {
 
 func makeCourtDecisionsListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.Court == nil {
-			return &api.Response{Error: "court engine not initialized"}
-		}
-		out, err := json.Marshal(env.Court.ListSessions())
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: out}
+		// Court engine removed from daemon TCB per Phase 1; stubbed.
+		_ = env
+		return &api.Response{Error: "court engine not in Host Daemon TCB (Phase 1)"}
 	}
 }
 
 func makeCourtDecisionsShowHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.Court == nil {
-			return &api.Response{Error: "court engine not initialized"}
-		}
-		var req struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		session, ok := env.Court.GetSession(strings.TrimSpace(req.ID))
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("court decision %q not found", req.ID)}
-		}
-		out, err := json.Marshal(session)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: out}
+		// Court removed from TCB.
+		_ = env
+		return &api.Response{Error: "court not in Host Daemon TCB"}
 	}
 }
-
 func makeTeamListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, _ json.RawMessage) *api.Response {
 		if env.TeamRegistry == nil {
