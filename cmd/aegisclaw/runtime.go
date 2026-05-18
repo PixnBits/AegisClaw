@@ -1,41 +1,20 @@
 package main
 
-import (
-	"context"
-	"fmt"
-
-	"github.com/PixnBits/AegisClaw/internal/config"
-	"github.com/PixnBits/AegisClaw/internal/sandbox"
-	"github.com/PixnBits/AegisClaw/internal/store"
-	"go.uber.org/zap"
-)
-
-// ToolRegistryClient seam (Phase 3.2)
-type ToolRegistryClient interface {
-	ListTools(ctx context.Context) ([]string, error)
+// AegisHubClient is the Phase 3.3 seam for forwarding control-plane
+// requests (chat, tools, etc.) to AegisHub.
+type AegisHubClient interface {
+	ForwardChatMessage(ctx context.Context, data json.RawMessage) (*api.Response, error)
+	ForwardChatTool(ctx context.Context, data json.RawMessage) (*api.Response, error)
+	// Add more methods as needed
 }
 
-type stubToolRegistryClient struct{}
+// stubAegisHubClient is a transitional implementation.
+type stubAegisHubClient struct{}
 
-func (s *stubToolRegistryClient) ListTools(ctx context.Context) ([]string, error) {
-	return []string{"daemon.ping", "search_tools (via AegisHub)"}, nil
+func (s *stubAegisHubClient) ForwardChatMessage(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return &api.Response{Error: "chat forwarded to AegisHub (stub)"}, nil
 }
 
-// runtimeEnv now includes ToolRegistryClient
-// Direct ToolRegistry usage should be deprecated in favor of this client.
-type runtimeEnv struct {
-	// ... existing fields ...
-	ToolRegistryClient ToolRegistryClient
-	// ...
-}
-
-func initRuntime() (*runtimeEnv, error) {
-	// ... existing init code ...
-
-	// Phase 3.2: Initialize ToolRegistryClient (points to AegisHub in future)
-	env := &runtimeEnv{
-		// ... other fields ...
-		ToolRegistryClient: &stubToolRegistryClient{},
-	}
-	return env, nil
+func (s *stubAegisHubClient) ForwardChatTool(ctx context.Context, data json.RawMessage) (*api.Response, error) {
+	return &api.Response{Error: "chat tool forwarded to AegisHub (stub)"}, nil
 }
