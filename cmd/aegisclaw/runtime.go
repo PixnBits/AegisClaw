@@ -38,12 +38,14 @@ var (
 	runtimeOnce     sync.Once
 	runtimeInst     *sandbox.FirecrackerRuntime
 	registryInst    *sandbox.SkillRegistry
-	proposalInst    *proposal.Store // Deprecated (Minimal Phase 2): owned by StoreVM
-	prStoreInst     *pullrequest.Store // Deprecated
-	compositionInst *composition.Store // Deprecated
-	memoryInst      *memory.Store      // Deprecated
+
+	// Deprecated globals kept only for reset; no longer created or used for ownership.
+	proposalInst    *proposal.Store
+	prStoreInst     *pullrequest.Store
+	compositionInst *composition.Store
+	memoryInst      *memory.Store
 	eventBusInst    *eventbus.Bus
-	workerStoreInst *worker.Store // Deprecated
+	workerStoreInst *worker.Store
 	lookupInst      *lookup.Store
 	gitManagerInst  *gitmanager.Manager
 	runtimeInitErr  error
@@ -56,7 +58,7 @@ type runtimeEnv struct {
 	Runtime  *sandbox.FirecrackerRuntime
 	Registry *sandbox.SkillRegistry
 
-	// Clean abstractions
+	// Clean abstractions - Store comes from StoreVM
 	Store         store.Store
 	CourtClient   court.Client
 	BuilderClient builder.Client
@@ -89,7 +91,8 @@ type runtimeEnv struct {
 	TeamRegistry     *teamRegistry     // Deprecated
 	AutonomyRegistry *autonomyRegistry // Deprecated
 
-	// StoreVM owns persistent state creation
+	// StoreVM is the ONLY persistent state boundary.
+	// Daemon has ZERO ownership of stores or their creation.
 	StoreVM store.StoreVM
 }
 
@@ -129,8 +132,6 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		// NOTE: All persistent stores are now created inside LocalStoreVM
-		// The old direct creation calls have been removed.
 		eventBusInst, runtimeInitErr = eventbus.New(eventbus.Config{
 			Dir:              cfg.EventBus.Dir,
 			MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
@@ -153,10 +154,11 @@ func initRuntime() (*runtimeEnv, error) {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
 	}
 
-	// Create StoreVM which now owns persistent store creation
-	localStoreVM, err := store.NewLocalStoreVM(cfg, logger)
+	// StoreVM encapsulates ALL persistent store creation and ownership.
+	// Daemon has no ownership or direct creation responsibility.
+	svm, err := store.NewStoreVM(cfg, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create LocalStoreVM: %w", err)
+		return nil, fmt.Errorf("failed to create StoreVM: %w", err)
 	}
 
 	courtClient := &court.StubClient{}
@@ -168,7 +170,7 @@ func initRuntime() (*runtimeEnv, error) {
 		Kernel:        kern,
 		Runtime:       runtimeInst,
 		Registry:      registryInst,
-		Store:         localStoreVM.Store(),
+		Store:         svm.Store(),
 		CourtClient:   courtClient,
 		BuilderClient: builderClient,
 		EgressProxy:   llm.NewEgressProxy(logger),
@@ -179,8 +181,92 @@ func initRuntime() (*runtimeEnv, error) {
 		ThoughtEvents: NewThoughtEventBuffer(600),
 		Workspace:     loadWorkspace(cfg, logger),
 		Sessions:      sessions.NewStore(),
-		StoreVM:       localStoreVM,
+		StoreVM:       svm,
 	}, nil
 }
 
-// ... rest of the file remains the same (layoutFromConfig, resetRuntimeSingletons, etc.)
+func layoutFromConfig(cfg *config.Config) aegispaths.Layout {
+	defaultLayout, _ := aegispaths.DefaultLayout()
+	layout := defaultLayout
+	if cfg == nil {
+		return layout
+	}
+	layout.SocketPath = cfg.Daemon.SocketPath
+	layout.AuditDir = cfg.Audit.Dir
+	layout.SecretsDir = cfg.Vault.Dir
+	layout.WorkspaceDir = cfg.Workspace.Dir
+	layout.VMDir = filepath.Dir(cfg.Sandbox.StateDir)
+	layout.RegistryDir = filepath.Dir(cfg.Sandbox.RegistryPath)
+	layout.ProposalDir = cfg.Proposal.StoreDir
+	layout.SBOMDir = cfg.Builder.SBOMDir
+	return layout
+}
+
+func resetRuntimeSingletons() {
+	runtimeOnce = sync.Once{}
+	runtimeInst = nil
+	registryInst = nil
+	proposalInst = nil
+	prStoreInst = nil
+	compositionInst = nil
+	memoryInst = nil
+	eventBusInst = nil
+	workerStoreInst = nil
+	lookupInst = nil
+	gitManagerInst = nil
+	runtimeInitErr = nil
+}
+
+func loadWorkspace(cfg *config.Config, logger *zap.Logger) *workspace.Content {
+	dir := cfg.Workspace.Dir
+	if dir == "" {
+		return &workspace.Content{}
+	}
+	c, err := workspace.Load(dir)
+	if err != nil {
+		logger.Warn("workspace load failed; continuing without workspace content",
+			zap.String("dir", dir), zap.Error(err))
+		return &workspace.Content{}
+	}
+	if !c.IsEmpty() {
+		logger.Info("workspace content loaded",
+			zap.String("dir", dir),
+			zap.Bool("agents", c.Agents != ""),
+			zap.Bool("soul", c.Soul != ""),
+			zap.Bool("tools", c.Tools != ""),
+			zap.Bool("skill", c.Skill != ""),
+		)
+	}
+	return c
+}
+
+func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("create memory dir %s: %w", dir, err)
+	}
+	identityPath := filepath.Join(dir, ".memory-age-identity")
+	data, readErr := os.ReadFile(identityPath)
+	if readErr == nil {
+		id, err := age.ParseX25519Identity(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, fmt.Errorf("parse memory age identity: %w", err)
+		}
+		return id, nil
+	}
+	if !os.IsNotExist(readErr) {
+		return nil, fmt.Errorf("read memory age identity: %w", readErr)
+	}
+	// First time: generate and persist a new identity.
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		return nil, fmt.Errorf("generate memory age identity: %w", err)
+	}
+	if err := os.WriteFile(identityPath, []byte(id.String()+"\n"), 0600); err != nil {
+		return nil, fmt.Errorf("write memory age identity: %w", err)
+	}
+	return id, nil
+}
+
+func generateVMID(prefix string) string {
+	return prefix + "-" + uuid.New().String()[:8]
+}
