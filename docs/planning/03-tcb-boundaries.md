@@ -1,12 +1,21 @@
-# Phase 3 Complete
+# Task 03 Complete: Phase 3 Summary
 
-**Phase 3.5 (AegisHub Launch, Monitoring & Lifecycle) is now closed out.**
+**Overall Status**: Phase 3 (Daemon Minimal TCB + AegisHub Strengthening) is **Complete**.
 
-### Final Deliverables
-- Actual Firecracker launch for AegisHub
-- Real health checking via vsock
-- Cancellable monitoring loop
-- Graceful shutdown
-- Restart-on-failure with VM re-creation
+## Phase 3 Outcome
 
-All major placeholders have been implemented. Phase 3 is ready for review.
+The Host Daemon's control-plane responsibilities have been significantly reduced. Most business logic (chat, sessions, workers, event coordination) now routes through AegisHub via thin proxies.
+
+AegisHub itself received major improvements:
+- Real Firecracker launch
+- Active health monitoring
+- Restart-on-failure capability
+- Clean lifecycle management
+
+## Remaining Daemon Responsibilities (Tightened)
+- Sandbox / VM lifecycle (including AegisHub and Store VM)
+- Unix socket server + authorization
+- Key distribution and Merkle signing
+- AegisHub + Store VM watchdog + monitoring
+
+Phase 3 successfully moved the architecture closer to the target minimal TCB model.
