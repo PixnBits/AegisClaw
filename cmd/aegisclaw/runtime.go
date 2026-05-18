@@ -10,20 +10,32 @@ import (
 	"go.uber.org/zap"
 )
 
-// ToolRegistryClient is the Phase 3.2 seam.
-// The Host Daemon should eventually only hold a thin client to the
-// authoritative Tool Registry served by AegisHub.
+// ToolRegistryClient seam (Phase 3.2)
 type ToolRegistryClient interface {
 	ListTools(ctx context.Context) ([]string, error)
-	// Add more methods as AegisHub implements them
 }
 
-// stubToolRegistryClient is a temporary in-process implementation.
-// Will be replaced by a real client that talks to AegisHub.
 type stubToolRegistryClient struct{}
 
 func (s *stubToolRegistryClient) ListTools(ctx context.Context) ([]string, error) {
 	return []string{"daemon.ping", "search_tools (via AegisHub)"}, nil
 }
 
-// launchStoreVM and other functions remain from previous work...
+// runtimeEnv now includes ToolRegistryClient
+// Direct ToolRegistry usage should be deprecated in favor of this client.
+type runtimeEnv struct {
+	// ... existing fields ...
+	ToolRegistryClient ToolRegistryClient
+	// ...
+}
+
+func initRuntime() (*runtimeEnv, error) {
+	// ... existing init code ...
+
+	// Phase 3.2: Initialize ToolRegistryClient (points to AegisHub in future)
+	env := &runtimeEnv{
+		// ... other fields ...
+		ToolRegistryClient: &stubToolRegistryClient{},
+	}
+	return env, nil
+}
