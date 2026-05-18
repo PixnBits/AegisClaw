@@ -123,64 +123,21 @@ func initRuntime() (*runtimeEnv, error) {
 			return
 		}
 
-		// Create all persistent stores and aggregate them behind the single
-		// store.Store interface. This is the ONLY path for persistent state
-		// access from the Host Daemon. Direct store fields have been removed.
-		propStore, err := proposal.NewStore(cfg.Proposal.StoreDir, logger)
-		if err != nil {
-			runtimeInitErr = err
-			return
+		// Choose Store implementation.
+		// Default to remote (forward progress toward Store VM ownership).
+		// Set AEGISCLAW_USE_REMOTE_STORE=false to force local fallback during transition.
+		if os.Getenv("AEGISCLAW_USE_REMOTE_STORE") != "false" {
+			storeInst = store.NewRemoteStore()
+			logger.Info("using remote Store client (Store VM seam)")
+		} else {
+			// Temporary local path (will be removed once remote is fully wired).
+			// TODO(Phase 3): remove local fallback once Store VM + vsock is stable.
+			storeInst = initLocalStore(cfg, logger)
+			if storeInst == nil {
+				runtimeInitErr = fmt.Errorf("failed to initialize local store fallback")
+				return
+			}
 		}
-		prStorePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "pullrequests")
-		prStore, err := pullrequest.NewStore(prStorePath, logger)
-		if err != nil {
-			runtimeInitErr = err
-			return
-		}
-		compStore, err := composition.NewStore(cfg.Composition.Dir)
-		if err != nil {
-			runtimeInitErr = err
-			return
-		}
-		memIdentity, memIDErr := loadOrCreateMemoryIdentity(cfg.Memory.Dir)
-		if memIDErr != nil {
-			runtimeInitErr = memIDErr
-			return
-		}
-		ttl := memory.TTLTier(cfg.Memory.DefaultTTL)
-		if ttl == "" {
-			ttl = memory.TTL90d
-		}
-		memStore, err := memory.NewStore(memory.StoreConfig{
-			Dir:          cfg.Memory.Dir,
-			MaxSizeMB:    cfg.Memory.MaxSizeMB,
-			DefaultTTL:   ttl,
-			PIIRedaction: cfg.Memory.PIIRedaction,
-		}, memIdentity)
-		if err != nil {
-			runtimeInitErr = err
-			return
-		}
-		evtBus, err := eventbus.New(eventbus.Config{
-			Dir:              cfg.EventBus.Dir,
-			MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
-			MaxSubscriptions: cfg.EventBus.MaxSubscriptions,
-		})
-		if err != nil {
-			runtimeInitErr = err
-			return
-		}
-		wrkStore, err := worker.NewStore(cfg.Worker.Dir)
-		if err != nil {
-			runtimeInitErr = err
-			return
-		}
-
-		// Vault is intentionally NOT created here. Per host-daemon.md the
-		// daemon must never handle secrets; any secret paths are stubbed.
-
-		// Aggregate behind the single Store interface.
-		storeInst = store.NewLocal(propStore, prStore, compStore, memStore, wrkStore, evtBus)
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -241,6 +198,56 @@ func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
 		return nil, fmt.Errorf("write memory age identity: %w", err)
 	}
 	return id, nil
+}
+
+// initLocalStore recreates the previous in-process store creation.
+// It is retained temporarily as a fallback while the remote Store VM seam
+// is hardened. This function (and the AEGISCLAW_USE_REMOTE_STORE=false path)
+// will be removed in a later phase.
+func initLocalStore(cfg *config.Config, logger *zap.Logger) store.Store {
+	propStore, err := proposal.NewStore(cfg.Proposal.StoreDir, logger)
+	if err != nil {
+		return nil
+	}
+	prStorePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "pullrequests")
+	prStore, err := pullrequest.NewStore(prStorePath, logger)
+	if err != nil {
+		return nil
+	}
+	compStore, err := composition.NewStore(cfg.Composition.Dir)
+	if err != nil {
+		return nil
+	}
+	memIdentity, memIDErr := loadOrCreateMemoryIdentity(cfg.Memory.Dir)
+	if memIDErr != nil {
+		return nil
+	}
+	ttl := memory.TTLTier(cfg.Memory.DefaultTTL)
+	if ttl == "" {
+		ttl = memory.TTL90d
+	}
+	memStore, err := memory.NewStore(memory.StoreConfig{
+		Dir:          cfg.Memory.Dir,
+		MaxSizeMB:    cfg.Memory.MaxSizeMB,
+		DefaultTTL:   ttl,
+		PIIRedaction: cfg.Memory.PIIRedaction,
+	}, memIdentity)
+	if err != nil {
+		return nil
+	}
+	evtBus, err := eventbus.New(eventbus.Config{
+		Dir:              cfg.EventBus.Dir,
+		MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
+		MaxSubscriptions: cfg.EventBus.MaxSubscriptions,
+	})
+	if err != nil {
+		return nil
+	}
+	wrkStore, err := worker.NewStore(cfg.Worker.Dir)
+	if err != nil {
+		return nil
+	}
+	return store.NewLocal(propStore, prStore, compStore, memStore, wrkStore, evtBus)
 }
 
 // generateVMID produces a short, human-readable VM identifier with the given
