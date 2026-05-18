@@ -79,66 +79,9 @@ type skillProposalDetails struct {
 func makeDashboardSkillsHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		_ = ctx
+		_ = data
 		_ = env
 		return &api.Response{Error: "dashboard proposal access removed from Host Daemon TCB (Phase 3)"}
-
-		// original code below is unreachable after stub (ProposalStore removed)
-		var proposals []proposal.Summary
-
-		detailsBySkill := make(map[string]skillProposalDetails)
-		for _, summary := range proposals {
-			full, getErr := env.ProposalStore.Get(summary.ID)
-			if getErr != nil || full == nil || full.TargetSkill == "" {
-				continue
-			}
-
-			candidate := skillProposalDetails{Summary: summary, Full: full}
-			if len(full.Spec) > 0 {
-				var spec builder.SkillSpec
-				if json.Unmarshal(full.Spec, &spec) == nil {
-					candidate.Spec = &spec
-				}
-			}
-
-			existing, ok := detailsBySkill[full.TargetSkill]
-			if !ok || summary.UpdatedAt.After(existing.Summary.UpdatedAt) {
-				detailsBySkill[full.TargetSkill] = candidate
-			}
-		}
-
-		registryEntries := env.Registry.List()
-		sort.Slice(registryEntries, func(i, j int) bool {
-			return registryEntries[i].Name < registryEntries[j].Name
-		})
-
-		runtimeSkills := make([]dashboardSkillInfo, 0, len(registryEntries))
-		for _, entry := range registryEntries {
-			if entry.Name == defaultScriptRunnerSkill {
-				continue
-			}
-			runtimeSkills = append(runtimeSkills, buildDashboardSkillInfo(entry, detailsBySkill[entry.Name], false))
-		}
-
-		builtInSkill := buildDefaultBuiltInSkill(env.Registry, detailsBySkill[defaultScriptRunnerSkill])
-
-		templates := builder.DefaultTemplates()
-		builtInTemplates := make([]dashboardTemplateInfo, 0, len(templates))
-		for _, name := range sortedTemplateNames(templates) {
-			tmpl := templates[name]
-			builtInTemplates = append(builtInTemplates, dashboardTemplateInfo{
-				Name:        tmpl.Name,
-				Description: tmpl.Description,
-				Kind:        "builder_template",
-			})
-		}
-
-		payload, _ := json.Marshal(dashboardSkillsPayload{
-			RuntimeSkills:    runtimeSkills,
-			BuiltInSkills:    []dashboardSkillInfo{builtInSkill},
-			BuiltInTemplates: builtInTemplates,
-			Proposals:        proposals,
-		})
-		return &api.Response{Success: true, Data: payload}
 	}
 }
 
