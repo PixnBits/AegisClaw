@@ -79,11 +79,11 @@ type skillProposalDetails struct {
 func makeDashboardSkillsHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		_ = ctx
+		_ = env
+		return &api.Response{Error: "dashboard proposal access removed from Host Daemon TCB (Phase 3)"}
 
-		proposals, err := env.ProposalStore.List()
-		if err != nil {
-			return &api.Response{Error: "failed to list proposals: " + err.Error()}
-		}
+		// original code below is unreachable after stub (ProposalStore removed)
+		var proposals []proposal.Summary
 
 		detailsBySkill := make(map[string]skillProposalDetails)
 		for _, summary := range proposals {

@@ -252,9 +252,10 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 	return hub, hubVMID, nil
 }
 
-// launchStoreVM starts the dedicated Store VM that owns all persistent state.
-// The Host Daemon only launches and watches it; all access is through env.Store.
-// This follows the exact pattern of launchAegisHub for consistency.
+// launchStoreVM starts the dedicated Store VM (persistent state owner).
+// Daemon responsibility: only launch + watchdog. State access is exclusively
+// via env.Store (remote client seam). The daemon never owns or directly
+// constructs ProposalStore etc.
 func launchStoreVM(ctx context.Context, env *runtimeEnv) (string, error) {
 	rootfsPath := os.Getenv("AEGISCLAW_STORE_ROOTFS")
 	if rootfsPath == "" {
@@ -299,10 +300,10 @@ func launchStoreVM(ctx context.Context, env *runtimeEnv) (string, error) {
 	)
 
 	// Register Store VM with AegisHub (ACL enforcement for inter-VM traffic).
-	// TODO(Phase 4): add health-check + restart watchdog loop for StoreVMID similar to AegisHub.
+	// TODO(Phase 4): register Store VM role with AegisHub ACL + add restart watchdog loop.
 
 	// Persistent state ownership has moved to the Store VM.
-	// All env.Store.* calls now route through the remote client when enabled.
+	// All env.Store.* calls now route through the remote client seam.
 
 	if compStore := env.Store.Composition(); compStore != nil {
 		components := map[string]composition.Component{

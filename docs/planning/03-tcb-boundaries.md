@@ -81,3 +81,20 @@ These are the **minimal necessary** responsibilities for a host daemon in this a
 - Legacy shim fields in `runtimeEnv` retained only where needed for build; direct store ownership removed from daemon path.
 - Ownership model: Host Daemon launches + watches Store VM; all state via `env.Store`.
 - Remaining: full vsock protocol + real Store VM image (Phase 4+).
+
+## Current End State after Phase 3 (Minimal TCB + Remote Store Seam)
+**Fully removed from Host Daemon:**
+- All in-process store creation (`proposal.NewStore`, `memory.NewStore`, `eventbus.New`, `worker.NewStore`, `store.NewLocal` etc.).
+- `initLocalStore` function and the `AEGISCLAW_USE_REMOTE_STORE=false` fallback path.
+- Direct ownership of ProposalStore, PRStore, CompositionStore, MemoryStore, WorkerStore, EventBus.
+- Legacy shim fields: TeamRegistry, AutonomyRegistry, Sessions, PortalVMID, ProposalStore, PRStore, MemoryStore, EventBus, GitManager, LookupStore.
+
+**Explicit stubs / non-TCB surfaces remaining (to be hardened in later phases):**
+- `remote*Store` methods in `internal/store/remote.go` all return `ErrRemoteNotWired`.
+- Team/Autonomy/Sessions handlers in `daemon_handlers_extended.go` and `session_handlers.go` return "removed from minimal Host Daemon TCB (Phase 3)" errors.
+- Dashboard/portal handlers still reference some legacy fields (will require further stubbing or removal).
+
+**Ownership model (final):**
+- Host Daemon TCB owns: VM lifecycle (Firecracker), Unix socket server, Ed25519 key distribution, Merkle root signing, launching/watching critical microVMs (AegisHub + Store VM).
+- Persistent state is 100% owned by the Store VM. All access is through `env.Store` (remote client seam).
+- Cross-ref: `docs/specs/host-daemon.md` lists the exact minimal responsibilities.

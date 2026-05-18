@@ -10,13 +10,12 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/worker"
 )
 
-// remoteStore is a placeholder client that will eventually talk to the
-// real Store VM over vsock routed through AegisHub.
+// remoteStore is the production seam for Store VM access.
+// All methods currently return ErrRemoteNotWired until vsock + AegisHub
+// routing is implemented.
 //
-// This implementation is a stub. All methods return ErrRemoteNotWired.
-// It will be replaced with a real vsock/AegisHub client in a future commit.
-//
-// During the transition the daemon falls back to localStore.
+// This file will be replaced by a real client; no local fallback remains
+// in the daemon. The Host Daemon never creates or owns persistent stores.
 type remoteStore struct{}
 
 func NewRemoteStore() Store {
