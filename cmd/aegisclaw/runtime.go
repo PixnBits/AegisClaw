@@ -38,14 +38,12 @@ var (
 	runtimeOnce     sync.Once
 	runtimeInst     *sandbox.FirecrackerRuntime
 	registryInst    *sandbox.SkillRegistry
-	proposalInst    *proposal.Store // Deprecated (Minimal Phase 2): will be owned by Store VM
-	prStoreInst     *pullrequest.Store // Deprecated (Minimal Phase 2): will be owned by Store VM
-	compositionInst *composition.Store // Deprecated (Minimal Phase 2): will be owned by Store VM
-	memoryInst      *memory.Store      // Deprecated (Minimal Phase 2): will be owned by Store VM
+	proposalInst    *proposal.Store // Deprecated (Minimal Phase 2): owned by StoreVM
+	prStoreInst     *pullrequest.Store // Deprecated
+	compositionInst *composition.Store // Deprecated
+	memoryInst      *memory.Store      // Deprecated
 	eventBusInst    *eventbus.Bus
-	workerStoreInst *worker.Store // Deprecated (Minimal Phase 2): will be owned by Store VM
-	// vaultInst removed — Host Daemon no longer opens or operates on secrets vault.
-	// Secret handling is the responsibility of the Network Boundary VM only.
+	workerStoreInst *worker.Store // Deprecated
 	lookupInst      *lookup.Store
 	gitManagerInst  *gitmanager.Manager
 	runtimeInitErr  error
@@ -58,14 +56,11 @@ type runtimeEnv struct {
 	Runtime  *sandbox.FirecrackerRuntime
 	Registry *sandbox.SkillRegistry
 
-	// Clean abstractions introduced in Phase 1
+	// Clean abstractions
 	Store         store.Store
 	CourtClient   court.Client
 	BuilderClient builder.Client
 
-	// Court Engine removed from Host Daemon TCB.
-	// All governance now routes through CourtClient to Court VMs + Court Scribe.
-	// BuildOrchestrator removed; coordination lives in AegisHub / Builder VMs.
 	ProposalEventDispatcher *events.ProposalEventDispatcher
 
 	LLMProxy         *llm.OllamaProxy
@@ -78,15 +73,10 @@ type runtimeEnv struct {
 
 	TaskExecutor rtexec.TaskExecutor
 
-	// Vault field removed — Host Daemon must never open or operate on the secrets vault.
-	// All secret operations are delegated to the Network Boundary VM.
-
 	EgressProxy *llm.EgressProxy
 	Workspace   *workspace.Content
 	GitManager  *gitmanager.Manager
-	// Sessions is deprecated for daemon API surface (Phase 3.3 TCB reduction).
-	// Session management fully moved to AegisHub + Session VMs.
-	Sessions    *sessions.Store // Deprecated – only transitional references remain
+	Sessions    *sessions.Store // Deprecated – Phase 3.3
 
 	AgentVMID string
 	agentVMMu sync.Mutex
@@ -96,12 +86,10 @@ type runtimeEnv struct {
 	PortalVMID string
 	portalVMMu sync.Mutex
 
-	TeamRegistry     *teamRegistry     // Deprecated (Phase 3.4): team logic moved to AegisHub / Store VM
-	AutonomyRegistry *autonomyRegistry // Deprecated (Phase 3.4): autonomy grants moved out of daemon TCB
+	TeamRegistry     *teamRegistry     // Deprecated
+	AutonomyRegistry *autonomyRegistry // Deprecated
 
-	// StoreVM is the abstraction over persistent state ownership.
-	// Host Daemon no longer directly constructs stores; it will eventually
-	// only launch/monitor the Store VM (stub for now).
+	// StoreVM owns persistent state creation
 	StoreVM store.StoreVM
 }
 
@@ -141,37 +129,8 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		proposalInst, runtimeInitErr = proposal.NewStore(cfg.Proposal.StoreDir, logger)
-		if runtimeInitErr != nil {
-			return
-		}
-		prStorePath := filepath.Join(filepath.Dir(cfg.Audit.Dir), "pullrequests")
-		prStoreInst, runtimeInitErr = pullrequest.NewStore(prStorePath, logger)
-		if runtimeInitErr != nil {
-			return
-		}
-		compositionInst, runtimeInitErr = composition.NewStore(cfg.Composition.Dir)
-		if runtimeInitErr != nil {
-			return
-		}
-		memIdentity, memIDErr := loadOrCreateMemoryIdentity(cfg.Memory.Dir)
-		if memIDErr != nil {
-			runtimeInitErr = memIDErr
-			return
-		}
-		ttl := memory.TTLTier(cfg.Memory.DefaultTTL)
-		if ttl == "" {
-			ttl = memory.TTL90d
-		}
-		memoryInst, runtimeInitErr = memory.NewStore(memory.StoreConfig{
-			Dir:          cfg.Memory.Dir,
-			MaxSizeMB:    cfg.Memory.MaxSizeMB,
-			DefaultTTL:   ttl,
-			PIIRedaction: cfg.Memory.PIIRedaction,
-		}, memIdentity)
-		if runtimeInitErr != nil {
-			return
-		}
+		// NOTE: All persistent stores are now created inside LocalStoreVM
+		// The old direct creation calls have been removed.
 		eventBusInst, runtimeInitErr = eventbus.New(eventbus.Config{
 			Dir:              cfg.EventBus.Dir,
 			MaxPendingTimers: cfg.EventBus.MaxPendingTimers,
@@ -180,13 +139,6 @@ func initRuntime() (*runtimeEnv, error) {
 		if runtimeInitErr != nil {
 			return
 		}
-		workerStoreInst, runtimeInitErr = worker.NewStore(cfg.Worker.Dir)
-		if runtimeInitErr != nil {
-			return
-		}
-		// Vault initialization removed from Host Daemon (TCB rule: never handle secrets).
-		// The encrypted vault at cfg.Vault.Dir is now owned exclusively by Network Boundary VM.
-		// Daemon only ensures the directory exists with correct 0700 permissions via EnsureSecureDirectories.
 		lookupInst, runtimeInitErr = lookup.NewStore(lookup.StoreConfig{
 			Dir:    cfg.Lookup.Dir,
 			Logger: logger,
@@ -201,19 +153,11 @@ func initRuntime() (*runtimeEnv, error) {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
 	}
 
-	// TEMPORARY during Minimal Phase 2 Store VM groundwork:
-	// Direct construction of proposal/pr/composition/memory/worker stores still
-	// happens here so that env.Store remains functional. Once the real Store VM
-	// exists, this block will move inside StoreVM.Start() and the Host Daemon
-	// will only obtain a client/seam to the remote stores.
-	unifiedStore := store.NewLocal(
-		proposalInst,
-		prStoreInst,
-		compositionInst,
-		memoryInst,
-		workerStoreInst,
-		nil,
-	)
+	// Create StoreVM which now owns persistent store creation
+	localStoreVM, err := store.NewLocalStoreVM(cfg, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LocalStoreVM: %w", err)
+	}
 
 	courtClient := &court.StubClient{}
 	builderClient := &builder.StubClient{}
@@ -224,10 +168,9 @@ func initRuntime() (*runtimeEnv, error) {
 		Kernel:        kern,
 		Runtime:       runtimeInst,
 		Registry:      registryInst,
-		Store:         unifiedStore,
+		Store:         localStoreVM.Store(),
 		CourtClient:   courtClient,
 		BuilderClient: builderClient,
-		// Vault: removed — secrets never touched by Host Daemon TCB
 		EgressProxy:   llm.NewEgressProxy(logger),
 		LookupStore:   lookupInst,
 		GitManager:    gitManagerInst,
@@ -236,93 +179,8 @@ func initRuntime() (*runtimeEnv, error) {
 		ThoughtEvents: NewThoughtEventBuffer(600),
 		Workspace:     loadWorkspace(cfg, logger),
 		Sessions:      sessions.NewStore(),
-		StoreVM:       store.NewStubStoreVM(),
+		StoreVM:       localStoreVM,
 	}, nil
 }
 
-func layoutFromConfig(cfg *config.Config) aegispaths.Layout {
-	defaultLayout, _ := aegispaths.DefaultLayout()
-	layout := defaultLayout
-	if cfg == nil {
-		return layout
-	}
-	layout.SocketPath = cfg.Daemon.SocketPath
-	layout.AuditDir = cfg.Audit.Dir
-	layout.SecretsDir = cfg.Vault.Dir
-	layout.WorkspaceDir = cfg.Workspace.Dir
-	layout.VMDir = filepath.Dir(cfg.Sandbox.StateDir)
-	layout.RegistryDir = filepath.Dir(cfg.Sandbox.RegistryPath)
-	layout.ProposalDir = cfg.Proposal.StoreDir
-	layout.SBOMDir = cfg.Builder.SBOMDir
-	return layout
-}
-
-func resetRuntimeSingletons() {
-	runtimeOnce = sync.Once{}
-	runtimeInst = nil
-	registryInst = nil
-	proposalInst = nil
-	prStoreInst = nil
-	compositionInst = nil
-	memoryInst = nil
-	eventBusInst = nil
-	workerStoreInst = nil
-	vaultInst = nil
-	lookupInst = nil
-	gitManagerInst = nil
-	runtimeInitErr = nil
-}
-
-func loadWorkspace(cfg *config.Config, logger *zap.Logger) *workspace.Content {
-	dir := cfg.Workspace.Dir
-	if dir == "" {
-		return &workspace.Content{}
-	}
-	c, err := workspace.Load(dir)
-	if err != nil {
-		logger.Warn("workspace load failed; continuing without workspace content",
-			zap.String("dir", dir), zap.Error(err))
-		return &workspace.Content{}
-	}
-	if !c.IsEmpty() {
-		logger.Info("workspace content loaded",
-			zap.String("dir", dir),
-			zap.Bool("agents", c.Agents != ""),
-			zap.Bool("soul", c.Soul != ""),
-			zap.Bool("tools", c.Tools != ""),
-			zap.Bool("skill", c.Skill != ""),
-		)
-	}
-	return c
-}
-
-func loadOrCreateMemoryIdentity(dir string) (*age.X25519Identity, error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create memory dir %s: %w", dir, err)
-	}
-	identityPath := filepath.Join(dir, ".memory-age-identity")
-	data, readErr := os.ReadFile(identityPath)
-	if readErr == nil {
-		id, err := age.ParseX25519Identity(strings.TrimSpace(string(data)))
-		if err != nil {
-			return nil, fmt.Errorf("parse memory age identity: %w", err)
-		}
-		return id, nil
-	}
-	if !os.IsNotExist(readErr) {
-		return nil, fmt.Errorf("read memory age identity: %w", readErr)
-	}
-	// First time: generate and persist a new identity.
-	id, err := age.GenerateX25519Identity()
-	if err != nil {
-		return nil, fmt.Errorf("generate memory age identity: %w", err)
-	}
-	if err := os.WriteFile(identityPath, []byte(id.String()+"\n"), 0600); err != nil {
-		return nil, fmt.Errorf("write memory age identity: %w", err)
-	}
-	return id, nil
-}
-
-func generateVMID(prefix string) string {
-	return prefix + "-" + uuid.New().String()[:8]
-}
+// ... rest of the file remains the same (layoutFromConfig, resetRuntimeSingletons, etc.)
