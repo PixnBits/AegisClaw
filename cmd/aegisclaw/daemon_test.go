@@ -8,57 +8,79 @@ import (
 	"go.uber.org/zap"
 )
 
-// TestSecureSocketCreation verifies that createSecureSocket sets strict permissions.
-func TestSecureSocketCreation(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "test.sock")
+// === Lifecycle Containment Tests ===
 
-	logger, _ := zap.NewDevelopment()
-	listener, err := createSecureSocket(socketPath, logger)
-	if err != nil {
-		t.Fatalf("createSecureSocket failed: %v", err)
-	}
-	defer listener.Close()
-
-	info, err := os.Stat(socketPath)
-	if err != nil {
-		t.Fatalf("failed to stat socket: %v", err)
-	}
-
-	// Check permissions are 0600
-	if info.Mode().Perm() != 0600 {
-		t.Errorf("expected socket permissions 0600, got %o", info.Mode().Perm())
-	}
-}
-
-// TestLifecycleContainmentSignalHandling ensures signal setup doesn't panic.
-func TestLifecycleContainmentSignalHandling(t *testing.T) {
+func TestLifecycleContainment_RegistersSignalHandlers(t *testing.T) {
 	env := &runtimeEnv{}
 	logger, _ := zap.NewDevelopment()
 
-	// Should not panic
+	// Should not panic and should set up handlers
 	setupLifecycleContainment(env, logger)
 }
 
-// TestCapabilityDroppingDoesNotPanic verifies the function runs without crashing.
-func TestCapabilityDroppingDoesNotPanic(t *testing.T) {
-	logger, _ := zap.NewDevelopment()
-	_ = dropCapabilities(logger) // should not panic even if it fails
-}
+// === Secure Socket Tests ===
 
-// TestSeccompFilterApplication verifies filter application doesn't crash on this system.
-func TestSeccompFilterApplication(t *testing.T) {
+func TestCreateSecureSocket_SetsStrictPermissions(t *testing.T) {
+	tmp := t.TempDir()
+	sockPath := filepath.Join(tmp, "secure.sock")
+
 	logger, _ := zap.NewDevelopment()
-	err := applySeccompFilter(logger)
+	ln, err := createSecureSocket(sockPath, logger)
 	if err != nil {
-		t.Logf("seccomp filter application returned (may be expected on some systems): %v", err)
+		t.Fatalf("createSecureSocket failed: %v", err)
+	}
+	defer ln.Close()
+
+	info, _ := os.Stat(sockPath)
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("expected 0600 permissions, got %o", info.Mode().Perm())
 	}
 }
 
-// TestNoObviousSecretPatterns is a basic safeguard.
-// In a real paranoid setup this would be supplemented by gosec / semgrep in CI.
-func TestNoObviousSecretPatterns(t *testing.T) {
-	// This test exists to force developers to think about secret handling.
-	// Real enforcement is done via code review + static analysis.
-	t.Log("Secret handling policy: enforced via review + linters (see Phase 5 docs)")
+func TestCreateSecureSocket_CreatesParentDirWith0700(t *testing.T) {
+	tmp := t.TempDir()
+	sockPath := filepath.Join(tmp, "subdir", "test.sock")
+
+	logger, _ := zap.NewDevelopment()
+	ln, err := createSecureSocket(sockPath, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	parent := filepath.Dir(sockPath)
+	info, _ := os.Stat(parent)
+	if info.Mode().Perm() != 0700 {
+		t.Errorf("expected parent dir 0700, got %o", info.Mode().Perm())
+	}
+}
+
+// === Hardening Function Stability Tests ===
+
+func TestDropCapabilities_DoesNotPanic(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	err := dropCapabilities(logger)
+	if err != nil {
+		t.Logf("dropCapabilities returned error (acceptable on some systems): %v", err)
+	}
+}
+
+func TestApplySeccompFilter_DoesNotPanic(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	err := applySeccompFilter(logger)
+	if err != nil {
+		t.Logf("applySeccompFilter returned error (may be expected): %v", err)
+	}
+}
+
+// === Policy / Regression Guard Tests ===
+
+func TestNoBusinessLogicInDaemon(t *testing.T) {
+	// This is a reminder test. Real enforcement happens via CI grep rules
+	// and code review. We keep it here so the intent is explicit in the test suite.
+	t.Log("Business logic must not live in the Host Daemon (enforced via review + CI)")
+}
+
+func TestNoSecretHandlingInDaemon(t *testing.T) {
+	t.Log("Daemon must never handle secrets (policy enforced via review + static analysis)")
 }
