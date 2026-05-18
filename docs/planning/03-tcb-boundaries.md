@@ -65,3 +65,10 @@ These are the **minimal necessary** responsibilities for a host daemon in this a
 - Court handlers (`makeCourtReviewHandler`, `makeCourtVoteHandler`) kept for test compatibility but clearly documented as disabled non-TCB stubs.
 - Cleaned `registerCoreTCBHandlers` signature (removed unused `toolRegistry` parameter).
 - This shape prepares the daemon for Phase 4 capability dropping, seccomp, and syscall filtering with no vestiges of business logic.
+## Store VM Integration (Phase 2)
+- Daemon now launches Store VM via `launchStoreVM` (pattern-matched to AegisHub).
+- `runtimeEnv.StoreVMID` tracks the VM for watchdog.
+- `internal/store/remote.go` provides the seam for future remote client (vsock via AegisHub).
+- `initRuntime` store creation moved to helper; direct construction of ProposalStore etc. can be gated.
+- Migration path: localStore (current) → remoteStore (Phase 3) → full vsock + ACL enforcement.
+- All `env.Store.*` call sites unchanged.

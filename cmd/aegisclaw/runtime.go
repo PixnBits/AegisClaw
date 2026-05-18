@@ -60,6 +60,11 @@ type runtimeEnv struct {
 	AgentVMID    string
 	agentVMMu    sync.Mutex
 
+	// StoreVMID tracks the dedicated Store VM launched by the daemon.
+	// The daemon is only responsible for launch + watchdog; all state access
+	// remains through env.Store.
+	StoreVMID string
+
 	// SafeMode is retained for minimal operational control during startup.
 	SafeMode atomic.Bool
 

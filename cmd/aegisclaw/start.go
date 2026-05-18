@@ -91,6 +91,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to register IPC bridge: %w", err)
 	}
 
+	// Launch the Store VM early so persistent state is owned outside the daemon.
+	storeVMID, err := launchStoreVM(cmd.Context(), env)
+	if err != nil {
+		return fmt.Errorf("Store VM required but failed to start: %w", err)
+	}
+	env.StoreVMID = storeVMID
+
 	env.Logger.Info("AegisClaw kernel started successfully")
 
 	apiSrv := api.NewServer(env.Config.Daemon.SocketPath, env.Logger)
@@ -243,6 +250,73 @@ func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, stri
 	}
 
 	return hub, hubVMID, nil
+}
+
+// launchStoreVM starts the dedicated Store VM that owns all persistent state.
+// The Host Daemon only launches and watches it; all access is through env.Store.
+// This follows the exact pattern of launchAegisHub for consistency.
+func launchStoreVM(ctx context.Context, env *runtimeEnv) (string, error) {
+	rootfsPath := os.Getenv("AEGISCLAW_STORE_ROOTFS")
+	if rootfsPath == "" {
+		rootfsPath = filepath.Join(filepath.Dir(env.Config.Rootfs.Template), "store-rootfs.ext4")
+	}
+	if _, err := os.Stat(rootfsPath); err != nil {
+		return "", fmt.Errorf(
+			"Store VM rootfs not found at %q (build with: sudo ./scripts/build-microvms-docker.sh --target=store): %w",
+			rootfsPath, err,
+		)
+	}
+
+	storeVMID := generateVMID("store")
+	spec := sandbox.SandboxSpec{
+		ID:   storeVMID,
+		Name: "store",
+		Resources: sandbox.Resources{
+			VCPUs:    2,
+			MemoryMB: 512,
+		},
+		NetworkPolicy: sandbox.NetworkPolicy{
+			NoNetwork:   true,
+			DefaultDeny: true,
+		},
+		RootfsPath:  rootfsPath,
+		KernelPath:  env.Config.Sandbox.KernelImage,
+		InitPath:    "/sbin/storevm",
+		WorkspaceMB: 128,
+	}
+
+	if err := env.Runtime.Create(ctx, spec); err != nil {
+		return "", fmt.Errorf("create Store VM: %w", err)
+	}
+	if err := env.Runtime.Start(ctx, storeVMID); err != nil {
+		_ = env.Runtime.Delete(ctx, storeVMID)
+		return "", fmt.Errorf("start Store VM: %w", err)
+	}
+
+	env.Logger.Info("Store VM started",
+		zap.String("vm_id", storeVMID),
+		zap.String("rootfs", rootfsPath),
+	)
+
+	// TODO(Phase 3): Register with AegisHub ACL and add health-check watchdog loop.
+
+	if compStore := env.Store.Composition(); compStore != nil {
+		components := map[string]composition.Component{
+			"store": {
+				Name:        "store",
+				Type:        composition.ComponentStore,
+				Version:     "1",
+				SandboxID:   storeVMID,
+				ArtifactRef: rootfsPath,
+				Health:      composition.HealthHealthy,
+			},
+		}
+		if _, err := compStore.Publish(components, "daemon", "Store VM launched"); err != nil {
+			env.Logger.Warn("failed to register Store VM in composition manifest", zap.Error(err))
+		}
+	}
+
+	return storeVMID, nil
 }
 
 // registerCoreTCBHandlers wires ONLY the minimal handlers required for the
