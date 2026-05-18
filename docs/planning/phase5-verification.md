@@ -1,3 +1,9 @@
-- Added contract checks for `AegisHubClient` and `ToolRegistryClient`
-- Added stability tests for `AegisHubMonitor.Stop` and stale VM cleanup
-- Added test for stale socket handling in `createSecureSocket`
+## Running Tests via Makefile
+
+```bash
+make test              # Normal fast tests (default in CI)
+make test-integration  # Richer lifecycle & integration tests
+make test-all          # Both
+```
+
+Integration tests use the `integration` build tag and are opt-in.
