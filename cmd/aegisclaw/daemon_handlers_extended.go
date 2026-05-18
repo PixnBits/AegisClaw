@@ -405,14 +405,14 @@ outer:
 
 func makeTasksListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.WorkerStore == nil {
+		if env.Store.Workers() == nil {
 			return &api.Response{Error: "worker store not initialized"}
 		}
 		var req struct {
 			ActiveOnly bool `json:"active_only"`
 		}
 		_ = json.Unmarshal(data, &req)
-		workers := env.WorkerStore.List(req.ActiveOnly)
+		workers := env.Store.Workers().List(req.ActiveOnly)
 		type row struct {
 			TaskID          string              `json:"task_id"`
 			WorkerID        string              `json:"worker_id"`
@@ -456,14 +456,14 @@ func makeTasksStatusHandler(env *runtimeEnv) api.Handler {
 		if req.TaskID == "" {
 			return &api.Response{Error: "task_id is required"}
 		}
-		if env.WorkerStore == nil {
+		if env.Store.Workers() == nil {
 			return &api.Response{Error: "worker store not initialized"}
 		}
-		if w, ok := env.WorkerStore.Get(req.TaskID); ok {
+		if w, ok := env.Store.Workers().Get(req.TaskID); ok {
 			raw, _ := json.Marshal(w)
 			return &api.Response{Success: true, Data: raw}
 		}
-		for _, w := range env.WorkerStore.List(false) {
+		for _, w := range env.Store.Workers().List(false) {
 			if w.TaskID == req.TaskID {
 				raw, _ := json.Marshal(w)
 				return &api.Response{Success: true, Data: raw}
@@ -508,15 +508,8 @@ func makeCourtDecisionsShowHandler(env *runtimeEnv) api.Handler {
 }
 func makeTeamListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, _ json.RawMessage) *api.Response {
-		if env.TeamRegistry == nil {
-			return &api.Response{Error: "team registry not initialized"}
-		}
-		teams := env.TeamRegistry.list()
-		raw, err := json.Marshal(teams)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: raw}
+		_ = env
+		return &api.Response{Error: "team registry removed from Host Daemon TCB (Phase 1)"}
 	}
 }
 

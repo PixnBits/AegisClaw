@@ -239,7 +239,7 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("list_proposals",
 		"List all proposals with their title, status, and risk level.",
 		func(_ context.Context, _ string) (string, error) {
-			summaries, err := env.ProposalStore.List()
+			summaries, err := env.Store.Proposals().List()
 			if err != nil {
 				return "", fmt.Errorf("list proposals: %w", err)
 			}
@@ -354,8 +354,8 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 			}
 
 			// Try to find by skill name: scan proposal store.
-			if params.SkillName != "" && env.ProposalStore != nil {
-				proposals, err := env.ProposalStore.List()
+			if params.SkillName != "" && env.Store != nil {
+				proposals, err := env.Store.Proposals().List()
 				if err != nil {
 					return "", fmt.Errorf("list proposals: %w", err)
 				}
