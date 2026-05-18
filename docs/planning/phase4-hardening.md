@@ -1,8 +1,9 @@
-# Phase 4.2 Capability Dropping - Done
+# Phase 4.3 seccomp-bpf Filter - Done
 
-- Added `dropCapabilities()` using `prctl` + `capset`.
-- Keeps minimal set: `CAP_SYS_ADMIN`, `CAP_NET_ADMIN`, `CAP_SYS_CHROOT`, `CAP_DAC_OVERRIDE`.
-- Called very early in `initRuntime()`.
-- Non-fatal on failure (logs warning).
+- Added comprehensive `applySeccompFilter()` using `libseccomp-golang`.
+- Default action: `ActKillProcess` on violation.
+- Large allowlist of commonly needed syscalls.
+- Applied early in `initRuntime()` (after capability dropping).
+- Non-fatal during initial rollout (logs warning on failure).
 
-Capabilities are now dropped to a much smaller set.
+seccomp-bpf is now active.
