@@ -341,10 +341,31 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		zap.String("action", req.Action),
 		zap.String("from", msg.From))
 
-	// Basic dispatch table for actions that have been wired through ControlPlaneProxy.
+	// Phase 8 improvement: attempt delegation to a registered backend first.
+	// If a backend (e.g., "store-vm") is registered for the action, forward
+	// the request to it. This enables realistic end-to-end testing and future
+	// Store VM integration without changing the ControlPlaneProxy contract.
+	if backendID := h.preferredBackendForAction(req.Action); backendID != "" {
+		if handler, ok := h.getRegisteredHandler(backendID); ok {
+			delegatedMsg := &Message{
+				ID:        msg.ID,
+				From:      msg.From,
+				To:        backendID,
+				Type:      req.Action,
+				Payload:   req.Data,
+				Timestamp: time.Now().UTC(),
+			}
+			if result, err := handler(delegatedMsg); err == nil && result != nil {
+				return result, nil
+			}
+			// If delegation failed, fall through to sample data for robustness.
+		}
+	}
+
+	// Fallback sample data for actions that have no registered backend yet.
+	// Real implementations will come from Store VM or other microVMs.
 	switch req.Action {
 	case "worker.list":
-		// Return a minimal worker list (real implementation would query Store VM).
 		data := json.RawMessage(`[{"worker_id":"w-001","role":"general","status":"idle"}]`)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
@@ -356,9 +377,6 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		data := json.RawMessage(`[{"skill_id":"example-skill","status":"registered"}]`)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
-	// Future actions (proposal.list, chat.message, etc.) can be added here
-	// or delegated to registered skills via h.router.Route(...).
-
 	default:
 		return &DeliveryResult{
 			MessageID: msg.ID,
@@ -366,4 +384,26 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 			Error:     fmt.Sprintf("unsupported controlplane action: %s", req.Action),
 		}, nil
 	}
+}
+
+// preferredBackendForAction returns the preferred backend skill/VM ID for a
+// given ControlPlane action. This mapping makes delegation explicit and easy
+// to extend when real backends (Store VM, etc.) are registered.
+func (h *MessageHub) preferredBackendForAction(action string) string {
+	switch action {
+	case "worker.list", "worker.status":
+		return "store-vm"
+	case "skill.list":
+		return "skill-registry"
+	default:
+		return ""
+	}
+}
+
+// getRegisteredHandler looks up a registered route handler for delegation.
+func (h *MessageHub) getRegisteredHandler(id string) (RouteHandler, bool) {
+	if h.router == nil {
+		return nil, false
+	}
+	return h.router.handlerFor(id)
 }

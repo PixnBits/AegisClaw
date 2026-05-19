@@ -113,9 +113,24 @@ func (p *ControlPlaneProxy) Forward(ctx context.Context, req ControlPlaneRequest
 		Timestamp: time.Now().UTC(),
 	}
 
+	// Respect context cancellation / deadline for robustness.
+	select {
+	case <-ctx.Done():
+		return &ControlPlaneResponse{Success: false, Error: ctx.Err().Error()}, nil
+	default:
+	}
+
 	result, err := p.hub.RouteMessage("daemon", msg)
 	if err != nil {
 		return &ControlPlaneResponse{Success: false, Error: err.Error()}, nil
+	}
+	if result == nil {
+		return &ControlPlaneResponse{Success: false, Error: "empty response from hub"}, nil
+	}
+
+	// Surface both transport errors and logical failures from the backend.
+	if !result.Success && result.Error != "" {
+		return &ControlPlaneResponse{Success: false, Error: result.Error}, nil
 	}
 
 	return &ControlPlaneResponse{

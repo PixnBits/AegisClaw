@@ -153,3 +153,96 @@ func TestControlPlaneProxy_Forward_UnknownAction(t *testing.T) {
 		t.Error("expected descriptive error message")
 	}
 }
+
+// TestControlPlaneProxy_Forward_BackendErrorPropagation verifies that errors
+// returned by a registered backend handler are properly surfaced to the caller.
+func TestControlPlaneProxy_Forward_BackendErrorPropagation(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	// Register a handler that simulates a backend failure.
+	if err := hub.RegisterSkill("failing-backend", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		return &ipc.DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "backend unavailable",
+		}, nil
+	}); err != nil {
+		t.Fatalf("failed to register failing backend: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "worker.status",
+	})
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected failure when backend returns error")
+	}
+	if resp.Error != "backend unavailable" {
+		t.Errorf("expected backend error to be propagated, got %q", resp.Error)
+	}
+}
+
+// TestControlPlaneProxy_Forward_DelegatesToRegisteredHandler verifies that
+// when a handler is registered for a ControlPlane action, the request is
+// delegated to it rather than using the internal sample-data switch.
+func TestControlPlaneProxy_Forward_DelegatesToRegisteredHandler(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	// Register a custom handler that returns distinctive data.
+	const customAction = "custom.action"
+	expectedData := json.RawMessage(`{"custom":"delegated-response"}`)
+
+	if err := hub.RegisterSkill("custom-skill", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		// Only respond if this is our custom action (simple check on payload).
+		return &ipc.DeliveryResult{
+			MessageID: msg.ID,
+			Success:   true,
+			Response:  expectedData,
+		}, nil
+	}); err != nil {
+		t.Fatalf("failed to register custom handler: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: customAction,
+	})
+	if err != nil {
+		t.Fatalf("Forward error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success from delegated handler, got error: %s", resp.Error)
+	}
+	if string(resp.Data) != string(expectedData) {
+		t.Errorf("expected delegated response data %s, got %s", expectedData, resp.Data)
+	}
+}
+
+// TestControlPlaneProxy_Forward_RespectsContextCancellation verifies that
+// a cancelled context results in a proper failure response rather than hanging.
+func TestControlPlaneProxy_Forward_RespectsContextCancellation(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancelled
+
+	resp, err := proxy.Forward(ctx, ControlPlaneRequest{Action: "worker.list"})
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected failure for cancelled context")
+	}
+	if resp.Error == "" {
+		t.Error("expected error message indicating cancellation")
+	}
+}
