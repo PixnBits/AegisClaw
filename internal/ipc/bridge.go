@@ -27,6 +27,11 @@ func NewBridge(hub *MessageHub, kern *kernel.Kernel, logger *zap.Logger) *Bridge
 
 // RegisterControlPlaneHandlers installs message routing handlers on the kernel's
 // control plane so that VMs can send IPC messages via their vsock connection.
+//
+// Phase 6: AegisHub (via this bridge) will also receive ControlPlaneRequest
+// messages originating from CLI operations forwarded by the daemon's
+// ControlPlaneProxy. These requests are treated similarly to skill/tool
+// invocations and are ACL-checked before routing to the target microVM.
 func (b *Bridge) RegisterControlPlaneHandlers() error {
 	// Handle "ipc.send" messages from VMs
 	if err := b.kern.ControlPlane().RegisterHandler("ipc.send", b.handleIPCSend); err != nil {

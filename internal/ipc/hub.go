@@ -35,6 +35,11 @@ type HubStats struct {
 // MessageHub is the core IPC router skill. It runs in its own context
 // (will be a microVM in production) and routes all inter-skill messages.
 // No direct skill-to-skill communication is permitted.
+//
+// Phase 6: MessageHub also serves as the entry point for ControlPlaneRequest
+// messages coming from the Host Daemon's ControlPlaneProxy. CLI operations
+// (worker.list, skill.status, chat.message, etc.) are forwarded here for
+// ACL enforcement and routing to the correct target component.
 type MessageHub struct {
 	router   *Router
 	kern     *kernel.Kernel

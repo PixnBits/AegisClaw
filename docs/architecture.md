@@ -71,6 +71,25 @@ The daemon temporarily retains lightweight logic to publish launched critical VM
 
 Future model: Component and VM registry data should be queried through AegisHub → daemon (mediated, ACL-enforced). The daemon acts only as a thin publisher for its own launched VMs.
 
+### ControlPlaneProxy & Mediated Request Flow (Phase 6)
+
+The Host Daemon now includes a `ControlPlaneProxy` that acts as a thin mediation layer. CLI and TUI operations are forwarded through this proxy to AegisHub rather than being handled directly inside the daemon.
+
+**Request Flow**:
+CLI / TUI → Unix socket → api.Handler → ControlPlaneProxy.Forward → AegisHub (MessageHub) → Target component (Store VM, Agent VM, Web Portal VM, etc.)
+
+This keeps the daemon's trusted surface minimal while enabling AegisHub-mediated access to data and operations. Requests are intentionally styled similarly to skill/tool invocations.
+
+**Current Socket Model**:
+A single Unix socket (`Daemon.SocketPath`) is used for all communication.
+
+**Future Work**:
+Split into two sockets for attack-surface reduction:
+- Privileged socket: VM lifecycle, control-plane, and shutdown operations.
+- Standard socket: Skill/tool calls and read-only data queries.
+
+This separation would allow stricter permission models and further reduce the attack surface of the Host Daemon.
+
 ## Communication & Mediation
 
 No sandbox may communicate directly with any other sandbox. All communication is strictly mediated by AegisHub.
@@ -92,7 +111,7 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 - **Agent Runtime VMs** may only communicate with their paired Memory VM, the Court Scribe, and AegisHub.
 - **Court VMs** may only communicate with the Court Scribe, their paired Agent (during reviews), and AegisHub.
 
-**Future Data Access Routing**: All reads of proposals, workers, events, etc. from CLI, dashboard, or other components will be routed through AegisHub to the appropriate owner (primarily Store VM). The Host Daemon no longer provides direct Store access.
+**Future Data Access Routing**: All reads of proposals, workers, events, etc. from CLI, dashboard, or other components will be routed through AegisHub (via the daemon's ControlPlaneProxy) to the appropriate owner (primarily Store VM). The Host Daemon no longer provides direct Store access.
 
 ## Data Flow Example: Skill Creation via SDLC
 

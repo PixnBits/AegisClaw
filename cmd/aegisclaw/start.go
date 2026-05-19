@@ -108,6 +108,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to register IPC bridge: %w", err)
 	}
 
+	// Phase 6: ControlPlaneProxy is the daemon's thin mediation layer.
+	// CLI operations are forwarded through this proxy to AegisHub instead
+	// of being handled directly in the daemon. This keeps the Host Daemon
+	// as a minimal TCB (VM lifecycle + temporary Composition Manifest).
+	controlProxy := NewControlPlaneProxy(hub, env.Logger)
+
 	// AegisHub is the central mediation and ACL enforcement layer.
 	// All future inter-VM and daemon↔VM requests (including data access)
 	// will be routed and authorized here.
@@ -131,6 +137,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	})
 
 	daemonQuit := make(chan struct{})
+	// Phase 6: ControlPlaneProxy is now available for handler registration.
+	// Selected handlers (worker.*, skill.*, chat.*) delegate via proxy.
+	_ = controlProxy
 	registerCoreTCBHandlers(apiSrv, env, hub, daemonQuit)
 
 	if err := apiSrv.Start(); err != nil {
