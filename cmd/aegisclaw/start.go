@@ -200,4 +200,20 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 	return nil
 }
 
-// ... rest of file unchanged ...
+// launchAegisHub stubbed during build cleanup (pre-existing undefined symbol).
+// Full Firecracker launch + vsock wiring deferred to Phase 8.
+func launchAegisHub(ctx context.Context, env *runtimeEnv) (*ipc.MessageHub, string, error) {
+	return nil, "", fmt.Errorf("launchAegisHub stubbed during build cleanup (pre-existing)")
+}
+
+// launchStoreVM stubbed during build cleanup (pre-existing undefined symbol).
+// Composition Manifest publish + VM lifecycle deferred to Phase 8.
+func launchStoreVM(ctx context.Context, env *runtimeEnv) (string, error) {
+	return "", fmt.Errorf("launchStoreVM stubbed during build cleanup (pre-existing)")
+}
+
+// registerCoreTCBHandlers stubbed during build cleanup (pre-existing undefined symbol).
+// Core TCB handler registration will be reimplemented in Phase 8.
+func registerCoreTCBHandlers(apiSrv *api.Server, env *runtimeEnv, hub *ipc.MessageHub, quit chan struct{}) {
+	// no-op stub
+}
