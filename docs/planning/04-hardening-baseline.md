@@ -68,7 +68,7 @@ This document establishes the current state of the Host Daemon before applying O
 
 All steps executed in order:
 
-- **Step 2 (Capability Dropping)**: `dropCapabilities` implemented in `daemon_hardening.go` using `prctl(PR_SET_NO_NEW_PRIVS)` + `capset` to retain only `CAP_SYS_ADMIN` + `CAP_DAC_OVERRIDE`. Called early in `runStart`.
+- **Step 2 (Capability Dropping)**: `dropCapabilities` implemented in `daemon_hardening.go` using `prctl(PR_SET_NO_NEW_PRIVS)` + `capset` to retain only `CAP_SYS_ADMIN` + `CAP_DAC_OVERRIDE`. Logs original vs final capability bits for observability. Called early in `runStart`.
 - **Step 3 (seccomp-bpf)**: `applySeccompFilter` added with default-deny policy + allowlist for VM/socket/signing. Configurable via `AEGISCLAW_SECCOMP_STRICT=0`.
 - **Step 4 (Static Binary)**: `make build-static` target added to Makefile with `CGO_ENABLED=0` and `file` verification.
 - **Step 5 (Lifecycle Containment)**: SIGINT/SIGTERM handling + best-effort stop/delete of AegisHubVMID + StoreVMID in `start.go`.

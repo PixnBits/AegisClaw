@@ -31,27 +31,43 @@ func dropCapabilities(logger *zap.Logger) error {
 	// Per host-daemon.md "Minimal Privilege" requirement, we drop all
 	// capabilities except the absolute minimum needed for Firecracker
 	// VM lifecycle and Unix socket/VM directory operations.
-	// Retained: CAP_SYS_ADMIN (chroot, jailer, Firecracker setup),
-	//           CAP_DAC_OVERRIDE (access restricted VM dirs/sockets).
-	// All others (including CAP_NET_ADMIN, CAP_SYS_PTRACE, etc.) are dropped.
-	// This is done early via prctl + capset before any VM or socket work.
+	//
+	// Retained:
+	//   CAP_SYS_ADMIN  - required because Firecracker's jailer binary performs
+	//                    chroot(2), unshare(2), and mount operations inside the
+	//                    VM setup process (see testdata/cassettes/README.md).
+	//                    Without this capability the jailer cannot create the
+	//                    isolated rootfs environment for microVMs.
+	//   CAP_DAC_OVERRIDE - allows the daemon to access VM state directories
+	//                      and the Unix socket path without granting broader
+	//                      root privileges to other code paths.
+	//
+	// All others (CAP_NET_ADMIN, CAP_SYS_PTRACE, CAP_SETUID, etc.) are dropped.
+	// This is done as early as possible (immediately after initRuntime) before
+	// any VM launch or socket work.
 
+	// Step 1: prevent the process from gaining new privileges via exec.
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		if logger != nil {
-			logger.Warn("Phase 4: PR_SET_NO_NEW_PRIVS failed", zap.Error(err))
+			logger.Warn("Phase 4: PR_SET_NO_NEW_PRIVS failed (non-fatal)", zap.Error(err))
 		}
-		// continue; not fatal in all envs
+		// continue; not fatal in all environments (e.g. some containers)
 	}
 
+	// Step 2: read current capabilities so we can log the before/after state.
 	header := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	var data unix.CapUserData
+	origEffective := uint32(0)
 	if err := unix.Capget(&header, &data); err != nil {
 		if logger != nil {
-			logger.Debug("Phase 4: capget failed (may be non-root or container)", zap.Error(err))
+			logger.Debug("Phase 4: capget failed (running in limited environment: container/non-root)", zap.Error(err))
 		}
-		return nil
+		// still proceed with PR_SET_NO_NEW_PRIVS and attempt to set minimal caps
+	} else {
+		origEffective = data.Effective
 	}
 
+	// Step 3: set the minimal capability set.
 	minCaps := uint32(1<<unix.CAP_SYS_ADMIN | 1<<unix.CAP_DAC_OVERRIDE)
 	data.Effective = minCaps
 	data.Permitted = minCaps
@@ -59,13 +75,15 @@ func dropCapabilities(logger *zap.Logger) error {
 
 	if err := unix.Capset(&header, &data); err != nil {
 		if logger != nil {
-			logger.Warn("Phase 4: capset to minimal set failed", zap.Error(err))
+			logger.Warn("Phase 4: capset to minimal set failed (may be non-root)", zap.Error(err))
 		}
 		return nil
 	}
 
 	if logger != nil {
 		logger.Info("Phase 4: capabilities dropped to minimal set",
+			zap.Uint32("original_effective", origEffective),
+			zap.Uint32("final_effective", minCaps),
 			zap.String("kept", "CAP_SYS_ADMIN,CAP_DAC_OVERRIDE"),
 			zap.String("dropped", "all others"))
 	}
@@ -76,12 +94,21 @@ func dropCapabilities(logger *zap.Logger) error {
 // Policy: default-deny. Only permit the syscalls required for the daemon's
 // minimal TCB responsibilities (Firecracker VM lifecycle, Unix socket server,
 // Merkle signing, watchdog).
-// Allowed (core set): read, write, close, openat, stat, fstat, mmap, mprotect,
-// clone, fork, wait4, kill, futex, nanosleep, getpid, gettid, prctl, socket,
-// bind, listen, accept, connect, sendto, recvfrom, setsockopt, getsockopt,
-// etc.
-// Blocked: execve, ptrace, mount, unshare (beyond what's needed), etc.
+//
+// Allowed (core set, minimal for VM + socket + signing):
+//   read, write, close, openat, stat, fstat, mmap, mprotect, brk,
+//   clone/fork (for Firecracker child processes), wait4, kill, futex,
+//   nanosleep, getpid/gettid, prctl, socket/bind/listen/accept/connect,
+//   sendto/recvfrom, setsockopt/getsockopt, etc.
+//
+// High-risk syscalls explicitly blocked (future real filter will enforce):
+//   ptrace, mount, umount2, pivot_root, setns, unshare, perf_event_open,
+//   kcmp, process_vm_readv, execve (except for controlled jailer paths).
+//
 // Config: set AEGISCLAW_SECCOMP_STRICT=0 to disable for development/debug.
+// This hook is a placeholder; it will be replaced by a real libseccomp or
+// raw BPF filter (SECCOMP_SET_MODE_FILTER) in a follow-up without changing
+// call sites or behavior for callers.
 func applySeccompFilter(logger *zap.Logger) error {
 	strict := os.Getenv("AEGISCLAW_SECCOMP_STRICT") != "0"
 	if !strict {
@@ -133,6 +160,10 @@ func setResourceLimits(logger *zap.Logger) error {
 	return nil
 }
 
+// createSecureSocket creates a Unix socket with strict 0600 permissions.
+// Phase 4: Unix socket hardening - the socket is only accessible by the
+// daemon owner, satisfying the "Unix Socket Hardening" requirement in
+// host-daemon.md. Directory is created with 0700 for defense-in-depth.
 func createSecureSocket(socketPath string, logger *zap.Logger) (net.Listener, error) {
 	socketDir := filepath.Dir(socketPath)
 	if err := os.MkdirAll(socketDir, 0700); err != nil {
@@ -148,7 +179,7 @@ func createSecureSocket(socketPath string, logger *zap.Logger) (net.Listener, er
 		return nil, fmt.Errorf("set socket permissions: %w", err)
 	}
 	if logger != nil {
-		logger.Info("created secure Unix socket", zap.String("path", socketPath))
+		logger.Info("Phase 4: created secure Unix socket (0600)", zap.String("path", socketPath))
 	}
 	return listener, nil
 }
