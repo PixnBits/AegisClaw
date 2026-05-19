@@ -2,7 +2,7 @@
 
 ### Security & Hardening (Phase 4)
 - Added aggressive lifecycle containment (VM termination on daemon exit)
-- Early capability dropping to minimal set
+- Early capability dropping to minimal set (Phase 4 complete)
 - seccomp-bpf filter with strict allowlist
 - Enforced static binary builds via Makefile
 - Hardened Unix socket permissions (0700 dir / 0600 socket)

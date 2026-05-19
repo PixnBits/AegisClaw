@@ -1,7 +1,15 @@
-.PHONY: build vet test test-short test-integration test-all fuzz
+.PHONY: build build-static vet test test-short test-integration test-all fuzz
 
 build:
 	go build ./...
+
+# Phase 4: Fully static binary build (CGO_ENABLED=0 + static ldflags).
+# Produces a binary with no dynamic library dependencies, satisfying
+# host-daemon.md "Static Binary" requirement.
+build-static:
+	CGO_ENABLED=0 go build -ldflags '-extldflags "-static"' -o aegisclaw ./cmd/aegisclaw
+	@file aegisclaw 2>/dev/null | grep -q "statically linked" || (echo "ERROR: binary is not statically linked" && exit 1)
+	@echo "Static binary verified: aegisclaw"
 
 vet:
 	go vet ./...

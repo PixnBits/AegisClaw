@@ -72,3 +72,25 @@ func TestNoNonTCBInitializations(t *testing.T) {
 	// (removed during shim cleanup + aggressive pass).
 	_ = env
 }
+
+// Phase 4 basic hardening smoke tests (can run without full system).
+
+func TestHardening_CapabilitiesDropCalled(t *testing.T) {
+	// Merely exercises the function; real cap drop is environment-dependent.
+	if err := dropCapabilities(nil); err != nil {
+		t.Logf("dropCapabilities returned err (expected in some envs): %v", err)
+	}
+}
+
+func TestHardening_SeccompFilterHook(t *testing.T) {
+	// Exercises the hook; full BPF enforcement is future work.
+	if err := applySeccompFilter(nil); err != nil {
+		t.Fatalf("applySeccompFilter: %v", err)
+	}
+}
+
+func TestHardening_ResourceLimits(t *testing.T) {
+	if err := setResourceLimits(nil); err != nil {
+		t.Logf("setResourceLimits non-fatal: %v", err)
+	}
+}

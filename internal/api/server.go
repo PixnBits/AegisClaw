@@ -202,6 +202,9 @@ func (s *Server) Handle(action string, h Handler) {
 // Start begins listening on the Unix socket. The parent directory is verified
 // before binding so a privileged daemon never binds inside a user-controlled
 // ~/.aegis socket directory on Linux.
+// Phase 4: Socket hardening - permissions are set to 0600 (owner-only) via
+// createSecureSocket pattern or equivalent SetRuntimeSocketOwner. This
+// enforces the "Unix Socket Hardening" requirement in host-daemon.md.
 func (s *Server) Start() error {
 	if err := aegispaths.EnsureRuntimeDir(filepath.Dir(s.socketPath)); err != nil {
 		return err

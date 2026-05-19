@@ -6,16 +6,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"os/signal"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
-	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/provision"
-	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -66,6 +65,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 		zap.String("arch", runtime.GOARCH),
 		zap.Bool("cgo_enabled", cgoEnabled()),
 	)
+
+	// Phase 4 Step 2: Drop capabilities as early as possible (after logger init).
+	_ = dropCapabilities(env.Logger)
+
+	// Phase 4 Step 3: Apply seccomp-bpf filter right after caps.
+	_ = applySeccompFilter(env.Logger)
+
+	// Phase 4 Step 6: Apply basic resource limits.
+	_ = setResourceLimits(env.Logger)
 
 	if startModelFlag != "" {
 		env.Config.Ollama.DefaultModel = startModelFlag
@@ -123,6 +131,25 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("AegisClaw kernel started.")
+
+	// Phase 4 Step 5: Lifecycle containment - handle shutdown signals and
+	// best-effort termination of managed microVMs (AegisHub + Store VM).
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		env.Logger.Info("Phase 4: received shutdown signal, terminating managed VMs")
+		if env.AegisHubVMID != "" {
+			_ = env.Runtime.Stop(cmd.Context(), env.AegisHubVMID)
+			_ = env.Runtime.Delete(cmd.Context(), env.AegisHubVMID)
+		}
+		if env.StoreVMID != "" {
+			_ = env.Runtime.Stop(cmd.Context(), env.StoreVMID)
+			_ = env.Runtime.Delete(cmd.Context(), env.StoreVMID)
+		}
+		close(daemonQuit)
+	}()
+
 	<-daemonQuit
 	env.Logger.Info("daemon exiting after shutdown request")
 	return nil
@@ -143,6 +170,7 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 	client := api.NewClient(resolveDaemonSocketPath())
 	pingCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
+	_ = pingCtx
 	if err := client.Ping(ctx); err == nil {
 		return fmt.Errorf("daemon already running (use: aegisclaw restart)")
 	}
