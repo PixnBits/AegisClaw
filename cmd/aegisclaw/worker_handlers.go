@@ -11,7 +11,8 @@ import (
 // makeWorkerListHandler lists worker records.
 func makeWorkerListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.WorkerStore == nil {
+		ws := env.Store.Workers()
+		if ws == nil {
 			return &api.Response{Error: "worker store not initialized"}
 		}
 		var req struct {
@@ -19,7 +20,7 @@ func makeWorkerListHandler(env *runtimeEnv) api.Handler {
 		}
 		json.Unmarshal(data, &req) //nolint:errcheck
 
-		workers := env.WorkerStore.List(req.ActiveOnly)
+		workers := ws.List(req.ActiveOnly)
 		out, err := json.Marshal(workers)
 		if err != nil {
 			return &api.Response{Error: "marshal: " + err.Error()}
@@ -31,7 +32,8 @@ func makeWorkerListHandler(env *runtimeEnv) api.Handler {
 // makeWorkerStatusHandler returns a single worker record.
 func makeWorkerStatusHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.WorkerStore == nil {
+		ws := env.Store.Workers()
+		if ws == nil {
 			return &api.Response{Error: "worker store not initialized"}
 		}
 		var req struct {
@@ -40,7 +42,7 @@ func makeWorkerStatusHandler(env *runtimeEnv) api.Handler {
 		if err := json.Unmarshal(data, &req); err != nil || req.WorkerID == "" {
 			return &api.Response{Error: "worker_id required"}
 		}
-		w, ok := env.WorkerStore.Get(req.WorkerID)
+		w, ok := ws.Get(req.WorkerID)
 		if !ok {
 			return &api.Response{Error: "worker " + req.WorkerID + " not found"}
 		}
@@ -55,10 +57,11 @@ func makeWorkerStatusHandler(env *runtimeEnv) api.Handler {
 // makeWorkerListActiveHandler is a convenience alias that returns only active workers.
 func makeWorkerListActiveHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, _ json.RawMessage) *api.Response {
-		if env.WorkerStore == nil {
+		ws := env.Store.Workers()
+		if ws == nil {
 			return &api.Response{Error: "worker store not initialized"}
 		}
-		workers := env.WorkerStore.List(true)
+		workers := ws.List(true)
 		out, _ := json.Marshal(workers)
 		return &api.Response{Success: true, Data: out}
 	}

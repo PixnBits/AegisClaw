@@ -195,45 +195,71 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 }
 
 func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
+	// Proposal draft handlers stubbed during TCB minimization (Phase 3);
+	// full SDLC flow now external via Governance Court + Builder VMs.
+	// Only env.Store.Proposals() paths remain for read access.
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalCreateDraft(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.update_draft",
 		"Update fields on an existing draft or in-review proposal. args: {id, ...fields}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalUpdateDraft(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.get_draft",
 		"Retrieve full details of a proposal draft. args: {id}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalGetDraft(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.list_drafts",
 		"List all proposal drafts.",
 		func(ctx context.Context, _ string) (string, error) {
-			return handleProposalListDrafts(env, ctx)
+			_ = ctx
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.submit",
 		"Submit a draft proposal for Governance Court review. args: {id}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalSubmitDirect(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.status",
 		"Check the current status and stage of a proposal. args: {id}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalStatus(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.reviews",
 		"Get detailed reviewer feedback (verdicts, comments, questions) for a proposal. args: {id}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalReviews(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.vote",
 		"Cast a human vote to approve or reject an escalated proposal. args: {id, approve, reason}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalVote(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 
 	reg.Register("list_proposals",
@@ -486,7 +512,8 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 			env.agentVMMu.Unlock()
 
 			if oldVMID != "" {
-				env.LLMProxy.StopForVM(oldVMID)
+				// LLMProxy removed from Host Daemon TCB (Phase 3); agent LLM routing now via AegisHub/Store VM.
+				// env.LLMProxy.StopForVM(oldVMID)
 				_ = env.Runtime.Stop(ctx, oldVMID)
 				_ = env.Runtime.Delete(ctx, oldVMID)
 			}
@@ -501,13 +528,13 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 			}
 
 			// Re-attach the LLM proxy to the new VM.
+			// LLMProxy removed from Host Daemon TCB (Phase 3); agent LLM routing now via AegisHub/Store VM.
 			vsockPath, err := env.Runtime.VsockPath(newVMID)
 			if err != nil {
 				return newVMID, fmt.Errorf("get vsock path for restored VM: %w", err)
 			}
-			if err := env.LLMProxy.StartForVM(newVMID, vsockPath); err != nil {
-				return newVMID, fmt.Errorf("start LLM proxy for restored VM: %w", err)
-			}
+			_ = vsockPath // LLMProxy.StartForVM stubbed (non-TCB)
+			// if err := env.LLMProxy.StartForVM(newVMID, vsockPath); err != nil { ... }
 
 			env.agentVMMu.Lock()
 			env.AgentVMID = newVMID
@@ -930,7 +957,8 @@ func registerWorkerTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("worker_status",
 		"Get the status and result of a previously spawned worker. Args: {worker_id} or {} to list recent workers.",
 		func(_ context.Context, args string) (string, error) {
-			if env.WorkerStore == nil {
+			ws := env.Store.Workers()
+			if ws == nil {
 				return "Worker store not initialized.", nil
 			}
 			var params struct {
@@ -939,14 +967,14 @@ func registerWorkerTools(reg *ToolRegistry, env *runtimeEnv) {
 			json.Unmarshal([]byte(args), &params) //nolint:errcheck
 
 			if params.WorkerID != "" {
-				w, ok := env.WorkerStore.Get(params.WorkerID)
+				w, ok := ws.Get(params.WorkerID)
 				if !ok {
 					return fmt.Sprintf("Worker %s not found.", params.WorkerID), nil
 				}
 				return formatWorkerRecord(w), nil
 			}
 			// List recent workers.
-			workers := env.WorkerStore.List(false)
+			workers := ws.List(false)
 			if len(workers) == 0 {
 				return "No workers found.", nil
 			}

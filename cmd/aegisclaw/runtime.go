@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 
 	"filippo.io/age"
-	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/config"
 	"github.com/PixnBits/AegisClaw/internal/eventbus"
 	gitmanager "github.com/PixnBits/AegisClaw/internal/git"
@@ -21,7 +20,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
 	"github.com/PixnBits/AegisClaw/internal/store"
-	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )

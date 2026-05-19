@@ -24,6 +24,35 @@ type spawnWorkerParams struct {
 	TaskID          string   `json:"task_id,omitempty"`
 }
 
+// Minimal chat/VM messaging types for worker ReAct loop (stubbed during TCB minimization).
+// These were previously provided by an in-process LLM/chat package that has been extracted.
+type agentChatMsg struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	Name    string `json:"name,omitempty"`
+}
+type agentChatPayload struct {
+	Messages         []agentChatMsg `json:"messages"`
+	Model            string         `json:"model"`
+	StructuredOutput bool           `json:"structured_output,omitempty"`
+}
+type agentVMRequest struct {
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+type agentVMResponse struct {
+	Success bool            `json:"success"`
+	Error   string          `json:"error,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+type agentChatResponse struct {
+	Status  string `json:"status"` // final | tool_call | error
+	Content string `json:"content,omitempty"`
+	Tool    string `json:"tool,omitempty"`
+	Args    string `json:"args,omitempty"`
+}
+
 // maxTimeoutMultiplier is the hard cap on per-worker timeout expressed as a
 // multiple of the configured default. Prevents runaway workers from consuming
 // resources for an unbounded duration.
@@ -57,8 +86,16 @@ func spawnWorker(ctx context.Context, env *runtimeEnv, p spawnWorkerParams) (str
 	if env.Config != nil && env.Config.Worker.MaxConcurrent > 0 {
 		maxConcurrent = env.Config.Worker.MaxConcurrent
 	}
-	if env.WorkerStore != nil && env.WorkerStore.CountActive() >= maxConcurrent {
-		return "", fmt.Errorf("resource limit: cannot spawn more than %d concurrent workers", maxConcurrent)
+	if ws := env.Store.Workers(); ws != nil {
+		active := 0
+		for _, w := range ws.List(true) {
+			if w != nil {
+				active++
+			}
+		}
+		if active >= maxConcurrent {
+			return "", fmt.Errorf("resource limit: cannot spawn more than %d concurrent workers", maxConcurrent)
+		}
 	}
 
 	workerID := uuid.New().String()
@@ -76,8 +113,8 @@ func spawnWorker(ctx context.Context, env *runtimeEnv, p spawnWorkerParams) (str
 		TimeoutAt:       timeoutAt,
 		Status:          worker.StatusSpawning,
 	}
-	if env.WorkerStore != nil {
-		env.WorkerStore.Upsert(rec) //nolint:errcheck
+	if ws := env.Store.Workers(); ws != nil {
+		ws.Upsert(rec) //nolint:errcheck
 	}
 
 	// Audit: worker spawned.
@@ -125,20 +162,19 @@ func spawnWorker(ctx context.Context, env *runtimeEnv, p spawnWorkerParams) (str
 	}
 	rec.VMID = vmID
 	rec.Status = worker.StatusRunning
-	if env.WorkerStore != nil {
-		env.WorkerStore.Upsert(rec) //nolint:errcheck
+	if ws := env.Store.Workers(); ws != nil {
+		ws.Upsert(rec) //nolint:errcheck
 	}
 
 	// Start LLM proxy for the worker VM.
+	// LLMProxy removed from Host Daemon TCB (Phase 3); worker LLM routing now via AegisHub/Store VM.
 	vsockPath, err := env.Runtime.VsockPath(vmID)
 	if err != nil {
 		destroyWorkerVM(ctx, env, vmID, workerID)
 		return finishWorker(env, rec, worker.StatusFailed, "", "vsock path: "+err.Error())
 	}
-	if err := env.LLMProxy.StartForVM(vmID, vsockPath); err != nil {
-		destroyWorkerVM(ctx, env, vmID, workerID)
-		return finishWorker(env, rec, worker.StatusFailed, "", "llm proxy: "+err.Error())
-	}
+	// env.LLMProxy.StartForVM stubbed (non-TCB); worker VM launch continues without direct proxy attachment.
+	_ = vsockPath
 
 	// Build the worker's specialized system prompt + task.
 	systemPrompt := worker.RolePrompt(role) +
@@ -250,8 +286,8 @@ func finishWorker(env *runtimeEnv, rec *worker.WorkerRecord, status worker.Worke
 	rec.Result = result
 	rec.Error = errMsg
 
-	if env.WorkerStore != nil {
-		env.WorkerStore.Upsert(rec) //nolint:errcheck
+	if ws := env.Store.Workers(); ws != nil {
+		ws.Upsert(rec) //nolint:errcheck
 	}
 
 	// Merkle-audit the outcome.
@@ -293,7 +329,8 @@ func finishWorker(env *runtimeEnv, rec *worker.WorkerRecord, status worker.Worke
 
 // destroyWorkerVM stops and deletes the worker VM and its LLM proxy.
 func destroyWorkerVM(ctx context.Context, env *runtimeEnv, vmID, workerID string) {
-	env.LLMProxy.StopForVM(vmID)
+	// LLMProxy removed from Host Daemon TCB (Phase 3); worker LLM routing now via AegisHub/Store VM.
+	// env.LLMProxy.StopForVM(vmID)
 	if err := env.Runtime.Stop(ctx, vmID); err != nil {
 		env.Logger.Warn("stop worker VM failed",
 			zap.String("vm_id", vmID), zap.Error(err))

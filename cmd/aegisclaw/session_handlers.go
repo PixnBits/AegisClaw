@@ -15,7 +15,6 @@ import (
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
-	"github.com/google/uuid"
 )
 
 // sessionsListResponse is the JSON payload returned by sessions.list.
