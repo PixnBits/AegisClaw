@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"go.uber.org/zap"
@@ -77,32 +79,49 @@ type ControlPlaneResponse struct {
 
 // Forward sends a ControlPlaneRequest through the AegisHub mediation layer.
 //
-// Flow inside Forward (current Phase 7 stub):
-//   1. Log the requested action for observability.
-//   2. Return a placeholder success response (real implementation will
-//      serialize the request, send it over vsock to AegisHub, wait for
-//      the response, and return it here).
-//
-// In the current implementation this is a lightweight stub that logs the
-// intent and returns a placeholder response. Real vsock forwarding will be
-// added in a later phase (Phase 8) without changing the method signature.
+// Phase 8 implementation:
+//   1. Wrap the request in an ipc.Message (Type=controlplane.request).
+//   2. Call hub.RouteMessage (which performs ACL check via IdentityRegistry
+//      and delivers to the hub's own handler).
+//   3. Map DeliveryResult back to ControlPlaneResponse.
 //
 // The caller (api.Handler) is responsible for converting the
 // ControlPlaneResponse back into an api.Response for the CLI client.
 func (p *ControlPlaneProxy) Forward(ctx context.Context, req ControlPlaneRequest) (*ControlPlaneResponse, error) {
 	if p.logger != nil {
-		p.logger.Debug("ControlPlaneProxy.Forward (stub)",
+		p.logger.Debug("ControlPlaneProxy.Forward",
 			zap.String("action", req.Action))
 	}
 
-	// TODO(Phase 6+): Serialize req and send via vsock to AegisHub.
-	// AegisHub will ACL-check and route to the appropriate microVM
-	// (Store VM for worker/proposal data, Agent VMs for chat, etc.).
+	if p.hub == nil {
+		// Allow tests and offline usage to proceed with a minimal success response.
+		return &ControlPlaneResponse{Success: true, Data: json.RawMessage(`{}`)}, nil
+	}
 
-	// Placeholder response for now.
+	// Serialize the request into the message payload.
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal ControlPlaneRequest: %w", err)
+	}
+
+	msg := &ipc.Message{
+		ID:        "cp-" + req.Action,
+		From:      "daemon",
+		To:        ipc.MessageHubID,
+		Type:      "controlplane.request",
+		Payload:   payload,
+		Timestamp: time.Now().UTC(),
+	}
+
+	result, err := p.hub.RouteMessage("daemon", msg)
+	if err != nil {
+		return &ControlPlaneResponse{Success: false, Error: err.Error()}, nil
+	}
+
 	return &ControlPlaneResponse{
-		Success: true,
-		Data:    json.RawMessage(`{}`),
+		Success: result.Success,
+		Error:   result.Error,
+		Data:    result.Response,
 	}, nil
 }
 

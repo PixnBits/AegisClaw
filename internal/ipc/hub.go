@@ -309,11 +309,61 @@ func (h *MessageHub) handleHubMessage(msg *Message) (*DeliveryResult, error) {
 			Response:  data,
 		}, nil
 
+	case "controlplane.request":
+		return h.handleControlPlaneRequest(msg)
+
 	default:
 		return &DeliveryResult{
 			MessageID: msg.ID,
 			Success:   false,
 			Error:     fmt.Sprintf("unknown hub command: %s", msg.Type),
+		}, nil
+	}
+}
+
+// handleControlPlaneRequest parses a ControlPlaneRequest from the message payload
+// and dispatches to the appropriate backend based on the Action field.
+// Phase 8: This is the AegisHub receiving side for mediated CLI operations.
+func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, error) {
+	var req struct {
+		Action string          `json:"action"`
+		Data   json.RawMessage `json:"data,omitempty"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return &DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "invalid controlplane request payload",
+		}, nil
+	}
+
+	h.logger.Debug("ControlPlaneRequest received",
+		zap.String("action", req.Action),
+		zap.String("from", msg.From))
+
+	// Basic dispatch table for actions that have been wired through ControlPlaneProxy.
+	switch req.Action {
+	case "worker.list":
+		// Return a minimal worker list (real implementation would query Store VM).
+		data := json.RawMessage(`[{"worker_id":"w-001","role":"general","status":"idle"}]`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	case "worker.status":
+		data := json.RawMessage(`{"worker_id":"w-001","role":"general","status":"idle","task_id":""}`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	case "skill.list":
+		data := json.RawMessage(`[{"skill_id":"example-skill","status":"registered"}]`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	// Future actions (proposal.list, chat.message, etc.) can be added here
+	// or delegated to registered skills via h.router.Route(...).
+
+	default:
+		return &DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     fmt.Sprintf("unsupported controlplane action: %s", req.Action),
 		}, nil
 	}
 }

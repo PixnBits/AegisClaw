@@ -113,7 +113,9 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 
 **Future Data Access Routing**: All reads of proposals, workers, events, etc. from CLI, dashboard, or other components will be routed through AegisHub (via the daemon's ControlPlaneProxy) to the appropriate owner (primarily Store VM). The Host Daemon no longer provides direct Store access.
 
-**Phase 7 Wiring**: Key CLI handlers (worker.list/status, skill.list/status, chat.message, etc.) have been refactored to delegate to ControlPlaneProxy, demonstrating the mediated request pattern while AegisHub-side receiving handlers are implemented in Phase 8.
+**Phase 7 Wiring**: Key CLI handlers (worker.list/status, skill.list/status, chat.message, etc.) have been refactored to delegate to ControlPlaneProxy.
+
+**Phase 8 Implementation**: AegisHub (MessageHub) now receives `ControlPlaneRequest` messages (type `controlplane.request`), performs ACL checks (RoleCLI permitted), and dispatches on the `Action` field (`worker.list`, `worker.status`, `skill.list`, ...). The receiving handler lives in `internal/ipc/hub.go:handleControlPlaneRequest`. Basic sample responses are returned for wired actions; real Store-VM backends can be plugged in later.
 
 ## Data Flow Example: Skill Creation via SDLC
 

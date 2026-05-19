@@ -84,6 +84,12 @@ func defaultACLPolicy() *ACLPolicy {
 	p.permit(RoleDaemon, "tool.result")
 	p.permit(RoleDaemon, "status")
 
+	// Phase 8: CLI / daemon-originated ControlPlaneRequest messages
+	// (worker.list, skill.status, etc.) are permitted. These requests are
+	// forwarded by ControlPlaneProxy and must be ACL-checked before dispatch
+	// to the owning microVM (primarily Store VM).
+	p.permit(RoleCLI, "controlplane.request")
+
 	return p
 }
 
