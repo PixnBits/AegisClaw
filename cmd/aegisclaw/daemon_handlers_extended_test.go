@@ -114,7 +114,7 @@ func TestTeamHandlersRoundTrip(t *testing.T) {
 func TestTeamAutonomyHandlersRegisteredWithoutRegistry(t *testing.T) {
 	env := &runtimeEnv{}
 	srv := api.NewServer("", nil)
-	registerExtendedDaemonAPI(srv, env, nil, nil, nil)
+	registerExtendedDaemonAPI(srv, env, nil, nil, nil, nil)
 
 	for _, action := range []string{"team.list", "team.create", "team.join", "team.leave", "team.status"} {
 		resp := srv.CallDirect(api.WithTrustedCaller(context.Background()), action, nil)

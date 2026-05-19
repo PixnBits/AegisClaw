@@ -13,6 +13,25 @@ import (
 // It translates high-level requests into mediated messages that
 // AegisHub can route and ACL-enforce.
 //
+// Request Flow (Phase 7):
+//   CLI / TUI client
+//        │
+//        │ 1. Sends JSON-RPC style request over Unix socket
+//        ▼
+//   api.Handler (daemon_handlers_extended.go, etc.)
+//        │
+//        │ 2. Constructs ControlPlaneRequest and calls Forward
+//        ▼
+//   ControlPlaneProxy.Forward(ctx, req)
+//        │
+//        │ 3. Forwards (currently stubbed) to AegisHub via vsock
+//        ▼
+//   AegisHub (MessageHub) ──► ACL check + route to target VM
+//        │
+//        │ 4. Target (Store VM, Agent VM, Web Portal VM, …) handles
+//        ▼
+//   Response flows back through the same path.
+//
 // This component enables the Host Daemon to act as a lightweight
 // proxy rather than holding persistent state directly (post-Phase 5).
 // All data access and skill/tool invocations should eventually flow
@@ -37,6 +56,13 @@ func NewControlPlaneProxy(hub *ipc.MessageHub, logger *zap.Logger) *ControlPlane
 // ControlPlaneRequest represents a mediated request from CLI to AegisHub.
 // The style is intentionally similar to skill/tool invocations rather than
 // generic command objects.
+//
+// Example actions (resembling skill/tool names):
+//   - "worker.list"
+//   - "worker.status"
+//   - "skill.list"
+//   - "skill.status"
+//   - "chat.message"
 type ControlPlaneRequest struct {
 	Action string          `json:"action"` // e.g. "worker.list", "skill.status"
 	Data   json.RawMessage `json:"data,omitempty"`
@@ -50,9 +76,19 @@ type ControlPlaneResponse struct {
 }
 
 // Forward sends a ControlPlaneRequest through the AegisHub mediation layer.
+//
+// Flow inside Forward (current Phase 7 stub):
+//   1. Log the requested action for observability.
+//   2. Return a placeholder success response (real implementation will
+//      serialize the request, send it over vsock to AegisHub, wait for
+//      the response, and return it here).
+//
 // In the current implementation this is a lightweight stub that logs the
 // intent and returns a placeholder response. Real vsock forwarding will be
-// added in a later phase without changing the method signature.
+// added in a later phase (Phase 8) without changing the method signature.
+//
+// The caller (api.Handler) is responsible for converting the
+// ControlPlaneResponse back into an api.Response for the CLI client.
 func (p *ControlPlaneProxy) Forward(ctx context.Context, req ControlPlaneRequest) (*ControlPlaneResponse, error) {
 	if p.logger != nil {
 		p.logger.Debug("ControlPlaneProxy.Forward (stub)",

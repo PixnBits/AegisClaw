@@ -305,7 +305,7 @@ func newContractAPIServer(t *testing.T) (*api.Server, *runtimeEnv) {
 	env.Court = setupContractCourtEngine(t, env)
 
 	srv := api.NewServer(filepath.Join(t.TempDir(), "contract.sock"), logger)
-	registerExtendedDaemonAPI(srv, env, buildToolRegistry(env), nil, nil)
+	registerExtendedDaemonAPI(srv, env, buildToolRegistry(env), nil, nil, nil)
 	return srv, env
 }
 

@@ -44,6 +44,11 @@ func (b *Bridge) RegisterControlPlaneHandlers() error {
 	}
 
 	b.logger.Info("IPC bridge control plane handlers registered")
+
+	// TODO(Phase 8): Register a dedicated handler for ControlPlaneRequest
+	// messages coming from the daemon's ControlPlaneProxy. This handler
+	// should perform ACL checks and forward the request to the appropriate
+	// target microVM (Store VM for data queries, Agent VMs for chat, etc.).
 	return nil
 }
 

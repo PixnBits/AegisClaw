@@ -9,24 +9,40 @@ import (
 )
 
 // makeWorkerListHandler lists worker records.
-// Phase 5: WorkerStore access removed from Host Daemon TCB.
-// Long-term owner: Store VM. Access routed through AegisHub mediation.
-func makeWorkerListHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		_ = env
-		_ = data
-		return &api.Response{Error: "worker store access removed from minimal Host Daemon TCB (Phase 5)"}
+// Phase 7: Routed via ControlPlaneProxy (AegisHub mediation).
+// Long-term owner: Store VM via AegisHub.
+func makeWorkerListHandler(env *runtimeEnv, proxy *ControlPlaneProxy) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		if proxy == nil {
+			return &api.Response{Error: "control plane proxy not available"}
+		}
+		resp, err := proxy.Forward(ctx, ControlPlaneRequest{
+			Action: "worker.list",
+			Data:   data,
+		})
+		if err != nil || !resp.Success {
+			return &api.Response{Error: "worker list via AegisHub failed"}
+		}
+		return &api.Response{Success: true, Data: resp.Data}
 	}
 }
 
 // makeWorkerStatusHandler returns a single worker record.
-// Phase 5: WorkerStore access removed from Host Daemon TCB.
-// Long-term owner: Store VM. Access routed through AegisHub mediation.
-func makeWorkerStatusHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		_ = env
-		_ = data
-		return &api.Response{Error: "worker store access removed from minimal Host Daemon TCB (Phase 5)"}
+// Phase 7: Routed via ControlPlaneProxy (AegisHub mediation).
+// Long-term owner: Store VM via AegisHub.
+func makeWorkerStatusHandler(env *runtimeEnv, proxy *ControlPlaneProxy) api.Handler {
+	return func(ctx context.Context, data json.RawMessage) *api.Response {
+		if proxy == nil {
+			return &api.Response{Error: "control plane proxy not available"}
+		}
+		resp, err := proxy.Forward(ctx, ControlPlaneRequest{
+			Action: "worker.status",
+			Data:   data,
+		})
+		if err != nil || !resp.Success {
+			return &api.Response{Error: "worker status via AegisHub failed"}
+		}
+		return &api.Response{Success: true, Data: resp.Data}
 	}
 }
 

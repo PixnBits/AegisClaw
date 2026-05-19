@@ -22,12 +22,16 @@ import (
 // registerExtendedDaemonAPI wires additional JSON-RPC-style handlers used by
 // the expanded CLI surface (docs/specs/cli.md). Handlers stay thin: validate
 // input, touch only host-side registries, and return structured JSON.
+//
+// Phase 7: Selected handlers now delegate to ControlPlaneProxy for
+// AegisHub-mediated request routing instead of direct Store access.
 func registerExtendedDaemonAPI(
 	apiSrv *api.Server,
 	env *runtimeEnv,
 	toolRegistry *ToolRegistry,
 	hub *ipc.MessageHub,
 	daemonQuit chan struct{},
+	proxy *ControlPlaneProxy,
 ) {
 	// Vault handlers stubbed — secrets handling has been removed from Host Daemon TCB.
 	// All vault operations are now the responsibility of the Network Boundary VM only.
@@ -37,8 +41,9 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("vault.secret.rotate", makeVaultSecretRotateHandler(env))
 
 	// Workers (read-only but still good to gate if needed)
-	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
-	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
+	// Phase 7: Routed via ControlPlaneProxy (AegisHub mediation).
+	apiSrv.Handle("worker.list", makeWorkerListHandler(env, proxy))
+	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env, proxy))
 
 	// Skills
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
