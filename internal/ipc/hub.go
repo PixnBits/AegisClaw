@@ -379,14 +379,17 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 
 	case "chat.message":
 		// Routed to chat router / agent VM in production.
+		// TODO(Phase 9): Replace sample with real delegation to registered chat-router or Agent VM.
 		data := json.RawMessage(`{"session_id":"s-001","reply":"(sample) message routed via AegisHub"}`)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
 	case "proposal.list":
+		// TODO(Phase 9): Replace sample with real Store VM query via registered handler.
 		data := json.RawMessage(`[{"proposal_id":"p-001","title":"Example","status":"draft"}]`)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
 	case "proposal.status":
+		// TODO(Phase 9): Replace sample with real Store VM query via registered handler.
 		data := json.RawMessage(`{"proposal_id":"p-001","title":"Example","status":"draft","created_at":"2026-05-19T00:00:00Z"}`)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 

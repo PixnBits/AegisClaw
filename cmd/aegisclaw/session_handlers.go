@@ -108,12 +108,11 @@ func makeSessionsHistoryHandler(env *runtimeEnv) api.Handler {
 //	API action: sessions.send
 //	Request:    {"session_id": "...", "message": "..."}
 //	Response:   {"session_id": "...", "reply": "...", "ok": true}
-func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Handler {
+func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry, proxy *ControlPlaneProxy) api.Handler {
 	// chatHandler is built once here, not per-request, so there is no
 	// per-call overhead from constructing the handler closure.
-	// Phase 8: chat.message now expects ControlPlaneProxy; sessions.send
-	// internal path passes nil for now (TODO Phase 9: wire proxy through).
-	chatHandler := makeChatMessageHandler(nil)
+	// Phase 8: chat.message routed through ControlPlaneProxy for mediation.
+	chatHandler := makeChatMessageHandler(proxy)
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		var req struct {
 			SessionID string `json:"session_id"`

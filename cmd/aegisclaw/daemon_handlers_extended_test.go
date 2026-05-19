@@ -40,7 +40,7 @@ func TestSessionsPauseResumeCancel(t *testing.T) {
 		t.Fatalf("want paused, got %s", rec.Status)
 	}
 
-	sendH := makeSessionsSendHandler(env, nil)
+	sendH := makeSessionsSendHandler(env, nil, nil)
 	resp = sendH(context.Background(), mustMarshalJSON(t, map[string]string{
 		"session_id": "sess-1",
 		"message":    "hi",
@@ -154,7 +154,7 @@ func TestSessionsSendRejectsClosedSession(t *testing.T) {
 	env := testEnvWithSessions(t)
 	env.Sessions.Open("sess-closed", "vm-1")
 	env.Sessions.Close("sess-closed")
-	sendH := makeSessionsSendHandler(env, nil)
+	sendH := makeSessionsSendHandler(env, nil, nil)
 	resp := sendH(context.Background(), mustMarshalJSON(t, map[string]string{
 		"session_id": "sess-closed",
 		"message":    "hello",

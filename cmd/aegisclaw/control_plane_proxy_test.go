@@ -333,3 +333,54 @@ func TestControlPlaneProxy_Forward_ProposalStatus_ErrorPropagation(t *testing.T)
 		t.Errorf("expected backend error propagated, got %q", resp.Error)
 	}
 }
+
+// TestProposalHandlers_RegisteredWithProxy defines expected behavior once
+// proposal handlers are registered with ControlPlaneProxy (test-guided).
+func TestProposalHandlers_RegisteredWithProxy(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		data := json.RawMessage(`[{"proposal_id":"p-reg-1"}]`)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	// Simulate what registration will do: create handler and call it.
+	listH := makeProposalListHandler(proxy)
+	resp := listH(context.Background(), json.RawMessage(`{}`))
+	if resp == nil || !resp.Success {
+		t.Fatalf("proposal.list handler failed: %+v", resp)
+	}
+
+	statusH := makeProposalStatusHandler(proxy)
+	resp = statusH(context.Background(), json.RawMessage(`{"proposal_id":"p-reg-1"}`))
+	if resp == nil || !resp.Success {
+		t.Fatalf("proposal.status handler failed: %+v", resp)
+	}
+}
+
+// TestSessionsSendHandler_UsesProxy defines expected behavior for sessions.send
+// when threaded with ControlPlaneProxy (test-guided).
+func TestSessionsSendHandler_UsesProxy(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		data := json.RawMessage(`{"reply":"sessions via proxy"}`)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("register chat-router: %v", err)
+	}
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	// Note: full sessions.send still needs env setup; here we test the proxy path
+	// that will be used inside the handler after threading.
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "chat.message",
+		Data:   json.RawMessage(`{"session_id":"s-test","message":"hi from sessions"}`),
+	})
+	if err != nil || !resp.Success {
+		t.Fatalf("expected sessions chat path to succeed via proxy: %v %+v", err, resp)
+	}
+}

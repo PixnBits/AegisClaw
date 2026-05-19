@@ -1029,7 +1029,7 @@ func registerSessionTools(reg *ToolRegistry, env *runtimeEnv, selfRegPtr **ToolR
 				return "", fmt.Errorf("session store not available")
 			}
 			// Build and call the sessions.send handler directly.
-			sendHandler := makeSessionsSendHandler(env, *selfRegPtr)
+			sendHandler := makeSessionsSendHandler(env, *selfRegPtr, nil)
 			reqBytes, _ := json.Marshal(map[string]string{
 				"session_id": p.SessionID,
 				"message":    p.Message,
