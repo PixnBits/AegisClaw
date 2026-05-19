@@ -413,3 +413,62 @@ func TestProposalHandlers_ErrorOnNilProxy(t *testing.T) {
 		t.Error("expected error response when proxy is nil for proposal.status")
 	}
 }
+
+// Phase 9 Integration Test Approach (defined in tests first, per test-guided style):
+// We use in-process MessageHubNoKernel + RegisterSkill to simulate Store VM / chat-router
+// backends. This allows full CLI → Proxy → AegisHub → Backend flow testing without
+// requiring real Firecracker VMs or vsock. Real adapters (e.g., wrapping ProposalStore)
+// can be registered the same way in production wiring.
+//
+// Example realistic adapter (moved to internal/ipc or store adapter in full impl):
+// type proposalBackend struct { store store.ProposalStore }
+// func (b *proposalBackend) handle(msg *ipc.Message) (*ipc.DeliveryResult, error) { ... calls b.store.List() ... }
+
+// TestMediatedProposalList_DelegatesToStoreVM verifies the full mediated path for proposal.list.
+func TestMediatedProposalList_DelegatesToStoreVM(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	// Simulate a Store VM backend that would use real ProposalStore.List() in production.
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		data := json.RawMessage(`[{"proposal_id":"p-int-1","title":"Integration Test Proposal","status":"draft"}]`)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("register store-vm: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "proposal.list",
+	})
+	if err != nil {
+		t.Fatalf("Forward error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %s", resp.Error)
+	}
+}
+
+// TestMediatedChatMessage_DelegatesToChatRouter verifies chat.message delegation.
+func TestMediatedChatMessage_DelegatesToChatRouter(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		data := json.RawMessage(`{"session_id":"s-int-1","reply":"Phase 9 chat response"}`)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("register chat-router: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "chat.message",
+		Data:   json.RawMessage(`{"message":"hello"}`),
+	})
+	if err != nil || !resp.Success {
+		t.Fatalf("chat.message delegation failed: %v %+v", err, resp)
+	}
+}

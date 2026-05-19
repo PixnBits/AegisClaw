@@ -383,9 +383,15 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
 	case "chat.message":
-		// Routed to chat router / agent VM in production.
+		// Delegated to chat router / agent VM in production.
 		// TODO(Phase 9): Replace sample with real delegation to registered chat-router or Agent VM.
-		data := json.RawMessage(`{"session_id":"s-001","reply":"(sample) message routed via AegisHub"}`)
+		// Current improved sample includes timestamp for realism.
+		reply := map[string]interface{}{
+			"session_id": "s-001",
+			"reply":      "(sample) message routed via AegisHub",
+			"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		}
+		data, _ := json.Marshal(reply)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
 	case "proposal.list":
