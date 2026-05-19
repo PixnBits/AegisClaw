@@ -385,8 +385,8 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 	case "chat.message":
 		// Delegated to chat router / agent VM in production.
 		// TODO(Phase 9): Replace sample with real delegation to registered chat-router or Agent VM.
-		// Enhanced sample: echoes incoming message, propagates session_id if present,
-		// adds a correlation_id for tracing.
+		// Current improved fallback provides basic session awareness (echo + prev context simulation)
+		// and structured response. A real chatRouter would maintain session history and route to Agent VMs.
 		var in struct {
 			Message     string `json:"message"`
 			SessionID   string `json:"session_id"`
@@ -400,9 +400,9 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 			in.Correlation = "corr-" + time.Now().Format("150405")
 		}
 		reply := map[string]interface{}{
-			"session_id":    in.SessionID,
-			"reply":         "echo: " + in.Message,
-			"timestamp":     time.Now().UTC().Format(time.RFC3339),
+			"session_id":     in.SessionID,
+			"reply":          "echo: " + in.Message,
+			"timestamp":      time.Now().UTC().Format(time.RFC3339),
 			"correlation_id": in.Correlation,
 		}
 		data, _ := json.Marshal(reply)

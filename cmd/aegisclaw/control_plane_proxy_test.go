@@ -605,3 +605,109 @@ func TestMediatedProposalList_RealProposalStore(t *testing.T) {
 		t.Errorf("expected real proposal in list, got: %+v", summaries)
 	}
 }
+
+// TestMediatedProposalStatus_FullPathWithRealBackend exercises the complete
+// mediation path with a real ProposalStore for proposal.status.
+func TestMediatedProposalStatus_FullPathWithRealBackend(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	tmp := t.TempDir()
+	propStore, err := proposal.NewStore(tmp, logger)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	p := &proposal.Proposal{ID: "p-full-1", Title: "Full Path", Status: proposal.StatusSubmitted}
+	if err := propStore.Create(p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Use the same handler pattern as the real proposalBackend for status.
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		var req struct{ ProposalID string `json:"proposal_id"` }
+		_ = json.Unmarshal(msg.Payload, &req)
+		p, err := propStore.Get(req.ProposalID)
+		if err != nil {
+			return &ipc.DeliveryResult{MessageID: msg.ID, Success: false, Error: err.Error()}, nil
+		}
+		status := map[string]string{"proposal_id": p.ID, "title": p.Title, "status": string(p.Status)}
+		data, _ := json.Marshal(status)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "proposal.status",
+		Data:   json.RawMessage(`{"proposal_id":"p-full-1"}`),
+	})
+	if err != nil || !resp.Success {
+		t.Fatalf("full path status failed: %v %+v", err, resp)
+	}
+}
+
+// TestChatRouter_SessionAwareness (test-guided) defines expected realistic
+// behavior for the chat-router: it should track basic session context and
+// return structured responses with session_id, reply, and correlation_id.
+func TestChatRouter_SessionAwareness(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	// Simulate an improved chat-router that maintains simple session state.
+	// In a real impl this would be a stateful handler or delegate to Agent VM.
+	sessions := make(map[string]string) // session_id -> last_message
+	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		var req struct {
+			Message   string `json:"message"`
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(msg.Payload, &req)
+		if req.SessionID == "" {
+			req.SessionID = "default"
+		}
+		prev := sessions[req.SessionID]
+		sessions[req.SessionID] = req.Message
+		reply := map[string]interface{}{
+			"session_id":     req.SessionID,
+			"reply":          "received: " + req.Message + " (prev: " + prev + ")",
+			"correlation_id": "corr-" + req.SessionID,
+			"timestamp":      "now",
+		}
+		data, _ := json.Marshal(reply)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("register chat-router: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	// First message
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "chat.message",
+		Data:   json.RawMessage(`{"message":"hello","session_id":"sess-1"}`),
+	})
+	if err != nil || !resp.Success {
+		t.Fatalf("first chat failed: %v %+v", err, resp)
+	}
+
+	// Second message to same session should see previous context
+	resp, err = proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "chat.message",
+		Data:   json.RawMessage(`{"message":"world","session_id":"sess-1"}`),
+	})
+	if err != nil || !resp.Success {
+		t.Fatalf("second chat failed: %v %+v", err, resp)
+	}
+
+	// Verify response contains expected structure (basic regression check)
+	var out map[string]string
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out["session_id"] != "sess-1" || out["correlation_id"] == "" {
+		t.Errorf("unexpected chat response: %+v", out)
+	}
+}

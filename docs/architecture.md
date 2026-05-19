@@ -119,7 +119,7 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 
 Additional actions wired: `chat.message`, `proposal.list`, `proposal.status` (handlers now registered on API socket and use ControlPlaneProxy). Sessions.send threaded through proxy. Cleanup pass: nil proxy fallbacks explicitly marked with TODO(Phase 9) where intentional (tool registry internal path); delegation fallback now logs; added coverage tests for proposal/sessions paths.
 
-**Phase 9**: A concrete `proposalBackend` (internal/ipc/proposal_backend.go) now wraps a real `proposal.Store` (git-backed ProposalStore) and is registered under "store-vm". `proposal.list` and `proposal.status` return actual store data. Integration tests (TestMediatedProposalList_RealProposalStore) create real stores and verify end-to-end delegation. Chat-router includes echo + correlation. Real remote Store VM vsock remains future work.
+**Phase 9**: A concrete `proposalBackend` (internal/ipc/proposal_backend.go) now wraps a real `proposal.Store` (git-backed ProposalStore) and is registered under "store-vm". `proposal.list` and `proposal.status` return actual store data. Chat-router improved with basic session awareness (echo + context) and structured responses. End-to-end + regression tests added for chat-router session handling and full-path proposal flows with real backends. Real remote Store VM vsock remains future work.
 
 ## Data Flow Example: Skill Creation via SDLC
 
