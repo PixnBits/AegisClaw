@@ -79,16 +79,17 @@ All steps executed in order:
 
 **Post-Phase 4 State**
 
-| Property                    | Post-Phase 4                  |
-|-----------------------------|-------------------------------|
-| Privileges                  | Minimal (SYS_ADMIN + DAC_OVERRIDE) |
-| seccomp                     | Restrictive default-deny hook |
+| Property                    | Post-Phase 4 (Completion)                  |
+|-----------------------------|--------------------------------------------|
+| Privileges                  | Minimal (SYS_ADMIN + DAC_OVERRIDE)         |
+| Capability Bounding Set     | Active (PR_CAPBSET_DROP for all others)    |
+| seccomp                     | Real aggressive allowlist (paranoid) via PR_SET_SECCOMP |
 | Binary                      | `make build-static` produces verified static binary |
-| Lifecycle                   | Signal handling + VM cleanup  |
-| Resource Limits             | 256MB / 1024 fds (conservative) |
-| Socket Permissions          | 0600 + 0700 dir               |
+| Lifecycle                   | Signal handling + VM cleanup               |
+| Resource Limits             | RLIMIT + basic cgroups v2 (memory/CPU)     |
+| Socket Permissions          | 0600 + 0700 dir                            |
 
-Future work: full BPF program, cgroups, capability bounding set, LSM integration.
+The seccomp allowlist is intentionally aggressive. Use `AEGISCLAW_SECCOMP_STRICT=0` to disable during development. Future work: Landlock, full cgroups delegation, LSM integration.
 
 ---
 

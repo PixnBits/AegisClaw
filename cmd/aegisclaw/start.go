@@ -69,11 +69,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Phase 4 Step 2: Drop capabilities as early as possible (after logger init).
 	_ = dropCapabilities(env.Logger)
 
+	// Phase 4 Step 1 (bounding set): Permanently remove capabilities from the bounding set.
+	_ = applyCapabilityBoundingSet(env.Logger)
+
 	// Phase 4 Step 3: Apply seccomp-bpf filter right after caps.
 	_ = applySeccompFilter(env.Logger)
 
 	// Phase 4 Step 6: Apply basic resource limits.
 	_ = setResourceLimits(env.Logger)
+
+	// Phase 4 Step 3 (cgroups): Apply conservative memory/CPU limits.
+	_ = applyCgroupLimits(env.Logger)
 
 	if startModelFlag != "" {
 		env.Config.Ollama.DefaultModel = startModelFlag
