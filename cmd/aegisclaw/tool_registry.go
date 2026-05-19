@@ -1029,6 +1029,10 @@ func registerSessionTools(reg *ToolRegistry, env *runtimeEnv, selfRegPtr **ToolR
 				return "", fmt.Errorf("session store not available")
 			}
 			// Build and call the sessions.send handler directly.
+			// Phase 8: Intentionally passing nil proxy here because this is an
+			// internal tool execution path (not the public API socket).
+			// TODO(Phase 9): Thread a real ControlPlaneProxy or refactor to
+			// avoid direct handler construction for tool self-calls.
 			sendHandler := makeSessionsSendHandler(env, *selfRegPtr, nil)
 			reqBytes, _ := json.Marshal(map[string]string{
 				"session_id": p.SessionID,

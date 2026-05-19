@@ -117,7 +117,7 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 
 **Phase 8 Implementation**: AegisHub (MessageHub) receives `ControlPlaneRequest` messages, performs ACL checks (RoleCLI permitted), and dispatches on the `Action` field. The handler in `internal/ipc/hub.go:handleControlPlaneRequest` first attempts delegation to a registered backend (e.g., "store-vm") when available, falling back to realistic sample data otherwise. `ControlPlaneProxy.Forward` respects context cancellation and properly surfaces backend errors. Dead Phase 3 dashboard stubs were removed. 
 
-Additional actions wired: `chat.message`, `proposal.list`, `proposal.status` (handlers now registered on API socket and use ControlPlaneProxy). Sessions.send threaded through proxy. Real chat routing and proposal store logic remain for Phase 9.
+Additional actions wired: `chat.message`, `proposal.list`, `proposal.status` (handlers now registered on API socket and use ControlPlaneProxy). Sessions.send threaded through proxy. Cleanup pass: nil proxy fallbacks explicitly marked with TODO(Phase 9) where intentional (tool registry internal path); delegation fallback now logs; added coverage tests for proposal/sessions paths. Real chat routing and proposal store logic remain for Phase 9.
 
 ## Data Flow Example: Skill Creation via SDLC
 

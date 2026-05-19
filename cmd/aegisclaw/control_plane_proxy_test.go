@@ -361,6 +361,19 @@ func TestProposalHandlers_RegisteredWithProxy(t *testing.T) {
 	}
 }
 
+// TestSessionsSendHandler_NilProxyFallback defines expected behavior when
+// sessions.send tool path intentionally uses nil proxy (internal bypass).
+// This test is written first per test-guided approach.
+func TestSessionsSendHandler_NilProxyFallback(t *testing.T) {
+	env := &runtimeEnv{} // minimal env; full test would need more setup
+	// With nil proxy, the handler should still be constructible.
+	// In practice it will error on chat path, but construction succeeds.
+	h := makeSessionsSendHandler(env, nil, nil)
+	if h == nil {
+		t.Fatal("makeSessionsSendHandler with nil proxy returned nil")
+	}
+}
+
 // TestSessionsSendHandler_UsesProxy defines expected behavior for sessions.send
 // when threaded with ControlPlaneProxy (test-guided).
 func TestSessionsSendHandler_UsesProxy(t *testing.T) {
@@ -382,5 +395,21 @@ func TestSessionsSendHandler_UsesProxy(t *testing.T) {
 	})
 	if err != nil || !resp.Success {
 		t.Fatalf("expected sessions chat path to succeed via proxy: %v %+v", err, resp)
+	}
+}
+
+// TestProposalHandlers_ErrorOnNilProxy verifies graceful error when handlers
+// are called without a proxy (coverage for registration edge case).
+func TestProposalHandlers_ErrorOnNilProxy(t *testing.T) {
+	listH := makeProposalListHandler(nil)
+	resp := listH(context.Background(), json.RawMessage(`{}`))
+	if resp == nil || resp.Success {
+		t.Error("expected error response when proxy is nil for proposal.list")
+	}
+
+	statusH := makeProposalStatusHandler(nil)
+	resp = statusH(context.Background(), json.RawMessage(`{"proposal_id":"x"}`))
+	if resp == nil || resp.Success {
+		t.Error("expected error response when proxy is nil for proposal.status")
 	}
 }

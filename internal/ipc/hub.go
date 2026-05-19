@@ -363,7 +363,12 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 	}
 
 	// Fallback sample data for actions that have no registered backend yet.
-	// Real implementations will come from Store VM or other microVMs.
+	// This path is used when delegation fails or no backend is registered.
+	// Real implementations will come from Store VM or other microVMs (Phase 9).
+	if h.logger != nil {
+		h.logger.Debug("ControlPlaneRequest using sample fallback",
+			zap.String("action", req.Action))
+	}
 	switch req.Action {
 	case "worker.list":
 		data := json.RawMessage(`[{"worker_id":"w-001","role":"general","status":"idle"}]`)
