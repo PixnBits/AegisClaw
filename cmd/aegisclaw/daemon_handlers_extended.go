@@ -53,7 +53,8 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("skill.secrets.refresh", withAuthorizedCaller(env, "skill.secrets.refresh", makeSkillSecretsRefreshHandler(env)))
 
 	// Chat – message is public for portal/CLI, tool is gated
-	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
+	// Phase 8: chat.message routed through ControlPlaneProxy (AegisHub mediation).
+	apiSrv.Handle("chat.message", makeChatMessageHandler(proxy))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
 	apiSrv.Handle("chat.tool", withAuthorizedCaller(env, "chat.tool", makeChatToolExecHandler(env, toolRegistry)))
 	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))

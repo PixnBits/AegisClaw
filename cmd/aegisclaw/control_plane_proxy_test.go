@@ -246,3 +246,90 @@ func TestControlPlaneProxy_Forward_RespectsContextCancellation(t *testing.T) {
 		t.Error("expected error message indicating cancellation")
 	}
 }
+
+// TestControlPlaneProxy_Forward_ChatMessage_Delegates defines expected behavior
+// for chat.message requests. Written first (test-guided) before handler wiring.
+func TestControlPlaneProxy_Forward_ChatMessage_Delegates(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	// Simulate a chat router backend that would live in AegisHub or Agent VM.
+	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		data := json.RawMessage(`{"session_id":"s-001","reply":"hello from hub"}`)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("failed to register chat-router: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "chat.message",
+		Data:   json.RawMessage(`{"message":"hi"}`),
+	})
+	if err != nil {
+		t.Fatalf("Forward error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success for chat.message, got error: %s", resp.Error)
+	}
+}
+
+// TestControlPlaneProxy_Forward_ProposalList_Delegates defines expected behavior
+// for proposal.list requests. Written first (test-guided).
+func TestControlPlaneProxy_Forward_ProposalList_Delegates(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		data := json.RawMessage(`[{"proposal_id":"p-1","title":"Example","status":"draft"}]`)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("failed to register store-vm: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "proposal.list",
+	})
+	if err != nil {
+		t.Fatalf("Forward error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success for proposal.list, got error: %s", resp.Error)
+	}
+}
+
+// TestControlPlaneProxy_Forward_ProposalStatus_ErrorPropagation verifies error
+// handling for proposal.status when the backend fails.
+func TestControlPlaneProxy_Forward_ProposalStatus_ErrorPropagation(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		return &ipc.DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "proposal not found",
+		}, nil
+	}); err != nil {
+		t.Fatalf("failed to register store-vm: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "proposal.status",
+		Data:   json.RawMessage(`{"proposal_id":"missing"}`),
+	})
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected failure when backend returns error")
+	}
+	if resp.Error != "proposal not found" {
+		t.Errorf("expected backend error propagated, got %q", resp.Error)
+	}
+}

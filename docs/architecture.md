@@ -115,7 +115,9 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 
 **Phase 7 Wiring**: Key CLI handlers (worker.list/status, skill.list/status, chat.message, etc.) have been refactored to delegate to ControlPlaneProxy.
 
-**Phase 8 Implementation**: AegisHub (MessageHub) receives `ControlPlaneRequest` messages, performs ACL checks (RoleCLI permitted), and dispatches on the `Action` field. The handler in `internal/ipc/hub.go:handleControlPlaneRequest` first attempts delegation to a registered backend (e.g., "store-vm") when available, falling back to realistic sample data otherwise. `ControlPlaneProxy.Forward` respects context cancellation and properly surfaces backend errors. Dead Phase 3 dashboard stubs were removed. Real Store-VM wiring remains for Phase 9.
+**Phase 8 Implementation**: AegisHub (MessageHub) receives `ControlPlaneRequest` messages, performs ACL checks (RoleCLI permitted), and dispatches on the `Action` field. The handler in `internal/ipc/hub.go:handleControlPlaneRequest` first attempts delegation to a registered backend (e.g., "store-vm") when available, falling back to realistic sample data otherwise. `ControlPlaneProxy.Forward` respects context cancellation and properly surfaces backend errors. Dead Phase 3 dashboard stubs were removed. 
+
+Additional actions wired: `chat.message`, `proposal.list`, `proposal.status` (with corresponding lightweight proxy-forwarding handler skeletons and delegation mappings). Real chat routing and proposal store logic remain for Phase 9.
 
 ## Data Flow Example: Skill Creation via SDLC
 

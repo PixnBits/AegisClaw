@@ -377,6 +377,19 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		data := json.RawMessage(`[{"skill_id":"example-skill","status":"registered"}]`)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
+	case "chat.message":
+		// Routed to chat router / agent VM in production.
+		data := json.RawMessage(`{"session_id":"s-001","reply":"(sample) message routed via AegisHub"}`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	case "proposal.list":
+		data := json.RawMessage(`[{"proposal_id":"p-001","title":"Example","status":"draft"}]`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	case "proposal.status":
+		data := json.RawMessage(`{"proposal_id":"p-001","title":"Example","status":"draft","created_at":"2026-05-19T00:00:00Z"}`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
 	default:
 		return &DeliveryResult{
 			MessageID: msg.ID,
@@ -395,6 +408,10 @@ func (h *MessageHub) preferredBackendForAction(action string) string {
 		return "store-vm"
 	case "skill.list":
 		return "skill-registry"
+	case "chat.message":
+		return "chat-router"
+	case "proposal.list", "proposal.status":
+		return "store-vm"
 	default:
 		return ""
 	}
