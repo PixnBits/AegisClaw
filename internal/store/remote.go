@@ -116,5 +116,5 @@ func (r *remoteWorkerStore) List(activeOnly bool) []*worker.WorkerRecord { retur
 type remoteEventStore struct{}
 
 // ErrRemoteNotWired is returned by all remote store methods until the
-// real vsock + AegisHub client is implemented.
-var ErrRemoteNotWired = fmt.Errorf("remote Store VM not yet wired (TODO: vsock + AegisHub routing)")
+// real vsock + AegisHub routing to Store VM is implemented (Phase 4).
+var ErrRemoteNotWired = fmt.Errorf("remote Store VM seam not wired (vsock + AegisHub pending; see Phase 4)")

@@ -87,12 +87,13 @@ These are the **minimal necessary** responsibilities for a host daemon in this a
 - All in-process store creation (`proposal.NewStore`, `memory.NewStore`, `eventbus.New`, `worker.NewStore`, `store.NewLocal` etc.).
 - `initLocalStore` function and the `AEGISCLAW_USE_REMOTE_STORE=false` fallback path.
 - Direct ownership of ProposalStore, PRStore, CompositionStore, MemoryStore, WorkerStore, EventBus.
-- Legacy shim fields: TeamRegistry, AutonomyRegistry, Sessions, PortalVMID, ProposalStore, PRStore, MemoryStore, EventBus, GitManager, LookupStore.
+- Direct creation/ownership of ProposalStore, PRStore, etc. fully removed (initLocalStore deleted, remote-only enforced).
+- Legacy shim fields retained temporarily in runtimeEnv for handler compatibility (to be cleaned in Phase 4).
 
 **Explicit stubs / non-TCB surfaces remaining (to be hardened in later phases):**
-- `remote*Store` methods in `internal/store/remote.go` all return `ErrRemoteNotWired`.
+- `remote*Store` methods in `internal/store/remote.go` all return `ErrRemoteNotWired` (seam intentionally not wired yet).
 - Team/Autonomy/Sessions handlers in `daemon_handlers_extended.go` and `session_handlers.go` return "removed from minimal Host Daemon TCB (Phase 3)" errors.
-- Dashboard/portal handlers still reference some legacy fields (will require further stubbing or removal).
+- Dashboard/portal handlers stubbed (ProposalStore etc.); legacy shim fields (TeamRegistry, PortalVMID, ProposalStore, etc.) retained in runtimeEnv as nil/empty for build compatibility during transition. Direct creation fully removed.
 
 **Ownership model (final):**
 - Host Daemon TCB owns: VM lifecycle (Firecracker), Unix socket server, Ed25519 key distribution, Merkle root signing, launching/watching critical microVMs (AegisHub + Store VM).

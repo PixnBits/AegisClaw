@@ -309,7 +309,7 @@ func launchStoreVM(ctx context.Context, env *runtimeEnv) (string, error) {
 		components := map[string]composition.Component{
 			"store": {
 				Name:        "store",
-				Type:        composition.ComponentStore,
+				Type:        "store",
 				Version:     "1",
 				SandboxID:   storeVMID,
 				ArtifactRef: rootfsPath,

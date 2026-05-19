@@ -275,39 +275,9 @@ func makeSessionStatusUpdateHandler(env *runtimeEnv, status sessions.Status) api
 //	Response:   {"session_id": "...", "ok": true}
 func makeSessionsSpawnHandler(env *runtimeEnv, _ *ToolRegistry) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			TaskDescription string                 `json:"task_description"`
-			Config          map[string]interface{} `json:"config,omitempty"`
-		}
-		// Config and task_description are optional; ignore parse errors.
-		json.Unmarshal(data, &req) //nolint:errcheck
-
-		newID := uuid.New().String()
-		if env.Runtime == nil || env.Config == nil {
-			return &api.Response{Error: "sessions.spawn runtime dependencies not available"}
-		}
-
-		// Ensure the shared agent VM is running so the new session has
-		// something to talk to on first use.
-		agentVMID, err := ensureAgentVM(ctx, env)
-		if err != nil {
-			return &api.Response{Error: "agent VM unavailable: " + err.Error()}
-		}
-
-		if env.Sessions != nil {
-			env.Sessions.Open(newID, agentVMID)
-			// If a task description was provided, record it as context.
-			if req.TaskDescription != "" {
-				env.Sessions.AppendMessage(newID, agentVMID, "system",
-					"Task context for this session: "+req.TaskDescription)
-			}
-		}
-
-		out, _ := json.Marshal(map[string]interface{}{
-			"session_id": newID,
-			"sandbox_id": agentVMID,
-			"ok":         true,
-		})
-		return &api.Response{Success: true, Data: out}
+		_ = ctx
+		_ = data
+		_ = env
+		return &api.Response{Error: "sessions.spawn removed from minimal Host Daemon TCB (Phase 3)"}
 	}
 }

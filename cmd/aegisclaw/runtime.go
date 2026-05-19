@@ -68,25 +68,21 @@ type runtimeEnv struct {
 	// SafeMode is retained for minimal operational control during startup.
 	SafeMode atomic.Bool
 
-	// team/autonomy shims removed in final cleanup; referenced by extended
-	// handlers are now nil to keep build green while surface is reduced.
+	// Legacy shims retained temporarily for handler compatibility during
+	// the transition to remote-only Store VM. Direct store creation was
+	// removed in Phase 3; these fields are nil or unused in normal paths.
+	// They will be fully removed once all call sites are stubbed (Phase 4 prep).
 	TeamRegistry     *teamRegistry
 	AutonomyRegistry *autonomyRegistry
-
-	// Additional legacy shims retained only to keep the tree buildable
-	// during aggressive surface reduction. These will be removed in Phase 4.
-	Sessions   *sessions.Store
-	portalVMMu sync.Mutex
-	PortalVMID string
-
-	// ProposalStore shim retained for remaining dashboard handler references
-	// during surface reduction.
-	ProposalStore *proposal.Store
-	PRStore       *pullrequest.Store
-	MemoryStore   *memory.Store
-	EventBus      *eventbus.Bus
-	GitManager    *gitmanager.Manager
-	LookupStore   *lookup.Store
+	Sessions         *sessions.Store
+	portalVMMu       sync.Mutex
+	PortalVMID       string
+	ProposalStore    *proposal.Store
+	PRStore          *pullrequest.Store
+	MemoryStore      *memory.Store
+	EventBus         *eventbus.Bus
+	GitManager       *gitmanager.Manager
+	LookupStore      *lookup.Store
 }
 
 func initRuntime() (*runtimeEnv, error) {
