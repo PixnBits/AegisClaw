@@ -9,61 +9,34 @@ import (
 )
 
 // makeWorkerListHandler lists worker records.
+// Phase 5: WorkerStore access removed from Host Daemon TCB.
+// Long-term owner: Store VM. Access routed through AegisHub mediation.
 func makeWorkerListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		ws := env.Store.Workers()
-		if ws == nil {
-			return &api.Response{Error: "worker store not initialized"}
-		}
-		var req struct {
-			ActiveOnly bool `json:"active_only"`
-		}
-		json.Unmarshal(data, &req) //nolint:errcheck
-
-		workers := ws.List(req.ActiveOnly)
-		out, err := json.Marshal(workers)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: out}
+		_ = env
+		_ = data
+		return &api.Response{Error: "worker store access removed from minimal Host Daemon TCB (Phase 5)"}
 	}
 }
 
 // makeWorkerStatusHandler returns a single worker record.
+// Phase 5: WorkerStore access removed from Host Daemon TCB.
+// Long-term owner: Store VM. Access routed through AegisHub mediation.
 func makeWorkerStatusHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		ws := env.Store.Workers()
-		if ws == nil {
-			return &api.Response{Error: "worker store not initialized"}
-		}
-		var req struct {
-			WorkerID string `json:"worker_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil || req.WorkerID == "" {
-			return &api.Response{Error: "worker_id required"}
-		}
-		w, ok := ws.Get(req.WorkerID)
-		if !ok {
-			return &api.Response{Error: "worker " + req.WorkerID + " not found"}
-		}
-		out, err := json.Marshal(w)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: out}
+		_ = env
+		_ = data
+		return &api.Response{Error: "worker store access removed from minimal Host Daemon TCB (Phase 5)"}
 	}
 }
 
 // makeWorkerListActiveHandler is a convenience alias that returns only active workers.
+// Phase 5: WorkerStore access removed from Host Daemon TCB.
+// Long-term owner: Store VM. Access routed through AegisHub mediation.
 func makeWorkerListActiveHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, _ json.RawMessage) *api.Response {
-		ws := env.Store.Workers()
-		if ws == nil {
-			return &api.Response{Error: "worker store not initialized"}
-		}
-		workers := ws.List(true)
-		out, _ := json.Marshal(workers)
-		return &api.Response{Success: true, Data: out}
+		_ = env
+		return &api.Response{Error: "worker store access removed from minimal Host Daemon TCB (Phase 5)"}
 	}
 }
 

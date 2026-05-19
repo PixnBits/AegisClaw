@@ -108,7 +108,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to register IPC bridge: %w", err)
 	}
 
+	// AegisHub is the central mediation and ACL enforcement layer.
+	// All future inter-VM and daemon↔VM requests (including data access)
+	// will be routed and authorized here.
+
 	// Launch the Store VM
+	// Temporary: Daemon publishes launched critical VMs (AegisHub, Store VM)
+	// to the Composition Manifest. This lightweight responsibility remains
+	// in the Host Daemon for now.
+	// Future: Component/VM registry queries should go through AegisHub → daemon.
 	storeVMID, err := launchStoreVM(cmd.Context(), env)
 	if err != nil {
 		return fmt.Errorf("Store VM required but failed to start: %w", err)

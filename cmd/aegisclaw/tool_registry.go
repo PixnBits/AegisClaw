@@ -265,18 +265,10 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("list_proposals",
 		"List all proposals with their title, status, and risk level.",
 		func(_ context.Context, _ string) (string, error) {
-			summaries, err := env.Store.Proposals().List()
-			if err != nil {
-				return "", fmt.Errorf("list proposals: %w", err)
-			}
-			if len(summaries) == 0 {
-				return "No proposals found.", nil
-			}
-			var lines []string
-			for _, s := range summaries {
-				lines = append(lines, fmt.Sprintf("  %s  %s  [%s]  %s", s.ID, s.Title, s.Status, s.Risk))
-			}
-			return strings.Join(lines, "\n"), nil
+			// Phase 5: ProposalStore access removed from Host Daemon TCB.
+			// Long-term owner: Store VM. Routed via AegisHub.
+			_ = env
+			return "Proposal listing removed from minimal Host Daemon TCB (Phase 5)", nil
 		})
 
 	reg.Register("list_sandboxes",
@@ -379,27 +371,10 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 				return string(b), nil
 			}
 
-			// Try to find by skill name: scan proposal store.
-			if params.SkillName != "" && env.Store != nil {
-				proposals, err := env.Store.Proposals().List()
-				if err != nil {
-					return "", fmt.Errorf("list proposals: %w", err)
-				}
-				for _, p := range proposals {
-					path := filepath.Join(sbomDir, p.ID, "sbom.json")
-					s, readErr := sbom.Read(path)
-					if readErr != nil {
-						continue
-					}
-					if s.Metadata.Component.Name == params.SkillName {
-						b, _ := json.MarshalIndent(s, "", "  ")
-						return string(b), nil
-					}
-				}
-				return "", fmt.Errorf("SBOM not found for skill %q", params.SkillName)
-			}
-
-			return "", fmt.Errorf("provide proposal_id or skill_name")
+			// Phase 5: ProposalStore lookup removed from daemon.
+			// Long-term owner: Store VM.
+			_ = params
+			return "", fmt.Errorf("SBOM lookup removed from minimal Host Daemon TCB (Phase 5)")
 		})
 
 	reg.Register("search_tools",
@@ -957,38 +932,10 @@ func registerWorkerTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("worker_status",
 		"Get the status and result of a previously spawned worker. Args: {worker_id} or {} to list recent workers.",
 		func(_ context.Context, args string) (string, error) {
-			ws := env.Store.Workers()
-			if ws == nil {
-				return "Worker store not initialized.", nil
-			}
-			var params struct {
-				WorkerID string `json:"worker_id"`
-			}
-			json.Unmarshal([]byte(args), &params) //nolint:errcheck
-
-			if params.WorkerID != "" {
-				w, ok := ws.Get(params.WorkerID)
-				if !ok {
-					return fmt.Sprintf("Worker %s not found.", params.WorkerID), nil
-				}
-				return formatWorkerRecord(w), nil
-			}
-			// List recent workers.
-			workers := ws.List(false)
-			if len(workers) == 0 {
-				return "No workers found.", nil
-			}
-			var b strings.Builder
-			b.WriteString(fmt.Sprintf("Recent Workers (%d):\n", len(workers)))
-			limit := 10
-			if len(workers) < limit {
-				limit = len(workers)
-			}
-			for _, w := range workers[:limit] {
-				b.WriteString(fmt.Sprintf("  [%s]  %-11s  %-12s  steps=%-3d  task=%s\n",
-					w.WorkerID[:8], w.Status, w.Role, w.StepCount, w.TaskID))
-			}
-			return strings.TrimRight(b.String(), "\n"), nil
+			// Phase 5: WorkerStore removed from Host Daemon TCB.
+			// Long-term owner: Store VM via AegisHub.
+			_ = args
+			return "", fmt.Errorf("worker_status removed from minimal Host Daemon TCB (Phase 5)")
 		})
 }
 

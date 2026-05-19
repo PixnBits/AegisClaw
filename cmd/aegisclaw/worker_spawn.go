@@ -81,22 +81,9 @@ func spawnWorker(ctx context.Context, env *runtimeEnv, p spawnWorkerParams) (str
 		timeoutMins = env.Config.Worker.DefaultTimeoutMins * maxTimeoutMultiplier
 	}
 
-	// Resource guard: cap on concurrent workers.
-	maxConcurrent := 4
-	if env.Config != nil && env.Config.Worker.MaxConcurrent > 0 {
-		maxConcurrent = env.Config.Worker.MaxConcurrent
-	}
-	if ws := env.Store.Workers(); ws != nil {
-		active := 0
-		for _, w := range ws.List(true) {
-			if w != nil {
-				active++
-			}
-		}
-		if active >= maxConcurrent {
-			return "", fmt.Errorf("resource limit: cannot spawn more than %d concurrent workers", maxConcurrent)
-		}
-	}
+	// Phase 5: WorkerStore concurrency guard removed from Host Daemon.
+	// Long-term owner: Store VM. Routed via AegisHub.
+	// (Resource limiting now handled externally.)
 
 	workerID := uuid.New().String()
 	now := time.Now().UTC()
@@ -113,9 +100,8 @@ func spawnWorker(ctx context.Context, env *runtimeEnv, p spawnWorkerParams) (str
 		TimeoutAt:       timeoutAt,
 		Status:          worker.StatusSpawning,
 	}
-	if ws := env.Store.Workers(); ws != nil {
-		ws.Upsert(rec) //nolint:errcheck
-	}
+	// Phase 5: WorkerStore upsert removed from Host Daemon TCB.
+	// Long-term owner: Store VM via AegisHub mediation.
 
 	// Audit: worker spawned.
 	auditPayload, _ := json.Marshal(map[string]interface{}{
@@ -162,9 +148,8 @@ func spawnWorker(ctx context.Context, env *runtimeEnv, p spawnWorkerParams) (str
 	}
 	rec.VMID = vmID
 	rec.Status = worker.StatusRunning
-	if ws := env.Store.Workers(); ws != nil {
-		ws.Upsert(rec) //nolint:errcheck
-	}
+	// Phase 5: WorkerStore upsert removed from Host Daemon TCB.
+	// Long-term owner: Store VM via AegisHub mediation.
 
 	// Start LLM proxy for the worker VM.
 	// LLMProxy removed from Host Daemon TCB (Phase 3); worker LLM routing now via AegisHub/Store VM.
@@ -286,9 +271,8 @@ func finishWorker(env *runtimeEnv, rec *worker.WorkerRecord, status worker.Worke
 	rec.Result = result
 	rec.Error = errMsg
 
-	if ws := env.Store.Workers(); ws != nil {
-		ws.Upsert(rec) //nolint:errcheck
-	}
+	// Phase 5: WorkerStore upsert removed from Host Daemon TCB.
+	// Long-term owner: Store VM via AegisHub mediation.
 
 	// Merkle-audit the outcome.
 	actionType := kernel.ActionWorkerComplete

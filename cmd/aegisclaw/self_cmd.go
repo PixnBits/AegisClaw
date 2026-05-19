@@ -87,18 +87,9 @@ func runSelfPropose(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid proposal: %w", err)
 	}
 
-	propAPI := env.Store.Proposals()
-	if err := propAPI.Create(p); err != nil {
-		return fmt.Errorf("failed to create proposal: %w", err)
-	}
-
-	// Auto-submit for court review.
-	if err := p.Transition(proposal.StatusSubmitted, "submitted for review", "system"); err != nil {
-		return fmt.Errorf("cannot submit: %w", err)
-	}
-	if err := propAPI.Update(p); err != nil {
-		return fmt.Errorf("failed to persist: %w", err)
-	}
+	// Phase 5: ProposalStore removed from Host Daemon TCB.
+	_ = env
+	return fmt.Errorf("proposal creation removed from minimal Host Daemon TCB (Phase 5)")
 
 	payload, _ := json.Marshal(map[string]interface{}{
 		"proposal_id": p.ID,
@@ -125,25 +116,9 @@ func runSelfStatus(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
-	proposals, err := env.Store.Proposals().List()
-	if err != nil {
-		return fmt.Errorf("failed to list proposals: %w", err)
-	}
-
-	found := false
-	for _, p := range proposals {
-		if p.Category == proposal.CategoryKernelPatch {
-			if !found {
-				fmt.Println("Self-improvement proposals:")
-				found = true
-			}
-			fmt.Printf("  %s  %-12s  %s\n", p.ID[:8], p.Status, p.Title)
-		}
-	}
-	if !found {
-		fmt.Println("No self-improvement proposals found.")
-	}
-	return nil
+	// Phase 5: ProposalStore removed from Host Daemon TCB.
+	_ = env
+	return fmt.Errorf("self-improvement proposal listing removed from minimal Host Daemon TCB (Phase 5)")
 }
 
 // diagnoseCheck holds the result of a single system health check.

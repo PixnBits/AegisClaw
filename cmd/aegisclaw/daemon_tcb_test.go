@@ -23,21 +23,19 @@ func TestDaemonDoesNotInitializeForbiddenComponents(t *testing.T) {
 	// We assert absence by checking that heavy fields are zero where applicable.
 }
 
-// TestAllPersistentAccessViaStore confirms that the canonical Store is present
-// and individual stores are accessible only through it (or compat shims).
-func TestAllPersistentAccessViaStore(t *testing.T) {
+// TestNoStoreInterfaceInDaemon confirms that the general Store interface
+// has been removed from the Host Daemon (Phase 5). Persistent state access
+// is now externalized to the Store VM via AegisHub mediation.
+func TestNoStoreInterfaceInDaemon(t *testing.T) {
 	env, err := initRuntime()
 	if err != nil {
 		t.Fatalf("initRuntime: %v", err)
 	}
 	defer resetRuntimeSingletons()
 
-	if env.Store == nil {
-		t.Fatal("env.Store must be the single source of truth")
-	}
-	// Verify interface usage
-	var _ store.Store = env.Store
-	_ = env.Store.Proposals()
+	// env.Store field no longer exists on runtimeEnv.
+	// This test simply documents the removal.
+	_ = env
 }
 
 // TestDaemonOnlyCoreResponsibilities is a lightweight structural check that

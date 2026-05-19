@@ -16,7 +16,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
-	"github.com/PixnBits/AegisClaw/internal/worker"
 	"go.uber.org/zap"
 )
 
@@ -405,71 +404,17 @@ outer:
 
 func makeTasksListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.Store.Workers() == nil {
-			return &api.Response{Error: "worker store not initialized"}
-		}
-		var req struct {
-			ActiveOnly bool `json:"active_only"`
-		}
-		_ = json.Unmarshal(data, &req)
-		workers := env.Store.Workers().List(req.ActiveOnly)
-		type row struct {
-			TaskID          string              `json:"task_id"`
-			WorkerID        string              `json:"worker_id"`
-			Status          worker.WorkerStatus `json:"status"`
-			Role            worker.Role         `json:"role"`
-			TaskDescription string              `json:"task_description"`
-			SpawnedAt       string              `json:"spawned_at"`
-		}
-		var out []row
-		for _, w := range workers {
-			tid := w.TaskID
-			if tid == "" {
-				tid = w.WorkerID
-			}
-			out = append(out, row{
-				TaskID:          tid,
-				WorkerID:        w.WorkerID,
-				Status:          w.Status,
-				Role:            w.Role,
-				TaskDescription: w.TaskDescription,
-				SpawnedAt:       w.SpawnedAt.UTC().Format(time.RFC3339),
-			})
-		}
-		raw, err := json.Marshal(out)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: raw}
+		_ = env
+		_ = data
+		return &api.Response{Error: "tasks access removed from minimal Host Daemon TCB (Phase 5)"}
 	}
 }
 
 func makeTasksStatusHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			TaskID string `json:"task_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		req.TaskID = strings.TrimSpace(req.TaskID)
-		if req.TaskID == "" {
-			return &api.Response{Error: "task_id is required"}
-		}
-		if env.Store.Workers() == nil {
-			return &api.Response{Error: "worker store not initialized"}
-		}
-		if w, ok := env.Store.Workers().Get(req.TaskID); ok {
-			raw, _ := json.Marshal(w)
-			return &api.Response{Success: true, Data: raw}
-		}
-		for _, w := range env.Store.Workers().List(false) {
-			if w.TaskID == req.TaskID {
-				raw, _ := json.Marshal(w)
-				return &api.Response{Success: true, Data: raw}
-			}
-		}
-		return &api.Response{Error: "task not found"}
+		_ = env
+		_ = data
+		return &api.Response{Error: "tasks access removed from minimal Host Daemon TCB (Phase 5)"}
 	}
 }
 

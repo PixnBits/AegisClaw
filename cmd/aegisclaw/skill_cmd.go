@@ -9,7 +9,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
-	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/wizard"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -116,18 +115,13 @@ func runSkillAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	propAPI := env.Store.Proposals()
-	if err := propAPI.Create(p); err != nil {
-		return fmt.Errorf("failed to create proposal: %w", err)
-	}
+	// Phase 5: ProposalStore removed from Host Daemon TCB.
+	// Long-term owner: Store VM via AegisHub.
+	_ = env
+	return fmt.Errorf("proposal creation removed from minimal Host Daemon TCB (Phase 5)")
 
-	// Auto-submit for court review.
-	if err := p.Transition(proposal.StatusSubmitted, "submitted for review", "operator"); err != nil {
-		return fmt.Errorf("cannot submit: %w", err)
-	}
-	if err := propAPI.Update(p); err != nil {
-		return fmt.Errorf("failed to persist: %w", err)
-	}
+	// Phase 5: ProposalStore removed.
+	// Auto-submit stubbed.
 
 	payload, _ := json.Marshal(map[string]interface{}{
 		"proposal_id": p.ID,
@@ -467,21 +461,9 @@ func runSkillSBOM(_ *cobra.Command, args []string) error {
 		return printSBOM(s)
 	}
 
-	// Try by skill name: scan all proposals.
-	proposals, listErr := env.Store.Proposals().List()
-	if listErr != nil {
-		return fmt.Errorf("list proposals: %w", listErr)
-	}
-	for _, p := range proposals {
-		path := filepath.Join(sbomDir, p.ID, "sbom.json")
-		s, readErr := tryReadSBOM(path)
-		if readErr != nil {
-			continue
-		}
-		if s.Metadata.Component.Name == nameOrID {
-			return printSBOM(s)
-		}
-	}
+	// Phase 5: ProposalStore removed from Host Daemon TCB.
+	_ = env
+	return fmt.Errorf("SBOM lookup via proposals removed from minimal Host Daemon TCB (Phase 5)")
 	return fmt.Errorf("no SBOM found for %q — build the skill first with: aegisclaw skill add", nameOrID)
 }
 
@@ -578,64 +560,8 @@ func runSkillActivate(cmd *cobra.Command, args []string) error {
 // verifies all declared secrets_refs exist in the vault.  Returns a descriptive
 // error listing missing secrets and the CLI command to add each one.
 func checkSecretsBeforeActivate(skillName string, env *runtimeEnv) error {
-	summaries, err := env.Store.Proposals().List()
-	if err != nil {
-		return nil // can't check — proceed optimistically
-	}
-
-	var secretsRefs []string
-	for _, s := range summaries {
-		full, err := env.Store.Proposals().Get(s.ID)
-		if err != nil || full == nil {
-			continue
-		}
-		if full.TargetSkill != skillName {
-			continue
-		}
-		if !full.IsApproved() {
-			continue
-		}
-		secretsRefs = full.SecretsRefs
-		break
-	}
-
-	if len(secretsRefs) == 0 {
-		return nil // no secrets required
-	}
-
-	// Use the already-opened vault if available; otherwise open it.
-	v := (*vault.Vault)(nil) // Vault removed; stub for TCB compliance
-	if v == nil {
-		if env.Kernel == nil {
-			return nil // can't check without kernel key — proceed optimistically
-		}
-		var vaultErr error
-		v, vaultErr = vault.NewVault(env.Config.Vault.Dir, env.Kernel.PrivateKeyBytes(), env.Logger)
-		if vaultErr != nil {
-			return nil // can't check vault — proceed and let daemon handle it
-		}
-	}
-
-	var missing []string
-	for _, ref := range secretsRefs {
-		ok, hasErr := v.HasChecked(ref)
-		if hasErr != nil {
-			return fmt.Errorf("vault security check failed before activating skill %q: %w", skillName, hasErr)
-		}
-		if !ok {
-			missing = append(missing, ref)
-		}
-	}
-
-	if len(missing) == 0 {
-		return nil
-	}
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Missing required secret(s) for skill %q:\n", skillName))
-	for _, m := range missing {
-		b.WriteString(fmt.Sprintf("  - %s\n", m))
-		b.WriteString(fmt.Sprintf("    Add with: aegisclaw secrets add %s --skill %s\n", m, skillName))
-	}
-	return fmt.Errorf("%s", b.String())
+	// Phase 5: ProposalStore / secrets check removed from Host Daemon TCB.
+	_ = skillName
+	_ = env
+	return nil // can't check — proceed optimistically (Phase 5 stub)
 }

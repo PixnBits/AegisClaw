@@ -24,18 +24,32 @@ This creates strong, enforceable security boundaries at every major system inter
 **Explicit Design Trade-off**:  
 We deliberately accept higher complexity and slightly reduced performance in exchange for strong, verifiable containment of compromise.
 
+### Component Data Ownership (Post-Phase 5)
+
+| Data / Responsibility          | Long-term Owner          | Access Path                  |
+|--------------------------------|--------------------------|------------------------------|
+| Proposals, PRs, Events, Workers| Store VM                 | AegisHub → Store VM          |
+| Chat sessions & context        | Agent VMs + Memory VM    | AegisHub                     |
+| Dashboard / Web UI             | Web Portal VM            | AegisHub                     |
+| Composition (VM registry)      | Host Daemon (temporary)  | Direct (lightweight publish) |
+
 ## Runtime Architecture
 
 The system is composed of one small trusted host component and multiple isolated sandboxes.
 
 ### Host Daemon (Minimal Trusted Computing Base)
 
-The host daemon is intentionally kept extremely small. Its only responsibilities are:
+The host daemon is intentionally kept extremely small. After Phase 5, it no longer depends on a general `store.Store` interface or `remoteStore`.
+
+Its only responsibilities are:
 
 - Starting, stopping, and monitoring isolated sandboxes (Firecracker on Linux, Docker Sandbox on macOS/Windows)
 - Managing the Unix socket for the CLI and TUI
 - Signing Merkle tree roots for the tamper-evident audit log
 - Serving as the bootstrap and watchdog for AegisHub
+- Lightweight Composition Manifest publishing for critical launched VMs (AegisHub, Store VM) — temporary
+
+All persistent state access (proposals, workers, events, etc.) has been removed from the daemon.
 
 ### Sandboxed Components
 
@@ -50,6 +64,12 @@ The host daemon is intentionally kept extremely small. Its only responsibilities
 - **Web Portal VM** — Dedicated sandbox for the rich collaborative web interface.
 
 Each sandbox has a single, narrowly defined responsibility and a hard security boundary.
+
+#### Composition Manifest Ownership (Temporary)
+
+The daemon temporarily retains lightweight logic to publish launched critical VMs (AegisHub, Store VM) into the Composition Manifest. This is a transitional responsibility.
+
+Future model: Component and VM registry data should be queried through AegisHub → daemon (mediated, ACL-enforced). The daemon acts only as a thin publisher for its own launched VMs.
 
 ## Communication & Mediation
 
@@ -71,6 +91,8 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 - The **Memory VM** is the only component allowed to hold conversation state.
 - **Agent Runtime VMs** may only communicate with their paired Memory VM, the Court Scribe, and AegisHub.
 - **Court VMs** may only communicate with the Court Scribe, their paired Agent (during reviews), and AegisHub.
+
+**Future Data Access Routing**: All reads of proposals, workers, events, etc. from CLI, dashboard, or other components will be routed through AegisHub to the appropriate owner (primarily Store VM). The Host Daemon no longer provides direct Store access.
 
 ## Data Flow Example: Skill Creation via SDLC
 

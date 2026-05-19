@@ -7,10 +7,10 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/api"
 )
 
-// Composition handlers are thin shims in Phase 1.
-// The Store interface is the only access path. Some methods (Rollback,
-// History, UpdateHealth) are not yet on the interface and are stubbed here
-// to keep the Host Daemon TCB minimal.
+// Composition handlers are thin shims.
+// Phase 5: General Store interface removed. Composition Manifest publishing
+// for launched VMs (AegisHub, Store VM) remains temporarily in the daemon.
+// Long-term: Query via AegisHub mediation.
 
 func makeCompositionCurrentHandler(env *runtimeEnv) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {

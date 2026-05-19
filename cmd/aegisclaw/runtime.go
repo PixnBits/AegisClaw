@@ -19,7 +19,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
-	"github.com/PixnBits/AegisClaw/internal/store"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -28,7 +27,6 @@ var (
 	runtimeOnce    sync.Once
 	runtimeInst    *sandbox.FirecrackerRuntime
 	registryInst   *sandbox.SkillRegistry
-	storeInst      store.Store
 	runtimeInitErr error
 )
 
@@ -39,12 +37,6 @@ type runtimeEnv struct {
 	Runtime *sandbox.FirecrackerRuntime
 	// Registry manages skill sandboxes for VM lifecycle (core TCB responsibility).
 	Registry *sandbox.SkillRegistry
-
-	// Store is the single source of truth for all persistent state access.
-	// All proposals, PRs, composition, memory, workers, and events must be
-	// accessed exclusively via env.Store.* methods. Direct store fields have
-	// been removed to enforce the abstraction and prepare for Store VM ownership.
-	Store store.Store
 
 	// CourtClient and BuilderClient are thin seams for work that lives outside
 	// the Host Daemon TCB (Court VMs + Scribe, Builder VMs). The daemon never
@@ -59,8 +51,8 @@ type runtimeEnv struct {
 	agentVMMu    sync.Mutex
 
 	// StoreVMID tracks the dedicated Store VM launched by the daemon.
-	// The daemon is only responsible for launch + watchdog; all state access
-	// remains through env.Store.
+	// The daemon is only responsible for launch + watchdog. Persistent state
+	// access is now fully external (Store VM via AegisHub mediation).
 	StoreVMID string
 
 	// SafeMode is retained for minimal operational control during startup.
@@ -117,10 +109,10 @@ func initRuntime() (*runtimeEnv, error) {
 			return
 		}
 
-		// REMOTE-ONLY: Daemon never creates ProposalStore, PRStore, etc.
-		// All persistent state lives in the Store VM. env.Store is the sole
-		// access point and is always backed by the remote client seam.
-		storeInst = store.NewRemoteStore()
+		// Phase 5: No general Store interface or remoteStore remains in the daemon.
+		// The Host Daemon only manages VM lifecycle and lightweight Composition Manifest.
+		// All persistent state (proposals, workers, events, etc.) lives in the Store VM
+		// and is accessed via AegisHub mediation.
 	})
 	if runtimeInitErr != nil {
 		return nil, fmt.Errorf("failed to initialize runtime: %w", runtimeInitErr)
@@ -132,7 +124,6 @@ func initRuntime() (*runtimeEnv, error) {
 		Kernel:        kern,
 		Runtime:       runtimeInst,
 		Registry:      registryInst,
-		Store:         storeInst,
 		CourtClient:   noopCourtClient{},
 		BuilderClient: noopBuilderClient{},
 	}, nil
@@ -149,7 +140,6 @@ func resetRuntimeSingletons() {
 	runtimeOnce = sync.Once{}
 	runtimeInst = nil
 	registryInst = nil
-	storeInst = nil
 	runtimeInitErr = nil
 }
 
