@@ -472,3 +472,73 @@ func TestMediatedChatMessage_DelegatesToChatRouter(t *testing.T) {
 		t.Fatalf("chat.message delegation failed: %v %+v", err, resp)
 	}
 }
+
+// TestMediatedProposalStatus_DelegatesToStoreVM (test-guided) defines expected
+// realistic behavior for proposal.status: delegation succeeds and returns
+// structured data including proposal_id, title, status, created_at.
+func TestMediatedProposalStatus_DelegatesToStoreVM(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	// Simulate Store VM returning realistic proposal data.
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		data := json.RawMessage(`{"proposal_id":"p-42","title":"Realistic Proposal","status":"submitted","created_at":"2026-05-19T18:00:00Z"}`)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("register store-vm: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "proposal.status",
+		Data:   json.RawMessage(`{"proposal_id":"p-42"}`),
+	})
+	if err != nil {
+		t.Fatalf("Forward error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success, got: %s", resp.Error)
+	}
+	// Data verification: check key fields are present in response.
+	var result map[string]string
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		t.Fatalf("unmarshal resp.Data: %v", err)
+	}
+	if result["proposal_id"] != "p-42" || result["status"] != "submitted" {
+		t.Errorf("unexpected proposal data: %+v", result)
+	}
+}
+
+// TestMediatedChatMessage_ErrorFromChatRouter (test-guided) defines expected
+// error propagation when the chat-router backend returns a failure.
+func TestMediatedChatMessage_ErrorFromChatRouter(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		return &ipc.DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "chat router unavailable",
+		}, nil
+	}); err != nil {
+		t.Fatalf("register chat-router: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "chat.message",
+		Data:   json.RawMessage(`{"message":"test"}`),
+	})
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected failure from chat-router error")
+	}
+	if resp.Error != "chat router unavailable" {
+		t.Errorf("expected backend error surfaced, got %q", resp.Error)
+	}
+}

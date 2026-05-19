@@ -385,22 +385,41 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 	case "chat.message":
 		// Delegated to chat router / agent VM in production.
 		// TODO(Phase 9): Replace sample with real delegation to registered chat-router or Agent VM.
-		// Current improved sample includes timestamp for realism.
+		// Enhanced sample: echoes incoming message, propagates session_id if present,
+		// adds a correlation_id for tracing.
+		var in struct {
+			Message     string `json:"message"`
+			SessionID   string `json:"session_id"`
+			Correlation string `json:"correlation_id"`
+		}
+		_ = json.Unmarshal(req.Data, &in)
+		if in.SessionID == "" {
+			in.SessionID = "s-001"
+		}
+		if in.Correlation == "" {
+			in.Correlation = "corr-" + time.Now().Format("150405")
+		}
 		reply := map[string]interface{}{
-			"session_id": "s-001",
-			"reply":      "(sample) message routed via AegisHub",
-			"timestamp":  time.Now().UTC().Format(time.RFC3339),
+			"session_id":    in.SessionID,
+			"reply":         "echo: " + in.Message,
+			"timestamp":     time.Now().UTC().Format(time.RFC3339),
+			"correlation_id": in.Correlation,
 		}
 		data, _ := json.Marshal(reply)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
 	case "proposal.list":
-		// TODO(Phase 9): Replace sample with real Store VM query via registered handler.
+		// Realistic adapter pattern (Phase 9+): a "store-vm" handler registered via
+		// hub.RegisterSkill("store-vm", proposalAdapter.Handle) would call:
+		//   summaries, _ := adapter.store.List()
+		//   data, _ := json.Marshal(summaries)
+		//   return &DeliveryResult{..., Response: data}, nil
+		// For now we keep a minimal sample; real impl replaces this block.
 		data := json.RawMessage(`[{"proposal_id":"p-001","title":"Example","status":"draft"}]`)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
 	case "proposal.status":
-		// TODO(Phase 9): Replace sample with real Store VM query via registered handler.
+		// See proposal.list comment above for the adapter pattern using ProposalStore.Get.
 		data := json.RawMessage(`{"proposal_id":"p-001","title":"Example","status":"draft","created_at":"2026-05-19T00:00:00Z"}`)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
@@ -416,6 +435,14 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 // preferredBackendForAction returns the preferred backend skill/VM ID for a
 // given ControlPlane action. This mapping makes delegation explicit and easy
 // to extend when real backends (Store VM, etc.) are registered.
+//
+// How to plug a real implementation (Phase 9+):
+//   1. Implement a type that satisfies RouteHandler (or use hub.RegisterSkill).
+//   2. In the real Store VM or chat-router microVM startup, call:
+//        hub.RegisterSkill("store-vm", myProposalHandler)
+//        hub.RegisterSkill("chat-router", myChatHandler)
+//   3. The delegation path in handleControlPlaneRequest will then forward
+//      the request and return the real result instead of the sample fallback.
 func (h *MessageHub) preferredBackendForAction(action string) string {
 	switch action {
 	case "worker.list", "worker.status":

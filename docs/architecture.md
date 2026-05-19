@@ -119,7 +119,7 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 
 Additional actions wired: `chat.message`, `proposal.list`, `proposal.status` (handlers now registered on API socket and use ControlPlaneProxy). Sessions.send threaded through proxy. Cleanup pass: nil proxy fallbacks explicitly marked with TODO(Phase 9) where intentional (tool registry internal path); delegation fallback now logs; added coverage tests for proposal/sessions paths.
 
-**Phase 9**: Integration tests added using in-process MessageHubNoKernel + RegisterSkill for realistic Store VM / chat-router delegation. Proposal actions now have adapter pattern for ProposalStore. Chat responses include timestamp. Real backend implementations (full Store VM vsock, chat router) remain future work.
+**Phase 9**: Integration tests added using in-process MessageHubNoKernel + RegisterSkill for realistic Store VM / chat-router delegation. Proposal adapter pattern documented with ProposalStore integration example; chat-router fallback now echoes message content and propagates correlation_id. Data verification and error-propagation tests added for proposal.status and chat.message. Real backend implementations (full Store VM vsock, chat router) remain future work.
 
 ## Data Flow Example: Skill Creation via SDLC
 
