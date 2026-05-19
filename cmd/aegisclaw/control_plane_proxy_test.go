@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
+	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"go.uber.org/zap"
 )
 
@@ -540,5 +541,67 @@ func TestMediatedChatMessage_ErrorFromChatRouter(t *testing.T) {
 	}
 	if resp.Error != "chat router unavailable" {
 		t.Errorf("expected backend error surfaced, got %q", resp.Error)
+	}
+}
+
+// TestMediatedProposalList_RealProposalStore (test-guided) defines the
+// expected behavior when a real ProposalStore is used via the proposalBackend.
+// It creates a temporary git-based proposal store, adds a proposal, registers
+// a handler that calls the store (simulating the real backend), and verifies
+// the mediated response contains the created proposal.
+func TestMediatedProposalList_RealProposalStore(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+
+	// Create a real ProposalStore (git-backed) in a temp directory.
+	tmp := t.TempDir()
+	propStore, err := proposal.NewStore(tmp, logger)
+	if err != nil {
+		t.Fatalf("failed to create proposal store: %v", err)
+	}
+
+	// Create one proposal so List() returns something real.
+	p := &proposal.Proposal{
+		ID:          "p-real-1",
+		Title:       "Real Proposal from Store",
+		Description: "Integration test proposal",
+		Category:    proposal.CategorySkill,
+		Status:      proposal.StatusDraft,
+	}
+	if err := propStore.Create(p); err != nil {
+		t.Fatalf("failed to create proposal in store: %v", err)
+	}
+
+	// Register a handler that uses the real ProposalStore (simulates proposalBackend).
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		summaries, err := propStore.List()
+		if err != nil {
+			return &ipc.DeliveryResult{MessageID: msg.ID, Success: false, Error: err.Error()}, nil
+		}
+		data, _ := json.Marshal(summaries)
+		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	}); err != nil {
+		t.Fatalf("register store-vm: %v", err)
+	}
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "proposal.list",
+	})
+	if err != nil {
+		t.Fatalf("Forward error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success from real store, got: %s", resp.Error)
+	}
+
+	// Verify the response contains our real proposal.
+	var summaries []map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &summaries); err != nil {
+		t.Fatalf("unmarshal summaries: %v", err)
+	}
+	if len(summaries) == 0 || summaries[0]["id"] != "p-real-1" {
+		t.Errorf("expected real proposal in list, got: %+v", summaries)
 	}
 }

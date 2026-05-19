@@ -437,12 +437,12 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 // to extend when real backends (Store VM, etc.) are registered.
 //
 // How to plug a real implementation (Phase 9+):
-//   1. Implement a type that satisfies RouteHandler (or use hub.RegisterSkill).
-//   2. In the real Store VM or chat-router microVM startup, call:
-//        hub.RegisterSkill("store-vm", myProposalHandler)
-//        hub.RegisterSkill("chat-router", myChatHandler)
-//   3. The delegation path in handleControlPlaneRequest will then forward
-//      the request and return the real result instead of the sample fallback.
+//   1. Create an adapter (e.g. proposalBackend) that holds a real
+//      store.ProposalStore (or remote client) and implements RouteHandler.
+//   2. At startup (AegisHub or Store VM), call:
+//        hub.RegisterSkill("store-vm", myProposalBackend.handle)
+//   3. The delegation path will now return real ProposalStore data
+//      instead of the sample fallback.
 func (h *MessageHub) preferredBackendForAction(action string) string {
 	switch action {
 	case "worker.list", "worker.status":
