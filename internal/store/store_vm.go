@@ -60,6 +60,8 @@ func newInProcessStoreVM(cfg *config.Config, logger *zap.Logger) (*inProcessStor
 	if !filepath.IsAbs(auditDir) {
 		return nil, fmt.Errorf("cfg.Audit.Dir must be an absolute path, got: %q", auditDir)
 	}
+	// The PR store lives as a sibling of the audit directory under the shared
+	// data root (e.g. /data/pullrequests alongside /data/audit).
 	prStorePath := filepath.Join(filepath.Dir(auditDir), "pullrequests")
 	prStore, err := pullrequest.NewStore(prStorePath, logger)
 	if err != nil {

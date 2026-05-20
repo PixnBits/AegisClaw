@@ -396,7 +396,10 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		}
 	}
 
-	// Phase 9: For proposal actions, never fall back to sample data.
+	// Proposal actions require persistent state from a real ProposalStore; there
+	// is no meaningful sample representation of live proposal data. They are
+	// therefore unconditionally hard-failed when the "store-vm" backend is not
+	// registered, even if AEGISCLAW_ALLOW_SAMPLE_DATA=true is set for other actions.
 	// If the "store-vm" backend (proposalBackend wrapping real ProposalStore) is not
 	// registered at AegisHub startup, return a clear actionable error + log.
 	// This enforces that real data is used in production and makes missing wiring obvious.

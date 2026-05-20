@@ -63,15 +63,14 @@ func acceptLoop(l net.Listener, svm store.StoreVM, logger *zap.Logger) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			// A temporary error (e.g. a transient kernel hiccup) should be
-			// retried; a permanent error (listener closed, etc.) means we
-			// must stop to avoid a hot spin.
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Temporary() { //nolint:staticcheck // SA1019: Temporary is deprecated but still useful here
-				logger.Warn("acceptLoop: temporary accept error, retrying", zap.Error(err))
-				continue
+			// If the listener was closed intentionally (e.g. during shutdown) that
+			// is a clean stop; any other error is unexpected – log it and stop to
+			// avoid a hot spin on a broken listener.
+			if errors.Is(err, net.ErrClosed) {
+				logger.Info("acceptLoop: listener closed, stopping")
+			} else {
+				logger.Error("acceptLoop: accept error, stopping", zap.Error(err))
 			}
-			logger.Error("acceptLoop: permanent accept error, stopping", zap.Error(err))
 			return
 		}
 		go handleConnection(conn, svm, logger)
