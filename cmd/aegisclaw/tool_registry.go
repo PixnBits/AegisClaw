@@ -1029,10 +1029,17 @@ func registerSessionTools(reg *ToolRegistry, env *runtimeEnv, selfRegPtr **ToolR
 				return "", fmt.Errorf("session store not available")
 			}
 			// Build and call the sessions.send handler directly.
-			// Phase 8: Intentionally passing nil proxy here because this is an
-			// internal tool execution path (not the public API socket).
-			// TODO(Phase 9): Thread a real ControlPlaneProxy or refactor to
-			// avoid direct handler construction for tool self-calls.
+			// WHY NIL PROXY BYPASS (intentional, temporary):
+			//   This is an internal tool execution path inside the daemon's
+			//   tool registry (for "sessions_send" skill self-call). It does not
+			//   go through the public API Unix socket, so no real ControlPlaneProxy
+			//   is available/required here. Passing nil keeps the handler signature
+			//   stable while the mediation layer evolves.
+			//   Planned removal: once Phase 9+ threads a real proxy instance into
+			//   the tool env (or refactors to avoid direct handler construction),
+			//   replace the nil. Search for "nil proxy" to find this bypass.
+			// TODO: Thread a real ControlPlaneProxy for sessions_send self-call
+			// or refactor to avoid direct handler construction (Phase 9 work).
 			sendHandler := makeSessionsSendHandler(env, *selfRegPtr, nil)
 			reqBytes, _ := json.Marshal(map[string]string{
 				"session_id": p.SessionID,

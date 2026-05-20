@@ -13,8 +13,9 @@ import (
 // they serve as the pattern for future wiring (e.g. "proposal.list",
 // "proposal.status").
 //
-// TODO(Phase 9): Register these handlers and connect to a real Store VM
-// backend via the delegation path in handleControlPlaneRequest.
+// TODO(Phase 9): Register proposal handlers on the API socket and connect
+// to a real Store VM backend (e.g. via RegisterSkill("store-vm", ...))
+// so delegation in handleControlPlaneRequest returns live data instead of samples.
 
 func makeProposalListHandler(proxy *ControlPlaneProxy) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {

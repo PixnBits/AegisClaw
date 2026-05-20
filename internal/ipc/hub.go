@@ -353,8 +353,11 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 
 	// Phase 8 improvement: attempt delegation to a registered backend first.
 	// If a backend (e.g., "store-vm") is registered for the action, forward
-	// the request to it. This enables realistic end-to-end testing and future
-	// Store VM integration without changing the ControlPlaneProxy contract.
+	// the request to it via the RouteHandler. This enables realistic
+	// end-to-end testing and future Store VM integration.
+	// Error mapping: handler errors or nil results fall through to sample
+	// fallback; we never surface Go errors from delegation here because
+	// ControlPlaneProxy expects a DeliveryResult (with .Error set on failure).
 	if backendID := h.preferredBackendForAction(req.Action); backendID != "" {
 		if handler, ok := h.getRegisteredHandler(backendID); ok {
 			delegatedMsg := &Message{
@@ -368,7 +371,12 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 			if result, err := handler(delegatedMsg); err == nil && result != nil {
 				return result, nil
 			}
-			// If delegation failed, fall through to sample data for robustness.
+			// Delegation attempt failed (handler error or nil result); log and
+			// fall through to sample data for robustness / graceful degradation.
+			if h.logger != nil {
+				h.logger.Debug("ControlPlaneRequest delegation failed, using sample fallback",
+					zap.String("action", req.Action), zap.String("backend", backendID))
+			}
 		}
 	}
 
@@ -393,10 +401,10 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
 	case "chat.message":
-		// Delegated to chat router / agent VM in production.
-		// TODO(Phase 9): Replace sample with real delegation to registered chat-router or Agent VM.
-		// Current improved fallback provides basic session awareness (echo + prev context simulation)
-		// and structured response. A real chatRouter would maintain session history and route to Agent VMs.
+		// Delegated to chat router / agent VM in production via preferredBackendForAction + RegisterSkill.
+		// Current fallback provides basic session awareness (echo + prev context simulation)
+		// and structured response when no chat-router backend is registered.
+		// A real chatRouter would maintain session history and route to Agent VMs.
 		var in struct {
 			Message     string `json:"message"`
 			SessionID   string `json:"session_id"`
@@ -446,13 +454,18 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 // given ControlPlane action. This mapping makes delegation explicit and easy
 // to extend when real backends (Store VM, etc.) are registered.
 //
-// How to plug a real implementation (Phase 9+):
-//   1. Create an adapter (e.g. proposalBackend) that holds a real
-//      store.ProposalStore (or remote client) and implements RouteHandler.
-//   2. At startup (AegisHub or Store VM), call:
-//        hub.RegisterSkill("store-vm", myProposalBackend.handle)
-//   3. The delegation path will now return real ProposalStore data
-//      instead of the sample fallback.
+// How to Add a New Backend (e.g. "store-vm", "chat-router"):
+//   1. Define an adapter type that holds your real backend (e.g. ProposalStore)
+//      and implements a RouteHandler func(*Message) (*DeliveryResult, error).
+//      Best practice: keep adapters stateless or inject deps; see proposalBackend
+//      pattern for wrapping git-backed stores.
+//   2. At daemon/AegisHub startup (or in Store VM init), call:
+//        hub.RegisterSkill("store-vm", myAdapter.Handle)
+//      This wires the handler into the router so getRegisteredHandler finds it.
+//   3. preferredBackendForAction will route matching actions (e.g. proposal.list)
+//      to it first; the registered handler wins over internal sample fallback.
+//   The ControlPlaneProxy + handleControlPlaneRequest flow then delegates
+//   transparently. Registering multiple backends is supported for different actions.
 func (h *MessageHub) preferredBackendForAction(action string) string {
 	switch action {
 	case "worker.list", "worker.status":
