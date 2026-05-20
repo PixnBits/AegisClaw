@@ -99,6 +99,11 @@ func TestControlPlaneProxy_HandlerUsagePattern(t *testing.T) {
 func TestControlPlaneProxy_Forward_MediatedWorkerList(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	// Register a backend handler simulating the Store VM worker store.
 	// In real flow this would be registered by the Store VM or a proxy skill.
@@ -160,6 +165,11 @@ func TestControlPlaneProxy_Forward_UnknownAction(t *testing.T) {
 func TestControlPlaneProxy_Forward_BackendErrorPropagation(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	// Register a handler that simulates a backend failure.
 	if err := hub.RegisterSkill("failing-backend", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
@@ -194,6 +204,11 @@ func TestControlPlaneProxy_Forward_BackendErrorPropagation(t *testing.T) {
 func TestControlPlaneProxy_Forward_DelegatesToRegisteredHandler(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	// Register a custom handler that returns distinctive data.
 	const customAction = "custom.action"
@@ -340,6 +355,12 @@ func TestControlPlaneProxy_Forward_ProposalStatus_ErrorPropagation(t *testing.T)
 func TestProposalHandlers_RegisteredWithProxy(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
 		data := json.RawMessage(`[{"proposal_id":"p-reg-1"}]`)
 		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
@@ -380,6 +401,11 @@ func TestSessionsSendHandler_NilProxyFallback(t *testing.T) {
 func TestSessionsSendHandler_UsesProxy(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
 		data := json.RawMessage(`{"reply":"sessions via proxy"}`)
 		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
@@ -429,6 +455,11 @@ func TestProposalHandlers_ErrorOnNilProxy(t *testing.T) {
 func TestMediatedProposalList_DelegatesToStoreVM(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	// Simulate a Store VM backend that would use real ProposalStore.List() in production.
 	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
@@ -455,6 +486,11 @@ func TestMediatedProposalList_DelegatesToStoreVM(t *testing.T) {
 func TestMediatedChatMessage_DelegatesToChatRouter(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
 		data := json.RawMessage(`{"session_id":"s-int-1","reply":"Phase 9 chat response"}`)
@@ -480,6 +516,11 @@ func TestMediatedChatMessage_DelegatesToChatRouter(t *testing.T) {
 func TestMediatedProposalStatus_DelegatesToStoreVM(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	// Simulate Store VM returning realistic proposal data.
 	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
@@ -516,6 +557,11 @@ func TestMediatedProposalStatus_DelegatesToStoreVM(t *testing.T) {
 func TestMediatedChatMessage_ErrorFromChatRouter(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
 		return &ipc.DeliveryResult{
@@ -552,6 +598,11 @@ func TestMediatedChatMessage_ErrorFromChatRouter(t *testing.T) {
 func TestMediatedProposalList_RealProposalStore(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	// Create a real ProposalStore (git-backed) in a temp directory.
 	tmp := t.TempDir()
@@ -561,12 +612,10 @@ func TestMediatedProposalList_RealProposalStore(t *testing.T) {
 	}
 
 	// Create one proposal so List() returns something real.
-	p := &proposal.Proposal{
-		ID:          "p-real-1",
-		Title:       "Real Proposal from Store",
-		Description: "Integration test proposal",
-		Category:    proposal.CategoryNewSkill,
-		Status:      proposal.StatusDraft,
+	// Use NewProposal to ensure a valid UUID ID (Phase 9 test adaptation).
+	p, err := proposal.NewProposal("Real Proposal from Store", "Integration test proposal", proposal.CategoryNewSkill, "tester")
+	if err != nil {
+		t.Fatalf("NewProposal: %v", err)
 	}
 	if err := propStore.Create(p); err != nil {
 		t.Fatalf("failed to create proposal in store: %v", err)
@@ -601,7 +650,7 @@ func TestMediatedProposalList_RealProposalStore(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &summaries); err != nil {
 		t.Fatalf("unmarshal summaries: %v", err)
 	}
-	if len(summaries) == 0 || summaries[0]["id"] != "p-real-1" {
+	if len(summaries) == 0 || summaries[0]["title"] != "Real Proposal from Store" {
 		t.Errorf("expected real proposal in list, got: %+v", summaries)
 	}
 }
@@ -611,6 +660,11 @@ func TestMediatedProposalList_RealProposalStore(t *testing.T) {
 func TestMediatedProposalStatus_FullPathWithRealBackend(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	tmp := t.TempDir()
 	propStore, err := proposal.NewStore(tmp, logger)
@@ -618,7 +672,11 @@ func TestMediatedProposalStatus_FullPathWithRealBackend(t *testing.T) {
 		t.Fatalf("create store: %v", err)
 	}
 
-	p := &proposal.Proposal{ID: "p-full-1", Title: "Full Path", Status: proposal.StatusSubmitted}
+	// Use NewProposal for valid UUID (Phase 9 test adaptation).
+	p, err := proposal.NewProposal("Full Path Proposal", "Full path integration test", proposal.CategoryNewSkill, "tester")
+	if err != nil {
+		t.Fatalf("NewProposal: %v", err)
+	}
 	if err := propStore.Create(p); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -642,7 +700,7 @@ func TestMediatedProposalStatus_FullPathWithRealBackend(t *testing.T) {
 
 	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
 		Action: "proposal.status",
-		Data:   json.RawMessage(`{"proposal_id":"p-full-1"}`),
+		Data:   json.RawMessage(`{"proposal_id":"` + p.ID + `"}`),
 	})
 	if err != nil || !resp.Success {
 		t.Fatalf("full path status failed: %v %+v", err, resp)
@@ -655,6 +713,11 @@ func TestMediatedProposalStatus_FullPathWithRealBackend(t *testing.T) {
 func TestChatRouter_SessionAwareness(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	// Simulate an improved chat-router that maintains simple session state.
 	// In a real impl this would be a stateful handler or delegate to Agent VM.

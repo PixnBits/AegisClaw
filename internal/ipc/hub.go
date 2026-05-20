@@ -149,6 +149,16 @@ func (h *MessageHub) RegisterSkill(skillID string, handler RouteHandler) error {
 	return nil
 }
 
+// RegisterIdentityForTest pre-registers a VM ID with a role so that ACL checks
+// in RouteMessage succeed for test scenarios. Exported solely to support
+// cross-package test adaptation after TCB reduction (ControlPlaneProxy mediation).
+func (h *MessageHub) RegisterIdentityForTest(vmID string, role VMRole) error {
+	if h.identity == nil {
+		return fmt.Errorf("identity registry not initialized")
+	}
+	return h.identity.Register(vmID, role)
+}
+
 // UnregisterSkill removes a skill's message handler from the router.
 func (h *MessageHub) UnregisterSkill(skillID string) {
 	h.router.Unregister(skillID)
