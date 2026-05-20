@@ -8,6 +8,10 @@ Per `docs/architecture.md` and `docs/specs/host-daemon.md`:
 - Compromised sandbox must never affect the daemon or other sandboxes.
 - Lifecycle containment is a core defense-in-depth control.
 
+## Traceability
+
+Lifecycle and watchdog **test rows** map to [03-daemon-minimal-tcb-refactor.md](03-daemon-minimal-tcb-refactor.md) (Sections 2.1–2.2). Kill containment and watchdog integration gaps are **DB-01** and **DB-09** in [docs/planning/daemon-test-backlog.md](../planning/daemon-test-backlog.md).
+
 ## Tasks
 
 1. **Implement strict lifecycle ownership**:

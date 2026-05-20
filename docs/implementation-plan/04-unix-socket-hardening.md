@@ -5,6 +5,10 @@
 ## Why This Is Critical (Paranoid Security)
 Docker's single socket is a well-known attack vector: any process that can write to it gains full host control. Per `docs/specs/host-daemon.md` (Unix Socket Hardening test requirement) and `docs/architecture.md` (strict mediation), we must prevent this entirely.
 
+## Traceability
+
+Socket-related **test requirement rows** and their CI status live in [03-daemon-minimal-tcb-refactor.md](03-daemon-minimal-tcb-refactor.md) (Section 2.1, Unix socket hardening). Prioritized gaps for peer credentials, rate limits, and audit-on-deny are tracked as **DB-05** and **DB-06** in [docs/planning/daemon-test-backlog.md](../planning/daemon-test-backlog.md).
+
 ## Tasks
 
 1. **Design & implement hardened socket model**:
