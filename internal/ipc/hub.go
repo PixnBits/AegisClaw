@@ -380,6 +380,22 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		}
 	}
 
+	// Phase 9: For proposal actions, never fall back to sample data.
+	// If the "store-vm" backend (proposalBackend wrapping real ProposalStore) is not
+	// registered at AegisHub startup, return a clear actionable error + log.
+	// This enforces that real data is used in production and makes missing wiring obvious.
+	if req.Action == "proposal.list" || req.Action == "proposal.status" {
+		if h.logger != nil {
+			h.logger.Warn("proposal action with no store-vm backend registered; returning error (no silent sample fallback)",
+				zap.String("action", req.Action))
+		}
+		return &DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "store-vm backend not registered (real ProposalStore required at AegisHub startup)",
+		}, nil
+	}
+
 	// Fallback sample data for actions that have no registered backend yet.
 	// This path is used when delegation fails or no backend is registered.
 	// Real implementations will come from Store VM or other microVMs (Phase 9).
@@ -426,20 +442,9 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		data, _ := json.Marshal(reply)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
-	case "proposal.list":
-		// Realistic adapter pattern (Phase 9+): a "store-vm" handler registered via
-		// hub.RegisterSkill("store-vm", proposalAdapter.Handle) would call:
-		//   summaries, _ := adapter.store.List()
-		//   data, _ := json.Marshal(summaries)
-		//   return &DeliveryResult{..., Response: data}, nil
-		// For now we keep a minimal sample; real impl replaces this block.
-		data := json.RawMessage(`[{"proposal_id":"p-001","title":"Example","status":"draft"}]`)
-		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
-
-	case "proposal.status":
-		// See proposal.list comment above for the adapter pattern using ProposalStore.Get.
-		data := json.RawMessage(`{"proposal_id":"p-001","title":"Example","status":"draft","created_at":"2026-05-19T00:00:00Z"}`)
-		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+	// proposal.list / proposal.status no longer have sample fallback here.
+	// They are handled exclusively by the registered proposalBackend (or error if missing).
+	// See guard above + preferredBackendForAction.
 
 	default:
 		return &DeliveryResult{

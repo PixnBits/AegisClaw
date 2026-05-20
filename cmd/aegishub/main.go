@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
+	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"go.uber.org/zap"
 )
 
@@ -116,6 +117,26 @@ func main() {
 	defer logger.Sync() //nolint:errcheck
 
 	hub := ipc.NewMessageHubNoKernel(logger)
+
+	// Production wiring (Phase 9): create git-backed ProposalStore owned by AegisHub
+	// (not the Host Daemon) and register proposalBackend under "store-vm".
+	// This makes proposal.list / proposal.status return real data via the delegation path.
+	// The adapter pattern is preserved so it can later be replaced by a remote
+	// Store VM client (vsock) without changing ControlPlaneProxy or daemon code.
+	// Repo path defaults to a persistent location; override via AEGIS_PROPOSAL_REPO for tests/dev.
+	repoPath := os.Getenv("AEGIS_PROPOSAL_REPO")
+	if repoPath == "" {
+		repoPath = "/var/lib/aegisclaw/proposals"
+	}
+	propStore, err := proposal.NewStore(repoPath, logger)
+	if err != nil {
+		logger.Fatal("aegishub: failed to create proposal store", zap.String("path", repoPath), zap.Error(err))
+	}
+	backend := ipc.NewProposalBackend(propStore, logger)
+	if err := hub.RegisterSkill("store-vm", backend.Handle); err != nil {
+		logger.Fatal("aegishub: failed to register store-vm backend", zap.Error(err))
+	}
+
 	if err := hub.Start(); err != nil {
 		logger.Fatal("aegishub: failed to start message hub", zap.Error(err))
 	}

@@ -27,8 +27,8 @@ func NewProposalBackend(s store.ProposalStore, logger *zap.Logger) *proposalBack
 	return &proposalBackend{store: s, logger: logger}
 }
 
-// handle implements the RouteHandler contract expected by MessageHub delegation.
-func (b *proposalBackend) handle(msg *Message) (*DeliveryResult, error) {
+// Handle implements the RouteHandler contract expected by MessageHub delegation.
+func (b *proposalBackend) Handle(msg *Message) (*DeliveryResult, error) {
 	switch msg.Type {
 	case "proposal.list":
 		summaries, err := b.store.List()
@@ -82,4 +82,4 @@ func (b *proposalBackend) handle(msg *Message) (*DeliveryResult, error) {
 }
 
 // Ensure it satisfies the expected handler signature used by RegisterSkill.
-var _ RouteHandler = (*proposalBackend)(nil).handle
+var _ RouteHandler = (*proposalBackend)(nil).Handle
