@@ -117,70 +117,8 @@ func runSkillAdd(cmd *cobra.Command, args []string) error {
 
 	// Phase 5: ProposalStore removed from Host Daemon TCB.
 	// Long-term owner: Store VM via AegisHub.
-	_ = env
+	_ = p
 	return fmt.Errorf("proposal creation removed from minimal Host Daemon TCB (Phase 5)")
-
-	// Phase 5: ProposalStore removed.
-	// Auto-submit stubbed.
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"proposal_id": p.ID,
-		"title":       p.Title,
-		"category":    string(p.Category),
-		"skill_name":  result.SkillName,
-		"risk":        result.Risk,
-	})
-	action := kernel.NewAction(kernel.ActionProposalCreate, "operator", payload)
-	if _, signErr := env.Kernel.SignAndLog(action); signErr != nil {
-		env.Logger.Error("failed to log proposal creation", zap.Error(signErr))
-	}
-
-	if globalJSON {
-		data, _ := json.MarshalIndent(map[string]interface{}{
-			"proposal_id": p.ID,
-			"title":       p.Title,
-			"skill":       p.TargetSkill,
-			"status":      string(p.Status),
-			"risk":        string(p.Risk),
-		}, "", "  ")
-		fmt.Println(string(data))
-	} else {
-		fmt.Println()
-		fmt.Printf("Skill proposal created and submitted for review.\n")
-		fmt.Printf("  ID:       %s\n", p.ID)
-		fmt.Printf("  Title:    %s\n", p.Title)
-		fmt.Printf("  Skill:    %s\n", p.TargetSkill)
-		fmt.Printf("  Risk:     %s\n", p.Risk)
-		fmt.Printf("  Status:   %s\n", p.Status)
-
-		if len(p.SecretsRefs) > 0 {
-			fmt.Printf("  Secrets:  %v\n", p.SecretsRefs)
-		}
-	}
-
-	// Send the proposal to the daemon for court review. The daemon runs as
-	// root with Firecracker access and owns the reviewer sandboxes.
-	proposalData, err := p.Marshal()
-	if err != nil {
-		return fmt.Errorf("failed to serialize proposal: %w", err)
-	}
-	client := api.NewClient(env.Config.Daemon.SocketPath)
-	resp, err := client.Call(cmd.Context(), "court.review", api.CourtReviewRequest{
-		ProposalID:   p.ID,
-		ProposalData: proposalData,
-	})
-	if err != nil {
-		fmt.Printf("\n  Court review could not be started: %v\n", err)
-		fmt.Printf("  (Is the daemon running? Start it with: sudo aegisclaw start)\n")
-		return nil
-	}
-	if resp.Error != "" {
-		fmt.Printf("\n  Court review failed: %s\n", resp.Error)
-		return nil
-	}
-	fmt.Printf("\n  Court review initiated.\n")
-
-	return nil
 }
 
 func buildSkillAddResult(skillGoal string) (*wizard.WizardResult, error) {
@@ -462,9 +400,7 @@ func runSkillSBOM(_ *cobra.Command, args []string) error {
 	}
 
 	// Phase 5: ProposalStore removed from Host Daemon TCB.
-	_ = env
-	return fmt.Errorf("SBOM lookup via proposals removed from minimal Host Daemon TCB (Phase 5)")
-	return fmt.Errorf("no SBOM found for %q — build the skill first with: aegisclaw skill add", nameOrID)
+	return fmt.Errorf("no SBOM found for %q (proposal-based lookup removed in Phase 5); build the skill first with: aegisclaw skill add", nameOrID)
 }
 
 func tryReadSBOM(path string) (*sbomPkg, error) {

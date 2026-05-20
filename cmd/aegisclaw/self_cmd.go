@@ -11,11 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 )
 
 var selfCmd = &cobra.Command{
@@ -88,25 +86,8 @@ func runSelfPropose(cmd *cobra.Command, args []string) error {
 	}
 
 	// Phase 5: ProposalStore removed from Host Daemon TCB.
-	_ = env
+	_ = p
 	return fmt.Errorf("proposal creation removed from minimal Host Daemon TCB (Phase 5)")
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"proposal_id": p.ID,
-		"title":       p.Title,
-		"category":    string(p.Category),
-	})
-	action := kernel.NewAction(kernel.ActionProposalCreate, "system", payload)
-	if _, signErr := env.Kernel.SignAndLog(action); signErr != nil {
-		env.Logger.Error("failed to log self-improvement proposal", zap.Error(signErr))
-	}
-
-	fmt.Printf("Self-improvement proposal created and submitted.\n")
-	fmt.Printf("  ID:       %s\n", p.ID)
-	fmt.Printf("  Title:    %s\n", p.Title)
-	fmt.Printf("  Status:   %s\n", p.Status)
-
-	return nil
 }
 
 func runSelfStatus(cmd *cobra.Command, args []string) error {
