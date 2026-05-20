@@ -799,3 +799,80 @@ func TestChatRouter_SessionAwareness(t *testing.T) {
 		t.Errorf("unexpected chat response: %+v", out)
 	}
 }
+
+// TestControlPlaneProxy_Delegation_Priority verifies that a registered handler
+// wins over the internal sample-data fallback (clear delegation priority).
+func TestControlPlaneProxy_Delegation_Priority(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	// Register a handler that returns a distinct marker.
+	expected := json.RawMessage(`{"delegated":true,"source":"registered"}`)
+	_ = hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		return &ipc.DeliveryResult{
+			MessageID: msg.ID,
+			Success:   true,
+			Response:  expected,
+		}, nil
+	})
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
+		Action: "worker.list", // maps to store-vm
+	})
+	if err != nil {
+		t.Fatalf("Forward error: %v", err)
+	}
+	if resp == nil || !resp.Success {
+		t.Fatalf("expected success, got: %+v", resp)
+	}
+	if string(resp.Data) != string(expected) {
+		t.Errorf("delegation did not win: got %s, want %s", resp.Data, expected)
+	}
+}
+
+// TestControlPlaneProxy_ErrorPropagation verifies consistent error surfacing
+// across different backend types (store-vm vs chat-router failure paths).
+func TestControlPlaneProxy_ErrorPropagation(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	// Failing store-vm backend
+	_ = hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		return &ipc.DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "store-vm backend error",
+		}, nil
+	})
+	// Failing chat-router backend
+	_ = hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+		return &ipc.DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "chat-router backend error",
+		}, nil
+	})
+
+	for _, action := range []string{"worker.list", "chat.message"} {
+		resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{Action: action})
+		if err != nil {
+			t.Errorf("%s: unexpected Go error: %v", action, err)
+			continue
+		}
+		if resp == nil || resp.Success || resp.Error == "" {
+			t.Errorf("%s: expected error response, got %+v", action, resp)
+		}
+	}
+}
