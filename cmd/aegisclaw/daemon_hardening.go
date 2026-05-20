@@ -13,10 +13,36 @@ import (
 )
 
 type AegisHubMonitor struct {
+	mu                    sync.Mutex
 	logger                *zap.Logger
 	maxFailsBeforeRestart int
 	consecutiveFails      int
 	stopOnce              sync.Once
+}
+
+// OnHealthCheckFailed records a failed AegisHub (or Store) health probe.
+// It returns true when consecutive failures reached maxFailsBeforeRestart (DB-09).
+func (m *AegisHubMonitor) OnHealthCheckFailed() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.maxFailsBeforeRestart < 1 {
+		m.maxFailsBeforeRestart = 3
+	}
+	m.consecutiveFails++
+	return m.consecutiveFails >= m.maxFailsBeforeRestart
+}
+
+// ResetHealthFailures clears the consecutive failure counter after a good probe.
+func (m *AegisHubMonitor) ResetHealthFailures() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.consecutiveFails = 0
 }
 
 func (m *AegisHubMonitor) Stop() {

@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/audit"
 	"go.uber.org/zap"
@@ -208,6 +210,35 @@ func (k *Kernel) Shutdown() {
 // AuditLog returns the kernel's Merkle audit log.
 func (k *Kernel) AuditLog() *audit.MerkleLog {
 	return k.auditLog
+}
+
+// SyncAuditLog fsyncs the Merkle audit chain (no-op if no log is open).
+func (k *Kernel) SyncAuditLog() error {
+	if k == nil || k.auditLog == nil {
+		return nil
+	}
+	return k.auditLog.Sync()
+}
+
+// RunPeriodicAuditSync invokes SyncAuditLog on every tick until ctx is done.
+// Intended for optional product use when AEGISCLAW_AUDIT_SYNC_INTERVAL is set
+// (DB-02 remainder: time-based durability between SignAndLog calls).
+func (k *Kernel) RunPeriodicAuditSync(ctx context.Context, every time.Duration) {
+	if k == nil || every <= 0 {
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := k.SyncAuditLog(); err != nil && k.logger != nil {
+				k.logger.Warn("periodic merkle audit sync failed", zap.Error(err))
+			}
+		}
+	}
 }
 
 func defaultKeyDir() (string, error) {

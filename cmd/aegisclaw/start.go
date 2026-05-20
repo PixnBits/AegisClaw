@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -57,6 +58,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer env.Logger.Sync()
+
+	auditCtx, auditCancel := context.WithCancel(context.Background())
+	defer auditCancel()
 
 	// === Phase 4 Hardening Baseline Logging ===
 	env.Logger.Info("daemon starting (Phase 4 baseline)",
@@ -137,7 +141,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	env.Logger.Info("AegisClaw kernel started successfully")
 
+	if d := auditFlushIntervalFromEnv(); d > 0 {
+		env.Logger.Info("starting periodic audit sync", zap.Duration("interval", d))
+		go env.Kernel.RunPeriodicAuditSync(auditCtx, d)
+	}
+
 	apiSrv := api.NewServer(env.Config.Daemon.SocketPath, env.Logger)
+	owner := daemonOwnerUID()
+	apiSrv.UnixPeerAllow = func(uid int) bool {
+		return uid == 0 || uid == owner
+	}
 	apiSrv.Handle("ping", func(ctx context.Context, _ json.RawMessage) *api.Response {
 		return &api.Response{Success: true}
 	})
@@ -191,6 +204,18 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 		return fmt.Errorf("daemon already running (use: aegisclaw restart)")
 	}
 	return nil
+}
+
+func auditFlushIntervalFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("AEGISCLAW_AUDIT_SYNC_INTERVAL"))
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // microVMStopDelete is the subset of the sandbox runtime used to tear down

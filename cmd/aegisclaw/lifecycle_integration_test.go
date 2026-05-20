@@ -26,17 +26,22 @@ func TestLifecycleContainment_MonitorHealthAndRestart(t *testing.T) {
 		maxFailsBeforeRestart: 2,
 	}
 
-	// First failure
-	monitor.consecutiveFails = 1
-
-	// Second failure should trigger restart threshold
-	monitor.consecutiveFails = 2
-
-	if monitor.consecutiveFails < monitor.maxFailsBeforeRestart {
-		t.Error("expected to reach restart threshold")
+	if monitor.OnHealthCheckFailed() {
+		t.Fatal("first failed probe should not cross restart threshold")
+	}
+	if !monitor.OnHealthCheckFailed() {
+		t.Fatal("second consecutive failure should cross restart threshold (DB-09)")
+	}
+	if !monitor.OnHealthCheckFailed() {
+		t.Fatal("failures after threshold should keep reporting threshold crossed")
 	}
 
-	t.Log("Lifecycle monitor reached restart threshold as expected")
+	monitor.ResetHealthFailures()
+	if monitor.OnHealthCheckFailed() {
+		t.Fatal("after reset, first failure must not immediately cross threshold")
+	}
+
+	t.Log("Lifecycle monitor health failure accounting behaves as expected")
 }
 
 func TestLifecycleContainment_CleanupOnShutdown(t *testing.T) {

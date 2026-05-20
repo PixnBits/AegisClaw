@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	aegispaths "github.com/PixnBits/AegisClaw/internal/paths"
 	"go.uber.org/zap"
@@ -173,6 +175,13 @@ func DefaultSocketPath() string {
 	return path
 }
 
+const defaultMaxAPIBodyBytes = 4 << 20
+
+type unixRateWindow struct {
+	second int64
+	n      int
+}
+
 // Server listens on a Unix socket and dispatches incoming requests to
 // registered handlers keyed by action name.
 type Server struct {
@@ -181,6 +190,21 @@ type Server struct {
 	listener   net.Listener
 	mu         sync.RWMutex
 	handlers   map[string]Handler
+
+	// UnixPeerAllow, when non-nil, rejects /api requests whose Unix peer UID
+	// does not pass this check (HTTP 403). When nil, no peer filter is applied
+	// at the HTTP layer (DB-05).
+	UnixPeerAllow func(uid int) bool
+
+	// MaxAPIBodyBytes caps the raw JSON body for POST /api (default 4 MiB when 0).
+	MaxAPIBodyBytes int
+
+	// UnixAPIRatePerSec limits successful JSON decodes per peer UID per wall
+	// clock second (default 200 when 0; set to -1 to disable, DB-06).
+	UnixAPIRatePerSec int
+
+	rateMu   sync.Mutex
+	rateUnix map[int]*unixRateWindow
 }
 
 // NewServer creates an API server bound to the given socket path.
@@ -280,15 +304,82 @@ func (s *Server) Stop() {
 	os.Remove(s.socketPath)
 }
 
+func (s *Server) maxBodyBytes() int64 {
+	if s.MaxAPIBodyBytes > 0 {
+		return int64(s.MaxAPIBodyBytes)
+	}
+	return int64(defaultMaxAPIBodyBytes)
+}
+
+func (s *Server) unixRateLimit() int {
+	if s.UnixAPIRatePerSec == -1 {
+		return -1
+	}
+	if s.UnixAPIRatePerSec > 0 {
+		return s.UnixAPIRatePerSec
+	}
+	return 200
+}
+
+func (s *Server) allowUnixAPIRate(ctx context.Context) bool {
+	limit := s.unixRateLimit()
+	if limit < 0 {
+		return true
+	}
+	uid, ok := PeerUIDFromContext(ctx)
+	if !ok {
+		uid = -1
+	}
+	now := time.Now().Unix()
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	if s.rateUnix == nil {
+		s.rateUnix = make(map[int]*unixRateWindow)
+	}
+	w := s.rateUnix[uid]
+	if w == nil || w.second != now {
+		s.rateUnix[uid] = &unixRateWindow{second: now, n: 1}
+		return true
+	}
+	w.n++
+	return w.n <= limit
+}
+
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, &Response{Error: "POST required"})
 		return
 	}
 
+	if s.UnixPeerAllow != nil {
+		uid, ok := PeerUIDFromContext(r.Context())
+		if !ok || !s.UnixPeerAllow(uid) {
+			writeJSON(w, http.StatusForbidden, &Response{Error: "unix socket peer not authorized"})
+			return
+		}
+	}
+
+	max := s.maxBodyBytes()
+	raw, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, &Response{Error: "read body: " + err.Error()})
+		return
+	}
+	if int64(len(raw)) > max {
+		writeJSON(w, http.StatusRequestEntityTooLarge, &Response{Error: "request body too large"})
+		return
+	}
+
 	var req Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, &Response{Error: "invalid JSON: " + err.Error()})
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, &Response{Error: "invalid JSON: " + err.Error()})
+			return
+		}
+	}
+
+	if !s.allowUnixAPIRate(r.Context()) {
+		writeJSON(w, http.StatusTooManyRequests, &Response{Error: "unix api rate limit exceeded"})
 		return
 	}
 

@@ -186,6 +186,17 @@ func (ml *MerkleLog) Close() error {
 	return err
 }
 
+// Sync flushes the audit log file to stable storage (best-effort fsync).
+// Used by periodic audit hygiene (DB-02) and manual checkpoints.
+func (ml *MerkleLog) Sync() error {
+	ml.mu.Lock()
+	defer ml.mu.Unlock()
+	if ml.file == nil {
+		return nil
+	}
+	return ml.file.Sync()
+}
+
 // Path returns the file path of the audit log.
 func (ml *MerkleLog) Path() string {
 	return ml.file.Name()
