@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/PixnBits/AegisClaw/internal/composition"
 	"github.com/PixnBits/AegisClaw/internal/memory"
@@ -17,12 +20,37 @@ import (
 // RemoteClient now actually talks to a Store VM over vsock.
 type RemoteClient struct {
 	conn net.Conn
+	mu   sync.Mutex
+}
+
+// parseVsockAddr parses an address of the form "vsock://CID:PORT" and returns
+// the CID and port as uint32 values.
+func parseVsockAddr(addr string) (uint32, uint32, error) {
+	trimmed := strings.TrimPrefix(addr, "vsock://")
+	if trimmed == addr {
+		return 0, 0, fmt.Errorf("vsock address must start with \"vsock://\", got: %q", addr)
+	}
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("vsock address must be \"vsock://CID:PORT\", got: %q", addr)
+	}
+	cid64, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid CID %q in address %q: %w", parts[0], addr, err)
+	}
+	port64, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid port %q in address %q: %w", parts[1], addr, err)
+	}
+	return uint32(cid64), uint32(port64), nil
 }
 
 func NewRemoteClient(addr string) (*RemoteClient, error) {
-	// For now we expect addr like "vsock://3:9999"
-	// In production this would parse CID and port
-	conn, err := vsock.Dial(3, 9999, nil)
+	cid, port, err := parseVsockAddr(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid vsock address: %w", err)
+	}
+	conn, err := vsock.Dial(cid, port, nil)
 	if err != nil {
 		return nil, fmt.Errorf("vsock dial to Store VM failed: %w", err)
 	}
@@ -36,11 +64,17 @@ func (c *RemoteClient) Close() error {
 	return nil
 }
 
-// sendRequest is the core communication method
+// sendRequest is the core communication method.
+// A mutex protects the shared connection so concurrent sub-store calls do not
+// interleave their request/response frames on the stream.
 func (c *RemoteClient) sendRequest(op string, payload interface{}) (interface{}, error) {
-	req := map[string]interface{}{
-		"op":      op,
-		"payload": payload,
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	req := Request{
+		ID:      op, // use op as a simple correlation key; callers are serialised by mu
+		Op:      op,
+		Payload: payload,
 	}
 
 	encoder := json.NewEncoder(c.conn)
@@ -49,16 +83,16 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (interface{},
 	}
 
 	decoder := json.NewDecoder(c.conn)
-	var resp map[string]interface{}
+	var resp Response
 	if err := decoder.Decode(&resp); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	if errStr, ok := resp["error"].(string); ok && errStr != "" {
-		return nil, fmt.Errorf("store vm error: %s", errStr)
+	if resp.Error != "" {
+		return nil, fmt.Errorf("store vm error: %s", resp.Error)
 	}
 
-	return resp, nil
+	return resp.Data, nil
 }
 
 // --- Store interface implementations ---

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
@@ -31,7 +33,12 @@ func main() {
 
 	logger.Info("Store VM starting with persistent storage", zap.String("dataDir", dataDir))
 
-	cfg := &config.Config{} // TODO: proper guest config
+	cfg := &config.Config{}
+	cfg.Audit.Dir = filepath.Join(dataDir, "audit")
+	cfg.Proposal.StoreDir = filepath.Join(dataDir, "proposals")
+	cfg.Composition.Dir = filepath.Join(dataDir, "composition")
+	cfg.Memory.Dir = filepath.Join(dataDir, "memory")
+	cfg.Worker.Dir = filepath.Join(dataDir, "workers")
 	svm, err := store.NewStoreVM(cfg, logger)
 	if err != nil {
 		logger.Fatal("Store initialization failed", zap.Error(err))
@@ -54,7 +61,19 @@ func main() {
 
 func acceptLoop(l net.Listener, svm store.StoreVM, logger *zap.Logger) {
 	for {
-		conn, _ := l.Accept()
+		conn, err := l.Accept()
+		if err != nil {
+			// A temporary error (e.g. a transient kernel hiccup) should be
+			// retried; a permanent error (listener closed, etc.) means we
+			// must stop to avoid a hot spin.
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Temporary() { //nolint:staticcheck // SA1019: Temporary is deprecated but still useful here
+				logger.Warn("acceptLoop: temporary accept error, retrying", zap.Error(err))
+				continue
+			}
+			logger.Error("acceptLoop: permanent accept error, stopping", zap.Error(err))
+			return
+		}
 		go handleConnection(conn, svm, logger)
 	}
 }

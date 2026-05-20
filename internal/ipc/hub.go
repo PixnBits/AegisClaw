@@ -354,11 +354,10 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 
 	// Phase 8 improvement: attempt delegation to a registered backend first.
 	// If a backend (e.g., "store-vm") is registered for the action, forward
-	// the request to it via the RouteHandler. This enables realistic
-	// end-to-end testing and future Store VM integration.
-	// Error mapping: handler errors or nil results fall through to sample
-	// fallback; we never surface Go errors from delegation here because
-	// ControlPlaneProxy expects a DeliveryResult (with .Error set on failure).
+	// the request to it via the RouteHandler. A registered backend that returns
+	// an error or nil result is treated as a hard failure and returned to the
+	// caller immediately – falling through to sample data when a backend exists
+	// would mask real errors and return misleading results.
 	if backendID := h.preferredBackendForAction(req.Action); backendID != "" {
 		if handler, ok := h.getRegisteredHandler(backendID); ok {
 			delegatedMsg := &Message{
@@ -369,15 +368,31 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 				Payload:   req.Data,
 				Timestamp: time.Now().UTC(),
 			}
-			if result, err := handler(delegatedMsg); err == nil && result != nil {
-				return result, nil
+			result, delegateErr := handler(delegatedMsg)
+			if delegateErr != nil {
+				if h.logger != nil {
+					h.logger.Error("ControlPlaneRequest delegation failed",
+						zap.String("action", req.Action), zap.String("backend", backendID),
+						zap.Error(delegateErr))
+				}
+				return &DeliveryResult{
+					MessageID: msg.ID,
+					Success:   false,
+					Error:     fmt.Sprintf("backend %q returned error: %v", backendID, delegateErr),
+				}, nil
 			}
-			// Delegation attempt failed (handler error or nil result).
-			// Will check for sample opt-in below before falling back.
-			if h.logger != nil {
-				h.logger.Debug("ControlPlaneRequest delegation failed",
-					zap.String("action", req.Action), zap.String("backend", backendID))
+			if result == nil {
+				if h.logger != nil {
+					h.logger.Error("ControlPlaneRequest delegation returned nil result",
+						zap.String("action", req.Action), zap.String("backend", backendID))
+				}
+				return &DeliveryResult{
+					MessageID: msg.ID,
+					Success:   false,
+					Error:     fmt.Sprintf("backend %q returned nil result", backendID),
+				}, nil
 			}
+			return result, nil
 		}
 	}
 

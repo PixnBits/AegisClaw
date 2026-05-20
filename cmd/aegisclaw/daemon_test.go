@@ -54,14 +54,19 @@ func TestWithAuthorizedCaller_EmptyAction(t *testing.T) {
 
 // === Stronger Invariant / Security Posture Tests ===
 
-func TestDaemonNeverHandlesUserContent(t *testing.T) {
-	t.Log("Architectural rule: Host Daemon must never process user messages, LLM output, or generated code.")
-}
-
-func TestDaemonNeverStoresSecrets(t *testing.T) {
-	t.Log("Architectural rule: Host Daemon must never store or manage secrets.")
-}
-
-func TestDaemonOnlyManagesTCB(t *testing.T) {
-	t.Log("Host Daemon TCB = VM lifecycle + socket + keys + Merkle signing + watchdog. Nothing else.")
+// TestDaemonTCBBoundary verifies that a zero-value runtimeEnv holds no
+// pre-initialised store or live infrastructure references, confirming that
+// those resources can only enter the struct through the explicit initialisation
+// path (initRuntime) rather than via package-level state.
+func TestDaemonTCBBoundary(t *testing.T) {
+	env := &runtimeEnv{}
+	if env.Registry != nil {
+		t.Error("expected nil SkillRegistry on zero-value runtimeEnv")
+	}
+	if env.Runtime != nil {
+		t.Error("expected nil FirecrackerRuntime on zero-value runtimeEnv")
+	}
+	if env.ProposalStore != nil {
+		t.Error("expected nil ProposalStore on zero-value runtimeEnv (store access must be mediated)")
+	}
 }

@@ -1,15 +1,21 @@
-# Real Firecracker Store VM - Final Integration Complete
+# Store VM Realization – Scaffold / Seam (Work in Progress)
 
-**Status**: Final integration pushed. The daemon now attempts to spawn a real Firecracker Store VM using `sandbox.FirecrackerRuntime`.
+**Status**: Initial scaffold pushed. The daemon has the plumbing to spawn a Store VM, but the implementation is still being completed.
 
-## Achieved
+## Achieved (Scaffold)
 
-- Removed all in-process Store ownership from daemon.
-- Functional vsock client + server with real request routing.
-- Persistent volume support in spec and guest.
-- `launchStoreVM` now creates `FirecrackerRuntime`, `CreateVM`, and starts it.
-- Remote client is returned once VM is up.
+- In-process `StoreVM` facade provides the correct interface for future migration.
+- vsock listener and client stubs exist as the protocol seam.
+- Persistent volume path support wired in guest (`-data-dir` flag).
+- `launchStoreVM` outline exists; real `FirecrackerRuntime` wiring is deferred.
+- Remote client parses vsock address; actual request routing is a placeholder.
 
-This completes the core migration from in-process to real microVM for the Store.
+## Not Yet Complete
 
-Remaining work is mostly hardening, rootfs, and full testing.
+- `cmd/store-vm/main.go` handler is a stub (`handleConnection` is a TODO).
+- The daemon does not yet spawn a real Firecracker Store VM; the in-process
+  fallback is used instead.
+- vsock protocol (request/response framing, op routing) needs full implementation.
+- End-to-end integration tests are deferred to a follow-up PR.
+
+Remaining work is the functional handler, rootfs, Firecracker wiring, and full testing.
