@@ -89,6 +89,16 @@ All steps executed in order:
 | Resource Limits             | RLIMIT + basic cgroups v2 (memory/CPU)     |
 | Socket Permissions          | 0600 + 0700 dir                            |
 
+**Security Considerations for Retained Capabilities**
+
+`CAP_SYS_ADMIN` is the only capability kept that carries broad risk. It is
+mandated exclusively by the Firecracker jailer binary's need to perform
+`chroot`, `unshare`, and `mount` during microVM setup. Removing it would
+break all VM launches, violating the platform's core isolation model.
+`CAP_DAC_OVERRIDE` is narrowly scoped to VM/socket paths and does not
+permit arbitrary file access by untrusted code. Combined with the
+capability bounding set and seccomp allowlist, the TCB remains minimal.
+
 The seccomp allowlist is intentionally aggressive. Use `AEGISCLAW_SECCOMP_STRICT=0` to disable during development. Future work: Landlock, full cgroups delegation, LSM integration.
 
 ---

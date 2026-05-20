@@ -60,11 +60,13 @@ func dropCapabilities(logger *zap.Logger) error {
 	// VM lifecycle and Unix socket/VM directory operations.
 	//
 	// Retained:
-	//   CAP_SYS_ADMIN  - required because Firecracker's jailer binary performs
-	//                    chroot(2), unshare(2), and mount operations inside the
-	//                    VM setup process (see testdata/cassettes/README.md).
-	//                    Without this capability the jailer cannot create the
-	//                    isolated rootfs environment for microVMs.
+	//   CAP_SYS_ADMIN  - REQUIRED for Firecracker jailer: the jailer binary
+	//                    invokes chroot(2), unshare(2), and mount(2) to set up
+	//                    the microVM's isolated rootfs and network namespace.
+	//                    Dropping it would cause VM launch to fail immediately
+	//                    (jailer cannot create the chroot jail or perform the
+	//                    required unshare/mount for Firecracker's seccomp-isolated
+	//                    execution environment). See testdata/cassettes/README.md.
 	//   CAP_DAC_OVERRIDE - allows the daemon to access VM state directories
 	//                      and the Unix socket path without granting broader
 	//                      root privileges to other code paths.
