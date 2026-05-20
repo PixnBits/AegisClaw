@@ -44,9 +44,9 @@ func TestControlPlaneProxy_Forward_Basic(t *testing.T) {
 	}
 }
 
-// TestControlPlaneProxy_Forward_ErrorHandling verifies that the proxy
-// currently does not return errors for unknown actions (stub behavior).
-// Future real implementation may return errors for ACL failures, etc.
+// TestControlPlaneProxy_Forward_ErrorHandling verifies proxy behavior.
+// Note: with default fail-fast (no sample unless AEGISCLAW_ALLOW_SAMPLE_DATA=true),
+// unknown actions return clear errors; this test uses nil-hub path which bypasses.
 func TestControlPlaneProxy_Forward_ErrorHandling(t *testing.T) {
 	logger := zap.NewNop()
 	proxy := NewControlPlaneProxy(nil, logger)
@@ -250,6 +250,8 @@ func TestControlPlaneProxy_Forward_DelegatesToRegisteredHandler(t *testing.T) {
 // TestControlPlaneProxy_Forward_RespectsContextCancellation verifies that
 // a cancelled context results in a proper failure response rather than hanging.
 func TestControlPlaneProxy_Forward_RespectsContextCancellation(t *testing.T) {
+	// Opt-in sample fallback for this test (uses worker.list without explicit backend registration).
+	t.Setenv("AEGISCLAW_ALLOW_SAMPLE_DATA", "true")
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
 	if err := hub.Start(); err != nil {
