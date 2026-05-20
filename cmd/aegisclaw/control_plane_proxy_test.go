@@ -176,8 +176,9 @@ func TestControlPlaneProxy_Forward_BackendErrorPropagation(t *testing.T) {
 	defer hub.Stop()
 	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
-	// Register a handler that simulates a backend failure.
-	if err := hub.RegisterSkill("failing-backend", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
+	// Register a handler under the backend that "worker.status" maps to ("store-vm").
+	// This ensures preferredBackendForAction routes the request to this failing handler.
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
 		return &ipc.DeliveryResult{
 			MessageID: msg.ID,
 			Success:   false,
@@ -215,12 +216,11 @@ func TestControlPlaneProxy_Forward_DelegatesToRegisteredHandler(t *testing.T) {
 	defer hub.Stop()
 	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
-	// Register a custom handler that returns distinctive data.
-	const customAction = "custom.action"
+	// Register a handler under "store-vm" (the backend for "worker.list").
+	// This exercises the delegation path: registered backend response wins over sample data.
 	expectedData := json.RawMessage(`{"custom":"delegated-response"}`)
 
-	if err := hub.RegisterSkill("custom-skill", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
-		// Only respond if this is our custom action (simple check on payload).
+	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
 		return &ipc.DeliveryResult{
 			MessageID: msg.ID,
 			Success:   true,
@@ -233,7 +233,7 @@ func TestControlPlaneProxy_Forward_DelegatesToRegisteredHandler(t *testing.T) {
 	proxy := NewControlPlaneProxy(hub, logger)
 
 	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
-		Action: customAction,
+		Action: "worker.list",
 	})
 	if err != nil {
 		t.Fatalf("Forward error: %v", err)
