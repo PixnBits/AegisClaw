@@ -119,7 +119,7 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 
 Additional actions wired: `chat.message`, `proposal.list`, `proposal.status` (handlers now registered on API socket and use ControlPlaneProxy). Sessions.send threaded through proxy. Nil proxy fallback for internal tool path documented; delegation fallback logs clearly; added coverage tests for proposal/sessions paths.
 
-**Phase 9**: A concrete `proposalBackend` (internal/ipc/proposal_backend.go) now wraps a real `proposal.Store` (git-backed ProposalStore) and is registered under "store-vm". `proposal.list` and `proposal.status` return actual store data. Chat-router improved with basic session awareness (echo + context) and structured responses. End-to-end + regression tests added for chat-router session handling and full-path proposal flows with real backends. Real remote Store VM vsock remains future work.
+**Phase 9**: `proposal.list` and `proposal.status` now return real data from a git-backed `ProposalStore` inside AegisHub (created at startup in cmd/aegishub/main.go) via the `proposalBackend` adapter registered under "store-vm" using RegisterSkill. No more silent sample fallback for these actions (clear error if backend missing). The clean adapter pattern is preserved so the in-process store can later be swapped for a remote Store VM client (vsock) without any changes to the Host Daemon or ControlPlaneProxy. Chat-router and other delegation paths also improved.
 
 ## Data Flow Example: Skill Creation via SDLC
 

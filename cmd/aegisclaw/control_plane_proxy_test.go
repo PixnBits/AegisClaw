@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
@@ -646,15 +647,9 @@ func TestMediatedProposalList_RealProposalStore(t *testing.T) {
 		t.Fatalf("failed to create proposal in store: %v", err)
 	}
 
-	// Register a handler that uses the real ProposalStore (simulates proposalBackend).
-	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
-		summaries, err := propStore.List()
-		if err != nil {
-			return &ipc.DeliveryResult{MessageID: msg.ID, Success: false, Error: err.Error()}, nil
-		}
-		data, _ := json.Marshal(summaries)
-		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
-	}); err != nil {
+	// Use the production proposalBackend adapter (test-guided: verifies real registration path).
+	backend := ipc.NewProposalBackend(propStore, logger)
+	if err := hub.RegisterSkill("store-vm", backend.Handle); err != nil {
 		t.Fatalf("register store-vm: %v", err)
 	}
 
@@ -706,18 +701,9 @@ func TestMediatedProposalStatus_FullPathWithRealBackend(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Use the same handler pattern as the real proposalBackend for status.
-	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
-		var req struct{ ProposalID string `json:"proposal_id"` }
-		_ = json.Unmarshal(msg.Payload, &req)
-		p, err := propStore.Get(req.ProposalID)
-		if err != nil {
-			return &ipc.DeliveryResult{MessageID: msg.ID, Success: false, Error: err.Error()}, nil
-		}
-		status := map[string]string{"proposal_id": p.ID, "title": p.Title, "status": string(p.Status)}
-		data, _ := json.Marshal(status)
-		return &ipc.DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
-	}); err != nil {
+	// Use the production proposalBackend adapter (test-guided: verifies real registration path for status).
+	backend := ipc.NewProposalBackend(propStore, logger)
+	if err := hub.RegisterSkill("store-vm", backend.Handle); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -874,5 +860,31 @@ func TestControlPlaneProxy_ErrorPropagation(t *testing.T) {
 		if resp == nil || resp.Success || resp.Error == "" {
 			t.Errorf("%s: expected error response, got %+v", action, resp)
 		}
+	}
+}
+
+// TestMediatedProposalList_NoBackendErrors (test-guided) verifies the Phase 9
+// error path: proposal actions return a clear actionable error (no silent sample fallback)
+// when the "store-vm" backend is not registered at AegisHub startup.
+func TestMediatedProposalList_NoBackendErrors(t *testing.T) {
+	logger := zap.NewNop()
+	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
+
+	proxy := NewControlPlaneProxy(hub, logger)
+
+	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{Action: "proposal.list"})
+	if err != nil {
+		t.Fatalf("Forward unexpected Go error: %v", err)
+	}
+	if resp == nil || resp.Success || resp.Error == "" {
+		t.Fatalf("expected error response for missing backend, got: %+v", resp)
+	}
+	if !strings.Contains(resp.Error, "store-vm") {
+		t.Errorf("error should mention store-vm backend: %s", resp.Error)
 	}
 }
