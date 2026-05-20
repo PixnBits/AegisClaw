@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -59,6 +60,42 @@ func TestKernel_SignAndLogMerkle(t *testing.T) {
 	}
 	if al.LastHash() == "" {
 		t.Fatal("expected non-empty last hash")
+	}
+}
+
+// TestKernel_MerkleAuditChainMultiEntries exercises sequential SignAndLog
+// appends for the daemon/kernel audit path (DB-02: Merkle signing on action).
+func TestKernel_MerkleAuditChainMultiEntries(t *testing.T) {
+	ResetInstance()
+	defer ResetInstance()
+
+	logger := zaptest.NewLogger(t)
+	auditDir := t.TempDir()
+
+	k, err := GetInstance(logger, auditDir)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+
+	const n = 5
+	for i := 0; i < n; i++ {
+		payload, _ := json.Marshal(map[string]int{"seq": i})
+		action := NewAction(ActionSandboxCreate, "kernel", payload)
+		if _, err := k.SignAndLog(action); err != nil {
+			t.Fatalf("SignAndLog seq %d: %v", i, err)
+		}
+	}
+
+	auditPath := filepath.Join(auditDir, "kernel.merkle.jsonl")
+	verified, err := audit.VerifyChain(auditPath, k.PublicKey())
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if verified != n {
+		t.Fatalf("expected %d verified entries, got %d", n, verified)
+	}
+	if k.AuditLog().EntryCount() != uint64(n) {
+		t.Fatalf("entry count: got %d want %d", k.AuditLog().EntryCount(), n)
 	}
 }
 

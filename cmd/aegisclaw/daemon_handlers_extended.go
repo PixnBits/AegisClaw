@@ -329,11 +329,28 @@ func makeKernelRestartHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api.
 	}
 }
 
+// sandboxLifecycleRuntime is the subset of FirecrackerRuntime used for
+// best-effort teardown of all tracked sandboxes (DB-01 / lifecycle containment).
+type sandboxLifecycleRuntime interface {
+	List(ctx context.Context) ([]sandbox.SandboxInfo, error)
+	Stop(ctx context.Context, id string) error
+	Delete(ctx context.Context, id string) error
+}
+
 func shutdownRuntimeSandboxes(ctx context.Context, env *runtimeEnv) error {
 	if env == nil || env.Runtime == nil {
 		return nil
 	}
-	sandboxes, err := env.Runtime.List(ctx)
+	return shutdownAllSandboxes(ctx, env.Runtime)
+}
+
+// shutdownAllSandboxes stops every running sandbox returned by List, then
+// deletes each entry. Used by kernel.shutdown / kernel.restart and tests.
+func shutdownAllSandboxes(ctx context.Context, rt sandboxLifecycleRuntime) error {
+	if rt == nil {
+		return nil
+	}
+	sandboxes, err := rt.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list sandboxes: %w", err)
 	}
@@ -343,11 +360,11 @@ func shutdownRuntimeSandboxes(ctx context.Context, env *runtimeEnv) error {
 			continue
 		}
 		if sb.State == sandbox.StateRunning {
-			if err := env.Runtime.Stop(ctx, id); err != nil {
+			if err := rt.Stop(ctx, id); err != nil {
 				return fmt.Errorf("stop sandbox %s: %w", id, err)
 			}
 		}
-		if err := env.Runtime.Delete(ctx, id); err != nil {
+		if err := rt.Delete(ctx, id); err != nil {
 			return fmt.Errorf("delete sandbox %s: %w", id, err)
 		}
 	}

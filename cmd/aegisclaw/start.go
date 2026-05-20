@@ -162,14 +162,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	go func() {
 		<-sigCh
 		env.Logger.Info("Phase 4: received shutdown signal, terminating managed VMs")
-		if env.AegisHubVMID != "" {
-			_ = env.Runtime.Stop(cmd.Context(), env.AegisHubVMID)
-			_ = env.Runtime.Delete(cmd.Context(), env.AegisHubVMID)
-		}
-		if env.StoreVMID != "" {
-			_ = env.Runtime.Stop(cmd.Context(), env.StoreVMID)
-			_ = env.Runtime.Delete(cmd.Context(), env.StoreVMID)
-		}
+		terminateManagedHubAndStoreVMs(cmd.Context(), env.Runtime, env.AegisHubVMID, env.StoreVMID)
 		close(daemonQuit)
 	}()
 
@@ -198,6 +191,29 @@ func ensureDaemonNotRunning(ctx context.Context, allowExisting bool) error {
 		return fmt.Errorf("daemon already running (use: aegisclaw restart)")
 	}
 	return nil
+}
+
+// microVMStopDelete is the subset of the sandbox runtime used to tear down
+// the AegisHub and Store VM IDs on daemon shutdown (Phase 4 containment, DB-01).
+type microVMStopDelete interface {
+	Stop(ctx context.Context, id string) error
+	Delete(ctx context.Context, id string) error
+}
+
+// terminateManagedHubAndStoreVMs issues best-effort Stop+Delete for the two
+// critical VM IDs tracked on runtimeEnv. Unit-tested without Firecracker.
+func terminateManagedHubAndStoreVMs(ctx context.Context, rt microVMStopDelete, hubID, storeVMID string) {
+	if rt == nil {
+		return
+	}
+	if hubID != "" {
+		_ = rt.Stop(ctx, hubID)
+		_ = rt.Delete(ctx, hubID)
+	}
+	if storeVMID != "" {
+		_ = rt.Stop(ctx, storeVMID)
+		_ = rt.Delete(ctx, storeVMID)
+	}
 }
 
 // launchAegisHub stubbed during build cleanup (pre-existing undefined symbol).

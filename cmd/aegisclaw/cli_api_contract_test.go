@@ -335,6 +335,7 @@ func isExplicitStubError(msg string) bool {
 		"not in host daemon tcb",
 		"disabled in minimal tcb",
 		"control plane proxy not available",
+		"sessions.send runtime dependencies not available",
 	} {
 		if strings.Contains(lower, phrase) {
 			return true

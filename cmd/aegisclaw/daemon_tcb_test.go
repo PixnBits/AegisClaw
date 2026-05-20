@@ -85,7 +85,11 @@ func TestHardening_CapabilityBoundingSetApplied(t *testing.T) {
 }
 
 func TestHardening_SeccompFilterHook(t *testing.T) {
-	// Exercises the real aggressive filter when strict mode is enabled.
+	// Installing the strict seccomp filter in this process succeeds, then the
+	// next disallowed syscall (e.g. from the test runner) SIGSYS-kills the
+	// whole `go test` binary. Exercise the hook with strict mode off here;
+	// validate strict filters in a subprocess or manual run.
+	t.Setenv("AEGISCLAW_SECCOMP_STRICT", "0")
 	if err := applySeccompFilter(nil); err != nil {
 		t.Logf("applySeccompFilter returned err (expected in some envs): %v", err)
 	}
