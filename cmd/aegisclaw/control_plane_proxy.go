@@ -114,14 +114,20 @@ func (p *ControlPlaneProxy) Forward(ctx context.Context, req ControlPlaneRequest
 	}
 
 	// Respect context cancellation / deadline for robustness.
-	select {
-	case <-ctx.Done():
+	if ctx.Err() != nil {
+		if p.logger != nil {
+			p.logger.Debug("ControlPlaneProxy.Forward context cancelled", zap.Error(ctx.Err()))
+		}
 		return &ControlPlaneResponse{Success: false, Error: ctx.Err().Error()}, nil
-	default:
 	}
 
 	result, err := p.hub.RouteMessage("daemon", msg)
 	if err != nil {
+		if p.logger != nil {
+			p.logger.Debug("ControlPlaneProxy.Forward RouteMessage error", zap.Error(err))
+		}
+		// Error mapping: transport/ACL errors from hub are surfaced in Response.Error
+		// rather than returning a Go error, to keep the proxy contract stable for callers.
 		return &ControlPlaneResponse{Success: false, Error: err.Error()}, nil
 	}
 	if result == nil {
