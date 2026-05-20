@@ -115,7 +115,7 @@ This enforces uniform network policy, rate limiting, auditing, and domain allow-
 
 **Phase 7 Wiring**: Key CLI handlers (worker.list/status, skill.list/status, chat.message, etc.) have been refactored to delegate to ControlPlaneProxy.
 
-**Phase 8 Implementation**: AegisHub (MessageHub) receives `ControlPlaneRequest` messages, performs ACL checks (RoleCLI permitted), and dispatches on the `Action` field. The handler in `internal/ipc/hub.go:handleControlPlaneRequest` first attempts delegation to a registered backend (e.g., "store-vm") when available, falling back to realistic sample data otherwise. `ControlPlaneProxy.Forward` respects context cancellation and properly surfaces backend errors. Dead Phase 3 dashboard stubs were removed. 
+**Phase 8 Implementation**: AegisHub (MessageHub) receives `ControlPlaneRequest` messages, performs ACL checks (RoleCLI permitted), and dispatches on the `Action` field. The handler in `internal/ipc/hub.go:handleControlPlaneRequest` first attempts delegation to a registered backend (e.g., "store-vm") when available. By default, unimplemented/unregistered actions now fail fast with a clear error ("no backend registered for action: X"); sample data fallback is opt-in only via AEGISCLAW_ALLOW_SAMPLE_DATA=true (dev/debug). `ControlPlaneProxy.Forward` respects context cancellation and properly surfaces backend errors. Dead Phase 3 dashboard stubs were removed. 
 
 Additional actions wired: `chat.message`, `proposal.list`, `proposal.status` (handlers now registered on API socket and use ControlPlaneProxy). Sessions.send threaded through proxy. Nil proxy fallback for internal tool path documented; delegation fallback logs clearly; added coverage tests for proposal/sessions paths.
 

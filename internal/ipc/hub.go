@@ -3,6 +3,7 @@ package ipc
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -371,10 +372,10 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 			if result, err := handler(delegatedMsg); err == nil && result != nil {
 				return result, nil
 			}
-			// Delegation attempt failed (handler error or nil result); log and
-			// fall through to sample data for robustness / graceful degradation.
+			// Delegation attempt failed (handler error or nil result).
+			// Will check for sample opt-in below before falling back.
 			if h.logger != nil {
-				h.logger.Debug("ControlPlaneRequest delegation failed, using sample fallback",
+				h.logger.Debug("ControlPlaneRequest delegation failed",
 					zap.String("action", req.Action), zap.String("backend", backendID))
 			}
 		}
@@ -396,11 +397,25 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 		}, nil
 	}
 
-	// Fallback sample data for actions that have no registered backend yet.
-	// This path is used when delegation fails or no backend is registered.
-	// Real implementations will come from Store VM or other microVMs (Phase 9).
+	// Default behavior (Phase 9+): fail fast with clear error if no backend registered.
+	// Sample data fallback is opt-in only (for dev/debug) via AEGISCLAW_ALLOW_SAMPLE_DATA=true.
+	// This makes unimplemented actions obvious instead of silently returning mocks.
+	allowSample := os.Getenv("AEGISCLAW_ALLOW_SAMPLE_DATA") == "true"
+	if !allowSample {
+		if h.logger != nil {
+			h.logger.Debug("ControlPlaneRequest no backend registered; failing fast (set AEGISCLAW_ALLOW_SAMPLE_DATA=true for dev samples)",
+				zap.String("action", req.Action))
+		}
+		return &DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     fmt.Sprintf("no backend registered for action: %s (register via RegisterSkill or set AEGISCLAW_ALLOW_SAMPLE_DATA=true)", req.Action),
+		}, nil
+	}
+
+	// Opt-in sample fallback path (dev only).
 	if h.logger != nil {
-		h.logger.Debug("ControlPlaneRequest using sample fallback",
+		h.logger.Debug("ControlPlaneRequest using sample fallback (dev mode)",
 			zap.String("action", req.Action))
 	}
 	switch req.Action {
@@ -468,7 +483,9 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 //        hub.RegisterSkill("store-vm", myAdapter.Handle)
 //      This wires the handler into the router so getRegisteredHandler finds it.
 //   3. preferredBackendForAction will route matching actions (e.g. proposal.list)
-//      to it first; the registered handler wins over internal sample fallback.
+//      to it first; the registered handler is used. If none registered, a clear
+//      error is returned by default ("no backend registered for action: ...").
+//      Sample fallback is opt-in only via AEGISCLAW_ALLOW_SAMPLE_DATA=true (dev).
 //   The ControlPlaneProxy + handleControlPlaneRequest flow then delegates
 //   transparently. Registering multiple backends is supported for different actions.
 func (h *MessageHub) preferredBackendForAction(action string) string {
