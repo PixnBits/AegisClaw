@@ -16,11 +16,8 @@ func TestCLI_TDDGapManifest(t *testing.T) {
 			stubs = append(stubs, tc.action)
 		}
 	}
-	for _, tc := range startOnlyDaemonContract {
-		if tc.impl == implStub {
-			stubs = append(stubs, tc.action)
-		}
-	}
+	// Note: startOnlyDaemonContract loop removed (Phase 9 test cleanup).
+	// court.vote and related Court handlers removed from Host Daemon TCB.
 	if len(stubs) == 0 {
 		t.Log("no stub endpoints — all contract actions are ready")
 		return

@@ -565,7 +565,7 @@ func TestMediatedProposalList_RealProposalStore(t *testing.T) {
 		ID:          "p-real-1",
 		Title:       "Real Proposal from Store",
 		Description: "Integration test proposal",
-		Category:    proposal.CategorySkill,
+		Category:    proposal.CategoryNewSkill,
 		Status:      proposal.StatusDraft,
 	}
 	if err := propStore.Create(p); err != nil {
