@@ -82,10 +82,11 @@ The Host Daemon intentionally retains only:
 | Concern | Location | Notes |
 |---------|----------|--------|
 | Forbidden init / structural TCB | `cmd/aegisclaw/daemon_tcb_test.go` | Several tests are **documentation-heavy** (compile-time guarantees). **Strengthen**: assert specific handler registrations or RPC error strings via a test-only introspection hook where architecturally allowed. |
+| CLI↔daemon stub / TCB denial strings | `cmd/aegisclaw/cli_api_contract_test.go` (`TestDaemonAPI_EndpointContract`, `isExplicitStubError`) | Treats stable “removed from minimal Host Daemon TCB”, vault disabled, and proxy-unavailable errors as explicit denials (**DB-07** partial). |
 | Authorization edge | `cmd/aegisclaw/daemon_test.go` `TestWithAuthorizedCaller_EmptyAction` | PR |
 | Panic recovery in IPC | `internal/api/server_test.go` | PR |
 
-**Recommended additions** (tracked in [daemon-test-backlog.md](../planning/daemon-test-backlog.md)): table-driven tests that call each deprecated handler ID and assert stable error body / code; golden list kept next to `registerCoreTCBHandlers` (or equivalent).
+**Recommended additions** (tracked in [daemon-test-backlog.md](../planning/daemon-test-backlog.md)): extend the contract table for every deprecated handler ID not yet listed; optional golden list next to handler registration when `registerCoreTCBHandlers` is restored beyond a stub.
 
 ---
 
@@ -99,7 +100,7 @@ Legacy path migration was removed: configs and paths must always materialize wit
 | Socket not under `~/.aegis` on Linux | `DefaultConfig` socket path prefix | Unit | `internal/config/directory_layout_test.go` | PR | **Implemented** |
 | Secure directory modes + symlink rejection | `EnsureSecureDirectories`, `VerifySensitiveDir`, runtime dir | Unit | `internal/paths/paths_test.go` | PR | **Implemented** |
 | Vault access hardening | Loose perms / symlink index rejected | Unit | `internal/vault/directory_layout_security_test.go` | PR | **Implemented** |
-| No legacy migration path | No `normalizeConfigPaths` / migrate-on-read behavior | Unit / grep | **gap** — add explicit test that default load does not invoke removed symbols, or static check in `cli_tdd_gaps` / vet script | PR | **Missing** (recommended) |
+| No legacy migration path | No silent rewrite of paths on load; fresh install matches `DefaultConfig()` | Unit | `internal/config/load_migration_regression_test.go` | PR | **Partial** — behavioral regression (**DB-08**); optional static guard for removed symbol names still welcome |
 
 ---
 

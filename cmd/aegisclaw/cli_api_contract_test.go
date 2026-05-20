@@ -180,19 +180,21 @@ var daemonEndpointContract = []struct {
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-a"})
 		return b
 	}},
-	{"autonomy.grant", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	// Autonomy mutations are stubbed in the Host Daemon TCB (in-process registry
+	// removed; mediation via AegisHub). Stable denial errors are required (DB-07).
+	{"autonomy.grant", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		env.Sessions.Open("sess-g", "vm-1")
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-g", "preset": "researcher"})
 		return b
 	}},
-	{"autonomy.revoke", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"autonomy.revoke", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		if err := env.AutonomyRegistry.grant("sess-v", "p", "", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-v"})
 		return b
 	}},
-	{"autonomy.reset", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"autonomy.reset", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		if err := env.AutonomyRegistry.grant("sess-z", "p", "", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
@@ -323,8 +325,22 @@ func assertContractResponse(t *testing.T, action string, impl endpointImpl, resp
 
 func isExplicitStubError(msg string) bool {
 	lower := strings.ToLower(msg)
-	return strings.Contains(lower, "not implemented") ||
-		strings.Contains(lower, "not supported")
+	if strings.Contains(lower, "not implemented") || strings.Contains(lower, "not supported") {
+		return true
+	}
+	// Stable denials for handlers removed from minimal Host Daemon TCB (Task 03 / DB-07).
+	for _, phrase := range []string{
+		"removed from minimal host daemon tcb",
+		"removed from host daemon tcb",
+		"not in host daemon tcb",
+		"disabled in minimal tcb",
+		"control plane proxy not available",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {

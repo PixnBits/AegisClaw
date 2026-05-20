@@ -12,8 +12,8 @@ Prioritized gaps derived from [docs/implementation-plan/03-daemon-minimal-tcb-re
 | DB-04 | P1 | **Keypair distribution**: private key never appears in daemon logs or cross-VM APIs | Integration / fuzz of logging redaction | Cross `internal/vault`, sandbox bootstrap |
 | DB-05 | P1 | **SO_PEERCRED** allow-list: reject unexpected UID/GID with stable audit | Unit + Linux integration | `internal/api/` — extend [server_peeruid_linux_test.go](../../internal/api/server_peeruid_linux_test.go); see [04](../implementation-plan/04-unix-socket-hardening.md) |
 | DB-06 | P1 | **Rate limit and max message size** on Unix IPC | Unit / integration | `internal/api/server.go` handlers |
-| DB-07 | P1 | **TCB handler regression table**: each removed/stub RPC returns documented error | Unit (table-driven) | `cmd/aegisclaw/` next to handler registration |
-| DB-08 | P2 | **No legacy path migration**: removed symbols never invoked from config load | Unit or static test | `internal/config/` — assert single code path for defaults ([02](../implementation-plan/02-directory-layout.md)) |
+| DB-07 | P1 | **TCB handler regression table**: each removed/stub RPC returns documented error | Unit (table-driven) | **Partial:** `cli_api_contract_test.go` — `isExplicitStubError` + autonomy rows aligned to TCB denials; extend table for all stub handlers |
+| DB-08 | P2 | **No legacy path migration**: removed symbols never invoked from config load | Unit or static test | **Partial:** `internal/config/load_migration_regression_test.go` — explicit socket preserved; fresh install matches defaults; optional `strings.Contains` / codegen guard for removed func names |
 | DB-09 | P2 | **Watchdog restart** path: simulate consecutive health failures → restart signal | Integration | Expand `lifecycle_integration_test.go` beyond struct-only checks |
 
 When closing an item, update the **Status** column in Task 03’s matrix so this backlog and the matrix stay aligned.
