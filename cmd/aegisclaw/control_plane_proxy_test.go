@@ -144,6 +144,11 @@ func TestControlPlaneProxy_Forward_MediatedWorkerList(t *testing.T) {
 func TestControlPlaneProxy_Forward_UnknownAction(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 	proxy := NewControlPlaneProxy(hub, logger)
 
 	resp, err := proxy.Forward(context.Background(), ControlPlaneRequest{
@@ -246,6 +251,11 @@ func TestControlPlaneProxy_Forward_DelegatesToRegisteredHandler(t *testing.T) {
 func TestControlPlaneProxy_Forward_RespectsContextCancellation(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 	proxy := NewControlPlaneProxy(hub, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -268,6 +278,11 @@ func TestControlPlaneProxy_Forward_RespectsContextCancellation(t *testing.T) {
 func TestControlPlaneProxy_Forward_ChatMessage_Delegates(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	// Simulate a chat router backend that would live in AegisHub or Agent VM.
 	if err := hub.RegisterSkill("chat-router", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
@@ -296,6 +311,11 @@ func TestControlPlaneProxy_Forward_ChatMessage_Delegates(t *testing.T) {
 func TestControlPlaneProxy_Forward_ProposalList_Delegates(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
 		data := json.RawMessage(`[{"proposal_id":"p-1","title":"Example","status":"draft"}]`)
@@ -322,6 +342,11 @@ func TestControlPlaneProxy_Forward_ProposalList_Delegates(t *testing.T) {
 func TestControlPlaneProxy_Forward_ProposalStatus_ErrorPropagation(t *testing.T) {
 	logger := zap.NewNop()
 	hub := ipc.NewMessageHubNoKernel(logger)
+	if err := hub.Start(); err != nil {
+		t.Fatalf("hub.Start: %v", err)
+	}
+	defer hub.Stop()
+	_ = hub.RegisterIdentityForTest("daemon", ipc.RoleCLI)
 
 	if err := hub.RegisterSkill("store-vm", func(msg *ipc.Message) (*ipc.DeliveryResult, error) {
 		return &ipc.DeliveryResult{
