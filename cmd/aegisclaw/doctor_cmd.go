@@ -160,6 +160,38 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+func layoutFromConfig(cfg *config.Config) aegispaths.Layout {
+	layout, err := aegispaths.DefaultLayout()
+	if err != nil {
+		return aegispaths.Layout{}
+	}
+	if cfg == nil {
+		return layout
+	}
+	if cfg.Workspace.Dir != "" {
+		layout.WorkspaceDir = cfg.Workspace.Dir
+	}
+	if cfg.Audit.Dir != "" {
+		layout.AuditDir = cfg.Audit.Dir
+	}
+	if cfg.Sandbox.RegistryPath != "" {
+		layout.RegistryDir = cfg.Sandbox.RegistryPath
+	}
+	if cfg.Proposal.StoreDir != "" {
+		layout.ProposalDir = cfg.Proposal.StoreDir
+	}
+	if cfg.Builder.SBOMDir != "" {
+		layout.SBOMDir = cfg.Builder.SBOMDir
+	}
+	if cfg.Vault.Dir != "" {
+		layout.SecretsDir = cfg.Vault.Dir
+	}
+	if cfg.Daemon.SocketPath != "" {
+		layout.SocketPath = cfg.Daemon.SocketPath
+	}
+	return layout
+}
+
 func checkBinary(label, path string) check {
 	if path == "" {
 		return check{label: label, ok: false, detail: "path not configured"}

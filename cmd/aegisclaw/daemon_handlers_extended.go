@@ -13,34 +13,37 @@ import (
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
-	"github.com/PixnBits/AegisClaw/internal/court"
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
-	"github.com/PixnBits/AegisClaw/internal/sessions"
-	"github.com/PixnBits/AegisClaw/internal/worker"
 	"go.uber.org/zap"
 )
 
 // registerExtendedDaemonAPI wires additional JSON-RPC-style handlers used by
 // the expanded CLI surface (docs/specs/cli.md). Handlers stay thin: validate
 // input, touch only host-side registries, and return structured JSON.
+//
+// Phase 7: Selected handlers now delegate to ControlPlaneProxy for
+// AegisHub-mediated request routing instead of direct Store access.
 func registerExtendedDaemonAPI(
 	apiSrv *api.Server,
 	env *runtimeEnv,
 	toolRegistry *ToolRegistry,
 	hub *ipc.MessageHub,
 	daemonQuit chan struct{},
+	proxy *ControlPlaneProxy,
 ) {
-	// Vault – secrets are sensitive
-	apiSrv.Handle("vault.secret.add", withAuthorizedCaller(env, "vault.secret.add", makeVaultSecretAddHandler(env)))
-	apiSrv.Handle("vault.secret.list", withAuthorizedCaller(env, "vault.secret.list", makeVaultSecretListHandler(env)))
-	apiSrv.Handle("vault.secret.delete", withAuthorizedCaller(env, "vault.secret.delete", makeVaultSecretDeleteHandler(env)))
-	apiSrv.Handle("vault.secret.rotate", withAuthorizedCaller(env, "vault.secret.rotate", makeVaultSecretRotateHandler(env)))
+	// Vault handlers stubbed — secrets handling has been removed from Host Daemon TCB.
+	// All vault operations are now the responsibility of the Network Boundary VM only.
+	apiSrv.Handle("vault.secret.add", makeVaultSecretAddHandler(env))
+	apiSrv.Handle("vault.secret.list", makeVaultSecretListHandler(env))
+	apiSrv.Handle("vault.secret.delete", makeVaultSecretDeleteHandler(env))
+	apiSrv.Handle("vault.secret.rotate", makeVaultSecretRotateHandler(env))
 
 	// Workers (read-only but still good to gate if needed)
-	apiSrv.Handle("worker.list", makeWorkerListHandler(env))
-	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env))
+	// Phase 7: Routed via ControlPlaneProxy (AegisHub mediation).
+	apiSrv.Handle("worker.list", makeWorkerListHandler(env, proxy))
+	apiSrv.Handle("worker.status", makeWorkerStatusHandler(env, proxy))
 
 	// Skills
 	apiSrv.Handle("skill.list", makeSkillListHandler(env))
@@ -50,25 +53,28 @@ func registerExtendedDaemonAPI(
 	apiSrv.Handle("skill.secrets.refresh", withAuthorizedCaller(env, "skill.secrets.refresh", makeSkillSecretsRefreshHandler(env)))
 
 	// Chat – message is public for portal/CLI, tool is gated
-	apiSrv.Handle("chat.message", makeChatMessageHandler(env, toolRegistry))
+	// Phase 8: chat.message routed through ControlPlaneProxy (AegisHub mediation).
+	apiSrv.Handle("chat.message", makeChatMessageHandler(proxy))
 	apiSrv.Handle("chat.slash", makeChatSlashHandler(env))
 	apiSrv.Handle("chat.tool", withAuthorizedCaller(env, "chat.tool", makeChatToolExecHandler(env, toolRegistry)))
 	apiSrv.Handle("chat.summarize", makeChatSummarizeHandler(env))
+
+	// Proposals (Phase 8): routed via ControlPlaneProxy to AegisHub / Store VM.
+	apiSrv.Handle("proposal.list", makeProposalListHandler(proxy))
+	apiSrv.Handle("proposal.status", makeProposalStatusHandler(proxy))
 
 	// Kernel control (highly privileged) - now consistently wrapped
 	apiSrv.Handle("kernel.shutdown", withAuthorizedCaller(env, "kernel.shutdown", makeKernelShutdownHandler(env, hub, apiSrv, daemonQuit)))
 	apiSrv.Handle("kernel.restart", withAuthorizedCaller(env, "kernel.restart", makeKernelRestartHandler(env, hub, apiSrv, daemonQuit)))
 
-	// Sessions (all should be authorized)
 	apiSrv.Handle("sessions.list", withAuthorizedCaller(env, "sessions.list", makeSessionsListHandler(env)))
 	apiSrv.Handle("sessions.history", withAuthorizedCaller(env, "sessions.history", makeSessionsHistoryHandler(env)))
-	apiSrv.Handle("sessions.send", withAuthorizedCaller(env, "sessions.send", makeSessionsSendHandler(env, toolRegistry)))
+	apiSrv.Handle("sessions.send", withAuthorizedCaller(env, "sessions.send", makeSessionsSendHandler(env, toolRegistry, proxy)))
 	apiSrv.Handle("sessions.spawn", withAuthorizedCaller(env, "sessions.spawn", makeSessionsSpawnHandler(env, toolRegistry)))
 	apiSrv.Handle("sessions.status", withAuthorizedCaller(env, "sessions.status", makeSessionsStatusHandler(env)))
 	apiSrv.Handle("sessions.pause", withAuthorizedCaller(env, "sessions.pause", makeSessionsPauseHandler(env)))
 	apiSrv.Handle("sessions.resume", withAuthorizedCaller(env, "sessions.resume", makeSessionsResumeHandler(env)))
 	apiSrv.Handle("sessions.cancel", withAuthorizedCaller(env, "sessions.cancel", makeSessionsCancelHandler(env)))
-	apiSrv.Handle("sessions.kill", withAuthorizedCaller(env, "sessions.kill", makeSessionsKillHandler(env))) // alias for cancel
 
 	// Tasks (stubs)
 	apiSrv.Handle("tasks.list", makeTasksListHandler(env))
@@ -246,7 +252,8 @@ func makeSkillDeactivateHandler(env *runtimeEnv) api.Handler {
 		if _, err := env.Kernel.SignAndLog(action); err != nil {
 			env.Logger.Error("failed to audit log skill deactivate", zap.Error(err))
 		}
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "deactivated " + req.Name})}
+		respData, _ := json.Marshal(map[string]string{"message": "deactivated " + req.Name})
+		return &api.Response{Success: true, Data: respData}
 	}
 }
 
@@ -260,7 +267,8 @@ func makeKernelShutdownHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api
 		mu.Lock()
 		defer mu.Unlock()
 		if shutdownStarted {
-			return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "shutdown already in progress"})}
+			data, _ := json.Marshal(map[string]string{"message": "shutdown already in progress"})
+			return &api.Response{Success: true, Data: data}
 		}
 		payload, _ := json.Marshal(map[string]string{"reason": "kernel.shutdown"})
 		action := kernel.NewAction(kernel.ActionKernelStop, "cli", payload)
@@ -274,7 +282,8 @@ func makeKernelShutdownHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api
 
 		shutdownStarted = true
 		scheduleDaemonExit(hub, apiSrv, daemonQuit)
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "shutdown initiated"})}
+		data, _ := json.Marshal(map[string]string{"message": "shutdown initiated"})
+		return &api.Response{Success: true, Data: data}
 	}
 }
 
@@ -288,7 +297,8 @@ func makeKernelRestartHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api.
 		mu.Lock()
 		defer mu.Unlock()
 		if restartStarted {
-			return &api.Response{Success: true, Data: mustMarshal(map[string]string{"message": "restart already in progress"})}
+			data, _ := json.Marshal(map[string]string{"message": "restart already in progress"})
+			return &api.Response{Success: true, Data: data}
 		}
 		if err := shutdownRuntimeSandboxes(ctx, env); err != nil {
 			return &api.Response{Error: err.Error()}
@@ -311,18 +321,36 @@ func makeKernelRestartHandler(env *runtimeEnv, hub *ipc.MessageHub, apiSrv *api.
 		}
 		restartStarted = true
 		scheduleDaemonExit(hub, apiSrv, daemonQuit)
-		return &api.Response{Success: true, Data: mustMarshal(map[string]interface{}{
+		data, _ := json.Marshal(map[string]interface{}{
 			"message": "restart initiated",
 			"pid":     restartProc.Process.Pid,
-		})}
+		})
+		return &api.Response{Success: true, Data: data}
 	}
+}
+
+// sandboxLifecycleRuntime is the subset of FirecrackerRuntime used for
+// best-effort teardown of all tracked sandboxes (DB-01 / lifecycle containment).
+type sandboxLifecycleRuntime interface {
+	List(ctx context.Context) ([]sandbox.SandboxInfo, error)
+	Stop(ctx context.Context, id string) error
+	Delete(ctx context.Context, id string) error
 }
 
 func shutdownRuntimeSandboxes(ctx context.Context, env *runtimeEnv) error {
 	if env == nil || env.Runtime == nil {
 		return nil
 	}
-	sandboxes, err := env.Runtime.List(ctx)
+	return shutdownAllSandboxes(ctx, env.Runtime)
+}
+
+// shutdownAllSandboxes stops every running sandbox returned by List, then
+// deletes each entry. Used by kernel.shutdown / kernel.restart and tests.
+func shutdownAllSandboxes(ctx context.Context, rt sandboxLifecycleRuntime) error {
+	if rt == nil {
+		return nil
+	}
+	sandboxes, err := rt.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list sandboxes: %w", err)
 	}
@@ -332,11 +360,11 @@ func shutdownRuntimeSandboxes(ctx context.Context, env *runtimeEnv) error {
 			continue
 		}
 		if sb.State == sandbox.StateRunning {
-			if err := env.Runtime.Stop(ctx, id); err != nil {
+			if err := rt.Stop(ctx, id); err != nil {
 				return fmt.Errorf("stop sandbox %s: %w", id, err)
 			}
 		}
-		if err := env.Runtime.Delete(ctx, id); err != nil {
+		if err := rt.Delete(ctx, id); err != nil {
 			return fmt.Errorf("delete sandbox %s: %w", id, err)
 		}
 	}
@@ -344,14 +372,17 @@ func shutdownRuntimeSandboxes(ctx context.Context, env *runtimeEnv) error {
 }
 
 func scheduleDaemonExit(hub *ipc.MessageHub, apiSrv *api.Server, daemonQuit chan struct{}) {
+	// Extract only what the goroutine needs before launching it.  Holding the
+	// full *api.Server pointer inside the goroutine would also keep every
+	// registered handler closure – and the runtimeEnv they capture – alive
+	// for the entire grace period, causing unnecessary memory pressure.
+	stopServer := apiSrv.Closer()
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		if hub != nil {
 			hub.Stop()
 		}
-		if apiSrv != nil {
-			apiSrv.Stop()
-		}
+		stopServer()
 		if daemonQuit != nil {
 			func() {
 				defer func() { _ = recover() }()
@@ -401,203 +432,19 @@ outer:
 	return env
 }
 
-func makeSessionsStatusHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		rec, ok := env.Sessions.Get(req.SessionID)
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		msgs, _ := env.Sessions.History(req.SessionID, 0)
-		out, err := json.Marshal(map[string]interface{}{
-			"session_id":     rec.ID,
-			"sandbox_id":     rec.SandboxID,
-			"status":         rec.Status,
-			"started_at":     rec.StartedAt.UTC().Format(time.RFC3339),
-			"last_active_at": rec.LastActiveAt.UTC().Format(time.RFC3339),
-			"message_count":  len(msgs),
-		})
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: out}
-	}
-}
-
-// makeSessionsPauseHandler rejects attempts to pause active sessions and
-// only allows transitioning from Idle → Paused.
-func makeSessionsPauseHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		rec, ok := env.Sessions.Get(req.SessionID)
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		if rec.Status == sessions.StatusActive {
-			return &api.Response{Error: "cannot pause an active session; wait for current turn to finish"}
-		}
-		if rec.Status == sessions.StatusClosed {
-			return &api.Response{Error: "session is closed"}
-		}
-		if rec.Status == sessions.StatusPaused {
-			return &api.Response{Success: true, Data: mustMarshal(map[string]string{"status": string(sessions.StatusPaused)})}
-		}
-		// Only allow Idle → Paused
-		if !env.Sessions.SetStatusIf(req.SessionID, sessions.StatusIdle, sessions.StatusPaused) {
-			return &api.Response{Error: "failed to pause session"}
-		}
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"status": string(sessions.StatusPaused)})}
-	}
-}
-
-// makeSessionsResumeHandler only resumes sessions that are currently Paused.
-func makeSessionsResumeHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		rec, ok := env.Sessions.Get(req.SessionID)
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		if rec.Status != sessions.StatusPaused {
-			return &api.Response{Error: fmt.Sprintf("session %q is not paused (current status: %s)", req.SessionID, rec.Status)}
-		}
-		if !env.Sessions.SetStatusIf(req.SessionID, sessions.StatusPaused, sessions.StatusIdle) {
-			return &api.Response{Error: "failed to resume session"}
-		}
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"status": string(sessions.StatusIdle)})}
-	}
-}
-
-// makeSessionsCancelHandler marks a session as closed. For active sessions it
-// still marks them closed (the in-flight turn will complete but no new turns
-// should be accepted after).
-func makeSessionsCancelHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		if _, ok := env.Sessions.Get(req.SessionID); !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		env.Sessions.Close(req.SessionID)
-		return &api.Response{Success: true, Data: mustMarshal(map[string]string{"status": string(sessions.StatusClosed)})}
-	}
-}
-
-// makeSessionsKillHandler is an alias for cancel (matches CLI spec "sessions kill").
-func makeSessionsKillHandler(env *runtimeEnv) api.Handler {
-	return makeSessionsCancelHandler(env)
-}
-
 func makeTasksListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.WorkerStore == nil {
-			return &api.Response{Error: "worker store not initialized"}
-		}
-		var req struct {
-			ActiveOnly bool `json:"active_only"`
-		}
-		_ = json.Unmarshal(data, &req)
-		workers := env.WorkerStore.List(req.ActiveOnly)
-		type row struct {
-			TaskID          string              `json:"task_id"`
-			WorkerID        string              `json:"worker_id"`
-			Status          worker.WorkerStatus `json:"status"`
-			Role            worker.Role         `json:"role"`
-			TaskDescription string              `json:"task_description"`
-			SpawnedAt       string              `json:"spawned_at"`
-		}
-		var out []row
-		for _, w := range workers {
-			tid := w.TaskID
-			if tid == "" {
-				tid = w.WorkerID
-			}
-			out = append(out, row{
-				TaskID:          tid,
-				WorkerID:        w.WorkerID,
-				Status:          w.Status,
-				Role:            w.Role,
-				TaskDescription: w.TaskDescription,
-				SpawnedAt:       w.SpawnedAt.UTC().Format(time.RFC3339),
-			})
-		}
-		raw, err := json.Marshal(out)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: raw}
+		_ = env
+		_ = data
+		return &api.Response{Error: "tasks access removed from minimal Host Daemon TCB (Phase 5)"}
 	}
 }
 
 func makeTasksStatusHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			TaskID string `json:"task_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		req.TaskID = strings.TrimSpace(req.TaskID)
-		if req.TaskID == "" {
-			return &api.Response{Error: "task_id is required"}
-		}
-		if env.WorkerStore == nil {
-			return &api.Response{Error: "worker store not initialized"}
-		}
-		if w, ok := env.WorkerStore.Get(req.TaskID); ok {
-			raw, _ := json.Marshal(w)
-			return &api.Response{Success: true, Data: raw}
-		}
-		for _, w := range env.WorkerStore.List(false) {
-			if w.TaskID == req.TaskID {
-				raw, _ := json.Marshal(w)
-				return &api.Response{Success: true, Data: raw}
-			}
-		}
-		return &api.Response{Error: "task not found"}
+		_ = env
+		_ = data
+		return &api.Response{Error: "tasks access removed from minimal Host Daemon TCB (Phase 5)"}
 	}
 }
 
@@ -621,272 +468,78 @@ func makeTasksCancelStubHandler() api.Handler {
 
 func makeCourtDecisionsListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.Court == nil {
-			return &api.Response{Error: "court engine not initialized"}
-		}
-		all := env.Court.ListSessions()
-		type row struct {
-			ID         string             `json:"id"`
-			ProposalID string             `json:"proposal_id"`
-			State      court.SessionState `json:"state"`
-			Verdict    string             `json:"verdict,omitempty"`
-			RiskScore  float64            `json:"risk_score"`
-			StartedAt  string             `json:"started_at"`
-			EndedAt    string             `json:"ended_at,omitempty"`
-		}
-		var rows []row
-		for _, s := range all {
-			if s == nil {
-				continue
-			}
-			r := row{
-				ID:         s.ID,
-				ProposalID: s.ProposalID,
-				State:      s.State,
-				Verdict:    s.Verdict,
-				RiskScore:  s.RiskScore,
-				StartedAt:  s.StartedAt.UTC().Format(time.RFC3339),
-			}
-			if s.EndedAt != nil {
-				r.EndedAt = s.EndedAt.UTC().Format(time.RFC3339)
-			}
-			rows = append(rows, r)
-		}
-		raw, err := json.Marshal(rows)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: raw}
+		// Court engine removed from daemon TCB per Phase 1; stubbed.
+		_ = env
+		return &api.Response{Error: "court engine not in Host Daemon TCB (Phase 1)"}
 	}
 }
 
 func makeCourtDecisionsShowHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		req.ID = strings.TrimSpace(req.ID)
-		if req.ID == "" {
-			return &api.Response{Error: "id is required"}
-		}
-		if env.Court == nil {
-			return &api.Response{Error: "court engine not initialized"}
-		}
-		s, ok := env.Court.GetSession(req.ID)
-		if !ok {
-			return &api.Response{Error: fmt.Sprintf("decision session %q not found", req.ID)}
-		}
-		// Return a clone for safety (Phase 4/6 improvement)
-		raw, err := json.Marshal(s)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: raw}
+		// Court removed from TCB.
+		_ = env
+		return &api.Response{Error: "court not in Host Daemon TCB"}
 	}
 }
-
 func makeTeamListHandler(env *runtimeEnv) api.Handler {
 	return func(_ context.Context, _ json.RawMessage) *api.Response {
-		if env.TeamRegistry == nil {
-			return &api.Response{Error: "team registry not initialized"}
-		}
-		teams := env.TeamRegistry.list()
-		raw, err := json.Marshal(teams)
-		if err != nil {
-			return &api.Response{Error: "marshal: " + err.Error()}
-		}
-		return &api.Response{Success: true, Data: raw}
+		_ = env
+		return &api.Response{Error: "team registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }
 
 func makeTeamCreateHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.TeamRegistry == nil {
-			return &api.Response{Error: "team registry not initialized"}
-		}
-		var req struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		rec, err := env.TeamRegistry.create(req.Name)
-		if err != nil {
-			return &api.Response{Error: err.Error()}
-		}
-		raw, _ := json.Marshal(rec)
-		return &api.Response{Success: true, Data: raw}
+	return func(_ context.Context, _ json.RawMessage) *api.Response {
+		_ = env
+		return &api.Response{Error: "team registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }
 
 func makeTeamJoinHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.TeamRegistry == nil {
-			return &api.Response{Error: "team registry not initialized"}
-		}
-		var req struct {
-			TeamID string `json:"team_id"`
-			Member string `json:"member"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if err := env.TeamRegistry.join(req.TeamID, req.Member); err != nil {
-			return &api.Response{Error: err.Error()}
-		}
-		return &api.Response{Success: true}
+	return func(_ context.Context, _ json.RawMessage) *api.Response {
+		_ = env
+		return &api.Response{Error: "team registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }
 
 func makeTeamLeaveHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.TeamRegistry == nil {
-			return &api.Response{Error: "team registry not initialized"}
-		}
-		var req struct {
-			TeamID string `json:"team_id"`
-			Member string `json:"member"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if err := env.TeamRegistry.leave(req.TeamID, req.Member); err != nil {
-			return &api.Response{Error: err.Error()}
-		}
-		return &api.Response{Success: true}
+	return func(_ context.Context, _ json.RawMessage) *api.Response {
+		_ = env
+		return &api.Response{Error: "team registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }
 
 func makeTeamStatusHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.TeamRegistry == nil {
-			return &api.Response{Error: "team registry not initialized"}
-		}
-		var req struct {
-			TeamID string `json:"team_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		rec, ok := env.TeamRegistry.get(req.TeamID)
-		if !ok {
-			return &api.Response{Error: "team not found"}
-		}
-		raw, _ := json.Marshal(rec)
-		return &api.Response{Success: true, Data: raw}
+	return func(_ context.Context, _ json.RawMessage) *api.Response {
+		_ = env
+		return &api.Response{Error: "team registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }
 
 func makeAutonomyShowHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.AutonomyRegistry == nil {
-			return &api.Response{Error: "autonomy registry not initialized"}
-		}
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		rec, ok, err := env.AutonomyRegistry.show(req.SessionID)
-		if err != nil {
-			return &api.Response{Error: err.Error()}
-		}
-		if !ok {
-			return &api.Response{Error: "no autonomy record for session"}
-		}
-		// Enforce expiry at read time (comprehensive fix)
-		if rec.ExpiresAt != "" {
-			expiry, parseErr := time.Parse(time.RFC3339, rec.ExpiresAt)
-			if parseErr == nil && time.Now().UTC().After(expiry) {
-				return &api.Response{Error: "autonomy grant has expired"}
-			}
-		}
-		raw, _ := json.Marshal(rec)
-		return &api.Response{Success: true, Data: raw}
+	return func(_ context.Context, _ json.RawMessage) *api.Response {
+		_ = env
+		return &api.Response{Error: "autonomy registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }
 
 func makeAutonomyGrantHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.AutonomyRegistry == nil {
-			return &api.Response{Error: "autonomy registry not initialized"}
-		}
-		var req struct {
-			SessionID string `json:"session_id"`
-			Preset    string `json:"preset"`
-			Duration  string `json:"duration"`
-			Scope     string `json:"scope"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if env.Sessions == nil {
-			return &api.Response{Error: "session store not initialized"}
-		}
-		if _, ok := env.Sessions.Get(req.SessionID); !ok {
-			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
-		}
-		var until time.Time
-		if strings.TrimSpace(req.Duration) != "" {
-			d, err := time.ParseDuration(req.Duration)
-			if err != nil {
-				return &api.Response{Error: "invalid duration: " + err.Error()}
-			}
-			if d <= 0 {
-				return &api.Response{Error: "duration must be greater than 0"}
-			}
-			until = time.Now().Add(d)
-		}
-		if err := env.AutonomyRegistry.grant(req.SessionID, req.Preset, req.Scope, until); err != nil {
-			return &api.Response{Error: err.Error()}
-		}
-		return &api.Response{Success: true}
+	return func(_ context.Context, _ json.RawMessage) *api.Response {
+		_ = env
+		return &api.Response{Error: "autonomy registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }
 
 func makeAutonomyRevokeHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.AutonomyRegistry == nil {
-			return &api.Response{Error: "autonomy registry not initialized"}
-		}
-		var req struct {
-			SessionID string `json:"session_id"`
-			Scope     string `json:"scope"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if err := env.AutonomyRegistry.revoke(req.SessionID, req.Scope); err != nil {
-			return &api.Response{Error: err.Error()}
-		}
-		return &api.Response{Success: true}
+	return func(_ context.Context, _ json.RawMessage) *api.Response {
+		_ = env
+		return &api.Response{Error: "autonomy registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }
 
 func makeAutonomyResetHandler(env *runtimeEnv) api.Handler {
-	return func(_ context.Context, data json.RawMessage) *api.Response {
-		if env.AutonomyRegistry == nil {
-			return &api.Response{Error: "autonomy registry not initialized"}
-		}
-		var req struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return &api.Response{Error: "invalid request: " + err.Error()}
-		}
-		if strings.TrimSpace(req.SessionID) == "" {
-			return &api.Response{Error: "session_id is required"}
-		}
-		if err := env.AutonomyRegistry.reset(req.SessionID); err != nil {
-			return &api.Response{Error: err.Error()}
-		}
-		return &api.Response{Success: true}
+	return func(_ context.Context, _ json.RawMessage) *api.Response {
+		_ = env
+		return &api.Response{Error: "autonomy registry removed from Host Daemon TCB (Phase 3)"}
 	}
 }

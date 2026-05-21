@@ -11,11 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 )
 
 var selfCmd = &cobra.Command{
@@ -87,34 +85,9 @@ func runSelfPropose(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid proposal: %w", err)
 	}
 
-	if err := env.ProposalStore.Create(p); err != nil {
-		return fmt.Errorf("failed to create proposal: %w", err)
-	}
-
-	// Auto-submit for court review.
-	if err := p.Transition(proposal.StatusSubmitted, "submitted for review", "system"); err != nil {
-		return fmt.Errorf("cannot submit: %w", err)
-	}
-	if err := env.ProposalStore.Update(p); err != nil {
-		return fmt.Errorf("failed to persist: %w", err)
-	}
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"proposal_id": p.ID,
-		"title":       p.Title,
-		"category":    string(p.Category),
-	})
-	action := kernel.NewAction(kernel.ActionProposalCreate, "system", payload)
-	if _, signErr := env.Kernel.SignAndLog(action); signErr != nil {
-		env.Logger.Error("failed to log self-improvement proposal", zap.Error(signErr))
-	}
-
-	fmt.Printf("Self-improvement proposal created and submitted.\n")
-	fmt.Printf("  ID:       %s\n", p.ID)
-	fmt.Printf("  Title:    %s\n", p.Title)
-	fmt.Printf("  Status:   %s\n", p.Status)
-
-	return nil
+	// Phase 5: ProposalStore removed from Host Daemon TCB.
+	_ = p
+	return fmt.Errorf("proposal creation removed from minimal Host Daemon TCB (Phase 5)")
 }
 
 func runSelfStatus(cmd *cobra.Command, args []string) error {
@@ -124,32 +97,16 @@ func runSelfStatus(cmd *cobra.Command, args []string) error {
 	}
 	defer env.Logger.Sync()
 
-	proposals, err := env.ProposalStore.List()
-	if err != nil {
-		return fmt.Errorf("failed to list proposals: %w", err)
-	}
-
-	found := false
-	for _, p := range proposals {
-		if p.Category == proposal.CategoryKernelPatch {
-			if !found {
-				fmt.Println("Self-improvement proposals:")
-				found = true
-			}
-			fmt.Printf("  %s  %-12s  %s\n", p.ID[:8], p.Status, p.Title)
-		}
-	}
-	if !found {
-		fmt.Println("No self-improvement proposals found.")
-	}
-	return nil
+	// Phase 5: ProposalStore removed from Host Daemon TCB.
+	_ = env
+	return fmt.Errorf("self-improvement proposal listing removed from minimal Host Daemon TCB (Phase 5)")
 }
 
 // diagnoseCheck holds the result of a single system health check.
 type diagnoseCheck struct {
-	Name    string
-	OK      bool
-	Detail  string
+	Name   string
+	OK     bool
+	Detail string
 }
 
 func (c diagnoseCheck) status() string {
@@ -421,4 +378,3 @@ func int8SliceToString(s []int8) string {
 	}
 	return string(b)
 }
-

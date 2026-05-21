@@ -85,7 +85,7 @@ func makeGitBrowseHandler(env *runtimeEnv) api.Handler {
 				}
 
 				item := map[string]interface{}{
-					"name":  entry.Name(),
+					"name":   entry.Name(),
 					"is_dir": entry.IsDir(),
 				}
 
@@ -99,9 +99,9 @@ func makeGitBrowseHandler(env *runtimeEnv) api.Handler {
 			}
 
 			respData, _ := json.Marshal(map[string]interface{}{
-				"type":    "directory",
-				"path":    requestedPath,
-				"items":   items,
+				"type":  "directory",
+				"path":  requestedPath,
+				"items": items,
 			})
 			return &api.Response{Success: true, Data: respData}
 		}
@@ -268,7 +268,7 @@ func makeWorkspaceReadHandler(env *runtimeEnv) api.Handler {
 
 		// Also allow *.SKILL.md files
 		isSKILL := strings.HasSuffix(req.Filename, ".SKILL.md")
-		
+
 		if !allowed[req.Filename] && !isSKILL {
 			return &api.Response{Error: "only workspace files (SOUL.md, AGENTS.md, TOOLS.md, *.SKILL.md) can be accessed"}
 		}

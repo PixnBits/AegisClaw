@@ -195,62 +195,80 @@ func buildToolRegistry(env *runtimeEnv) *ToolRegistry {
 }
 
 func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
+	// Proposal draft handlers stubbed during TCB minimization (Phase 3);
+	// full SDLC flow now external via Governance Court + Builder VMs.
+	// Only env.Store.Proposals() paths remain for read access.
 	reg.Register("proposal.create_draft",
 		"Create a new skill proposal draft. args: {title, description, skill_name, tools, intended_user, example_usage, risk_assessment, dependencies, tests, security_considerations}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalCreateDraft(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.update_draft",
 		"Update fields on an existing draft or in-review proposal. args: {id, ...fields}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalUpdateDraft(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.get_draft",
 		"Retrieve full details of a proposal draft. args: {id}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalGetDraft(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.list_drafts",
 		"List all proposal drafts.",
 		func(ctx context.Context, _ string) (string, error) {
-			return handleProposalListDrafts(env, ctx)
+			_ = ctx
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.submit",
 		"Submit a draft proposal for Governance Court review. args: {id}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalSubmitDirect(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.status",
 		"Check the current status and stage of a proposal. args: {id}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalStatus(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.reviews",
 		"Get detailed reviewer feedback (verdicts, comments, questions) for a proposal. args: {id}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalReviews(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 	reg.Register("proposal.vote",
 		"Cast a human vote to approve or reject an escalated proposal. args: {id, approve, reason}",
 		func(ctx context.Context, args string) (string, error) {
-			return handleProposalVote(env, ctx, args)
+			_ = ctx
+			_ = args
+			_ = env
+			return "", fmt.Errorf("proposal draft tools removed from minimal Host Daemon TCB (Phase 3)")
 		})
 
 	reg.Register("list_proposals",
 		"List all proposals with their title, status, and risk level.",
 		func(_ context.Context, _ string) (string, error) {
-			summaries, err := env.ProposalStore.List()
-			if err != nil {
-				return "", fmt.Errorf("list proposals: %w", err)
-			}
-			if len(summaries) == 0 {
-				return "No proposals found.", nil
-			}
-			var lines []string
-			for _, s := range summaries {
-				lines = append(lines, fmt.Sprintf("  %s  %s  [%s]  %s", s.ID, s.Title, s.Status, s.Risk))
-			}
-			return strings.Join(lines, "\n"), nil
+			// Phase 5: ProposalStore access removed from Host Daemon TCB.
+			// Long-term owner: Store VM. Routed via AegisHub.
+			_ = env
+			return "Proposal listing removed from minimal Host Daemon TCB (Phase 5)", nil
 		})
 
 	reg.Register("list_sandboxes",
@@ -353,27 +371,10 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 				return string(b), nil
 			}
 
-			// Try to find by skill name: scan proposal store.
-			if params.SkillName != "" && env.ProposalStore != nil {
-				proposals, err := env.ProposalStore.List()
-				if err != nil {
-					return "", fmt.Errorf("list proposals: %w", err)
-				}
-				for _, p := range proposals {
-					path := filepath.Join(sbomDir, p.ID, "sbom.json")
-					s, readErr := sbom.Read(path)
-					if readErr != nil {
-						continue
-					}
-					if s.Metadata.Component.Name == params.SkillName {
-						b, _ := json.MarshalIndent(s, "", "  ")
-						return string(b), nil
-					}
-				}
-				return "", fmt.Errorf("SBOM not found for skill %q", params.SkillName)
-			}
-
-			return "", fmt.Errorf("provide proposal_id or skill_name")
+			// Phase 5: ProposalStore lookup removed from daemon.
+			// Long-term owner: Store VM.
+			_ = params
+			return "", fmt.Errorf("SBOM lookup removed from minimal Host Daemon TCB (Phase 5)")
 		})
 
 	reg.Register("search_tools",
@@ -486,7 +487,8 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 			env.agentVMMu.Unlock()
 
 			if oldVMID != "" {
-				env.LLMProxy.StopForVM(oldVMID)
+				// LLMProxy removed from Host Daemon TCB (Phase 3); agent LLM routing now via AegisHub/Store VM.
+				// env.LLMProxy.StopForVM(oldVMID)
 				_ = env.Runtime.Stop(ctx, oldVMID)
 				_ = env.Runtime.Delete(ctx, oldVMID)
 			}
@@ -501,13 +503,13 @@ func registerProposalTools(reg *ToolRegistry, env *runtimeEnv) {
 			}
 
 			// Re-attach the LLM proxy to the new VM.
+			// LLMProxy removed from Host Daemon TCB (Phase 3); agent LLM routing now via AegisHub/Store VM.
 			vsockPath, err := env.Runtime.VsockPath(newVMID)
 			if err != nil {
 				return newVMID, fmt.Errorf("get vsock path for restored VM: %w", err)
 			}
-			if err := env.LLMProxy.StartForVM(newVMID, vsockPath); err != nil {
-				return newVMID, fmt.Errorf("start LLM proxy for restored VM: %w", err)
-			}
+			_ = vsockPath // LLMProxy.StartForVM stubbed (non-TCB)
+			// if err := env.LLMProxy.StartForVM(newVMID, vsockPath); err != nil { ... }
 
 			env.agentVMMu.Lock()
 			env.AgentVMID = newVMID
@@ -930,37 +932,10 @@ func registerWorkerTools(reg *ToolRegistry, env *runtimeEnv) {
 	reg.Register("worker_status",
 		"Get the status and result of a previously spawned worker. Args: {worker_id} or {} to list recent workers.",
 		func(_ context.Context, args string) (string, error) {
-			if env.WorkerStore == nil {
-				return "Worker store not initialized.", nil
-			}
-			var params struct {
-				WorkerID string `json:"worker_id"`
-			}
-			json.Unmarshal([]byte(args), &params) //nolint:errcheck
-
-			if params.WorkerID != "" {
-				w, ok := env.WorkerStore.Get(params.WorkerID)
-				if !ok {
-					return fmt.Sprintf("Worker %s not found.", params.WorkerID), nil
-				}
-				return formatWorkerRecord(w), nil
-			}
-			// List recent workers.
-			workers := env.WorkerStore.List(false)
-			if len(workers) == 0 {
-				return "No workers found.", nil
-			}
-			var b strings.Builder
-			b.WriteString(fmt.Sprintf("Recent Workers (%d):\n", len(workers)))
-			limit := 10
-			if len(workers) < limit {
-				limit = len(workers)
-			}
-			for _, w := range workers[:limit] {
-				b.WriteString(fmt.Sprintf("  [%s]  %-11s  %-12s  steps=%-3d  task=%s\n",
-					w.WorkerID[:8], w.Status, w.Role, w.StepCount, w.TaskID))
-			}
-			return strings.TrimRight(b.String(), "\n"), nil
+			// Phase 5: WorkerStore removed from Host Daemon TCB.
+			// Long-term owner: Store VM via AegisHub.
+			_ = args
+			return "", fmt.Errorf("worker_status removed from minimal Host Daemon TCB (Phase 5)")
 		})
 }
 
@@ -1054,7 +1029,18 @@ func registerSessionTools(reg *ToolRegistry, env *runtimeEnv, selfRegPtr **ToolR
 				return "", fmt.Errorf("session store not available")
 			}
 			// Build and call the sessions.send handler directly.
-			sendHandler := makeSessionsSendHandler(env, *selfRegPtr)
+			// WHY NIL PROXY BYPASS (intentional, temporary):
+			//   This is an internal tool execution path inside the daemon's
+			//   tool registry (for "sessions_send" skill self-call). It does not
+			//   go through the public API Unix socket, so no real ControlPlaneProxy
+			//   is available/required here. Passing nil keeps the handler signature
+			//   stable while the mediation layer evolves.
+			//   Planned removal: once Phase 9+ threads a real proxy instance into
+			//   the tool env (or refactors to avoid direct handler construction),
+			//   replace the nil. Search for "nil proxy" to find this bypass.
+			// TODO: Thread a real ControlPlaneProxy for sessions_send self-call
+			// or refactor to avoid direct handler construction (Phase 9 work).
+			sendHandler := makeSessionsSendHandler(env, *selfRegPtr, nil)
 			reqBytes, _ := json.Marshal(map[string]string{
 				"session_id": p.SessionID,
 				"message":    p.Message,

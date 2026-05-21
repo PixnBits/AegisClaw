@@ -27,6 +27,11 @@ func NewBridge(hub *MessageHub, kern *kernel.Kernel, logger *zap.Logger) *Bridge
 
 // RegisterControlPlaneHandlers installs message routing handlers on the kernel's
 // control plane so that VMs can send IPC messages via their vsock connection.
+//
+// Phase 6: AegisHub (via this bridge) will also receive ControlPlaneRequest
+// messages originating from CLI operations forwarded by the daemon's
+// ControlPlaneProxy. These requests are treated similarly to skill/tool
+// invocations and are ACL-checked before routing to the target microVM.
 func (b *Bridge) RegisterControlPlaneHandlers() error {
 	// Handle "ipc.send" messages from VMs
 	if err := b.kern.ControlPlane().RegisterHandler("ipc.send", b.handleIPCSend); err != nil {
@@ -39,6 +44,15 @@ func (b *Bridge) RegisterControlPlaneHandlers() error {
 	}
 
 	b.logger.Info("IPC bridge control plane handlers registered")
+
+	// Phase 8: ControlPlaneRequest handler (from daemon ControlPlaneProxy or
+	// future vsock from AegisHub VM). We register a lightweight handler that
+	// unpacks the payload into an ipc.Message and routes it through the hub
+	// (ACL is enforced inside RouteMessage).
+	if err := b.kern.ControlPlane().RegisterHandler("controlplane.request", b.handleControlPlaneRequest); err != nil {
+		return fmt.Errorf("failed to register controlplane.request handler: %w", err)
+	}
+
 	return nil
 }
 
@@ -72,6 +86,34 @@ func (b *Bridge) handleIPCRoutes(vmID string, ctlMsg kernel.ControlMessage) (*ke
 	data, _ := json.Marshal(routes)
 	return &kernel.ControlResponse{
 		Success: true,
+		Data:    data,
+	}, nil
+}
+
+// handleControlPlaneRequest receives a ControlPlaneRequest from the kernel
+// control plane (either from the local daemon proxy or a future vsock
+// connection from the AegisHub microVM) and routes it through the hub.
+func (b *Bridge) handleControlPlaneRequest(vmID string, ctlMsg kernel.ControlMessage) (*kernel.ControlResponse, error) {
+	var msg Message
+	if err := json.Unmarshal(ctlMsg.Payload, &msg); err != nil {
+		return &kernel.ControlResponse{
+			Success: false,
+			Error:   fmt.Sprintf("invalid controlplane message: %v", err),
+		}, nil
+	}
+
+	result, err := b.hub.RouteMessage(vmID, &msg)
+	if err != nil {
+		return &kernel.ControlResponse{
+			Success: false,
+			Error:   err.Error(),
+		}, nil
+	}
+
+	data, _ := json.Marshal(result)
+	return &kernel.ControlResponse{
+		Success: result.Success,
+		Error:   result.Error,
 		Data:    data,
 	}, nil
 }

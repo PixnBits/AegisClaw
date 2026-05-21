@@ -87,6 +87,15 @@ func (r *Router) Unregister(id string) {
 	delete(r.handlers, id)
 }
 
+// handlerFor returns the registered RouteHandler for the given ID, if any.
+// This is used internally by the hub for ControlPlane delegation.
+func (r *Router) handlerFor(id string) (RouteHandler, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	h, ok := r.handlers[id]
+	return h, ok
+}
+
 // Route validates sender identity and delivers a message to the target.
 // The senderVMID parameter is the verified VM identity from the vsock connection,
 // not from the message itself (prevents spoofing).

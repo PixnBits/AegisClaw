@@ -63,3 +63,5 @@ The following behaviors must be enforced by automated tests:
 - **Audit Root Signing**: The daemon must correctly sign Merkle tree roots at regular intervals
 - **Unix Socket Hardening**: The Unix socket must enforce strict permissions and input validation
 
+**See also:** [docs/implementation-plan/03-daemon-minimal-tcb-refactor.md](../implementation-plan/03-daemon-minimal-tcb-refactor.md) — requirements traceability matrix (maps each bullet above to tests, CI tier, and gap backlog).
+

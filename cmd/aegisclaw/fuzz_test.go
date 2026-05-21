@@ -142,6 +142,11 @@ func FuzzReActTermination(f *testing.F) {
 	f.Add("", 5)
 	f.Add(strings.Repeat("go ", 100), 9)
 
+	// reactMaxIterations defines the hard cap for react-loop iterations.
+	// This constant was previously defined in removed chat synthesis code.
+	// Defined locally here for the fuzz safety test (Phase 9 test cleanup).
+	const reactMaxIterations = 20
+
 	f.Fuzz(func(t *testing.T, _ string, iterSeed int) {
 		// iterSeed is consumed by the fuzzer but the loop cap is always
 		// reactMaxIterations — verify that the constant is sane.

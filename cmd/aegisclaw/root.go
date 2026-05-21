@@ -156,6 +156,8 @@ func init() {
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(stopDaemonCmd)
 	rootCmd.AddCommand(statusCmd)
+	// chatCmd removed from Host Daemon TCB surface (stub to allow build)
+	var chatCmd = &cobra.Command{Use: "chat", Short: "chat (non-TCB, see Phase 1 extraction)"}
 	rootCmd.AddCommand(chatCmd)
 	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(auditCmd)

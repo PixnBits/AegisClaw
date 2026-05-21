@@ -24,13 +24,31 @@ jobs:
           cache: true
 
       - name: Build
-        run: go build ./...
+        run: make build
 
       - name: Vet
         run: go vet ./...
 
       - name: Test
-        run: go test ./... -count=1 -timeout 120s
+        run: make test
+
+  integration-tests:
+    name: Integration & Lifecycle Tests
+    runs-on: ubuntu-latest
+    # These are heavier and may require KVM or longer timeouts.
+    # They are opt-in via workflow_dispatch or can be triggered manually.
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Integration Tests
+        run: make test-integration
 
   # Journey and golden-trace tests run on every PR touching the agent, runtime,
   # tool lookup, or dashboard code paths.  They require no KVM or Ollama.

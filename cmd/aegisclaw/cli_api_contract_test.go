@@ -9,12 +9,11 @@ import (
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/api"
-	"github.com/PixnBits/AegisClaw/internal/court"
+	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/sandbox"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
-	"github.com/PixnBits/AegisClaw/internal/worker"
-	"github.com/google/uuid"
+	"go.uber.org/zap/zaptest"
 )
 
 // endpointImpl tracks expected daemon maturity for TDD (docs/implementation-plan/01-cli-full-coverage.md).
@@ -35,35 +34,33 @@ var daemonEndpointContract = []struct {
 	impl    endpointImpl
 	payload func(t *testing.T, env *runtimeEnv) json.RawMessage
 }{
-	// Vault (ready)
-	{"vault.secret.add", implReady, func(t *testing.T, _ *runtimeEnv) json.RawMessage {
+	// Vault (stubbed — disabled in minimal TCB per Phase 1)
+	{"vault.secret.add", implStub, func(t *testing.T, _ *runtimeEnv) json.RawMessage {
 		b, _ := json.Marshal(api.VaultSecretAddRequest{Name: "tok", SkillID: "skill-a", Value: "secret"})
 		return b
 	}},
-	{"vault.secret.list", implReady, func(*testing.T, *runtimeEnv) json.RawMessage { return nil }},
-	{"vault.secret.delete", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"vault.secret.list", implStub, func(*testing.T, *runtimeEnv) json.RawMessage { return nil }},
+	{"vault.secret.delete", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		h := makeVaultSecretAddHandler(env)
 		_ = h(context.Background(), mustJSON(t, api.VaultSecretAddRequest{Name: "delme", SkillID: "s", Value: "v"}))
 		b, _ := json.Marshal(api.VaultSecretDeleteRequest{Name: "delme"})
 		return b
 	}},
-	{"vault.secret.rotate", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"vault.secret.rotate", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		h := makeVaultSecretAddHandler(env)
 		_ = h(context.Background(), mustJSON(t, api.VaultSecretAddRequest{Name: "rot", SkillID: "s", Value: "old"}))
 		b, _ := json.Marshal(api.VaultSecretAddRequest{Name: "rot", Value: "new"})
 		return b
 	}},
 
-	// Workers (ready)
-	{"worker.list", implReady, func(*testing.T, *runtimeEnv) json.RawMessage {
+	// Workers (stubbed — list now via ControlPlaneProxy per Phase 6+)
+	{"worker.list", implStub, func(*testing.T, *runtimeEnv) json.RawMessage {
 		b, _ := json.Marshal(map[string]bool{"active_only": false})
 		return b
 	}},
-	{"worker.status", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
-		id := seedWorker(t, env)
-		b, _ := json.Marshal(map[string]string{"worker_id": id})
-		return b
-	}},
+	// worker.status removed from contract test (Phase 9 cleanup):
+	// WorkerStore access removed from Host Daemon TCB (Phase 5).
+	// Status queries now flow through ControlPlaneProxy → AegisHub → Store VM.
 
 	// Skills (ready + stubs)
 	{"skill.list", implReady, func(*testing.T, *runtimeEnv) json.RawMessage { return nil }},
@@ -127,14 +124,14 @@ var daemonEndpointContract = []struct {
 		return b
 	}},
 
-	// Tasks (ready list/status; pause/resume/cancel stubbed)
-	{"tasks.list", implReady, func(*testing.T, *runtimeEnv) json.RawMessage {
+	// Tasks (stubbed — removed from Host Daemon TCB per Phase 5)
+	{"tasks.list", implStub, func(*testing.T, *runtimeEnv) json.RawMessage {
 		b, _ := json.Marshal(map[string]bool{"active_only": false})
 		return b
 	}},
-	{"tasks.status", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
-		id := seedWorker(t, env)
-		b, _ := json.Marshal(map[string]string{"task_id": id})
+	// tasks.status (stubbed — removed from Host Daemon TCB per Phase 5)
+	{"tasks.status", implStub, func(*testing.T, *runtimeEnv) json.RawMessage {
+		b, _ := json.Marshal(map[string]string{"task_id": "t-contract"})
 		return b
 	}},
 	{"tasks.pause", implStub, func(*testing.T, *runtimeEnv) json.RawMessage {
@@ -150,56 +147,54 @@ var daemonEndpointContract = []struct {
 		return b
 	}},
 
-	// Court decisions (ready when engine present)
-	{"court.decisions.list", implReady, func(*testing.T, *runtimeEnv) json.RawMessage { return nil }},
-	{"court.decisions.show", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
-		sid := seedCourtSession(t, env)
-		b, _ := json.Marshal(map[string]string{"id": sid})
-		return b
-	}},
+	// Court decisions removed from daemonEndpointContract (Phase 9 test cleanup).
+	// Court functionality moved out of Host Daemon TCB (Phase 1).
+	// Court operations are now mediated through AegisHub.
 
-	// Team / autonomy (ready)
-	{"team.list", implReady, func(*testing.T, *runtimeEnv) json.RawMessage { return nil }},
-	{"team.create", implReady, func(*testing.T, *runtimeEnv) json.RawMessage {
+	// Team / autonomy (stubbed — removed from Host Daemon TCB per Phase 3)
+	{"team.list", implStub, func(*testing.T, *runtimeEnv) json.RawMessage { return nil }},
+	{"team.create", implStub, func(*testing.T, *runtimeEnv) json.RawMessage {
 		b, _ := json.Marshal(map[string]string{"name": "contract-team"})
 		return b
 	}},
-	{"team.join", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"team.join", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		team, _ := env.TeamRegistry.create("joinable")
 		b, _ := json.Marshal(map[string]string{"team_id": team.ID, "member": "alice"})
 		return b
 	}},
-	{"team.leave", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"team.leave", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		team, _ := env.TeamRegistry.create("leavable")
 		_ = env.TeamRegistry.join(team.ID, "bob")
 		b, _ := json.Marshal(map[string]string{"team_id": team.ID, "member": "bob"})
 		return b
 	}},
-	{"team.status", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"team.status", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		team, _ := env.TeamRegistry.create("status-team")
 		b, _ := json.Marshal(map[string]string{"team_id": team.ID})
 		return b
 	}},
-	{"autonomy.show", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"autonomy.show", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		if err := env.AutonomyRegistry.grant("sess-a", "default", "", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-a"})
 		return b
 	}},
-	{"autonomy.grant", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	// Autonomy mutations are stubbed in the Host Daemon TCB (in-process registry
+	// removed; mediation via AegisHub). Stable denial errors are required (DB-07).
+	{"autonomy.grant", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		env.Sessions.Open("sess-g", "vm-1")
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-g", "preset": "researcher"})
 		return b
 	}},
-	{"autonomy.revoke", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"autonomy.revoke", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		if err := env.AutonomyRegistry.grant("sess-v", "p", "", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
 		b, _ := json.Marshal(map[string]string{"session_id": "sess-v"})
 		return b
 	}},
-	{"autonomy.reset", implReady, func(t *testing.T, env *runtimeEnv) json.RawMessage {
+	{"autonomy.reset", implStub, func(t *testing.T, env *runtimeEnv) json.RawMessage {
 		if err := env.AutonomyRegistry.grant("sess-z", "p", "", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
@@ -211,13 +206,9 @@ var daemonEndpointContract = []struct {
 	{"kernel.shutdown", implReady, func(*testing.T, *runtimeEnv) json.RawMessage { return nil }},
 }
 
-// startOnlyDaemonContract covers handlers registered in start.go outside registerExtendedDaemonAPI.
-var startOnlyDaemonContract = []struct {
-	action string
-	impl   endpointImpl
-}{
-	{"court.vote", implStub},
-}
+// Note: startOnlyDaemonContract removed (Phase 9 test cleanup).
+// court.vote and Court functionality were removed from Host Daemon TCB (Phase 1).
+// Court operations are now mediated through AegisHub to Court VMs.
 
 func TestDaemonAPI_EndpointContract(t *testing.T) {
 	srv, env := newContractAPIServer(t)
@@ -236,25 +227,8 @@ func TestDaemonAPI_EndpointContract(t *testing.T) {
 	}
 }
 
-func TestDaemonAPI_StartOnlyEndpointContract(t *testing.T) {
-	srv, env := newContractAPIServer(t)
-	ctx := api.WithTrustedCaller(context.Background())
-	// court.vote is registered in start.go, not registerExtendedDaemonAPI.
-	srv.Handle("court.vote", makeCourtVoteHandler(env, env.Court))
-
-	for _, tc := range startOnlyDaemonContract {
-		tc := tc
-		t.Run(tc.action, func(t *testing.T) {
-			resp := srv.CallDirect(ctx, tc.action, mustJSON(t, api.CourtVoteRequest{
-				ProposalID: "p1",
-				Voter:      "op",
-				Approve:    true,
-				Reason:     "test",
-			}))
-			assertContractResponse(t, tc.action, tc.impl, resp)
-		})
-	}
-}
+// TestDaemonAPI_StartOnlyEndpointContract removed (Phase 9 test cleanup).
+// court.vote and Court functionality removed from Host Daemon TCB (Phase 1).
 
 // TestDaemonAPI_UnknownActionRegression ensures we never silently drop handlers.
 func TestDaemonAPI_UnknownActionRegression(t *testing.T) {
@@ -267,8 +241,22 @@ func TestDaemonAPI_UnknownActionRegression(t *testing.T) {
 
 func newContractAPIServer(t *testing.T) (*api.Server, *runtimeEnv) {
 	t.Helper()
-	env := testEnvWithVaultAndKernel(t)
-	logger := env.Logger
+	// Minimal runtimeEnv for contract tests (Phase 9 cleanup).
+	// Vault/Court removed from TCB; using kernel + logger only.
+	kernel.ResetInstance()
+	logger := zaptest.NewLogger(t)
+	kern, err := kernel.GetInstance(logger, t.TempDir())
+	if err != nil {
+		t.Fatalf("kernel.GetInstance: %v", err)
+	}
+	t.Cleanup(func() {
+		kern.Shutdown()
+		kernel.ResetInstance()
+	})
+	env := &runtimeEnv{
+		Logger: logger,
+		Kernel: kern,
+	}
 
 	regDir := filepath.Join(t.TempDir(), "cli-registry")
 	teamReg, err := newTeamRegistry(regDir)
@@ -286,86 +274,27 @@ func newContractAPIServer(t *testing.T) (*api.Server, *runtimeEnv) {
 		t.Fatal(err)
 	}
 
-	ws, err := worker.NewStore(filepath.Join(t.TempDir(), "workers"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	propStore, err := proposal.NewStore(filepath.Join(t.TempDir(), "proposals"), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	env.Registry = reg
-	env.WorkerStore = ws
 	env.ProposalStore = propStore
 	env.Sessions = sessions.NewStore()
 	env.TeamRegistry = teamReg
 	env.AutonomyRegistry = autoReg
-	env.Court = setupContractCourtEngine(t, env)
+	// Note: Court, WorkerStore removed from Host Daemon TCB (Phase 1/5).
+	// Tests that previously set these fields have been cleaned up (Phase 9).
 
 	srv := api.NewServer(filepath.Join(t.TempDir(), "contract.sock"), logger)
-	registerExtendedDaemonAPI(srv, env, buildToolRegistry(env), nil, nil)
+	registerExtendedDaemonAPI(srv, env, buildToolRegistry(env), nil, nil, nil)
 	return srv, env
 }
 
-func setupContractCourtEngine(t *testing.T, env *runtimeEnv) *court.Engine {
-	t.Helper()
-	personas := []*court.Persona{
-		{Name: "CISO", Role: "security", SystemPrompt: "x", Models: []string{"m"}, Weight: 1.0},
-	}
-	reviewerFn := func(ctx context.Context, p *proposal.Proposal, persona *court.Persona) (*proposal.Review, error) {
-		return &proposal.Review{
-			ID:      uuid.New().String(),
-			Persona: persona.Name,
-			Model:   "m",
-			Verdict: proposal.VerdictApprove,
-		}, nil
-	}
-	cfg := court.DefaultEngineConfig()
-	engine, err := court.NewEngine(cfg, env.ProposalStore, env.Kernel, personas, reviewerFn, env.Logger, t.TempDir(), t.TempDir())
-	if err != nil {
-		t.Fatalf("court engine: %v", err)
-	}
-	return engine
-}
-
-func seedWorker(t *testing.T, env *runtimeEnv) string {
-	t.Helper()
-	id := uuid.New().String()
-	if err := env.WorkerStore.Upsert(&worker.WorkerRecord{
-		WorkerID:        id,
-		Role:            worker.RoleResearcher,
-		TaskDescription: "contract test",
-		SpawnedBy:       "test",
-		Status:          worker.StatusDone,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return id
-}
-
-func seedCourtSession(t *testing.T, env *runtimeEnv) string {
-	t.Helper()
-	p, err := proposal.NewProposal("T", "D", proposal.CategoryNewSkill, "admin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := env.ProposalStore.Create(p); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Transition(proposal.StatusSubmitted, "ok", "admin"); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.ProposalStore.Update(p); err != nil {
-		t.Fatal(err)
-	}
-	sess, err := env.Court.VoteOnProposal(context.Background(), p.ID, "tester", true, "contract seed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sess.ID
-}
+// Note: setupContractCourtEngine, seedWorker, seedCourtSession removed (Phase 9 test cleanup).
+// Court and WorkerStore were removed from Host Daemon TCB (Phases 1/5).
+// Related contract tests updated or removed to reflect current architecture.
 
 func assertContractResponse(t *testing.T, action string, impl endpointImpl, resp *api.Response) {
 	t.Helper()
@@ -396,8 +325,23 @@ func assertContractResponse(t *testing.T, action string, impl endpointImpl, resp
 
 func isExplicitStubError(msg string) bool {
 	lower := strings.ToLower(msg)
-	return strings.Contains(lower, "not implemented") ||
-		strings.Contains(lower, "not supported")
+	if strings.Contains(lower, "not implemented") || strings.Contains(lower, "not supported") {
+		return true
+	}
+	// Stable denials for handlers removed from minimal Host Daemon TCB (Task 03 / DB-07).
+	for _, phrase := range []string{
+		"removed from minimal host daemon tcb",
+		"removed from host daemon tcb",
+		"not in host daemon tcb",
+		"disabled in minimal tcb",
+		"control plane proxy not available",
+		"sessions.send runtime dependencies not available",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {

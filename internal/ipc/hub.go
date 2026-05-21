@@ -3,6 +3,7 @@ package ipc
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -35,6 +36,11 @@ type HubStats struct {
 // MessageHub is the core IPC router skill. It runs in its own context
 // (will be a microVM in production) and routes all inter-skill messages.
 // No direct skill-to-skill communication is permitted.
+//
+// Phase 6: MessageHub also serves as the entry point for ControlPlaneRequest
+// messages coming from the Host Daemon's ControlPlaneProxy. CLI operations
+// (worker.list, skill.status, chat.message, etc.) are forwarded here for
+// ACL enforcement and routing to the correct target component.
 type MessageHub struct {
 	router   *Router
 	kern     *kernel.Kernel
@@ -142,6 +148,16 @@ func (h *MessageHub) RegisterSkill(skillID string, handler RouteHandler) error {
 		zap.String("skill_id", skillID),
 	)
 	return nil
+}
+
+// RegisterIdentityForTest pre-registers a VM ID with a role so that ACL checks
+// in RouteMessage succeed for test scenarios. Exported solely to support
+// cross-package test adaptation after TCB reduction (ControlPlaneProxy mediation).
+func (h *MessageHub) RegisterIdentityForTest(vmID string, role VMRole) error {
+	if h.identity == nil {
+		return fmt.Errorf("identity registry not initialized")
+	}
+	return h.identity.Register(vmID, role)
 }
 
 // UnregisterSkill removes a skill's message handler from the router.
@@ -304,6 +320,9 @@ func (h *MessageHub) handleHubMessage(msg *Message) (*DeliveryResult, error) {
 			Response:  data,
 		}, nil
 
+	case "controlplane.request":
+		return h.handleControlPlaneRequest(msg)
+
 	default:
 		return &DeliveryResult{
 			MessageID: msg.ID,
@@ -311,4 +330,201 @@ func (h *MessageHub) handleHubMessage(msg *Message) (*DeliveryResult, error) {
 			Error:     fmt.Sprintf("unknown hub command: %s", msg.Type),
 		}, nil
 	}
+}
+
+// handleControlPlaneRequest parses a ControlPlaneRequest from the message payload
+// and dispatches to the appropriate backend based on the Action field.
+// Phase 8: This is the AegisHub receiving side for mediated CLI operations.
+func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, error) {
+	var req struct {
+		Action string          `json:"action"`
+		Data   json.RawMessage `json:"data,omitempty"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return &DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "invalid controlplane request payload",
+		}, nil
+	}
+
+	h.logger.Debug("ControlPlaneRequest received",
+		zap.String("action", req.Action),
+		zap.String("from", msg.From))
+
+	// Phase 8 improvement: attempt delegation to a registered backend first.
+	// If a backend (e.g., "store-vm") is registered for the action, forward
+	// the request to it via the RouteHandler. A registered backend that returns
+	// an error or nil result is treated as a hard failure and returned to the
+	// caller immediately – falling through to sample data when a backend exists
+	// would mask real errors and return misleading results.
+	if backendID := h.preferredBackendForAction(req.Action); backendID != "" {
+		if handler, ok := h.getRegisteredHandler(backendID); ok {
+			delegatedMsg := &Message{
+				ID:        msg.ID,
+				From:      msg.From,
+				To:        backendID,
+				Type:      req.Action,
+				Payload:   req.Data,
+				Timestamp: time.Now().UTC(),
+			}
+			result, delegateErr := handler(delegatedMsg)
+			if delegateErr != nil {
+				if h.logger != nil {
+					h.logger.Error("ControlPlaneRequest delegation failed",
+						zap.String("action", req.Action), zap.String("backend", backendID),
+						zap.Error(delegateErr))
+				}
+				return &DeliveryResult{
+					MessageID: msg.ID,
+					Success:   false,
+					Error:     fmt.Sprintf("backend %q returned error: %v", backendID, delegateErr),
+				}, nil
+			}
+			if result == nil {
+				if h.logger != nil {
+					h.logger.Error("ControlPlaneRequest delegation returned nil result",
+						zap.String("action", req.Action), zap.String("backend", backendID))
+				}
+				return &DeliveryResult{
+					MessageID: msg.ID,
+					Success:   false,
+					Error:     fmt.Sprintf("backend %q returned nil result", backendID),
+				}, nil
+			}
+			return result, nil
+		}
+	}
+
+	// Proposal actions require persistent state from a real ProposalStore; there
+	// is no meaningful sample representation of live proposal data. They are
+	// therefore unconditionally hard-failed when the "store-vm" backend is not
+	// registered, even if AEGISCLAW_ALLOW_SAMPLE_DATA=true is set for other actions.
+	// If the "store-vm" backend (proposalBackend wrapping real ProposalStore) is not
+	// registered at AegisHub startup, return a clear actionable error + log.
+	// This enforces that real data is used in production and makes missing wiring obvious.
+	if req.Action == "proposal.list" || req.Action == "proposal.status" {
+		if h.logger != nil {
+			h.logger.Warn("proposal action with no store-vm backend registered; returning error (no silent sample fallback)",
+				zap.String("action", req.Action))
+		}
+		return &DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     "store-vm backend not registered (real ProposalStore required at AegisHub startup)",
+		}, nil
+	}
+
+	// Default behavior (Phase 9+): fail fast with clear error if no backend registered.
+	// Sample data fallback is opt-in only (for dev/debug) via AEGISCLAW_ALLOW_SAMPLE_DATA=true.
+	// This makes unimplemented actions obvious instead of silently returning mocks.
+	allowSample := os.Getenv("AEGISCLAW_ALLOW_SAMPLE_DATA") == "true"
+	if !allowSample {
+		if h.logger != nil {
+			h.logger.Debug("ControlPlaneRequest no backend registered; failing fast (set AEGISCLAW_ALLOW_SAMPLE_DATA=true for dev samples)",
+				zap.String("action", req.Action))
+		}
+		return &DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     fmt.Sprintf("no backend registered for action: %s (register via RegisterSkill or set AEGISCLAW_ALLOW_SAMPLE_DATA=true)", req.Action),
+		}, nil
+	}
+
+	// Opt-in sample fallback path (dev only).
+	if h.logger != nil {
+		h.logger.Debug("ControlPlaneRequest using sample fallback (dev mode)",
+			zap.String("action", req.Action))
+	}
+	switch req.Action {
+	case "worker.list":
+		data := json.RawMessage(`[{"worker_id":"w-001","role":"general","status":"idle"}]`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	case "worker.status":
+		data := json.RawMessage(`{"worker_id":"w-001","role":"general","status":"idle","task_id":""}`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	case "skill.list":
+		data := json.RawMessage(`[{"skill_id":"example-skill","status":"registered"}]`)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	case "chat.message":
+		// Delegated to chat router / agent VM in production via preferredBackendForAction + RegisterSkill.
+		// Current fallback provides basic session awareness (echo + prev context simulation)
+		// and structured response when no chat-router backend is registered.
+		// A real chatRouter would maintain session history and route to Agent VMs.
+		var in struct {
+			Message     string `json:"message"`
+			SessionID   string `json:"session_id"`
+			Correlation string `json:"correlation_id"`
+		}
+		_ = json.Unmarshal(req.Data, &in)
+		if in.SessionID == "" {
+			in.SessionID = "s-001"
+		}
+		if in.Correlation == "" {
+			in.Correlation = "corr-" + time.Now().Format("150405")
+		}
+		reply := map[string]interface{}{
+			"session_id":     in.SessionID,
+			"reply":          "echo: " + in.Message,
+			"timestamp":      time.Now().UTC().Format(time.RFC3339),
+			"correlation_id": in.Correlation,
+		}
+		data, _ := json.Marshal(reply)
+		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
+
+	// proposal.list / proposal.status no longer have sample fallback here.
+	// They are handled exclusively by the registered proposalBackend (or error if missing).
+	// See guard above + preferredBackendForAction.
+
+	default:
+		return &DeliveryResult{
+			MessageID: msg.ID,
+			Success:   false,
+			Error:     fmt.Sprintf("unsupported controlplane action: %s", req.Action),
+		}, nil
+	}
+}
+
+// preferredBackendForAction returns the preferred backend skill/VM ID for a
+// given ControlPlane action. This mapping makes delegation explicit and easy
+// to extend when real backends (Store VM, etc.) are registered.
+//
+// How to Add a New Backend (e.g. "store-vm", "chat-router"):
+//   1. Define an adapter type that holds your real backend (e.g. ProposalStore)
+//      and implements a RouteHandler func(*Message) (*DeliveryResult, error).
+//      Best practice: keep adapters stateless or inject deps; see proposalBackend
+//      pattern for wrapping git-backed stores.
+//   2. At daemon/AegisHub startup (or in Store VM init), call:
+//        hub.RegisterSkill("store-vm", myAdapter.Handle)
+//      This wires the handler into the router so getRegisteredHandler finds it.
+//   3. preferredBackendForAction will route matching actions (e.g. proposal.list)
+//      to it first; the registered handler is used. If none registered, a clear
+//      error is returned by default ("no backend registered for action: ...").
+//      Sample fallback is opt-in only via AEGISCLAW_ALLOW_SAMPLE_DATA=true (dev).
+//   The ControlPlaneProxy + handleControlPlaneRequest flow then delegates
+//   transparently. Registering multiple backends is supported for different actions.
+func (h *MessageHub) preferredBackendForAction(action string) string {
+	switch action {
+	case "worker.list", "worker.status":
+		return "store-vm"
+	case "skill.list":
+		return "skill-registry"
+	case "chat.message":
+		return "chat-router"
+	case "proposal.list", "proposal.status":
+		return "store-vm"
+	default:
+		return ""
+	}
+}
+
+// getRegisteredHandler looks up a registered route handler for delegation.
+func (h *MessageHub) getRegisteredHandler(id string) (RouteHandler, bool) {
+	if h.router == nil {
+		return nil, false
+	}
+	return h.router.handlerFor(id)
 }

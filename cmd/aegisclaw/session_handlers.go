@@ -15,7 +15,6 @@ import (
 
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/sessions"
-	"github.com/google/uuid"
 )
 
 // sessionsListResponse is the JSON payload returned by sessions.list.
@@ -109,10 +108,11 @@ func makeSessionsHistoryHandler(env *runtimeEnv) api.Handler {
 //	API action: sessions.send
 //	Request:    {"session_id": "...", "message": "..."}
 //	Response:   {"session_id": "...", "reply": "...", "ok": true}
-func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Handler {
+func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry, proxy *ControlPlaneProxy) api.Handler {
 	// chatHandler is built once here, not per-request, so there is no
 	// per-call overhead from constructing the handler closure.
-	chatHandler := makeChatMessageHandler(env, toolRegistry)
+	// Phase 8: chat.message routed through ControlPlaneProxy for mediation.
+	chatHandler := makeChatMessageHandler(proxy)
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
 		var req struct {
 			SessionID string `json:"session_id"`
@@ -132,6 +132,9 @@ func makeSessionsSendHandler(env *runtimeEnv, toolRegistry *ToolRegistry) api.Ha
 
 		if err := validateSessionForMessage(env.Sessions, req.SessionID, true); err != nil {
 			return &api.Response{Error: err.Error()}
+		}
+		if env.Runtime == nil || env.Config == nil {
+			return &api.Response{Error: "sessions.send runtime dependencies not available"}
 		}
 
 		// Look up the session to include its history so the agent has context.
@@ -199,6 +202,69 @@ func validateSessionForMessage(store *sessions.Store, sessionID string, requireE
 	}
 }
 
+func makeSessionsStatusHandler(env *runtimeEnv) api.Handler {
+	return func(_ context.Context, data json.RawMessage) *api.Response {
+		var req struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		req.SessionID = strings.TrimSpace(req.SessionID)
+		if req.SessionID == "" {
+			return &api.Response{Error: "session_id is required"}
+		}
+		if env.Sessions == nil {
+			return &api.Response{Error: "session store not initialized"}
+		}
+		rec, ok := env.Sessions.Get(req.SessionID)
+		if !ok {
+			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
+		}
+		out, _ := json.Marshal(rec)
+		return &api.Response{Success: true, Data: out}
+	}
+}
+
+func makeSessionsPauseHandler(env *runtimeEnv) api.Handler {
+	return makeSessionStatusUpdateHandler(env, sessions.StatusPaused)
+}
+
+func makeSessionsResumeHandler(env *runtimeEnv) api.Handler {
+	return makeSessionStatusUpdateHandler(env, sessions.StatusIdle)
+}
+
+func makeSessionsCancelHandler(env *runtimeEnv) api.Handler {
+	return makeSessionStatusUpdateHandler(env, sessions.StatusClosed)
+}
+
+func makeSessionStatusUpdateHandler(env *runtimeEnv, status sessions.Status) api.Handler {
+	return func(_ context.Context, data json.RawMessage) *api.Response {
+		var req struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(data, &req); err != nil {
+			return &api.Response{Error: "invalid request: " + err.Error()}
+		}
+		req.SessionID = strings.TrimSpace(req.SessionID)
+		if req.SessionID == "" {
+			return &api.Response{Error: "session_id is required"}
+		}
+		if env.Sessions == nil {
+			return &api.Response{Error: "session store not initialized"}
+		}
+		rec, ok := env.Sessions.Get(req.SessionID)
+		if !ok {
+			return &api.Response{Error: fmt.Sprintf("session %q not found", req.SessionID)}
+		}
+		if rec.Status == sessions.StatusClosed && status != sessions.StatusClosed {
+			return &api.Response{Error: "session is not paused"}
+		}
+		env.Sessions.SetStatus(req.SessionID, status)
+		return &api.Response{Success: true}
+	}
+}
+
 // makeSessionsSpawnHandler creates a new isolated chat session and returns its
 // session ID.  The new session uses the same shared agent VM as the caller
 // (Firecracker VMs are expensive; full per-session VM isolation is opt-in via
@@ -209,36 +275,9 @@ func validateSessionForMessage(store *sessions.Store, sessionID string, requireE
 //	Response:   {"session_id": "...", "ok": true}
 func makeSessionsSpawnHandler(env *runtimeEnv, _ *ToolRegistry) api.Handler {
 	return func(ctx context.Context, data json.RawMessage) *api.Response {
-		var req struct {
-			TaskDescription string                 `json:"task_description"`
-			Config          map[string]interface{} `json:"config,omitempty"`
-		}
-		// Config and task_description are optional; ignore parse errors.
-		json.Unmarshal(data, &req) //nolint:errcheck
-
-		newID := uuid.New().String()
-
-		// Ensure the shared agent VM is running so the new session has
-		// something to talk to on first use.
-		agentVMID, err := ensureAgentVM(ctx, env)
-		if err != nil {
-			return &api.Response{Error: "agent VM unavailable: " + err.Error()}
-		}
-
-		if env.Sessions != nil {
-			env.Sessions.Open(newID, agentVMID)
-			// If a task description was provided, record it as context.
-			if req.TaskDescription != "" {
-				env.Sessions.AppendMessage(newID, agentVMID, "system",
-					"Task context for this session: "+req.TaskDescription)
-			}
-		}
-
-		out, _ := json.Marshal(map[string]interface{}{
-			"session_id": newID,
-			"sandbox_id": agentVMID,
-			"ok":         true,
-		})
-		return &api.Response{Success: true, Data: out}
+		_ = ctx
+		_ = data
+		_ = env
+		return &api.Response{Error: "sessions.spawn removed from minimal Host Daemon TCB (Phase 3)"}
 	}
 }

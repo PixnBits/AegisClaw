@@ -220,20 +220,20 @@ func makeDashboardPRStatsHandler(env *runtimeEnv) api.Handler {
 
 		// Calculate stats
 		stats := map[string]interface{}{
-			"total":                     len(allPRs),
-			"open":                      0,
-			"merged":                    0,
-			"closed":                    0,
-			"awaiting_court_review":     0,
-			"court_review_approved":     0,
-			"court_review_rejected":     0,
-			"ready_to_merge":            0,
-			"total_files_changed":       0,
-			"total_additions":           0,
-			"total_deletions":           0,
-			"build_passed":              0,
-			"analysis_passed":           0,
-			"security_gates_passed":     0,
+			"total":                 len(allPRs),
+			"open":                  0,
+			"merged":                0,
+			"closed":                0,
+			"awaiting_court_review": 0,
+			"court_review_approved": 0,
+			"court_review_rejected": 0,
+			"ready_to_merge":        0,
+			"total_files_changed":   0,
+			"total_additions":       0,
+			"total_deletions":       0,
+			"build_passed":          0,
+			"analysis_passed":       0,
+			"security_gates_passed": 0,
 		}
 
 		for _, pr := range allPRs {

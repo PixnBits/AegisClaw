@@ -9,7 +9,6 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/api"
 	"github.com/PixnBits/AegisClaw/internal/kernel"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
-	"github.com/PixnBits/AegisClaw/internal/vault"
 	"github.com/PixnBits/AegisClaw/internal/wizard"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -116,76 +115,10 @@ func runSkillAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := env.ProposalStore.Create(p); err != nil {
-		return fmt.Errorf("failed to create proposal: %w", err)
-	}
-
-	// Auto-submit for court review.
-	if err := p.Transition(proposal.StatusSubmitted, "submitted for review", "operator"); err != nil {
-		return fmt.Errorf("cannot submit: %w", err)
-	}
-	if err := env.ProposalStore.Update(p); err != nil {
-		return fmt.Errorf("failed to persist: %w", err)
-	}
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"proposal_id": p.ID,
-		"title":       p.Title,
-		"category":    string(p.Category),
-		"skill_name":  result.SkillName,
-		"risk":        result.Risk,
-	})
-	action := kernel.NewAction(kernel.ActionProposalCreate, "operator", payload)
-	if _, signErr := env.Kernel.SignAndLog(action); signErr != nil {
-		env.Logger.Error("failed to log proposal creation", zap.Error(signErr))
-	}
-
-	if globalJSON {
-		data, _ := json.MarshalIndent(map[string]interface{}{
-			"proposal_id": p.ID,
-			"title":       p.Title,
-			"skill":       p.TargetSkill,
-			"status":      string(p.Status),
-			"risk":        string(p.Risk),
-		}, "", "  ")
-		fmt.Println(string(data))
-	} else {
-		fmt.Println()
-		fmt.Printf("Skill proposal created and submitted for review.\n")
-		fmt.Printf("  ID:       %s\n", p.ID)
-		fmt.Printf("  Title:    %s\n", p.Title)
-		fmt.Printf("  Skill:    %s\n", p.TargetSkill)
-		fmt.Printf("  Risk:     %s\n", p.Risk)
-		fmt.Printf("  Status:   %s\n", p.Status)
-
-		if len(p.SecretsRefs) > 0 {
-			fmt.Printf("  Secrets:  %v\n", p.SecretsRefs)
-		}
-	}
-
-	// Send the proposal to the daemon for court review. The daemon runs as
-	// root with Firecracker access and owns the reviewer sandboxes.
-	proposalData, err := p.Marshal()
-	if err != nil {
-		return fmt.Errorf("failed to serialize proposal: %w", err)
-	}
-	client := api.NewClient(env.Config.Daemon.SocketPath)
-	resp, err := client.Call(cmd.Context(), "court.review", api.CourtReviewRequest{
-		ProposalID:   p.ID,
-		ProposalData: proposalData,
-	})
-	if err != nil {
-		fmt.Printf("\n  Court review could not be started: %v\n", err)
-		fmt.Printf("  (Is the daemon running? Start it with: sudo aegisclaw start)\n")
-		return nil
-	}
-	if resp.Error != "" {
-		fmt.Printf("\n  Court review failed: %s\n", resp.Error)
-		return nil
-	}
-	fmt.Printf("\n  Court review initiated.\n")
-
-	return nil
+	// Phase 5: ProposalStore removed from Host Daemon TCB.
+	// Long-term owner: Store VM via AegisHub.
+	_ = p
+	return fmt.Errorf("proposal creation removed from minimal Host Daemon TCB (Phase 5)")
 }
 
 func buildSkillAddResult(skillGoal string) (*wizard.WizardResult, error) {
@@ -466,22 +399,8 @@ func runSkillSBOM(_ *cobra.Command, args []string) error {
 		return printSBOM(s)
 	}
 
-	// Try by skill name: scan all proposals.
-	proposals, listErr := env.ProposalStore.List()
-	if listErr != nil {
-		return fmt.Errorf("list proposals: %w", listErr)
-	}
-	for _, p := range proposals {
-		path := filepath.Join(sbomDir, p.ID, "sbom.json")
-		s, readErr := tryReadSBOM(path)
-		if readErr != nil {
-			continue
-		}
-		if s.Metadata.Component.Name == nameOrID {
-			return printSBOM(s)
-		}
-	}
-	return fmt.Errorf("no SBOM found for %q — build the skill first with: aegisclaw skill add", nameOrID)
+	// Phase 5: ProposalStore removed from Host Daemon TCB.
+	return fmt.Errorf("no SBOM found for %q (proposal-based lookup removed in Phase 5); build the skill first with: aegisclaw skill add", nameOrID)
 }
 
 func tryReadSBOM(path string) (*sbomPkg, error) {
@@ -545,7 +464,7 @@ func runSkillActivate(cmd *cobra.Command, args []string) error {
 
 	// Pre-activation check: verify all declared secrets exist in the vault.
 	// Walk proposals to find the approved one for this skill.
-	if env.Vault != nil {
+	if false { // Vault removed from TCB; secrets not handled in daemon 
 		if err := checkSecretsBeforeActivate(skillName, env); err != nil {
 			return err
 		}
@@ -577,64 +496,8 @@ func runSkillActivate(cmd *cobra.Command, args []string) error {
 // verifies all declared secrets_refs exist in the vault.  Returns a descriptive
 // error listing missing secrets and the CLI command to add each one.
 func checkSecretsBeforeActivate(skillName string, env *runtimeEnv) error {
-	summaries, err := env.ProposalStore.List()
-	if err != nil {
-		return nil // can't check — proceed optimistically
-	}
-
-	var secretsRefs []string
-	for _, s := range summaries {
-		full, err := env.ProposalStore.Get(s.ID)
-		if err != nil || full == nil {
-			continue
-		}
-		if full.TargetSkill != skillName {
-			continue
-		}
-		if !full.IsApproved() {
-			continue
-		}
-		secretsRefs = full.SecretsRefs
-		break
-	}
-
-	if len(secretsRefs) == 0 {
-		return nil // no secrets required
-	}
-
-	// Use the already-opened vault if available; otherwise open it.
-	v := env.Vault
-	if v == nil {
-		if env.Kernel == nil {
-			return nil // can't check without kernel key — proceed optimistically
-		}
-		var vaultErr error
-		v, vaultErr = vault.NewVault(env.Config.Vault.Dir, env.Kernel.PrivateKeyBytes(), env.Logger)
-		if vaultErr != nil {
-			return nil // can't check vault — proceed and let daemon handle it
-		}
-	}
-
-	var missing []string
-	for _, ref := range secretsRefs {
-		ok, hasErr := v.HasChecked(ref)
-		if hasErr != nil {
-			return fmt.Errorf("vault security check failed before activating skill %q: %w", skillName, hasErr)
-		}
-		if !ok {
-			missing = append(missing, ref)
-		}
-	}
-
-	if len(missing) == 0 {
-		return nil
-	}
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Missing required secret(s) for skill %q:\n", skillName))
-	for _, m := range missing {
-		b.WriteString(fmt.Sprintf("  - %s\n", m))
-		b.WriteString(fmt.Sprintf("    Add with: aegisclaw secrets add %s --skill %s\n", m, skillName))
-	}
-	return fmt.Errorf("%s", b.String())
+	// Phase 5: ProposalStore / secrets check removed from Host Daemon TCB.
+	_ = skillName
+	_ = env
+	return nil // can't check — proceed optimistically (Phase 5 stub)
 }
