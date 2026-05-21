@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/PixnBits/AegisClaw/internal/proposal"
@@ -14,7 +13,8 @@ func snpTestProposalStore(t *testing.T) *proposal.Store {
 	t.Helper()
 	dir := t.TempDir()
 	logger, _ := zap.NewDevelopment()
-	store, err := proposal.NewStore(filepath.Join(dir, "proposals.json"), logger)
+	// proposal.NewStore expects a directory path (it initializes a git repo inside).
+	store, err := proposal.NewStore(dir, logger)
 	if err != nil {
 		t.Fatalf("failed to create proposal store: %v", err)
 	}
