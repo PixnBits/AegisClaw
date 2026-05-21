@@ -104,6 +104,19 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 		var respData interface{}
 		var err error
 
+		// Safely extract payload bytes for unmarshaling regardless of decoder type
+		var payloadBytes []byte
+		switch v := req.Payload.(type) {
+		case []byte:
+			payloadBytes = v
+		case json.RawMessage:
+			payloadBytes = v
+		case map[string]interface{}:
+			payloadBytes, _ = json.Marshal(v)
+		default:
+			payloadBytes = []byte{}
+		}
+
 		switch req.Op {
 		case "proposal.list":
 			summaries, e := svm.Store().Proposals().List()
@@ -114,7 +127,7 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 			}
 		case "proposal.get":
 			var idReq struct{ ID string `json:"id"` }
-			if e := json.Unmarshal(req.Payload, &idReq); e != nil {
+			if e := json.Unmarshal(payloadBytes, &idReq); e != nil {
 				err = fmt.Errorf("invalid payload for proposal.get: %w", e)
 			} else {
 				p, e := svm.Store().Proposals().Get(idReq.ID)
@@ -126,7 +139,7 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 			}
 		case "proposal.create":
 			var p proposal.Proposal
-			if e := json.Unmarshal(req.Payload, &p); e != nil {
+			if e := json.Unmarshal(payloadBytes, &p); e != nil {
 				err = fmt.Errorf("invalid payload for proposal.create: %w", e)
 			} else {
 				e := svm.Store().Proposals().Create(&p)
@@ -138,7 +151,7 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 			}
 		case "proposal.update":
 			var p proposal.Proposal
-			if e := json.Unmarshal(req.Payload, &p); e != nil {
+			if e := json.Unmarshal(payloadBytes, &p); e != nil {
 				err = fmt.Errorf("invalid payload for proposal.update: %w", e)
 			} else {
 				e := svm.Store().Proposals().Update(&p)
@@ -150,7 +163,7 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 			}
 		case "proposal.list_by_status":
 			var statusReq struct{ Status string `json:"status"` }
-			if e := json.Unmarshal(req.Payload, &statusReq); e != nil {
+			if e := json.Unmarshal(payloadBytes, &statusReq); e != nil {
 				err = fmt.Errorf("invalid payload for proposal.list_by_status: %w", e)
 			} else {
 				summaries, e := svm.Store().Proposals().ListByStatus(proposal.Status(statusReq.Status))
@@ -162,7 +175,7 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 			}
 		case "proposal.resolve_id":
 			var prefixReq struct{ Prefix string `json:"prefix"` }
-			if e := json.Unmarshal(req.Payload, &prefixReq); e != nil {
+			if e := json.Unmarshal(payloadBytes, &prefixReq); e != nil {
 				err = fmt.Errorf("invalid payload for proposal.resolve_id: %w", e)
 			} else {
 				id, e := svm.Store().Proposals().ResolveID(prefixReq.Prefix)
@@ -174,7 +187,7 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 			}
 		case "proposal.import":
 			var p proposal.Proposal
-			if e := json.Unmarshal(req.Payload, &p); e != nil {
+			if e := json.Unmarshal(payloadBytes, &p); e != nil {
 				err = fmt.Errorf("invalid payload for proposal.import: %w", e)
 			} else {
 				e := svm.Store().Proposals().Import(&p)

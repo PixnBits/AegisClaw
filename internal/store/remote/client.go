@@ -157,10 +157,10 @@ func (r *remoteProposalStore) List() ([]proposal.ProposalSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	var summaries []proposal.ProposalSummary
 	if data == nil {
-		return summaries, nil
+		return nil, nil
 	}
+	var summaries []proposal.ProposalSummary
 	if err := json.Unmarshal(data.(json.RawMessage), &summaries); err != nil {
 		return nil, fmt.Errorf("unmarshal proposal list: %w", err)
 	}
@@ -172,10 +172,10 @@ func (r *remoteProposalStore) ListByStatus(status proposal.Status) ([]proposal.P
 	if err != nil {
 		return nil, err
 	}
-	var summaries []proposal.ProposalSummary
 	if data == nil {
-		return summaries, nil
+		return nil, nil
 	}
+	var summaries []proposal.ProposalSummary
 	if err := json.Unmarshal(data.(json.RawMessage), &summaries); err != nil {
 		return nil, fmt.Errorf("unmarshal proposal list by status: %w", err)
 	}

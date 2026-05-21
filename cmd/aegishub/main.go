@@ -21,7 +21,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -33,6 +32,9 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/store/remote"
 	"go.uber.org/zap"
 )
+
+// defaultVsockPort is the default vsock port for Store VM communication.
+const defaultVsockPort = 9999
 
 // AegisHub is the system IPC router microVM for AegisClaw.
 // It routes messages between the daemon, the Governance Court, and the Store VM.
@@ -54,7 +56,8 @@ import (
 func main() {
 	logger, err := zap.NewProduction()
 	if err != nil {
-		log.Fatalf("aegishub: failed to create logger: %v", err)
+		fmt.Printf("aegishub: failed to create logger: %v\n", err)
+		os.Exit(1)
 	}
 	defer logger.Sync() //nolint:errcheck
 
@@ -65,7 +68,7 @@ func main() {
 	// No in-process git repos or proposal data are loaded here.
 	storeVMAddr := os.Getenv("STORE_VM_VSOCK")
 	if storeVMAddr == "" {
-		storeVMAddr = "vsock://3:9999"
+		storeVMAddr = fmt.Sprintf("vsock://3:%d", defaultVsockPort)
 	}
 	remoteClient, err := remote.NewRemoteClient(storeVMAddr)
 	if err != nil {
@@ -86,10 +89,10 @@ func main() {
 
 	logger.Info("AegisHub started",
 		zap.String("role", "system-ipc-router"),
-		zap.String("listen", fmt.Sprintf("vsock::%d", vsockPort)),
+		zap.String("listen", fmt.Sprintf("vsock::%d", defaultVsockPort)),
 	)
 
-	listener, err := listenVsock(vsockPort)
+	listener, err := listenVsock(defaultVsockPort)
 	if err != nil {
 		logger.Fatal("aegishub: failed to listen on vsock", zap.Error(err))
 	}
