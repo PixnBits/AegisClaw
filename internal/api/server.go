@@ -304,6 +304,25 @@ func (s *Server) Stop() {
 	os.Remove(s.socketPath)
 }
 
+// Closer returns a lightweight stop function that closes the listener and
+// removes the socket file.  Unlike Stop, it captures only the net.Listener
+// and the socket path string rather than the full Server value, so callers
+// can discard the *Server pointer after calling Closer and let it be
+// garbage-collected (e.g. from a goroutine that must not hold large closures).
+func (s *Server) Closer() func() {
+	if s == nil {
+		return func() {}
+	}
+	ln := s.listener
+	path := s.socketPath
+	return func() {
+		if ln != nil {
+			ln.Close()
+		}
+		os.Remove(path)
+	}
+}
+
 func (s *Server) maxBodyBytes() int64 {
 	if s.MaxAPIBodyBytes > 0 {
 		return int64(s.MaxAPIBodyBytes)

@@ -212,7 +212,8 @@ func ReadEntries(path string) ([]MerkleEntry, error) {
 
 	var entries []MerkleEntry
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	// Initial capacity is 64 KiB; grows up to 1 MiB for large payloads.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -246,8 +247,8 @@ func VerifyChain(path string, pubKey ed25519.PublicKey) (uint64, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	// Support entries up to 1MB (generous for JSON payloads)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	// Initial capacity is 64 KiB; grows up to 1 MiB for large payloads.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var count uint64
 	var prevHash string
@@ -307,7 +308,8 @@ func VerifyChainThroughHashPrefix(path string, pubKey ed25519.PublicKey, hashTar
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	// Initial capacity is 64 KiB; grows up to 1 MiB for large payloads.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var count uint64
 	var prevHash string
@@ -363,7 +365,9 @@ func (ml *MerkleLog) recoverChainState() error {
 	}
 
 	scanner := bufio.NewScanner(ml.file)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	// Initial capacity is 64 KiB to keep kernel start-up allocation small; the
+	// buffer grows automatically up to 1 MiB if any single log line is larger.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()

@@ -372,14 +372,17 @@ func shutdownAllSandboxes(ctx context.Context, rt sandboxLifecycleRuntime) error
 }
 
 func scheduleDaemonExit(hub *ipc.MessageHub, apiSrv *api.Server, daemonQuit chan struct{}) {
+	// Extract only what the goroutine needs before launching it.  Holding the
+	// full *api.Server pointer inside the goroutine would also keep every
+	// registered handler closure – and the runtimeEnv they capture – alive
+	// for the entire grace period, causing unnecessary memory pressure.
+	stopServer := apiSrv.Closer()
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		if hub != nil {
 			hub.Stop()
 		}
-		if apiSrv != nil {
-			apiSrv.Stop()
-		}
+		stopServer()
 		if daemonQuit != nil {
 			func() {
 				defer func() { _ = recover() }()
