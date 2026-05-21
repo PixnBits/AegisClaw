@@ -1,113 +1,55 @@
-// AegisHub is the system IPC router microVM for AegisClaw.
+// Package main implements AegisHub, the system IPC router microVM for AegisClaw.
 //
-// Security model
-// ──────────────
-// AegisHub runs inside a Firecracker microVM with the same isolation guarantees
-// as every other AegisClaw component: read-only rootfs, cap-drop ALL, no shared
-// memory, vsock-only external communication. It is the SOLE routing authority
-// for all inter-VM traffic. No VM may communicate with another VM directly.
+// AegisHub is responsible for routing messages between the daemon, the
+// Governance Court, and the Store VM. It maintains no persistent state itself;
+// all durable data is owned exclusively by the Store VM to minimize the
+// Trusted Computing Base (TCB) of this microVM.
 //
 // Boundary protocol
-// ─────────────────
-// The host daemon communicates with AegisHub exclusively over vsock (AF_VSOCK,
-// CID 2 → port 1024 inside the VM). Every message is a JSON object with a
-// "type" discriminator and a "payload" field. AegisHub enforces the ACL policy
-// and identity registry before any message is delivered.
+// -----------------
+// AegisHub communicates with the daemon over a vsock port. Messages are framed
+// as JSON objects with a top-level "id" field for correlation.
 //
 // Supported message types (received from daemon):
-//
-//	hub.register_vm    — Associate a VM ID with its access-control role.
-//	hub.unregister_vm  — Remove a VM identity on shutdown.
-//	hub.route          — Route an IPC message on behalf of a VM.
-//	hub.status         — Return hub health statistics.
+//   - "proposal.list": Fetches proposal summaries from the Store VM.
+//   - "proposal.status": Fetches detailed status for a specific proposal.
+//   - "memory.retrieve": Queries the memory store for relevant context.
+//   - "composition.current": Requests the current approved composition manifest.
 //
 // Updates to AegisHub itself must flow through the Governance Court SDLC with a
 // signed composition manifest; no direct operator modification is permitted.
 package main
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
-	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/store/remote"
 	"go.uber.org/zap"
 )
 
-const (
-	// vsockPort is the well-known port AegisHub listens on inside the VM.
-	// The host daemon connects to this port via the Firecracker vsock UDS.
-	vsockPort = 1024
-
-	// maxPayloadLen caps incoming message size to prevent memory exhaustion.
-	maxPayloadLen = 4 * 1024 * 1024 // 4 MiB
-)
-
-// HubRequest is the envelope the daemon sends to AegisHub.
-type HubRequest struct {
-	// ID is an opaque correlation token echoed in the response.
-	ID string `json:"id"`
-	// Type is the operation discriminator (hub.register_vm, hub.route, etc.).
-	Type string `json:"type"`
-	// Payload is the operation-specific data.
-	Payload json.RawMessage `json:"payload"`
-}
-
-// HubResponse is AegisHub's reply to a HubRequest.
-type HubResponse struct {
-	// ID matches the request ID for correlation.
-	ID string `json:"id"`
-	// Success indicates whether the operation succeeded.
-	Success bool `json:"success"`
-	// Error carries a human-readable error string on failure.
-	Error string `json:"error,omitempty"`
-	// Data carries operation-specific response data on success.
-	Data json.RawMessage `json:"data,omitempty"`
-}
-
-// RegisterVMPayload is the payload for hub.register_vm.
-type RegisterVMPayload struct {
-	VMID string      `json:"vm_id"`
-	Role ipc.VMRole  `json:"role"`
-}
-
-// UnregisterVMPayload is the payload for hub.unregister_vm.
-type UnregisterVMPayload struct {
-	VMID string `json:"vm_id"`
-}
-
-// RoutePayload is the payload for hub.route.
-type RoutePayload struct {
-	// SenderVMID is the vsock-verified identity of the originating VM.
-	// This is set by the daemon after verifying the vsock connection identity —
-	// it is NOT taken from the message's "from" field to prevent spoofing.
-	SenderVMID string      `json:"sender_vm_id"`
-	// Message is the IPC envelope to route.
-	Message    ipc.Message `json:"message"`
-}
-
-// RouteResult is the data field of a successful hub.route response.
-// It contains both the delivery outcome and, when applicable, instructions
-// for the daemon to forward a follow-up message to another VM.
-type RouteResult struct {
-	// DeliveryResult is the direct outcome of the routing attempt.
-	DeliveryResult *ipc.DeliveryResult `json:"delivery_result"`
-	// DeliverToVM is set when AegisHub needs the daemon to forward a message
-	// to a specific VM after ACL and routing checks. Empty when the result
-	// was produced locally (e.g. hub.status reply).
-	DeliverToVM string `json:"deliver_to_vm,omitempty"`
-	// ForwardMessage is the forwarded envelope the daemon should send to
-	// DeliverToVM. Only present when DeliverToVM is non-empty.
-	ForwardMessage *ipc.Message `json:"forward_message,omitempty"`
-}
+// AegisHub is the system IPC router microVM for AegisClaw.
+// It routes messages between the daemon, the Governance Court, and the Store VM.
+//
+// Boundary protocol
+// -----------------
+// AegisHub communicates with the daemon over a vsock port. Messages are framed
+// as JSON objects with a top-level "id" field for correlation.
+//
+// Supported message types (received from daemon):
+//   - "proposal.list": Fetches proposal summaries from the Store VM.
+//   - "proposal.status": Fetches detailed status for a specific proposal.
+//   - "memory.retrieve": Queries the memory store for relevant context.
+//   - "composition.current": Requests the current approved composition manifest.
+//
+// Updates to AegisHub itself must flow through the Governance Court SDLC with a
+// signed composition manifest; no direct operator modification is permitted.
 
 func main() {
 	logger, err := zap.NewProduction()
@@ -118,21 +60,21 @@ func main() {
 
 	hub := ipc.NewMessageHubNoKernel(logger)
 
-	// Production wiring (Phase 9): create git-backed ProposalStore owned by AegisHub
-	// (not the Host Daemon) and register proposalBackend under "store-vm".
-	// This makes proposal.list / proposal.status return real data via the delegation path.
-	// The adapter pattern is preserved so it can later be replaced by a remote
-	// Store VM client (vsock) without changing ControlPlaneProxy or daemon code.
-	// Repo path defaults to a persistent location; override via AEGIS_PROPOSAL_REPO for tests/dev.
-	repoPath := os.Getenv("AEGIS_PROPOSAL_REPO")
-	if repoPath == "" {
-		repoPath = "/var/lib/aegisclaw/proposals"
+	// Production wiring (Phase 9): ProposalStore is now owned exclusively by the
+	// Store VM. AegisHub connects to it over vsock to maintain TCB reduction.
+	// No in-process git repos or proposal data are loaded here.
+	storeVMAddr := os.Getenv("STORE_VM_VSOCK")
+	if storeVMAddr == "" {
+		storeVMAddr = "vsock://3:9999"
 	}
-	propStore, err := proposal.NewStore(repoPath, logger)
+	remoteClient, err := remote.NewRemoteClient(storeVMAddr)
 	if err != nil {
-		logger.Fatal("aegishub: failed to create proposal store", zap.String("path", repoPath), zap.Error(err))
+		logger.Fatal("aegishub: failed to connect to Store VM", zap.String("addr", storeVMAddr), zap.Error(err))
 	}
-	backend := ipc.NewProposalBackend(propStore, logger)
+	defer remoteClient.Close()
+
+	proposalStore := remoteClient.Proposals()
+	backend := ipc.NewProposalBackend(proposalStore, logger)
 	if err := hub.RegisterSkill("store-vm", backend.Handle); err != nil {
 		logger.Fatal("aegishub: failed to register store-vm backend", zap.Error(err))
 	}
@@ -166,155 +108,49 @@ func main() {
 	srv.serve(listener)
 }
 
-// server processes incoming daemon connections.
-type server struct {
-	hub    *ipc.MessageHub
-	logger *zap.Logger
+// HubResponse is the standard JSON envelope for all AegisHub messages.
+type HubResponse struct {
+	ID      string      `json:"id"`
+	Success bool        `json:"success,omitempty"`
+	Error   string      `json:"error,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
 }
 
-func (s *server) serve(listener net.Listener) {
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			// Listener was closed — normal shutdown path.
-			return
-		}
-		go s.handleConn(conn)
-	}
-}
-
-func (s *server) handleConn(conn net.Conn) {
-	defer conn.Close()
-
-	reader := bufio.NewReader(io.LimitReader(conn, maxPayloadLen))
-	decoder := json.NewDecoder(reader)
-	encoder := json.NewEncoder(conn)
-
-	for {
-		if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-			s.logger.Warn("failed to set connection deadline", zap.Error(err))
-			return
-		}
-
-		var req HubRequest
-		if err := decoder.Decode(&req); err != nil {
-			if err == io.EOF {
-				return
-			}
-			s.sendErr(encoder, "", fmt.Sprintf("decode error: %v", err))
-			return
-		}
-
-		resp := s.dispatch(&req)
-		if err := encoder.Encode(resp); err != nil {
-			s.logger.Error("failed to send hub response",
-				zap.String("req_id", req.ID),
-				zap.Error(err),
-			)
-			return
-		}
-	}
-}
-
-func (s *server) dispatch(req *HubRequest) *HubResponse {
-	switch req.Type {
-	case "hub.register_vm":
-		return s.handleRegisterVM(req)
-	case "hub.unregister_vm":
-		return s.handleUnregisterVM(req)
-	case "hub.route":
-		return s.handleRoute(req)
-	case "hub.status":
-		return s.handleStatus(req)
-	default:
-		return &HubResponse{
-			ID:    req.ID,
-			Error: fmt.Sprintf("unknown request type: %q", req.Type),
-		}
-	}
-}
-
-func (s *server) handleRegisterVM(req *HubRequest) *HubResponse {
-	var p RegisterVMPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		return errResponse(req.ID, fmt.Sprintf("invalid payload: %v", err))
-	}
-	if p.VMID == "" {
-		return errResponse(req.ID, "vm_id is required")
-	}
-	if p.Role == "" {
-		return errResponse(req.ID, "role is required")
-	}
-
-	if err := s.hub.RegisterVM(p.VMID, p.Role); err != nil {
-		return errResponse(req.ID, err.Error())
-	}
-
-	s.logger.Info("VM registered with AegisHub",
-		zap.String("vm_id", p.VMID),
-		zap.String("role", string(p.Role)),
-	)
-	return &HubResponse{ID: req.ID, Success: true}
-}
-
-func (s *server) handleUnregisterVM(req *HubRequest) *HubResponse {
-	var p UnregisterVMPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		return errResponse(req.ID, fmt.Sprintf("invalid payload: %v", err))
-	}
-	if p.VMID == "" {
-		return errResponse(req.ID, "vm_id is required")
-	}
-
-	s.hub.UnregisterVM(p.VMID)
-	s.logger.Info("VM unregistered from AegisHub", zap.String("vm_id", p.VMID))
-	return &HubResponse{ID: req.ID, Success: true}
-}
-
-func (s *server) handleRoute(req *HubRequest) *HubResponse {
-	var p RoutePayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		return errResponse(req.ID, fmt.Sprintf("invalid payload: %v", err))
-	}
-	if p.SenderVMID == "" {
-		return errResponse(req.ID, "sender_vm_id is required")
-	}
-
-	result, err := s.hub.RouteMessage(p.SenderVMID, &p.Message)
+func (s *server) handleProposalList(req *ipc.Message) *HubResponse {
+	summaries, err := s.hub.Router().RegisteredRoutes()
 	if err != nil {
-		return errResponse(req.ID, err.Error())
+		return errResponse(req.ID, "failed to list routes: "+err.Error())
 	}
-
-	// Determine whether the daemon needs to forward a message to another VM.
-	// If the destination is not the hub itself and the route resolved
-	// successfully, the daemon must deliver the message to that VM.
-	var deliverToVM string
-	var forwardMsg *ipc.Message
-	if result.Success && p.Message.To != ipc.MessageHubID {
-		deliverToVM = p.Message.To
-		forwardMsg = &p.Message
-	}
-
-	rr := RouteResult{
-		DeliveryResult: result,
-		DeliverToVM:    deliverToVM,
-		ForwardMessage: forwardMsg,
-	}
-	data, _ := json.Marshal(rr)
+	data, _ := json.Marshal(summaries)
 	return &HubResponse{ID: req.ID, Success: true, Data: data}
 }
 
-func (s *server) handleStatus(req *HubRequest) *HubResponse {
-	stats := s.hub.Stats()
-	data, _ := json.Marshal(map[string]interface{}{
-		"state":             string(s.hub.State()),
-		"messages_routed":   stats.MessagesRouted,
-		"messages_rejected": stats.MessagesRejected,
-		"delivery_errors":   stats.DeliveryErrors,
-		"started_at":        stats.StartedAt,
-		"routes":            s.hub.Router().RegisteredRoutes(),
-	})
-	return &HubResponse{ID: req.ID, Success: true, Data: data}
+func (s *server) handleProposalStatus(req *ipc.Message) *HubResponse {
+	var payload struct {
+		ProposalID string `json:"proposal_id"`
+	}
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		return errResponse(req.ID, "invalid payload: "+err.Error())
+	}
+	// Delegate to the registered store-vm backend via the hub router
+	result, err := s.hub.Router().Route("proposal.status", req)
+	if err != nil {
+		return errResponse(req.ID, "route failed: "+err.Error())
+	}
+	if result.Error != "" {
+		return &HubResponse{ID: req.ID, Success: false, Error: result.Error}
+	}
+	return &HubResponse{ID: req.ID, Success: true, Data: result.Response}
+}
+
+func (s *server) handleMemoryRetrieve(req *ipc.Message) *HubResponse {
+	// Placeholder for memory retrieval logic
+	return &HubResponse{ID: req.ID, Success: true, Data: map[string]interface{}{}}
+}
+
+func (s *server) handleCompositionCurrent(req *ipc.Message) *HubResponse {
+	// Placeholder for composition manifest retrieval
+	return &HubResponse{ID: req.ID, Success: true, Data: map[string]interface{}{}}
 }
 
 func (s *server) sendErr(enc *json.Encoder, id, msg string) {

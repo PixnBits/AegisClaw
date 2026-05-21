@@ -15,6 +15,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
+	"github.com/PixnBits/AegisClaw/internal/store/remote"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 )
 
@@ -30,8 +31,8 @@ type StoreVM interface {
 func NewStoreVM(cfg *config.Config, logger *zap.Logger) (StoreVM, error) {
 	// Phase 2.9+ hook for remote mode
 	if os.Getenv("STORE_MODE") == "remote" {
-		addr := "vsock://2:9999"                  // placeholder
-		client, err := remoteClientFromAddr(addr) // helper below
+		addr := "vsock://2:9999" // placeholder
+		client, err := remoteClientFromAddr(addr)
 		if err != nil {
 			return nil, err
 		}
@@ -138,21 +139,24 @@ func (vm *inProcessStoreVM) Store() Store {
 
 var _ StoreVM = (*inProcessStoreVM)(nil)
 
-// remoteStoreVMAdapter (from Phase 2.9)
+// remoteStoreVMAdapter bridges the remote client to the StoreVM interface.
 type remoteStoreVMAdapter struct {
-	client interface{ Store() Store }
+	client *remote.RemoteClient
 }
 
 func (a *remoteStoreVMAdapter) Start(ctx context.Context) error { return nil }
 func (a *remoteStoreVMAdapter) Stop(ctx context.Context) error  { return nil }
-func (a *remoteStoreVMAdapter) Store() Store                    { return a.client.Store() }
+func (a *remoteStoreVMAdapter) Store() Store                    { return a.client }
 
 var _ StoreVM = (*remoteStoreVMAdapter)(nil)
 
 // Helper for remote (Phase 2.8/2.9)
 func remoteClientFromAddr(addr string) (interface{ Store() Store }, error) {
-	// Placeholder - real implementation uses remote.NewRemoteClient
-	return nil, fmt.Errorf("remote mode not fully implemented yet (use STORE_MODE=in-process)")
+	client, err := remote.NewRemoteClient(addr)
+	if err != nil {
+		return nil, err
+	}
+	return &remoteStoreVMAdapter{client: client}, nil
 }
 
 // loadOrCreateMemoryIdentity (kept here for self-contained in-process creation)

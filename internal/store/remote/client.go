@@ -121,11 +121,11 @@ func (c *RemoteClient) Events() store.EventStore {
 	return &remoteEventStore{client: c}
 }
 
-// Placeholder implementations for sub-stores. Remote mode is not enabled by
-// default yet; these methods provide the correct typed surface so the package
-// builds while the vsock protocol is completed.
+// --- Proposal Store Implementation ---
 
 type remoteProposalStore struct{ client *RemoteClient }
+
+var _ store.ProposalStore = (*remoteProposalStore)(nil)
 
 func (r *remoteProposalStore) Create(p *proposal.Proposal) error {
 	_, err := r.client.sendRequest("proposal.create", p)
@@ -133,7 +133,18 @@ func (r *remoteProposalStore) Create(p *proposal.Proposal) error {
 }
 
 func (r *remoteProposalStore) Get(id string) (*proposal.Proposal, error) {
-	return nil, fmt.Errorf("remote proposal get is not implemented for %s", id)
+	data, err := r.client.sendRequest("proposal.get", map[string]string{"id": id})
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("proposal not found: %s", id)
+	}
+	var p proposal.Proposal
+	if err := json.Unmarshal(data.(json.RawMessage), &p); err != nil {
+		return nil, fmt.Errorf("unmarshal proposal get: %w", err)
+	}
+	return &p, nil
 }
 
 func (r *remoteProposalStore) Update(p *proposal.Proposal) error {
@@ -142,15 +153,48 @@ func (r *remoteProposalStore) Update(p *proposal.Proposal) error {
 }
 
 func (r *remoteProposalStore) List() ([]proposal.ProposalSummary, error) {
-	return nil, fmt.Errorf("remote proposal list is not implemented")
+	data, err := r.client.sendRequest("proposal.list", nil)
+	if err != nil {
+		return nil, err
+	}
+	var summaries []proposal.ProposalSummary
+	if data == nil {
+		return summaries, nil
+	}
+	if err := json.Unmarshal(data.(json.RawMessage), &summaries); err != nil {
+		return nil, fmt.Errorf("unmarshal proposal list: %w", err)
+	}
+	return summaries, nil
 }
 
 func (r *remoteProposalStore) ListByStatus(status proposal.Status) ([]proposal.ProposalSummary, error) {
-	return nil, fmt.Errorf("remote proposal list by status is not implemented for %s", status)
+	data, err := r.client.sendRequest("proposal.list_by_status", map[string]string{"status": string(status)})
+	if err != nil {
+		return nil, err
+	}
+	var summaries []proposal.ProposalSummary
+	if data == nil {
+		return summaries, nil
+	}
+	if err := json.Unmarshal(data.(json.RawMessage), &summaries); err != nil {
+		return nil, fmt.Errorf("unmarshal proposal list by status: %w", err)
+	}
+	return summaries, nil
 }
 
 func (r *remoteProposalStore) ResolveID(prefix string) (string, error) {
-	return "", fmt.Errorf("remote proposal resolve is not implemented for %s", prefix)
+	data, err := r.client.sendRequest("proposal.resolve_id", map[string]string{"prefix": prefix})
+	if err != nil {
+		return "", err
+	}
+	if data == nil {
+		return "", fmt.Errorf("no ID resolved for prefix: %s", prefix)
+	}
+	var resolved string
+	if err := json.Unmarshal(data.(json.RawMessage), &resolved); err != nil {
+		return "", fmt.Errorf("unmarshal proposal resolve id: %w", err)
+	}
+	return resolved, nil
 }
 
 func (r *remoteProposalStore) Import(p *proposal.Proposal) error {
@@ -158,7 +202,7 @@ func (r *remoteProposalStore) Import(p *proposal.Proposal) error {
 	return err
 }
 
-// Similar minimal implementations for other stores can be expanded
+// --- Other Store Stubs (Minimal implementations to satisfy interfaces) ---
 
 type remoteMemoryStore struct{ client *RemoteClient }
 
@@ -166,16 +210,12 @@ func (r *remoteMemoryStore) Store(entry *memory.MemoryEntry) (string, error) {
 	_, err := r.client.sendRequest("memory.store", entry)
 	return "", err
 }
-
 func (r *remoteMemoryStore) Retrieve(query string, k int, taskID string) ([]*memory.MemoryEntry, error) {
 	return nil, fmt.Errorf("remote memory retrieve is not implemented for %q/%d/%q", query, k, taskID)
 }
-
 func (r *remoteMemoryStore) List(tier memory.TTLTier) ([]memory.StoreSummary, error) {
 	return nil, fmt.Errorf("remote memory list is not implemented for tier %s", tier)
 }
-
-// Stubs for other stores
 
 type remotePullRequestStore struct{ client *RemoteClient }
 
@@ -193,8 +233,6 @@ func (r *remotePullRequestStore) Update(pr *pullrequest.PullRequest) error { ret
 func (r *remotePullRequestStore) Approve(prID, approvedBy string) error    { return nil }
 func (r *remotePullRequestStore) Close(prID string) error                  { return nil }
 func (r *remotePullRequestStore) MarkMerged(prID string) error             { return nil }
-
-// ... (similar stubs for Composition, Worker, Event)
 
 type remoteCompositionStore struct{ client *RemoteClient }
 
