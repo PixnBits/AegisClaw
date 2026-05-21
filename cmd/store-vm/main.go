@@ -22,6 +22,7 @@ import (
 )
 
 // store-vm guest with persistent filesystem support.
+// This VM owns all persistent proposal state, reducing the TCB of AegisHub.
 
 func main() {
 	var dataDir string
@@ -68,9 +69,6 @@ func acceptLoop(l net.Listener, svm store.StoreVM, logger *zap.Logger) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			// If the listener was closed intentionally (e.g. during shutdown) that
-			// is a clean stop; any other error is unexpected – log it and stop to
-			// avoid a hot spin on a broken listener.
 			if errors.Is(err, net.ErrClosed) {
 				logger.Info("acceptLoop: listener closed, stopping")
 			} else {

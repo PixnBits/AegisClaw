@@ -67,7 +67,9 @@ func (c *RemoteClient) Close() error {
 // sendRequest is the core communication method.
 // A mutex protects the shared connection so concurrent sub-store calls do not
 // interleave their request/response frames on the stream.
-func (c *RemoteClient) sendRequest(op string, payload interface{}) (interface{}, error) {
+// Returns json.RawMessage to avoid double-unmarshaling issues when the server
+// sends Go types that json.Decoder converts to map/slice.
+func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -92,7 +94,16 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (interface{},
 		return nil, fmt.Errorf("store vm error: %s", resp.Error)
 	}
 
-	return resp.Data, nil
+	if resp.Data == nil {
+		return nil, nil
+	}
+
+	// Return raw JSON to avoid double-unmarshaling issues when the server
+	// sends Go types that json.Decoder converts to map/slice.
+	if raw, ok := resp.Data.(json.RawMessage); ok {
+		return raw, nil
+	}
+	return json.Marshal(resp.Data)
 }
 
 // --- Store interface implementations ---
@@ -141,7 +152,7 @@ func (r *remoteProposalStore) Get(id string) (*proposal.Proposal, error) {
 		return nil, fmt.Errorf("proposal not found: %s", id)
 	}
 	var p proposal.Proposal
-	if err := json.Unmarshal(data.(json.RawMessage), &p); err != nil {
+	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("unmarshal proposal get: %w", err)
 	}
 	return &p, nil
@@ -161,7 +172,7 @@ func (r *remoteProposalStore) List() ([]proposal.ProposalSummary, error) {
 		return nil, nil
 	}
 	var summaries []proposal.ProposalSummary
-	if err := json.Unmarshal(data.(json.RawMessage), &summaries); err != nil {
+	if err := json.Unmarshal(data, &summaries); err != nil {
 		return nil, fmt.Errorf("unmarshal proposal list: %w", err)
 	}
 	return summaries, nil
@@ -176,7 +187,7 @@ func (r *remoteProposalStore) ListByStatus(status proposal.Status) ([]proposal.P
 		return nil, nil
 	}
 	var summaries []proposal.ProposalSummary
-	if err := json.Unmarshal(data.(json.RawMessage), &summaries); err != nil {
+	if err := json.Unmarshal(data, &summaries); err != nil {
 		return nil, fmt.Errorf("unmarshal proposal list by status: %w", err)
 	}
 	return summaries, nil
@@ -191,7 +202,7 @@ func (r *remoteProposalStore) ResolveID(prefix string) (string, error) {
 		return "", fmt.Errorf("no ID resolved for prefix: %s", prefix)
 	}
 	var resolved string
-	if err := json.Unmarshal(data.(json.RawMessage), &resolved); err != nil {
+	if err := json.Unmarshal(data, &resolved); err != nil {
 		return "", fmt.Errorf("unmarshal proposal resolve id: %w", err)
 	}
 	return resolved, nil
