@@ -15,6 +15,9 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
@@ -23,6 +26,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const defaultAegisHubVSOCKPort = 9998
+
 type HubRequest struct {
 	ID      string          `json:"id"`
 	Type    string          `json:"type"`
@@ -30,10 +35,10 @@ type HubRequest struct {
 }
 
 type HubResponse struct {
-	ID      string      `json:"id"`
-	Success bool        `json:"success"`
-	Error   string      `json:"error,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
+	ID      string          `json:"id"`
+	Success bool            `json:"success"`
+	Error   string          `json:"error,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 type RegisterVMPayload struct {
@@ -41,14 +46,21 @@ type RegisterVMPayload struct {
 	Role string `json:"role"`
 }
 
-type RoutePayload struct {
-	Target string `json:"target"`
+type handshakeRequest struct {
+	Type   string `json:"type"`
+	Secret string `json:"secret"`
+	VMID   string `json:"vm_id"`
+	Role   string `json:"role"`
+}
+
+type authenticatedVM struct {
+	ID   string
+	Role ipc.VMRole
 }
 
 type server struct {
-	logger  *zap.Logger
-	hub     *ipc.MessageHub
-	storeVM interface{}
+	logger *zap.Logger
+	hub    *ipc.MessageHub
 }
 
 func main() {
@@ -64,26 +76,64 @@ func main() {
 		logger.Fatal("message hub failed to start", zap.Error(err))
 	}
 
-	_ = srv.handleConn
-	_ = srv.dispatch
-	_ = RegisterVMPayload{}
-	_ = RoutePayload{}
+	port := defaultAegisHubVSOCKPort
+	if portEnv := os.Getenv("AEGISHUB_VSOCK_PORT"); portEnv != "" {
+		parsed, err := strconv.ParseUint(portEnv, 10, 32)
+		if err != nil {
+			logger.Fatal("invalid AEGISHUB_VSOCK_PORT", zap.String("value", portEnv), zap.Error(err))
+		}
+		port = int(parsed)
+	}
 
-	// Placeholder: In production this would listen on vsock or unix socket.
-	logger.Info("aegishub: placeholder main - no listener configured")
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
-		<-sigCh
-		srv.hub.Stop()
-	}()
+	listener, err := listenAFVsock(uint32(port))
+	if err != nil {
+		logger.Fatal("aegishub listen failed", zap.Error(err))
+	}
+	defer listener.Close()
+
+	logger.Info("aegishub listening", zap.Int("vsock_port", port))
+	go srv.acceptLoop(listener)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
+	<-sigCh
+
+	if err := listener.Close(); err != nil {
+		logger.Warn("failed to close listener", zap.Error(err))
+	}
+	srv.hub.Stop()
+}
+
+func (s *server) acceptLoop(listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if strings.Contains(err.Error(), "use of closed network connection") {
+				return
+			}
+			s.logger.Warn("aegishub: accept failed", zap.Error(err))
+			return
+		}
+		go s.handleConn(conn)
+	}
 }
 
 func (s *server) handleConn(conn net.Conn) {
 	defer conn.Close()
+
 	// Task 5: Connection Hardening - Enforce read/write deadlines to mitigate slow-client DoS.
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+
+	authn, err := s.authenticateConn(conn)
+	if err != nil {
+		s.logger.Warn("aegishub: handshake failed", zap.Error(err))
+		return
+	}
+
+	// Reset deadlines after the handshake succeeds.
+	conn.SetReadDeadline(time.Time{})
+	conn.SetWriteDeadline(time.Time{})
 
 	dec := json.NewDecoder(conn)
 	enc := json.NewEncoder(conn)
@@ -97,7 +147,7 @@ func (s *server) handleConn(conn net.Conn) {
 			return
 		}
 
-		resp := s.dispatch(req)
+		resp := s.dispatch(authn, req)
 		if err := enc.Encode(resp); err != nil {
 			s.logger.Debug("aegishub: failed to encode response", zap.Error(err))
 			return
@@ -108,47 +158,113 @@ func (s *server) handleConn(conn net.Conn) {
 	}
 }
 
-// sanitizeError returns a generic error message for external consumption.
-func sanitizeError(err error) string {
-	if err == nil {
-		return ""
+func (s *server) authenticateConn(conn net.Conn) (authenticatedVM, error) {
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+
+	var req handshakeRequest
+	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		return authenticatedVM{}, fmt.Errorf("decode handshake: %w", err)
 	}
-	return "internal error"
+	if req.Type != "handshake" {
+		return authenticatedVM{}, fmt.Errorf("invalid handshake type")
+	}
+	if req.VMID == "" {
+		return authenticatedVM{}, fmt.Errorf("vm_id is required")
+	}
+
+	role, err := parseRole(req.Role)
+	if err != nil {
+		return authenticatedVM{}, err
+	}
+
+	secret, err := loadSharedSecret("AEGISHUB_SHARED_SECRET")
+	if err != nil {
+		return authenticatedVM{}, err
+	}
+	if req.Secret != secret {
+		return authenticatedVM{}, fmt.Errorf("invalid shared secret")
+	}
+
+	if err := s.hub.RegisterVM(req.VMID, role); err != nil {
+		return authenticatedVM{}, fmt.Errorf("register vm: %w", err)
+	}
+
+	if err := json.NewEncoder(conn).Encode(map[string]string{
+		"type":   "handshake_ack",
+		"status": "ok",
+	}); err != nil {
+		return authenticatedVM{}, fmt.Errorf("encode handshake ack: %w", err)
+	}
+
+	return authenticatedVM{ID: req.VMID, Role: role}, nil
 }
 
 // dispatch routes the request to the appropriate handler based on its type.
-func (s *server) dispatch(req HubRequest) HubResponse {
+func (s *server) dispatch(sender authenticatedVM, req HubRequest) HubResponse {
 	switch req.Type {
 	case "register_vm":
 		var payload RegisterVMPayload
 		if err := json.Unmarshal(req.Payload, &payload); err != nil {
 			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("invalid register_vm payload"))}
 		}
-		// TODO: Implement VM registration logic if needed by the hub.
+		if payload.VMID != sender.ID || ipc.VMRole(payload.Role) != sender.Role {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("register_vm payload does not match authenticated identity"))}
+		}
+		if err := s.hub.RegisterVM(payload.VMID, sender.Role); err != nil {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
+		}
 		return HubResponse{ID: req.ID, Success: true}
 
 	case "route":
-		var payload RoutePayload
-		if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		var msg ipc.Message
+		if err := json.Unmarshal(req.Payload, &msg); err != nil {
 			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("invalid route payload"))}
 		}
-		// TODO: Implement cross-VM routing logic.
-		return HubResponse{ID: req.ID, Success: true, Data: json.RawMessage(`{"routed": true}`)}
+		if msg.From == "" {
+			msg.From = sender.ID
+		}
+		if msg.Timestamp.IsZero() {
+			msg.Timestamp = time.Now().UTC()
+		}
+
+		result, err := s.hub.RouteMessage(sender.ID, &msg)
+		if err != nil {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
+		}
+
+		data, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(marshalErr)}
+		}
+		return HubResponse{ID: req.ID, Success: true, Data: json.RawMessage(data)}
 
 	default:
-		// Delegate to registered skills using the hub's message router.
-		if s.hub != nil {
-			result, err := s.hub.RouteMessage(req.ID, &ipc.Message{
-				ID:      req.ID,
-				Type:    req.Type,
-				Payload: req.Payload,
-			})
-			if err != nil {
-				return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
-			}
-			data, _ := json.Marshal(result)
-			return HubResponse{ID: req.ID, Success: true, Data: json.RawMessage(data)}
-		}
 		return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("unknown request type: %s", req.Type))}
 	}
+}
+
+func parseRole(role string) (ipc.VMRole, error) {
+	switch ipc.VMRole(role) {
+	case ipc.RoleAgent, ipc.RoleCLI, ipc.RoleCourt, ipc.RoleBuilder, ipc.RoleSkill, ipc.RoleHub, ipc.RoleDaemon:
+		return ipc.VMRole(role), nil
+	default:
+		return "", fmt.Errorf("invalid role %q", role)
+	}
+}
+
+func loadSharedSecret(envVar string) (string, error) {
+	if secret := strings.TrimSpace(os.Getenv(envVar)); secret != "" {
+		return secret, nil
+	}
+
+	data, err := os.ReadFile(filepath.Join("/data", ".shared_secret"))
+	if err != nil {
+		return "", fmt.Errorf("shared secret not configured")
+	}
+	secret := strings.TrimSpace(string(data))
+	if secret == "" {
+		return "", fmt.Errorf("shared secret not configured")
+	}
+	return secret, nil
 }

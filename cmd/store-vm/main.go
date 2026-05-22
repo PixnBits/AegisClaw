@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
@@ -89,12 +91,15 @@ func main() {
 	_ = svm.Stop(context.Background())
 }
 
-// dropCapabilities drops all Linux capabilities except CAP_NET_BIND_SERVICE if needed.
+// dropCapabilities removes every capability from the Linux capability bounding set.
 // This minimizes the attack surface in case of container escape or VM breakout.
 func dropCapabilities() error {
-	// In a real deployment, capabilities are managed by the host/jailer.
-	// We set the bounding set to empty to prevent privilege escalation.
-	return unix.Prctl(unix.PR_CAPBSET_DROP, 0, 0, 0, 0)
+	for capID := uintptr(0); capID <= unix.CAP_LAST_CAP; capID++ {
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, capID, 0, 0, 0); err != nil {
+			return fmt.Errorf("drop capability %d: %w", capID, err)
+		}
+	}
+	return nil
 }
 
 // applySeccompFilter applies a default-deny seccomp policy.
@@ -136,12 +141,12 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 	conn.SetReadDeadline(time.Time{})
 	conn.SetWriteDeadline(time.Time{})
 
-	decoder := json.NewDecoder(io.LimitReader(conn, remote.MaxPayloadLen))
 	encoder := json.NewEncoder(conn)
+	reader := bufio.NewReader(conn)
 
 	for {
 		var req remote.Request
-		if err := decoder.Decode(&req); err != nil {
+		if err := json.NewDecoder(io.LimitReader(reader, remote.MaxPayloadLen+1)).Decode(&req); err != nil {
 			if err == io.EOF {
 				return
 			}
@@ -156,29 +161,9 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 		var err error
 
 		// Task 3: Strict Input Validation - Validate payload structure and size before unmarshaling.
-		var payloadBytes []byte
-		err = fmt.Errorf("invalid payload for processing")
-		switch v := req.Payload.(type) {
-		case []byte:
-			if len(v) > remote.MaxPayloadLen {
-				err = fmt.Errorf("payload too large")
-			} else {
-				payloadBytes = v
-			}
-		case json.RawMessage:
-			if len(v) > remote.MaxPayloadLen {
-				err = fmt.Errorf("payload too large")
-			} else {
-				payloadBytes = v
-			}
-		case map[string]interface{}:
-			if len(v) > remote.MaxPayloadLen {
-				err = fmt.Errorf("payload too large")
-			} else {
-				payloadBytes, _ = json.Marshal(v)
-			}
-		default:
-			err = fmt.Errorf("unsupported payload type: %T", req.Payload)
+		payloadBytes := req.Payload
+		if len(payloadBytes) > remote.MaxPayloadLen {
+			err = fmt.Errorf("payload too large")
 		}
 
 		if err == nil {
@@ -191,7 +176,9 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 					respData = summaries
 				}
 			case "proposal.get":
-				var idReq struct{ ID string `json:"id"` }
+				var idReq struct {
+					ID string `json:"id"`
+				}
 				if e := json.Unmarshal(payloadBytes, &idReq); e != nil {
 					err = fmt.Errorf("invalid payload for proposal.get: %w", e)
 				} else {
@@ -240,7 +227,9 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 					}
 				}
 			case "proposal.list_by_status":
-				var statusReq struct{ Status string `json:"status"` }
+				var statusReq struct {
+					Status string `json:"status"`
+				}
 				if e := json.Unmarshal(payloadBytes, &statusReq); e != nil {
 					err = fmt.Errorf("invalid payload for proposal.list_by_status: %w", e)
 				} else {
@@ -252,7 +241,9 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 					}
 				}
 			case "proposal.resolve_id":
-				var prefixReq struct{ Prefix string `json:"prefix"` }
+				var prefixReq struct {
+					Prefix string `json:"prefix"`
+				}
 				if e := json.Unmarshal(payloadBytes, &prefixReq); e != nil {
 					err = fmt.Errorf("invalid payload for proposal.resolve_id: %w", e)
 				} else {
@@ -280,11 +271,18 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 			}
 		}
 
+		respDataBytes, marshalErr := marshalResponseData(respData)
+		if marshalErr != nil {
+			logger.Error("failed to marshal response payload", zap.Error(marshalErr))
+			err = fmt.Errorf("marshal response: %w", marshalErr)
+			respDataBytes = nil
+		}
+
 		resp := remote.Response{
 			ID:      req.ID,
 			Success: err == nil,
 			Error:   "",
-			Data:    respData,
+			Data:    respDataBytes,
 		}
 		if err != nil {
 			resp.Error = remote.SanitizeError(err)
@@ -311,15 +309,10 @@ func verifyHandshake(conn net.Conn) error {
 	}
 
 	// Load shared secret from env or data directory
-	secret := os.Getenv("STORE_VM_SHARED_SECRET")
-	if secret == "" {
-		secretPath := filepath.Join("/data", ".shared_secret")
-		data, err := os.ReadFile(secretPath)
-		if err == nil {
-			secret = string(data)
-		}
+	secret, err := loadSharedSecret()
+	if err != nil {
+		return err
 	}
-
 	if secret == "" {
 		return fmt.Errorf("shared secret not configured")
 	}
@@ -331,4 +324,32 @@ func verifyHandshake(conn net.Conn) error {
 	// Send acknowledgment
 	ack := map[string]string{"type": "handshake_ack", "status": "ok"}
 	return json.NewEncoder(conn).Encode(ack)
+}
+
+func marshalResponseData(data interface{}) (json.RawMessage, error) {
+	if data == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
+}
+
+func loadSharedSecret() (string, error) {
+	if secret := strings.TrimSpace(os.Getenv("STORE_VM_SHARED_SECRET")); secret != "" {
+		return secret, nil
+	}
+
+	secretPath := os.Getenv("STORE_VM_SHARED_SECRET_FILE")
+	if secretPath == "" {
+		secretPath = filepath.Join("/data", ".shared_secret")
+	}
+
+	data, err := os.ReadFile(secretPath)
+	if err != nil {
+		return "", fmt.Errorf("shared secret not configured")
+	}
+	return strings.TrimSpace(string(data)), nil
 }

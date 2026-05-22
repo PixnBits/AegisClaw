@@ -1,8 +1,10 @@
 package remote
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -29,23 +31,24 @@ const (
 
 // Request is sent from client (AegisHub/daemon) to Store VM.
 type Request struct {
-	ID      string      `json:"id"`
-	Op      string      `json:"op"`      // e.g. "proposal.create", "memory.store", "list_proposals"
-	Payload interface{} `json:"payload,omitempty"`
+	ID      string          `json:"id"`
+	Op      string          `json:"op"` // e.g. "proposal.create", "memory.store", "list_proposals"
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // Response is returned by the Store VM.
 type Response struct {
-	ID      string      `json:"id"`
-	Success bool        `json:"success"`
-	Error   string      `json:"error,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
+	ID      string          `json:"id"`
+	Success bool            `json:"success"`
+	Error   string          `json:"error,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // RemoteClient now actually talks to a Store VM over vsock.
 type RemoteClient struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn   net.Conn
+	reader *bufio.Reader
+	mu     sync.Mutex
 }
 
 var _ storeapi.AggregateStore = (*RemoteClient)(nil)
@@ -149,7 +152,10 @@ func NewRemoteClient(addr string) (*RemoteClient, error) {
 		return nil, fmt.Errorf("vsock handshake failed: %w", err)
 	}
 
-	return &RemoteClient{conn: conn}, nil
+	return &RemoteClient{
+		conn:   conn,
+		reader: bufio.NewReader(conn),
+	}, nil
 }
 
 // performHandshake sends the authentication token and waits for confirmation.
@@ -166,7 +172,7 @@ func performHandshake(conn net.Conn, secret string) error {
 	}
 
 	var resp map[string]string
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(conn, MaxPayloadLen+1)).Decode(&resp); err != nil {
 		return fmt.Errorf("failed to read handshake response: %w", err)
 	}
 
@@ -212,7 +218,7 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMess
 	req := Request{
 		ID:      op, // use op as a simple correlation key; callers are serialised by mu
 		Op:      op,
-		Payload: payload,
+		Payload: payloadBytes,
 	}
 
 	encoder := json.NewEncoder(c.conn)
@@ -220,9 +226,8 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMess
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 
-	decoder := json.NewDecoder(c.conn)
 	var resp Response
-	if err := decoder.Decode(&resp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(c.reader, MaxPayloadLen+1)).Decode(&resp); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
@@ -235,12 +240,7 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMess
 		return nil, nil
 	}
 
-	// Return raw JSON to avoid double-unmarshaling issues when the server
-	// sends Go types that json.Decoder converts to map/slice.
-	if raw, ok := resp.Data.(json.RawMessage); ok {
-		return raw, nil
-	}
-	return json.Marshal(resp.Data)
+	return resp.Data, nil
 }
 
 // --- Proposal Store Implementation ---

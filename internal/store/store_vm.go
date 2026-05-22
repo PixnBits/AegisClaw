@@ -148,7 +148,11 @@ var _ StoreVM = (*remoteStoreVMAdapter)(nil)
 
 // newRemoteStoreVM creates the remote StoreVM.
 func newRemoteStoreVM() (StoreVM, error) {
-	client, err := remote.NewRemoteClient("vsock://2:9999")
+	addr := os.Getenv("STORE_VM_VSOCK_ADDR")
+	if addr == "" {
+		addr = "vsock://3:9999"
+	}
+	client, err := remote.NewRemoteClient(addr)
 	if err != nil {
 		return nil, err
 	}

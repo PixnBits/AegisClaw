@@ -1,33 +1,89 @@
 package remote
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
+	"net"
 	"testing"
 )
 
 // TestHandshakeInvalidSecret verifies that the handshake rejects invalid credentials.
 func TestHandshakeInvalidSecret(t *testing.T) {
-	// Note: This test requires a mock vsock listener or a test double.
-	// In a real environment, we would spin up a mock Store VM that expects a secret.
-	// For now, we verify the logic in performHandshake would fail on mismatch.
-	// TODO: Implement integration test with mock vsock when test infrastructure is ready.
-	t.Skip("Requires mock vsock infrastructure")
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer serverConn.Close()
+
+		var req map[string]string
+		if err := json.NewDecoder(serverConn).Decode(&req); err != nil {
+			t.Errorf("server decode handshake: %v", err)
+			return
+		}
+		if req["type"] != "handshake" {
+			t.Errorf("unexpected handshake type %q", req["type"])
+		}
+		if err := json.NewEncoder(serverConn).Encode(map[string]string{
+			"type":   "handshake_ack",
+			"status": "denied",
+		}); err != nil {
+			t.Errorf("server encode handshake ack: %v", err)
+		}
+	}()
+
+	err := performHandshake(clientConn, "wrong-secret")
+	if err == nil {
+		t.Fatal("performHandshake() error = nil, want invalid response error")
+	}
+	<-done
 }
 
-// IntegrationTestSkeleton provides a starting point for end-to-end tests.
-// Uncomment and configure when the Store VM and AegisHub are available in a test environment.
-/*
-func TestIntegrationAegisHubToStoreVM(t *testing.T) {
-	// 1. Spin up a test Store VM with a mock backend.
-	// 2. Start AegisHub pointing to the test Store VM.
-	// 3. Send a "proposal.list" request over vsock.
-	// 4. Verify the response matches expected data.
-	// 5. Verify TCB boundaries: AegisHub must not hold any proposal state.
-	//    Confirm that all persistent data flows exclusively through the Store VM.
-	// 6. Tear down.
-	t.Skip("Integration test skeleton - requires full VM environment")
+func TestSendRequestReturnsRawJSON(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer serverConn.Close()
+
+		var req Request
+		if err := json.NewDecoder(serverConn).Decode(&req); err != nil {
+			t.Errorf("server decode request: %v", err)
+			return
+		}
+		if req.Op != "proposal.get" {
+			t.Errorf("unexpected op %q", req.Op)
+		}
+		if string(req.Payload) != `{"id":"abc123"}` {
+			t.Errorf("unexpected payload %s", req.Payload)
+		}
+
+		if err := json.NewEncoder(serverConn).Encode(Response{
+			ID:      req.ID,
+			Success: true,
+			Data:    json.RawMessage(`{"id":"abc123","title":"demo"}`),
+		}); err != nil {
+			t.Errorf("server encode response: %v", err)
+		}
+	}()
+
+	client := &RemoteClient{
+		conn:   clientConn,
+		reader: bufio.NewReader(clientConn),
+	}
+	got, err := client.sendRequest("proposal.get", map[string]string{"id": "abc123"})
+	if err != nil {
+		t.Fatalf("sendRequest() error = %v", err)
+	}
+	if string(got) != `{"id":"abc123","title":"demo"}` {
+		t.Fatalf("sendRequest() = %s, want raw JSON payload", got)
+	}
+	<-done
 }
-*/
 
 func TestParseVsockAddr(t *testing.T) {
 	tests := []struct {
