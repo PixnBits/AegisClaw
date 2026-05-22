@@ -27,6 +27,7 @@ import (
 )
 
 const defaultAegisHubVSOCKPort = 9998
+const requestTimeout = 30 * time.Second
 
 type HubRequest struct {
 	ID      string          `json:"id"`
@@ -82,6 +83,9 @@ func main() {
 		if err != nil {
 			logger.Fatal("invalid AEGISHUB_VSOCK_PORT", zap.String("value", portEnv), zap.Error(err))
 		}
+		if parsed > uint64(^uint(0)>>1) {
+			logger.Fatal("AEGISHUB_VSOCK_PORT exceeds int range", zap.String("value", portEnv))
+		}
 		port = int(parsed)
 	}
 
@@ -122,8 +126,8 @@ func (s *server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	// Task 5: Connection Hardening - Enforce read/write deadlines to mitigate slow-client DoS.
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(requestTimeout))
+	conn.SetWriteDeadline(time.Now().Add(requestTimeout))
 
 	authn, err := s.authenticateConn(conn)
 	if err != nil {
@@ -153,8 +157,8 @@ func (s *server) handleConn(conn net.Conn) {
 			return
 		}
 		// Reset deadline after successful round-trip to allow normal operation.
-		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-		conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(requestTimeout))
+		conn.SetWriteDeadline(time.Now().Add(requestTimeout))
 	}
 }
 

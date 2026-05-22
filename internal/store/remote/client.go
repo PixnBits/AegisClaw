@@ -172,7 +172,7 @@ func performHandshake(conn net.Conn, secret string) error {
 	}
 
 	var resp map[string]string
-	if err := json.NewDecoder(io.LimitReader(conn, MaxPayloadLen+1)).Decode(&resp); err != nil {
+	if err := newLimitedDecoder(conn).Decode(&resp); err != nil {
 		return fmt.Errorf("failed to read handshake response: %w", err)
 	}
 
@@ -227,13 +227,13 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMess
 	}
 
 	var resp Response
-	if err := json.NewDecoder(io.LimitReader(c.reader, MaxPayloadLen+1)).Decode(&resp); err != nil {
+	if err := newLimitedDecoder(c.reader).Decode(&resp); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
 	if resp.Error != "" {
 		msg := SanitizeError(fmt.Errorf("%s", resp.Error))
-		return nil, fmt.Errorf("store vm error: %s", fmt.Sprintf("%s", msg))
+		return nil, fmt.Errorf("store vm error: %s", msg)
 	}
 
 	if resp.Data == nil {
@@ -241,6 +241,10 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMess
 	}
 
 	return resp.Data, nil
+}
+
+func newLimitedDecoder(r io.Reader) *json.Decoder {
+	return json.NewDecoder(io.LimitReader(r, MaxPayloadLen+1))
 }
 
 // --- Proposal Store Implementation ---
