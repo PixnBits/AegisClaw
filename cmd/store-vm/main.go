@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/config"
@@ -20,6 +19,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/store/remote"
 	"github.com/mdlayher/vsock"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
 // Security Summary:
@@ -83,7 +83,7 @@ func main() {
 	go acceptLoop(listener, svm, logger)
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
 	<-sigCh
 
 	_ = svm.Stop(context.Background())
@@ -94,7 +94,7 @@ func main() {
 func dropCapabilities() error {
 	// In a real deployment, capabilities are managed by the host/jailer.
 	// We set the bounding set to empty to prevent privilege escalation.
-	return syscall.Prctl(syscall.PR_CAPBSET_DROP, 0, 0, 0, 0)
+	return unix.Prctl(unix.PR_CAPBSET_DROP, 0, 0, 0, 0)
 }
 
 // applySeccompFilter applies a default-deny seccomp policy.
@@ -156,22 +156,32 @@ func handleConnection(conn net.Conn, svm store.StoreVM, logger *zap.Logger) {
 		var err error
 
 		// Task 3: Strict Input Validation - Validate payload structure and size before unmarshaling.
-		if len(req.Payload) > remote.MaxPayloadLen {
-			err = fmt.Errorf("payload too large")
-		} else {
-			// Safely extract payload bytes for unmarshaling regardless of decoder type
-			var payloadBytes []byte
-			switch v := req.Payload.(type) {
-			case []byte:
+		var payloadBytes []byte
+		err = fmt.Errorf("invalid payload for processing")
+		switch v := req.Payload.(type) {
+		case []byte:
+			if len(v) > remote.MaxPayloadLen {
+				err = fmt.Errorf("payload too large")
+			} else {
 				payloadBytes = v
-			case json.RawMessage:
-				payloadBytes = v
-			case map[string]interface{}:
-				payloadBytes, _ = json.Marshal(v)
-			default:
-				payloadBytes = []byte{}
 			}
+		case json.RawMessage:
+			if len(v) > remote.MaxPayloadLen {
+				err = fmt.Errorf("payload too large")
+			} else {
+				payloadBytes = v
+			}
+		case map[string]interface{}:
+			if len(v) > remote.MaxPayloadLen {
+				err = fmt.Errorf("payload too large")
+			} else {
+				payloadBytes, _ = json.Marshal(v)
+			}
+		default:
+			err = fmt.Errorf("unsupported payload type: %T", req.Payload)
+		}
 
+		if err == nil {
 			switch req.Op {
 			case "proposal.list":
 				summaries, e := svm.Store().Proposals().List()

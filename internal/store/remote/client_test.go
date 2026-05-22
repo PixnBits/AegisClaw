@@ -1,7 +1,6 @@
 package remote
 
 import (
-	"encoding/json"
 	"errors"
 	"testing"
 )

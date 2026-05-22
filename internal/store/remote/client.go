@@ -14,7 +14,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/memory"
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
-	"github.com/PixnBits/AegisClaw/internal/store"
+	"github.com/PixnBits/AegisClaw/internal/storeapi"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 	"github.com/mdlayher/vsock"
 )
@@ -27,11 +27,81 @@ const (
 	handshakeTimeout = 5 * time.Second
 )
 
+// Request is sent from client (AegisHub/daemon) to Store VM.
+type Request struct {
+	ID      string      `json:"id"`
+	Op      string      `json:"op"`      // e.g. "proposal.create", "memory.store", "list_proposals"
+	Payload interface{} `json:"payload,omitempty"`
+}
+
+// Response is returned by the Store VM.
+type Response struct {
+	ID      string      `json:"id"`
+	Success bool        `json:"success"`
+	Error   string      `json:"error,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+}
+
 // RemoteClient now actually talks to a Store VM over vsock.
 type RemoteClient struct {
 	conn net.Conn
 	mu   sync.Mutex
 }
+
+var _ storeapi.AggregateStore = (*RemoteClient)(nil)
+
+type ProposalStoreImpl struct{ client *RemoteClient }
+
+type PullRequestStoreImpl struct{ client *RemoteClient }
+
+type CompositionStoreImpl struct{ client *RemoteClient }
+
+type MemoryStoreImpl struct{ client *RemoteClient }
+
+type WorkerStoreImpl struct{ client *RemoteClient }
+
+type EventStoreImpl struct{ client *RemoteClient }
+
+var _ storeapi.ProposalStore = (*ProposalStoreImpl)(nil)
+var _ storeapi.PullRequestStore = (*PullRequestStoreImpl)(nil)
+var _ storeapi.CompositionStore = (*CompositionStoreImpl)(nil)
+var _ storeapi.MemoryStore = (*MemoryStoreImpl)(nil)
+var _ storeapi.WorkerStore = (*WorkerStoreImpl)(nil)
+
+// --- AggregateStore interface methods on RemoteClient ---
+
+func (c *RemoteClient) Proposals() storeapi.ProposalStore {
+	return &ProposalStoreImpl{client: c}
+}
+
+func (c *RemoteClient) PullRequests() storeapi.PullRequestStore {
+	return &PullRequestStoreImpl{client: c}
+}
+
+func (c *RemoteClient) Composition() storeapi.CompositionStore {
+	return &CompositionStoreImpl{client: c}
+}
+
+func (c *RemoteClient) Memory() storeapi.MemoryStore {
+	return &MemoryStoreImpl{client: c}
+}
+
+func (c *RemoteClient) Workers() storeapi.WorkerStore {
+	return &WorkerStoreImpl{client: c}
+}
+
+func (c *RemoteClient) Events() storeapi.EventStore {
+	return &EventStoreImpl{client: c}
+}
+
+func (c *RemoteClient) Close() error {
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+// --- vsock helper ---
 
 // parseVsockAddr parses an address of the form "vsock://CID:PORT" and returns
 // the CID and port as uint32 values.
@@ -106,23 +176,16 @@ func performHandshake(conn net.Conn, secret string) error {
 	return nil
 }
 
-func (c *RemoteClient) Close() error {
-	if c.conn != nil {
-		return c.conn.Close()
-	}
-	return nil
-}
-
 // SanitizeError returns a generic error message for external consumption while
 // preserving the original error for internal logging. This prevents information leakage.
 func SanitizeError(err error) string {
 	if err == nil {
 		return ""
 	}
-	// In production, we would map specific error codes to generic messages.
-	// For now, we return a safe generic message.
 	return "internal error"
 }
+
+// --- Core request method ---
 
 // sendRequest is the core communication method.
 // A mutex protects the shared connection so concurrent sub-store calls do not
@@ -164,7 +227,8 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMess
 	}
 
 	if resp.Error != "" {
-		return nil, fmt.Errorf("store vm error: %s", SanitizeError(fmt.Errorf(resp.Error)))
+		msg := SanitizeError(fmt.Errorf("%s", resp.Error))
+		return nil, fmt.Errorf("store vm error: %s", fmt.Sprintf("%s", msg))
 	}
 
 	if resp.Data == nil {
@@ -179,44 +243,14 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMess
 	return json.Marshal(resp.Data)
 }
 
-// --- Store interface implementations ---
-
-func (c *RemoteClient) Proposals() store.ProposalStore {
-	return &remoteProposalStore{client: c}
-}
-
-func (c *RemoteClient) PullRequests() store.PullRequestStore {
-	return &remotePullRequestStore{client: c}
-}
-
-func (c *RemoteClient) Composition() store.CompositionStore {
-	return &remoteCompositionStore{client: c}
-}
-
-func (c *RemoteClient) Memory() store.MemoryStore {
-	return &remoteMemoryStore{client: c}
-}
-
-func (c *RemoteClient) Workers() store.WorkerStore {
-	return &remoteWorkerStore{client: c}
-}
-
-func (c *RemoteClient) Events() store.EventStore {
-	return &remoteEventStore{client: c}
-}
-
 // --- Proposal Store Implementation ---
 
-type remoteProposalStore struct{ client *RemoteClient }
-
-var _ store.ProposalStore = (*remoteProposalStore)(nil)
-
-func (r *remoteProposalStore) Create(p *proposal.Proposal) error {
+func (r *ProposalStoreImpl) Create(p *proposal.Proposal) error {
 	_, err := r.client.sendRequest("proposal.create", p)
 	return err
 }
 
-func (r *remoteProposalStore) Get(id string) (*proposal.Proposal, error) {
+func (r *ProposalStoreImpl) Get(id string) (*proposal.Proposal, error) {
 	data, err := r.client.sendRequest("proposal.get", map[string]string{"id": id})
 	if err != nil {
 		return nil, err
@@ -231,12 +265,12 @@ func (r *remoteProposalStore) Get(id string) (*proposal.Proposal, error) {
 	return &p, nil
 }
 
-func (r *remoteProposalStore) Update(p *proposal.Proposal) error {
+func (r *ProposalStoreImpl) Update(p *proposal.Proposal) error {
 	_, err := r.client.sendRequest("proposal.update", p)
 	return err
 }
 
-func (r *remoteProposalStore) List() ([]proposal.ProposalSummary, error) {
+func (r *ProposalStoreImpl) List() ([]proposal.ProposalSummary, error) {
 	data, err := r.client.sendRequest("proposal.list", nil)
 	if err != nil {
 		return nil, err
@@ -251,7 +285,7 @@ func (r *remoteProposalStore) List() ([]proposal.ProposalSummary, error) {
 	return summaries, nil
 }
 
-func (r *remoteProposalStore) ListByStatus(status proposal.Status) ([]proposal.ProposalSummary, error) {
+func (r *ProposalStoreImpl) ListByStatus(status proposal.Status) ([]proposal.ProposalSummary, error) {
 	data, err := r.client.sendRequest("proposal.list_by_status", map[string]string{"status": string(status)})
 	if err != nil {
 		return nil, err
@@ -266,7 +300,7 @@ func (r *remoteProposalStore) ListByStatus(status proposal.Status) ([]proposal.P
 	return summaries, nil
 }
 
-func (r *remoteProposalStore) ResolveID(prefix string) (string, error) {
+func (r *ProposalStoreImpl) ResolveID(prefix string) (string, error) {
 	data, err := r.client.sendRequest("proposal.resolve_id", map[string]string{"prefix": prefix})
 	if err != nil {
 		return "", err
@@ -281,57 +315,47 @@ func (r *remoteProposalStore) ResolveID(prefix string) (string, error) {
 	return resolved, nil
 }
 
-func (r *remoteProposalStore) Import(p *proposal.Proposal) error {
+func (r *ProposalStoreImpl) Import(p *proposal.Proposal) error {
 	_, err := r.client.sendRequest("proposal.import", p)
 	return err
 }
 
 // --- Other Store Stubs (Minimal implementations to satisfy interfaces) ---
 
-type remoteMemoryStore struct{ client *RemoteClient }
-
-func (r *remoteMemoryStore) Store(entry *memory.MemoryEntry) (string, error) {
+func (r *MemoryStoreImpl) Store(entry *memory.MemoryEntry) (string, error) {
 	_, err := r.client.sendRequest("memory.store", entry)
 	return "", err
 }
-func (r *remoteMemoryStore) Retrieve(query string, k int, taskID string) ([]*memory.MemoryEntry, error) {
+func (r *MemoryStoreImpl) Retrieve(query string, k int, taskID string) ([]*memory.MemoryEntry, error) {
 	return nil, fmt.Errorf("remote memory retrieve is not implemented for %q/%d/%q", query, k, taskID)
 }
-func (r *remoteMemoryStore) List(tier memory.TTLTier) ([]memory.StoreSummary, error) {
+func (r *MemoryStoreImpl) List(tier memory.TTLTier) ([]memory.StoreSummary, error) {
 	return nil, fmt.Errorf("remote memory list is not implemented for tier %s", tier)
 }
 
-type remotePullRequestStore struct{ client *RemoteClient }
-
-func (r *remotePullRequestStore) Create(pr *pullrequest.PullRequest) error { return nil }
-func (r *remotePullRequestStore) Get(id string) (*pullrequest.PullRequest, error) {
+func (r *PullRequestStoreImpl) Create(pr *pullrequest.PullRequest) error { return nil }
+func (r *PullRequestStoreImpl) Get(id string) (*pullrequest.PullRequest, error) {
 	return nil, fmt.Errorf("remote pull request get is not implemented for %s", id)
 }
-func (r *remotePullRequestStore) GetByProposalID(proposalID string) (*pullrequest.PullRequest, error) {
+func (r *PullRequestStoreImpl) GetByProposalID(proposalID string) (*pullrequest.PullRequest, error) {
 	return nil, fmt.Errorf("remote pull request get by proposal is not implemented for %s", proposalID)
 }
-func (r *remotePullRequestStore) List(status *pullrequest.Status) ([]*pullrequest.PullRequest, error) {
+func (r *PullRequestStoreImpl) List(status *pullrequest.Status) ([]*pullrequest.PullRequest, error) {
 	return nil, fmt.Errorf("remote pull request list is not implemented")
 }
-func (r *remotePullRequestStore) Update(pr *pullrequest.PullRequest) error { return nil }
-func (r *remotePullRequestStore) Approve(prID, approvedBy string) error    { return nil }
-func (r *remotePullRequestStore) Close(prID string) error                  { return nil }
-func (r *remotePullRequestStore) MarkMerged(prID string) error             { return nil }
+func (r *PullRequestStoreImpl) Update(pr *pullrequest.PullRequest) error { return nil }
+func (r *PullRequestStoreImpl) Approve(prID, approvedBy string) error    { return nil }
+func (r *PullRequestStoreImpl) Close(prID string) error                  { return nil }
+func (r *PullRequestStoreImpl) MarkMerged(prID string) error             { return nil }
 
-type remoteCompositionStore struct{ client *RemoteClient }
-
-func (r *remoteCompositionStore) Publish(components map[string]composition.Component, actor, reason string) (*composition.Manifest, error) {
+func (r *CompositionStoreImpl) Publish(components map[string]composition.Component, actor, reason string) (*composition.Manifest, error) {
 	return nil, fmt.Errorf("remote composition publish is not implemented")
 }
-func (r *remoteCompositionStore) Current() *composition.Manifest { return nil }
-func (r *remoteCompositionStore) Get(version int) (*composition.Manifest, error) {
+func (r *CompositionStoreImpl) Current() *composition.Manifest { return nil }
+func (r *CompositionStoreImpl) Get(version int) (*composition.Manifest, error) {
 	return nil, fmt.Errorf("remote composition get is not implemented for v%d", version)
 }
 
-type remoteWorkerStore struct{ client *RemoteClient }
-
-func (r *remoteWorkerStore) Upsert(record *worker.WorkerRecord) error    { return nil }
-func (r *remoteWorkerStore) Get(id string) (*worker.WorkerRecord, bool)  { return nil, false }
-func (r *remoteWorkerStore) List(activeOnly bool) []*worker.WorkerRecord { return nil }
-
-type remoteEventStore struct{ client *RemoteClient }
+func (r *WorkerStoreImpl) Upsert(record *worker.WorkerRecord) error    { return nil }
+func (r *WorkerStoreImpl) Get(id string) (*worker.WorkerRecord, bool)  { return nil, false }
+func (r *WorkerStoreImpl) List(activeOnly bool) []*worker.WorkerRecord { return nil }

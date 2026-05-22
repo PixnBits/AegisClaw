@@ -15,15 +15,69 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
 	"github.com/PixnBits/AegisClaw/internal/store/remote"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
-// ... existing code ...
+type HubRequest struct {
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+type HubResponse struct {
+	ID      string      `json:"id"`
+	Success bool        `json:"success"`
+	Error   string      `json:"error,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+}
+
+type RegisterVMPayload struct {
+	VMID string `json:"vm_id"`
+	Role string `json:"role"`
+}
+
+type RoutePayload struct {
+	Target string `json:"target"`
+}
+
+type server struct {
+	logger  *zap.Logger
+	hub     *ipc.MessageHub
+	storeVM interface{}
+}
+
+func main() {
+	logger, _ := zap.NewProduction()
+	defer logger.Sync()
+
+	srv := &server{
+		logger: logger,
+		hub:    ipc.NewMessageHubNoKernel(logger),
+	}
+
+	if err := srv.hub.Start(); err != nil {
+		logger.Fatal("message hub failed to start", zap.Error(err))
+	}
+
+	_ = srv.handleConn
+	_ = srv.dispatch
+	_ = RegisterVMPayload{}
+	_ = RoutePayload{}
+
+	// Placeholder: In production this would listen on vsock or unix socket.
+	logger.Info("aegishub: placeholder main - no listener configured")
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
+		<-sigCh
+		srv.hub.Stop()
+	}()
+}
 
 func (s *server) handleConn(conn net.Conn) {
 	defer conn.Close()
@@ -84,7 +138,11 @@ func (s *server) dispatch(req HubRequest) HubResponse {
 	default:
 		// Delegate to registered skills using the hub's message router.
 		if s.hub != nil {
-			result, err := s.hub.RouteMessage(req.Type, req.Payload)
+			result, err := s.hub.RouteMessage(req.ID, &ipc.Message{
+				ID:      req.ID,
+				Type:    req.Type,
+				Payload: req.Payload,
+			})
 			if err != nil {
 				return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
 			}
@@ -94,5 +152,3 @@ func (s *server) dispatch(req HubRequest) HubResponse {
 		return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("unknown request type: %s", req.Type))}
 	}
 }
-
-// ... existing code ...

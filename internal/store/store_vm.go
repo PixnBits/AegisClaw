@@ -16,6 +16,7 @@ import (
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/pullrequest"
 	"github.com/PixnBits/AegisClaw/internal/store/remote"
+	"github.com/PixnBits/AegisClaw/internal/storeapi"
 	"github.com/PixnBits/AegisClaw/internal/worker"
 )
 
@@ -31,12 +32,7 @@ type StoreVM interface {
 func NewStoreVM(cfg *config.Config, logger *zap.Logger) (StoreVM, error) {
 	// Phase 2.9+ hook for remote mode
 	if os.Getenv("STORE_MODE") == "remote" {
-		addr := "vsock://2:9999" // placeholder
-		client, err := remoteClientFromAddr(addr)
-		if err != nil {
-			return nil, err
-		}
-		return &remoteStoreVMAdapter{client: client}, nil
+		return newRemoteStoreVM()
 	}
 
 	return newInProcessStoreVM(cfg, logger)
@@ -139,24 +135,24 @@ func (vm *inProcessStoreVM) Store() Store {
 
 var _ StoreVM = (*inProcessStoreVM)(nil)
 
-// remoteStoreVMAdapter bridges the remote client to the StoreVM interface.
+// remoteStoreVMAdapter wraps a remote AggregateStore to satisfy StoreVM.
 type remoteStoreVMAdapter struct {
-	client *remote.RemoteClient
+	storeapi.AggregateStore
 }
 
-func (a *remoteStoreVMAdapter) Start(ctx context.Context) error { return nil }
-func (a *remoteStoreVMAdapter) Stop(ctx context.Context) error  { return nil }
-func (a *remoteStoreVMAdapter) Store() Store                    { return a.client }
+func (r *remoteStoreVMAdapter) Start(ctx context.Context) error { return nil }
+func (r *remoteStoreVMAdapter) Stop(ctx context.Context) error  { return nil }
+func (r *remoteStoreVMAdapter) Store() Store                    { return r.AggregateStore }
 
 var _ StoreVM = (*remoteStoreVMAdapter)(nil)
 
-// Helper for remote (Phase 2.8/2.9)
-func remoteClientFromAddr(addr string) (interface{ Store() Store }, error) {
-	client, err := remote.NewRemoteClient(addr)
+// newRemoteStoreVM creates the remote StoreVM.
+func newRemoteStoreVM() (StoreVM, error) {
+	client, err := remote.NewRemoteClient("vsock://2:9999")
 	if err != nil {
 		return nil, err
 	}
-	return &remoteStoreVMAdapter{client: client}, nil
+	return &remoteStoreVMAdapter{AggregateStore: client}, nil
 }
 
 // loadOrCreateMemoryIdentity (kept here for self-contained in-process creation)
