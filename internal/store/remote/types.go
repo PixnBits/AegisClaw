@@ -18,6 +18,14 @@ type Response struct {
 	Data    interface{}     `json:"data,omitempty"`
 }
 
+// ProtocolError represents a structured error returned by the Store VM.
+// It enables callers to distinguish between transient network failures and
+// application-level validation or state errors.
+type ProtocolError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // Common operations
 const (
 	OpProposalCreate   = "proposal.create"

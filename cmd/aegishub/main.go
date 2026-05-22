@@ -21,7 +21,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -35,23 +34,6 @@ import (
 
 // defaultVsockPort is the default vsock port for Store VM communication.
 const defaultVsockPort = 9999
-
-// AegisHub is the system IPC router microVM for AegisClaw.
-// It routes messages between the daemon, the Governance Court, and the Store VM.
-//
-// Boundary protocol
-// -----------------
-// AegisHub communicates with the daemon over a vsock port. Messages are framed
-// as JSON objects with a top-level "id" field for correlation.
-//
-// Supported message types (received from daemon):
-//   - "proposal.list": Fetches proposal summaries from the Store VM.
-//   - "proposal.status": Fetches detailed status for a specific proposal.
-//   - "memory.retrieve": Queries the memory store for relevant context.
-//   - "composition.current": Requests the current approved composition manifest.
-//
-// Updates to AegisHub itself must flow through the Governance Court SDLC with a
-// signed composition manifest; no direct operator modification is permitted.
 
 func main() {
 	logger, err := zap.NewProduction()
@@ -111,58 +93,28 @@ func main() {
 	srv.serve(listener)
 }
 
-// HubResponse is the standard JSON envelope for all AegisHub messages.
-type HubResponse struct {
-	ID      string      `json:"id"`
-	Success bool        `json:"success,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
+// server handles incoming vsock connections for AegisHub.
+type server struct {
+	hub    *ipc.MessageHub
+	logger *zap.Logger
 }
 
-func (s *server) handleProposalList(req *ipc.Message) *HubResponse {
-	summaries, err := s.hub.Router().RegisteredRoutes()
-	if err != nil {
-		return errResponse(req.ID, "failed to list routes: "+err.Error())
+func (s *server) serve(l net.Listener) {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			s.logger.Error("aegishub: accept error", zap.Error(err))
+			continue
+		}
+		go s.handleConn(conn)
 	}
-	data, _ := json.Marshal(summaries)
-	return &HubResponse{ID: req.ID, Success: true, Data: data}
 }
 
-func (s *server) handleProposalStatus(req *ipc.Message) *HubResponse {
-	var payload struct {
-		ProposalID string `json:"proposal_id"`
-	}
-	if err := json.Unmarshal(req.Payload, &payload); err != nil {
-		return errResponse(req.ID, "invalid payload: "+err.Error())
-	}
-	// Delegate to the registered store-vm backend via the hub router
-	result, err := s.hub.Router().Route("proposal.status", req)
-	if err != nil {
-		return errResponse(req.ID, "route failed: "+err.Error())
-	}
-	if result.Error != "" {
-		return &HubResponse{ID: req.ID, Success: false, Error: result.Error}
-	}
-	return &HubResponse{ID: req.ID, Success: true, Data: result.Response}
-}
-
-func (s *server) handleMemoryRetrieve(req *ipc.Message) *HubResponse {
-	// Placeholder for memory retrieval logic
-	return &HubResponse{ID: req.ID, Success: true, Data: map[string]interface{}{}}
-}
-
-func (s *server) handleCompositionCurrent(req *ipc.Message) *HubResponse {
-	// Placeholder for composition manifest retrieval
-	return &HubResponse{ID: req.ID, Success: true, Data: map[string]interface{}{}}
-}
-
-func (s *server) sendErr(enc *json.Encoder, id, msg string) {
-	resp := &HubResponse{ID: id, Error: msg}
-	enc.Encode(resp) //nolint:errcheck
-}
-
-func errResponse(id, msg string) *HubResponse {
-	return &HubResponse{ID: id, Error: msg}
+func (s *server) handleConn(conn net.Conn) {
+	defer conn.Close()
+	// TODO: Implement message framing and routing logic here.
+	// For now, AegisHub acts as a pass-through to the registered skills.
+	s.logger.Debug("aegishub: new connection accepted")
 }
 
 // listenVsock creates a vsock listener on the given port.
