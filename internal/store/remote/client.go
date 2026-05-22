@@ -232,8 +232,7 @@ func (c *RemoteClient) sendRequest(op string, payload interface{}) (json.RawMess
 	}
 
 	if resp.Error != "" {
-		msg := SanitizeError(fmt.Errorf("%s", resp.Error))
-		return nil, fmt.Errorf("store vm error: %s", msg)
+		return nil, fmt.Errorf("store vm error: internal error")
 	}
 
 	if resp.Data == nil {

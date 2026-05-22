@@ -10,6 +10,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -77,25 +78,22 @@ func main() {
 		logger.Fatal("message hub failed to start", zap.Error(err))
 	}
 
-	port := defaultAegisHubVSOCKPort
+	port := uint32(defaultAegisHubVSOCKPort)
 	if portEnv := os.Getenv("AEGISHUB_VSOCK_PORT"); portEnv != "" {
 		parsed, err := strconv.ParseUint(portEnv, 10, 32)
 		if err != nil {
 			logger.Fatal("invalid AEGISHUB_VSOCK_PORT", zap.String("value", portEnv), zap.Error(err))
 		}
-		if parsed > uint64(^uint(0)>>1) {
-			logger.Fatal("AEGISHUB_VSOCK_PORT exceeds int range", zap.String("value", portEnv))
-		}
-		port = int(parsed)
+		port = uint32(parsed)
 	}
 
-	listener, err := listenAFVsock(uint32(port))
+	listener, err := listenAFVsock(port)
 	if err != nil {
 		logger.Fatal("aegishub listen failed", zap.Error(err))
 	}
 	defer listener.Close()
 
-	logger.Info("aegishub listening", zap.Int("vsock_port", port))
+	logger.Info("aegishub listening", zap.Uint32("vsock_port", port))
 	go srv.acceptLoop(listener)
 
 	sigCh := make(chan os.Signal, 1)
@@ -112,7 +110,7 @@ func (s *server) acceptLoop(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			if strings.Contains(err.Error(), "use of closed network connection") {
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, unix.EBADF) {
 				return
 			}
 			s.logger.Warn("aegishub: accept failed", zap.Error(err))
