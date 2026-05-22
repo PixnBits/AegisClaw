@@ -32,10 +32,10 @@ func TestIntegrationAegisHubToStoreVM(t *testing.T) {
 
 func TestParseVsockAddr(t *testing.T) {
 	tests := []struct {
-		addr    string
-		wantCID uint32
+		addr     string
+		wantCID  uint32
 		wantPort uint32
-		wantErr bool
+		wantErr  bool
 	}{
 		{"vsock://1:9999", 1, 9999, false},
 		{"vsock://0:0", 0, 0, false},

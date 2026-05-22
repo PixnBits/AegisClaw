@@ -1,10 +1,8 @@
-// Package main implements AegisHub, the system IPC router microVM for AegisClaw.
-//
-// Security Summary:
-// - AegisHub acts as a strict mediator. It holds no persistent proposal state.
-// - All vsock connections are authenticated via mutual handshake.
-// - Input is strictly validated; errors are sanitized to prevent information leakage.
-// - Connection timeouts prevent slow-client DoS.
+// This version restores full message handling while keeping ProposalStore ownership in the Store VM.
+// AegisHub acts as a strict mediator. It holds no persistent proposal state.
+// All vsock connections are authenticated via mutual handshake.
+// Input is strictly validated; errors are sanitized to prevent information leakage.
+// Connection timeouts prevent slow-client DoS.
 // Trust Boundary: AegisHub trusts the Store VM only after successful handshake.
 // All external messages are considered hostile until proven otherwise.
 
@@ -84,13 +82,16 @@ func (s *server) dispatch(req HubRequest) HubResponse {
 		return HubResponse{ID: req.ID, Success: true, Data: json.RawMessage(`{"routed": true}`)}
 
 	default:
-		// Delegate to registered skills (e.g., store-vm)
-		result, err := s.hub.Dispatch(req.Type, req.Payload)
-		if err != nil {
-			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
+		// Delegate to registered skills using the hub's message router.
+		if s.hub != nil {
+			result, err := s.hub.RouteMessage(req.Type, req.Payload)
+			if err != nil {
+				return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
+			}
+			data, _ := json.Marshal(result)
+			return HubResponse{ID: req.ID, Success: true, Data: json.RawMessage(data)}
 		}
-		data, _ := json.Marshal(result)
-		return HubResponse{ID: req.ID, Success: true, Data: json.RawMessage(data)}
+		return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("unknown request type: %s", req.Type))}
 	}
 }
 
