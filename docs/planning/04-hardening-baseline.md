@@ -74,7 +74,7 @@ All steps executed in order:
 - **Step 5 (Lifecycle Containment)**: SIGINT/SIGTERM handling + best-effort stop/delete of AegisHubVMID + StoreVMID in `start.go`.
 - **Step 6 (Resource Limits)**: `setResourceLimits` applies conservative RLIMIT_AS / RLIMIT_NOFILE.
 - **Step 7 (Unix Socket)**: 0600 permissions + comments in `api/server.go` + `createSecureSocket`.
-- **Step 8 (Tests)**: Basic smoke tests added to `daemon_tcb_test.go` for caps/seccomp/rlimit.
+- **Step 8 (Tests)**: Basic smoke tests in `daemon_tcb_test.go`; strengthened with real post-mutation assertions (rlimits via Getrlimit, caps via capget) + seccomp strict killer subprocess proof in new `daemon_hardening_linux_test.go` (Linux-only). Cross-platform build fixed via platform-specific split following secrets_io_* pattern. Pre-existing compile issues in api/server.go also resolved to make tests runnable.
 - **Step 9 (Docs)**: This baseline + 03-tcb-boundaries.md + CHANGELOG updated.
 
 **Post-Phase 4 State**

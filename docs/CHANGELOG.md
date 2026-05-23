@@ -11,6 +11,7 @@
 - Added initial daemon verification tests
 - Created measurement and forbidden-pattern review guidance
 - Marked Task 03 implementation plan as Completed
+- Strengthened Phase 4 hardening baseline tests: real rlimit/cap assertions, Linux/other split for cross-platform `go test`, documented seccomp limitations; resolved blocking compile issues in `internal/api` so the suite is green; updated traceability matrix and baseline doc
 
 ### Unix Socket Hardening (04-unix-socket-hardening – COMPLETE)
 - Dedicated `aegis` group support + 0750/0600 socket perms + abstract socket (`@aegis-daemon`) path helper (Phase 2)

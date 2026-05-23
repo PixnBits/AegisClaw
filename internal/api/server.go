@@ -142,7 +142,7 @@ type ChatSlashRequest struct {
 // ChatToolExecRequest carries the payload for the "chat.tool" action (D2).
 type ChatToolExecRequest struct {
 	Name string `json:"name"`
-	Args string `json:"args,omitempty""
+	Args string `json:"args,omitempty"`
 }
 
 // ChatSummarizeRequest carries the payload for the "chat.summarize" action (D2).
@@ -278,7 +278,7 @@ func (s *Server) Start() error {
 			if err != nil {
 				return ctx
 			}
-			uid, okUID := peerUIDFromRawConn(raw)
+			uid, _ := peerUIDFromRawConn(raw)
 			// Phase 3: PID extraction placeholder (full in peer_uid_linux.go extension)
 			pid := 0
 			corrID := generateCorrelationID() // Phase 4

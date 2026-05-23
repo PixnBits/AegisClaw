@@ -134,7 +134,7 @@ func TestServer_RootUIDRejected(t *testing.T) {
 func TestServer_CorrelationIDPresent(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "aegis", "corr.sock")
 	srv := NewServer(socketPath, zap.NewNop())
-	srv.Handle("ping", func(ctx context.Context, json.RawMessage) *Response {
+	srv.Handle("ping", func(ctx context.Context, _ json.RawMessage) *Response {
 		if id, ok := CorrelationIDFromContext(ctx); !ok || id == "" {
 			return &Response{Error: "no correlation id"}
 		}

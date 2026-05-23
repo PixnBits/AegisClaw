@@ -69,6 +69,8 @@ func TestNoNonTCBInitializations(t *testing.T) {
 }
 
 // Phase 4 basic hardening smoke tests (can run without full system).
+// Real verification of effects (post-set rlimit values, seccomp kill proof, etc.)
+// lives in daemon_hardening_linux_test.go (build-tagged for Linux + unix syscall access).
 
 func TestHardening_CapabilitiesDropCalled(t *testing.T) {
 	// Merely exercises the function; real cap drop is environment-dependent.
