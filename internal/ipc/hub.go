@@ -405,9 +405,12 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 	// in the latter case the earlier delegation block would have skipped
 	// anyway, so we need to return a specific actionable error for proposals.
 	proposalActions := map[string]bool{
-		"proposal.list":     true,
-		"proposal.status":   true,
-		"proposal.create":   true,
+		"proposal.list":            true,
+		"proposal.status":          true,
+		"proposal.create":          true,
+		"proposal.list_by_status":  true,
+		"proposal.resolve_id":      true,
+		"proposal.import":          true,
 	}
 	if proposalActions[req.Action] {
 		if backendID := h.preferredBackendForAction(req.Action); backendID == "" {
@@ -522,7 +525,7 @@ func (h *MessageHub) preferredBackendForAction(action string) string {
 		return "skill-registry"
 	case "chat.message":
 		return "chat-router"
-	case "proposal.list", "proposal.status", "proposal.create":
+	case "proposal.list", "proposal.status", "proposal.create", "proposal.list_by_status", "proposal.resolve_id", "proposal.import":
 		return "store-vm"
 	default:
 		return ""
