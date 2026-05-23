@@ -24,6 +24,12 @@ func TestSignalShutdownSIGTERM_TerminatesTrackedVMs_E2E(t *testing.T) {
 		t.Skip("unix signals only")
 	}
 
+	// Extra-safe hermetic config setup for both parent and child processes.
+	// This test spawns a full re-execution of the test binary; without this,
+	// the child can hit the same "create default config on clean HOME" path
+	// that has repeatedly caused OOMs in CI during `make test`.
+	setupTestConfig(t)
+
 	resultPath := filepath.Join(t.TempDir(), "result.json")
 	readyPath := filepath.Join(t.TempDir(), "ready")
 

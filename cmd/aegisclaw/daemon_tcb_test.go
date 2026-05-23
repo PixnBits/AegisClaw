@@ -1,13 +1,41 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// setupTestConfig creates a temporary HOME with a minimal config.yaml so that
+// initRuntime() / config.Load() does not attempt to write the full default
+// configuration (which can trigger expensive/fragile YAML marshaling in CI
+// environments with a clean home directory).
+func setupTestConfig(t *testing.T) {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUDO_USER", "")
+
+	configDir := filepath.Join(home, ".aegis", "config")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("create test config dir: %v", err)
+	}
+
+	configPath := filepath.Join(configDir, "config.yaml")
+	// Minimal config that satisfies Load without triggering the "create defaults" write path.
+	minimal := `daemon:
+  socket_path: ` + filepath.Join(home, ".aegis", "run", "daemon.sock") + "\n"
+	if err := os.WriteFile(configPath, []byte(minimal), 0600); err != nil {
+		t.Fatalf("write minimal config: %v", err)
+	}
+}
 
 // TestDaemonDoesNotInitializeForbiddenComponents verifies that the minimal
 // TCB runtimeEnv no longer contains Vault, Court engine, or BuildOrchestrator.
 // Phase 9 test cleanup: Vault field removed from runtimeEnv; test updated accordingly.
 func TestDaemonDoesNotInitializeForbiddenComponents(t *testing.T) {
+	setupTestConfig(t)
 	env, err := initRuntime()
 	if err != nil {
 		t.Fatalf("initRuntime: %v", err)
@@ -24,6 +52,7 @@ func TestDaemonDoesNotInitializeForbiddenComponents(t *testing.T) {
 // has been removed from the Host Daemon (Phase 5). Persistent state access
 // is now externalized to the Store VM via AegisHub mediation.
 func TestNoStoreInterfaceInDaemon(t *testing.T) {
+	setupTestConfig(t)
 	env, err := initRuntime()
 	if err != nil {
 		t.Fatalf("initRuntime: %v", err)
@@ -38,6 +67,7 @@ func TestNoStoreInterfaceInDaemon(t *testing.T) {
 // TestDaemonOnlyCoreResponsibilities is a lightweight structural check that
 // the daemon launches only AegisHub and registers minimal handlers.
 func TestDaemonOnlyCoreResponsibilities(t *testing.T) {
+	setupTestConfig(t)
 	// In a real integration this would inspect registered handlers and
 	// launched VMs, but here we simply ensure no forbidden init occurred.
 	env, err := initRuntime()
@@ -54,6 +84,7 @@ func TestDaemonOnlyCoreResponsibilities(t *testing.T) {
 // TestNoNonTCBInitializations verifies aggressive pre-hardening cleanup:
 // no team/autonomy registry creation, reconcile and script runner disabled.
 func TestNoNonTCBInitializations(t *testing.T) {
+	setupTestConfig(t)
 	// The init path in runStart no longer calls newTeamRegistry,
 	// newAutonomyRegistry, reconcileApprovedProposals, or
 	// ensureDefaultScriptRunnerActive. This test documents that state.
