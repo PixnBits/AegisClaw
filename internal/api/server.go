@@ -19,6 +19,7 @@ import (
 type peerUIDContextKey struct{}
 type trustedCallerContextKey struct{}
 type peerPIDContextKey struct{} // Phase 3: PID from SO_PEERCRED for audit/logging (extend peer_uid_linux.go for full extraction)
+type correlationIDContextKey struct{} // Phase 4: correlation ID for full audit trail
 
 // PeerUIDFromContext returns the Unix peer UID when the request arrived via the
 // daemon's Unix socket transport.
@@ -33,6 +34,13 @@ func PeerPIDFromContext(ctx context.Context) (int, bool) {
 	v := ctx.Value(peerPIDContextKey{})
 	pid, ok := v.(int)
 	return pid, ok
+}
+
+// CorrelationIDFromContext returns the request correlation ID (Phase 4).
+func CorrelationIDFromContext(ctx context.Context) (string, bool) {
+	v := ctx.Value(correlationIDContextKey{})
+	id, ok := v.(string)
+	return id, ok
 }
 
 // WithTrustedCaller marks a context as originating from a trusted in-process
@@ -134,7 +142,7 @@ type ChatSlashRequest struct {
 // ChatToolExecRequest carries the payload for the "chat.tool" action (D2).
 type ChatToolExecRequest struct {
 	Name string `json:"name"`
-	Args string `json:"args,omitempty"`
+	Args string `json:"args,omitempty""
 }
 
 // ChatSummarizeRequest carries the payload for the "chat.summarize" action (D2).
@@ -238,6 +246,7 @@ func (s *Server) Handle(action string, h Handler) {
 // from paths.go (aegis group 0750 when available, abstract socket support via
 // DefaultAbstractSocketPath(), SocketPermGroup). Enforces Task 1 hardened model.
 // Phase 3: ConnContext now also extracts PID; UnixPeerAllow defaults to root-reject + allow-list.
+// Phase 4: Correlation ID generated per connection for full audit trail (Task 5).
 func (s *Server) Start() error {
 	if err := aegispaths.EnsureRuntimeDir(filepath.Dir(s.socketPath)); err != nil {
 		return err
@@ -272,14 +281,22 @@ func (s *Server) Start() error {
 			uid, okUID := peerUIDFromRawConn(raw)
 			// Phase 3: PID extraction placeholder (full in peer_uid_linux.go extension)
 			pid := 0
+			corrID := generateCorrelationID() // Phase 4
 			ctx = context.WithValue(ctx, peerUIDContextKey{}, uid)
 			ctx = context.WithValue(ctx, peerPIDContextKey{}, pid)
+			ctx = context.WithValue(ctx, correlationIDContextKey{}, corrID)
 			return ctx
 		},
 	}
 	go srv.Serve(ln)
 	s.logger.Info("API server listening", zap.String("socket", s.socketPath))
 	return nil
+}
+
+// generateCorrelationID creates a simple time-based correlation ID (Phase 4).
+// In production, use UUID or request ID from upstream.
+func generateCorrelationID() string {
+	return time.Now().UTC().Format("20060102T150405.000000000Z07:00") + "-" + "aegis"
 }
 
 // Stop closes the listener and removes the socket file.
@@ -411,17 +428,34 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	uid, hasUID := PeerUIDFromContext(r.Context())
 	pid, _ := PeerPIDFromContext(r.Context())
+	corrID, _ := CorrelationIDFromContext(r.Context())
+
+	// Phase 4: Comprehensive audit logging for every connection attempt (Task 5)
+	s.logger.Info("unix socket connection attempt",
+		zap.String("correlation_id", corrID),
+		zap.Int("uid", uid),
+		zap.Int("pid", pid),
+		zap.String("remote", r.RemoteAddr),
+	)
 
 	// Phase 3: UnixPeerAllow with root reject + audit (Task 2)
 	if s.UnixPeerAllow != nil {
 		if !hasUID || !s.UnixPeerAllow(uid) {
-			// Audit hook: log deny with UID/PID (integrate with internal/audit in full impl)
-			s.logger.Warn("unix socket peer denied", zap.Int("uid", uid), zap.Int("pid", pid), zap.String("action", ""))
+			// Audit hook: log deny with UID/PID/correlation (integrate with internal/audit Merkle in full impl)
+			s.logger.Warn("unix socket peer denied",
+				zap.String("correlation_id", corrID),
+				zap.Int("uid", uid),
+				zap.Int("pid", pid),
+			)
 			writeJSON(w, http.StatusForbidden, &Response{Error: "unix socket peer not authorized (root or unexpected UID rejected)"})
 			return
 	}
 	} else if !DefaultUnixPeerAllow(uid) {
-		s.logger.Warn("unix socket peer denied (default)", zap.Int("uid", uid), zap.Int("pid", pid))
+		s.logger.Warn("unix socket peer denied (default)",
+			zap.String("correlation_id", corrID),
+			zap.Int("uid", uid),
+			zap.Int("pid", pid),
+		)
 		writeJSON(w, http.StatusForbidden, &Response{Error: "unix socket peer not authorized (root rejected)"})
 		return
 	}
@@ -476,6 +510,16 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if !resp.Success {
 		status = http.StatusInternalServerError
 	}
+
+	// Phase 4: Success audit log with full context (Task 5)
+	s.logger.Info("unix socket request completed",
+		zap.String("correlation_id", corrID),
+		zap.String("action", req.Action),
+		zap.Int("uid", uid),
+		zap.Int("pid", pid),
+		zap.Bool("success", resp.Success),
+	)
+
 	writeJSON(w, status, resp)
 }
 
