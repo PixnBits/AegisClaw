@@ -106,3 +106,72 @@ func TestServer_UnixAPIRateLimit(t *testing.T) {
 		t.Fatalf("expected rate limit on last call, got %+v", last)
 	}
 }
+
+// Phase 5: New tests for 04-unix-socket-hardening acceptance criteria
+
+func TestServer_RootUIDRejected(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "aegis", "root.sock")
+	srv := NewServer(socketPath, zap.NewNop())
+	srv.Handle("ping", func(context.Context, json.RawMessage) *Response {
+		return &Response{Success: true}
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+
+	// Simulate root UID (uid=0) - DefaultUnixPeerAllow should reject
+	// In real test, use a client that spoofs or test via direct call
+	// For now, verify DefaultUnixPeerAllow rejects root
+	if DefaultUnixPeerAllow(0) {
+		t.Error("expected DefaultUnixPeerAllow(0) to return false")
+	}
+	if !DefaultUnixPeerAllow(1000) {
+		t.Error("expected DefaultUnixPeerAllow(1000) to return true")
+	}
+}
+
+func TestServer_CorrelationIDPresent(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "aegis", "corr.sock")
+	srv := NewServer(socketPath, zap.NewNop())
+	srv.Handle("ping", func(ctx context.Context, json.RawMessage) *Response {
+		if id, ok := CorrelationIDFromContext(ctx); !ok || id == "" {
+			return &Response{Error: "no correlation id"}
+		}
+		return &Response{Success: true}
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+
+	client := NewClient(socketPath)
+	ctx := context.Background()
+	resp, err := client.Call(ctx, "ping", nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("expected success with correlation id, got %+v", resp)
+	}
+}
+
+func TestServer_CapabilityTokenRequiredForSensitive(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "aegis", "cap.sock")
+	srv := NewServer(socketPath, zap.NewNop())
+	srv.Handle("start", func(context.Context, json.RawMessage) *Response {
+		return &Response{Success: true}
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+
+	// Call without token should fail (Phase 3/4 capability check)
+	client := NewClient(socketPath)
+	ctx := context.Background()
+	resp, err := client.Call(ctx, "start", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected failure without capability token for sensitive action")
+	}
+}
