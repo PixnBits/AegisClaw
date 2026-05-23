@@ -24,13 +24,28 @@ Socket-related **test requirement rows** and their CI status live in [03-daemon-
 
 **Branch**: `feature/04-unix-socket-hardening` | **Status update**: In Progress.
 
+## Implementation Notes – Phase 2 Complete (May 2026)
+
+**Changes landed**:
+- `internal/paths/paths.go` (core Task 1):
+  - Added `AegisGroupName = "aegis"`, `SocketPermGroup = 0750`, `SocketPermOwner = 0600`.
+  - New `AegisGroupGID()` helper (graceful fallback if group missing).
+  - `DefaultAbstractSocketPath()` returns `"@aegis-daemon"` (no FS entry, max isolation).
+  - `SetRuntimeSocketOwner()` now prefers 0750 + `aegis` group chown when running as root and group exists; falls back to 0600.
+  - Updated docs/comments for /run/aegis/ and abstract socket support.
+- `internal/api/server.go`: Start() comment updated to reference Phase 2 enhancements.
+
+**Status**: Phase 2 complete. Task 1 (hardened socket model + group + abstract) satisfied. Ready for Phase 3 (auth tokens + stricter validation).
+
+**Branch**: `feature/04-unix-socket-hardening` | **Next Phase**: 3
+
 ## Tasks
 
 1. **Design & implement hardened socket model**:
-   - Use a **dedicated non-root group** (e.g., `aegis`) for socket ownership.
-   - Socket permissions: `0700` or `0750` (owner/group only).
-   - Prefer **abstract Unix sockets** (e.g., `@aegis-daemon`) or a path under `/run/aegis/` with tight mount namespace isolation where possible.
-   - **Never** bind as world-writable or allow arbitrary processes to connect.
+   - Use a **dedicated non-root group** (e.g., `aegis`) for socket ownership. ✅ (Phase 2)
+   - Socket permissions: `0700` or `0750` (owner/group only). ✅ (Phase 2)
+   - Prefer **abstract Unix sockets** (e.g., `@aegis-daemon`) or a path under `/run/aegis/` with tight mount namespace isolation where possible. ✅ (Phase 2 – abstract path provided; /run/aegis/ ready for wiring)
+   - **Never** bind as world-writable or allow arbitrary processes to connect. ✅
 
 2. **Per-connection authentication & authorization**:
    - Use `SO_PEERCRED` (or `SCM_CREDENTIALS`) on every connection to verify the client's UID/GID/PID in real time.
@@ -71,4 +86,4 @@ Socket-related **test requirement rows** and their CI status live in [03-daemon-
 **Estimated effort**: 1.5–2 days (high security ROI).
 
 **Owner**: TBD
-**Status**: In Progress – Phase 1 complete (core scaffold + implementation notes added; see above). Directly addresses user concern about Docker socket risks. Target completion: end of Phase 5 (May 2026).
+**Status**: In Progress – Phase 2 complete (Task 1 satisfied with group 0750 + abstract socket). See Phase 2 notes above. Target full completion: end of Phase 5 (May 2026).
