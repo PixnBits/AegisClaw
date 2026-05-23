@@ -1,5 +1,6 @@
-// This version restores full message handling while keeping ProposalStore ownership in the Store VM.
+// This version routes all proposal operations through a remote Store VM client.
 // AegisHub acts as a strict mediator. It holds no persistent proposal state.
+// The remote ProposalStore is wired at startup via the Store VM vsock connection.
 // All vsock connections are authenticated via mutual handshake.
 // Input is strictly validated; errors are sanitized to prevent information leakage.
 // Connection timeouts prevent slow-client DoS.
@@ -78,6 +79,36 @@ func main() {
 		logger.Fatal("message hub failed to start", zap.Error(err))
 	}
 
+	// Wire the remote ProposalStore via Store VM vsock connection.
+	remoteVsockAddr := os.Getenv("STORE_VM_VSOCK_ADDR")
+	if remoteVsockAddr == "" {
+		remoteVsockAddr = "vsock://3:9999"
+	}
+
+	remoteClient, err := remote.NewRemoteClient(remoteVsockAddr)
+	if err != nil {
+		logger.Fatal("failed to create remote store client", zap.Error(err))
+	}
+	defer func() {
+		if err := remoteClient.Close(); err != nil {
+			logger.Warn("failed to close remote store client", zap.Error(err))
+		}
+	}()
+
+	logger.Info("remote store client connected", zap.String("addr", remoteVsockAddr))
+
+	// Register proposalBackend as the "store-vm" skill so preferredBackendForAction
+	// routes proposal actions through the real remote Store VM.
+	proposalBackend := ipc.NewProposalBackend(remoteClient.Proposals(), logger)
+	if err := srv.hub.RegisterSkill("store-vm", proposalBackend.Handle); err != nil {
+		logger.Fatal("failed to register store-vm skill", zap.Error(err))
+	}
+	if err := srv.hub.RegisterSkill("chat-router", ipc.NewChatRouterHandler(logger)); err != nil {
+		logger.Fatal("failed to register chat-router skill", zap.Error(err))
+	}
+
+	logger.Info("store-vm and chat-router skills registered with message-hub")
+
 	port := uint32(defaultAegisHubVSOCKPort)
 	if portEnv := os.Getenv("AEGISHUB_VSOCK_PORT"); portEnv != "" {
 		parsed, err := strconv.ParseUint(portEnv, 10, 32)
@@ -91,7 +122,11 @@ func main() {
 	if err != nil {
 		logger.Fatal("aegishub listen failed", zap.Error(err))
 	}
-	defer listener.Close()
+	defer func() {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			logger.Warn("failed to close listener", zap.Error(err))
+		}
+	}()
 
 	logger.Info("aegishub listening", zap.Uint32("vsock_port", port))
 	go srv.acceptLoop(listener)
@@ -100,9 +135,6 @@ func main() {
 	signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
 	<-sigCh
 
-	if err := listener.Close(); err != nil {
-		logger.Warn("failed to close listener", zap.Error(err))
-	}
 	srv.hub.Stop()
 }
 

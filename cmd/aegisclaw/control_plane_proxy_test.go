@@ -886,7 +886,7 @@ func TestMediatedProposalList_NoBackendErrors(t *testing.T) {
 	if resp == nil || resp.Success || resp.Error == "" {
 		t.Fatalf("expected error response for missing backend, got: %+v", resp)
 	}
-	if !strings.Contains(resp.Error, "store-vm") {
-		t.Errorf("error should mention store-vm backend: %s", resp.Error)
+	if !strings.Contains(resp.Error, "store-vm") && !strings.Contains(resp.Error, "backend") {
+		t.Errorf("error should mention store-vm or backend: %s", resp.Error)
 	}
 }

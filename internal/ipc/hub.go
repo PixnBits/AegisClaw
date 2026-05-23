@@ -398,21 +398,45 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 
 	// Proposal actions require persistent state from a real ProposalStore; there
 	// is no meaningful sample representation of live proposal data. They are
-	// therefore unconditionally hard-failed when the "store-vm" backend is not
-	// registered, even if AEGISCLAW_ALLOW_SAMPLE_DATA=true is set for other actions.
-	// If the "store-vm" backend (proposalBackend wrapping real ProposalStore) is not
-	// registered at AegisHub startup, return a clear actionable error + log.
-	// This enforces that real data is used in production and makes missing wiring obvious.
-	if req.Action == "proposal.list" || req.Action == "proposal.status" {
-		if h.logger != nil {
-			h.logger.Warn("proposal action with no store-vm backend registered; returning error (no silent sample fallback)",
-				zap.String("action", req.Action))
+	// therefore unconditionally hard-failed when no handler is available,
+	// even if AEGISCLAW_ALLOW_SAMPLE_DATA=true is set for other actions.
+	// Only apply this guard when no preferred backend is mapped at all,
+	// or when a preferred backend is mapped but no handler is registered —
+	// in the latter case the earlier delegation block would have skipped
+	// anyway, so we need to return a specific actionable error for proposals.
+	proposalActions := map[string]bool{
+		"proposal.list":           true,
+		"proposal.status":         true,
+		"proposal.create":         true,
+		"proposal.list_by_status": true,
+		"proposal.resolve_id":     true,
+		"proposal.import":         true,
+	}
+	if proposalActions[req.Action] {
+		backendID := h.preferredBackendForAction(req.Action)
+		if backendID == "" {
+			if h.logger != nil {
+				h.logger.Warn("proposal action with no preferred backend; returning error (no silent sample fallback)",
+					zap.String("action", req.Action))
+			}
+			return &DeliveryResult{
+				MessageID: msg.ID,
+				Success:   false,
+				Error:     "store-vm backend not registered (real ProposalStore required at AegisHub startup)",
+			}, nil
 		}
-		return &DeliveryResult{
-			MessageID: msg.ID,
-			Success:   false,
-			Error:     "store-vm backend not registered (real ProposalStore required at AegisHub startup)",
-		}, nil
+		if _, ok := h.getRegisteredHandler(backendID); !ok {
+			if h.logger != nil {
+				h.logger.Warn("proposal action backend not registered; returning error (no silent sample fallback)",
+					zap.String("action", req.Action),
+					zap.String("backend", backendID))
+			}
+			return &DeliveryResult{
+				MessageID: msg.ID,
+				Success:   false,
+				Error:     "store-vm backend not registered (real ProposalStore required at AegisHub startup)",
+			}, nil
+		}
 	}
 
 	// Default behavior (Phase 9+): fail fast with clear error if no backend registered.
@@ -493,19 +517,19 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 // to extend when real backends (Store VM, etc.) are registered.
 //
 // How to Add a New Backend (e.g. "store-vm", "chat-router"):
-//   1. Define an adapter type that holds your real backend (e.g. ProposalStore)
-//      and implements a RouteHandler func(*Message) (*DeliveryResult, error).
-//      Best practice: keep adapters stateless or inject deps; see proposalBackend
-//      pattern for wrapping git-backed stores.
-//   2. At daemon/AegisHub startup (or in Store VM init), call:
-//        hub.RegisterSkill("store-vm", myAdapter.Handle)
-//      This wires the handler into the router so getRegisteredHandler finds it.
-//   3. preferredBackendForAction will route matching actions (e.g. proposal.list)
-//      to it first; the registered handler is used. If none registered, a clear
-//      error is returned by default ("no backend registered for action: ...").
-//      Sample fallback is opt-in only via AEGISCLAW_ALLOW_SAMPLE_DATA=true (dev).
-//   The ControlPlaneProxy + handleControlPlaneRequest flow then delegates
-//   transparently. Registering multiple backends is supported for different actions.
+//  1. Define an adapter type that holds your real backend (e.g. ProposalStore)
+//     and implements a RouteHandler func(*Message) (*DeliveryResult, error).
+//     Best practice: keep adapters stateless or inject deps; see proposalBackend
+//     pattern for wrapping git-backed stores.
+//  2. At daemon/AegisHub startup (or in Store VM init), call:
+//     hub.RegisterSkill("store-vm", myAdapter.Handle)
+//     This wires the handler into the router so getRegisteredHandler finds it.
+//  3. preferredBackendForAction will route matching actions (e.g. proposal.list)
+//     to it first; the registered handler is used. If none registered, a clear
+//     error is returned by default ("no backend registered for action: ...").
+//     Sample fallback is opt-in only via AEGISCLAW_ALLOW_SAMPLE_DATA=true (dev).
+//     The ControlPlaneProxy + handleControlPlaneRequest flow then delegates
+//     transparently. Registering multiple backends is supported for different actions.
 func (h *MessageHub) preferredBackendForAction(action string) string {
 	switch action {
 	case "worker.list", "worker.status":
@@ -514,7 +538,7 @@ func (h *MessageHub) preferredBackendForAction(action string) string {
 		return "skill-registry"
 	case "chat.message":
 		return "chat-router"
-	case "proposal.list", "proposal.status":
+	case "proposal.list", "proposal.status", "proposal.create", "proposal.list_by_status", "proposal.resolve_id", "proposal.import":
 		return "store-vm"
 	default:
 		return ""
