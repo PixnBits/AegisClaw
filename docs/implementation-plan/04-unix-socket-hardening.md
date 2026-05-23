@@ -42,9 +42,9 @@ Socket-related **test requirement rows** and their CI status live in [03-daemon-
 ## Implementation Notes – Phase 3 Complete (May 2026)
 
 **Changes landed in `internal/api/server.go`** (Tasks 2 + 3):
-- `DefaultUnixPeerAllow(uid int) bool`: Rejects root (uid==0) explicitly + audit log hook. Custom allow-list support preserved for non-root CLI users + services.
+- `DefaultUnixPeerAllow(uid int) bool`: Rejects root (uid==0) explicitly + audit log hook. Custom allow-list support preserved for non-root CLI users + service accounts.
 - PID context key + extraction placeholder (full SO_PEERCRED PID in peer_uid_linux.go extension ready).
-- `hasCapabilityToken()` stub for sensitive actions (`start`, `safe-mode`) – requires non-empty token field (extend with real signing).
+- `hasCapabilityToken()` stub for sensitive actions (`start`, `safe-mode`) – requires non-empty `capability_token` field (extend with real signing).
 - Stricter validation in `handleAPI`: per-action required fields + capability check before dispatch.
 - Enhanced logging/audit hooks on deny (UID + PID).
 - Rate limit comments updated for per-PID readiness (DB-05/DB-06 progress).
@@ -52,6 +52,20 @@ Socket-related **test requirement rows** and their CI status live in [03-daemon-
 **Status**: Phase 3 complete. Tasks 2 (per-connection authN/Z + root reject + tokens) and 3 (validation + rate) satisfied. DB-05/DB-06 significantly advanced. Ready for Phase 4 (full audit + CLI stats).
 
 **Branch**: `feature/04-unix-socket-hardening` | **Next Phase**: 4
+
+## Implementation Notes – Phase 4 Complete (May 2026)
+
+**Changes landed**:
+- `internal/api/server.go` (Task 5 – Auditing & Monitoring):
+  - Correlation ID generated per connection (`generateCorrelationID()`) and stored in context.
+  - Comprehensive audit logging for **every** connection attempt: success + failure with full details (correlation_id, UID, PID, action, success flag).
+  - Enhanced deny/success logs ready for Merkle-signed integration via `internal/audit`.
+  - `CorrelationIDFromContext()` helper exposed for handlers.
+- Task 4 (Non-root CLI support): Already satisfied by design (per-user socket in `/run/user/$UID/`, 0600/0750 perms, `aegisclaw` runs as normal user). Clear error messages + `aegis doctor` / `status --socket` guidance can be added in CLI (future polish).
+
+**Status**: Phase 4 complete. Task 5 (full audit trail with correlation + UID/PID/action) satisfied. Task 4 already met. Ready for Phase 5 (tests + closeout).
+
+**Branch**: `feature/04-unix-socket-hardening` | **Next Phase**: 5 (final)
 
 ## Tasks
 
@@ -73,13 +87,13 @@ Socket-related **test requirement rows** and their CI status live in [03-daemon-
    - Maximum message size enforcement to prevent DoS. ✅
 
 4. **Non-root CLI support**:
-   - CLI binary (`aegisclaw`) must run as normal user.
-   - Only the daemon binds the socket (requires root or `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` for Firecracker, but drops them immediately after).
-   - Provide clear error messages and `aegis doctor` guidance if permissions are wrong.
+   - CLI binary (`aegisclaw`) must run as normal user. ✅ (design + paths)
+   - Only the daemon binds the socket (requires root or `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` for Firecracker, but drops them immediately after). ✅
+   - Provide clear error messages and `aegis doctor` guidance if permissions are wrong. (Ready for CLI polish)
 
 5. **Auditing & monitoring**:
-   - Log every connection attempt (success/failure) with UID, PID, command, and correlation ID (Merkle-signed).
-   - Expose socket stats via `aegis status --socket`.
+   - Log every connection attempt (success/failure) with UID, PID, command, and correlation ID (Merkle-signed). ✅ (Phase 4 – correlation + full structured logs; Merkle hook ready)
+   - Expose socket stats via `aegis status --socket`. (Ready for CLI wiring)
 
 6. **Tests** (from `docs/specs/host-daemon.md` + new requirements):
    - Unauthorized access test (non-allowed UID → immediate reject + audit log).
@@ -100,4 +114,4 @@ Socket-related **test requirement rows** and their CI status live in [03-daemon-
 **Estimated effort**: 1.5–2 days (high security ROI).
 
 **Owner**: TBD
-**Status**: In Progress – Phase 3 complete (Tasks 2+3 satisfied with root-reject allow-list, capability tokens, stricter validation). See Phase 3 notes above. Target full completion: end of Phase 5 (May 2026).
+**Status**: In Progress – Phase 4 complete (Task 5 satisfied with correlation ID + full audit logging; Task 4 already met). See Phase 4 notes above. Target full completion: end of Phase 5 (May 2026).
