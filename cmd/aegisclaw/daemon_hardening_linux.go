@@ -4,6 +4,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"unsafe"
 
 	"go.uber.org/zap"
@@ -146,10 +147,24 @@ func applySeccompFilter(logger *zap.Logger) error {
 		unix.SYS_EVENTFD2, unix.SYS_TIMERFD_CREATE, unix.SYS_TIMERFD_SETTIME,
 	}
 
+	arch, ok := seccompAuditArch()
+	if !ok {
+		if logger != nil {
+			logger.Warn("Phase 4: unknown GOARCH for seccomp arch check", zap.String("goarch", runtime.GOARCH))
+		}
+		return nil
+	}
+
 	// Build a simple filter program
 	var filter []unix.SockFilter
-	// Load syscall number
-	filter = append(filter, unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: uint32(4)}) // offsetof(seccomp_data, nr)
+	// Validate arch first (offsetof(seccomp_data, arch)=4). If arch mismatches, kill.
+	filter = append(filter,
+		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: uint32(4)},
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: arch, Jt: 1, Jf: 0},
+		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: uint32(unix.SECCOMP_RET_KILL_PROCESS)},
+	)
+	// Load syscall number (offsetof(seccomp_data, nr)=0).
+	filter = append(filter, unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: uint32(0)})
 
 	for _, nr := range allowed {
 		// if (nr == syscall) accept
@@ -208,4 +223,21 @@ func setResourceLimits(logger *zap.Logger) error {
 		}
 	}
 	return nil
+}
+
+func seccompAuditArch() (uint32, bool) {
+	switch runtime.GOARCH {
+	case "amd64":
+		return uint32(unix.AUDIT_ARCH_X86_64), true
+	case "arm64":
+		return uint32(unix.AUDIT_ARCH_AARCH64), true
+	case "386":
+		return uint32(unix.AUDIT_ARCH_I386), true
+	case "arm":
+		return uint32(unix.AUDIT_ARCH_ARM), true
+	case "riscv64":
+		return uint32(unix.AUDIT_ARCH_RISCV64), true
+	default:
+		return 0, false
+	}
 }

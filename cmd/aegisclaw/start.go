@@ -148,15 +148,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	apiSrv := api.NewServer(env.Config.Daemon.SocketPath, env.Logger)
 	owner := daemonOwnerUID()
-	// Phase 4/04-unix-socket-hardening: the live daemon uses an explicit allow func
-	// that accepts the real owner UID (from SUDO_UID or geteuid) and also uid==0.
-	// This supports the documented sudo launch path for the privileged daemon while
-	// the CLI (running as the original user) can still connect. DefaultUnixPeerAllow
-	// (used by unit tests and external clients) remains the strict "reject root" policy
-	// described in the 04 implementation plan and server_unix_policy tests. The two
-	// policies coexist because the daemon itself is the one that decides its peer rules.
+	// Phase 4/04-unix-socket-hardening: allow only the resolved daemon owner UID
+	// (from SUDO_UID or geteuid). Root is intentionally rejected by policy.
 	apiSrv.UnixPeerAllow = func(uid int) bool {
-		return uid == 0 || uid == owner
+		return uid == owner
 	}
 	apiSrv.Handle("ping", func(ctx context.Context, _ json.RawMessage) *api.Response {
 		return &api.Response{Success: true}

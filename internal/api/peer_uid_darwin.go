@@ -8,8 +8,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func peerUIDFromRawConn(raw syscall.RawConn) (int, bool) {
+func peerUIDFromRawConn(raw syscall.RawConn) (int, int, bool) {
 	var uid int
+	var pid int
 	var okUID bool
 	_ = raw.Control(func(fd uintptr) {
 		cred, err := unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
@@ -18,5 +19,5 @@ func peerUIDFromRawConn(raw syscall.RawConn) (int, bool) {
 			okUID = true
 		}
 	})
-	return uid, okUID
+	return uid, pid, okUID
 }

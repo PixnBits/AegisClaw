@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +21,7 @@ import (
 
 type peerUIDContextKey struct{}
 type trustedCallerContextKey struct{}
-type peerPIDContextKey struct{} // Phase 3: PID from SO_PEERCRED for audit/logging (extend peer_uid_linux.go for full extraction)
+type peerPIDContextKey struct{}
 type correlationIDContextKey struct{} // Phase 4: correlation ID for full audit trail
 
 // PeerUIDFromContext returns the Unix peer UID when the request arrived via the
@@ -29,7 +32,7 @@ func PeerUIDFromContext(ctx context.Context) (int, bool) {
 	return uid, ok
 }
 
-// PeerPIDFromContext returns the Unix peer PID (Phase 3 placeholder; full impl in peer_uid_linux.go).
+// PeerPIDFromContext returns the Unix peer PID from transport peer credentials.
 func PeerPIDFromContext(ctx context.Context) (int, bool) {
 	v := ctx.Value(peerPIDContextKey{})
 	pid, ok := v.(int)
@@ -97,7 +100,7 @@ type SkillActivateRequest struct {
 type SkillInvokeRequest struct {
 	Skill string `json:"skill"`
 	Tool  string `json:"tool"`
-	Args string `json:"args,omitempty"`
+	Args  string `json:"args,omitempty"`
 }
 
 // SkillDeactivateRequest carries the payload for the "skill.deactivate" action.
@@ -248,19 +251,24 @@ func (s *Server) Handle(action string, h Handler) {
 // Phase 3: ConnContext now also extracts PID; UnixPeerAllow defaults to root-reject + allow-list.
 // Phase 4: Correlation ID generated per connection for full audit trail (Task 5).
 func (s *Server) Start() error {
-	if err := aegispaths.EnsureRuntimeDir(filepath.Dir(s.socketPath)); err != nil {
-		return err
+	abstractSocket := strings.HasPrefix(s.socketPath, "@")
+	if !abstractSocket {
+		if err := aegispaths.EnsureRuntimeDir(filepath.Dir(s.socketPath)); err != nil {
+			return err
+		}
+		// Remove stale socket if it exists.
+		os.Remove(s.socketPath)
 	}
-	// Remove stale socket if it exists.
-	os.Remove(s.socketPath)
 
 	ln, err := net.Listen("unix", s.socketPath)
 	if err != nil {
 		return err
 	}
-	if err := aegispaths.SetRuntimeSocketOwner(s.socketPath); err != nil {
-		ln.Close() //nolint:errcheck
-		return err
+	if !abstractSocket {
+		if err := aegispaths.SetRuntimeSocketOwner(s.socketPath); err != nil {
+			ln.Close() //nolint:errcheck
+			return err
+		}
 	}
 	s.listener = ln
 
@@ -278,12 +286,12 @@ func (s *Server) Start() error {
 			if err != nil {
 				return ctx
 			}
-			uid, _ := peerUIDFromRawConn(raw)
-			// Phase 3: PID extraction placeholder (full in peer_uid_linux.go extension)
-			pid := 0
+			uid, pid, ok := peerUIDFromRawConn(raw)
 			corrID := generateCorrelationID() // Phase 4
-			ctx = context.WithValue(ctx, peerUIDContextKey{}, uid)
-			ctx = context.WithValue(ctx, peerPIDContextKey{}, pid)
+			if ok {
+				ctx = context.WithValue(ctx, peerUIDContextKey{}, uid)
+				ctx = context.WithValue(ctx, peerPIDContextKey{}, pid)
+			}
 			ctx = context.WithValue(ctx, correlationIDContextKey{}, corrID)
 			return ctx
 		},
@@ -293,10 +301,13 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// generateCorrelationID creates a simple time-based correlation ID (Phase 4).
-// In production, use UUID or request ID from upstream.
+// generateCorrelationID creates an opaque per-connection ID.
 func generateCorrelationID() string {
-	return time.Now().UTC().Format("20060102T150405.000000000Z07:00") + "-" + "aegis"
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return time.Now().UTC().Format("20060102150405.000000000")
 }
 
 // Stop closes the listener and removes the socket file.
@@ -319,7 +330,7 @@ func (s *Server) CallDirect(ctx context.Context, action string, data json.RawMes
 				)
 			}
 			resp = &Response{Error: "internal handler panic"}
-	}
+		}
 	}()
 	return h(ctx, data)
 }
@@ -328,7 +339,9 @@ func (s *Server) Stop() {
 	if s.listener != nil {
 		s.listener.Close()
 	}
-	os.Remove(s.socketPath)
+	if !strings.HasPrefix(s.socketPath, "@") {
+		os.Remove(s.socketPath)
+	}
 }
 
 // Closer returns a lightweight stop function that closes the listener and
@@ -346,7 +359,9 @@ func (s *Server) Closer() func() {
 		if ln != nil {
 			ln.Close()
 		}
-		os.Remove(path)
+		if !strings.HasPrefix(path, "@") {
+			os.Remove(path)
+		}
 	}
 }
 
@@ -449,7 +464,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			)
 			writeJSON(w, http.StatusForbidden, &Response{Error: "unix socket peer not authorized (root or unexpected UID rejected)"})
 			return
-	}
+		}
 	} else if !DefaultUnixPeerAllow(uid) {
 		s.logger.Warn("unix socket peer denied (default)",
 			zap.String("correlation_id", corrID),
@@ -476,7 +491,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(raw, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, &Response{Error: "invalid JSON: " + err.Error()})
 			return
-	}
+		}
 	}
 
 	// Phase 3: stricter schema validation + capability token check for sensitive actions (Task 3)

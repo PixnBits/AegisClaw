@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,24 +111,21 @@ func TestServer_UnixAPIRateLimit(t *testing.T) {
 // Phase 5: New tests for 04-unix-socket-hardening acceptance criteria
 
 func TestServer_RootUIDRejected(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "aegis", "root.sock")
-	srv := NewServer(socketPath, zap.NewNop())
+	srv := NewServer(filepath.Join(t.TempDir(), "aegis", "root.sock"), zap.NewNop())
 	srv.Handle("ping", func(context.Context, json.RawMessage) *Response {
 		return &Response{Success: true}
 	})
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
+	body, err := json.Marshal(Request{Action: "ping"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(srv.Stop)
+	req := httptest.NewRequest(http.MethodPost, "/api", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), peerUIDContextKey{}, 0))
+	rec := httptest.NewRecorder()
 
-	// Simulate root UID (uid=0) - DefaultUnixPeerAllow should reject
-	// In real test, use a client that spoofs or test via direct call
-	// For now, verify DefaultUnixPeerAllow rejects root
-	if DefaultUnixPeerAllow(0) {
-		t.Error("expected DefaultUnixPeerAllow(0) to return false")
-	}
-	if !DefaultUnixPeerAllow(1000) {
-		t.Error("expected DefaultUnixPeerAllow(1000) to return true")
+	srv.handleAPI(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden for root uid with default policy, got %d", rec.Code)
 	}
 }
 

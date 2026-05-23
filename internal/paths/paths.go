@@ -22,7 +22,7 @@ const (
 
 	// Socket permissions per 04-unix-socket-hardening.md
 	SocketPermOwner os.FileMode = 0600 // strict owner-only (current default)
-	SocketPermGroup os.FileMode = 0750 // owner + aegis group (preferred when group exists)
+	SocketPermGroup os.FileMode = 0660 // owner + aegis group read/write when group exists
 
 	RuntimeUIDEnv = "AEGIS_RUNTIME_UID"
 	RuntimeGIDEnv = "AEGIS_RUNTIME_GID"
