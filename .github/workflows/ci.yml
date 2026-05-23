@@ -36,8 +36,11 @@ jobs:
     name: Integration & Lifecycle Tests
     runs-on: ubuntu-latest
     # These are heavier and may require KVM or longer timeouts.
-    # They are opt-in via workflow_dispatch or can be triggered manually.
-    if: github.event_name == 'workflow_dispatch'
+    # Opt-in via:
+    #   - Adding the "run-integration-tests" label to a PR, or
+    #   - Manual trigger via workflow_dispatch
+    if: github.event_name == 'workflow_dispatch' ||
+        contains(github.event.pull_request.labels.*.name, 'run-integration-tests')
 
     steps:
       - uses: actions/checkout@v4
