@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -60,6 +61,13 @@ func TestSignalShutdownSIGTERM_TerminatesTrackedVMs_E2E(t *testing.T) {
 		"AEGISCLAW_SIGVM_E2E_RESULT="+resultPath,
 		"AEGISCLAW_SIGVM_E2E_READY="+readyPath,
 	)
+
+	// Capture the child's output. This is critical for debugging why the
+	// child exits with non-zero status (currently causing "wait: exit status 2").
+	var childOutput bytes.Buffer
+	cmd.Stdout = &childOutput
+	cmd.Stderr = &childOutput
+
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -78,10 +86,12 @@ func TestSignalShutdownSIGTERM_TerminatesTrackedVMs_E2E(t *testing.T) {
 	select {
 	case err := <-waitErr:
 		if err != nil {
+			t.Logf("child process output:\n%s", childOutput.String())
 			t.Fatalf("wait: %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		_ = cmd.Process.Kill()
+		t.Logf("child process output (before kill):\n%s", childOutput.String())
 		t.Fatal("child did not exit")
 	}
 
