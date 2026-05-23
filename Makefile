@@ -25,7 +25,7 @@ test-short:
 	go test -short -p 1 ./...
 
 test-integration:
-	go test -tags=integration ./cmd/aegisclaw/ -run 'Integration|Lifecycle|Journey' -v
+	go test -tags=integration ./cmd/aegisclaw/ -run 'Integration|Lifecycle|Journey|SignalShutdown' -v
 
 test-all: test test-integration
 
