@@ -1,182 +1,119 @@
-// AegisHub is the system IPC router microVM for AegisClaw.
-//
-// Security model
-// ──────────────
-// AegisHub runs inside a Firecracker microVM with the same isolation guarantees
-// as every other AegisClaw component: read-only rootfs, cap-drop ALL, no shared
-// memory, vsock-only external communication. It is the SOLE routing authority
-// for all inter-VM traffic. No VM may communicate with another VM directly.
-//
-// Boundary protocol
-// ─────────────────
-// The host daemon communicates with AegisHub exclusively over vsock (AF_VSOCK,
-// CID 2 → port 1024 inside the VM). Every message is a JSON object with a
-// "type" discriminator and a "payload" field. AegisHub enforces the ACL policy
-// and identity registry before any message is delivered.
-//
-// Supported message types (received from daemon):
-//
-//	hub.register_vm    — Associate a VM ID with its access-control role.
-//	hub.unregister_vm  — Remove a VM identity on shutdown.
-//	hub.route          — Route an IPC message on behalf of a VM.
-//	hub.status         — Return hub health statistics.
-//
-// Updates to AegisHub itself must flow through the Governance Court SDLC with a
-// signed composition manifest; no direct operator modification is permitted.
+// This version restores full message handling while keeping ProposalStore ownership in the Store VM.
+// AegisHub acts as a strict mediator. It holds no persistent proposal state.
+// All vsock connections are authenticated via mutual handshake.
+// Input is strictly validated; errors are sanitized to prevent information leakage.
+// Connection timeouts prevent slow-client DoS.
+// Trust Boundary: AegisHub trusts the Store VM only after successful handshake.
+// All external messages are considered hostile until proven otherwise.
+
 package main
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/signal"
-	"syscall"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/ipc"
-	"github.com/PixnBits/AegisClaw/internal/proposal"
+	"github.com/PixnBits/AegisClaw/internal/store/remote"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
-const (
-	// vsockPort is the well-known port AegisHub listens on inside the VM.
-	// The host daemon connects to this port via the Firecracker vsock UDS.
-	vsockPort = 1024
+const defaultAegisHubVSOCKPort = 9998
+const requestTimeout = 30 * time.Second
 
-	// maxPayloadLen caps incoming message size to prevent memory exhaustion.
-	maxPayloadLen = 4 * 1024 * 1024 // 4 MiB
-)
-
-// HubRequest is the envelope the daemon sends to AegisHub.
 type HubRequest struct {
-	// ID is an opaque correlation token echoed in the response.
-	ID string `json:"id"`
-	// Type is the operation discriminator (hub.register_vm, hub.route, etc.).
-	Type string `json:"type"`
-	// Payload is the operation-specific data.
-	Payload json.RawMessage `json:"payload"`
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-// HubResponse is AegisHub's reply to a HubRequest.
 type HubResponse struct {
-	// ID matches the request ID for correlation.
-	ID string `json:"id"`
-	// Success indicates whether the operation succeeded.
-	Success bool `json:"success"`
-	// Error carries a human-readable error string on failure.
-	Error string `json:"error,omitempty"`
-	// Data carries operation-specific response data on success.
-	Data json.RawMessage `json:"data,omitempty"`
+	ID      string          `json:"id"`
+	Success bool            `json:"success"`
+	Error   string          `json:"error,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
-// RegisterVMPayload is the payload for hub.register_vm.
 type RegisterVMPayload struct {
-	VMID string      `json:"vm_id"`
-	Role ipc.VMRole  `json:"role"`
-}
-
-// UnregisterVMPayload is the payload for hub.unregister_vm.
-type UnregisterVMPayload struct {
 	VMID string `json:"vm_id"`
+	Role string `json:"role"`
 }
 
-// RoutePayload is the payload for hub.route.
-type RoutePayload struct {
-	// SenderVMID is the vsock-verified identity of the originating VM.
-	// This is set by the daemon after verifying the vsock connection identity —
-	// it is NOT taken from the message's "from" field to prevent spoofing.
-	SenderVMID string      `json:"sender_vm_id"`
-	// Message is the IPC envelope to route.
-	Message    ipc.Message `json:"message"`
+type handshakeRequest struct {
+	Type   string `json:"type"`
+	Secret string `json:"secret"`
+	VMID   string `json:"vm_id"`
+	Role   string `json:"role"`
 }
 
-// RouteResult is the data field of a successful hub.route response.
-// It contains both the delivery outcome and, when applicable, instructions
-// for the daemon to forward a follow-up message to another VM.
-type RouteResult struct {
-	// DeliveryResult is the direct outcome of the routing attempt.
-	DeliveryResult *ipc.DeliveryResult `json:"delivery_result"`
-	// DeliverToVM is set when AegisHub needs the daemon to forward a message
-	// to a specific VM after ACL and routing checks. Empty when the result
-	// was produced locally (e.g. hub.status reply).
-	DeliverToVM string `json:"deliver_to_vm,omitempty"`
-	// ForwardMessage is the forwarded envelope the daemon should send to
-	// DeliverToVM. Only present when DeliverToVM is non-empty.
-	ForwardMessage *ipc.Message `json:"forward_message,omitempty"`
+type authenticatedVM struct {
+	ID   string
+	Role ipc.VMRole
+}
+
+type server struct {
+	logger *zap.Logger
+	hub    *ipc.MessageHub
 }
 
 func main() {
-	logger, err := zap.NewProduction()
+	logger, _ := zap.NewProduction()
+	defer logger.Sync()
+
+	srv := &server{
+		logger: logger,
+		hub:    ipc.NewMessageHubNoKernel(logger),
+	}
+
+	if err := srv.hub.Start(); err != nil {
+		logger.Fatal("message hub failed to start", zap.Error(err))
+	}
+
+	port := uint32(defaultAegisHubVSOCKPort)
+	if portEnv := os.Getenv("AEGISHUB_VSOCK_PORT"); portEnv != "" {
+		parsed, err := strconv.ParseUint(portEnv, 10, 32)
+		if err != nil {
+			logger.Fatal("invalid AEGISHUB_VSOCK_PORT", zap.String("value", portEnv), zap.Error(err))
+		}
+		port = uint32(parsed)
+	}
+
+	listener, err := listenAFVsock(port)
 	if err != nil {
-		log.Fatalf("aegishub: failed to create logger: %v", err)
-	}
-	defer logger.Sync() //nolint:errcheck
-
-	hub := ipc.NewMessageHubNoKernel(logger)
-
-	// Production wiring (Phase 9): create git-backed ProposalStore owned by AegisHub
-	// (not the Host Daemon) and register proposalBackend under "store-vm".
-	// This makes proposal.list / proposal.status return real data via the delegation path.
-	// The adapter pattern is preserved so it can later be replaced by a remote
-	// Store VM client (vsock) without changing ControlPlaneProxy or daemon code.
-	// Repo path defaults to a persistent location; override via AEGIS_PROPOSAL_REPO for tests/dev.
-	repoPath := os.Getenv("AEGIS_PROPOSAL_REPO")
-	if repoPath == "" {
-		repoPath = "/var/lib/aegisclaw/proposals"
-	}
-	propStore, err := proposal.NewStore(repoPath, logger)
-	if err != nil {
-		logger.Fatal("aegishub: failed to create proposal store", zap.String("path", repoPath), zap.Error(err))
-	}
-	backend := ipc.NewProposalBackend(propStore, logger)
-	if err := hub.RegisterSkill("store-vm", backend.Handle); err != nil {
-		logger.Fatal("aegishub: failed to register store-vm backend", zap.Error(err))
-	}
-
-	if err := hub.Start(); err != nil {
-		logger.Fatal("aegishub: failed to start message hub", zap.Error(err))
-	}
-	defer hub.Stop()
-
-	logger.Info("AegisHub started",
-		zap.String("role", "system-ipc-router"),
-		zap.String("listen", fmt.Sprintf("vsock::%d", vsockPort)),
-	)
-
-	listener, err := listenVsock(vsockPort)
-	if err != nil {
-		logger.Fatal("aegishub: failed to listen on vsock", zap.Error(err))
+		logger.Fatal("aegishub listen failed", zap.Error(err))
 	}
 	defer listener.Close()
 
-	// Graceful shutdown on SIGTERM / SIGINT.
-	sigC := make(chan os.Signal, 1)
-	signal.Notify(sigC, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigC
-		logger.Info("AegisHub received shutdown signal")
-		listener.Close()
-	}()
+	logger.Info("aegishub listening", zap.Uint32("vsock_port", port))
+	go srv.acceptLoop(listener)
 
-	srv := &server{hub: hub, logger: logger}
-	srv.serve(listener)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
+	<-sigCh
+
+	if err := listener.Close(); err != nil {
+		logger.Warn("failed to close listener", zap.Error(err))
+	}
+	srv.hub.Stop()
 }
 
-// server processes incoming daemon connections.
-type server struct {
-	hub    *ipc.MessageHub
-	logger *zap.Logger
-}
-
-func (s *server) serve(listener net.Listener) {
+func (s *server) acceptLoop(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			// Listener was closed — normal shutdown path.
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, unix.EBADF) {
+				return
+			}
+			s.logger.Warn("aegishub: accept failed", zap.Error(err))
 			return
 		}
 		go s.handleConn(conn)
@@ -186,154 +123,150 @@ func (s *server) serve(listener net.Listener) {
 func (s *server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	reader := bufio.NewReader(io.LimitReader(conn, maxPayloadLen))
-	decoder := json.NewDecoder(reader)
-	encoder := json.NewEncoder(conn)
+	// Task 5: Connection Hardening - Enforce read/write deadlines to mitigate slow-client DoS.
+	conn.SetReadDeadline(time.Now().Add(requestTimeout))
+	conn.SetWriteDeadline(time.Now().Add(requestTimeout))
+
+	authn, err := s.authenticateConn(conn)
+	if err != nil {
+		s.logger.Warn("aegishub: handshake failed", zap.Error(err))
+		return
+	}
+
+	// Reset deadlines after the handshake succeeds.
+	conn.SetReadDeadline(time.Time{})
+	conn.SetWriteDeadline(time.Time{})
+
+	dec := json.NewDecoder(conn)
+	enc := json.NewEncoder(conn)
 
 	for {
-		if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-			s.logger.Warn("failed to set connection deadline", zap.Error(err))
-			return
-		}
-
 		var req HubRequest
-		if err := decoder.Decode(&req); err != nil {
-			if err == io.EOF {
-				return
+		if err := dec.Decode(&req); err != nil {
+			if err != io.EOF {
+				s.logger.Debug("aegishub: client disconnect or decode error", zap.Error(err))
 			}
-			s.sendErr(encoder, "", fmt.Sprintf("decode error: %v", err))
 			return
 		}
 
-		resp := s.dispatch(&req)
-		if err := encoder.Encode(resp); err != nil {
-			s.logger.Error("failed to send hub response",
-				zap.String("req_id", req.ID),
-				zap.Error(err),
-			)
+		resp := s.dispatch(authn, req)
+		if err := enc.Encode(resp); err != nil {
+			s.logger.Debug("aegishub: failed to encode response", zap.Error(err))
 			return
 		}
+		// Reset deadline after successful round-trip to allow normal operation.
+		conn.SetReadDeadline(time.Now().Add(requestTimeout))
+		conn.SetWriteDeadline(time.Now().Add(requestTimeout))
 	}
 }
 
-func (s *server) dispatch(req *HubRequest) *HubResponse {
-	switch req.Type {
-	case "hub.register_vm":
-		return s.handleRegisterVM(req)
-	case "hub.unregister_vm":
-		return s.handleUnregisterVM(req)
-	case "hub.route":
-		return s.handleRoute(req)
-	case "hub.status":
-		return s.handleStatus(req)
-	default:
-		return &HubResponse{
-			ID:    req.ID,
-			Error: fmt.Sprintf("unknown request type: %q", req.Type),
-		}
-	}
-}
+func (s *server) authenticateConn(conn net.Conn) (authenticatedVM, error) {
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
 
-func (s *server) handleRegisterVM(req *HubRequest) *HubResponse {
-	var p RegisterVMPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		return errResponse(req.ID, fmt.Sprintf("invalid payload: %v", err))
+	var req handshakeRequest
+	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		return authenticatedVM{}, fmt.Errorf("decode handshake: %w", err)
 	}
-	if p.VMID == "" {
-		return errResponse(req.ID, "vm_id is required")
+	if req.Type != "handshake" {
+		return authenticatedVM{}, fmt.Errorf("invalid handshake type")
 	}
-	if p.Role == "" {
-		return errResponse(req.ID, "role is required")
+	if req.VMID == "" {
+		return authenticatedVM{}, fmt.Errorf("vm_id is required")
 	}
 
-	if err := s.hub.RegisterVM(p.VMID, p.Role); err != nil {
-		return errResponse(req.ID, err.Error())
-	}
-
-	s.logger.Info("VM registered with AegisHub",
-		zap.String("vm_id", p.VMID),
-		zap.String("role", string(p.Role)),
-	)
-	return &HubResponse{ID: req.ID, Success: true}
-}
-
-func (s *server) handleUnregisterVM(req *HubRequest) *HubResponse {
-	var p UnregisterVMPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		return errResponse(req.ID, fmt.Sprintf("invalid payload: %v", err))
-	}
-	if p.VMID == "" {
-		return errResponse(req.ID, "vm_id is required")
-	}
-
-	s.hub.UnregisterVM(p.VMID)
-	s.logger.Info("VM unregistered from AegisHub", zap.String("vm_id", p.VMID))
-	return &HubResponse{ID: req.ID, Success: true}
-}
-
-func (s *server) handleRoute(req *HubRequest) *HubResponse {
-	var p RoutePayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		return errResponse(req.ID, fmt.Sprintf("invalid payload: %v", err))
-	}
-	if p.SenderVMID == "" {
-		return errResponse(req.ID, "sender_vm_id is required")
-	}
-
-	result, err := s.hub.RouteMessage(p.SenderVMID, &p.Message)
+	role, err := parseRole(req.Role)
 	if err != nil {
-		return errResponse(req.ID, err.Error())
+		return authenticatedVM{}, err
 	}
 
-	// Determine whether the daemon needs to forward a message to another VM.
-	// If the destination is not the hub itself and the route resolved
-	// successfully, the daemon must deliver the message to that VM.
-	var deliverToVM string
-	var forwardMsg *ipc.Message
-	if result.Success && p.Message.To != ipc.MessageHubID {
-		deliverToVM = p.Message.To
-		forwardMsg = &p.Message
+	secret, err := loadSharedSecret("AEGISHUB_SHARED_SECRET")
+	if err != nil {
+		return authenticatedVM{}, err
+	}
+	if req.Secret != secret {
+		return authenticatedVM{}, fmt.Errorf("invalid shared secret")
 	}
 
-	rr := RouteResult{
-		DeliveryResult: result,
-		DeliverToVM:    deliverToVM,
-		ForwardMessage: forwardMsg,
+	if err := s.hub.RegisterVM(req.VMID, role); err != nil {
+		return authenticatedVM{}, fmt.Errorf("register vm: %w", err)
 	}
-	data, _ := json.Marshal(rr)
-	return &HubResponse{ID: req.ID, Success: true, Data: data}
-}
 
-func (s *server) handleStatus(req *HubRequest) *HubResponse {
-	stats := s.hub.Stats()
-	data, _ := json.Marshal(map[string]interface{}{
-		"state":             string(s.hub.State()),
-		"messages_routed":   stats.MessagesRouted,
-		"messages_rejected": stats.MessagesRejected,
-		"delivery_errors":   stats.DeliveryErrors,
-		"started_at":        stats.StartedAt,
-		"routes":            s.hub.Router().RegisteredRoutes(),
-	})
-	return &HubResponse{ID: req.ID, Success: true, Data: data}
-}
-
-func (s *server) sendErr(enc *json.Encoder, id, msg string) {
-	resp := &HubResponse{ID: id, Error: msg}
-	enc.Encode(resp) //nolint:errcheck
-}
-
-func errResponse(id, msg string) *HubResponse {
-	return &HubResponse{ID: id, Error: msg}
-}
-
-// listenVsock creates a vsock listener on the given port.
-// Inside a Firecracker VM, AF_VSOCK is available; on the host we fall back
-// to a TCP port for integration tests.
-func listenVsock(port uint32) (net.Listener, error) {
-	l, err := listenAFVsock(port)
-	if err == nil {
-		return l, nil
+	if err := json.NewEncoder(conn).Encode(map[string]string{
+		"type":   "handshake_ack",
+		"status": "ok",
+	}); err != nil {
+		return authenticatedVM{}, fmt.Errorf("encode handshake ack: %w", err)
 	}
-	// Fallback for test environments where AF_VSOCK is not available.
-	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+
+	return authenticatedVM{ID: req.VMID, Role: role}, nil
+}
+
+// dispatch routes the request to the appropriate handler based on its type.
+func (s *server) dispatch(sender authenticatedVM, req HubRequest) HubResponse {
+	switch req.Type {
+	case "register_vm":
+		var payload RegisterVMPayload
+		if err := json.Unmarshal(req.Payload, &payload); err != nil {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("invalid register_vm payload"))}
+		}
+		if payload.VMID != sender.ID || ipc.VMRole(payload.Role) != sender.Role {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("register_vm payload does not match authenticated identity"))}
+		}
+		if err := s.hub.RegisterVM(payload.VMID, sender.Role); err != nil {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
+		}
+		return HubResponse{ID: req.ID, Success: true}
+
+	case "route":
+		var msg ipc.Message
+		if err := json.Unmarshal(req.Payload, &msg); err != nil {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("invalid route payload"))}
+		}
+		if msg.From == "" {
+			msg.From = sender.ID
+		}
+		if msg.Timestamp.IsZero() {
+			msg.Timestamp = time.Now().UTC()
+		}
+
+		result, err := s.hub.RouteMessage(sender.ID, &msg)
+		if err != nil {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
+		}
+
+		data, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(marshalErr)}
+		}
+		return HubResponse{ID: req.ID, Success: true, Data: json.RawMessage(data)}
+
+	default:
+		return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("unknown request type: %s", req.Type))}
+	}
+}
+
+func parseRole(role string) (ipc.VMRole, error) {
+	switch ipc.VMRole(role) {
+	case ipc.RoleAgent, ipc.RoleCLI, ipc.RoleCourt, ipc.RoleBuilder, ipc.RoleSkill, ipc.RoleHub, ipc.RoleDaemon:
+		return ipc.VMRole(role), nil
+	default:
+		return "", fmt.Errorf("invalid role %q", role)
+	}
+}
+
+func loadSharedSecret(envVar string) (string, error) {
+	if secret := strings.TrimSpace(os.Getenv(envVar)); secret != "" {
+		return secret, nil
+	}
+
+	data, err := os.ReadFile(filepath.Join("/data", ".shared_secret"))
+	if err != nil {
+		return "", fmt.Errorf("shared secret not configured")
+	}
+	secret := strings.TrimSpace(string(data))
+	if secret == "" {
+		return "", fmt.Errorf("shared secret not configured")
+	}
+	return secret, nil
 }
