@@ -76,9 +76,19 @@ type runtimeEnv struct {
 }
 
 func initRuntime() (*runtimeEnv, error) {
-	logger, err := zap.NewProduction()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create logger: %w", err)
+	var logger *zap.Logger
+	var err error
+
+	if os.Getenv("AEGISCLAW_TEST_LIGHTWEIGHT") != "" {
+		// Lightweight mode for structural TCB tests and E2E children.
+		// Avoids heavy zap sampler allocations and production logging overhead
+		// that have repeatedly caused OOMs in CI on GitHub runners.
+		logger = zap.NewNop()
+	} else {
+		logger, err = zap.NewProduction()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create logger: %w", err)
+		}
 	}
 
 	cfg, err := config.Load(logger)

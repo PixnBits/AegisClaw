@@ -10,12 +10,17 @@ import (
 // initRuntime() / config.Load() does not attempt to write the full default
 // configuration (which can trigger expensive/fragile YAML marshaling in CI
 // environments with a clean home directory).
+//
+// It also enables lightweight runtime initialization (nop logger) to avoid
+// heavy zap allocations that have repeatedly caused OOMs during `make test`
+// on GitHub Actions runners.
 func setupTestConfig(t *testing.T) {
 	t.Helper()
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("SUDO_USER", "")
+	t.Setenv("AEGISCLAW_TEST_LIGHTWEIGHT", "1")
 
 	configDir := filepath.Join(home, ".aegis", "config")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
