@@ -81,7 +81,7 @@ type SkillActivateRequest struct {
 type SkillInvokeRequest struct {
 	Skill string `json:"skill"`
 	Tool  string `json:"tool"`
-	Args  string `json:"args,omitempty"`
+	Args string `json:"args,omitempty"`
 }
 
 // SkillDeactivateRequest carries the payload for the "skill.deactivate" action.
@@ -226,9 +226,9 @@ func (s *Server) Handle(action string, h Handler) {
 // Start begins listening on the Unix socket. The parent directory is verified
 // before binding so a privileged daemon never binds inside a user-controlled
 // ~/.aegis socket directory on Linux.
-// Phase 4: Socket hardening - permissions are set to 0600 (owner-only) via
-// createSecureSocket pattern or equivalent SetRuntimeSocketOwner. This
-// enforces the "Unix Socket Hardening" requirement in host-daemon.md.
+// Phase 2 (04-unix-socket-hardening): Now uses enhanced SetRuntimeSocketOwner
+// from paths.go (aegis group 0750 when available, abstract socket support via
+// DefaultAbstractSocketPath(), SocketPermGroup). Enforces Task 1 hardened model.
 func (s *Server) Start() error {
 	if err := aegispaths.EnsureRuntimeDir(filepath.Dir(s.socketPath)); err != nil {
 		return err
@@ -292,7 +292,7 @@ func (s *Server) CallDirect(ctx context.Context, action string, data json.RawMes
 				)
 			}
 			resp = &Response{Error: "internal handler panic"}
-		}
+	}
 	}()
 	return h(ctx, data)
 }
@@ -375,7 +375,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		if !ok || !s.UnixPeerAllow(uid) {
 			writeJSON(w, http.StatusForbidden, &Response{Error: "unix socket peer not authorized"})
 			return
-		}
+	}
 	}
 
 	max := s.maxBodyBytes()
@@ -394,7 +394,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(raw, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, &Response{Error: "invalid JSON: " + err.Error()})
 			return
-		}
+	}
 	}
 
 	if !s.allowUnixAPIRate(r.Context()) {
