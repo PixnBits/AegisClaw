@@ -398,21 +398,29 @@ func (h *MessageHub) handleControlPlaneRequest(msg *Message) (*DeliveryResult, e
 
 	// Proposal actions require persistent state from a real ProposalStore; there
 	// is no meaningful sample representation of live proposal data. They are
-	// therefore unconditionally hard-failed when the "store-vm" backend is not
-	// registered, even if AEGISCLAW_ALLOW_SAMPLE_DATA=true is set for other actions.
-	// If the "store-vm" backend (proposalBackend wrapping real ProposalStore) is not
-	// registered at AegisHub startup, return a clear actionable error + log.
-	// This enforces that real data is used in production and makes missing wiring obvious.
-	if req.Action == "proposal.list" || req.Action == "proposal.status" {
-		if h.logger != nil {
-			h.logger.Warn("proposal action with no store-vm backend registered; returning error (no silent sample fallback)",
-				zap.String("action", req.Action))
+	// therefore unconditionally hard-failed when no handler is available,
+	// even if AEGISCLAW_ALLOW_SAMPLE_DATA=true is set for other actions.
+	// Only apply this guard when no preferred backend is mapped at all,
+	// or when a preferred backend is mapped but no handler is registered —
+	// in the latter case the earlier delegation block would have skipped
+	// anyway, so we need to return a specific actionable error for proposals.
+	proposalActions := map[string]bool{
+		"proposal.list":     true,
+		"proposal.status":   true,
+		"proposal.create":   true,
+	}
+	if proposalActions[req.Action] {
+		if backendID := h.preferredBackendForAction(req.Action); backendID == "" {
+			if h.logger != nil {
+				h.logger.Warn("proposal action with no preferred backend; returning error (no silent sample fallback)",
+					zap.String("action", req.Action))
+			}
+			return &DeliveryResult{
+				MessageID: msg.ID,
+				Success:   false,
+				Error:     "store-vm backend not registered (real ProposalStore required at AegisHub startup)",
+			}, nil
 		}
-		return &DeliveryResult{
-			MessageID: msg.ID,
-			Success:   false,
-			Error:     "store-vm backend not registered (real ProposalStore required at AegisHub startup)",
-		}, nil
 	}
 
 	// Default behavior (Phase 9+): fail fast with clear error if no backend registered.
@@ -514,7 +522,7 @@ func (h *MessageHub) preferredBackendForAction(action string) string {
 		return "skill-registry"
 	case "chat.message":
 		return "chat-router"
-	case "proposal.list", "proposal.status":
+	case "proposal.list", "proposal.status", "proposal.create":
 		return "store-vm"
 	default:
 		return ""

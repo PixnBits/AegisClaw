@@ -1,5 +1,6 @@
-// This version restores full message handling while keeping ProposalStore ownership in the Store VM.
+// This version routes all proposal operations through a remote Store VM client.
 // AegisHub acts as a strict mediator. It holds no persistent proposal state.
+// The remote ProposalStore is wired at startup via the Store VM vsock connection.
 // All vsock connections are authenticated via mutual handshake.
 // Input is strictly validated; errors are sanitized to prevent information leakage.
 // Connection timeouts prevent slow-client DoS.
@@ -78,6 +79,29 @@ func main() {
 		logger.Fatal("message hub failed to start", zap.Error(err))
 	}
 
+	// Wire the remote ProposalStore via Store VM vsock connection.
+	remoteVsockAddr := os.Getenv("STORE_VM_VSOCK_ADDR")
+	if remoteVsockAddr == "" {
+		remoteVsockAddr = "vsock://3:9999"
+	}
+
+	remoteClient, err := remote.NewRemoteClient(remoteVsockAddr)
+	if err != nil {
+		logger.Fatal("failed to create remote store client", zap.Error(err))
+	}
+	defer remoteClient.Close()
+
+	logger.Info("remote store client connected", zap.String("addr", remoteVsockAddr))
+
+	// Register proposalBackend as the "store-vm" skill so preferredBackendForAction
+	// routes proposal actions through the real remote Store VM.
+	proposalBackend := ipc.NewProposalBackend(remoteClient.Proposals(), logger)
+	if err := srv.hub.RegisterSkill("store-vm", proposalBackend.Handle); err != nil {
+		logger.Fatal("failed to register store-vm skill", zap.Error(err))
+	}
+
+	logger.Info("store-vm skill registered with message-hub")
+
 	port := uint32(defaultAegisHubVSOCKPort)
 	if portEnv := os.Getenv("AEGISHUB_VSOCK_PORT"); portEnv != "" {
 		parsed, err := strconv.ParseUint(portEnv, 10, 32)
@@ -100,9 +124,9 @@ func main() {
 	signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
 	<-sigCh
 
-	if err := listener.Close(); err != nil {
-		logger.Warn("failed to close listener", zap.Error(err))
-	}
+	// Graceful shutdown: close remote client before stopping hub.
+	remoteClient.Close()
+	listener.Close()
 	srv.hub.Stop()
 }
 
