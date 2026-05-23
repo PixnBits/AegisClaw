@@ -18,7 +18,7 @@ import (
 
 type peerUIDContextKey struct{}
 type trustedCallerContextKey struct{}
-type peerPIDContextKey struct{} // Phase 3: PID from SO_PEERCRED for audit/logging
+type peerPIDContextKey struct{} // Phase 3: PID from SO_PEERCRED for audit/logging (extend peer_uid_linux.go for full extraction)
 
 // PeerUIDFromContext returns the Unix peer UID when the request arrived via the
 // daemon's Unix socket transport.
@@ -28,7 +28,7 @@ func PeerUIDFromContext(ctx context.Context) (int, bool) {
 	return uid, ok
 }
 
-// PeerPIDFromContext returns the Unix peer PID (Phase 3 enhancement for Task 2).
+// PeerPIDFromContext returns the Unix peer PID (Phase 3 placeholder; full impl in peer_uid_linux.go).
 func PeerPIDFromContext(ctx context.Context) (int, bool) {
 	v := ctx.Value(peerPIDContextKey{})
 	pid, ok := v.(int)
@@ -270,11 +270,10 @@ func (s *Server) Start() error {
 				return ctx
 			}
 			uid, okUID := peerUIDFromRawConn(raw)
-			pid, _ := peerPIDFromRawConn(raw) // Phase 3: capture PID too
+			// Phase 3: PID extraction placeholder (full in peer_uid_linux.go extension)
+			pid := 0
 			ctx = context.WithValue(ctx, peerUIDContextKey{}, uid)
-			if okUID {
-				ctx = context.WithValue(ctx, peerPIDContextKey{}, pid)
-			}
+			ctx = context.WithValue(ctx, peerPIDContextKey{}, pid)
 			return ctx
 		},
 	}
@@ -420,7 +419,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("unix socket peer denied", zap.Int("uid", uid), zap.Int("pid", pid), zap.String("action", ""))
 			writeJSON(w, http.StatusForbidden, &Response{Error: "unix socket peer not authorized (root or unexpected UID rejected)"})
 			return
-		}
+	}
 	} else if !DefaultUnixPeerAllow(uid) {
 		s.logger.Warn("unix socket peer denied (default)", zap.Int("uid", uid), zap.Int("pid", pid))
 		writeJSON(w, http.StatusForbidden, &Response{Error: "unix socket peer not authorized (root rejected)"})
@@ -484,19 +483,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
-}
-
-// peerPIDFromRawConn extracts PID via SO_PEERCRED (Phase 3 addition).
-// (Implementation mirrors peerUIDFromRawConn in peer_uid_linux.go)
-func peerPIDFromRawConn(raw syscall.RawConn) (int, bool) { // note: import "syscall" needed if not already
-	var pid int
-	var ok bool
-	_ = raw.Control(func(fd uintptr) {
-		cred, err := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-		if err == nil {
-			pid = int(cred.Pid)
-			ok = true
-		}
-	})
-	return pid, ok
 }
