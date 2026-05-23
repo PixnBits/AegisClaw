@@ -11,6 +11,7 @@ protect the Firecracker isolation model.
 1. [Development Setup](#development-setup)
 2. [Running Tests](#running-tests)
    - [Unit & Integration Tests](#unit--integration-tests)
+   - [Opt-in Integration & Lifecycle Tests (via PR labels)](#opt-in-integration--lifecycle-tests-via-pr-labels)
    - [Journey Tests](#journey-tests)
    - [Golden Trace Tests](#golden-trace-tests)
    - [Fuzz / Property Tests](#fuzz--property-tests)
@@ -47,6 +48,47 @@ make test
 # Fast mode — skips -short-flagged journey tests:
 make test-short
 ```
+
+### Opt-in Integration & Lifecycle Tests (via PR labels)
+
+Heavy integration tests (daemon signal handling, VM lifecycle containment,
+sandbox E2E scenarios, and other tests guarded by `//go:build integration`) are
+**not** run on every PR. This keeps the default `make test` fast, cheap, and
+reliable on GitHub Actions.
+
+**How to run them on a PR:**
+
+Add the **`run-integration-tests`** label to the pull request.
+
+When the label is present, the **Integration & Lifecycle Tests** job will
+automatically execute:
+
+```bash
+make test-integration
+```
+
+(Equivalent to `go test -tags=integration ... -run 'Integration|Lifecycle|...'`)
+
+The job will also still run on manual `workflow_dispatch` triggers.
+
+**When you should add the label:**
+
+- Modifying `start.go`, signal handling, `terminateManagedHubAndStoreVMs`, or
+  sandbox lifecycle code
+- Adding or changing a test that carries `//go:build integration`
+- A reviewer explicitly requests deeper coverage before merge
+
+GitHub re-evaluates the job when the label is added or removed, so you can
+apply it at any point during review.
+
+This follows the same opt-in pattern as the existing
+`run-inprocess-tests` label (see below).
+
+See also:
+- [docs/testing-standards.md](docs/testing-standards.md#ci-tiers)
+- [docs/planning/daemon-testing-strategy.md](docs/planning/daemon-testing-strategy.md)
+
+---
 
 ### Journey Tests
 
