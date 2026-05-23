@@ -20,8 +20,14 @@ const (
 	SensitiveDirPerm os.FileMode = 0700
 	RuntimeDirPerm   os.FileMode = 0700
 
+	// Socket permissions per 04-unix-socket-hardening.md
+	SocketPermOwner os.FileMode = 0600 // strict owner-only (current default)
+	SocketPermGroup os.FileMode = 0750 // owner + aegis group (preferred when group exists)
+
 	RuntimeUIDEnv = "AEGIS_RUNTIME_UID"
 	RuntimeGIDEnv = "AEGIS_RUNTIME_GID"
+
+	AegisGroupName = "aegis" // dedicated non-root group for socket ownership (Task 1)
 )
 
 // Layout contains the security-conscious filesystem layout from
@@ -100,6 +106,8 @@ func ResolveHome() (string, error) {
 // DefaultSocketPath returns the privileged daemon socket path. On Linux it is
 // always outside ~/.aegis and placed in /run/user/$UID/aegis/ (tmpfs). Other
 // platforms fall back to ~/.aegis/run/daemon.sock for compatibility.
+// Per 04-unix-socket-hardening: supports dedicated 'aegis' group (0750) when present;
+// abstract socket (@aegis-daemon) available via DefaultAbstractSocketPath().
 func DefaultSocketPath() (string, error) {
 	if runtime.GOOS == "linux" {
 		owner, err := RuntimeSocketOwner()
@@ -113,6 +121,12 @@ func DefaultSocketPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, AppDirName, "run", "daemon.sock"), nil
+}
+
+// DefaultAbstractSocketPath returns an abstract Unix socket name (no filesystem entry).
+// Preferred for even tighter isolation (no path to race or mount). Use with net.Listen("unix", path).
+func DefaultAbstractSocketPath() string {
+	return "@aegis-daemon"
 }
 
 // RuntimeSocketOwner returns the intended owner of /run/user/$UID/aegis and
@@ -182,6 +196,7 @@ func EnsureSecureDirectories(layout Layout) error {
 // EnsureRuntimeDir creates the daemon socket parent and verifies it is not a
 // symlink. On Linux, the parent must be a dedicated "aegis" directory so startup
 // never repairs broad parents such as /tmp or /run/user/$UID.
+// Supports /run/aegis/ for group-based layouts (future 04 enhancement).
 func EnsureRuntimeDir(dir string) error {
 	if dir == "" {
 		return fmt.Errorf("runtime dir is required")
@@ -196,8 +211,10 @@ func EnsureRuntimeDir(dir string) error {
 	return nil
 }
 
-// SetRuntimeSocketOwner applies the runtime owner and strict owner-only
-// permissions to the bound daemon socket.
+// SetRuntimeSocketOwner applies the runtime owner and hardened permissions
+// to the bound daemon socket per 04-unix-socket-hardening.md (Task 1).
+// Prefers 0750 + 'aegis' group ownership when the group exists and running as root;
+// falls back to strict 0600 owner-only.
 func SetRuntimeSocketOwner(path string) error {
 	owner, err := RuntimeSocketOwner()
 	if err != nil {
@@ -206,7 +223,28 @@ func SetRuntimeSocketOwner(path string) error {
 	if err := chownIfRoot(path, owner); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0600)
+
+	// Dedicated non-root 'aegis' group support (Task 1)
+	if gid, err := AegisGroupGID(); err == nil && os.Geteuid() == 0 {
+		if chErr := os.Chown(path, owner.UID, gid); chErr == nil {
+			return os.Chmod(path, SocketPermGroup)
+		}
+	}
+	return os.Chmod(path, SocketPermOwner)
+}
+
+// AegisGroupGID returns the GID of the dedicated 'aegis' group if it exists.
+// Used for 0750 group-owned socket permissions (non-root CLI + daemon group access).
+func AegisGroupGID() (int, error) {
+	g, err := user.LookupGroup(AegisGroupName)
+	if err != nil {
+		return -1, fmt.Errorf("lookup group %s: %w (create with: groupadd %s)", AegisGroupName, err, AegisGroupName)
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return -1, fmt.Errorf("parse gid for group %s: %w", AegisGroupName, err)
+	}
+	return gid, nil
 }
 
 // VerifySensitiveDir enforces ownership, mode, and O_NOFOLLOW traversal for
