@@ -89,7 +89,11 @@ func main() {
 	if err != nil {
 		logger.Fatal("failed to create remote store client", zap.Error(err))
 	}
-	defer remoteClient.Close()
+	defer func() {
+		if err := remoteClient.Close(); err != nil {
+			logger.Warn("failed to close remote store client", zap.Error(err))
+		}
+	}()
 
 	logger.Info("remote store client connected", zap.String("addr", remoteVsockAddr))
 
@@ -99,8 +103,11 @@ func main() {
 	if err := srv.hub.RegisterSkill("store-vm", proposalBackend.Handle); err != nil {
 		logger.Fatal("failed to register store-vm skill", zap.Error(err))
 	}
+	if err := srv.hub.RegisterSkill("chat-router", ipc.NewChatRouterHandler(logger)); err != nil {
+		logger.Fatal("failed to register chat-router skill", zap.Error(err))
+	}
 
-	logger.Info("store-vm skill registered with message-hub")
+	logger.Info("store-vm and chat-router skills registered with message-hub")
 
 	port := uint32(defaultAegisHubVSOCKPort)
 	if portEnv := os.Getenv("AEGISHUB_VSOCK_PORT"); portEnv != "" {
@@ -115,7 +122,11 @@ func main() {
 	if err != nil {
 		logger.Fatal("aegishub listen failed", zap.Error(err))
 	}
-	defer listener.Close()
+	defer func() {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			logger.Warn("failed to close listener", zap.Error(err))
+		}
+	}()
 
 	logger.Info("aegishub listening", zap.Uint32("vsock_port", port))
 	go srv.acceptLoop(listener)
@@ -124,9 +135,6 @@ func main() {
 	signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
 	<-sigCh
 
-	// Graceful shutdown: close remote client before stopping hub.
-	remoteClient.Close()
-	listener.Close()
 	srv.hub.Stop()
 }
 

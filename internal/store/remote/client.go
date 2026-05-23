@@ -249,8 +249,19 @@ func newLimitedDecoder(r io.Reader) *json.Decoder {
 // --- Proposal Store Implementation ---
 
 func (r *ProposalStoreImpl) Create(p *proposal.Proposal) error {
-	_, err := r.client.sendRequest("proposal.create", p)
-	return err
+	data, err := r.client.sendRequest("proposal.create", p)
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		return nil
+	}
+	var created proposal.Proposal
+	if err := json.Unmarshal(data, &created); err != nil {
+		return fmt.Errorf("unmarshal proposal create: %w", err)
+	}
+	*p = created
+	return nil
 }
 
 func (r *ProposalStoreImpl) Get(id string) (*proposal.Proposal, error) {

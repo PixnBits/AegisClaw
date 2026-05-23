@@ -2,6 +2,8 @@ package ipc
 
 import (
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/PixnBits/AegisClaw/internal/proposal"
 	"github.com/PixnBits/AegisClaw/internal/store/remote"
@@ -74,14 +76,19 @@ func (b *proposalBackend) Handle(msg *Message) (*DeliveryResult, error) {
 			"proposal_id": p.ID,
 			"title":       p.Title,
 			"status":      p.Status,
-			"created_at":  p.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"created_at":  p.CreatedAt.Format(time.RFC3339),
 		}
 		data, _ := json.Marshal(status)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil
 
 	case "proposal.create":
-		var p proposal.Proposal
-		if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		var req struct {
+			Title       string            `json:"title"`
+			Description string            `json:"description"`
+			Category    proposal.Category `json:"category"`
+			Author      string            `json:"author"`
+		}
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
 			return &DeliveryResult{
 				MessageID: msg.ID,
 				Success:   false,
@@ -89,15 +96,23 @@ func (b *proposalBackend) Handle(msg *Message) (*DeliveryResult, error) {
 			}, nil
 		}
 		// Validate required fields before sending to Store VM.
-		if p.Title == "" || p.Description == "" || p.Author == "" {
+		if req.Title == "" || req.Description == "" || req.Author == "" {
 			return &DeliveryResult{
 				MessageID: msg.ID,
 				Success:   false,
 				Error:     "missing required fields: title, description, author",
 			}, nil
 		}
-		p.Status = proposal.StatusDraft
-		if err := b.store.Create(&p); err != nil {
+
+		p, err := proposal.NewProposal(req.Title, req.Description, req.Category, req.Author)
+		if err != nil {
+			return &DeliveryResult{
+				MessageID: msg.ID,
+				Success:   false,
+				Error:     fmt.Sprintf("invalid payload for proposal.create: %v", err),
+			}, nil
+		}
+		if err := b.store.Create(p); err != nil {
 			b.logger.Error("proposal create failed",
 				zap.String("title", p.Title),
 				zap.String("author", p.Author),
@@ -113,7 +128,7 @@ func (b *proposalBackend) Handle(msg *Message) (*DeliveryResult, error) {
 			"proposal_id": p.ID,
 			"title":       p.Title,
 			"status":      p.Status,
-			"created_at":  p.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"created_at":  p.CreatedAt.Format(time.RFC3339),
 		}
 		data, _ := json.Marshal(created)
 		return &DeliveryResult{MessageID: msg.ID, Success: true, Response: data}, nil

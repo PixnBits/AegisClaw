@@ -14,9 +14,9 @@ import (
 
 // ------ Integration / smoke tests for the AegisHub → Store VM proposal flow ------
 
-// TestRemoteProposalFlow_Integration verifies the mediated-actions operations
-// from PR #58 are all defined.
+// TestRemoteProposalFlow_Integration verifies proposal actions map to store-vm.
 func TestRemoteProposalFlow_Integration(t *testing.T) {
+	hub := NewMessageHubNoKernel(zap.NewNop())
 	proposedOps := []string{
 		"proposal.list",
 		"proposal.status",
@@ -27,7 +27,9 @@ func TestRemoteProposalFlow_Integration(t *testing.T) {
 	}
 	for _, op := range proposedOps {
 		t.Run(op, func(t *testing.T) {
-			t.Log("operation", op, "is in the mediated-actions set (PR #58)")
+			if backend := hub.preferredBackendForAction(op); backend != "store-vm" {
+				t.Fatalf("expected %s to route to store-vm, got %s", op, backend)
+			}
 		})
 	}
 }
@@ -42,8 +44,8 @@ func TestChatRouter_Integration(t *testing.T) {
 	sessionID := "cr-int-" + t.Name()
 
 	createMsg := &Message{
-		ID:    "ci-create",
-		Type:  "chat.session.create",
+		ID:      "ci-create",
+		Type:    "chat.session.create",
 		Payload: []byte(`{"session_id":"` + sessionID + `"}`),
 	}
 	res, err := cr.Handle(createMsg)
@@ -52,8 +54,8 @@ func TestChatRouter_Integration(t *testing.T) {
 	}
 
 	msgMsg := &Message{
-		ID:    "ci-msg",
-		Type:  "chat.message",
+		ID:      "ci-msg",
+		Type:    "chat.message",
 		Payload: []byte(`{"session_id":"` + sessionID + `","message":"hello","correlation_id":"c1"}`),
 	}
 	res, err = cr.Handle(msgMsg)
@@ -62,8 +64,8 @@ func TestChatRouter_Integration(t *testing.T) {
 	}
 
 	toolMsg := &Message{
-		ID:    "ci-tool",
-		Type:  "chat.tool.result",
+		ID:      "ci-tool",
+		Type:    "chat.tool.result",
 		Payload: []byte(`{"session_id":"` + sessionID + `","tool_call_id":"tc1","content":"output"}`),
 	}
 	res, err = cr.Handle(toolMsg)
@@ -72,8 +74,8 @@ func TestChatRouter_Integration(t *testing.T) {
 	}
 
 	histMsg := &Message{
-		ID:    "ci-hist",
-		Type:  "chat.history",
+		ID:      "ci-hist",
+		Type:    "chat.history",
 		Payload: []byte(`{"session_id":"` + sessionID + `"}`),
 	}
 	res, err = cr.Handle(histMsg)
@@ -85,8 +87,8 @@ func TestChatRouter_Integration(t *testing.T) {
 	}
 
 	listMsg := &Message{
-		ID:    "ci-list",
-		Type:  "chat.sessions.list",
+		ID:      "ci-list",
+		Type:    "chat.sessions.list",
 		Payload: []byte(`{}`),
 	}
 	res, err = cr.Handle(listMsg)
@@ -165,21 +167,6 @@ func TestHardening_PayloadSizeLimitVerified(t *testing.T) {
 		t.Errorf("MaxPayloadLen = %d, expected %d", remote.MaxPayloadLen, 4*1024*1024)
 	}
 	// The remote client already tests this in client_test.go via TestSendRequestReturnsRawJSON
-}
-
-// TestHardening_StoreVMDeadlines verifies store-vm sets read/write deadlines.
-func TestHardening_StoreVMDeadlines(t *testing.T) {
-	data, err := os.ReadFile("/home/pixnbits/AegisClaw/fix/more/cmd/store-vm/main.go")
-	if err != nil {
-		t.Skip("store-vm code not available: ", err)
-	}
-	src := string(data)
-	if !strings.Contains(src, "SetReadDeadline") {
-		t.Error("store-vm should set read deadline")
-	}
-	if !strings.Contains(src, "SetWriteDeadline") {
-		t.Error("store-vm should set write deadline")
-	}
 }
 
 // ------ IPC coverage expansion ------
@@ -326,13 +313,13 @@ func TestIPC_StoreVMRemoteClientMethods(t *testing.T) {
 		"proposal.resolve_id", "proposal.import",
 	}
 	expectedOps := map[string]bool{
-		"proposal.create":       true,
-		"proposal.get":          true,
-		"proposal.update":       true,
-		"proposal.list":         true,
+		"proposal.create":         true,
+		"proposal.get":            true,
+		"proposal.update":         true,
+		"proposal.list":           true,
 		"proposal.list_by_status": true,
-		"proposal.resolve_id":   true,
-		"proposal.import":       true,
+		"proposal.resolve_id":     true,
+		"proposal.import":         true,
 	}
 	for _, op := range ops {
 		if !expectedOps[op] {

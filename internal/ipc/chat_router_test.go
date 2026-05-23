@@ -31,8 +31,8 @@ func TestChatRouter_SessionCreate(t *testing.T) {
 
 	sessionID := "tc-create-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	msg := &Message{
-		ID:    "sc-1",
-		Type:  "chat.session.create",
+		ID:      "sc-1",
+		Type:    "chat.session.create",
 		Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q}`, sessionID)),
 	}
 	result, err := r.Handle(msg)
@@ -58,8 +58,8 @@ func TestChatRouter_SessionCreateAutoSessionID(t *testing.T) {
 	defer cleanup()
 
 	msg := &Message{
-		ID:    "sc-auto",
-		Type:  "chat.session.create",
+		ID:      "sc-auto",
+		Type:    "chat.session.create",
 		Payload: []byte(`{}`),
 	}
 	result, err := r.Handle(msg)
@@ -77,14 +77,35 @@ func TestChatRouter_SessionCreateAutoSessionID(t *testing.T) {
 	}
 }
 
+func TestChatRouter_InvalidPayloadReturnsActionableError(t *testing.T) {
+	r, cleanup := newTestChatRouter(t)
+	defer cleanup()
+
+	msg := &Message{
+		ID:      "bad-json",
+		Type:    "chat.message",
+		Payload: []byte(`{"message":`),
+	}
+	result, err := r.Handle(msg)
+	if err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected failure for invalid payload")
+	}
+	if result.Error != "invalid payload for chat.message" {
+		t.Fatalf("unexpected error: %q", result.Error)
+	}
+}
+
 func TestChatRouter_ChatMessage(t *testing.T) {
 	r, cleanup := newTestChatRouter(t)
 	defer cleanup()
 
 	sessionID := "tc-msg-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	msg := &Message{
-		ID:    "cm-1",
-		Type:  "chat.message",
+		ID:      "cm-1",
+		Type:    "chat.message",
 		Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q,"message":"hello","correlation_id":"c1"}`, sessionID)),
 	}
 	result, err := r.Handle(msg)
@@ -112,8 +133,8 @@ func TestChatRouter_ChatMessageStreamFlag(t *testing.T) {
 
 	sessionID := "tc-stream-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	msg := &Message{
-		ID:    "cm-stream",
-		Type:  "chat.message",
+		ID:      "cm-stream",
+		Type:    "chat.message",
 		Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q,"message":"stream test","correlation_id":"c2","stream":true}`, sessionID)),
 	}
 	result, err := r.Handle(msg)
@@ -136,8 +157,8 @@ func TestChatRouter_SessionList(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		sid := fmt.Sprintf("tc-list-%d", i)
 		msg := &Message{
-			ID:    fmt.Sprintf("sl-%d", i),
-			Type:  "chat.session.create",
+			ID:      fmt.Sprintf("sl-%d", i),
+			Type:    "chat.session.create",
 			Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q}`, sid)),
 		}
 		if _, err := r.Handle(msg); err != nil {
@@ -166,8 +187,8 @@ func TestChatRouter_HistoryNotFound(t *testing.T) {
 	defer cleanup()
 
 	msg := &Message{
-		ID:    "hh-1",
-		Type:  "chat.history",
+		ID:      "hh-1",
+		Type:    "chat.history",
 		Payload: []byte(`{"session_id":"nonexistent"}`),
 	}
 	result, err := r.Handle(msg)
@@ -191,8 +212,8 @@ func TestChatRouter_HistoryWithMessages(t *testing.T) {
 	// Send two messages.
 	for i := 0; i < 2; i++ {
 		msg := &Message{
-			ID:    fmt.Sprintf("hm-%d", i),
-			Type:  "chat.message",
+			ID:      fmt.Sprintf("hm-%d", i),
+			Type:    "chat.message",
 			Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q,"message":"msg%d","correlation_id":"c%d"}`, sessionID, i, i)),
 		}
 		if _, err := r.Handle(msg); err != nil {
@@ -202,8 +223,8 @@ func TestChatRouter_HistoryWithMessages(t *testing.T) {
 
 	// Get history.
 	msg := &Message{
-		ID:    "hhist",
-		Type:  "chat.history",
+		ID:      "hhist",
+		Type:    "chat.history",
 		Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q}`, sessionID)),
 	}
 	result, err := r.Handle(msg)
@@ -231,14 +252,14 @@ func TestChatRouter_ToolResult(t *testing.T) {
 
 	// Create session first.
 	_, _ = r.Handle(&Message{
-		ID:    "tc-create",
-		Type:  "chat.session.create",
+		ID:      "tc-create",
+		Type:    "chat.session.create",
 		Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q}`, sessionID)),
 	})
 
 	msg := &Message{
-		ID:    "tr-1",
-		Type:  "chat.tool.result",
+		ID:      "tr-1",
+		Type:    "chat.tool.result",
 		Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q,"tool_call_id":"tcid-1","content":"tool output"}`, sessionID)),
 	}
 	result, err := r.Handle(msg)
@@ -264,8 +285,8 @@ func TestChatRouter_MissingSessionIDForHistory(t *testing.T) {
 	defer cleanup()
 
 	msg := &Message{
-		ID:    "hh-missing",
-		Type:  "chat.history",
+		ID:      "hh-missing",
+		Type:    "chat.history",
 		Payload: []byte(`{}`),
 	}
 	result, err := r.Handle(msg)
@@ -285,8 +306,8 @@ func TestChatRouter_UnsupportedAction(t *testing.T) {
 	defer cleanup()
 
 	msg := &Message{
-		ID:    "us-1",
-		Type:  "chat.nonexistent",
+		ID:      "us-1",
+		Type:    "chat.nonexistent",
 		Payload: []byte(`{}`),
 	}
 	result, err := r.Handle(msg)
@@ -359,8 +380,8 @@ func TestChatRouter_SessionIsolation(t *testing.T) {
 		go func(n int) {
 			sid := fmt.Sprintf("tc-isolate-%d", n)
 			msg := &Message{
-				ID:    fmt.Sprintf("iso-%d", n),
-				Type:  "chat.session.create",
+				ID:      fmt.Sprintf("iso-%d", n),
+				Type:    "chat.session.create",
 				Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q}`, sid)),
 			}
 			result, err := r.Handle(msg)
@@ -382,6 +403,56 @@ func TestChatRouter_SessionIsolation(t *testing.T) {
 		if !<-done {
 			t.Error("isolation test failed")
 		}
+	}
+}
+
+func TestChatRouter_ConcurrentMessageMutationSingleSession(t *testing.T) {
+	r, cleanup := newTestChatRouter(t)
+	defer cleanup()
+
+	sessionID := "tc-concurrent-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	const count = 25
+	var wg sync.WaitGroup
+	wg.Add(count)
+
+	for i := 0; i < count; i++ {
+		go func(n int) {
+			defer wg.Done()
+			msg := &Message{
+				ID:   fmt.Sprintf("cm-conc-%d", n),
+				Type: "chat.message",
+				Payload: json.RawMessage(fmt.Sprintf(
+					`{"session_id":%q,"message":"msg-%d","correlation_id":"c-%d"}`, sessionID, n, n,
+				)),
+			}
+			if _, err := r.Handle(msg); err != nil {
+				t.Errorf("Handle(chat.message) error: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	historyMsg := &Message{
+		ID:      "hist-conc",
+		Type:    "chat.history",
+		Payload: json.RawMessage(fmt.Sprintf(`{"session_id":%q}`, sessionID)),
+	}
+	result, err := r.Handle(historyMsg)
+	if err != nil {
+		t.Fatalf("Handle(chat.history) error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success, got: %s", result.Error)
+	}
+
+	var resp struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(result.Response, &resp); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+	if resp.Count != count {
+		t.Fatalf("expected %d messages, got %d", count, resp.Count)
 	}
 }
 
@@ -424,8 +495,8 @@ func TestProposalBackend_GetNotFound(t *testing.T) {
 	backend := NewProposalBackend(mock, logger)
 
 	msg := &Message{
-		ID:    "gnf-1",
-		Type:  "proposal.status",
+		ID:      "gnf-1",
+		Type:    "proposal.status",
 		Payload: json.RawMessage(`{"proposal_id":"nonexistent"}`),
 	}
 	result, err := backend.Handle(msg)
