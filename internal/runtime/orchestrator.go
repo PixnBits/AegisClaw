@@ -63,16 +63,29 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 
 	logrus.Infof("Starting %s VM %s with image %s", vmType, id, image)
 
-	// Create VM config with security settings
+	// Per-VM key generation + distribution (Host Daemon TCB duty)
+	vmKP, err := o.secMgr.GenerateVMKeyPair()
+	if err != nil {
+		return fmt.Errorf("failed to generate per-VM keypair: %w", err)
+	}
+
+	// Create VM config with security settings (VM's own keypair for signing its messages)
 	vmConfig := sandbox.VMConfig{
-		ID:        id,
-		Image:     image,
-		Memory:    512, // Default 512MB
-		VCpus:     1,   // Default 1 vCPU
-		PublicKey: o.secMgr.GetKeyPair().PublicKey,
+		ID:         id,
+		Image:      image,
+		Memory:     512, // Default 512MB
+		VCpus:      1,   // Default 1 vCPU
+		PublicKey:  vmKP.PublicKey,
+		PrivateKey: vmKP.PrivateKey, // backend will inject; we zero local copy below
 		NetworkConfig: &sandbox.NetworkConfig{
 			VsockPort: uint32(9000 + len(o.vms)), // Allocate sequential vsock ports
 		},
+	}
+
+	// Best-effort zero the private material in this scope after handing to config/backend
+	// (real zeroization + proof is strengthened in dedicated TCB tests)
+	for i := range vmKP.PrivateKey {
+		vmKP.PrivateKey[i] = 0
 	}
 
 	// For Firecracker on Linux, set kernel and rootfs paths
@@ -93,7 +106,11 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		Config: vmConfig,
 	}
 
-	logrus.Infof("VM %s started successfully", id)
+	// Register the VM's public key with the security manager so AegisHub etc. can verify its signatures.
+	// (The private key has been handed off via vmConfig to the backend for injection into the VM.)
+	o.secMgr.RegisterVM(id, vmConfig.PublicKey)
+
+	logrus.Infof("VM %s started successfully (per-VM key distributed + registered)", id)
 	return nil
 }
 
@@ -150,4 +167,14 @@ func (o *Orchestrator) Config() *config.Config {
 // SecurityManager returns the security manager.
 func (o *Orchestrator) SecurityManager() *security.Manager {
 	return o.secMgr
+}
+
+// SignAuditRoot signs a Merkle tree root (or other audit blob) using the
+// daemon's key. This fulfills the Host Daemon responsibility for tamper-evident
+// audit log signing.
+func (o *Orchestrator) SignAuditRoot(root []byte) (string, error) {
+	if o.secMgr == nil {
+		return "", fmt.Errorf("security manager not initialized")
+	}
+	return o.secMgr.Sign(root)
 }

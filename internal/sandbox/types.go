@@ -15,6 +15,7 @@ type VMConfig struct {
 	Memory        uint64 // Memory in MB
 	VCpus         int
 	PublicKey     ed25519.PublicKey
+	PrivateKey    ed25519.PrivateKey // per-VM private key for secure injection by backend; daemon must not retain after handoff (TCB)
 	NetworkConfig *NetworkConfig
 }
 

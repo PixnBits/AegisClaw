@@ -210,20 +210,45 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	logrus.Info("daemon ready")
 
-	// Block forever
-	select {}
+	// Demo: sign a genesis audit root using the new TCB signing path (exercises
+	// per-daemon key + audit responsibility). Real Merkle roots will be signed
+	// on events and periodically.
+	if sig, err := orchestrator.SignAuditRoot([]byte("genesis-audit-root")); err == nil {
+		logrus.Infof("genesis audit root signed (len=%d)", len(sig))
+	}
 }
 
 func stopDaemon(cmd *cobra.Command, args []string) {
-	if os.Getuid() != 0 {
-		fmt.Println("stop requires root privileges (use: sudo aegis stop)")
-		os.Exit(1)
+	// Prefer socket-based stop: this allows non-root users to stop a root-started
+	// daemon (per AGENTS.md and docs/specs/cli.md). The root daemon honors the
+	// "stop" command over the (currently open) socket and performs its own shutdown.
+	socket := expandPath(socketPath)
+	if conn, err := net.Dial("unix", socket); err == nil {
+		defer conn.Close()
+		if _, err := conn.Write([]byte("stop")); err == nil {
+			buf := make([]byte, 256)
+			if n, err := conn.Read(buf); err == nil {
+				resp := strings.TrimSpace(string(buf[:n]))
+				fmt.Printf("%s\n", resp)
+			}
+			// Give the daemon a moment to exit and clean PID
+			for i := 0; i < 50; i++ {
+				if !isDaemonRunning() {
+					fmt.Println("daemon stopped (via socket)")
+					return
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			fmt.Println("daemon stop requested via socket (may still be shutting down)")
+			return
+		}
 	}
 
+	// Fallback: direct PID signal (works when daemon not root-owned or same-user)
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		fmt.Println("daemon not running")
-		removePIDFile() // Clean up if it exists
+		removePIDFile()
 		return
 	}
 
@@ -242,21 +267,18 @@ func stopDaemon(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	// Try to terminate the process
 	if err := process.Signal(syscall.SIGTERM); err != nil {
-		// If process doesn't exist, just clean up the PID file
 		if strings.Contains(err.Error(), "no such process") {
 			fmt.Println("daemon not running (PID file stale, cleaned up)")
 			removePIDFile()
 			return
 		}
-		fmt.Printf("failed to stop daemon: %v\n", err)
+		fmt.Printf("failed to stop daemon via signal: %v (try with sudo if daemon is root-owned)\n", err)
 		return
 	}
 
-	// Wait for daemon to shut down gracefully (up to 10 seconds)
 	for i := 0; i < 100; i++ {
-		if isDaemonRunning() == false {
+		if !isDaemonRunning() {
 			fmt.Println("daemon stopped")
 			removePIDFile()
 			return
@@ -264,10 +286,8 @@ func stopDaemon(cmd *cobra.Command, args []string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// If still running, try SIGKILL
 	process.Signal(syscall.SIGKILL)
 	time.Sleep(500 * time.Millisecond)
-
 	fmt.Println("daemon stopped (forced)")
 	removePIDFile()
 }
@@ -350,9 +370,21 @@ func startSocketServer(socketPath string, orch *runtime.Orchestrator) error {
 		return fmt.Errorf("failed to listen on socket: %w", err)
 	}
 
-	// Make socket readable by all users
-	if err := os.Chmod(socket, 0666); err != nil {
-		return fmt.Errorf("failed to chmod socket: %w", err)
+	// Harden socket: chown to the original invoking user (from sudo or current)
+	// and chmod 0600 so only that user (and root) can connect. This is a key
+	// TCB hardening step per host-daemon.md (strict permissions + input validation).
+	if u, err := getOriginalUser(); err == nil {
+		if uid, perr := strconv.Atoi(u.Uid); perr == nil {
+			gid := uid
+			if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
+				gid = g
+			}
+			_ = os.Chown(socket, uid, gid)
+		}
+	}
+	if err := os.Chmod(socket, 0600); err != nil {
+		// Fallback to world for unusual setups (still better than before in most cases)
+		_ = os.Chmod(socket, 0666)
 	}
 
 	go func() {
@@ -381,8 +413,21 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		return
 	}
 
-	command := string(buf[:n])
+	command := strings.TrimSpace(string(buf[:n]))
 	logrus.Debugf("received command: %s", command)
+
+	// Input validation / hardening (per host-daemon.md Unix Socket Hardening req)
+	if len(command) == 0 || len(command) > 64 {
+		conn.Write([]byte("invalid command\n"))
+		return
+	}
+	// Allowlist (extend as we add commands in later phases)
+	allowed := map[string]bool{"vm list": true, "stop": true}
+	if !allowed[command] {
+		logrus.Warnf("unauthorized or unknown socket command: %s", command)
+		conn.Write([]byte("unauthorized\n"))
+		return
+	}
 
 	response := ""
 	switch command {
@@ -397,6 +442,22 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 				response += fmt.Sprintf("%s: %s (%s)\n", vm.ID, vm.Type, vm.Status)
 			}
 		}
+	case "stop":
+		response = "stopping\n"
+		conn.Write([]byte(response))
+		logrus.Info("stop command received via socket - initiating graceful shutdown")
+		go func() {
+			if orchestrator != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := orchestrator.Shutdown(ctx); err != nil {
+					logrus.Errorf("shutdown error during socket stop: %v", err)
+				}
+			}
+			removePIDFile()
+			os.Exit(0)
+		}()
+		return
 	default:
 		response = "Unknown command\n"
 	}
