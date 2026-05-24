@@ -198,7 +198,7 @@ Sub-steps:
 **Deliverable:** Builder runs on proposal, gates pass/fail correctly, artifacts signed.  
 **Tests:** Security gate unit + integration tests (malicious skill examples blocked).
 
-**Phase 4 Progress (current):** The 5 mandatory gates have been implemented and hardened with a robust test suite designed to catch regressions. Wiring advanced: signed git/PR flows + proposal trigger after Court approval (Builder fetches proposal, runs gates, reports success/failure non-leaking). Store handles build results. ACLs updated. 5 commits. See full-implementation-roadmap.md.
+**Phase 4 Progress (current):** The 5 mandatory gates have been implemented and hardened with a robust test suite designed to catch regressions. Wiring advanced: signed git/PR flows + proposal trigger after Court approval. Builder build_proposal handler now fully sequences clone → push (gates) → pr.create → skill.register (all signed, per builder-vm.md). Store integrates results. ACLs updated. 6 commits. See full-implementation-roadmap.md.
 
 ### Phase 5: Web Portal — Full Thin VM + Complete UI Screens
 

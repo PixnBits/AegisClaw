@@ -87,9 +87,10 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 - Strong regression test suite for the gates (individual + combined, explicit vague secrets message verification).
 - Improved wiring: Builder now properly sends signed requests for git.clone, git.push (gates enforced before any push), and pr.create to Store with response handling (per builder-vm.md).
 - Proposal trigger flow: Store notifies Builder after Court approval (signed); Builder fetches proposal, runs gates, reports success/failure back (non-leaking reports).
+- Enhanced build_proposal handler now fully sequences the git/PR/skill registration flow: clone → push (gates) → pr.create → skill.register (all signed).
 - ACLs updated.
-- 5 logical commits.
-- Remaining: rootfs scanner integration, fuller git content management, skill.register from Builder, Court feedback handling.
+- 6 logical commits in Phase 4.
+- Remaining: rootfs scanner integration, more realistic local git content changes inside Builder, Court feedback loop.
 
 ### Phase 5: Web Portal — Thin VM + Complete UI + All Screens
 
