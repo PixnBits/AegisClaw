@@ -232,6 +232,19 @@ func createProposal(description string, encoder *json.Encoder, decoder *json.Dec
 	signMessage(&msg, priv)
 	encoder.Encode(msg)
 	fmt.Println("Proposal created:", proposal["id"])
+
+	// Notify Court Scribe (Phase 3 integration with governance-court.md)
+	scribeMsg := Message{
+		Source:      "agent",
+		Destination: "court-scribe",
+		Command:     "scribe.notify_review",
+		Payload:     map[string]interface{}{"proposal_id": proposal["id"], "description": description},
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Signature:   "",
+	}
+	signMessage(&scribeMsg, priv)
+	encoder.Encode(scribeMsg)
+	fmt.Println("Notified Court Scribe for proposal review")
 }
 
 func runAgent(cmd *cobra.Command, args []string) {
