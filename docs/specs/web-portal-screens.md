@@ -1,7 +1,11 @@
 # Web Portal Screens & Design Specification
 
-## Design Philosophy
-- Dark, clean, high-contrast "secure command center" aesthetic
+> **Note**: This file contains legacy wireframe concepts and the original design vision. For the **current implementation** (features, exact navigation, look & feel from code, API surface), see the authoritative **[web-portal.md](./web-portal.md)**.
+>
+> The actual running portal (internal/dashboard/server.go) uses a GitHub-dark theme (#0d1117 / #58a6ff accents), a specific 14-link nav (Overview, Canvas, Chat, ...), and rich implemented screens (full streaming chat with client Markdown, Canvas live workspace, proposal round feedback, workspace editor, source/git/PR scaffolding, etc.). Many "planned" items from the wireframes below have been realized in code.
+
+## Design Philosophy (Original + Current)
+- Dark, clean, high-contrast "secure command center" aesthetic (realized as GitHub-inspired dark UI)
 - Paranoid by design: transparency, clear status, prominent emergency controls
 - Fully self-contained (no external CDNs, fonts, or assets)
 - Prioritizes clarity, fast feedback (RAIL), and easy access to critical actions
@@ -27,7 +31,11 @@
 [Logo: AegisClaw]   [System Status: ● Daemon Running | Firecracker]   [Navigation]   [Connection Status] [Notifications (n)] [Avatar ▼]
 ```
 
-**Navigation**: Dashboard • Conversations • Teams • Agents • Skills • Court • Monitoring • Audit
+**Navigation** (original vision): Dashboard • Conversations • Teams • Agents • Skills • Court • Monitoring • Audit
+
+**Current actual navigation** (see web-portal.md for details):  
+Overview • Canvas • Chat • Agents • Skills • PRs • Source • Git • Workspace • Async Hub • Memory • Approvals • Audit • Settings  
+(plus live SSE status indicator; logo 🛡️ AegisClaw)
 
 **Right side** (right to left):
 - Avatar → dropdown (About Me, Settings, Agent Customization)
