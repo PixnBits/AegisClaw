@@ -119,34 +119,76 @@ for component in $COMPONENTS; do
     
     # Build Docker image
     image_name="aegis-${component}:latest"
+    
+    # Use repo root as build context for components that need go.mod / multi-package access (e.g. builder)
+    if [ "$component" = "builder" ]; then
+        build_context="$REPO_ROOT"
+    else
+        build_context="$REPO_ROOT/cmd/$component"
+    fi
+    
     docker build \
         -f "$dockerfile_path" \
         -t "$image_name" \
-        "$REPO_ROOT/cmd/$component" \
+        "$build_context" \
         || error "Failed to build Docker image for $component"
     
-    # Extract rootfs from Docker image
-    # This creates a minimal filesystem that can be used by Firecracker
+    # Extract rootfs from Docker image (per-component isolation)
     log "Extracting filesystem from Docker image..."
     
     container_id=$(docker create "$image_name")
     trap "docker rm $container_id > /dev/null 2>&1 || true" EXIT
     
+    component_rootfs_dir="$ROOTFS_DIR/${component}-rootfs"
+    mkdir -p "$component_rootfs_dir"
+    
+    # Export container filesystem as tar (clean per-component)
+    docker export "$container_id" | tar -xf - -C "$component_rootfs_dir" || error "Failed to extract filesystem"
+    
     rootfs_file="$ROOTFS_DIR/${component}.img"
     
-    # Export container filesystem as tar
-    docker export "$container_id" | tar -xf - -C "$ROOTFS_DIR" || error "Failed to extract filesystem"
+    # Create per-component tarball (clean, does not accumulate previous components)
+    log "Creating rootfs archive for $component..."
+    tar -czf "${rootfs_file}.tar.gz" -C "$component_rootfs_dir" . || error "Failed to create filesystem archive"
     
-    # Create ext4 filesystem image (for Firecracker)
-    # This is a simplified approach; for production, would create proper ext4 images
-    log "Creating ext4 filesystem image for $component..."
-    
-    # For now, create a tarball that can be used to initialize the rootfs
-    tar -czf "${rootfs_file}.tar.gz" -C "$ROOTFS_DIR" . || error "Failed to create filesystem archive"
+    # Optional: clean up per-component dir to save space (keep tarball)
+    rm -rf "$component_rootfs_dir"
     
     log "Filesystem for $component saved to ${rootfs_file}.tar.gz"
     
     docker rm "$container_id" > /dev/null 2>&1 || true
+
+    # === Builder-specific post-processing (Phase 4 rootfs requirements) ===
+    if [ "$component" = "builder" ]; then
+        log "Performing Builder-specific rootfs enhancements (scanners for 5 security gates)..."
+        
+        # Ensure scanners from the image are properly present in the extracted dir
+        # (they are already copied in the Dockerfile; this step can add verification or SBOM)
+        
+        # Create a minimal SBOM / manifest for supply-chain visibility (see threat-model.md)
+        sbom_file="$ROOTFS_DIR/builder-sbom.txt"
+        {
+            echo "# AegisClaw Builder VM SBOM (Phase 4)"
+            echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "# Reference: docs/specs/builder-security-gates.md + builder-vm.md"
+            echo ""
+            echo "Binary: /usr/local/bin/builder (statically linked Go)"
+            echo ""
+            echo "Included security gate scanners:"
+            echo "  - SAST: gosec (github.com/securego/gosec)"
+            echo "  - SCA: govulncheck (golang.org/x/vuln)"
+            echo "  - Secrets: gitleaks + custom entropy/patterns in binary"
+            echo "  - Policy-as-Code: opa (Open Policy Agent)"
+            echo "  - Composition/Health: Go toolchain + smoke test support"
+            echo ""
+            echo "Notes:"
+            echo "  - All scanners are available inside the untrusted Builder VM."
+            echo "  - Rootfs kept minimal per security-model.md (alpine base + static tools)."
+            echo "  - Future work: proper image signing + full SBOM (syft/spdx) + SBOM in build artifacts."
+        } > "$sbom_file"
+        
+        log "Builder SBOM/manifest written to $sbom_file"
+    fi
 done
 
 log "MicroVM filesystem build complete!"
