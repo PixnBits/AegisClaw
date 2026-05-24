@@ -82,6 +82,8 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 
 **Exit Criteria:** A proposal can go through Builder; gates correctly pass/fail with proper audit; artifacts signed.
 
+**Phase 4 Progress (current):** Core 5 gates + runner implemented and hardened in `cmd/builder/`. Strong regression test suite (individual gates + combined, vague secrets message enforcement, malicious cases). 3 commits. Wiring, rootfs, and full proposal flow integration remain.
+
 ### Phase 5: Web Portal — Thin VM + Complete UI + All Screens
 
 **Dependencies:** Phase 1 (daemon proxy), Phase 2 (Hub data), Phase 3 (Court/Agent data flows).
