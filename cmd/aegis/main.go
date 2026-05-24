@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -191,6 +194,21 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// Start socket server
 	if err := startSocketServer(socketPath, orchestrator); err != nil {
 		logrus.Fatalf("failed to start socket server: %v", err)
+	}
+
+	// Phase 5: Minimal hardened reverse proxy for Web Portal (per web-portal-vm.md + host-daemon.md)
+	// The Web Portal must receive traffic ONLY through the Host Daemon.
+	// We start the portal on an internal address and proxy from the public :8080.
+	go func() {
+		if err := startManagedWebPortal(); err != nil {
+			logrus.Errorf("web-portal management: %v", err)
+		}
+	}()
+
+	// Start the public-facing reverse proxy (users hit this at http://localhost:8080)
+	// This is the only inbound path to the Web Portal.
+	if err := startWebPortalProxy("127.0.0.1:8080", "http://127.0.0.1:18080"); err != nil {
+		logrus.Fatalf("failed to start web portal reverse proxy: %v", err)
 	}
 
 	// Setup signal handling
@@ -553,4 +571,88 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// startManagedWebPortal starts the web-portal binary as a managed child process
+// on an internal address (127.0.0.1:18080). This is part of the Host Daemon's
+// responsibility to mediate all access to the Web Portal (per web-portal-vm.md).
+func startManagedWebPortal() error {
+	webPortalBinary := "./bin/web-portal"
+	if _, err := os.Stat(webPortalBinary); os.IsNotExist(err) {
+		// Fall back to looking in PATH or same dir as daemon (useful in dev)
+		webPortalBinary = "web-portal"
+	}
+
+	cmd := exec.Command(webPortalBinary)
+	cmd.Env = append(os.Environ(),
+		"AEGIS_WEB_PORTAL_LISTEN_ADDR=127.0.0.1:18080",
+		// In real deployment this would also pass vsock or hub socket info
+	)
+
+	// Inherit logging from the daemon for now (goes to ~/.aegis/daemon.log)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	logrus.Info("starting managed web-portal on internal address 127.0.0.1:18080")
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start web-portal: %w", err)
+	}
+
+	// In a more complete implementation we would track this in the orchestrator
+	// and restart on crash. For Phase 5 minimal proxy this is sufficient.
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			logrus.Warnf("managed web-portal exited: %v", err)
+		}
+	}()
+
+	return nil
+}
+
+// startWebPortalProxy starts a minimal, hardened reverse proxy on the public
+// address (typically 127.0.0.1:8080) that forwards to the internal web-portal.
+// This is the ONLY way users should reach the Web Portal.
+func startWebPortalProxy(listenAddr, targetURL string) error {
+	target, err := url.Parse(targetURL)
+	if err != nil {
+		return fmt.Errorf("invalid web portal target: %w", err)
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	// Hardening (per host-daemon.md TCB requirements and plan notes)
+	proxy.Transport = &http.Transport{
+		MaxIdleConns:        100,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+
+	// Wrap with basic hardening middleware
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simple request size limit (protect against huge uploads)
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10MB
+
+		// Log high-level access (goes to daemon log / audit trail)
+		logrus.Infof("web-proxy: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+
+		proxy.ServeHTTP(w, r)
+	})
+
+	server := &http.Server{
+		Addr:         listenAddr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 60 * time.Second, // longer for SSE/streaming chat
+		IdleTimeout:  120 * time.Second,
+	}
+
+	logrus.Infof("web portal reverse proxy listening on %s (forwarding to %s)", listenAddr, targetURL)
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logrus.Errorf("web portal proxy error: %v", err)
+		}
+	}()
+
+	return nil
 }
