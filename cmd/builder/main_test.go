@@ -23,6 +23,17 @@ func main() {
 		t.Error("Should pass")
 	}
 
+	// Individual gate tests
+	if pass, _ := runSAST(code); !pass {
+		t.Error("Good code should pass SAST")
+	}
+	if pass, _ := runSecretsScan(code); !pass {
+		t.Error("Good code should pass secrets scan")
+	}
+	if pass, _ := runPolicyCheck(code); !pass {
+		t.Error("Good code should pass policy")
+	}
+
 	// Test failing SAST
 	badCode := `package main
 
