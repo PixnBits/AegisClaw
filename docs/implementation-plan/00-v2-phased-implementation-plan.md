@@ -174,11 +174,13 @@ Sub-steps:
 **Tests:** Unit for loop steps + persona voting; integration journey seeds.
 
 **Phase 3 Progress (current session):**  
-- `cmd/agent/main.go` already had strong skeleton with calls to observe/think/plan/act/execute/judge + signing + Hub registration + memory context fetch + proposal creation on skill requests.
-- Enhanced with `callLLMWithFallback` (uses mockLLMResponse when real Network Boundary path unavailable — ideal for dev/Phase 3 iteration).
-- Builds cleanly (`bin/agent`).
-- Aligns directly with `agent-runtime.md` (6-step, via Hub, stateless, signed messages) and governance-court requirements (proposals trigger Court via scribe).
-- Ready for deeper Memory VM + Court Scribe/Persona implementations.
+- `cmd/agent/main.go` already had strong skeleton... Enhanced with distinct 6-step prompts, memory context in Observe, proposal trigger in Judge, callLLMWithFallback + rich persona-aware mocks. Fixed createProposal to notify Scribe with **ID only** (no content leak, per court-scribe.md). Added unit tests (mock, payload security).
+- Memory VM: spec-aligned get_context (32k tokens, semantic top-N long-term, token summary), normalizeVector for embeddings, ioutil fixed, persist to Store, expanded tests.
+- Court Scribe: full keys+signing+pubkey reg, content guard (rejects desc), forwards notify to 7 unique personas via Hub, real decideReview (unanimous non-abstain Approve or any Reject blocks), signed review_complete. Tests for rules.
+- Court Personas: unique sources "court-persona-<name>" (7 distinct, ACL wildcard enabled), persona-specific analysis producing distinguishable votes/reasoning + Abstain on uncertainty, structured feedback, signed Store fetch + vote. Tests.
+- ACLs: wildcard support + comprehensive Phase 3 rules (agent/memory/store/net/court flows, bidirectional, deny-default).
+- All: builds, relevant tests green (go test ./cmd/{agent,memory,aegishub,court-*}). 3 logical commits. Hub roundtrips pass with DEV_MODE + explicit ACL.
+- Remaining (see todos): full E2E flow tests with live hub+components, deeper persona LLM via NetBoundary, Builder integration, plan user journeys seeds.
 
 ### Phase 4: Builder VM + Mandatory Security Gates
 - `cmd/builder/`: Ephemeral per-proposal. Implements the 5 gates in order (`builder-security-gates.md` + `builder-vm.md`):
