@@ -5,6 +5,8 @@
 **Status:** Authoritative plan to reach spec-compliant, working system  
 **Primary References:** Current `docs/specs/`, `docs/prd/`, `docs/architecture.md`, `docs/testing-standards.md`, `AGENTS.md` (local), and the component-split code in this branch as the *best available reference* (not to be preserved verbatim).
 
+**Detailed Execution Plan:** See the companion `full-implementation-roadmap.md` (created after deep PRD/Spec exploration + Phase 3 progress). It provides granular tasks, traceability to every user journey's Success Criteria, and refines Phases 4–7 for execution.
+
 ## 1. Executive Summary & Context
 
 This branch contains the **architectural reference implementation** created after lessons from an earlier monolithic design. The specifications in `docs/specs/` (especially `host-daemon.md`, `web-portal-*.md`, component specs, and the 9 user journeys) and `docs/prd/` have been refined based on those lessons.
