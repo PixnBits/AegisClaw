@@ -40,14 +40,16 @@ func TestHubRoundTrip(t *testing.T) {
 
 	// Generate keys for clients
 	pub1, priv1, _ := ed25519.GenerateKey(rand.Reader)
-	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
 	pub1Str := base64.StdEncoding.EncodeToString(pub1)
 	pub2Str := base64.StdEncoding.EncodeToString(pub2)
 
 	// Start hub in background
 	hubBinary := buildTestBinary(t, "./cmd/aegishub", "aegishub-test")
 	cmd := exec.Command(hubBinary, "start")
-	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+testHubSocketPath)
+	// Allow dummy signatures in the test (the test was written for the lenient registration path).
+	// Real components will send proper signatures; production Hub rejects dummy unless this env is set.
+	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+testHubSocketPath, "AEGIS_DEV_MODE=1")
 	err := cmd.Start()
 	if err != nil {
 		t.Fatalf("Failed to start hub: %v", err)
@@ -80,8 +82,12 @@ func TestHubRoundTrip(t *testing.T) {
 		Command:     "register",
 		Payload:     map[string]string{"public_key": pub1Str},
 		Timestamp:   "2026-05-09T19:20:00Z",
-		Signature:   "dummy", // For register, perhaps no sig needed
+		Signature:   "",
 	}
+	// Sign registration (same pattern the test already uses for data messages)
+	data1, _ := json.Marshal(regMsg1)
+	sig1 := ed25519.Sign(priv1, data1)
+	regMsg1.Signature = base64.StdEncoding.EncodeToString(sig1)
 	err = encoder1.Encode(regMsg1)
 	if err != nil {
 		t.Fatalf("Failed to register client1: %v", err)
@@ -104,8 +110,12 @@ func TestHubRoundTrip(t *testing.T) {
 		Command:     "register",
 		Payload:     map[string]string{"public_key": pub2Str},
 		Timestamp:   "2026-05-09T19:20:00Z",
-		Signature:   "dummy",
+		Signature:   "",
 	}
+	// Sign registration (same pattern the test already uses for data messages)
+	data2, _ := json.Marshal(regMsg2)
+	sig2 := ed25519.Sign(priv2, data2)
+	regMsg2.Signature = base64.StdEncoding.EncodeToString(sig2)
 	err = encoder2.Encode(regMsg2)
 	if err != nil {
 		t.Fatalf("Failed to register client2: %v", err)
