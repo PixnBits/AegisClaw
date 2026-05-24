@@ -1,4 +1,4 @@
-.PHONY: build build-binaries build-microvms clean test test-integration test-e2e help doctor
+.PHONY: build build-binaries build-microvms clean test test-integration test-e2e smoke help doctor
 
 # Default target
 all: build
@@ -52,6 +52,47 @@ status:
 doctor:
 	./bin/aegis doctor
 
+# Quick smoke test - run this after `make start` to verify the system came up cleanly.
+# Catches regressions in startup, socket, reverse proxy, and basic portal reachability.
+smoke:
+	@echo "=== AegisClaw Smoke Test ==="
+	@echo ""
+	@echo "1. CLI: status..."
+	@./bin/aegis status | grep -q "running" && echo "   ✓ Daemon reports as running" || (echo "   ✗ Daemon not running"; exit 1)
+	@echo ""
+	@echo "2. CLI: doctor..."
+	@./bin/aegis doctor > /dev/null 2>&1 && echo "   ✓ doctor succeeded" || (echo "   ✗ doctor failed"; exit 1)
+	@echo ""
+	@echo "3. Web Portal proxy (via daemon on :8080)..."
+	@curl -sf --max-time 8 http://localhost:8080/health > /dev/null && echo "   ✓ /health responded" || (echo "   ✗ Portal proxy health check failed (is the daemon running?)"; exit 1)
+	@curl -sf --max-time 8 -o /dev/null http://localhost:8080/ && echo "   ✓ Root page responds" || (echo "   ✗ Root page failed"; exit 1)
+	@echo ""
+	@echo "4. Key new REST endpoints (thin layer)..."
+	@curl -sf --max-time 5 http://localhost:8080/api/proposals > /dev/null 2>&1 && echo "   ✓ /api/proposals" || echo "   ⚠ /api/proposals (may be empty or backend-limited)"
+	@curl -sf --max-time 5 http://localhost:8080/api/audit > /dev/null 2>&1 && echo "   ✓ /api/audit" || echo "   ⚠ /api/audit"
+	@echo ""
+	@echo "5. Canvas + Teams features (Phase 5 first slice)..."
+	@curl -sf --max-time 8 http://localhost:8080/canvas > /dev/null && echo "   ✓ /canvas responds" || (echo "   ✗ /canvas failed"; exit 1)
+	@curl -sf --max-time 8 http://localhost:8080/canvas 2>/dev/null | grep -q 'team-filter-pills' && echo "   ✓ team filtering UI present" || echo "   ⚠ team filtering UI (may be dynamic)"
+	@curl -sf --max-time 8 http://localhost:8080/canvas 2>/dev/null | grep -q 'teams-list-section' && echo "   ✓ teams list/sidebar present" || echo "   ⚠ teams list/sidebar"
+	@curl -sf --max-time 8 http://localhost:8080/canvas 2>/dev/null | grep -q 'create-demo-team-btn' && echo "   ✓ New Demo Team button present" || echo "   ⚠ New Demo Team button"
+	@echo "6. Actual team creation via thin endpoint..."
+	@curl -sf --max-time 5 -X POST -H "Content-Type: application/json" \
+	  -d '{"id":"smoke-team-1","name":"Smoke Test Team","goal":"Verify thin team.* wiring"}' \
+	  http://localhost:8080/api/teams/create > /dev/null && echo "   ✓ /api/teams/create succeeded" || echo "   ⚠ team create"
+	@curl -sf --max-time 5 http://localhost:8080/api/teams > /dev/null && echo "   ✓ /api/teams list responded" || echo "   ⚠ team list"
+	@echo "7. Dedicated /teams page + success/messages/cards UX (Phase 5 Teams slice)..."
+	@curl -sf --max-time 8 http://localhost:8080/teams > /dev/null && echo "   ✓ /teams responds" || (echo "   ✗ /teams failed"; exit 1)
+	@curl -sf --max-time 8 http://localhost:8080/teams 2>/dev/null | grep -q 'data-testid="create-team-form"' && echo "   ✓ create team form + success placeholder present" || echo "   ⚠ create form"
+	@curl -sf --max-time 8 http://localhost:8080/teams 2>/dev/null | grep -q 'data-testid="team-create-success"' && echo "   ✓ create success banner container present" || echo "   ⚠ create success"
+	@curl -sf --max-time 8 http://localhost:8080/teams 2>/dev/null | grep -q 'data-testid="send-team-msg-form"' && echo "   ✓ send team message form present" || echo "   ⚠ message form"
+	@curl -sf --max-time 8 http://localhost:8080/teams 2>/dev/null | grep -q 'data-testid="team-msg-success"' && echo "   ✓ message success banner container present" || echo "   ⚠ message success"
+	@curl -sf --max-time 8 http://localhost:8080/teams 2>/dev/null | grep -q 'data-testid="team-cards-section"' && echo "   ✓ team overview cards section present" || echo "   ⚠ cards section"
+	@curl -sf --max-time 8 http://localhost:8080/teams 2>/dev/null | grep -q '>Msgs<' && echo "   ✓ Msgs column (messages feed count) in table" || echo "   ⚠ Msgs column"
+	@curl -sf --max-time 8 http://localhost:8080/teams 2>/dev/null | grep -q 'Team Messages / Activity' && echo "   ✓ messages/activity section header" || echo "   ⚠ messages section"
+	@echo ""
+	@echo "=== Smoke test passed! System is up and the proxy/portal + team UI features are reachable. ==="
+
 # Clean build artifacts
 clean:
 	rm -rf bin/
@@ -81,6 +122,7 @@ help:
 	@echo "  make stop               Stop the daemon"
 	@echo "  make status             Check daemon status"
 	@echo "  make doctor             Run health checks"
+	@echo "  make smoke              Quick smoke test after 'make start' (CLI + portal + teams)"
 	@echo "  make test               Run unit tests"
 	@echo "  make test-integration   Run daemon integration tests"
 	@echo "  make test-e2e           Run E2E tests"
@@ -91,6 +133,7 @@ help:
 	@echo "  1. Install dependencies: go mod download"
 	@echo "  2. Build binaries: make build"
 	@echo "  3. Start daemon: make start"
+	@echo "  4. (Optional) Verify: make smoke"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  See README.md for detailed setup instructions"

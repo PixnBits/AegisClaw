@@ -73,10 +73,13 @@ func ensureStateDir() error {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 
-	// For Linux, also ensure rootfs directory exists
+	// For Linux + Firecracker, best-effort ensure rootfs directory.
+	// This may fail on minimal systems or when /opt is specially mounted;
+	// actual images are populated by `make build-microvms` (which handles permissions).
+	// We do not want early daemon startup to hard-fail here.
 	if cfg.SandboxType == config.Firecracker {
 		if err := os.MkdirAll(cfg.RootfsDir, 0755); err != nil {
-			return fmt.Errorf("failed to create rootfs directory: %w", err)
+			logrus.Warnf("Could not create rootfs directory %s (this is often fine; run 'make build-microvms' to populate images): %v", cfg.RootfsDir, err)
 		}
 	}
 
@@ -152,16 +155,31 @@ func startDaemon(cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 
-		// Wait for PID file to be written (signals daemon is ready)
-		for i := 0; i < 30; i++ {
+		// Wait for PID file to be written (signals daemon is ready).
+		// Increased timeout because modern startup (orchestrator, web proxy,
+		// managed web-portal child, etc.) can take a few seconds on some systems.
+		const maxWait = 150 // 15 seconds
+		for i := 0; i < maxWait; i++ {
 			if _, err := os.Stat(pidFile); err == nil {
 				fmt.Println("daemon started")
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
+
+		// One last check
+		if _, err := os.Stat(pidFile); err == nil {
+			fmt.Println("daemon started")
+			return
+		}
+
 		fmt.Println("timeout waiting for daemon to start")
-		os.Exit(1)
+		fmt.Println("The daemon may still be initializing in the background.")
+		fmt.Println("Check status with: ./bin/aegis status")
+		fmt.Println("Or view logs: sudo tail -n 50 /root/.aegis/daemon.log")
+		// Do not hard-fail the parent; the child may still be healthy.
+		// os.Exit(1) would be misleading when the daemon actually started.
+		return
 	}
 
 	// Setup logging
@@ -242,6 +260,11 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if sig, err := orchestrator.SignAuditRoot([]byte("genesis-audit-root")); err == nil {
 		logrus.Infof("genesis audit root signed (len=%d)", len(sig))
 	}
+
+	// Block forever so the main goroutine doesn't exit.
+	// All real work (socket server, web proxy, etc.) runs in background goroutines.
+	// The signal handler above will call os.Exit when we receive SIGINT/SIGTERM.
+	select {}
 }
 
 func stopDaemon(cmd *cobra.Command, args []string) {

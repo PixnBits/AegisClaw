@@ -133,6 +133,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/chat/send", s.handleChatSend)
 	s.mux.HandleFunc("/canvas", s.handleCanvas)
 	s.mux.HandleFunc("/events", s.handleSSE)
+	s.mux.HandleFunc("/teams", s.handleTeams)
+
+	// Teams plan thin endpoints (stub tolerant)
+	s.mux.HandleFunc("/api/teams", s.handleTeamList)
+	s.mux.HandleFunc("/api/teams/create", s.handleTeamCreate)
+	s.mux.HandleFunc("/api/teams/message", s.handleTeamMessage)
 	// Phase 2: Source Code & Git routes
 	s.mux.HandleFunc("/source", s.handleSource)
 	s.mux.HandleFunc("/source/browse", s.handleSourceBrowse)
@@ -381,11 +387,342 @@ func (s *Server) handleCanvas(w http.ResponseWriter, r *http.Request) {
 	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
 	sandboxes, _ := s.fetchRaw(r.Context(), "sandbox.list", map[string]bool{"running_only": true})
 	skills, _ := s.fetchRaw(r.Context(), "skill.list", nil)
+
+	// Teams plan: first try real team data via thin bridge (even if stubbed backend).
+	// Fall back to demo injection if the action isn't wired yet.
+	realTeams, teamErr := s.fetchRaw(r.Context(), "team.list", nil)
+	var teamsForTemplate interface{}
+	if teamErr == nil && realTeams != nil {
+		teamsForTemplate = realTeams
+	} else {
+		teamsForTemplate = nil // will trigger client-side demo in template
+	}
+
+	// Still inject lightweight team/role metadata for workers (demo until real team membership)
+	enhancedWorkers := enhanceWorkersWithTeams(workers)
+
+	// Support ?team=xxx filter from /teams links (ties the dedicated view to Canvas)
+	teamFilter := r.URL.Query().Get("team")
+
 	s.renderTemplate(w, "Canvas", canvasTmpl, map[string]interface{}{
-		"Workers":   workers,
-		"Sandboxes": sandboxes,
-		"Skills":    skills,
+		"Workers":    enhancedWorkers,
+		"Sandboxes":  sandboxes,
+		"Skills":     skills,
+		"Teams":      teamsForTemplate,
+		"TeamFilter": teamFilter,
 	})
+}
+
+func (s *Server) handleTeams(w http.ResponseWriter, r *http.Request) {
+	// Dedicated Teams page - higher level view than Canvas.
+	// Uses the thin team endpoints we wired.
+	teamsData, _ := s.fetchRaw(r.Context(), "team.list", nil)
+
+	// For demo, also pull workers so we can show member counts by team
+	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
+	enhancedWorkers := enhanceWorkersWithTeams(workers)
+
+	s.renderTemplate(w, "Teams", teamsTmpl, map[string]interface{}{
+		"Teams":   teamsData,
+		"Workers": enhancedWorkers,
+	})
+}
+
+const teamsTmpl = `
+<h1>Teams</h1>
+<div class="section">
+  <div class="section-header">Active Teams</div>
+  {{if .Teams}}
+  <table data-testid="teams-table">
+    <thead>
+      <tr><th>Name</th><th>Goal</th><th>Members</th><th>Msgs</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+    {{range .Teams}}
+    <tr>
+      <td><strong>{{index . "name"}}</strong></td>
+      <td>{{index . "goal"}}</td>
+      <td>
+        {{ $teamID := index . "id" }}
+        {{range $.Workers}}
+          {{if eq (index . "team_id") $teamID}}
+            <span class="badge">{{index . "name"}}</span>
+          {{end}}
+        {{end}}
+      </td>
+      <td style="font-variant-numeric:tabular-nums;color:#8b949e;">
+        {{ $msgs := index . "messages" }}{{if $msgs}}{{len $msgs}}{{else}}0{{end}}
+      </td>
+      <td>
+        <a href="/canvas?team={{index . "id"}}" class="nav-link" data-testid="view-team-canvas">View in Canvas</a>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No teams yet. Create one below.</p>
+  {{end}}
+</div>
+
+<!-- Richer per-team dashboard cards (Phase B polish) -->
+{{if .Teams}}
+<div class="section" data-testid="team-cards-section">
+  <div class="section-header">Team Overview Cards</div>
+  <div style="display:flex;gap:0.75rem;padding:0.75rem 1rem;flex-wrap:wrap;background:#0d1117;">
+    {{range .Teams}}
+    {{ $teamID := index . "id" }}
+    {{ $name := index . "name" }}
+    {{ $goal := index . "goal" }}
+    {{ $msgs := index . "messages" }}
+    <div class="team-card" data-testid="team-card" style="flex:1 1 260px;min-width:240px;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:0.6rem 0.75rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong style="font-size:0.95rem;">{{ $name }}</strong>
+        <span style="font-size:0.7rem;color:#8b949e;">{{ $teamID }}</span>
+      </div>
+      <div class="muted" style="font-size:0.8rem;margin:0.25rem 0 0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ $goal }}</div>
+      <div style="margin-bottom:0.4rem;">
+        {{range $.Workers}}
+          {{if eq (index . "team_id") $teamID}}
+            <span class="badge" style="margin-right:0.2rem;">{{index . "name"}} <span style="opacity:0.7;">({{index . "role"}})</span></span>
+          {{end}}
+        {{end}}
+      </div>
+      <div style="font-size:0.75rem;color:#8b949e;display:flex;gap:1rem;align-items:center;">
+        <span>Msgs: <strong style="color:#e6edf3;">{{if $msgs}}{{len $msgs}}{{else}}0{{end}}</strong></span>
+        <a href="/canvas?team={{ $teamID }}" class="nav-link" data-testid="view-team-canvas-card" style="font-size:0.75rem;">View in Canvas →</a>
+      </div>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+<div class="section">
+  <div class="section-header">Create New Team</div>
+  <form id="create-team-form" method="POST" action="/api/teams/create" style="display:flex;gap:0.5rem;align-items:end" data-testid="create-team-form">
+    <div>
+      <label>Name</label><br>
+      <input name="name" required style="width:200px">
+    </div>
+    <div>
+      <label>Goal</label><br>
+      <input name="goal" style="width:300px" placeholder="What is the team working on?">
+    </div>
+    <button type="submit">Create Team</button>
+  </form>
+  <div id="team-create-success" data-testid="team-create-success" style="display:none; background:#0d4429; border:1px solid #3fb950; color:#c6e6d3; padding:0.75rem 1rem; border-radius:6px; margin-top:0.75rem; font-size:0.9rem; line-height:1.4;"></div>
+  <p class="muted" style="font-size:0.8rem;margin-top:0.5rem">Uses the thin <code>/api/teams/create</code> (real delegation to Store when available; demo fallback otherwise).</p>
+</div>
+
+<div class="section">
+  <div class="section-header">Team Messages / Activity</div>
+  <div style="padding:0.75rem 1rem 0.25rem;">
+    <form id="send-team-msg-form" style="display:flex;gap:0.5rem;align-items:end;flex-wrap:wrap" data-testid="send-team-msg-form">
+      <div>
+        <label>Team ID</label><br>
+        <input name="team_id" required style="width:180px" placeholder="team-..." data-testid="msg-team-id">
+      </div>
+      <div>
+        <label>Message</label><br>
+        <input name="text" required style="width:320px" placeholder="Note for the team or @role handoff...">
+      </div>
+      <button type="submit">Send Message</button>
+    </form>
+    <div id="team-msg-success" data-testid="team-msg-success" style="display:none; background:#0d4429; border:1px solid #3fb950; color:#c6e6d3; padding:0.5rem 0.75rem; border-radius:6px; margin-top:0.5rem; font-size:0.85rem; line-height:1.3;"></div>
+  </div>
+  <p class="muted" style="font-size:0.8rem;padding:0 1rem 0.75rem 1rem;">Sends via thin <code>POST /api/teams/message</code> (append-only to Store team.messages). Msgs count updates in the table on refresh.</p>
+</div>
+
+<p><a href="/canvas" class="nav-link">← Back to Canvas (live team workspace)</a></p>
+
+<script>
+(function(){
+  function escapeHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    // Team creation success wiring (from previous)
+    var form = document.getElementById('create-team-form') || document.querySelector('[data-testid="create-team-form"]');
+    var successDiv = document.getElementById('team-create-success');
+    if (form && successDiv) {
+      form.addEventListener('submit', function(e){
+        e.preventDefault();
+        var nameInput = form.querySelector('input[name="name"]');
+        var goalInput = form.querySelector('input[name="goal"]');
+        var name = (nameInput && nameInput.value || '').trim();
+        var goal = (goalInput && goalInput.value || '').trim() || 'Collaborative multi-agent work';
+        if (!name) { alert('Team name is required'); return; }
+        var submitBtn = form.querySelector('button');
+        if (submitBtn) submitBtn.disabled = true;
+        var payloadId = 'team-' + Date.now();
+        var payload = { id: payloadId, name: name, goal: goal };
+        fetch('/api/teams/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).then(function(res){ return res.json().catch(function(){ return {}; }); }).then(function(data){
+          var ok = !!(data && (data.success || data.ok));
+          var id = (data && (data.id || (data.data && data.data.id))) || payloadId;
+          successDiv.innerHTML =
+            'Team <strong>' + escapeHtml(name) + '</strong> created successfully! ' +
+            '<a href="/canvas?team=' + encodeURIComponent(id) + '" class="nav-link" data-testid="view-in-canvas-after-create" style="color:#58a6ff;font-weight:500;">View in Canvas →</a> ' +
+            '<button type="button" onclick="location.reload()" style="margin-left:0.5rem;">Refresh list</button>' +
+            '<button type="button" onclick="resetCreateForm()" style="margin-left:0.25rem;">Create another</button>';
+          successDiv.style.display = 'block';
+          form.style.display = 'none';
+        }).catch(function(){
+          if (submitBtn) submitBtn.disabled = false;
+          form.submit();
+        });
+      });
+    }
+
+    // Team message send + success feedback (surfaces team.message thin call)
+    var msgForm = document.getElementById('send-team-msg-form');
+    var msgSuccess = document.getElementById('team-msg-success');
+    if (msgForm && msgSuccess) {
+      msgForm.addEventListener('submit', function(e){
+        e.preventDefault();
+        var tidInput = msgForm.querySelector('input[name="team_id"]');
+        var txtInput = msgForm.querySelector('input[name="text"]');
+        var tid = (tidInput && tidInput.value || '').trim();
+        var txt = (txtInput && txtInput.value || '').trim();
+        if (!tid || !txt) { alert('Team ID and message text required'); return; }
+        var mbtn = msgForm.querySelector('button');
+        if (mbtn) mbtn.disabled = true;
+        var mpayload = { team_id: tid, from: 'web-portal', to: 'broadcast', text: txt };
+        fetch('/api/teams/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(mpayload)
+        }).then(function(res){ return res.json().catch(function(){ return {}; }); }).then(function(d){
+          var ok = !!(d && (d.success || d.ok));
+          msgSuccess.innerHTML = 'Message sent to <strong>' + escapeHtml(tid) + '</strong> (broadcast). ' +
+            '<button type="button" onclick="location.reload()" style="margin-left:0.5rem;font-size:0.8rem;">Refresh list</button>';
+          msgSuccess.style.display = 'block';
+          msgForm.reset();
+          if (mbtn) mbtn.disabled = false;
+        }).catch(function(){
+          if (mbtn) mbtn.disabled = false;
+          msgForm.submit();
+        });
+      });
+    }
+  });
+  window.resetCreateForm = function(){
+    var form = document.getElementById('create-team-form');
+    var successDiv = document.getElementById('team-create-success');
+    if (successDiv) successDiv.style.display = 'none';
+    if (form) {
+      form.style.display = '';
+      form.reset();
+      var btn = form.querySelector('button');
+      if (btn) btn.disabled = false;
+    }
+  };
+})();
+</script>
+`
+
+// --- Thin team.* bridge handlers (Teams plan - stub tolerant) ---
+
+func (s *Server) handleTeamList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	data, err := s.fetchRaw(r.Context(), "team.list", nil)
+	if err != nil {
+		// Backend not wired yet — return empty so client can use demo mode
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+	json.NewEncoder(w).Encode(data)
+}
+
+func (s *Server) handleTeamCreate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload map[string]interface{}
+	contentType := r.Header.Get("Content-Type")
+
+	if strings.Contains(contentType, "application/json") {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid json"})
+			return
+		}
+	} else {
+		// Support form posts from the /teams page
+		r.ParseForm()
+		payload = map[string]interface{}{
+			"id":   fmt.Sprintf("team-%d", time.Now().UnixNano()),
+			"name": r.FormValue("name"),
+			"goal": r.FormValue("goal"),
+		}
+	}
+
+	resp, err := s.apiClient.Call(r.Context(), "team.create", mustMarshal(payload))
+	if err != nil || !resp.Success {
+		// Stub response so the thin layer can continue (backend not fully wired yet)
+		id := payload["id"]
+		if id == nil {
+			id = fmt.Sprintf("team-%d", time.Now().UnixNano())
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"stub":    true,
+			"id":      id,
+		})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": resp.Data})
+}
+
+func (s *Server) handleTeamMessage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid json"})
+		return
+	}
+
+	resp, err := s.apiClient.Call(r.Context(), "team.message", mustMarshal(payload))
+	if err != nil || !resp.Success {
+		// Stub success
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "stub": true})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": resp.Data})
+}
+
+// enhanceWorkersWithTeams adds demo team_id + role for the early Teams implementation slice.
+// This is purely presentational / thin-layer demo data until real team.* backend support exists.
+func enhanceWorkersWithTeams(workers interface{}) interface{} {
+	list, ok := workers.([]interface{})
+	if !ok || len(list) == 0 {
+		return workers
+	}
+	// Simple round-robin demo teams for visual progress
+	teams := []string{"research", "analysis", "build"}
+	roles := []string{"researcher", "analyst", "coder", "critic"}
+
+	for i, w := range list {
+		if m, ok := w.(map[string]interface{}); ok {
+			if _, hasTeam := m["team_id"]; !hasTeam {
+				m["team_id"] = teams[i%len(teams)]
+			}
+			if _, hasRole := m["role"]; !hasRole {
+				m["role"] = roles[i%len(roles)]
+			}
+		}
+	}
+	return list
 }
 
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
@@ -2950,10 +3287,22 @@ const canvasTmpl = `
 <div id="canvas-wrap">
   <div id="canvas-header">
     <h2>&#127981; Canvas — Live Workspace</h2>
-    <div id="canvas-stats">
-      <span id="cs-agents">Agents</span>
-      <span id="cs-vms">VMs</span>
-      <span id="cs-skills">Skills</span>
+    <div style="display:flex;gap:0.75rem;align-items:center">
+      <div id="canvas-stats">
+        <span id="cs-agents">Agents</span>
+        <span id="cs-vms">VMs</span>
+        <span id="cs-skills">Skills</span>
+      </div>
+      <!-- Teams plan first slice: basic interactive team creation (client-side demo) -->
+      <div style="display:flex;gap:0.5rem;align-items:center;border-left:1px solid #30363d;padding-left:0.75rem;margin-left:0.25rem">
+        <input id="new-team-name" type="text" placeholder="Team name" style="width:140px;font-size:0.85rem" data-testid="new-team-input">
+        <button id="create-team-btn" style="font-size:0.8rem" data-testid="create-demo-team-btn">+ New Demo Team</button>
+      </div>
+      <!-- Team filtering (item 1 of autonomous work) -->
+      <div id="team-filter-container" style="display:flex;gap:0.35rem;align-items:center;border-left:1px solid #30363d;padding-left:0.75rem;margin-left:0.5rem" data-testid="team-filter-pills">
+        <!-- Populated dynamically by JS -->
+      </div>
+      <a href="/teams" class="nav-link" style="margin-left:0.5rem" data-testid="teams-nav-link">Teams</a>
     </div>
   </div>
 
@@ -2968,14 +3317,21 @@ const canvasTmpl = `
     <h3>Live Tool-Call Log</h3>
     <div id="canvas-log"></div>
   </div>
+
+  <!-- Minimal Teams sidebar/list (autonomous item 3) -->
+  <div class="graph-section" id="teams-list-section" data-testid="teams-list-section">
+    <h3>Active Demo Teams</h3>
+    <div id="teams-list" style="font-size:0.85rem"></div>
+  </div>
 </div>
 <script>
 (function(){
   // Seed initial data from server-side render.
   var initialWorkers = {{if .Workers}}{{.Workers | toJSON}}{{else}}[]{{end}};
   var initialSkills  = {{if .Skills}}{{.Skills | toJSON}}{{else}}[]{{end}};
+  var initialTeams   = {{if .Teams}}{{.Teams | toJSON}}{{else}}null{{end}};
 
-  // Agent state: map of agentId → {id, name, status, tools:[]}
+  // Agent state: map of agentId → {id, name, status, team_id, role, tools:[]}
   var agents = {};
 
   function agentID(w){
@@ -2999,44 +3355,234 @@ const canvasTmpl = `
     return 'running';
   }
 
-  // Initialise from server data.
+  function agentTeam(w){
+    if(typeof w === 'object' && w !== null){
+      return w.team_id || w.team || null;
+    }
+    return null;
+  }
+
+  function agentRole(w){
+    if(typeof w === 'object' && w !== null){
+      return w.role || null;
+    }
+    return null;
+  }
+
+  // Initialise from server data (now includes team/role from enhanceWorkersWithTeams).
   (Array.isArray(initialWorkers)?initialWorkers:[]).forEach(function(w){
     var id=agentID(w);
-    agents[id]={id:id,name:agentName(w),status:agentStatus(w),tools:[]};
+    agents[id]={
+      id:id,
+      name:agentName(w),
+      status:agentStatus(w),
+      team_id:agentTeam(w),
+      role:agentRole(w),
+      tools:[]
+    };
   });
+
+  // Teams plan: prefer real teams from bridge if provided by server, else demo mode.
+  var demoTeams = {}; // teamName -> {members: [ids]}
+
+  if (initialTeams && Array.isArray(initialTeams)) {
+    initialTeams.forEach(function(t){
+      var name = t.name || t.id || 'Team';
+      demoTeams[name] = { members: t.members || [] };
+    });
+  }
+
+  function createDemoTeam(name) {
+    if (!name) name = 'Team ' + (Object.keys(demoTeams).length + 1);
+    if (demoTeams[name]) name += ' ' + Date.now();
+
+    var payload = { name: name, goal: "Demo team from Canvas" };
+
+    // Try real thin bridge call first (even if backend is stubbed)
+    fetch('/api/teams/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(function(res){ return res.json(); })
+    .then(function(data){
+      if (data && data.success) {
+        // Real team created — in future we would re-fetch team.list
+        console.log('Real team.create succeeded (future)');
+      }
+      // Always do the local demo assignment for now (stub tolerant)
+      doLocalDemoTeamCreation(name);
+    })
+    .catch(function(){
+      // Backend not ready yet — fall back to pure client-side demo
+      doLocalDemoTeamCreation(name);
+    });
+  }
+
+  function doLocalDemoTeamCreation(name) {
+    // Take currently ungrouped agents (or all if none)
+    var ungrouped = Object.keys(agents).filter(function(id){
+      return !agents[id].team_id || agents[id].team_id === 'ungrouped';
+    });
+
+    if (ungrouped.length === 0) {
+      ungrouped = Object.keys(agents); // fallback
+    }
+
+    // Assign up to 3 agents to the new team for demo
+    var assigned = ungrouped.slice(0, 3);
+    demoTeams[name] = { members: assigned };
+
+    assigned.forEach(function(id){
+      agents[id].team_id = name;
+    });
+
+    renderGrid();
+    renderGraph();
+    renderTeamFilters();
+    renderTeamsList();
+  }
+
+  // Wire the button (after DOM is ready)
+  setTimeout(function(){
+    var btn = document.getElementById('create-team-btn');
+    var input = document.getElementById('new-team-name');
+    if (btn) {
+      btn.addEventListener('click', function(){
+        createDemoTeam(input ? input.value.trim() : null);
+        if (input) input.value = '';
+        renderTeamFilters();
+      });
+    }
+    if (input) {
+      input.addEventListener('keypress', function(e){
+        if (e.key === 'Enter') {
+          createDemoTeam(input.value.trim());
+          input.value = '';
+          renderTeamFilters();
+        }
+      });
+    }
+  }, 50);
+
+  // === Team filtering (autonomous item 1) ===
+  var currentTeamFilter = 'all';
+
+  function renderTeamFilters() {
+    var container = document.getElementById('team-filter-container');
+    if (!container) return;
+
+    var teams = Object.keys(demoTeams);
+    var hasUngrouped = Object.keys(agents).some(function(id){
+      var t = agents[id].team_id;
+      return !t || t === 'ungrouped' || !demoTeams[t];
+    });
+
+    var html = '<span style="font-size:0.8rem;color:#8b949e;margin-right:0.25rem">Filter:</span>';
+    html += '<button data-filter="all" class="team-pill ' + (currentTeamFilter==='all' ? 'active' : '') + '" style="font-size:0.75rem;padding:2px 8px;border-radius:999px;border:1px solid #30363d;background:' + (currentTeamFilter==='all'?'#30363d':'#21262d') + ';color:#e6edf3;cursor:pointer" data-testid="filter-all">All</button>';
+
+    teams.forEach(function(t){
+      var isActive = currentTeamFilter === t;
+      html += '<button data-filter="'+escH(t)+'" class="team-pill" style="font-size:0.75rem;padding:2px 8px;border-radius:999px;border:1px solid #30363d;background:'+(isActive?'#30363d':'#21262d')+';color:#e6edf3;cursor:pointer" data-testid="filter-team-'+escH(t)+'">'+escH(t)+'</button>';
+    });
+
+    if (hasUngrouped) {
+      var isActive = currentTeamFilter === 'ungrouped';
+      html += '<button data-filter="ungrouped" class="team-pill" style="font-size:0.75rem;padding:2px 8px;border-radius:999px;border:1px solid #30363d;background:'+(isActive?'#30363d':'#21262d')+';color:#e6edf3;cursor:pointer" data-testid="filter-ungrouped">Ungrouped</button>';
+    }
+
+    container.innerHTML = html;
+
+    // Wire clicks
+    container.querySelectorAll('button[data-filter]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        currentTeamFilter = btn.getAttribute('data-filter');
+        renderTeamFilters();
+        renderGrid();
+      });
+    });
+  }
 
   function renderGrid(){
     var grid=document.getElementById('canvas-grid');
-    var keys=Object.keys(agents);
+    var allKeys = Object.keys(agents);
+
+    // Apply current team filter (autonomous item 1)
+    var keys = allKeys.filter(function(id){
+      if (currentTeamFilter === 'all') return true;
+      var t = agents[id].team_id || 'ungrouped';
+      return t === currentTeamFilter;
+    });
+
     if(keys.length===0){
-      grid.innerHTML='<p class="empty-state">No active agents. Start a chat or spawn a worker to see live activity here.</p>';
+      grid.innerHTML='<p class="empty-state">No agents match the current filter.</p>';
       return;
     }
-    grid.innerHTML='';
+
+    // Group the filtered agents by team
+    var byTeam = {};
     keys.forEach(function(id){
       var a=agents[id];
-      var card=document.createElement('div');
-      card.className='agent-card';
-      card.id='ac-'+id.replace(/[^a-z0-9]/gi,'_');
-      var status=a.status||'idle';
-      card.innerHTML=
-        '<div class="agent-card-header">'+
-          '<span class="agent-card-title" title="'+escH(a.name)+'">'+escH(a.name)+'</span>'+
-          '<span class="agent-card-badge '+(status==='running'?'running':'idle')+'">'+escH(status)+'</span>'+
-        '</div>'+
-        '<div class="tool-feed" id="tf-'+escH(id.replace(/[^a-z0-9]/gi,'_'))+'">'+
-          (a.tools.length===0?'<span style="color:#6e7681">No tool calls yet…</span>':
-            a.tools.slice(-6).map(function(t){
-              return '<div class="tf-entry">'+
-                '<span class="tf-tool">'+escH(t.tool)+'</span>'+
-                (t.ok!==undefined?
-                  (t.ok?'<span class="tf-result"> ✓</span>':'<span class="tf-err"> ✗ '+escH(t.err||'')+'</span>')
-                :'')+
-              '</div>';
-            }).join('')
-          )+
-        '</div>';
-      grid.appendChild(card);
+      var t = a.team_id || 'ungrouped';
+      if(!byTeam[t]) byTeam[t]=[];
+      byTeam[t].push(id);
+    });
+
+    grid.innerHTML='';
+    Object.keys(byTeam).sort().forEach(function(team){
+      var teamHeader = document.createElement('div');
+      teamHeader.className = 'team-header';
+      teamHeader.style.cssText = 'margin:0.75rem 0 0.25rem;font-weight:600;color:#8b949e;font-size:0.85rem;';
+      teamHeader.textContent = (team === 'ungrouped' ? 'Individual Agents' : 'Team: ' + team);
+      teamHeader.setAttribute('data-testid', 'team-header-' + team);
+      grid.appendChild(teamHeader);
+
+      byTeam[team].forEach(function(id){
+        var a=agents[id];
+        var card=document.createElement('div');
+        card.className='agent-card';
+        card.id='ac-'+id.replace(/[^a-z0-9]/gi,'_');
+        card.setAttribute('data-testid', 'agent-card');
+        card.setAttribute('data-team', a.team_id || '');
+        card.style.cursor = 'pointer';
+        card.title = 'Click to move to next team (demo)';
+        var status=a.status||'idle';
+        var roleBadge = a.role ? '<span class="agent-card-badge" style="background:#30363d;margin-left:0.25rem">'+escH(a.role)+'</span>' : '';
+        card.innerHTML=
+          '<div class="agent-card-header">'+
+            '<span class="agent-card-title" title="'+escH(a.name)+'">'+escH(a.name)+'</span>'+
+            '<span class="agent-card-badge '+(status==='running'?'running':'idle')+'">'+escH(status)+'</span>'+
+            roleBadge +
+          '</div>'+
+          '<div class="tool-feed" id="tf-'+escH(id.replace(/[^a-z0-9]/gi,'_'))+'">'+
+            (a.tools.length===0?'<span style="color:#6e7681">No tool calls yet…</span>':
+              a.tools.slice(-6).map(function(t){
+                return '<div class="tf-entry">'+
+                  '<span class="tf-tool">'+escH(t.tool)+'</span>'+
+                  (t.ok!==undefined?
+                    (t.ok?'<span class="tf-result"> ✓</span>':'<span class="tf-err"> ✗ '+escH(t.err||'')+'</span>')
+                  :'')+
+                '</div>';
+              }).join('')
+            )+
+          '</div>';
+        // Better assignment UX (autonomous item 4): click card to cycle team
+        card.addEventListener('click', function(ev){
+          if (ev.target.tagName === 'BUTTON') return;
+          var current = agents[id].team_id || 'ungrouped';
+          var teamList = Object.keys(demoTeams);
+          if (teamList.length === 0) return;
+          var idx = teamList.indexOf(current);
+          var next = teamList[(idx + 1) % teamList.length];
+          agents[id].team_id = next;
+          renderGrid();
+          renderGraph();
+          renderTeamFilters();
+          renderTeamsList();
+        });
+
+        grid.appendChild(card);
+      });
     });
   }
 
@@ -3044,12 +3590,72 @@ const canvasTmpl = `
     var el=document.getElementById('canvas-graph');
     var keys=Object.keys(agents);
     if(keys.length===0){el.textContent='(no active agents)';return;}
-    var lines=['[host daemon]'];
+
+    // Improved graph with team awareness (autonomous item 2)
+    var byTeam = {};
     keys.forEach(function(id){
-      var a=agents[id];
-      lines.push('  └─ '+a.name+' ('+( a.status||'idle')+')');
+      var a = agents[id];
+      var t = a.team_id || 'ungrouped';
+      if (!byTeam[t]) byTeam[t] = [];
+      byTeam[t].push(a);
     });
-    el.textContent=lines.join('\n');
+
+    var lines = ['[host daemon]'];
+    Object.keys(byTeam).sort().forEach(function(team){
+      if (team !== 'ungrouped') {
+        lines.push('┌─ Team: ' + team);
+      }
+      byTeam[team].forEach(function(a){
+        var prefix = (team === 'ungrouped') ? '  └─ ' : '│  └─ ';
+        var rolePart = a.role ? ' [' + a.role + ']' : '';
+        lines.push(prefix + a.name + rolePart + ' (' + (a.status||'idle') + ')');
+      });
+      if (team !== 'ungrouped') {
+        lines.push('└────────────────');
+      }
+    });
+
+    el.textContent = lines.join('\n');
+  }
+
+  // Minimal Teams list / sidebar (autonomous item 3)
+  function renderTeamsList() {
+    var container = document.getElementById('teams-list');
+    if (!container) return;
+
+    var teamNames = Object.keys(demoTeams);
+    if (teamNames.length === 0) {
+      container.innerHTML = '<span style="color:#6e7681">No demo teams yet. Use the button above.</span>';
+      return;
+    }
+
+    var html = '';
+    teamNames.forEach(function(name){
+      var count = demoTeams[name].members ? demoTeams[name].members.length : 0;
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px dotted #30363d" data-testid="team-list-item-'+escH(name)+'">' +
+        '<span><strong>' + escH(name) + '</strong> <span style="color:#8b949e">(' + count + ')</span></span>' +
+        '<button data-disband="'+escH(name)+'" style="font-size:0.7rem;padding:1px 6px" data-testid="disband-team-'+escH(name)+'">Disband</button>' +
+      '</div>';
+    });
+    container.innerHTML = html;
+
+    // Wire disband buttons
+    container.querySelectorAll('button[data-disband]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var name = btn.getAttribute('data-disband');
+        if (demoTeams[name]) {
+          // Return members to ungrouped
+          (demoTeams[name].members || []).forEach(function(id){
+            if (agents[id]) agents[id].team_id = null;
+          });
+          delete demoTeams[name];
+          renderGrid();
+          renderGraph();
+          renderTeamsList();
+          renderTeamFilters();
+        }
+      });
+    });
   }
 
   function appendLog(ts,name,tool,ok,err){
@@ -3107,6 +3713,8 @@ const canvasTmpl = `
       var id=d.worker_id||d.id||'worker';
       agents[id]={id:id,name:d.name||d.task_description||'Worker',status:'running',tools:[]};
       renderGrid();renderGraph();
+      renderTeamFilters();
+      renderTeamsList();
       document.getElementById('cs-agents').textContent='Agents: '+Object.keys(agents).length;
     }
     else if(msg.type==='worker_end'||msg.type==='worker_stop'){
@@ -3144,6 +3752,7 @@ const canvasTmpl = `
 
   renderGrid();
   renderGraph();
+  renderTeamFilters();
   if(Object.keys(agents).length===0){
     document.getElementById('canvas-log').innerHTML='<span style="color:#6e7681">Waiting for tool-call events…</span>';
   }

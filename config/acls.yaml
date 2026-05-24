@@ -111,6 +111,21 @@ rules:
     - scribe.notify_review
     - scribe.*
 
+# Teams (lightweight collaboration - Phase 5 slice)
+# Web Portal and CLI can create/list teams and send messages
+- source: web-portal
+  destination: store
+  commands:
+    - team.create
+    - team.list
+    - team.get
+    - team.message
+    - team.*
+- source: aegis
+  destination: store
+  commands:
+    - team.*
+
 # Memory <-> Store (long-term persistence per memory-vm.md)
 - source: memory
   destination: store

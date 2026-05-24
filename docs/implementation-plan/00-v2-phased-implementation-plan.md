@@ -243,6 +243,8 @@ Phase 5 work must implement (or adapt) this API contract + the rich UI described
   - Go tests + build green; Playwright structure ready (full live runs with daemon per AGENTS.md will cover the complete Court/Builder SDLC paths).
   - Logical commit + plan updates.
 
+- Created detailed forward plan for the remaining major UI gap: **Teams / Multi-Agent Collaborative Views** (see `docs/implementation-plan/teams-multi-agent-plan.md`). Executed the rich UI slice autonomously: dedicated `/teams` page with create success banners/feedback + "View in Canvas" CTAs, team.message send form + activity counts in table, richer per-team dashboard cards (stats, roles, msgs, links), all thin bridge + data-testid, Canvas `?team=` integration, and plan updates. (See teams plan "Progress Update" for details.) Builds directly on Canvas + thin architecture.
+
 ### Phase 6: Full CLI, Complete 9 User Journeys, End-to-End Integration
 - Flesh out all CLI commands in `aegis` binary (or thin client) per `cli.md` (chat, sessions, tasks, skills, court, autonomy, etc.). All non-start commands non-root, JSON support, etc.
 - For **each of the 9 user journeys** (detailed in `docs/specs/user-journeys/`):

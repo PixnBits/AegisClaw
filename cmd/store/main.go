@@ -159,6 +159,7 @@ func runStore(cmd *cobra.Command, args []string) {
 	auditLog := loadAuditFromFile("audit.json")
 	memories := loadFromFile("memories.json")
 	prs := loadFromFile("prs.json")
+	teams := loadFromFile("teams.json")
 	var mu sync.Mutex
 
 	// Store loop
@@ -320,6 +321,50 @@ func runStore(cmd *cobra.Command, args []string) {
 			id := payload["id"].(string)
 			response.Command = "pr.data"
 			response.Payload = prs[id]
+
+		// === Teams (minimal stub for Phase 5 Teams plan slice) ===
+		case "team.create":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["id"].(string)
+			if _, ok := payload["created_at"]; !ok {
+				payload["created_at"] = response.Timestamp
+			}
+			payload["members"] = payload["members"] // may be nil
+			payload["messages"] = []interface{}{}
+			teams[id] = payload
+			saveToFile("teams.json", teams)
+			response.Command = "team.created"
+			response.Payload = map[string]interface{}{"id": id}
+		case "team.list":
+			list := []interface{}{}
+			for _, t := range teams {
+				list = append(list, t)
+			}
+			response.Command = "team.list"
+			response.Payload = list
+		case "team.get":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["id"].(string)
+			response.Command = "team.data"
+			response.Payload = teams[id]
+		case "team.message":
+			payload := msg.Payload.(map[string]interface{})
+			teamID := payload["team_id"].(string)
+			if t, ok := teams[teamID].(map[string]interface{}); ok {
+				if msgs, ok := t["messages"].([]interface{}); ok {
+					msgEntry := map[string]interface{}{
+						"ts":      response.Timestamp,
+						"from":    payload["from"],
+						"to":      payload["to"], // role or "broadcast"
+						"content": payload["content"],
+					}
+					t["messages"] = append(msgs, msgEntry)
+				}
+				teams[teamID] = t
+				saveToFile("teams.json", teams)
+			}
+			response.Command = "team.message.sent"
+			response.Payload = "ok"
 		case "skill.register":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)
