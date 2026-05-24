@@ -1293,26 +1293,26 @@ const approvalsTmpl = `
   {{if .ShowAll}}<a href="/approvals" class="nav-link">Show pending only</a>
   {{else}}<a href="/approvals?all=1" class="nav-link">Show all approvals</a>{{end}}
 </div>
-<div class="section">
+<div class="section" data-testid="approvals-section">
   <div class="section-header">{{if .ShowAll}}All Approvals{{else}}Pending Approvals{{end}}</div>
   {{if .Approvals}}
   {{range .Approvals}}
-  <div style="padding:1rem;border-bottom:1px solid #21262d">
+  <div style="padding:1rem;border-bottom:1px solid #21262d" data-testid="approval-card-{{index . "approval_id"}}">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.5rem">
       <div>
         <strong>{{index . "title"}}</strong>
         <span class="badge badge-{{index . "status"}}" style="margin-left:.5rem">{{index . "status"}}</span>
         <span class="badge badge-pending" style="margin-left:.25rem">risk: {{index . "risk_level"}}</span>
       </div>
-      <code style="font-size:.75rem;color:#8b949e">{{index . "approval_id"}}</code>
+      <code style="font-size:.75rem;color:#8b949e" data-testid="approval-id">{{index . "approval_id"}}</code>
     </div>
     {{with index . "description"}}<p style="color:#8b949e;font-size:.875rem;margin-bottom:.75rem">{{truncate . 200}}</p>{{end}}
     {{if eq (index . "status") "pending"}}
-    <form method="POST" action="/approvals/decide" style="display:flex;gap:.5rem;align-items:center">
+    <form method="POST" action="/approvals/decide" style="display:flex;gap:.5rem;align-items:center" data-testid="approval-decide-form-{{index . "approval_id"}}">
       <input type="hidden" name="approval_id" value="{{index . "approval_id"}}">
-      <input type="text" name="reason" placeholder="Reason (optional)" style="width:200px">
-      <button type="submit" name="decision" value="approve" class="approve">Approve</button>
-      <button type="submit" name="decision" value="reject" class="danger">Reject</button>
+      <input type="text" name="reason" placeholder="Reason (optional)" style="width:200px" data-testid="approval-reason-input">
+      <button type="submit" name="decision" value="approve" class="approve" data-testid="approval-approve-button">Approve</button>
+      <button type="submit" name="decision" value="reject" class="danger" data-testid="approval-reject-button">Reject</button>
     </form>
     {{end}}
   </div>
@@ -1368,8 +1368,8 @@ const settingsTmpl = `
 
 const overviewTmpl = `
 <h1>{{.Title}}</h1>
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem">
-  <div class="section" style="padding:1.25rem;text-align:center">
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem" data-testid="dashboard-stats">
+  <div class="section" style="padding:1.25rem;text-align:center" data-testid="stat-running-vms">
     <div style="font-size:2rem;font-weight:700;color:#f2cc60">{{.RunningVMCount}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Running MicroVMs</div>
   </div>
@@ -1572,20 +1572,20 @@ const skillsTmpl = `
   <p class="empty">No built-in templates found.</p>
   {{end}}
 </div>
-<div class="section">
+<div class="section" data-testid="proposals-section">
   <div class="section-header">Proposals</div>
   {{if .Proposals}}
-  <table>
+  <table data-testid="proposals-list">
     <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Category</th><th>Target Skill</th><th>Details</th></tr></thead>
     <tbody>
     {{range .Proposals}}
-    <tr>
+    <tr data-testid="proposal-row-{{index . "id"}}">
       <td><code>{{truncate (index . "id") 8}}</code></td>
       <td>{{truncate (index . "title") 60}}</td>
       <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
       <td>{{index . "category"}}</td>
       <td>{{index . "target_skill"}}</td>
-      <td><a href="/skills/proposals/{{index . "id"}}" class="nav-link">View details</a></td>
+      <td><a href="/skills/proposals/{{index . "id"}}" class="nav-link" data-testid="proposal-detail-link-{{index . "id"}}">View details</a></td>
     </tr>
     {{end}}
     </tbody>
@@ -1602,11 +1602,11 @@ const proposalDetailTmpl = `
   {{if .Error}}
   <p class="empty" style="color:#f85149">Failed to load proposal {{.ProposalID}}: {{.Error}}</p>
   {{else if .Proposal}}
-  <div style="padding:1rem">
+  <div style="padding:1rem" data-testid="proposal-detail-summary">
     <p style="margin-bottom:.4rem"><a href="/skills" class="nav-link">&larr; Back to Skills</a></p>
-    <h2 style="font-size:1.15rem;margin-bottom:.6rem">{{index .Proposal "title"}}</h2>
+    <h2 style="font-size:1.15rem;margin-bottom:.6rem" data-testid="proposal-title">{{index .Proposal "title"}}</h2>
     <p style="color:#8b949e;margin-bottom:1rem">{{index .Proposal "description"}}</p>
-    <table style="width:auto">
+    <table style="width:auto" data-testid="proposal-meta-table">
       <tr><th style="width:220px">Proposal ID</th><td><code>{{index .Proposal "id"}}</code></td></tr>
       <tr><th>Status</th><td><span class="badge badge-{{index .Proposal "status"}}">{{index .Proposal "status"}}</span></td></tr>
       <tr><th>Category</th><td>{{index .Proposal "category"}}</td></tr>
@@ -1625,9 +1625,9 @@ const proposalDetailTmpl = `
 </div>
 
 {{if .Proposal}}
-<div class="section">
+<div class="section" data-testid="proposal-review-status">
   <div class="section-header">Current Review Status</div>
-  <div style="padding:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.75rem">
+  <div style="padding:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.75rem" data-testid="review-status-grid">
     <div><div class="muted">Current Round</div><strong>{{index .ReviewStatus "current_round"}}</strong></div>
     <div><div class="muted">Reviews This Round</div><strong>{{index .ReviewStatus "current_count"}}</strong></div>
     <div><div class="muted">Pending Reviews</div><strong>{{index .ReviewStatus "pending_reviews"}}</strong></div>
@@ -1718,22 +1718,22 @@ const proposalDetailTmpl = `
 const chatTmpl = `
 <div id="chat-wrap">
   <div id="chat-layout">
-    <aside id="chat-sidebar">
+    <aside id="chat-sidebar" data-testid="chat-sidebar">
       <div id="chat-sessions-header">
         <strong>Sessions</strong>
-        <button type="button" id="new-session-btn">New</button>
+        <button type="button" id="new-session-btn" data-testid="new-chat-button">New</button>
       </div>
-      <div id="chat-sessions"></div>
+      <div id="chat-sessions" data-testid="chat-sessions-list"></div>
     </aside>
     <section id="chat-main">
-      <div id="chat-msgs"></div>
+      <div id="chat-msgs" data-testid="chat-messages"></div>
       <div id="chat-input-area">
         <form id="chat-form">
           <div style="display:flex;gap:.5rem;align-items:flex-end">
-            <textarea id="chat-input" rows="1"
+            <textarea id="chat-input" data-testid="chat-input" rows="1"
               placeholder="Message the agent… (Enter to send, Shift+Enter for newline)"
               style="flex:1;resize:none;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:.5rem .75rem;font-size:.875rem;font-family:inherit;line-height:1.5;max-height:120px;overflow-y:auto"></textarea>
-            <button type="submit" id="send-btn">Send</button>
+            <button type="submit" id="send-btn" data-testid="chat-send-button">Send</button>
           </div>
         </form>
       </div>

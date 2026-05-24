@@ -28,8 +28,8 @@ test.describe('Web Portal E2E Tests', () => {
   test('should handle chat streaming with visible fast feedback', async ({ page }) => {
     await page.goto('/#chat');
 
-    const input = page.locator('#messageInput');
-    const sendButton = page.getByTestId('send-button');
+    const input = page.getByTestId('chat-input');
+    const sendButton = page.getByTestId('chat-send-button');
     const chatStatus = page.getByTestId('chat-status');
 
     await input.fill('Hello AegisClaw');
@@ -47,8 +47,8 @@ test.describe('Web Portal E2E Tests', () => {
   test('should show tool calls and tool results during streaming', async ({ page }) => {
     await page.goto('/#chat');
 
-    await page.locator('#messageInput').fill('Search for AI security news');
-    await page.getByTestId('send-button').click();
+    await page.getByTestId('chat-input').fill('Search for AI security news');
+    await page.getByTestId('chat-send-button').click();
 
     await expect(page.locator('#messages .tool-event[data-stream-kind="tool-call"]')).toContainText('ollama.generate');
     await expect(page.locator('#messages .tool-event[data-stream-kind="tool-result"]')).toBeVisible();
@@ -58,7 +58,7 @@ test.describe('Web Portal E2E Tests', () => {
   test('should ignore empty messages gracefully', async ({ page }) => {
     await page.goto('/#chat');
 
-    await page.getByTestId('send-button').click();
+    await page.getByTestId('chat-send-button').click();
     await expect(page.locator('#messages .message-bubble, #messages .tool-event')).toHaveCount(0);
   });
 });
