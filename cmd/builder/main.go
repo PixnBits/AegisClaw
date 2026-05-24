@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -263,27 +264,51 @@ func runBuilder(cmd *cobra.Command, args []string) {
 
 		switch msg.Command {
 		case "store.git.clone":
-			// Implement git clone
+			// Proper request to Store per builder-vm.md
 			payload := msg.Payload.(map[string]interface{})
-			repo := payload["repo"].(string)
-			// Simulate clone
-			response.Command = "git.cloned"
-			response.Payload = map[string]interface{}{"repo": repo, "status": "cloned"}
+			cloneMsg := Message{
+				Source:      "builder",
+				Destination: "store",
+				Command:     "git.clone",
+				Payload:     payload,
+				Timestamp:   time.Now().Format(time.RFC3339),
+				Signature:   "",
+			}
+			signMessage(&cloneMsg, priv)
+			connMutex.Lock()
+			encoder.Encode(cloneMsg)
+			var storeResp Message
+			err = decoder.Decode(&storeResp)
+			connMutex.Unlock()
+			if err != nil {
+				response.Command = "git.clone_failed"
+				response.Payload = err.Error()
+			} else {
+				response.Command = "git.cloned"
+				response.Payload = storeResp.Payload
+			}
+
 		case "store.git.push":
-			// Run security gates before push
+			// Always run gates before any push (security critical)
 			payload := msg.Payload.(map[string]interface{})
-			code := payload["code"].(string)
-			deps := payload["deps"].(string)
+			code := ""
+			deps := ""
+			if c, ok := payload["code"].(string); ok {
+				code = c
+			}
+			if d, ok := payload["deps"].(string); ok {
+				deps = d
+			}
 			if pass, report := runSecurityGates(code, deps); !pass {
 				response.Command = "git.push_failed"
 				response.Payload = report
-				// Audit failure
+				// Audit failure (signed)
 				auditMsg := Message{
 					Source:      "builder",
 					Destination: "store",
 					Command:     "audit.append",
 					Payload:     map[string]interface{}{"action": "push_blocked", "reason": report},
-					Timestamp:   response.Timestamp,
+					Timestamp:   time.Now().Format(time.RFC3339),
 					Signature:   "",
 				}
 				signMessage(&auditMsg, priv)
@@ -291,36 +316,93 @@ func runBuilder(cmd *cobra.Command, args []string) {
 				encoder.Encode(auditMsg)
 				connMutex.Unlock()
 			} else {
-				response.Command = "git.pushed"
-				response.Payload = "ok"
+				// Forward the push request to Store after gates pass
+				pushMsg := Message{
+					Source:      "builder",
+					Destination: "store",
+					Command:     "git.push",
+					Payload:     payload,
+					Timestamp:   time.Now().Format(time.RFC3339),
+					Signature:   "",
+				}
+				signMessage(&pushMsg, priv)
+				connMutex.Lock()
+				encoder.Encode(pushMsg)
+				var storeResp Message
+				err = decoder.Decode(&storeResp)
+				connMutex.Unlock()
+				if err != nil {
+					response.Command = "git.push_failed"
+					response.Payload = err.Error()
+				} else {
+					response.Command = "git.pushed"
+					response.Payload = storeResp.Payload
+				}
 				// Audit success
 				auditMsg := Message{
 					Source:      "builder",
 					Destination: "store",
 					Command:     "audit.append",
 					Payload:     map[string]interface{}{"action": "push_allowed"},
-					Timestamp:   response.Timestamp,
+					Timestamp:   time.Now().Format(time.RFC3339),
 					Signature:   "",
 				}
 				signMessage(&auditMsg, priv)
+				connMutex.Lock()
 				encoder.Encode(auditMsg)
+				connMutex.Unlock()
 			}
+
 		case "store.pr.create":
-			response.Command = "pr.created"
-			response.Payload = "ok"
+			payload := msg.Payload.(map[string]interface{})
+			prMsg := Message{
+				Source:      "builder",
+				Destination: "store",
+				Command:     "pr.create",
+				Payload:     payload,
+				Timestamp:   time.Now().Format(time.RFC3339),
+				Signature:   "",
+			}
+			signMessage(&prMsg, priv)
+			connMutex.Lock()
+			encoder.Encode(prMsg)
+			var storeResp Message
+			err = decoder.Decode(&storeResp)
+			connMutex.Unlock()
+			if err != nil {
+				response.Command = "pr.create_failed"
+				response.Payload = err.Error()
+			} else {
+				response.Command = "pr.created"
+				response.Payload = storeResp.Payload
+			}
+
 		case "builder.implement_skill":
 			payload := msg.Payload.(map[string]interface{})
 			description := payload["description"].(string)
 			code := generateSkillCode(description)
-			// Run security gates
+			// Run security gates on generated code before any further action
 			if pass, report := runSecurityGates(code, ""); !pass {
 				response.Command = "implementation.failed"
 				response.Payload = report
+				// Send failure report to Store for audit
+				failMsg := Message{
+					Source:      "builder",
+					Destination: "store",
+					Command:     "audit.append",
+					Payload:     map[string]interface{}{"action": "implementation_blocked", "reason": report},
+					Timestamp:   time.Now().Format(time.RFC3339),
+					Signature:   "",
+				}
+				signMessage(&failMsg, priv)
+				connMutex.Lock()
+				encoder.Encode(failMsg)
+				connMutex.Unlock()
 			} else {
 				response.Command = "implementation.success"
 				response.Payload = map[string]interface{}{
 					"code":  code,
-					"tests": "basic tests", // stub
+					"tests": "basic tests", // stub for Phase 4
 				}
 			}
 		case "version", "get-version":

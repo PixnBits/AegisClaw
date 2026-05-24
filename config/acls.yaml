@@ -121,15 +121,25 @@ rules:
   commands:
     - memory.*
 
-# --- Builder (Phase 4 prep) and other future ---
+# --- Builder (Phase 4) ---
 - source: builder
   destination: store
   commands:
+    - git.clone
+    - git.push
+    - pr.create
+    - pr.update
+    - skill.register
+    - audit.append
     - proposal.*
-    - build.*
 - source: store
   destination: builder
   commands:
+    - git.cloned
+    - git.pushed
+    - pr.created
+    - pr.updated
+    - skill.registered
     - proposal.*
 
 # --- Web Portal / Dashboard (Phase 5, via internal/dashboard + thin proxy) ---
