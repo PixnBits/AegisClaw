@@ -65,45 +65,76 @@ func expandPath(path string) string {
 	return path
 }
 
-func loadACL() {
-	possiblePaths := []string{
-		"../../config/acls.yaml",
-		"./config/acls.yaml",
-		"/root/AegisClaw_lessons-learned/config/acls.yaml",
-		"/home/pixnbits/AegisClaw_lessons-learned/config/acls.yaml",
-	}
+var aclFilePath string
+var lastACLModTime time.Time
 
-	// Also try from working directory
-	if wd, err := os.Getwd(); err == nil {
-		possiblePaths = append(possiblePaths, filepath.Join(wd, "config/acls.yaml"))
-	}
-
-	var file *os.File
-	var openErr error
-
-	for _, path := range possiblePaths {
-		file, openErr = os.Open(path)
-		if openErr == nil {
-			log.Printf("Loaded ACL from %s", path)
-			break
+func findACLFile() string {
+	if p := os.Getenv("AEGIS_ACL_FILE"); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			return p
 		}
 	}
 
-	if file == nil {
-		log.Printf("No ACL file found, using default deny")
+	candidates := []string{
+		"config/acls.yaml",
+		"./config/acls.yaml",
+		filepath.Join(filepath.Dir(os.Args[0]), "config/acls.yaml"),
+	}
+
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, "config/acls.yaml"))
+	}
+
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func loadACL() {
+	path := findACLFile()
+	if path == "" {
+		log.Printf("No ACL file found, using default deny-all")
+		aclRules = nil
+		aclFilePath = ""
+		return
+	}
+	aclFilePath = path
+
+	file, err := os.Open(path)
+	if err != nil {
+		log.Printf("Failed to open ACL %s: %v", path, err)
 		return
 	}
 	defer file.Close()
 
 	decoder := yaml.NewDecoder(file)
 	var config ACLConfig
-	err := decoder.Decode(&config)
-	if err != nil {
+	if err := decoder.Decode(&config); err != nil {
 		log.Printf("Failed to decode ACL: %v", err)
 		return
 	}
 	aclRules = config.Rules
-	log.Printf("Loaded %d ACL rules", len(aclRules))
+	if fi, err := os.Stat(path); err == nil {
+		lastACLModTime = fi.ModTime()
+	}
+	log.Printf("Loaded %d ACL rules from %s", len(aclRules), path)
+}
+
+func reloadACLIfChanged() {
+	if aclFilePath == "" {
+		return
+	}
+	fi, err := os.Stat(aclFilePath)
+	if err != nil {
+		return
+	}
+	if fi.ModTime().After(lastACLModTime) {
+		log.Printf("ACL file changed, reloading...")
+		loadACL() // re-use the loader (it will update modtime)
+	}
 }
 
 func checkACL(source, dest, cmd string) bool {
@@ -147,6 +178,16 @@ func verifySignature(msg Message, pubKey ed25519.PublicKey) bool {
 
 func startHub(cmd *cobra.Command, args []string) {
 	loadACL()
+
+	// Hot-reload support per aegishub.md
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			reloadACLIfChanged()
+		}
+	}()
+
 	socket := expandPath(hubSocketPath)
 	dir := filepath.Dir(socket)
 	os.MkdirAll(dir, 0700)
@@ -294,7 +335,16 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			log.Printf("Audit: unauthorized source %s", msg.Source)
 			continue
 		}
-		if msg.Signature != "" && msg.Signature != "dummy" && !verifySignature(msg, regComp.PublicKey) {
+		// Signature is now strictly required for all real traffic (per aegishub.md + security model).
+		// "dummy" is only for early dev; it is logged and treated as failure in non-dev mode.
+		if msg.Signature == "" || msg.Signature == "dummy" {
+			if os.Getenv("AEGIS_DEV_MODE") != "1" {
+				encoder.Encode(map[string]string{"error": "ERR_SIGNATURE_REQUIRED"})
+				log.Printf("Audit: missing or dummy signature from %s (set AEGIS_DEV_MODE=1 to allow during development)", msg.Source)
+				continue
+			}
+			log.Printf("DEV MODE: allowing dummy signature from %s", msg.Source)
+		} else if !verifySignature(msg, regComp.PublicKey) {
 			encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			log.Printf("Audit: invalid signature from %s", msg.Source)
 			continue
