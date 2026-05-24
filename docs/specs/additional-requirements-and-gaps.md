@@ -51,7 +51,7 @@ This enables strong personalization.
 - **Journey automation (`docs/tasks/phase-0-foundations.md`, `docs/roadmap.md`)**: only User Journey #1 is currently automated in CI; journeys #2-#9 are still partial, placeholder, or documentation-only.
 - **Host Daemon (`docs/specs/host-daemon.md`)**: watchdog behavior, audit-root signing, static-binary verification, socket-hardening tests, and lifecycle-containment coverage remain incomplete.
 - **AegisHub (`docs/specs/aegishub.md`)**: ACL hot reload, denied-message audit persistence, and fuller handshake/signature enforcement coverage still need implementation.
-- **Web Portal (`docs/specs/web-portal.md`)**: dedicated skills/proposals/court/autonomy flows and the stable selectors needed to automate those later journeys are not implemented yet.
+- **Web Portal (`docs/specs/web-portal.md`)**: The rich UI (Canvas, full streaming Chat with Markdown, proposal detail with round feedback, source/workspace/git/PR scaffolding, approvals, memory search, etc.) and many handlers are present in `internal/dashboard/server.go` + supporting files (`handlers_git.go`, `dashboard_pr_handlers.go`, event buffers). However, not all actions are registered/wired (some `git.*`/`workspace.*`/`dashboard.skills`), the public REST `/api/*` surface expected by E2E (`/api/proposals*`, workspace read) and issue-35 vision is partial, and stable `data-testid` + full Playwright coverage for new screens is incomplete. See the new `web-portal.md` for current vs. design state.
 - **Operational scripts referenced by CI**: the repository does not yet contain the image-build and live-test scripts that future phases expect under `scripts/`.
 
 ## Next Actions
