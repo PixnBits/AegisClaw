@@ -3,7 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -112,16 +115,21 @@ func handleHubMessages() {
 			continue
 		}
 
-		// Register with hub
+		// Dev keypair for web-portal (in real deployment this comes from daemon injection via the VM rootfs)
+		devPub, _, _ := ed25519.GenerateKey(rand.Reader)
+		devPubStr := base64.StdEncoding.EncodeToString(devPub)
+
+		// Register with hub (now sending real pubkey so hub can verify signatures)
 		regMsg := Message{
 			Source:      "web-portal",
 			Destination: "hub",
 			Command:     "register",
 			Payload: map[string]string{
-				"version": getBuildVersion(),
+				"version":    getBuildVersion(),
+				"public_key": devPubStr,
 			},
 			Timestamp: time.Now().Format(time.RFC3339),
-			Signature: "dummy",
+			Signature: "dummy", // still dummy for register in this dev build; hub allows under AEGIS_DEV_MODE
 		}
 		encoder := json.NewEncoder(conn)
 		decoder := json.NewDecoder(conn)
