@@ -391,6 +391,9 @@ func runStore(cmd *cobra.Command, args []string) {
 			root := computeMerkleRoot(auditLog)
 			response.Command = "audit.root"
 			response.Payload = root
+		case "audit.list":
+			response.Command = "audit.list"
+			response.Payload = auditLog
 		case "tool.list":
 			response.Command = "tool.list"
 			response.Payload = skills

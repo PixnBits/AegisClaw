@@ -28,6 +28,35 @@ The Host Daemon **must** run as root on Linux (for Firecracker microVMs and priv
 - The script internally uses `sudo` when it needs to create or chown directories under `/opt/aegis` (common on Linux). It will prompt unless you have configured NOPASSWD for the specific operations or run the whole build as root (not recommended).
 - On non-Linux or when using Docker sandboxes, microVM builds are often skipped.
 
+## Accessing the Web UI for Review (SSH / Remote Machines)
+
+The Web Portal is only reachable through the Host Daemon's hardened reverse proxy (see `web-portal-vm.md`).
+
+**Default (localhost only):**
+- UI available at `http://localhost:8080` on the machine running the daemon.
+
+**From another computer (SSH session):**
+
+**Recommended safe method — SSH local port forwarding (no changes to binding):**
+```bash
+# On your local machine
+ssh -L 8080:localhost:8080 user@remote-server
+# Then open http://localhost:8080 in your local browser
+```
+
+**Alternative (bind to all interfaces — use only on trusted networks):**
+```bash
+AEGIS_WEB_PORTAL_PROXY_ADDR=0.0.0.0:8080 sudo ./bin/aegis start
+# (or with make: AEGIS_WEB_PORTAL_PROXY_ADDR=0.0.0.0:8080 sudo make start)
+```
+- You will see a warning in the logs when binding non-localhost.
+- Then access `http://<server-ip>:8080` from your other computer.
+- **Security note**: This exposes the rich UI (and any unauthenticated actions) to the network. Only use for short review/debug sessions.
+
+The internal portal address can also be overridden with `AEGIS_WEB_PORTAL_INTERNAL_ADDR` if needed.
+
+After review, stop the daemon normally (`./bin/aegis stop` or Ctrl+C in foreground mode) and restart with default localhost binding for normal use.
+
 ## Running Tests (After Starting the Daemon Where Required)
 
 - Unit tests (safe, no daemon needed): `make test` or `go test ./...`

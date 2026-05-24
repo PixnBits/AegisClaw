@@ -121,7 +121,7 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 **Tasks:**
 - Ensure/adapt `cmd/web-portal/` + `internal/dashboard/` to be strictly thin per the spec.
 - Complete missing screens + interactions.
-- Host Daemon reverse proxy integration (minimal, hardened). **Completed**: phase5-08 — daemon now manages web-portal on internal port and exposes hardened ReverseProxy on :8080 (the only allowed inbound path per web-portal-vm.md).
+- Host Daemon reverse proxy integration (minimal, hardened). **Completed + hardened**: phase5-08 — configurable addresses, strong security headers (CSP etc.), error shielding, transport/server limits, managed child process. Also added matching headers in the portal itself. Cleanup of stale artifacts.
 - Full E2E Playwright expansion.
 
 **Exit Criteria:** `make start` → rich UI at localhost:8080 works for core flows; matches design; all major screens present with realtime; Playwright green for UI journeys.

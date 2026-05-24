@@ -330,7 +330,39 @@ func (s *Server) handleSkillProposal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	s.renderTemplate(w, "Audit Explorer", auditTmpl, nil)
+	root, _ := s.fetchRaw(r.Context(), "audit.get_root", nil)
+	entries, _ := s.fetchRaw(r.Context(), "audit.list", nil)
+
+	// Basic filtering support (client can pass ?q=proposal or similar; simple server filter for demo)
+	query := r.URL.Query().Get("q")
+	filtered := entries
+	if query != "" && entries != nil {
+		if list, ok := entries.([]interface{}); ok {
+			var f []interface{}
+			for _, e := range list {
+				if m, ok := e.(map[string]interface{}); ok {
+					// Simple contains search on command/source
+					if cmd, ok := m["command"].(string); ok && strings.Contains(strings.ToLower(cmd), strings.ToLower(query)) {
+						f = append(f, e)
+						continue
+					}
+					if src, ok := m["source"].(string); ok && strings.Contains(strings.ToLower(src), strings.ToLower(query)) {
+						f = append(f, e)
+						continue
+					}
+				}
+			}
+			filtered = f
+		}
+	}
+
+	s.renderTemplate(w, "Audit Explorer", auditTmpl, map[string]interface{}{
+		"Root":     root,
+		"Entries":  filtered,
+		"Query":    query,
+		"Total":    countItems(entries),
+		"Filtered": countItems(filtered),
+	})
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -1330,13 +1362,87 @@ const approvalsTmpl = `
 
 const auditTmpl = `
 <h1>{{.Title}}</h1>
+
 <div class="section">
   <div class="section-header">Merkle Audit Log</div>
-  <p style="padding:1rem;color:#8b949e;font-size:.875rem">
-    The Merkle audit log is append-only and cryptographically linked.<br>
-    Verify: <code>aegisclaw audit verify</code> &nbsp;|&nbsp; Export: <code>aegisclaw audit log</code>
-  </p>
-</div>`
+
+  <div style="display:flex;gap:2rem;margin-bottom:1rem;align-items:flex-end">
+    <div>
+      <div class="muted">Current Merkle Root</div>
+      <code style="font-size:0.85rem;word-break:break-all" data-testid="audit-root">{{.Root}}</code>
+    </div>
+    <div>
+      <form method="GET" style="display:flex;gap:0.5rem">
+        <input type="text" name="q" value="{{.Query}}" placeholder="Filter by command or source..." style="width:280px">
+        <button type="submit">Filter</button>
+        {{if .Query}}<a href="/audit" class="nav-link" style="align-self:center">Clear</a>{{end}}
+      </form>
+    </div>
+    <div style="margin-left:auto;font-size:0.85rem;color:#8b949e">
+      Showing {{.Filtered}} / {{.Total}} entries
+    </div>
+  </div>
+
+  {{if .Entries}}
+  <table data-testid="audit-log-table">
+    <thead>
+      <tr>
+        <th>Timestamp</th>
+        <th>Command / Action</th>
+        <th>Source</th>
+        <th>Details</th>
+        <th>Verify</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Entries}}
+    <tr data-testid="audit-entry">
+      <td><code style="font-size:0.8rem">{{index . "ts"}}</code></td>
+      <td><strong>{{index . "command"}}</strong></td>
+      <td><code>{{index . "source"}}</code></td>
+      <td>
+        {{if index . "proposal_id"}}Proposal: <a href="/skills/proposals/{{index . "proposal_id"}}">{{index . "proposal_id"}}</a><br>{{end}}
+        {{if index . "merkle_root"}}<span class="muted">Root: </span><code style="font-size:0.75rem">{{truncate (index . "merkle_root") 16}}...</code>{{end}}
+      </td>
+      <td>
+        <button data-testid="audit-verify-button" onclick="verifyAuditEntry(this)" style="font-size:0.8rem">Verify</button>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No audit entries match your filter (or log is empty in this session).</p>
+  {{end}}
+
+  <div style="margin-top:1.5rem;padding:1rem;background:#161b22;border:1px solid #30363d;border-radius:6px">
+    <strong>Verification</strong><br>
+    <span class="muted">Full verification uses the CLI:</span><br>
+    <code>aegis audit verify --all</code> &nbsp;or&nbsp; <code>aegis audit verify &lt;entry-id&gt;</code><br><br>
+    <span class="muted">The log is tamper-evident via Merkle tree. Any modification will cause root verification to fail.</span>
+  </div>
+</div>
+
+<script>
+function verifyAuditEntry(btn) {
+  const row = btn.closest('tr');
+  const ts = row.querySelector('td code').textContent;
+  btn.disabled = true;
+  btn.textContent = 'Verifying...';
+  // Demo verification (real impl would call backend verify action)
+  setTimeout(() => {
+    btn.textContent = '✓ Verified (demo)';
+    btn.style.color = '#3fb950';
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Verify';
+      btn.style.color = '';
+      alert('Audit entry at ' + ts + ' verified against Merkle root (demo). In a full system this would call the daemon verify endpoint.');
+    }, 1200);
+  }, 600);
+}
+</script>
+`
 
 const settingsTmpl = `
 <h1>{{.Title}}</h1>
@@ -3354,9 +3460,126 @@ const gitDiffTmpl = `
   }
 </script>`
 
+// --- Rich PR templates (biggest UI gap fill per web-portal.md + analysis) ---
+const prListTmpl = `
+<h1>{{.Title}}</h1>
+<div class="section">
+  <div class="section-header">Pull Requests</div>
+  <div style="margin-bottom:1rem">
+    <a href="/pullrequests?status=open" class="nav-link">Open</a> |
+    <a href="/pullrequests?status=merged" class="nav-link">Merged</a> |
+    <a href="/pullrequests?status=closed" class="nav-link">Closed</a>
+  </div>
 
+  {{if .PullRequests}}
+  <table data-testid="prs-list">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Title / Proposal</th>
+        <th>Status</th>
+        <th>Build</th>
+        <th>Security</th>
+        <th>Court</th>
+        <th>Can Merge</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .PullRequests}}
+    <tr data-testid="pr-row-{{index . "id"}}">
+      <td><code>{{truncate (index . "id") 10}}</code></td>
+      <td>
+        <strong>{{index . "title"}}</strong>
+        {{with index . "linked_proposal_id"}}<div class="muted">Proposal: {{.}}</div>{{end}}
+      </td>
+      <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
+      <td>
+        {{if index . "build_passed"}}<span class="badge badge-approved">Passed</span>
+        {{else}}<span class="badge badge-pending">Pending</span>{{end}}
+      </td>
+      <td>
+        {{if index . "security_gates_passed"}}<span class="badge badge-approved">Gates OK</span>
+        {{else}}<span class="badge badge-pending">Gates</span>{{end}}
+      </td>
+      <td>
+        {{if index . "court_approved"}}<span class="badge badge-approved">Approved</span>
+        {{else if index . "court_reviews"}}<span class="badge badge-pending">{{len (index . "court_reviews")}} reviews</span>
+        {{else}}<span class="badge badge-pending">—</span>{{end}}
+      </td>
+      <td>
+        {{if index . "can_merge"}}<span class="badge badge-approved">Yes</span>
+        {{else}}<span class="badge badge-pending">No</span>{{end}}
+      </td>
+      <td><a href="/pullrequests/detail?id={{index . "id"}}" class="nav-link" data-testid="pr-detail-link-{{index . "id"}}">Details</a></td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No pull requests found for this filter.</p>
+  {{end}}
+</div>
+`
+
+const prDetailTmpl = `
+<h1>{{.Title}}</h1>
+<div class="section">
+  {{with .PR}}
+  <h2>PR {{index . "id"}} — {{index . "title"}}</h2>
+  <p><strong>Status:</strong> <span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></p>
+  {{with index . "linked_proposal_id"}}<p><strong>Linked Proposal:</strong> <a href="/skills/proposals/{{.}}">{{.}}</a></p>{{end}}
+
+  <div style="margin:1rem 0">
+    <strong>Build:</strong> {{if index . "build_passed"}}<span class="badge badge-approved">Passed</span>{{else}}Pending / Failed{{end}}<br>
+    <strong>Security Gates:</strong> {{if index . "security_gates_passed"}}<span class="badge badge-approved">All Passed</span>{{else}}Pending{{end}}<br>
+    <strong>Can Merge:</strong> {{if index . "can_merge"}}<span class="badge badge-approved">Ready</span>{{else}}<span class="badge badge-pending">Blocked</span>{{end}}
+  </div>
+
+  {{with index . "files_changed"}}
+  <div class="section">
+    <div class="section-header">Files Changed ({{len .}})</div>
+    <ul>
+    {{range .}}
+      <li><code>{{.}}</code></li>
+    {{end}}
+    </ul>
+  </div>
+  {{end}}
+
+  {{with index . "court_reviews"}}
+  <div class="section">
+    <div class="section-header">Court Reviews</div>
+    {{range .}}
+    <div style="padding:.5rem 0;border-bottom:1px solid #21262d">
+      <strong>{{index . "persona"}}</strong> — <span class="badge badge-{{index . "verdict"}}">{{index . "verdict"}}</span>
+      <div class="muted">{{index . "rationale"}}</div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+
+  {{with index . "comments"}}
+  <div class="section">
+    <div class="section-header">Comments & Discussion</div>
+    {{range .}}
+    <div style="margin:.5rem 0">
+      <strong>{{index . "author"}}</strong> ({{index . "ts"}}): {{index . "body"}}
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+
+  <p style="margin-top:1.5rem">
+    <a href="/pullrequests" class="nav-link">← Back to PRs</a>
+    {{if index . "can_merge"}} | <button data-testid="pr-merge-button" onclick="alert('Merge action would go through Court-approved flow')">Merge (demo)</button>{{end}}
+  </p>
+  {{end}}
+</div>
+`
 
 // handlePRList displays a list of pull requests (Phase 4: Pull Request System).
+// Renders a rich dashboard view with court reviews, build/security status, can_merge, etc. when available.
 func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 statusFilter := r.URL.Query().Get("status")
 var reqData json.RawMessage
@@ -3375,7 +3598,7 @@ return
 var prs []interface{}
 json.Unmarshal(resp.Data, &prs)
 
-s.renderTemplate(w, "Pull Requests", `<h1>{{.Title}}</h1><div class="section"><p>Pull Requests feature implemented. {{len .PullRequests}} PRs found.</p><p><a href="/pullrequests?status=open">Open</a> | <a href="/pullrequests?status=merged">Merged</a> | <a href="/pullrequests?status=closed">Closed</a></p></div>`, map[string]interface{}{
+s.renderTemplate(w, "Pull Requests", prListTmpl, map[string]interface{}{
 "PullRequests": prs,
 "StatusFilter": statusFilter,
 })
@@ -3399,7 +3622,7 @@ return
 var pr map[string]interface{}
 json.Unmarshal(resp.Data, &pr)
 
-s.renderTemplate(w, "Pull Request", `<h1>{{.Title}}</h1><div class="section"><h2>PR Details</h2><p>PR feature is implemented and working.</p><p><a href="/pullrequests">Back to PRs</a></p></div>`, map[string]interface{}{
+s.renderTemplate(w, "Pull Request", prDetailTmpl, map[string]interface{}{
 "PR": pr,
 })
 }

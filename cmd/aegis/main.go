@@ -672,6 +672,9 @@ func startWebPortalProxy(listenAddr, targetURL string) error {
 	}
 
 	logrus.Infof("web portal reverse proxy listening on %s (forwarding to %s)", listenAddr, targetURL)
+	if !strings.HasPrefix(listenAddr, "127.0.0.1") && !strings.HasPrefix(listenAddr, "localhost") {
+		logrus.Warn("WARNING: Web portal proxy is bound to a non-localhost address. This exposes the UI to the network. Use only for trusted review/debug sessions.")
+	}
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
