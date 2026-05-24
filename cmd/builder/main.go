@@ -104,10 +104,10 @@ func runSecretsScan(code string) (bool, string) {
 	// Per builder-security-gates.md:16-20 — block ANY potential secret/high-entropy value.
 	// Use multiple methods (patterns + simple entropy heuristic). Deliberately vague error only.
 	secretPatterns := []string{
-		`(?i)password\s*[:=]\s*['"]\w+['"]`,
-		`(?i)token\s*[:=]\s*['"]\w+['"]`,
-		`(?i)secret\s*[:=]\s*['"]\w+['"]`,
-		`(?i)api[_-]?key\s*[:=]\s*['"]\w+['"]`,
+		`(?i)password\s*[:=]+\s*['"]?[\w.-]+['"]?`,
+		`(?i)token\s*[:=]+\s*['"]?[\w.-]+['"]?`,
+		`(?i)secret\s*[:=]+\s*['"]?[\w.-]+['"]?`,
+		`(?i)api[_-]?key\s*[:=]+\s*['"]?[\w.-]+['"]?`,
 		`(?i)bearer\s+['"]?[\w.-]{20,}`,
 	}
 
