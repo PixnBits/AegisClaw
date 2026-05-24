@@ -146,6 +146,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/proposals", s.handleAPIProposals)
 	s.mux.HandleFunc("/api/proposals/", s.handleAPIProposalDetail)
 	s.mux.HandleFunc("/api/workspace/read", s.handleAPIWorkspaceRead)
+
+	// Recommended public REST endpoints per web-portal.md for E2E/SDLC visibility
+	s.mux.HandleFunc("/api/skills", s.handleAPISkills)
+	s.mux.HandleFunc("/api/approvals", s.handleAPIApprovals)
+	s.mux.HandleFunc("/api/court/decisions", s.handleAPICourtDecisions)
+	s.mux.HandleFunc("/api/prs", s.handleAPIPRs)
+	s.mux.HandleFunc("/api/build/status", s.handleAPIBuildStatus)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -3396,39 +3403,167 @@ s.renderTemplate(w, "Pull Request", `<h1>{{.Title}}</h1><div class="section"><h2
 func (s *Server) handleAPIProposals(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodPost {
-		// Per E2E + design: create proposal entrypoint on portal (delegates to proposal.create_draft or equivalent)
 		var payload map[string]interface{}
-		_ = json.NewDecoder(r.Body).Decode(&payload)
-		// In full impl: call s.apiClient.Call(..., "proposal.create_draft" or sessions equivalent)
-		// For now return shape expected by E2E test (id will be used in status/audit)
-		id := fmt.Sprintf("prop-%d", time.Now().UnixNano())
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid json"}) //nolint:errcheck
+			return
+		}
+
+		// Ensure ID per Store contract and web-portal.md (thin layer generates for client convenience)
+		if _, hasID := payload["id"]; !hasID {
+			payload["id"] = fmt.Sprintf("prop-%d", time.Now().UnixNano())
+		}
+		// Normalize common documented fields for downstream (title/desc stay as provided)
+		if title, ok := payload["title"].(string); ok && payload["description"] == nil {
+			if desc, ok2 := payload["description"].(string); !ok2 || desc == "" {
+				payload["description"] = title
+			}
+		}
+
+		// Thin delegation ONLY: forward to Store via signed bridge (no local state/logic)
+		resp, err := s.apiClient.Call(r.Context(), "proposal.create", mustMarshal(payload))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+			return
+		}
+		if !resp.Success {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": resp.Error}) //nolint:errcheck
+			return
+		}
+
+		// Return documented shape { "id": "..." }
+		id := ""
+		if payloadID, ok := payload["id"].(string); ok {
+			id = payloadID
+		}
+		if id == "" {
+			id = fmt.Sprintf("prop-%d", time.Now().UnixNano())
+		}
+		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{"id": id}) //nolint:errcheck
 		return
 	}
-	http.Error(w, "POST to create", http.StatusMethodNotAllowed)
+
+	if r.Method == http.MethodGet {
+		// Documented: GET /api/proposals -> list (delegates to Store)
+		data, err := s.fetchRaw(r.Context(), "proposal.list", nil)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+			return
+		}
+		json.NewEncoder(w).Encode(data) //nolint:errcheck
+		return
+	}
+
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	json.NewEncoder(w).Encode(map[string]string{"error": "POST to create or GET to list"}) //nolint:errcheck
 }
 
 func (s *Server) handleAPIProposalDetail(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	// /api/proposals/{id}/status or /audit
 	path := r.URL.Path
+
+	// Extract proposal ID (simple parsing for /api/proposals/{id}/status or /audit)
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 3 {
+		http.NotFound(w, r)
+		return
+	}
+	proposalID := parts[2]
+
 	if strings.HasSuffix(path, "/status") {
-		// Return SDLC status shape per E2E test + issue-35 phases
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		// Thin delegation: fetch real proposal + court status via bridge
+		propData, err := s.fetchRaw(r.Context(), "proposal.get", map[string]string{"id": proposalID})
+		if err != nil {
+			// Graceful degradation per spec — always JSON for API
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"phase":          "unknown",
+				"court_approved": false,
+				"error":          err.Error(),
+			})
+			return
+		}
+
+		// Try to enrich with court reviews
+		courtData, _ := s.fetchRaw(r.Context(), "court.get_reviews", map[string]string{"proposal_id": proposalID})
+
+		status := map[string]interface{}{
 			"phase":           "review",
 			"court_approved":  false,
 			"code_generated":  false,
 			"pr_url":          "",
 			"deployed":        false,
 			"error":           "",
-		}) //nolint:errcheck
+		}
+
+		// Basic enrichment from real data (if available)
+		if p, ok := propData.(map[string]interface{}); ok {
+			if state, ok := p["state"].(string); ok {
+				status["phase"] = state
+			}
+		}
+		if reviews, ok := courtData.(map[string]interface{}); ok {
+			if approved, ok := reviews["approved"].(bool); ok {
+				status["court_approved"] = approved
+			}
+		}
+
+		json.NewEncoder(w).Encode(status) //nolint:errcheck
 		return
 	}
+
 	if strings.HasSuffix(path, "/audit") {
-		fmt.Fprint(w, "# Audit trail for proposal (stub per web-portal.md design)\n- Created\n- Court review pending")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		// Thin delegation for audit trail (markdown/text per spec)
+		audit, err := s.fetchRaw(r.Context(), "proposal.get_audit", map[string]string{"id": proposalID})
+		if err != nil || audit == nil {
+			// Fallback (documented as acceptable until full audit trail in Store)
+			fmt.Fprintf(w, "# Audit trail for proposal %s\n\n- Created\n- Court review (see /api/proposals/%s/status)\n", proposalID, proposalID)
+			return
+		}
+		if s, ok := audit.(string); ok {
+			fmt.Fprint(w, s)
+			return
+		}
+		// If structured, render simple text
+		fmt.Fprintf(w, "# Audit trail for proposal %s\n\n%v\n", proposalID, audit)
 		return
 	}
-	http.NotFound(w, r)
+
+	// Bare /api/proposals/{id} — return proposal data (or status shape) for convenience
+	propData, err := s.fetchRaw(r.Context(), "proposal.get", map[string]string{"id": proposalID})
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	json.NewEncoder(w).Encode(propData) //nolint:errcheck
+}
+
+func (s *Server) handleAPISkills(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	data, err := s.fetchRaw(r.Context(), "skill.list", nil)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+		return
+	}
+	json.NewEncoder(w).Encode(data) //nolint:errcheck
+}
+
+func (s *Server) handleAPIApprovals(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	pendingOnly := r.URL.Query().Get("pending") == "1"
+	data, err := s.fetchRaw(r.Context(), "event.approvals.list", map[string]bool{"pending_only": pendingOnly})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+		return
+	}
+	json.NewEncoder(w).Encode(data) //nolint:errcheck
 }
 
 func (s *Server) handleAPIWorkspaceRead(w http.ResponseWriter, r *http.Request) {
@@ -3451,4 +3586,64 @@ func (s *Server) handleAPIWorkspaceRead(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": data}) //nolint:errcheck
+}
+
+// --- Additional documented public REST handlers (recommended per web-portal.md) ---
+
+func (s *Server) handleAPICourtDecisions(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	proposalID := r.URL.Query().Get("proposal")
+	payload := map[string]string{}
+	if proposalID != "" {
+		payload["proposal_id"] = proposalID
+	}
+	data, err := s.fetchRaw(r.Context(), "court.get_reviews", payload)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+		return
+	}
+	json.NewEncoder(w).Encode(data) //nolint:errcheck
+}
+
+func (s *Server) handleAPIPRs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	statusFilter := r.URL.Query().Get("status")
+	var reqData json.RawMessage
+	if statusFilter != "" {
+		reqData, _ = json.Marshal(map[string]string{"status": statusFilter})
+	} else {
+		reqData = json.RawMessage(`{}`)
+	}
+	resp, err := s.apiClient.Call(r.Context(), "pr.list", reqData)
+	if err != nil || !resp.Success {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to list prs"}) //nolint:errcheck
+		return
+	}
+	var prs interface{}
+	json.Unmarshal(resp.Data, &prs)
+	json.NewEncoder(w).Encode(map[string]interface{}{"prs": prs}) //nolint:errcheck
+}
+
+func (s *Server) handleAPIBuildStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	proposalID := r.URL.Query().Get("proposal")
+	if proposalID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "proposal query param required"}) //nolint:errcheck
+		return
+	}
+	// Delegate to builder or store for pipeline status (gated build info)
+	data, err := s.fetchRaw(r.Context(), "build.status", map[string]string{"proposal_id": proposalID})
+	if err != nil {
+		// Graceful: return minimal documented shape
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"proposal_id": proposalID,
+			"phase":       "unknown",
+			"error":       err.Error(),
+		})
+		return
+	}
+	json.NewEncoder(w).Encode(data) //nolint:errcheck
 }
