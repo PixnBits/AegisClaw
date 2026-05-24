@@ -234,6 +234,8 @@ Phase 5 work must implement (or adapt) this API contract + the rich UI described
 
 **Phase 5 Progress (current session):** First major milestone achieved — Web Portal is now strictly thin (detailed in full-implementation-roadmap.md). `cmd/web-portal` reduced to thin entrypoint + bridge client; rich UI comes from the reference implementation. Direct business logic removed.
 
+- Completed implementation of the documented public REST / JSON API surface from `docs/specs/web-portal.md:148-176` (POST /api/proposals returning 201+id; GET /api/proposals, /api/proposals/{id}/status (exact shape), /api/proposals/{id}/audit (md/text); GET /api/skills, /api/approvals; plus recommended /api/court/decisions, /api/prs, /api/build/status). All strictly thin (delegation only via the hubBridgeClient signed Message protocol + APIClient; no local logic/state). Fixed ID generation for proposal.create compatibility with Store. Consistent JSON errors. Expanded tests in cmd/web-portal/main_test.go with delegation assertions proving thinness. Logical commit + tests green. (phase5-11)
+
 ### Phase 6: Full CLI, Complete 9 User Journeys, End-to-End Integration
 - Flesh out all CLI commands in `aegis` binary (or thin client) per `cli.md` (chat, sessions, tasks, skills, court, autonomy, etc.). All non-start commands non-root, JSON support, etc.
 - For **each of the 9 user journeys** (detailed in `docs/specs/user-journeys/`):
