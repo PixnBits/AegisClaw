@@ -90,7 +90,8 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 - Enhanced build_proposal handler now fully sequences the git/PR/skill registration flow: clone → push (gates) → pr.create → skill.register (all signed).
 - ACLs updated.
 - 6 logical commits in Phase 4.
-- Remaining: rootfs scanner integration, more realistic local git content changes inside Builder, Court feedback loop.
+- Rootfs: cmd/builder/Dockerfile created with minimal alpine + the 5 gate scanners (gosec, govulncheck, opa, gitleaks). build-microvms-docker.sh enhanced with Builder-specific SBOM stub, per-component isolation fix, and correct build context.
+- Remaining: full image signing + SBOM in artifacts, Court feedback loop, more realistic git content changes (easier post-rootfs).
 
 ### Phase 5: Web Portal — Thin VM + Complete UI + All Screens
 

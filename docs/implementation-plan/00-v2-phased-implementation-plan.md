@@ -198,7 +198,7 @@ Sub-steps:
 **Deliverable:** Builder runs on proposal, gates pass/fail correctly, artifacts signed.  
 **Tests:** Security gate unit + integration tests (malicious skill examples blocked).
 
-**Phase 4 Progress (current):** The 5 mandatory gates have been implemented and hardened with a robust test suite designed to catch regressions. Wiring advanced: signed git/PR flows + proposal trigger after Court approval. Builder build_proposal handler now fully sequences clone → push (gates) → pr.create → skill.register (all signed, per builder-vm.md). Store integrates results. ACLs updated. 6 commits. See full-implementation-roadmap.md.
+**Phase 4 Progress (current):** The 5 mandatory gates have been implemented and hardened with a robust test suite designed to catch regressions. Wiring advanced (full signed git/PR + proposal trigger flow). Rootfs support added: cmd/builder/Dockerfile (minimal + gosec/govulncheck/opa/gitleaks scanners) + enhancements to build-microvms-docker.sh (per-component isolation, Builder SBOM stub, build context). 7 commits. See full-implementation-roadmap.md.
 
 ### Phase 5: Web Portal — Full Thin VM + Complete UI Screens
 
