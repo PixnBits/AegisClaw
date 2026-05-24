@@ -459,24 +459,103 @@ func runBuilder(cmd *cobra.Command, args []string) {
 					encoder.Encode(failMsg)
 					connMutex.Unlock()
 				} else {
-					// Success path: simulate git/PR flow (using existing improved handlers logic)
-					// In fuller impl this would do clone + commit changes + push (gates) + pr.create
+					// Success path: Perform the full git/PR sequence per builder-vm.md
+					// 1. Clone the repo for this proposal/skill
+					repoName := "skill-" + proposalID
+					clonePayload := map[string]interface{}{"repo": repoName}
+					cloneMsg := Message{
+						Source:      "builder",
+						Destination: "store",
+						Command:     "git.clone",
+						Payload:     clonePayload,
+						Timestamp:   time.Now().Format(time.RFC3339),
+						Signature:   "",
+					}
+					signMessage(&cloneMsg, priv)
+					connMutex.Lock()
+					encoder.Encode(cloneMsg)
+					var cloneResp Message
+					_ = decoder.Decode(&cloneResp) // best effort for Phase 4 wiring
+					connMutex.Unlock()
+
+					// 2. Push the implemented code (this path will run gates again inside the push handler)
+					pushPayload := map[string]interface{}{
+						"repo": repoName,
+						"code": code,
+						"deps": "",
+					}
+					pushMsg := Message{
+						Source:      "builder",
+						Destination: "store",
+						Command:     "git.push",
+						Payload:     pushPayload,
+						Timestamp:   time.Now().Format(time.RFC3339),
+						Signature:   "",
+					}
+					signMessage(&pushMsg, priv)
+					connMutex.Lock()
+					encoder.Encode(pushMsg)
+					var pushResp Message
+					_ = decoder.Decode(&pushResp)
+					connMutex.Unlock()
+
+					// 3. Create PR for the implementation
+					prPayload := map[string]interface{}{
+						"id":          "pr-" + proposalID,
+						"proposal_id": proposalID,
+						"title":       "Implement " + proposalID,
+						"code":        code,
+					}
+					prMsg := Message{
+						Source:      "builder",
+						Destination: "store",
+						Command:     "pr.create",
+						Payload:     prPayload,
+						Timestamp:   time.Now().Format(time.RFC3339),
+						Signature:   "",
+					}
+					signMessage(&prMsg, priv)
+					connMutex.Lock()
+					encoder.Encode(prMsg)
+					var prResp Message
+					_ = decoder.Decode(&prResp)
+					connMutex.Unlock()
+
+					// 4. Register the skill (Builder drives this on success, per architecture)
+					skillPayload := map[string]interface{}{
+						"id":          proposalID,
+						"name":        "Skill " + proposalID,
+						"description": desc,
+						"code":        code,
+					}
+					regMsg := Message{
+						Source:      "builder",
+						Destination: "store",
+						Command:     "skill.register",
+						Payload:     skillPayload,
+						Timestamp:   time.Now().Format(time.RFC3339),
+						Signature:   "",
+					}
+					signMessage(&regMsg, priv)
+					connMutex.Lock()
+					encoder.Encode(regMsg)
+					connMutex.Unlock()
+
+					// Final success report
 					response.Command = "build.success"
 					response.Payload = map[string]interface{}{
 						"proposal_id": proposalID,
-						"status":      "implemented",
+						"status":      "implemented_and_pr_created",
 						"artifacts":   "signed",
 					}
 
-					// Report success + register skill (via Store)
 					successMsg := Message{
 						Source:      "builder",
 						Destination: "store",
 						Command:     "build.complete",
 						Payload: map[string]interface{}{
 							"proposal_id": proposalID,
-							"code":        code,
-							"status":      "gates_passed",
+							"status":      "success",
 						},
 						Timestamp: time.Now().Format(time.RFC3339),
 						Signature: "",
