@@ -119,9 +119,18 @@ func callLLM(prompt string, encoder *json.Encoder, decoder *json.Decoder, priv e
 	return "Error: Invalid LLM response format"
 }
 
+// Fallback for dev / when Network Boundary not fully wired yet
+func callLLMWithFallback(prompt string, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) string {
+	resp := callLLM(prompt, encoder, decoder, priv)
+	if strings.HasPrefix(resp, "Error:") || strings.HasPrefix(resp, "LLM Error") {
+		return mockLLMResponse(prompt)
+	}
+	return resp
+}
+
 func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Observe the user input: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt, encoder, decoder, priv)
+	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("1. Observe:", llmResponse)
 
 	// Get context from memory
@@ -152,30 +161,30 @@ func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 
 func think(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Think about the request: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt, encoder, decoder, priv)
+	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("2. Think:", llmResponse)
 }
 
 func plan(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Plan how to respond to: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt, encoder, decoder, priv)
+	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("3. Plan:", llmResponse)
 }
 
 func act(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Act on the plan for: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt, encoder, decoder, priv)
+	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("4. Act:", llmResponse)
 }
 
 func execute(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	prompt := "Execute the actions for: " + fmt.Sprintf("%v", msg.Payload)
-	llmResponse := callLLM(prompt, encoder, decoder, priv)
+	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("5. Execute:", llmResponse)
 }
 
 func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	llmResponse := callLLM("Judge the response quality: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
+	llmResponse := callLLMWithFallback("Judge the response quality: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
 	fmt.Println("6. Judge:", llmResponse)
 
 	// If the request is to add a skill, create a proposal
@@ -205,7 +214,7 @@ func mockLLMResponse(prompt string) string {
 func createProposal(description string, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
 	// Use LLM to extract skill specs
 	prompt := "Extract skill name, description, required permissions, and code skeleton from: " + description
-	extracted := callLLM(prompt, encoder, decoder, priv)
+	extracted := callLLMWithFallback(prompt, encoder, decoder, priv)
 	proposal := map[string]interface{}{
 		"id":          "proposal_" + fmt.Sprintf("%d", time.Now().Unix()),
 		"description": description,

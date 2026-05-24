@@ -173,6 +173,13 @@ Sub-steps:
 **Deliverable:** Basic agent can run a trivial loop, talk to memory, trigger Court review on a proposal.  
 **Tests:** Unit for loop steps + persona voting; integration journey seeds.
 
+**Phase 3 Progress (current session):**  
+- `cmd/agent/main.go` already had strong skeleton with calls to observe/think/plan/act/execute/judge + signing + Hub registration + memory context fetch + proposal creation on skill requests.
+- Enhanced with `callLLMWithFallback` (uses mockLLMResponse when real Network Boundary path unavailable — ideal for dev/Phase 3 iteration).
+- Builds cleanly (`bin/agent`).
+- Aligns directly with `agent-runtime.md` (6-step, via Hub, stateless, signed messages) and governance-court requirements (proposals trigger Court via scribe).
+- Ready for deeper Memory VM + Court Scribe/Persona implementations.
+
 ### Phase 4: Builder VM + Mandatory Security Gates
 - `cmd/builder/`: Ephemeral per-proposal. Implements the 5 gates in order (`builder-security-gates.md` + `builder-vm.md`):
   1. SAST
