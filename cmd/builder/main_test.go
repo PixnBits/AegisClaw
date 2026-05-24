@@ -94,6 +94,12 @@ func TestIndividualGates(t *testing.T) {
 	if pass, _ := runSCA("old-lib"); pass {
 		t.Error("SCA should catch known bad dep")
 	}
+	if pass, _ := runSCA("module example\ngo 1.21\nrequire example.com/vulnerable-dep v1.0.0"); pass {
+		t.Error("SCA should catch vulnerable-dep pattern")
+	}
+	if pass, _ := runSCA("module example\nrequire bad-license v1.0 // GPL-3"); pass {
+		t.Error("SCA should catch license policy violation")
+	}
 
 	// Secrets
 	if pass, _ := runSecretsScan(good); !pass {
