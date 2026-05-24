@@ -232,6 +232,8 @@ Phase 5 work must implement (or adapt) this API contract + the rich UI described
 **Deliverable:** `make start` → open http://localhost:8080 → full rich UI works for core flows, realtime updates, all major screens. Playwright covers the screens.  
 **Tests:** Expanded E2E for UI journeys + accessibility basics.
 
+**Phase 5 Progress (current session):** First major milestone achieved — Web Portal is now strictly thin (detailed in full-implementation-roadmap.md). `cmd/web-portal` reduced to thin entrypoint + bridge client; rich UI comes from the reference implementation. Direct business logic removed.
+
 ### Phase 6: Full CLI, Complete 9 User Journeys, End-to-End Integration
 - Flesh out all CLI commands in `aegis` binary (or thin client) per `cli.md` (chat, sessions, tasks, skills, court, autonomy, etc.). All non-start commands non-root, JSON support, etc.
 - For **each of the 9 user journeys** (detailed in `docs/specs/user-journeys/`):

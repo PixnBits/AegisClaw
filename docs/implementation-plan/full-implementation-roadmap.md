@@ -126,6 +126,13 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 
 **Exit Criteria:** `make start` → rich UI at localhost:8080 works for core flows; matches design; all major screens present with realtime; Playwright green for UI journeys.
 
+**Phase 5 Progress (current session):**
+- First major milestone: Web Portal is now strictly thin (commit 0c21f68).
+  - `cmd/web-portal` is a minimal entrypoint + `hubBridgeClient`.
+  - All rich UI comes from `internal/dashboard.Server` (the reference implementation).
+  - Direct business logic (Ollama, local files, etc.) removed.
+- This directly implements the "presentation-only" rule from the specs.
+
 ### Phase 6: Full CLI + Complete 9 User Journeys + End-to-End Wiring
 
 **Dependencies:** Phases 1–5.
