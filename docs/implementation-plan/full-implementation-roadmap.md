@@ -121,7 +121,7 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 **Tasks:**
 - Ensure/adapt `cmd/web-portal/` + `internal/dashboard/` to be strictly thin per the spec.
 - Complete missing screens + interactions.
-- Host Daemon reverse proxy integration (minimal, hardened).
+- Host Daemon reverse proxy integration (minimal, hardened). **Completed**: phase5-08 — daemon now manages web-portal on internal port and exposes hardened ReverseProxy on :8080 (the only allowed inbound path per web-portal-vm.md).
 - Full E2E Playwright expansion.
 
 **Exit Criteria:** `make start` → rich UI at localhost:8080 works for core flows; matches design; all major screens present with realtime; Playwright green for UI journeys.
@@ -133,6 +133,7 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
   - Direct business logic (Ollama, local files, etc.) removed.
 - This directly implements the "presentation-only" rule from the specs.
 - Completed documented public REST endpoints (phase5-11, commit 5fe97b7): full contract from web-portal.md §"Public REST / JSON API Surface" (POST/GET /api/proposals + variants, status/audit shapes, skills/approvals, plus recommended court/prs/build status). All thin delegation only; ID gen fix for compatibility; JSON errors; tests with call recording proving no local logic. Tests green.
+- Expanded Playwright E2E coverage for all 9 documented journeys (phase5-09, commit 469b1f6): comprehensive data-testid sweep (chat, proposals, approvals, stats, nav across templates + static), major journeys.spec.js expansion asserting Success Criteria (Testable) + exercising the new thin REST surface via page.request + UI. Playwright config hardened. Ready for live daemon runs (AGENTS.md).
 
 ### Phase 6: Full CLI + Complete 9 User Journeys + End-to-End Wiring
 

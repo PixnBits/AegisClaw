@@ -225,7 +225,7 @@ Phase 5 work must implement (or adapt) this API contract + the rich UI described
   - Others implied (Audit, Settings, Agent Customization).
   - All interactive elements have stable `data-testid` (per testability req).
   - Self-contained (no CDNs). Fast, paranoid UX.
-- Host Daemon proxy integration (from Phase 1) so `localhost:8080` reaches the VM safely.
+- Host Daemon proxy integration (from Phase 1) so `localhost:8080` reaches the VM safely. **Completed in this session**: minimal hardened ReverseProxy + managed web-portal child process on internal address (stdlib httputil with limits + logging). See phase5-08.
 - E2E expansion: Drive the real (or stubbed) flows.
 
 **Dependencies:** Phase 1 (daemon launches + proxies it), Phase 2 (Hub for data). Can prototype UI against mock early.  
@@ -235,6 +235,13 @@ Phase 5 work must implement (or adapt) this API contract + the rich UI described
 **Phase 5 Progress (current session):** First major milestone achieved — Web Portal is now strictly thin (detailed in full-implementation-roadmap.md). `cmd/web-portal` reduced to thin entrypoint + bridge client; rich UI comes from the reference implementation. Direct business logic removed.
 
 - Completed implementation of the documented public REST / JSON API surface from `docs/specs/web-portal.md:148-176` (POST /api/proposals returning 201+id; GET /api/proposals, /api/proposals/{id}/status (exact shape), /api/proposals/{id}/audit (md/text); GET /api/skills, /api/approvals; plus recommended /api/court/decisions, /api/prs, /api/build/status). All strictly thin (delegation only via the hubBridgeClient signed Message protocol + APIClient; no local logic/state). Fixed ID generation for proposal.create compatibility with Store. Consistent JSON errors. Expanded tests in cmd/web-portal/main_test.go with delegation assertions proving thinness. Logical commit + tests green. (phase5-11)
+
+- Expanded Playwright E2E + data-testid baseline for the 9 documented user journeys (phase5-09):
+  - Added dozens of stable `data-testid` across static/index.html and all major render templates in internal/dashboard/server.go (chat, proposals, approvals, dashboard stats, nav, review grids, decide forms — per web-portal.md Testability section and testing-standards.md).
+  - Dramatically expanded e2e/journeys.spec.js to drive UI flows + directly exercise the new public REST endpoints for proposals/status/audit/court/approvals (asserting exact shapes and Success Criteria from every user-journeys/*.md, especially 02/04/05/06/09).
+  - Fixed playwright.config.js webServer for reliable thin-portal startup in E2E.
+  - Go tests + build green; Playwright structure ready (full live runs with daemon per AGENTS.md will cover the complete Court/Builder SDLC paths).
+  - Logical commit + plan updates.
 
 ### Phase 6: Full CLI, Complete 9 User Journeys, End-to-End Integration
 - Flesh out all CLI commands in `aegis` binary (or thin client) per `cli.md` (chat, sessions, tasks, skills, court, autonomy, etc.). All non-start commands non-root, JSON support, etc.

@@ -94,6 +94,12 @@ func New(addr string, client APIClient) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Security headers (defense in depth; also set at the daemon proxy edge)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+
 	s.mux.ServeHTTP(w, r)
 }
 

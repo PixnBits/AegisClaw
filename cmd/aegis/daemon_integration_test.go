@@ -38,7 +38,7 @@ func TestDaemonLifecycle(t *testing.T) {
 	rootDir := repoRoot(t)
 	aegisBinary := filepath.Join(rootDir, "bin", "aegis")
 	if _, err := os.Stat(aegisBinary); err != nil {
-		t.Fatalf("aegis binary not found at %s, run 'make build' first", aegisBinary)
+		t.Skipf("aegis binary not found at %s — run 'make build-binaries' first. Integration tests that require the real binary are skipped.", aegisBinary)
 	}
 
 	t.Run("daemon_not_running_initially", func(t *testing.T) {

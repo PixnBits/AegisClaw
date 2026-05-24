@@ -198,16 +198,24 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	// Phase 5: Minimal hardened reverse proxy for Web Portal (per web-portal-vm.md + host-daemon.md)
 	// The Web Portal must receive traffic ONLY through the Host Daemon.
-	// We start the portal on an internal address and proxy from the public :8080.
+	internalPortal := os.Getenv("AEGIS_WEB_PORTAL_INTERNAL_ADDR")
+	if internalPortal == "" {
+		internalPortal = "127.0.0.1:18080"
+	}
+	publicProxy := os.Getenv("AEGIS_WEB_PORTAL_PROXY_ADDR")
+	if publicProxy == "" {
+		publicProxy = "127.0.0.1:8080"
+	}
+
 	go func() {
-		if err := startManagedWebPortal(); err != nil {
+		if err := startManagedWebPortal(internalPortal); err != nil {
 			logrus.Errorf("web-portal management: %v", err)
 		}
 	}()
 
 	// Start the public-facing reverse proxy (users hit this at http://localhost:8080)
 	// This is the only inbound path to the Web Portal.
-	if err := startWebPortalProxy("127.0.0.1:8080", "http://127.0.0.1:18080"); err != nil {
+	if err := startWebPortalProxy(publicProxy, "http://"+internalPortal); err != nil {
 		logrus.Fatalf("failed to start web portal reverse proxy: %v", err)
 	}
 
@@ -574,9 +582,9 @@ func main() {
 }
 
 // startManagedWebPortal starts the web-portal binary as a managed child process
-// on an internal address (127.0.0.1:18080). This is part of the Host Daemon's
-// responsibility to mediate all access to the Web Portal (per web-portal-vm.md).
-func startManagedWebPortal() error {
+// on the given internal address. This is part of the Host Daemon's responsibility
+// to mediate all access to the Web Portal (per web-portal-vm.md).
+func startManagedWebPortal(internalAddr string) error {
 	webPortalBinary := "./bin/web-portal"
 	if _, err := os.Stat(webPortalBinary); os.IsNotExist(err) {
 		// Fall back to looking in PATH or same dir as daemon (useful in dev)
@@ -585,7 +593,7 @@ func startManagedWebPortal() error {
 
 	cmd := exec.Command(webPortalBinary)
 	cmd.Env = append(os.Environ(),
-		"AEGIS_WEB_PORTAL_LISTEN_ADDR=127.0.0.1:18080",
+		"AEGIS_WEB_PORTAL_LISTEN_ADDR="+internalAddr,
 		// In real deployment this would also pass vsock or hub socket info
 	)
 
@@ -611,7 +619,7 @@ func startManagedWebPortal() error {
 
 // startWebPortalProxy starts a minimal, hardened reverse proxy on the public
 // address (typically 127.0.0.1:8080) that forwards to the internal web-portal.
-// This is the ONLY way users should reach the Web Portal.
+// This is the ONLY way users should reach the Web Portal (per web-portal-vm.md threat model).
 func startWebPortalProxy(listenAddr, targetURL string) error {
 	target, err := url.Parse(targetURL)
 	if err != nil {
@@ -620,20 +628,36 @@ func startWebPortalProxy(listenAddr, targetURL string) error {
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 
-	// Hardening (per host-daemon.md TCB requirements and plan notes)
+	// Transport hardening
 	proxy.Transport = &http.Transport{
 		MaxIdleConns:        100,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 
-	// Wrap with basic hardening middleware
+	// Hardened handler with security headers, limits, and logging
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simple request size limit (protect against huge uploads)
-		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10MB
+		// 1. Body size limit (protect against DoS / huge uploads)
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10 MiB
 
-		// Log high-level access (goes to daemon log / audit trail)
+		// 2. Security headers (edge protection for the presentation layer)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		// Basic CSP suitable for self-contained app (no external resources)
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+
+		// 3. Audit-relevant logging (high signal, no sensitive bodies)
 		logrus.Infof("web-proxy: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+
+		// 4. Forward with error shielding (do not leak internal errors to browser)
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			logrus.Warnf("web-proxy backend error for %s: %v", r.URL.Path, err)
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":"web portal temporarily unavailable"}`))
+		}
 
 		proxy.ServeHTTP(w, r)
 	})
@@ -642,8 +666,9 @@ func startWebPortalProxy(listenAddr, targetURL string) error {
 		Addr:         listenAddr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second, // longer for SSE/streaming chat
+		WriteTimeout: 90 * time.Second, // generous for SSE + large chat streams
 		IdleTimeout:  120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MiB header limit
 	}
 
 	logrus.Infof("web portal reverse proxy listening on %s (forwarding to %s)", listenAddr, targetURL)
