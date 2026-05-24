@@ -198,7 +198,7 @@ Sub-steps:
 **Deliverable:** Builder runs on proposal, gates pass/fail correctly, artifacts signed.  
 **Tests:** Security gate unit + integration tests (malicious skill examples blocked).
 
-**Phase 4 Progress (current):** The 5 mandatory gates have been implemented and hardened with a robust test suite designed to catch regressions. Initial wiring improvements (signed git/PR requests to Store with gate enforcement before push/implementation). ACL updates. See the companion `full-implementation-roadmap.md` for details.
+**Phase 4 Progress (current):** The 5 mandatory gates have been implemented and hardened with a robust test suite designed to catch regressions. Wiring advanced: signed git/PR flows + proposal trigger after Court approval (Builder fetches proposal, runs gates, reports success/failure non-leaking). Store handles build results. ACLs updated. 5 commits. See full-implementation-roadmap.md.
 
 ### Phase 5: Web Portal — Full Thin VM + Complete UI Screens
 
