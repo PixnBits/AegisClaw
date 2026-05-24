@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math"
 	"net"
@@ -58,7 +57,7 @@ func loadFromFile(filename string) map[string]interface{} {
 
 func saveToFile(filename string, data interface{}) {
 	bytes, _ := json.Marshal(data)
-	ioutil.WriteFile(filename, bytes, 0644)
+	os.WriteFile(filename, bytes, 0644)
 }
 
 func signMessage(msg *Message, priv ed25519.PrivateKey) {
@@ -126,6 +125,24 @@ func cosine(a, b []float64) float64 {
 		dot += a[i] * b[i]
 	}
 	return dot
+}
+
+// normalizeVector converts JSON-unmarshaled vectors (often []interface{} of float64) to []float64.
+func normalizeVector(v interface{}) []float64 {
+	switch vv := v.(type) {
+	case []float64:
+		return vv
+	case []interface{}:
+		out := make([]float64, len(vv))
+		for i, x := range vv {
+			if f, ok := x.(float64); ok {
+				out[i] = f
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func runMemory(cmd *cobra.Command, args []string) {
@@ -199,7 +216,7 @@ func runMemory(cmd *cobra.Command, args []string) {
 		mu.Lock()
 		switch msg.Command {
 		case "memory.get_context":
-			// Auto summarize if over limit
+			// Enforce 32k token hard limit + auto-summarize (per memory-vm.md)
 			if tokenCount > 32000 {
 				if len(shortTerm) > 5 {
 					shortTerm = shortTerm[len(shortTerm)-5:]
@@ -210,14 +227,44 @@ func runMemory(cmd *cobra.Command, args []string) {
 			if len(shortTerm) > 10 {
 				short = shortTerm[len(shortTerm)-10:]
 			}
-			long := []interface{}{}
-			for _, v := range longTerm {
-				long = append(long, v)
+
+			// Semantic long-term retrieval (top relevant; use last short msg as implicit query or generic)
+			query := "general context"
+			if len(short) > 0 {
+				query = short[len(short)-1]
 			}
+			queryVector := embedText(query)
+			type scored struct {
+				item interface{}
+				sim  float64
+			}
+			var scoredLong []scored
+			for _, v := range longTerm {
+				if m, ok := v.(map[string]interface{}); ok {
+					if vec := normalizeVector(m["vector"]); len(vec) > 0 {
+						scoredLong = append(scoredLong, scored{v, cosine(queryVector, vec)})
+					} else {
+						scoredLong = append(scoredLong, scored{v, 0})
+					}
+				}
+			}
+			sort.Slice(scoredLong, func(i, j int) bool { return scoredLong[i].sim > scoredLong[j].sim })
+			long := []interface{}{}
+			limit := 5
+			for i, s := range scoredLong {
+				if i >= limit {
+					break
+				}
+				long = append(long, s.item)
+			}
+
 			response.Command = "memory.context"
 			response.Payload = map[string]interface{}{
-				"short_term": short,
-				"long_term":  long,
+				"short_term":     short,
+				"long_term":      long,
+				"token_count":    tokenCount,
+				"token_limit":    32000,
+				"retrieval_note": "top semantic long-term for implicit query",
 			}
 		case "memory.store":
 			payload := msg.Payload.(map[string]interface{})
@@ -247,7 +294,10 @@ func runMemory(cmd *cobra.Command, args []string) {
 			}
 			var resList []result
 			for _, v := range longTerm {
-				if vec, ok := v.(map[string]interface{})["vector"].([]float64); ok {
+				item := v.(map[string]interface{})
+				rawVec := item["vector"]
+				vec := normalizeVector(rawVec)
+				if len(vec) > 0 {
 					sim := cosine(queryVector, vec)
 					if sim > 0.1 { // threshold
 						resList = append(resList, result{v, sim})
