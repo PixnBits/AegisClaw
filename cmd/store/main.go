@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strings"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -367,6 +368,36 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = "unknown command"
 		}
 		mu.Unlock()
+
+		// Phase 2 enhancement: every Store response is signed with its private key
+		// so AegisHub can verify it (consistent with per-VM key model).
+		signMessage(&response, priv)
+
+		// Tamper-evident Merkle audit log: record state changes.
+		// In a full impl this would be the canonical Store-owned audit trail.
+		if strings.HasPrefix(msg.Command, "proposal.") ||
+			msg.Command == "court.review_complete" ||
+			msg.Command == "pr.create" ||
+			msg.Command == "skill.register" ||
+			msg.Command == "memory.store" {
+			entry := map[string]interface{}{
+				"ts":      response.Timestamp,
+				"command": msg.Command,
+				"source":  msg.Source,
+			}
+			auditLog = append(auditLog, entry)
+			root := computeMerkleRoot(auditLog)
+			// Attach latest root so clients (Court, Web Portal) can see it
+			if m, ok := response.Payload.(map[string]interface{}); ok {
+				m["merkle_root"] = root
+			} else {
+				response.Payload = map[string]interface{}{
+					"result":       response.Payload,
+					"merkle_root":  root,
+				}
+			}
+			saveAuditToFile("audit.json", auditLog)
+		}
 
 		err = encoder.Encode(response)
 		if err != nil {
