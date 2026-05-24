@@ -82,7 +82,13 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 
 **Exit Criteria:** A proposal can go through Builder; gates correctly pass/fail with proper audit; artifacts signed.
 
-**Phase 4 Progress (current):** Core 5 gates + runner implemented and hardened in `cmd/builder/`. Strong regression test suite (individual gates + combined, vague secrets message enforcement, malicious cases). 3 commits. Wiring, rootfs, and full proposal flow integration remain.
+**Phase 4 Progress (current):** 
+- Core 5 gates implemented and hardened.
+- Strong regression test suite for the gates (individual + combined, explicit vague secrets message verification).
+- Improved wiring: Builder now properly sends signed requests for git.clone, git.push (gates enforced before any push), and pr.create to Store with response handling (per builder-vm.md).
+- ACLs updated with explicit commands.
+- 4 logical commits. 
+- Remaining in Phase 4: fuller trigger from Court/Store after approval, additional commands (skill.register, feedback), rootfs scanner integration.
 
 ### Phase 5: Web Portal — Thin VM + Complete UI + All Screens
 
