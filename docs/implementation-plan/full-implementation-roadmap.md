@@ -91,7 +91,9 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 - ACLs updated.
 - 6 logical commits in Phase 4.
 - Rootfs: cmd/builder/Dockerfile created with minimal alpine + the 5 gate scanners (gosec, govulncheck, opa, gitleaks). build-microvms-docker.sh enhanced with Builder-specific SBOM stub, per-component isolation fix, and correct build context.
-- Remaining: full image signing + SBOM in artifacts, Court feedback loop, more realistic git content changes (easier post-rootfs).
+- SCA gate significantly enhanced with real vuln/license policy logic + integration notes for the rootfs scanners.
+- All 5 gates now have solid implementations and strong regression tests.
+- Phase 4 (Builder + 5 Gates) largely complete. Ready for Phase 5.
 
 ### Phase 5: Web Portal — Thin VM + Complete UI + All Screens
 

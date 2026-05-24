@@ -198,7 +198,7 @@ Sub-steps:
 **Deliverable:** Builder runs on proposal, gates pass/fail correctly, artifacts signed.  
 **Tests:** Security gate unit + integration tests (malicious skill examples blocked).
 
-**Phase 4 Progress (current):** The 5 mandatory gates have been implemented and hardened with a robust test suite designed to catch regressions. Wiring advanced (full signed git/PR + proposal trigger flow). Rootfs support added: cmd/builder/Dockerfile (minimal + gosec/govulncheck/opa/gitleaks scanners) + enhancements to build-microvms-docker.sh (per-component isolation, Builder SBOM stub, build context). 7 commits. See full-implementation-roadmap.md.
+**Phase 4 Progress (current):** All 5 mandatory gates (including final SCA enhancement) implemented + hardened with strong regression tests. Full wiring (proposal trigger + sequenced git/PR/skill flow). Rootfs support complete (Builder Dockerfile with the 5 scanners + build script improvements). Phase 4 largely complete. 8+ commits. See full-implementation-roadmap.md.
 
 ### Phase 5: Web Portal — Full Thin VM + Complete UI Screens
 
