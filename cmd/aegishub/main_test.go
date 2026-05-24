@@ -49,7 +49,11 @@ func TestHubRoundTrip(t *testing.T) {
 	cmd := exec.Command(hubBinary, "start")
 	// Allow dummy signatures in the test (the test was written for the lenient registration path).
 	// Real components will send proper signatures; production Hub rejects dummy unless this env is set.
-	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+testHubSocketPath, "AEGIS_DEV_MODE=1")
+	// Compute repoRoot for reliable ACL file path (test may exec binary from temp dir)
+	wd, _ := os.Getwd()
+	repoRootForACL := filepath.Clean(filepath.Join(wd, "..", ".."))
+	aclPath := filepath.Join(repoRootForACL, "config", "acls.yaml")
+	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+testHubSocketPath, "AEGIS_DEV_MODE=1", "AEGIS_ACL_FILE="+aclPath)
 	err := cmd.Start()
 	if err != nil {
 		t.Fatalf("Failed to start hub: %v", err)
@@ -158,5 +162,69 @@ func TestHubRoundTrip(t *testing.T) {
 
 	if received.Source != "client1" || received.Destination != "client2" || received.Command != "test" {
 		t.Errorf("Received wrong message: %+v", received)
+	}
+}
+
+func TestACLMatch(t *testing.T) {
+	tests := []struct {
+		pattern string
+		value   string
+		want    bool
+	}{
+		{"*", "anything", true},
+		{"agent", "agent", true},
+		{"agent", "memory", false},
+		{"memory.*", "memory.get_context", true},
+		{"memory.*", "memory.store", true},
+		{"memory.*", "memoryfoo", false},
+		{"court-persona-*", "court-persona-ciso", true},
+		{"court-persona-*", "court-persona-security-architect", true},
+		{"court-persona-*", "court-persona", false},
+		{"scribe.notify_review", "scribe.notify_review", true},
+		{"foo", "foobar", false}, // stricter now
+		{"test", "test", true},
+	}
+	for _, tt := range tests {
+		got := aclMatch(tt.pattern, tt.value)
+		if got != tt.want {
+			t.Errorf("aclMatch(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestCheckACL(t *testing.T) {
+	// Save/restore global
+	orig := aclRules
+	defer func() { aclRules = orig }()
+
+	aclRules = []ACLRule{
+		{Source: "agent", Destination: "memory", Commands: []string{"memory.*"}},
+		{Source: "agent", Destination: "store", Commands: []string{"proposal.*"}},
+		{Source: "court-persona-*", Destination: "court-scribe", Commands: []string{"scribe.submit_vote"}},
+		{Source: "*", Destination: "hub", Commands: []string{"version", "get-version"}},
+		{Source: "client1", Destination: "client2", Commands: []string{"test"}},
+	}
+
+	cases := []struct {
+		src, dst, cmd string
+		want          bool
+	}{
+		{"agent", "memory", "memory.get_context", true},
+		{"agent", "memory", "memory.search", true},
+		{"agent", "store", "proposal.create", true},
+		{"agent", "store", "proposal.get", true},
+		{"agent", "store", "skill.list", false},
+		{"court-persona-ciso", "court-scribe", "scribe.submit_vote", true},
+		{"court-persona-tester", "court-scribe", "scribe.submit_vote", true},
+		{"court-persona-foo", "court-scribe", "scribe.notify_review", false},
+		{"foo", "hub", "version", true},
+		{"client1", "client2", "test", true},
+		{"client1", "client2", "other", false},
+		{"agent", "memory", "other", false},
+	}
+	for _, c := range cases {
+		if got := checkACL(c.src, c.dst, c.cmd); got != c.want {
+			t.Errorf("checkACL(%q,%q,%q)=%v want %v", c.src, c.dst, c.cmd, got, c.want)
+		}
 	}
 }

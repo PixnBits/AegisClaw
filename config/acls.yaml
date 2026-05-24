@@ -1,17 +1,155 @@
+# AegisClaw ACL Configuration
+# Loaded by AegisHub with hot-reload. Default-deny: only listed (source,dest,cmd) patterns allowed.
+# Wildcards: "*" for any; "prefix*" for prefix match (e.g. "memory.*", "court-persona-*").
+# All inter-VM traffic after registration is signed+ACL-checked (AEGIS_DEV_MODE=1 allows dummy sigs for tests/dev).
+# Register handshake and some hub control msgs have special handling before full ACL.
+
 rules:
+# --- Test harness (client1 <-> client2 via hub) ---
 - source: client1
   destination: client2
   commands:
     - test
+- source: client2
+  destination: client1
+  commands:
+    - test
+
+# --- Legacy/compat (kept for transition; prefer explicit below) ---
 - source: agent1
   destination: memory
   commands:
     - memory.*
+
+# --- Daemon <-> everything (Phase 1 TCB bootstrap, versions, control) ---
 - source: daemon
   destination: "*"
   commands:
     - version
+    - get-version
+    - "*"
 - source: "*"
   destination: daemon
   commands:
     - version
+    - get-version
+
+# --- All components <-> Hub for versions, discovery (hub special-cases some) ---
+- source: "*"
+  destination: hub
+  commands:
+    - version
+    - get-version
+    - component.list
+    - tool.list
+
+# --- Phase 3: Agent Runtime 6-step loop + Memory + Court flows ---
+# Agent <-> Memory (context, store/search per memory-vm.md)
+- source: agent
+  destination: memory
+  commands:
+    - memory.*
+- source: memory
+  destination: agent
+  commands:
+    - memory.*
+
+# Agent <-> Store (proposals, and responses)
+- source: agent
+  destination: store
+  commands:
+    - proposal.*
+- source: store
+  destination: agent
+  commands:
+    - proposal.*
+
+# Agent <-> Network Boundary (LLM calls via signed, for callLLMWithFallback and tool use)
+- source: agent
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: agent
+  commands:
+    - llm.*
+
+# Agent <-> Court Scribe (notify on proposal creation per governance)
+- source: agent
+  destination: court-scribe
+  commands:
+    - scribe.*
+
+# Store <-> Court Scribe (notify on create, review_complete updates; per court-scribe.md + store)
+- source: store
+  destination: court-scribe
+  commands:
+    - scribe.notify_review
+- source: court-scribe
+  destination: store
+  commands:
+    - court.review_complete
+    - court.*
+
+# Court Personas (distinct sources: court-persona-ciso, court-persona-security-architect, etc.)
+# Each pulls proposal content ONLY from Store (never via Scribe), submits votes to Scribe.
+- source: court-persona-*
+  destination: store
+  commands:
+    - proposal.get
+    - proposal.data
+- source: court-persona-*
+  destination: court-scribe
+  commands:
+    - scribe.submit_vote
+    - scribe.*
+
+# Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
+- source: court-scribe
+  destination: court-persona-*
+  commands:
+    - scribe.notify_review
+    - scribe.*
+
+# Memory <-> Store (long-term persistence per memory-vm.md)
+- source: memory
+  destination: store
+  commands:
+    - memory.*
+- source: store
+  destination: memory
+  commands:
+    - memory.*
+
+# --- Builder (Phase 4 prep) and other future ---
+- source: builder
+  destination: store
+  commands:
+    - proposal.*
+    - build.*
+- source: store
+  destination: builder
+  commands:
+    - proposal.*
+
+# --- Web Portal / Dashboard (Phase 5, via internal/dashboard + thin proxy) ---
+- source: web-portal
+  destination: hub
+  commands:
+    - "*"
+- source: hub
+  destination: web-portal
+  commands:
+    - "*"
+
+# --- Catch common response patterns (signed replies often mirror cmd names or use response/*) ---
+# Broad but explicit for known components during Phase 3 iteration
+- source: "*"
+  destination: "*"
+  commands:
+    - response
+    - error
+    - ping
+    - pong
+    - version
+    - get-version

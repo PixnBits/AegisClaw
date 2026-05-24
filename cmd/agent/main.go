@@ -129,17 +129,18 @@ func callLLMWithFallback(prompt string, encoder *json.Encoder, decoder *json.Dec
 }
 
 func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	prompt := "Observe the user input: " + fmt.Sprintf("%v", msg.Payload)
+	input := fmt.Sprintf("%v", msg.Payload)
+	prompt := "Observe and parse the user/agent request. Extract intent, key entities, and whether this requires a proposal (e.g. new skill). Input: " + input + ". Return structured observation."
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("1. Observe:", llmResponse)
 
-	// Get context from memory
+	// Get context from memory (per agent-runtime.md + memory-vm.md)
 	contextMsg := Message{
 		Source:      "agent",
 		Destination: "memory",
 		Command:     "memory.get_context",
-		Payload:     nil,
-		Timestamp:   "2026-05-09T19:30:02Z",
+		Payload:     map[string]interface{}{"reason": "observe step"},
+		Timestamp:   time.Now().Format(time.RFC3339),
 		Signature:   "",
 	}
 	signMessage(&contextMsg, priv)
@@ -149,45 +150,49 @@ func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 		return
 	}
 
-	// Wait for response
+	// Wait for response (hub routes back)
 	var contextResp Message
 	err = decoder.Decode(&contextResp)
 	if err != nil {
 		fmt.Println("Failed to decode context:", err)
 		return
 	}
-	fmt.Println("Context received:", contextResp.Payload)
+	fmt.Println("Context received (short-term + relevant long-term):", contextResp.Payload)
 }
 
 func think(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	prompt := "Think about the request: " + fmt.Sprintf("%v", msg.Payload)
+	input := fmt.Sprintf("%v", msg.Payload)
+	prompt := "Think step-by-step about the observed request using prior context. Identify risks, required skills/tools, autonomy implications. Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("2. Think:", llmResponse)
 }
 
 func plan(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	prompt := "Plan how to respond to: " + fmt.Sprintf("%v", msg.Payload)
+	input := fmt.Sprintf("%v", msg.Payload)
+	prompt := "Create a concrete plan: steps, which tools/skills via Hub, whether to create a formal proposal for Court review (per governance-court.md). Be specific. Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("3. Plan:", llmResponse)
 }
 
 func act(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	prompt := "Act on the plan for: " + fmt.Sprintf("%v", msg.Payload)
+	input := fmt.Sprintf("%v", msg.Payload)
+	prompt := "Execute the 'Act' phase: prepare specific tool invocations (signed via Hub) or proposal payload. If skill creation, prepare for proposal.create. Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("4. Act:", llmResponse)
 }
 
 func execute(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	prompt := "Execute the actions for: " + fmt.Sprintf("%v", msg.Payload)
+	input := fmt.Sprintf("%v", msg.Payload)
+	prompt := "Perform the execution: actually send signed tool/skill calls to Hub or invoke proposal creation flow. Capture results. Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("5. Execute:", llmResponse)
 }
 
 func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	llmResponse := callLLMWithFallback("Judge the response quality: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
+	llmResponse := callLLMWithFallback("Judge the response quality, compliance with policy, and whether Court review is required. Payload: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
 	fmt.Println("6. Judge:", llmResponse)
 
-	// If the request is to add a skill, create a proposal
+	// If the request is to add a skill, create a proposal (triggers Court per Phase 3 / governance-court.md)
 	payloadStr := fmt.Sprintf("%v", msg.Payload)
 	if strings.Contains(strings.ToLower(payloadStr), "add a") && strings.Contains(strings.ToLower(payloadStr), "skill") {
 		createProposal(payloadStr, encoder, decoder, priv)
@@ -195,28 +200,46 @@ func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25
 }
 
 func mockLLMResponse(prompt string) string {
-	if strings.Contains(prompt, "Observe") {
-		return "Observed: User input received and context loaded."
-	} else if strings.Contains(prompt, "Think") {
-		return "Analyzed: This is a request for information."
-	} else if strings.Contains(prompt, "Plan") {
-		return "Planned: Respond with relevant information."
-	} else if strings.Contains(prompt, "Act") {
-		return "Acting: Prepare tool calls if needed."
-	} else if strings.Contains(prompt, "Execute") {
-		return "Executed: Tools called and results received."
-	} else if strings.Contains(prompt, "Judge") {
-		return "Judged: Response quality is good."
+	lower := strings.ToLower(prompt)
+	isSkill := strings.Contains(lower, "skill") || strings.Contains(lower, "add a")
+	if strings.Contains(prompt, "Observe") || strings.Contains(lower, "observe and parse") {
+		if isSkill {
+			return "Observed: Intent='create new skill'. Entities: name, perms, code. Requires Court proposal. Context: prior conv empty."
+		}
+		return "Observed: General request. Loaded recent context + 2 long-term memories."
+	} else if strings.Contains(prompt, "Think") || strings.Contains(lower, "think step-by-step") {
+		if isSkill {
+			return "Thought: New skill increases attack surface; must go through all 7 personas + Builder gates. Low autonomy change."
+		}
+		return "Thought: Straightforward Q&A or tool use. No governance trigger."
+	} else if strings.Contains(prompt, "Plan") || strings.Contains(lower, "create a concrete plan") {
+		if isSkill {
+			return "Plan: 1. Extract spec via LLM. 2. proposal.create to Store. 3. scribe.notify_review (ID only). 4. Await Court votes. 5. On approve, Builder."
+		}
+		return "Plan: Answer directly or call 1-2 tools via Hub."
+	} else if strings.Contains(prompt, "Act") || strings.Contains(lower, "execute the 'act' phase") {
+		return "Acted: Prepared proposal payload or tool call list."
+	} else if strings.Contains(prompt, "Execute") || strings.Contains(lower, "perform the execution") {
+		if isSkill {
+			return "Executed: Sent signed proposal.create + scribe notify (ID only) to Hub."
+		}
+		return "Executed: Tool results received and merged into response."
+	} else if strings.Contains(prompt, "Judge") || strings.Contains(lower, "judge the response quality") {
+		if isSkill {
+			return "Judged: Proposal ready for Court. Quality good; unanimous-approve path expected for trivial skill."
+		}
+		return "Judged: High quality, safe, no further action. Stored summary to Memory."
 	}
 	return "LLM response: " + prompt
 }
 
 func createProposal(description string, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	// Use LLM to extract skill specs
+	// Use LLM to extract skill specs (full details go to Store only)
 	prompt := "Extract skill name, description, required permissions, and code skeleton from: " + description
 	extracted := callLLMWithFallback(prompt, encoder, decoder, priv)
+	proposalID := "proposal_" + fmt.Sprintf("%d", time.Now().Unix())
 	proposal := map[string]interface{}{
-		"id":          "proposal_" + fmt.Sprintf("%d", time.Now().Unix()),
+		"id":          proposalID,
 		"description": description,
 		"extracted":   extracted,
 		"status":      "pending",
@@ -231,20 +254,20 @@ func createProposal(description string, encoder *json.Encoder, decoder *json.Dec
 	}
 	signMessage(&msg, priv)
 	encoder.Encode(msg)
-	fmt.Println("Proposal created:", proposal["id"])
+	fmt.Println("Proposal created:", proposalID)
 
-	// Notify Court Scribe (Phase 3 integration with governance-court.md)
+	// Notify Court Scribe **with ID only** (per court-scribe.md: Scribe must never see or transmit proposal content/text. Personas fetch from Store.)
 	scribeMsg := Message{
 		Source:      "agent",
 		Destination: "court-scribe",
 		Command:     "scribe.notify_review",
-		Payload:     map[string]interface{}{"proposal_id": proposal["id"], "description": description},
+		Payload:     map[string]interface{}{"proposal_id": proposalID},
 		Timestamp:   time.Now().Format(time.RFC3339),
 		Signature:   "",
 	}
 	signMessage(&scribeMsg, priv)
 	encoder.Encode(scribeMsg)
-	fmt.Println("Notified Court Scribe for proposal review")
+	fmt.Println("Notified Court Scribe for proposal review (ID only, no content)")
 }
 
 func runAgent(cmd *cobra.Command, args []string) {

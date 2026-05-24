@@ -139,24 +139,30 @@ func reloadACLIfChanged() {
 
 func checkACL(source, dest, cmd string) bool {
 	for _, rule := range aclRules {
-		// Check source match (including wildcards)
-		sourceMatches := rule.Source == source || rule.Source == "*"
-		if !sourceMatches {
+		if !aclMatch(rule.Source, source) {
 			continue
 		}
-
-		// Check destination match (including wildcards)
-		destMatches := rule.Destination == dest || rule.Destination == "*"
-		if !destMatches {
+		if !aclMatch(rule.Destination, dest) {
 			continue
 		}
-
-		// Check command match (including wildcard patterns)
 		for _, c := range rule.Commands {
-			if c == cmd || strings.HasPrefix(cmd, strings.TrimSuffix(c, "*")) {
+			if aclMatch(c, cmd) {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// aclMatch supports exact match, "*" wildcard, and suffix "*" prefix-match (e.g. "memory.*" matches "memory.get_context"; "court-persona-*" matches "court-persona-ciso").
+// For commands without trailing *, exact match only (stricter than prior loose HasPrefix).
+func aclMatch(pattern, value string) bool {
+	if pattern == "*" || pattern == value {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		prefix := strings.TrimSuffix(pattern, "*")
+		return strings.HasPrefix(value, prefix)
 	}
 	return false
 }
