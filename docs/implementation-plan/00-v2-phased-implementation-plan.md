@@ -188,7 +188,18 @@ Sub-steps:
 **Tests:** Security gate unit + integration tests (malicious skill examples blocked).
 
 ### Phase 5: Web Portal — Full Thin VM + Complete UI Screens
-- **Server (`cmd/web-portal/main.go` rewrite/adapt):** Thin per `web-portal-vm.md`: Embed/serve updated static, internal HTTP APIs that **validate + forward** to AegisHub (no local LLM, no state, no secrets), SSE/WebSocket proxy for realtime events from Hub to browsers, `/health`. Graceful degradation when backends down. Runs inside its sandbox (build dedicated rootfs image with binary + assets).
+
+**Post-integration note (from 6f4d470 on update/web-portal-specs-and-api):**  
+The authoritative specification is now `docs/specs/web-portal.md` (integrated via cherry-pick). It provides a current implementation review of the rich portal (GitHub-dark theme, Canvas/Chat/Overview/Skills/PRs/Workspace, real-time SSE/streaming chat + tool events, full documented feature set). Related files (web-portal-screens.md, web-portal-vm.md, additional-requirements-and-gaps.md, chat-ui-data-flow.md, issue-35.md) were refreshed. Concrete REST API surface was added in the reference `internal/dashboard/server.go` (brought in as part of the integration):
+- `POST /api/proposals` (create)
+- `GET /api/proposals/{id}/status`
+- `GET /api/proposals/{id}/audit`
+- `GET /api/workspace/read`
+(and supporting handlers for the E2E SDLC/workspace flows).
+
+Phase 5 work must implement (or adapt) this API contract + the rich UI described in the new primary spec, while staying thin/presentation-only (all actions via Hub/daemon bridge).
+
+- **Server (`cmd/web-portal/main.go` rewrite/adapt or adapt from reference `internal/dashboard/server.go`):** Thin per the new `docs/specs/web-portal.md` + `web-portal-vm.md`: Embed/serve updated static, implement the documented internal + public REST endpoints (proposals, workspace, etc.), SSE/WebSocket for realtime (chat streaming, tool/thought events, /events), validate + forward to AegisHub/Host bridge (no local LLM/state/secrets), `/health`. Graceful degradation. Runs inside its dedicated sandbox VM. Build rootfs with the binary + assets.
 - **Frontend (static/ + app.js/css):** Realize **every** screen/wireframe from `web-portal-screens.md` (and proposal detail):
   - Consistent header (status, nav: Dashboard/Conversations/Teams/Agents/Skills/Court/Monitoring/Audit, avatar, notifications, conn).
   - Exact color palette, typography, dark "secure command center".
