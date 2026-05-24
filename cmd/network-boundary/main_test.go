@@ -57,3 +57,26 @@ func TestOllamaBackendHostEnvOverride(t *testing.T) {
 		t.Errorf("expected ollama-vm:11434, got %q", got)
 	}
 }
+
+func TestLoadAllowedDomainsDefaults(t *testing.T) {
+	t.Setenv("AEGIS_ALLOWED_DOMAINS", "")
+	allowed := loadAllowedDomains("localhost:11434")
+	if !allowed["localhost:11434"] || !allowed["api.github.com"] {
+		t.Error("defaults should include ollama host and github")
+	}
+	if allowed["evil.com"] {
+		t.Error("evil.com should not be allowed by default")
+	}
+}
+
+func TestLoadAllowedDomainsEnvOverride(t *testing.T) {
+	t.Setenv("AEGIS_ALLOWED_DOMAINS", "custom.internal:8080,another.host")
+	allowed := loadAllowedDomains("localhost:11434")
+	if !allowed["custom.internal:8080"] || !allowed["another.host"] {
+		t.Error("env override domains should be present")
+	}
+	// Defaults should still be there unless explicitly overridden (current simple impl merges)
+	if !allowed["api.github.com"] {
+		t.Error("defaults should still apply alongside override")
+	}
+}

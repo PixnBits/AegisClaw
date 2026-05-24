@@ -95,6 +95,16 @@ Builds directly on `00-v2-phased-implementation-plan.md` Phases 4–7, with more
 - All 5 gates now have solid implementations and strong regression tests.
 - Phase 4 (Builder + 5 Gates) largely complete. Ready for Phase 5.
 
+**Pre-Phase 5 Stub Review (this session):**
+- Performed systematic search for remaining stubs/mocks across Builder, Store, Network Boundary, Hub, Web Portal reference, etc.
+- Addressed highest-impact items before Phase 5:
+  - Network Boundary: Replaced hardcoded allowed domains + secret injection with env-configurable versions + tests (major reduction in stubs for a core security boundary).
+  - Store git.push: Documented as remaining simplification (acceptable until real git content wiring).
+  - Minor Builder wiring artifacts and Hub ACL TODO noted as low-risk.
+- Web Portal internal/dashboard still contains some audit "stub" comments (explicitly per web-portal.md design) — will be cleaned as part of Phase 5 thin-proxy work.
+- Agent mocks and Court persona mocks are intentional dev fallbacks (well documented).
+- Overall: Phase 4 surface is now much cleaner. No blocking "not yet implemented" paths in core flows.
+
 ### Phase 5: Web Portal — Thin VM + Complete UI + All Screens
 
 **Dependencies:** Phase 1 (daemon proxy), Phase 2 (Hub data), Phase 3 (Court/Agent data flows).

@@ -198,7 +198,7 @@ Sub-steps:
 **Deliverable:** Builder runs on proposal, gates pass/fail correctly, artifacts signed.  
 **Tests:** Security gate unit + integration tests (malicious skill examples blocked).
 
-**Phase 4 Progress (current):** All 5 mandatory gates (including final SCA enhancement) implemented + hardened with strong regression tests. Full wiring (proposal trigger + sequenced git/PR/skill flow). Rootfs support complete (Builder Dockerfile with the 5 scanners + build script improvements). Phase 4 largely complete. 8+ commits. See full-implementation-roadmap.md.
+**Phase 4 Progress (current):** All 5 mandatory gates (including final SCA enhancement) implemented + hardened with strong regression tests. Full wiring (proposal trigger + sequenced git/PR/skill flow). Rootfs support complete (Builder Dockerfile with the 5 scanners + build script improvements). Pre-Phase 5 stub audit performed: critical Network Boundary hardcoded values hardened with env support + tests; other minor stubs documented. Phase 4 surface clean. 9+ commits. See full-implementation-roadmap.md.
 
 ### Phase 5: Web Portal — Full Thin VM + Complete UI Screens
 

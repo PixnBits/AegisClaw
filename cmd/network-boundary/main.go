@@ -148,13 +148,10 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	}
 	fmt.Println("Network Boundary registered")
 
-	// Load allowed domains (stub: hardcode for now)
+	// Load allowed domains (improved from stub: supports env override for Phase 2+)
 	ollamaHost := ollamaBackendHost()
-	allowedDomains := map[string]bool{
-		"example.com":    true,
-		"api.github.com": true,
-		ollamaHost:       true,
-	}
+	allowedDomains := loadAllowedDomains(ollamaHost)
+
 	ollamaGenerateURL := "http://" + ollamaHost + "/api/generate"
 
 	// Start HTTP proxy
@@ -184,7 +181,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				http.Error(w, "Domain not allowed", 403)
 				return
 			}
-			// Inject secrets if needed (stub: for github, add token)
+			// Inject secrets if needed (improved: env-driven per host, still Phase 2 stub values)
 			req, err := http.NewRequest(r.Method, parsedURL.String(), r.Body)
 			if err != nil {
 				http.Error(w, "Invalid URL", 400)
@@ -195,9 +192,17 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 					req.Header.Set(header, val)
 				}
 			}
-			if strings.Contains(parsedURL.Host, "api.github.com") {
-				// Inject secret (stub: hardcode)
-				req.Header.Set("Authorization", "Bearer dummy_token")
+
+			// Secret injection map (can be extended via env or future Store config)
+			secretInjections := map[string]string{
+				"api.github.com": os.Getenv("GITHUB_TOKEN"), // e.g. "Bearer <token>"
+			}
+			if token, ok := secretInjections[parsedURL.Host]; ok && token != "" {
+				// Simple heuristic: if not already prefixed, assume Bearer for common cases
+				if !strings.HasPrefix(strings.ToLower(token), "bearer ") && !strings.HasPrefix(strings.ToLower(token), "token ") {
+					token = "Bearer " + token
+				}
+				req.Header.Set("Authorization", token)
 			}
 			client := &http.Client{}
 			resp, err := client.Do(req)
@@ -350,6 +355,27 @@ func ollamaBackendHost() string {
 		return host
 	}
 	return "localhost:11434"
+}
+
+// loadAllowedDomains builds the allowlist, with env override support.
+// Format for AEGIS_ALLOWED_DOMAINS: comma-separated list (e.g. "api.github.com,ollama.internal:11434")
+// Falls back to sensible defaults if not set.
+func loadAllowedDomains(ollamaHost string) map[string]bool {
+	allowed := map[string]bool{
+		"example.com":    true,
+		"api.github.com": true,
+		ollamaHost:       true,
+	}
+
+	if envList := strings.TrimSpace(os.Getenv("AEGIS_ALLOWED_DOMAINS")); envList != "" {
+		for _, d := range strings.Split(envList, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				allowed[d] = true
+			}
+		}
+	}
+	return allowed
 }
 
 func main() {
