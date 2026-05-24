@@ -236,18 +236,31 @@ func runStore(cmd *cobra.Command, args []string) {
 			votes := payload["votes"].(map[string]interface{})
 			if p, ok := proposals[id].(map[string]interface{}); ok {
 				p["reviews"] = votes
-				p["state"] = "approved" // simplified
+				approved := false
+				if a, ok := payload["approved"].(bool); ok {
+					approved = a
+				} else {
+					approved = true // fallback for old payloads
+				}
+				if approved {
+					p["state"] = "approved"
+					// Wire to Builder: trigger implementation after Court approval (per builder-vm.md + Phase 4 plan)
+					builderMsg := Message{
+						Source:      "store",
+						Destination: "builder",
+						Command:     "builder.build_proposal",
+						Payload:     map[string]interface{}{"proposal_id": id},
+						Timestamp:   response.Timestamp,
+						Signature:   "",
+					}
+					signMessage(&builderMsg, priv)
+					encoder.Encode(builderMsg)
+				} else {
+					p["state"] = "rejected"
+				}
 				proposals[id] = p
 				saveToFile("proposals.json", proposals)
-				// Register the skill
-				skill := map[string]interface{}{
-					"id":          id,
-					"name":        "Discord Monitor", // hardcoded for test
-					"description": p["description"],
-				}
-				skills[id] = skill
-				saveToFile("skills.json", skills)
-				response.Command = "skill.registered"
+				response.Command = "court.review_recorded"
 				response.Payload = "ok"
 			}
 		case "court.get_reviews":
@@ -319,6 +332,39 @@ func runStore(cmd *cobra.Command, args []string) {
 			id := payload["id"].(string)
 			response.Command = "skill.data"
 			response.Payload = skills[id]
+
+		case "build.complete":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["proposal_id"].(string)
+			if p, ok := proposals[id].(map[string]interface{}); ok {
+				p["state"] = "built"
+				p["build_status"] = "success"
+				proposals[id] = p
+				saveToFile("proposals.json", proposals)
+				// On success, register the skill (closing the loop from Builder)
+				skill := map[string]interface{}{
+					"id":          id,
+					"name":        "Skill from " + id,
+					"description": p["description"],
+				}
+				skills[id] = skill
+				saveToFile("skills.json", skills)
+			}
+			response.Command = "build.recorded"
+			response.Payload = "ok"
+
+		case "build.failed":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["proposal_id"].(string)
+			report := payload["report"]
+			if p, ok := proposals[id].(map[string]interface{}); ok {
+				p["state"] = "build_failed"
+				p["build_report"] = report // non-leaking
+				proposals[id] = p
+				saveToFile("proposals.json", proposals)
+			}
+			response.Command = "build.recorded"
+			response.Payload = "ok"
 		case "skill.list":
 			list := []interface{}{}
 			for _, s := range skills {

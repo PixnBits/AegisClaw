@@ -405,6 +405,88 @@ func runBuilder(cmd *cobra.Command, args []string) {
 					"tests": "basic tests", // stub for Phase 4
 				}
 			}
+
+		case "builder.build_proposal":
+			// New wiring for post-Court approval flow (p4-6.2 + builder-vm.md)
+			payload := msg.Payload.(map[string]interface{})
+			proposalID := payload["proposal_id"].(string)
+
+			// Fetch full proposal from Store (signed, per security model)
+			getMsg := Message{
+				Source:      "builder",
+				Destination: "store",
+				Command:     "proposal.get",
+				Payload:     map[string]interface{}{"id": proposalID},
+				Timestamp:   time.Now().Format(time.RFC3339),
+				Signature:   "",
+			}
+			signMessage(&getMsg, priv)
+			connMutex.Lock()
+			encoder.Encode(getMsg)
+			var propResp Message
+			err = decoder.Decode(&propResp)
+			connMutex.Unlock()
+
+			if err != nil || propResp.Payload == nil {
+				response.Command = "build.failed"
+				response.Payload = "failed to fetch proposal"
+			} else {
+				propData := propResp.Payload.(map[string]interface{})
+				desc := ""
+				if d, ok := propData["description"].(string); ok {
+					desc = d
+				}
+				code := generateSkillCode(desc)
+
+				// Run gates on the implementation
+				if pass, report := runSecurityGates(code, ""); !pass {
+					response.Command = "build.failed"
+					response.Payload = map[string]interface{}{
+						"proposal_id": proposalID,
+						"reason":      report, // non-leaking for secrets
+					}
+					// Report failure back (non-leaking)
+					failMsg := Message{
+						Source:      "builder",
+						Destination: "store",
+						Command:     "build.failed",
+						Payload:     map[string]interface{}{"proposal_id": proposalID, "report": report},
+						Timestamp:   time.Now().Format(time.RFC3339),
+						Signature:   "",
+					}
+					signMessage(&failMsg, priv)
+					connMutex.Lock()
+					encoder.Encode(failMsg)
+					connMutex.Unlock()
+				} else {
+					// Success path: simulate git/PR flow (using existing improved handlers logic)
+					// In fuller impl this would do clone + commit changes + push (gates) + pr.create
+					response.Command = "build.success"
+					response.Payload = map[string]interface{}{
+						"proposal_id": proposalID,
+						"status":      "implemented",
+						"artifacts":   "signed",
+					}
+
+					// Report success + register skill (via Store)
+					successMsg := Message{
+						Source:      "builder",
+						Destination: "store",
+						Command:     "build.complete",
+						Payload: map[string]interface{}{
+							"proposal_id": proposalID,
+							"code":        code,
+							"status":      "gates_passed",
+						},
+						Timestamp: time.Now().Format(time.RFC3339),
+						Signature: "",
+					}
+					signMessage(&successMsg, priv)
+					connMutex.Lock()
+					encoder.Encode(successMsg)
+					connMutex.Unlock()
+				}
+			}
 		case "version", "get-version":
 			if msg.Command == "get-version" {
 				// For get-version from hub, send proper Message response back

@@ -132,6 +132,9 @@ rules:
     - skill.register
     - audit.append
     - proposal.*
+    - build.complete
+    - build.failed
+    - builder.build_proposal
 - source: store
   destination: builder
   commands:
@@ -141,6 +144,9 @@ rules:
     - pr.updated
     - skill.registered
     - proposal.*
+    - builder.build_proposal
+    - build.complete
+    - build.failed
 
 # --- Web Portal / Dashboard (Phase 5, via internal/dashboard + thin proxy) ---
 - source: web-portal
