@@ -68,13 +68,17 @@ func getBuildVersion() string {
 }
 
 func runSAST(code string) (bool, string) {
-	// Check for unsafe patterns
+	// Per builder-security-gates.md:8-10 — detect common vuln patterns, unsafe practices.
+	// Go-focused for Phase 4; designed to be extensible for language-specific rules.
 	patterns := []string{
 		`eval\s*\(`,
 		`exec\.Command`,
 		`system\s*\(`,
 		`os\.popen`,
 		`subprocess\.call`,
+		`unsafe\.Pointer`,
+		`//go:linkname`,
+		`http\.ListenAndServe\s*\(\s*":\d+"`, // direct listen without config
 	}
 	for _, pat := range patterns {
 		if matched, _ := regexp.MatchString(pat, code); matched {
@@ -85,38 +89,57 @@ func runSAST(code string) (bool, string) {
 }
 
 func runSCA(deps string) (bool, string) {
-	// Stub: check for known vulnerable deps
-	if strings.Contains(deps, "old-lib") {
+	// Per builder-security-gates.md:12-14 — SCA + license policy.
+	// Phase 4: basic known-bad + license checks. Real scanner integration later.
+	if strings.Contains(strings.ToLower(deps), "old-lib") || strings.Contains(deps, "vulnerable-dep") {
 		return false, "SCA: Vulnerable dependency detected"
+	}
+	if strings.Contains(strings.ToLower(deps), "gpl-3") { // example license policy
+		return false, "SCA: License policy violation"
 	}
 	return true, ""
 }
 
 func runSecretsScan(code string) (bool, string) {
-	// Scan for potential secrets: high-entropy strings, patterns
+	// Per builder-security-gates.md:16-20 — block ANY potential secret/high-entropy value.
+	// Use multiple methods (patterns + simple entropy heuristic). Deliberately vague error only.
 	secretPatterns := []string{
 		`(?i)password\s*[:=]\s*['"]\w+['"]`,
 		`(?i)token\s*[:=]\s*['"]\w+['"]`,
 		`(?i)secret\s*[:=]\s*['"]\w+['"]`,
+		`(?i)api[_-]?key\s*[:=]\s*['"]\w+['"]`,
+		`(?i)bearer\s+['"]?[\w.-]{20,}`,
 	}
+
 	for _, pat := range secretPatterns {
 		if matched, _ := regexp.MatchString(pat, code); matched {
 			return false, "Potential sensitive value detected – commit blocked for security reasons"
 		}
 	}
+
+	// Simple high-entropy heuristic (long base64-like strings)
+	if matched, _ := regexp.MatchString(`[A-Za-z0-9+/=]{32,}`, code); matched {
+		return false, "Potential sensitive value detected – commit blocked for security reasons"
+	}
+
 	return true, ""
 }
 
 func runPolicyCheck(code string) (bool, string) {
-	// Check policies: no direct network, etc.
+	// Per builder-security-gates.md:22-24 — Policy-as-Code (simple rules for now; future: Rego).
+	// Examples from spec: must route outbound through Network Boundary, no direct credentials.
 	if strings.Contains(code, "net.Dial") && !strings.Contains(code, "network-boundary") {
-		return false, "Policy: Direct network access not allowed"
+		return false, "Policy: Direct network access not allowed — must use Network Boundary"
+	}
+	if strings.Contains(code, "os.Getenv") && strings.Contains(code, "token") {
+		return false, "Policy: Direct credential access not allowed"
 	}
 	return true, ""
 }
 
 func runCompositionCheck(code string) (bool, string) {
-	// Basic checks: has main, etc.
+	// Per builder-security-gates.md:26-29 — artifact integrity + basic health.
+	// For Phase 4: minimal structural checks. Real smoke + rollback in later wiring.
 	if !strings.Contains(code, "func main") {
 		return false, "Composition: Missing main function"
 	}
@@ -124,26 +147,32 @@ func runCompositionCheck(code string) (bool, string) {
 }
 
 func runSecurityGates(code, deps string) (bool, string) {
+	// Strict sequential order per builder-security-gates.md:6-30.
+	// Any failure stops further gates for that build (fail-fast) but we collect for report.
+	// Failure report must be detailed for Court but non-leaking for secrets.
 	var report []string
 
-	if pass, msg := runSAST(code); !pass {
-		report = append(report, msg)
+	gates := []struct {
+		name string
+		fn   func(string, string) (bool, string)
+	}{
+		{"SAST", func(c, d string) (bool, string) { return runSAST(c) }},
+		{"SCA", func(c, d string) (bool, string) { return runSCA(d) }},
+		{"Secrets", func(c, d string) (bool, string) { return runSecretsScan(c) }},
+		{"Policy", func(c, d string) (bool, string) { return runPolicyCheck(c) }},
+		{"Composition", func(c, d string) (bool, string) { return runCompositionCheck(c) }},
 	}
-	if pass, msg := runSCA(deps); !pass {
-		report = append(report, msg)
-	}
-	if pass, msg := runSecretsScan(code); !pass {
-		report = append(report, msg)
-	}
-	if pass, msg := runPolicyCheck(code); !pass {
-		report = append(report, msg)
-	}
-	if pass, msg := runCompositionCheck(code); !pass {
-		report = append(report, msg)
+
+	for _, g := range gates {
+		pass, msg := g.fn(code, deps)
+		if !pass {
+			report = append(report, msg)
+			// Per spec: on any failure the build is Failed. We still run remaining for fuller report in Phase 4.
+		}
 	}
 
 	if len(report) > 0 {
-		return false, strings.Join(report, "; ")
+		return false, strings.Join(report, " | ")
 	}
 	return true, ""
 }

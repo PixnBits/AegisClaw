@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,19 @@ func main() {
 	secretCode := `password := "secret123"`
 	if pass, msg := runSecurityGates(secretCode, deps); pass || msg == "" {
 		t.Error("Should fail secrets scan")
+	}
+
+	// Test high-entropy secret (new heuristic)
+	entropySecret := `key := "AKIAIOSFODNN7EXAMPLEwJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`
+	if pass, _ := runSecurityGates(entropySecret, deps); pass {
+		t.Error("Should fail high-entropy secrets scan")
+	}
+
+	// Test that vague message is used (no details leaked)
+	if pass, msg := runSecurityGates(`token := "ghp_1234567890abcdef"`, deps); !pass {
+		if strings.Contains(msg, "ghp_") || strings.Contains(msg, "123456") {
+			t.Error("Secrets error must be deliberately vague per builder-security-gates.md")
+		}
 	}
 }
 
