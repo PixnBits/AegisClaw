@@ -90,20 +90,49 @@ func getPersonaPrompt(persona string) string {
 
 func analyzeProposal(persona, proposalDesc string) (string, string) {
 	prompt := getPersonaPrompt(persona) + "\n\nProposal: " + proposalDesc
-	llmResponse := callLLM(prompt)
-	// Parse response for vote and reasoning (simple simulation)
-	if strings.Contains(llmResponse, "Reject") {
-		return "Reject", llmResponse
-	} else if strings.Contains(llmResponse, "Abstain") {
-		return "Abstain", llmResponse
-	} else {
-		return "Approve", llmResponse
+	llmResponse := callLLMWithPersona(persona, prompt)
+	// Parse for vote (encourage Abstain on uncertainty per spec)
+	vote := "Approve"
+	reason := llmResponse
+	if strings.Contains(llmResponse, "Reject") || strings.Contains(llmResponse, "reject") {
+		vote = "Reject"
+	} else if strings.Contains(llmResponse, "Abstain") || strings.Contains(llmResponse, "abstain") || proposalDesc == "" {
+		vote = "Abstain"
+		reason = "Abstained: insufficient context or high uncertainty from " + persona + " perspective. " + llmResponse
 	}
+	// Structured-ish: include specific_feedback stub
+	if vote != "Approve" {
+		reason += " | specific_feedback: [Review details from Store; propose minimal changes if needed]"
+	}
+	return vote, reason
 }
 
-func callLLM(prompt string) string {
-	// Mock LLM response
-	return "Approve: " + prompt
+// callLLMWithPersona: in full would sign+send "llm.call" to network-boundary via hub (like agent).
+// For Phase 3 dev: persona-aware mocks producing distinguishable votes/reasoning per role.
+func callLLMWithPersona(persona, prompt string) string {
+	lower := strings.ToLower(prompt)
+	switch persona {
+	case "ciso":
+		if strings.Contains(lower, "skill") {
+			return "Approve: Low strategic risk; aligns with compliance. specific_feedback: monitor post-deploy."
+		}
+		return "Abstain: Need more business context."
+	case "security-architect":
+		if strings.Contains(lower, "network") || strings.Contains(lower, "discord") {
+			return "Reject: Expands attack surface via new outbound; needs policy gate."
+		}
+		return "Approve: Design sound if Builder gates pass."
+	case "tester":
+		if strings.Contains(lower, "test") {
+			return "Approve: Good test plan implied."
+		}
+		return "Abstain: Test strategy not detailed in proposal."
+	default:
+		if strings.Contains(lower, "reject") {
+			return "Reject: " + persona + " flags issues."
+		}
+		return "Approve: " + persona + " perspective satisfied for this change."
+	}
 }
 
 func runCourtPersona(cmd *cobra.Command, args []string) {
@@ -121,15 +150,17 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
 
-	// Register
+	// Register with unique source per persona (enables 7 distinct via scribe forwarding + ACL wildcards)
+	uniqueSource := "court-persona-" + persona
 	regMsg := Message{
-		Source:      "court-persona",
+		Source:      uniqueSource,
 		Destination: "hub",
 		Command:     "register",
-		Payload:     map[string]string{"public_key": pubStr},
-		Timestamp:   "2026-05-09T19:50:00Z",
+		Payload:     map[string]string{"public_key": pubStr, "version": getBuildVersion()},
+		Timestamp:   time.Now().Format(time.RFC3339),
 		Signature:   "dummy",
 	}
+	signMessage(&regMsg, priv)
 	err = encoder.Encode(regMsg)
 	if err != nil {
 		log.Fatal("Failed to register:", err)
@@ -144,7 +175,7 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 	if error, ok := resp["error"]; ok {
 		log.Fatal("Registration failed:", error)
 	}
-	fmt.Println("Court Persona", persona, "registered")
+	fmt.Println("Court Persona", persona, "registered as", uniqueSource)
 
 	// Persona loop
 	for {
@@ -158,15 +189,15 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 		fmt.Println("Persona", persona, "received:", msg.Command)
 
 		if msg.Command == "scribe.notify_review" {
-			// Get proposal details from store
+			// Get proposal details from store (ID only; per spec Court pulls content directly)
 			payload := msg.Payload.(map[string]interface{})
 			proposalID := payload["proposal_id"].(string)
 			getMsg := Message{
-				Source:      "court-persona",
+				Source:      uniqueSource,
 				Destination: "store",
 				Command:     "proposal.get",
 				Payload:     map[string]interface{}{"id": proposalID},
-				Timestamp:   "2026-05-09T19:50:01Z",
+				Timestamp:   time.Now().Format(time.RFC3339),
 				Signature:   "",
 			}
 			signMessage(&getMsg, priv)
@@ -182,14 +213,17 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 				continue
 			}
 			proposalData := resp.Payload.(map[string]interface{})
-			description := proposalData["description"].(string)
+			description := ""
+			if d, ok := proposalData["description"].(string); ok {
+				description = d
+			}
 
-			// Analyze with LLM
+			// Analyze with persona-specific LLM (via Hub or fallback mock)
 			vote, reasoning := analyzeProposal(persona, description)
 
-			// Submit vote
+			// Submit vote (signed, unique source)
 			voteMsg := Message{
-				Source:      "court-persona",
+				Source:      uniqueSource,
 				Destination: "court-scribe",
 				Command:     "scribe.submit_vote",
 				Payload: map[string]interface{}{
@@ -198,7 +232,7 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 					"vote":        vote,
 					"reasoning":   reasoning,
 				},
-				Timestamp: "2026-05-09T19:50:01Z",
+				Timestamp: time.Now().Format(time.RFC3339),
 				Signature: "",
 			}
 			signMessage(&voteMsg, priv)
@@ -208,7 +242,7 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 			}
 		} else if msg.Command == "version" || msg.Command == "get-version" {
 			response := Message{
-				Source:      "court-persona",
+				Source:      uniqueSource,
 				Destination: msg.Source,
 				Command:     "version",
 				Payload:     map[string]string{"version": getBuildVersion()},
