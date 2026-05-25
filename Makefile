@@ -57,6 +57,10 @@ doctor:
 smoke:
 	@echo "=== AegisClaw Smoke Test ==="
 	@echo ""
+	@echo "0. CLI surface (Task 6.1 complete --help + version)..."
+	@./bin/aegis --help | grep -q "autonomy" && echo "   ✓ Full command tree present (autonomy + skills + court + secrets + restart etc.)" || (echo "   ✗ CLI tree incomplete"; exit 1)
+	@./bin/aegis --version | grep -q "phase6-cli" && echo "   ✓ Version present" || echo "   ⚠ version (non-fatal)"
+	@echo ""
 	@echo "1. CLI: status..."
 	@./bin/aegis status | grep -q "running" && echo "   ✓ Daemon reports as running" || (echo "   ✗ Daemon not running"; exit 1)
 	@echo ""
@@ -109,6 +113,19 @@ test-integration:
 test-e2e:
 	npm test
 
+# Setup target for Journey 01 (onboarding)
+# Provides a low-intervention path: build + doctor (per user-journeys/01-installation-onboarding.md)
+setup:
+	@echo "=== AegisClaw Setup / Onboarding ==="
+	@$(MAKE) build-binaries
+	@echo ""
+	@./bin/aegis doctor || true
+	@echo ""
+	@echo "Setup complete. Next steps (per AGENTS.md):"
+	@echo "  sudo make start"
+	@echo "  make smoke"
+	@echo "  ./bin/aegis chat --headless \"Hello\""
+
 # Help target
 help:
 	@echo "AegisClaw Build System"
@@ -117,6 +134,7 @@ help:
 	@echo "  make build              Build binaries and microVMs"
 	@echo "  make build-binaries     Build Go binaries only"
 	@echo "  make build-microvms     Build microVM filesystems (Linux only)"
+	@echo "  make setup              Onboarding helper (build + doctor) - Journey 01"
 	@echo "  make start              Start the daemon with sudo"
 	@echo "  make start-foreground   Start daemon in foreground (debugging)"
 	@echo "  make stop               Stop the daemon"
