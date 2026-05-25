@@ -84,10 +84,12 @@ Many chat/streaming and deep interaction tests will only be meaningful (or pass)
 
 Playwright supports `expect(page).toHaveScreenshot()` for pixel-perfect (or thresholded) UI snapshots.
 
-**If you add screenshots:**
+**6.7 Hardening note**: `e2e/snapshots/` + LFS patterns in `.gitattributes` are ready. Snapshot tests in `journeys.spec.js` are opt-in via `AEGIS_E2E_VISUAL=1` (skipped in normal CI/`npm test` to keep green without baselines committed). 
 
-1. Store them under `e2e/snapshots/` (or configure `snapshotDir`).
-2. **You must use Git LFS** — browser screenshots are binary PNGs and will bloat the repo otherwise.
+**If you add/enable screenshots:**
+
+1. Store under `e2e/snapshots/` (configured via `snapshotDir` in playwright.config.js).
+2. **You must use Git LFS** — browser screenshots are binary PNGs and will bloat the repo otherwise. The patterns are pre-tracked in `.gitattributes`.
 
 Setup steps (run once per machine):
 
@@ -98,6 +100,14 @@ Setup steps (run once per machine):
 # Then:
 git lfs install
 ```
+
+To capture/update baselines (after code changes that affect UI):
+```bash
+AEGIS_E2E_VISUAL=1 npx playwright test -g "visual baseline" --update-snapshots
+# Then: git add e2e/snapshots/ && git commit (LFS will handle the binaries)
+```
+
+See journeys.spec.js for the two starter visual tests (dashboard + skills). Add more for other key screens as journeys evolve.
 
 Add (or ensure) the following in `.gitattributes` (create the file if it doesn't exist):
 

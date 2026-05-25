@@ -35,4 +35,8 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 45 * 1000,
   },
+  // 6.7 hardening: snapshots under e2e/snapshots per TESTING.md + .gitattributes LFS rules.
+  // Use AEGIS_E2E_VISUAL=1 to enable toHaveScreenshot assertions (otherwise skipped).
+  // First baseline: npx playwright test -g "visual" --update-snapshots, then git add + LFS.
+  snapshotDir: './e2e/snapshots',
 });
