@@ -27,5 +27,6 @@
 - Coverage report generated on every PR
 
 ## Related Documents
+- [TESTING.md](../TESTING.md) — practical how-to for all test types, including the modern E2E/Playwright setup with fixture mode.
 - docs/implementation-plan/
 - docs/specs/*

@@ -1,6 +1,10 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Web Portal E2E Tests', () => {
+  // NOTE: These run against the thin web-portal in isolated "limited" or "E2E fixture" mode
+  // (see playwright.config.js webServer + cmd/web-portal/main.go fixture client).
+  // Full chat streaming, tool calls, and live backend responses require the full daemon
+  // (`make start`) + real Hub/backend. Contract + shell + public REST are validated here.
   test('should load the secure command center shell', async ({ page }) => {
     await page.goto('/');
 

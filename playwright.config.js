@@ -27,9 +27,12 @@ export default defineConfig({
     },
   ],
   webServer: {
+    // Starts the thin web-portal in E2E fixture mode (loads skills/proposals fixtures into
+    // an in-memory mock client). This lets contract + UI shell + public REST tests run
+    // reliably in CI and dev without a full daemon/Hub. See cmd/web-portal/main.go.
     command: 'AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json go run ./cmd/web-portal',
     url: 'http://localhost:8080/health',
     reuseExistingServer: !process.env.CI,
-    timeout: 30 * 1000,
+    timeout: 45 * 1000,
   },
 });

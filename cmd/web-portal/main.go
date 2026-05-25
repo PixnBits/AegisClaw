@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"time"
 
 	"AegisClaw/internal/dashboard"
 
@@ -14,6 +16,7 @@ import (
 
 func runWebPortal(cmd *cobra.Command, args []string) {
 	client, err := newHubBridgeClient()
+	useFixtures := false
 	if err != nil {
 		// Do not hard-fail in test / contract / isolated E2E scenarios.
 		// The public REST endpoints we expose (/api/proposals*, /api/status, etc.)
@@ -23,9 +26,17 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 		log.Println("Continuing in limited mode (REST endpoints + static UI will still work; live actions will return errors).")
 		log.Println("For full functionality start the daemon first (see AGENTS.md).")
 
-		// Provide a no-op client so the rich dashboard server can still start
-		// and serve the UI shell + our documented public REST endpoints.
-		client = &noopAPIClient{}
+		// Try E2E fixture-backed client first (when playwright sets the env vars).
+		// This makes isolated E2E tests see realistic data for skills/proposals lists etc.
+		if fixtureClient := tryNewE2EFixtureClient(); fixtureClient != nil {
+			client = fixtureClient
+			useFixtures = true
+			log.Println("E2E fixture data loaded — contract tests will see seeded skills/proposals.")
+		} else {
+			// Provide a no-op client so the rich dashboard server can still start
+			// and serve the UI shell + our documented public REST endpoints.
+			client = &noopAPIClient{}
+		}
 	}
 
 	// Support being managed by the Host Daemon (reverse proxy mode per web-portal-vm.md)
@@ -42,7 +53,9 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	}
 
 	log.Printf("Web Portal (thin) starting on %s", listenAddr)
-	if client == nil {
+	if useFixtures {
+		log.Println("  (E2E fixture mode — seeded data for contract/UI tests)")
+	} else if _, ok := client.(*noopAPIClient); ok {
 		log.Println("  (limited / no-Hub mode — good for E2E contract tests of UI + public REST)")
 	} else {
 		log.Println("  (full mode — all actions routed through Hub/Host Daemon)")
@@ -69,4 +82,159 @@ func (n *noopAPIClient) Call(ctx context.Context, action string, payload json.Ra
 		Success: false,
 		Error:   "web-portal running in limited mode (no Hub connection): " + action + " not available",
 	}, nil
+}
+
+// e2eFixtureClient provides realistic seeded responses for isolated E2E / contract tests.
+// Activated automatically in the web-portal binary when playwright sets the fixture env vars.
+// This makes the thin layer return data that matches the shapes expected by E2E specs
+// and the dashboard templates (skills list, proposals, etc.) without needing a full daemon/Hub.
+type e2eFixtureClient struct {
+	skills    map[string]map[string]interface{}
+	proposals map[string]map[string]interface{}
+	created   map[string]map[string]interface{} // ephemeral creates during a test run
+}
+
+func tryNewE2EFixtureClient() *e2eFixtureClient {
+	dataDir := os.Getenv("AEGIS_STORE_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "."
+	}
+	skillsFile := os.Getenv("AEGIS_SKILLS_FILE")
+	propsFile := os.Getenv("AEGIS_PROPOSALS_FILE")
+	if skillsFile == "" && propsFile == "" {
+		return nil
+	}
+
+	c := &e2eFixtureClient{
+		skills:    map[string]map[string]interface{}{},
+		proposals: map[string]map[string]interface{}{},
+		created:   map[string]map[string]interface{}{},
+	}
+
+	if skillsFile != "" {
+		if b, err := os.ReadFile(filepath.Join(dataDir, skillsFile)); err == nil {
+			var raw map[string]map[string]interface{}
+			if json.Unmarshal(b, &raw) == nil {
+				c.skills = raw
+			}
+		}
+	}
+	if propsFile != "" {
+		if b, err := os.ReadFile(filepath.Join(dataDir, propsFile)); err == nil {
+			var raw map[string]map[string]interface{}
+			if json.Unmarshal(b, &raw) == nil {
+				c.proposals = raw
+			}
+		}
+	}
+	if len(c.skills) == 0 && len(c.proposals) == 0 {
+		return nil
+	}
+	return c
+}
+
+func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
+	switch action {
+	case "proposal.list", "dashboard.skills":
+		// Combine fixture proposals + any created in this run
+		list := []interface{}{}
+		for id, p := range c.proposals {
+			entry := map[string]interface{}{"id": id}
+			for k, v := range p {
+				entry[k] = v
+			}
+			list = append(list, entry)
+		}
+		for id, p := range c.created {
+			entry := map[string]interface{}{"id": id}
+			for k, v := range p {
+				entry[k] = v
+			}
+			list = append(list, entry)
+		}
+		data, _ := json.Marshal(list)
+		if action == "dashboard.skills" {
+			// Shape expected by handleSkills + skillsTmpl
+			skillsList := []interface{}{}
+			for id, s := range c.skills {
+				entry := map[string]interface{}{"id": id}
+				for k, v := range s {
+					entry[k] = v
+				}
+				skillsList = append(skillsList, entry)
+			}
+			shape := map[string]interface{}{
+				"runtime_skills":     skillsList,
+				"built_in_skills":    []interface{}{},
+				"built_in_templates": []interface{}{},
+				"proposals":          list,
+			}
+			data, _ = json.Marshal(shape)
+		}
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "proposal.create":
+		var p map[string]interface{}
+		json.Unmarshal(payload, &p) // best effort
+		if p == nil {
+			p = map[string]interface{}{}
+		}
+		id, _ := p["id"].(string)
+		if id == "" {
+			id = "prop-" + time.Now().Format("20060102150405") + "-" + randomSuffix()
+		}
+		p["id"] = id
+		c.created[id] = p
+		resp := map[string]string{"id": id}
+		data, _ := json.Marshal(resp)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "proposal.get":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		id := req["id"]
+		if prop, ok := c.proposals[id]; ok {
+			data, _ := json.Marshal(prop)
+			return &dashboard.APIResponse{Success: true, Data: data}, nil
+		}
+		if prop, ok := c.created[id]; ok {
+			data, _ := json.Marshal(prop)
+			return &dashboard.APIResponse{Success: true, Data: data}, nil
+		}
+		// Graceful fallback for unknown
+		fb := map[string]interface{}{"id": id, "state": "unknown"}
+		data, _ := json.Marshal(fb)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "skill.list":
+		list := []interface{}{}
+		for id, s := range c.skills {
+			entry := map[string]interface{}{"id": id}
+			for k, v := range s {
+				entry[k] = v
+			}
+			list = append(list, entry)
+		}
+		data, _ := json.Marshal(list)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "event.approvals.list":
+		data := []byte("[]")
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "court.get_reviews":
+		// Minimal shape so status enrichment works
+		data, _ := json.Marshal(map[string]interface{}{"approved": true})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	default:
+		// Everything else succeeds with empty object so UI doesn't explode
+		data := []byte("{}")
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+	}
+}
+
+// tiny helper (no rand import needed for test fixture ids)
+func randomSuffix() string {
+	return time.Now().Format("05000")
 }

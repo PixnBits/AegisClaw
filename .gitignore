@@ -19,3 +19,8 @@ bin/
 proposals.json
 skills.json
 audit.json
+
+# E2E / browser test artifacts (Playwright)
+test-results/
+playwright-report/
+playwright/.cache/

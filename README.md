@@ -97,17 +97,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bin/aegis ./c
 
 ### Running Tests
 
-```bash
-# Run all unit tests
-make test
+See [TESTING.md](./TESTING.md) for the full guide covering:
 
-# Run E2E tests with Playwright
-make test-e2e
+- Unit tests (`make test`)
+- Integration tests
+- E2E / browser tests with Playwright (isolated contract mode vs live full-system journeys)
+- The E2E fixture client for reliable thin-portal testing
+- Smoke tests
+- Visual regression guidance (with Git LFS requirements)
+- Writing and maintaining tests
 
-# Run tests for a specific package
-go test ./internal/sandbox/...
-go test ./internal/runtime/...
-```
+Quick commands are also shown in the Makefile help (`make help`).
 
 ### Platform-Specific Notes
 

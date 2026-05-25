@@ -154,7 +154,7 @@ func (s *Server) registerRoutes() {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
-	// Public REST API surface for E2E/clients and SDLC visibility (design per docs/issue-35.md, phase4-pr-system.md, web_portal_e2e_sdlc_test.go, web-portal.md)
+	// Public REST API surface for E2E/clients and SDLC visibility (design per docs/issue-35.md, phase4-pr-system.md, web-portal.md + e2e/*.spec.js)
 	s.mux.HandleFunc("/api/proposals", s.handleAPIProposals)
 	s.mux.HandleFunc("/api/proposals/", s.handleAPIProposalDetail)
 	s.mux.HandleFunc("/api/workspace/read", s.handleAPIWorkspaceRead)
