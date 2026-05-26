@@ -1010,6 +1010,9 @@ func main() {
 	// (autonomy + background) have visible feedback in one place. Called once at startup.
 	initEventBusReactivity()
 
+	// 7.2 foundation: Start periodic reconciliation so expiration happens proactively.
+	startPeriodicReconciliation()
+
 	// 7.2 foundation demo: A small recurring background consumer using the new
 	// ScheduleRecurring primitive. In a real system this would be more sophisticated
 	// (e.g., stale session sweeper, health pings, etc.).
@@ -1506,6 +1509,12 @@ func runTasksCancel(cmd *cobra.Command, args []string) {
 // This makes `aegis autonomy grant --duration=...` actually expire on the CLI surface,
 // directly using the timer support added in Task 7.2.
 // Real enforcement (revoking in running agents, Court notification, etc.) belongs in the Agent Runtime.
+//
+// TODO(future): Because reconciliation is currently only called from CLI commands + the
+// new periodic goroutine, a listener that starts after an "autonomy.expired" event has
+// already been published will miss it. Same problem will appear for proposal lifecycle
+// events and other future use cases. A generic event replay / catch-up mechanism would
+// be the cleaner long-term solution.
 func reconcileExpiredAutonomy() []string {
 	sessions := loadSessions()
 	var expired []string
@@ -1557,6 +1566,27 @@ func reconcileExpiredBackgroundWork() []string {
 		}
 	}
 	return expired
+}
+
+// TODO(future): The current EventBus is fire-and-forget. Listeners that start after an event
+// has already been published will miss it. This affects the reconciliation consumers above
+// (and will affect other future consumers, e.g. proposal lifecycle state changes).
+// A more generic "event replay" / "catch-up" mechanism (or durable event log + replay) would
+// solve this class of problem cleanly for many use cases. Deferring as a design improvement
+// for another day (see also event-system.md and future 7.x work).
+
+// startPeriodicReconciliation runs the two 7.2 reconciliation consumers on a timer
+// so that autonomy/background expiration happens proactively instead of only on the
+// next CLI command that happens to call them. This is a simple 7.2 foundation demo.
+func startPeriodicReconciliation() {
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			_ = reconcileExpiredAutonomy()
+			_ = reconcileExpiredBackgroundWork()
+		}
+	}()
 }
 
 // initEventBusReactivity centralizes the visible reactivity for the two 7.2 EventBus consumers.

@@ -1157,7 +1157,9 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 **Task 7.4 – Workspace Customization**
 - Support loading and precedence rules for `~/.aegis/{AGENTS.md, SOUL.md, TOOLS.md, SKILL.md}` with proper validation and security checks.
 
-**7.2 foundation note**: ScheduleRecurring improved with real automatic re-scheduling + TestRecurringConsumerPattern. The example recurring consumer now performs a real lightweight stale-session sweep on every tick (visible logging when it cleans). This turns the 7.2 recurring primitive into an observable background service. Committed after tests + build.
+**7.2 foundation note**: ScheduleRecurring improved with real automatic re-scheduling + TestRecurringConsumerPattern. The example recurring consumer now performs a real lightweight stale-session sweep on every tick (visible logging when it cleans).
+
+Added `startPeriodicReconciliation()` background goroutine so the two 7.2 reconcile consumers run proactively. Added TODOs noting the current EventBus fire-and-forget limitation (listeners started later can miss events, e.g. proposal lifecycle changes and other future cases) and that a more generic replay/catch-up mechanism would be the cleaner long-term design (deferred). Committed after tests + build.
 
 **Task 7.5 – Host Daemon TCB Completion (Remaining Items)**
 - Full watchdog + automatic crash containment (jailer/cgroups + restart policy).
