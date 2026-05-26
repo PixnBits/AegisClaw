@@ -1390,6 +1390,14 @@ func runTasksList(cmd *cobra.Command, args []string) {
 	_ = reconcileExpiredAutonomy()
 	_ = reconcileExpiredBackgroundWork()
 
+	// 7.2.2 reactivity demo (same as sessions list)
+	eventbus.Subscribe("autonomy.expired", func(e eventbus.Event) {
+		fmt.Printf("  [7.2 EventBus] autonomy expired (tasks view)\n")
+	})
+	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
+		fmt.Printf("  [7.2 EventBus] background work expired (tasks view)\n")
+	})
+
 	// Journey 03/05 surface: Show active background work, tied to sessions where possible
 	tasks := []map[string]interface{}{}
 
