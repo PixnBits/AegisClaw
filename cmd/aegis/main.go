@@ -1593,17 +1593,15 @@ func reconcileExpiredBackgroundWork() []string {
 // so that autonomy/background expiration happens proactively instead of only on the
 // next CLI command that happens to call them. This is a simple 7.2 foundation demo.
 //
-// It currently uses a plain ticker. Once ScheduleRecurring is more robust it can be
-// switched over for consistency with other background work.
+// It now uses the ScheduleRecurring primitive for consistency with other 7.2
+// background/recurring work.
 func startPeriodicReconciliation() {
-	go func() {
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			_ = reconcileExpiredAutonomy()
-			_ = reconcileExpiredBackgroundWork()
-		}
-	}()
+	eventbus.DefaultBus.ScheduleRecurring(15*time.Second, "reconciliation.tick", nil)
+
+	eventbus.Subscribe("reconciliation.tick", func(e eventbus.Event) {
+		_ = reconcileExpiredAutonomy()
+		_ = reconcileExpiredBackgroundWork()
+	})
 }
 
 // initEventBusReactivity centralizes the visible reactivity for the two 7.2 EventBus consumers.

@@ -1161,6 +1161,8 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 
 Architectural correction (per docs/prd + specs): Long-term home for reconciliation trigger + persistent timers is the Store VM event system (hard-coded timer as specified in event-system.md / store-vm.md). Strengthened TODOs and added minimal placeholder + timer sketch in cmd/store. Current surface implementation in cmd/aegis remains as temporary scaffolding. Committed after tests + build.
 
+Follow-up: Switched `startPeriodicReconciliation()` from raw ticker to the improved `ScheduleRecurring` primitive for consistency with the 7.2 foundation. Committed after tests + build.
+
 **Task 7.5 – Host Daemon TCB Completion (Remaining Items)**
 - Full watchdog + automatic crash containment (jailer/cgroups + restart policy).
 - Complete secure key distribution to all VMs at bootstrap.
