@@ -141,6 +141,14 @@ var globalNonceCache = boundarycrypto.NewNonceCache(10000, 12*time.Minute)
 // Store-driven secret rotation use cases.
 var globalSecretsUpdateRateLimiter = boundarycrypto.NewRateLimiter(30, time.Minute) // 30 updates per minute max
 
+// globalSecretsSymmetricKey is the 32-byte AES-256 key used for the real
+// encrypted "secrets.update" blobs coming from the Store (7.1 full path).
+//
+// Loaded from AEGIS_SECRETS_SYMMETRIC_KEY (base64) at startup.
+// In production this would come from attested key delivery during registration
+// rather than a long-lived env var.
+var globalSecretsSymmetricKey []byte
+
 // liveSecretStore is the mutable, thread-safe holder for per-skill secrets.
 // This is the foundation for the Hub-mediated dynamic secrets path (7.1+).
 //
@@ -412,6 +420,17 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	pubStr := base64.StdEncoding.EncodeToString(pub)
 
+	// 7.1 real secrets: load the AES-256 symmetric key for encrypted blobs
+	// (sent by Store after signing the update message).
+	if b64 := os.Getenv("AEGIS_SECRETS_SYMMETRIC_KEY"); b64 != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(b64); err == nil && len(decoded) == 32 {
+			globalSecretsSymmetricKey = decoded
+			log.Println("SECURITY: Loaded AEGIS_SECRETS_SYMMETRIC_KEY for real encrypted secrets path")
+		} else {
+			log.Println("SECURITY WARNING: AEGIS_SECRETS_SYMMETRIC_KEY present but invalid (must be 32-byte base64) — encrypted blob path disabled")
+		}
+	}
+
 	socket := expandPath(hubSocket)
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
@@ -544,6 +563,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	// VMs connect here (initially over host-forwarded TCP or vsock), and we enforce
 	// allowlists + secret injection + full audit.
 	//
+	// Crash containment: we still launch the listener (so health can be recovered by
+	// a supervisor restarting the boundary), but every handler + vsock path checks
+	// boundaryHealthy and refuses with 503 on degraded.
 	// Future: This listener will be on vsock so Firecracker guests can dial it directly
 	// without any host network exposure.
 	go func() {
@@ -869,6 +891,38 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				response.Command = "secrets.response"
 				response.Payload = map[string]interface{}{"error": "signature verification failed", "signature_verified": false}
 				break
+			}
+
+			// === 7.1 Full encrypted path (real secrets via Hub) ===
+			// If the Store sent ciphertext + nonce instead of plaintext secrets,
+			// decrypt using the symmetric key we loaded, then zero the plaintext
+			// immediately after feeding it to the live store.
+			if ctIface, hasCt := payload["encrypted_blob"]; hasCt {
+				if nonceIface, hasNonce := payload["nonce"]; hasNonce {
+					if ctB64, ok := ctIface.(string); ok {
+						if nonceB64, ok := nonceIface.(string); ok {
+							ct, _ := base64.StdEncoding.DecodeString(ctB64)
+							nonce, _ := base64.StdEncoding.DecodeString(nonceB64)
+
+							if len(globalSecretsSymmetricKey) == 32 && len(ct) > 0 && len(nonce) > 0 {
+								decrypted, derr := boundarycrypto.DecryptSecretsBlob(ct, nonce, globalSecretsSymmetricKey)
+								if derr != nil {
+									log.Printf("SECURITY EVENT: secrets.update encrypted blob decryption FAILED — rejecting")
+									response.Command = "secrets.response"
+									response.Payload = map[string]interface{}{"error": "encrypted blob decryption failed"}
+									break
+								}
+								liveSecrets.ReplaceAll(decrypted)
+								boundarycrypto.ZeroSecretsMap(decrypted) // critical: clear after use
+
+								log.Printf("SECURITY: Received *encrypted* secrets.update (%d skills, decrypted+zeroized)", len(decrypted))
+								response.Command = "secrets.response"
+								response.Payload = map[string]interface{}{"status": "accepted", "encrypted": true, "count": len(decrypted)}
+								break
+							}
+						}
+					}
+				}
 			}
 
 			// === Incremental operations support (new in this slice) ===
@@ -1353,6 +1407,11 @@ func main() {
 // The maps passed in are the current source of truth for what is allowed.
 // In later slices they will be kept fresh from the Hub/Store.
 func startEnvoy(priv ed25519.PrivateKey, globalAllowed map[string]bool, skillRules map[string]map[string]bool, live *liveSecretStore) {
+	if !boundaryHealthy {
+		log.Println("SECURITY: startEnvoy skipped — boundary not healthy (fail-closed, no Envoy launch)")
+		return
+	}
+
 	envoyPath := os.Getenv("ENVOY_PATH")
 	if envoyPath == "" {
 		envoyPath = "envoy"
@@ -1386,6 +1445,11 @@ func startEnvoy(priv ed25519.PrivateKey, globalAllowed map[string]bool, skillRul
 
 	log.Printf("Envoy started (PID %d)", cmd.Process.Pid)
 
+	// 7.1 crash containment note: Envoy exit is handled in the cmd.Wait() below.
+	// On unexpected exit we set boundaryHealthy=false so all other egress paths refuse traffic
+	// (defense in depth with the handler-level checks). A full supervisor (restart or VM kill)
+	// is documented future work in the crash containment slice.
+
 	// Start the ExtAuthz gRPC server (the backend for the filter we added).
 	// It now receives a reference to the live (Hub-updatable) secret store.
 	go startExtAuthzServer(globalAllowed, skillRules, live)
@@ -1407,26 +1471,30 @@ func startEnvoy(priv ed25519.PrivateKey, globalAllowed map[string]bool, skillRul
 	}()
 
 	if err := cmd.Wait(); err != nil {
-		log.Printf("Envoy exited: %v", err)
+		log.Printf("SECURITY EVENT: Envoy exited unexpectedly (%v) — setting boundary unhealthy (fail-closed: all outbound now blocked)", err)
+		boundaryHealthy = false
 	}
 }
 
 // generateEnvoyBootstrap writes a security-hardened Envoy bootstrap focused on outbound-only traffic.
-// This is the foundation for the real proxy engine (per network-boundary.md).
+// This is the foundation for the real proxy engine (per network-boundary.md + 7.1).
 //
-// Key paranoid properties:
-// - Outbound only (no inbound listeners from untrusted networks in final form)
-// - Strict timeouts and circuit breaking (future)
-// - Access logging for full audit
-// - Placeholder for dynamic route configuration driven by the Go control plane + Store
+// Current 7.1 state (post prior slices):
+// - Outbound-only listener (8082) with strict timeouts.
+// - Full access logging capturing skill_id + vsock provenance headers.
+// - ExtAuthz gRPC filter (failure_mode_allow=false) wired to Go control plane for per-skill allowlist + secret injection.
+// - Dynamic route_config loaded from /tmp/envoy-dynamic-routes.yaml (per-skill clusters + header-based routing + rate_limit descriptors + circuit breakers).
+// - The Go control plane (startEnvoy + periodic loop) owns the authoritative allowlists and keeps the dynamic file fresh.
 //
-// The Go binary will own generating/updating the config and triggering reloads.
+// Future evolution (documented):
+// - xDS/EDS delivery instead of file reload.
+// - Real rate limit service backing the descriptors.
+// - Deeper integration with Store for live policy fragments.
+//
+// The Go binary is the control plane and must keep Envoy healthy or fail-closed.
 func generateEnvoyBootstrap(path string) error {
-	// For this slice we keep a static bootstrap with clear extension points.
-	// Next slices will:
-	// - Generate per-skill route clusters based on network-access declarations
-	// - Use xDS / EDS for dynamic updates from the control plane
-	// - Add External Authorization filter for secret injection / policy
+	// Bootstrap is intentionally static + small. All per-skill policy lives in the dynamic
+	// routes file written by generateEnvoyDynamicRoutes (called before Envoy start and on ticker).
 	config := `
 static_resources:
   listeners:
@@ -1463,18 +1531,11 @@ static_resources:
                   x_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
                   x_aegis_origin_vsock: "%REQ(X-AEGIS-ORIGIN-VSOCK)%"
           http_filters:
-          # 7.1: External Authorization filter placeholder.
-          # This is the planned integration point for:
-          #   - Per-skill secret injection (the Go control plane will return
-          #     Authorization headers or other metadata via CheckResponse)
-          #   - Fine-grained policy decisions (network-access rules, rate limits, etc.)
-          #
-          # The Go side will implement the standard Envoy ext_authz gRPC service:
-          #   envoy.service.auth.v3.Authorization.Check
-          #
-          # Real gRPC backend now exists (see startExtAuthzServer).
-          # failure_mode_allow is false — Envoy will now strictly require the
-          # authorization server to be healthy and responsive.
+          # 7.1: External Authorization filter (real).
+          # The Go control plane (startExtAuthzServer) implements envoy.service.auth.v3.Authorization.Check.
+          # It performs per-skill allowlist enforcement + conditional secret header injection.
+          # failure_mode_allow: false ensures Envoy refuses traffic if the control plane is unhealthy
+          # (defense-in-depth with the Go boundaryHealthy gate).
           - name: envoy.filters.http.ext_authz
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
@@ -1486,9 +1547,10 @@ static_resources:
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-          # Route configuration is now loaded dynamically from the file written by
-          # the Go control plane (see generateEnvoyDynamicRoutes).
-          # This makes per-skill allowlist decisions flow from Go into Envoy.
+          # Route configuration (including per-skill clusters, header-based routing to skill-<id>-outbound,
+          # rate_limit descriptors, and circuit breakers) is loaded dynamically from the file written
+          # by the Go control plane (generateEnvoyDynamicRoutes, called before launch + on 30s ticker).
+          # This is the current 7.1 mechanism for per-skill outbound policy in Envoy.
           route_config:
             name: egress_routes
             config_source:
@@ -1498,8 +1560,7 @@ static_resources:
     connect_timeout: 5s
     type: STRICT_DNS
     lb_policy: ROUND_ROBIN
-    # In future slices this will be dynamically populated from the Go control plane
-    # based on skill network-access declarations + secret material.
+    # Fallback cluster (legacy/dev paths). Real per-skill clusters + routing come from the dynamic file.
     load_assignment:
       cluster_name: outbound_cluster
       endpoints:
@@ -1509,7 +1570,14 @@ static_resources:
               socket_address:
                 address: 127.0.0.1
                 port_value: 80
-  # Cluster for the External Authorization gRPC service (will be implemented by the Go control plane)
+    circuit_breakers:
+      thresholds:
+      - priority: DEFAULT
+        max_connections: 200
+        max_pending_requests: 100
+        max_requests: 500
+        max_retries: 3
+  # Cluster for the External Authorization gRPC service (implemented in startExtAuthzServer, listens :9001)
   - name: ext_authz_cluster
     connect_timeout: 5s
     type: STRICT_DNS
@@ -1522,7 +1590,8 @@ static_resources:
             address:
               socket_address:
                 address: 127.0.0.1
-                port_value: 9001   # Placeholder port for the future Go ext_authz gRPC server
+                port_value: 9001
+    # The real secret injection + per-skill policy decisions happen here (Go control plane).
 admin:
   address:
     socket_address:
