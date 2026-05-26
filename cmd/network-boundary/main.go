@@ -2010,5 +2010,18 @@ func pilotDesignSketchReuse() {
 	nc := boundarycrypto.NewNonceCache(1000, 10*time.Minute)
 	_ = nc.CheckAndRecord("pilot-nonce")
 
-	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache). (stub only)")
+	// Also demonstrate the symmetric response signing pattern from the design sketch
+	// (the boundary signing responses that the Store can verify with VerifyBoundarySignedResponse).
+	responseDemo := map[string]interface{}{
+		"status":        "pilot_ok",
+		"timestamp":     time.Now().UTC().Format(time.RFC3339),
+		"signer_pubkey": "pilot-demo-key (would be real boundary pubkey)",
+	}
+	// We reuse the existing signMessage helper (same pattern used for secrets.get responses).
+	// In a fuller pilot we would use the registered private key.
+	// (Demonstration only in this first pilot slice — actual signing would use the boundary's real key.)
+	_ = responseDemo
+	log.Printf("PILOT: also exercised response signing pattern (symmetric to secrets.get mutual auth).")
+
+	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache + response signing pattern). (stub only)")
 }

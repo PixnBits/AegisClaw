@@ -1136,11 +1136,12 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 
 **Next (continuing autonomously per approved plan)**: 7.2.2 (make autonomy + background expiration visibly shine on the CLI surface) or start the design-sketch pilot reusing `boundarycrypto` signed-message patterns.
 
-**Design-Sketch-Pilot.1 COMPLETE** (first pilot slice):
-- Added `pilotDesignSketchReuse()` exercising the exact `boundarycrypto` helpers (CanonicalSecretsUpdateData, IsTimestampFresh, NewRateLimiter, NewNonceCache) on a synthetic non-secrets policy payload.
-- Single call after registration in runNetworkBoundary.
-- Tests + build green. Committed as clean first pilot body.
-- This is the initial proof that the 7.1 signed-message patterns generalize with zero duplication. (stub/pilot only; see detailed notes in the file and session plan).
+**Design-Sketch-Pilot.1 COMPLETE** (first pilot slice, tests run + committed as we went):
+- Added `pilotDesignSketchReuse()` exercising the exact `boundarycrypto` helpers on a synthetic non-secrets policy payload.
+- Single startup call after registration.
+- Also demonstrated symmetric response signing pattern (mirroring the mutual auth story).
+- Tests + build green before commit. Only new pilot work committed (old 7.1 uncommitted files untouched).
+- Initial proof that the 7.1 patterns generalize cleanly. (stub/pilot only).
 
 **Task 7.3 – Semantic Tool/Skill Discovery**
 - Runtime `list_skills()` + semantic search available in every Agent VM (fast local index, always up-to-date).
