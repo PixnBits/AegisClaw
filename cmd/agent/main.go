@@ -28,6 +28,9 @@ type Message struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 
+// 7.4: Loaded at startup via secure workspace loader. Used by prompt builders.
+var loadedWorkspace *workspace.Context
+
 func init() {
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
 		hubSocket = env
@@ -165,7 +168,18 @@ func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 func think(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
 	available := formatAvailableTools(idx)
-	prompt := "Think step-by-step about the observed request using prior context. Identify risks, required skills/tools, autonomy implications. Available local tools you can actually call: " + available + ". Request: " + input
+
+	custom := ""
+	if loadedWorkspace != nil {
+		if loadedWorkspace.SOUL != "" {
+			custom += "Core values (SOUL): " + loadedWorkspace.SOUL + ". "
+		}
+		if loadedWorkspace.AGENTS != "" {
+			custom += "Custom instructions (AGENTS): " + loadedWorkspace.AGENTS + ". "
+		}
+	}
+
+	prompt := custom + "Think step-by-step about the observed request using prior context. Identify risks, required skills/tools, autonomy implications. Available local tools you can actually call: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("2. Think:", llmResponse)
 }
@@ -330,6 +344,8 @@ func runAgent(cmd *cobra.Command, args []string) {
 		log.Printf("7.4: Loaded workspace customizations (AGENTS=%d, SOUL=%d, TOOLS=%d chars)",
 			len(wsCtx.AGENTS), len(wsCtx.SOUL), len(wsCtx.TOOLS))
 	}
+	// Make the loaded context available to prompt helpers
+	loadedWorkspace = wsCtx
 
 	// 7.3: Fast local semantic skill/tool index (stdlib only, always available)
 	skillIndex := NewAgentSkillIndex()
