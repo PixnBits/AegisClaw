@@ -31,6 +31,26 @@ var hubSocket = "~/.aegis/hub.sock"
 // 7.4: Loaded at startup via secure workspace loader. Used by prompt builders.
 var loadedWorkspace *workspace.Context
 
+// 7.4 helper: Returns a prefix string containing custom SOUL + AGENTS instructions
+// (if any were loaded). This is prepended to reasoning prompts.
+func customInstructionsPrefix() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	var b strings.Builder
+	if loadedWorkspace.SOUL != "" {
+		b.WriteString("Core values and soul: ")
+		b.WriteString(loadedWorkspace.SOUL)
+		b.WriteString(". ")
+	}
+	if loadedWorkspace.AGENTS != "" {
+		b.WriteString("Custom agent instructions: ")
+		b.WriteString(loadedWorkspace.AGENTS)
+		b.WriteString(". ")
+	}
+	return b.String()
+}
+
 func init() {
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
 		hubSocket = env
@@ -135,7 +155,8 @@ func callLLMWithFallback(prompt string, encoder *json.Encoder, decoder *json.Dec
 func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
 	available := formatAvailableTools(idx)
-	prompt := "Observe and parse the user/agent request. Extract intent, key entities, and whether this requires a proposal (e.g. new skill). Available local tools/skills: " + available + ". Input: " + input + ". Return structured observation."
+	custom := customInstructionsPrefix()
+	prompt := custom + "Observe and parse the user/agent request. Extract intent, key entities, and whether this requires a proposal (e.g. new skill). Available local tools/skills: " + available + ". Input: " + input + ". Return structured observation."
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("1. Observe:", llmResponse)
 
@@ -187,7 +208,8 @@ func think(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25
 func plan(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
 	available := formatAvailableTools(idx)
-	prompt := "Create a concrete plan: steps, which tools/skills via Hub (only use ones from the available local index), whether to create a formal proposal for Court review (per governance-court.md). Be specific. Available tools: " + available + ". Request: " + input
+	custom := customInstructionsPrefix()
+	prompt := custom + "Create a concrete plan: steps, which tools/skills via Hub (only use ones from the available local index), whether to create a formal proposal for Court review (per governance-court.md). Be specific. Available tools: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("3. Plan:", llmResponse)
 }
@@ -195,7 +217,8 @@ func plan(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed255
 func act(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
 	available := formatAvailableTools(idx)
-	prompt := "Execute the 'Act' phase: prepare specific tool invocations (signed via Hub, only from available local index) or proposal payload. If skill creation, prepare for proposal.create. Available tools: " + available + ". Request: " + input
+	custom := customInstructionsPrefix()
+	prompt := custom + "Execute the 'Act' phase: prepare specific tool invocations (signed via Hub, only from available local index) or proposal payload. If skill creation, prepare for proposal.create. Available tools: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("4. Act:", llmResponse)
 }
@@ -203,14 +226,16 @@ func act(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed2551
 func execute(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
 	available := formatAvailableTools(idx)
-	prompt := "Perform the execution: actually send signed tool/skill calls to Hub (only use tools from the available local index) or invoke proposal creation flow. Capture results. Available: " + available + ". Request: " + input
+	custom := customInstructionsPrefix()
+	prompt := custom + "Perform the execution: actually send signed tool/skill calls to Hub (only use tools from the available local index) or invoke proposal creation flow. Capture results. Available: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("5. Execute:", llmResponse)
 }
 
 func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	available := formatAvailableTools(idx)
-	llmResponse := callLLMWithFallback("Judge the response quality, compliance with policy, and whether Court review is required. Available local tools: "+available+". Payload: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
+	custom := customInstructionsPrefix()
+	llmResponse := callLLMWithFallback(custom+"Judge the response quality, compliance with policy, and whether Court review is required. Available local tools: "+available+". Payload: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
 	fmt.Println("6. Judge:", llmResponse)
 
 	// If the request is to add a skill, create a proposal (triggers Court per Phase 3 / governance-court.md)
@@ -760,6 +785,8 @@ func min(a, b, c int) int {
 
 // formatAvailableTools returns a compact string of the local skill/tool index
 // for injection into LLM prompts (keeps context reasonable).
+// 7.4: If custom TOOLS.md was loaded, it is appended/preferred for better
+// descriptions during search and reasoning.
 func formatAvailableTools(idx *AgentSkillIndex) string {
 	if idx == nil {
 		return "(no local tool index available)"
@@ -782,6 +809,13 @@ func formatAvailableTools(idx *AgentSkillIndex) string {
 		}
 		b.WriteString(t.Name)
 	}
+
+	// 7.4 integration: Inject custom tool descriptions from workspace if present
+	if loadedWorkspace != nil && loadedWorkspace.TOOLS != "" {
+		b.WriteString(". Custom tool guidance: ")
+		b.WriteString(loadedWorkspace.TOOLS)
+	}
+
 	return b.String()
 }
 
