@@ -1157,6 +1157,8 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 **Task 7.4 – Workspace Customization**
 - Support loading and precedence rules for `~/.aegis/{AGENTS.md, SOUL.md, TOOLS.md, SKILL.md}` with proper validation and security checks.
 
+**7.2 foundation note**: ScheduleRecurring now has real automatic re-scheduling (useful primitive for background services). Committed after tests + build.
+
 **Task 7.5 – Host Daemon TCB Completion (Remaining Items)**
 - Full watchdog + automatic crash containment (jailer/cgroups + restart policy).
 - Complete secure key distribution to all VMs at bootstrap.

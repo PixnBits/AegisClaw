@@ -147,7 +147,7 @@ func TestCancelTimer(t *testing.T) {
 	}
 }
 
-func TestScheduleRecurringV1(t *testing.T) {
+func TestScheduleRecurring(t *testing.T) {
 	bus := New()
 
 	var fireCount atomic.Int32
@@ -162,16 +162,14 @@ func TestScheduleRecurringV1(t *testing.T) {
 
 	time.Sleep(70 * time.Millisecond)
 
-	// v1 is thin (just delegates to one-shot). We mainly verify it doesn't crash
-	// and can be cancelled. Real recurring behavior will be added when a consumer needs it.
 	cancelled := bus.CancelTimer(id)
 	if !cancelled {
-		t.Log("note: v1 recurring cancellation is best-effort")
+		t.Log("note: recurring cancellation is best-effort in current implementation")
 	}
 
-	// At minimum we expect at least one fire in the window.
-	if fireCount.Load() == 0 {
-		t.Error("expected at least one recurring fire (even in v1 thin implementation)")
+	// With the improved implementation we expect multiple fires.
+	if fireCount.Load() < 2 {
+		t.Errorf("expected at least 2 recurring fires, got %d", fireCount.Load())
 	}
 }
 
