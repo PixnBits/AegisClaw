@@ -349,6 +349,28 @@ func runAgent(cmd *cobra.Command, args []string) {
 			continue
 		}
 
+		// 7.3 portal/CLI exposure helper: full current snapshot of the local index
+		// The thin web-portal or `aegis` CLI can call this to show users what the
+		// agent currently knows about (very useful for debugging autonomy).
+		if msg.Command == "tools.snapshot" || msg.Command == "skills.snapshot" {
+			snapshot := map[string]interface{}{
+				"skills": skillIndex.ListSkills(),
+				"tools":  skillIndex.tools,
+				"count":  len(skillIndex.skills) + len(skillIndex.tools),
+			}
+			resp := Message{
+				Source:      "agent",
+				Destination: msg.Source,
+				Command:     "tools.snapshot.response",
+				Payload:     snapshot,
+				Timestamp:   time.Now().Format(time.RFC3339),
+				Signature:   "",
+			}
+			signMessage(&resp, priv)
+			encoder.Encode(resp)
+			continue
+		}
+
 		// 7.3 + 7.2: Dynamic index update from Hub / future EventBus (skill.deployed etc.)
 		// This is the invalidation/refresh path. In a full EventBus world the Hub
 		// would forward "skill.deployed" events here.
