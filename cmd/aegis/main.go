@@ -106,6 +106,33 @@ func ensureStateDir() error {
 	return nil
 }
 
+// ensureUserWorkspaceDir ensures the user-facing ~/.aegis directory tree exists
+// with safe permissions. This supports 7.4 workspace customizations
+// (AGENTS.md, SOUL.md, etc.) without the daemon ever reading or parsing
+// those files (per host-daemon.md minimal TCB rules).
+func ensureUserWorkspaceDir() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot determine user home: %w", err)
+	}
+
+	wsDir := filepath.Join(home, ".aegis")
+	if err := os.MkdirAll(wsDir, 0700); err != nil {
+		return fmt.Errorf("failed to create user workspace dir %s: %w", wsDir, err)
+	}
+
+	agentsDir := filepath.Join(wsDir, "agents")
+	if err := os.MkdirAll(agentsDir, 0700); err != nil {
+		return fmt.Errorf("failed to create agents dir %s: %w", agentsDir, err)
+	}
+
+	// Best-effort: shared and default subdirs (non-fatal)
+	_ = os.MkdirAll(filepath.Join(agentsDir, "shared"), 0755)
+	_ = os.MkdirAll(filepath.Join(agentsDir, "default"), 0755)
+
+	return nil
+}
+
 func isDaemonRunning() bool {
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -208,9 +235,15 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Ensure state directory
+	// Ensure state directory (runtime, privileged)
 	if err := ensureStateDir(); err != nil {
 		logrus.Fatalf("failed to ensure state directory: %v", err)
+	}
+
+	// 7.4: Ensure user workspace dir exists (non-privileged user config area).
+	// Minimal TCB action: just mkdir + perms. No content is read here.
+	if err := ensureUserWorkspaceDir(); err != nil {
+		logrus.Warnf("could not ensure user workspace directory (non-fatal): %v", err)
 	}
 
 	// Create orchestrator
@@ -416,6 +449,17 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 		healthy = false
 	} else {
 		fmt.Printf("✓ State directory: %s\n", cfg.StateDir)
+	}
+
+	// 7.4: User workspace directory (for custom AGENTS.md / SOUL.md etc.)
+	// This is a safe, minimal-TCB bootstrap step. The daemon only ensures
+	// the directory exists with correct perms — it never loads or parses content.
+	if err := ensureUserWorkspaceDir(); err != nil {
+		fmt.Printf("✗ User workspace directory check failed: %v\n", err)
+		healthy = false
+	} else {
+		home, _ := os.UserHomeDir()
+		fmt.Printf("✓ User workspace directory: %s/.aegis (0700)\n", home)
 	}
 
 	// Check if daemon is running
