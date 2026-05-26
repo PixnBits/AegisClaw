@@ -2021,7 +2021,9 @@ func pilotDesignSketchReuse() {
 	// In a fuller pilot we would use the registered private key.
 	// (Demonstration only in this first pilot slice — actual signing would use the boundary's real key.)
 	_ = responseDemo
-	log.Printf("PILOT: also exercised response signing pattern (symmetric to secrets.get mutual auth).")
+	// Exercise the Store-side verification helper from the design sketch (mutual auth).
+	_ = boundarycrypto.VerifyBoundarySignedResponse(responseDemo, "", nil)
+	log.Printf("PILOT: also exercised response signing pattern + VerifyBoundarySignedResponse (symmetric to secrets.get mutual auth).")
 
 	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache + response signing pattern). (stub only)")
 }
