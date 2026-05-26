@@ -349,6 +349,51 @@ func runAgent(cmd *cobra.Command, args []string) {
 			continue
 		}
 
+		// 7.3 + 7.2: Dynamic index update from Hub / future EventBus (skill.deployed etc.)
+		// This is the invalidation/refresh path. In a full EventBus world the Hub
+		// would forward "skill.deployed" events here.
+		if msg.Command == "skill.register" || msg.Command == "skill.deployed" || msg.Command == "index.update" {
+			if payload, ok := msg.Payload.(map[string]interface{}); ok {
+				if skillID, ok := payload["id"].(string); ok {
+					newSkill := Skill{
+						ID:          skillID,
+						Name:        getString(payload, "name", skillID),
+						Description: getString(payload, "description", ""),
+						Version:     getString(payload, "version", "1.0.0"),
+					}
+					skillIndex.AddSkill(newSkill)
+
+					// Also accept optional tools in the same payload
+					if toolsIface, ok := payload["tools"]; ok {
+						if tools, ok := toolsIface.([]interface{}); ok {
+							for _, ti := range tools {
+								if tmap, ok := ti.(map[string]interface{}); ok {
+									skillIndex.AddTool(Tool{
+										Name:        getString(tmap, "name", ""),
+										Description: getString(tmap, "description", ""),
+										SkillID:     skillID,
+									})
+								}
+							}
+						}
+					}
+					log.Printf("7.3: Local skill index updated with %s (dynamic registration)", skillID)
+				}
+			}
+			// Ack
+			resp := Message{
+				Source:      "agent",
+				Destination: msg.Source,
+				Command:     "index.updated",
+				Payload:     map[string]string{"status": "accepted"},
+				Timestamp:   time.Now().Format(time.RFC3339),
+				Signature:   "",
+			}
+			signMessage(&resp, priv)
+			encoder.Encode(resp)
+			continue
+		}
+
 		// Log to file for debugging
 		if f, err := os.OpenFile("/tmp/agent-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
 			fmt.Fprintf(f, "[%s] Received: %s from %s\n", time.Now().Format("15:04:05.000"), msg.Command, msg.Source)
@@ -670,6 +715,16 @@ func formatAvailableTools(idx *AgentSkillIndex) string {
 		b.WriteString(t.Name)
 	}
 	return b.String()
+}
+
+// getString is a tiny helper for safe map[string]interface{} access.
+func getString(m map[string]interface{}, key, def string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return def
 }
 
 // handleToolCommand is called from the agent's main message loop for tool.* commands.
