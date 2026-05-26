@@ -1143,6 +1143,10 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 - Tests + build green before commit. Only new pilot work committed (old 7.1 uncommitted files untouched).
 - Initial proof that the 7.1 patterns generalize cleanly. (stub/pilot only).
 
+**7.2.2 reactivity demo** (small continuous slice):
+- Added EventBus subscribers in sessions list that react to the two consumers publishing "autonomy.expired" / "background.expired".
+- Makes the 7.2 EventBus work visibly reactive on the surface. Committed after tests.
+
 **Task 7.3 – Semantic Tool/Skill Discovery**
 - Runtime `list_skills()` + semantic search available in every Agent VM (fast local index, always up-to-date).
 

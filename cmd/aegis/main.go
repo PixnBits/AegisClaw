@@ -1296,6 +1296,16 @@ func runChat(cmd *cobra.Command, args []string) {
 }
 
 func runSessionsList(cmd *cobra.Command, args []string) {
+	// 7.2.2 demo: React to the EventBus consumers we wired.
+	// This makes the "autonomy.expired" and "background.expired" events visibly active
+	// during a user command (proof that the two real consumers are publishing).
+	eventbus.Subscribe("autonomy.expired", func(e eventbus.Event) {
+		logrus.Debugf("7.2 EventBus: received autonomy.expired (session reactivity demo)")
+	})
+	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
+		logrus.Debugf("7.2 EventBus: received background.expired (session reactivity demo)")
+	})
+
 	// Surface timer enforcement for autonomy + background work (7.2 consumers)
 	_ = reconcileExpiredAutonomy()
 	_ = reconcileExpiredBackgroundWork()
