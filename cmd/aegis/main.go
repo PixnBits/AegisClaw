@@ -1742,7 +1742,11 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 	}
 
 	if jsonOutput {
-		fmt.Printf(`{"status":"granted","session_id":"%s","preset":"%s","duration":"%s","risky":%t,"unknown_scope":%t,"note":"Surface grant only. %s"}\n`, id, preset, duration, isRisky, isUnknown, warning)
+		note := fmt.Sprintf("Surface grant only. %s", warning)
+		if duration != "" {
+			note += " 7.2 EventBus timers active."
+		}
+		fmt.Printf(`{"status":"granted","session_id":"%s","preset":"%s","duration":"%s","risky":%t,"unknown_scope":%t,"note":"%s"}\n`, id, preset, duration, isRisky, isUnknown, note)
 		return
 	}
 
@@ -1750,6 +1754,9 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 	fmt.Printf("  Preset:   %s%s\n", preset, warning)
 	fmt.Printf("  Duration: %s\n", duration)
 	fmt.Println("  Status:   Recorded in surface state (visible in autonomy show / sessions list).")
+	if duration != "" {
+		fmt.Println("  7.2: EventBus timers active for autonomy + background expiration (will reconcile on next relevant command).")
+	}
 	fmt.Println("  Security note: In a full system this would be validated against skill declarations and may require explicit approval for high-risk scopes.")
 }
 
