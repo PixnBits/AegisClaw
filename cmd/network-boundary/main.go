@@ -1994,6 +1994,12 @@ func startVSockEgressListener() {
 //
 // This is explicitly a stub/pilot only. Real policy distribution,
 // audit receipts, or other privileged Hub flows will build on this.
+//
+// How to extend this pilot in a future slice:
+// 1. Replace the synthetic payload with a real signed message from the Hub.
+// 2. Use the registered private key (or a dedicated pilot key) for response signing.
+// 3. Add a real "policy.apply" path that the boundary actually acts on.
+// 4. Wire it through the same rate limiter / nonce cache instances used by secrets.
 func pilotDesignSketchReuse() {
 	log.Printf("PILOT: design-sketch reuse validation (7.1 Forward-Looking Design Sketch)")
 
