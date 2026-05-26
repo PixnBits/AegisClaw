@@ -2003,7 +2003,7 @@ func startVSockEgressListener() {
 // 5. Future integration: the EventBus (7.2) can feed signed policy updates here when
 //    autonomy/background grants change (see orchestrator comment on EgressViaBoundary).
 func pilotDesignSketchReuse() {
-	log.Printf("PILOT: design-sketch reuse validation (7.1 Forward-Looking Design Sketch)")
+	log.Printf("PILOT: design-sketch reuse validation (7.1 Forward-Looking Design Sketch) [pilot v1]")
 
 	synthetic := map[string]interface{}{
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -2054,5 +2054,5 @@ func pilotDesignSketchReuse() {
 	_ = boundarycrypto.VerifyBoundarySignedResponse(policyReconcile, "", nil) // exercise the verifier on the response side too
 	log.Printf("PILOT: exercised policy reconciliation response style (signed + verifiable, metadata only).")
 
-	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache [replay=%v] + response signing + verification + reconciliation response). (stub only)", !second)
+	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache [replay=%v] + response signing + verification + reconciliation response). (stub only) [pilot v1]", !second)
 }
