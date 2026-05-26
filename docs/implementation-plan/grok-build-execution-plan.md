@@ -1139,9 +1139,10 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 **Design-Sketch-Pilot.1 COMPLETE** (first pilot slice, tests run + committed as we went):
 - Added `pilotDesignSketchReuse()` exercising the exact `boundarycrypto` helpers on a synthetic non-secrets policy payload.
 - Single startup call after registration.
-- Also demonstrated symmetric response signing pattern + called VerifyBoundarySignedResponse (closing the mutual auth loop in the demo).
+- Also demonstrated symmetric response signing pattern + called VerifyBoundarySignedResponse (closing the mutual auth loop).
+- Added explicit nonce replay rejection demo using the shared NonceCache.
 - Tests + build green before commit. Only new pilot work committed (old 7.1 uncommitted files untouched).
-- Initial proof that the 7.1 patterns generalize cleanly (inbound + outbound + verification). (stub/pilot only).
+- Stronger initial proof of the design sketch (inbound + outbound + replay protection + verification). (stub/pilot only).
 
 **7.2.2 reactivity demo** (small continuous slice):
 - Added EventBus subscribers in sessions list that react to the two consumers publishing "autonomy.expired" / "background.expired".

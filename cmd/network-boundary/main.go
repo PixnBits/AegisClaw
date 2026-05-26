@@ -2009,6 +2009,7 @@ func pilotDesignSketchReuse() {
 
 	nc := boundarycrypto.NewNonceCache(1000, 10*time.Minute)
 	_ = nc.CheckAndRecord("pilot-nonce")
+	second := nc.CheckAndRecord("pilot-nonce") // should be replay (false)
 
 	// Also demonstrate the symmetric response signing pattern from the design sketch
 	// (the boundary signing responses that the Store can verify with VerifyBoundarySignedResponse).
@@ -2025,5 +2026,5 @@ func pilotDesignSketchReuse() {
 	_ = boundarycrypto.VerifyBoundarySignedResponse(responseDemo, "", nil)
 	log.Printf("PILOT: also exercised response signing pattern + VerifyBoundarySignedResponse (symmetric to secrets.get mutual auth).")
 
-	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache + response signing pattern). (stub only)")
+	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache [replay=%v] + response signing + verification). (stub only)", !second)
 }
