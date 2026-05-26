@@ -1320,8 +1320,12 @@ func runSessionsList(cmd *cobra.Command, args []string) {
 		if len(s.GrantedScopes) > 0 {
 			autonomy += " + " + strings.Join(s.GrantedScopes, ",")
 		}
-		fmt.Printf("  %s  status=%s  goal=%s  vm=%s  autonomy=%s  started=%s\n",
-			s.ID, s.Status, s.Goal, s.VMID, autonomy, s.Started.Format(time.RFC3339))
+		bg := ""
+		if s.BackgroundExpires != nil {
+			bg = " bg-until=" + s.BackgroundExpires.Format(time.RFC3339)
+		}
+		fmt.Printf("  %s  status=%s  goal=%s  vm=%s  autonomy=%s%s  started=%s\n",
+			s.ID, s.Status, s.Goal, s.VMID, autonomy, bg, s.Started.Format(time.RFC3339))
 	}
 }
 
@@ -1526,11 +1530,21 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 	}
 
 	// Surface enforcement via timer reconciliation (7.2 consumers)
-	expired := reconcileExpiredAutonomy()
-	_ = reconcileExpiredBackgroundWork() // second real consumer (7.2.1.2)
-	if len(expired) > 0 {
-		// In a fuller implementation we would publish events here too
-		_ = expired // for now just cleaned
+	expiredAutonomy := reconcileExpiredAutonomy()
+	expiredBackground := reconcileExpiredBackgroundWork()
+	if len(expiredAutonomy) > 0 || len(expiredBackground) > 0 {
+		// Make the 7.2 timer consumers visibly useful on the surface.
+		if jsonOutput {
+			fmt.Printf(`{"note":"7.2 timer reconciliation","autonomy_expired":%s,"background_expired":%s}\n`,
+				mustJSON(expiredAutonomy), mustJSON(expiredBackground))
+		} else {
+			if len(expiredAutonomy) > 0 {
+				fmt.Printf("Note: Autonomy expired via EventBus timer (7.2 consumer) and was cleared for: %v\n", expiredAutonomy)
+			}
+			if len(expiredBackground) > 0 {
+				fmt.Printf("Note: Background work expired via EventBus timer (second 7.2 consumer) and was cleared for: %v\n", expiredBackground)
+			}
+		}
 	}
 
 	if s, ok := getSession(id); ok {
