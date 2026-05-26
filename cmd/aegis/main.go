@@ -1014,6 +1014,7 @@ func main() {
 	// ScheduleRecurring primitive. In a real system this would be more sophisticated
 	// (e.g., stale session sweeper, health pings, etc.).
 	startExampleRecurringConsumer()
+	fmt.Println("7.2: Example recurring background consumer started (heartbeat every 30s via ScheduleRecurring).")
 
 	startCmd := &cobra.Command{
 		Use:   "start",
