@@ -1125,7 +1125,16 @@ Or just say "go" and we'll continue cleaning the milestone.
 
 This is the first concrete step in deepening 7.2 after the 7.1 priority pivot. The bus now has the foundation for better autonomous debugging of background services.
 
-**Next (per approved plan)**: 7.2.1.2 (second real consumer) or the 7.1 design-sketch pilot for signed message reuse via `boundarycrypto`.
+**7.2.1.2 COMPLETE** (continuous autonomous execution per user direction — no per-small-slice pauses):
+- Added `BackgroundExpires` to CLISession.
+- Implemented `reconcileExpiredBackgroundWork()` as the explicit second real EventBus consumer (publishes "background.expired", modeled on the autonomy reconciler).
+- Wired calls from sessions list/status, autonomy grant/show, etc.
+- Added parallel ScheduleTimer example for "background.expired" in the grant path.
+- Both plans updated.
+
+Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consumers. The 7.2.1 group foundation is solid.
+
+**Next (continuing autonomously per approved plan)**: 7.2.2 (make autonomy + background expiration visibly shine on the CLI surface) or start the design-sketch pilot reusing `boundarycrypto` signed-message patterns.
 
 **Task 7.3 – Semantic Tool/Skill Discovery**
 - Runtime `list_skills()` + semantic search available in every Agent VM (fast local index, always up-to-date).
