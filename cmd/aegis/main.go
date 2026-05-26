@@ -1006,6 +1006,10 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format (machine-parseable)")
 	rootCmd.PersistentFlags().Bool("headless", false, "Non-interactive mode (for automation/scripts)")
 
+	// 7.2.2: Centralize EventBus reactivity subscriptions so the two consumers
+	// (autonomy + background) have visible feedback in one place. Called once at startup.
+	initEventBusReactivity()
+
 	startCmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the daemon",
@@ -1296,25 +1300,6 @@ func runChat(cmd *cobra.Command, args []string) {
 }
 
 func runSessionsList(cmd *cobra.Command, args []string) {
-	// 7.2.2 demo: React to the EventBus consumers we wired.
-	// This makes the "autonomy.expired" and "background.expired" events visibly active
-	// during a user command (proof that the two real consumers are publishing).
-	eventbus.Subscribe("autonomy.expired", func(e eventbus.Event) {
-		sid := "unknown"
-		if e.Payload != nil {
-			var p map[string]any
-			if json.Unmarshal(e.Payload, &p) == nil {
-				if v, ok := p["session_id"].(string); ok {
-					sid = v
-				}
-			}
-		}
-		fmt.Printf("  [7.2 EventBus] autonomy expired for session %s (reactivity demo)\n", sid)
-	})
-	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
-		fmt.Printf("  [7.2 EventBus] background work expired (reactivity demo)\n")
-	})
-
 	// Surface timer enforcement for autonomy + background work (7.2 consumers)
 	_ = reconcileExpiredAutonomy()
 	_ = reconcileExpiredBackgroundWork()
@@ -1420,14 +1405,6 @@ func runTasksList(cmd *cobra.Command, args []string) {
 	// 7.2 consumers: ensure we reconcile before showing tasks (symmetry with sessions)
 	_ = reconcileExpiredAutonomy()
 	_ = reconcileExpiredBackgroundWork()
-
-	// 7.2.2 reactivity demo (same as sessions list)
-	eventbus.Subscribe("autonomy.expired", func(e eventbus.Event) {
-		fmt.Printf("  [7.2 EventBus] autonomy expired (tasks view)\n")
-	})
-	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
-		fmt.Printf("  [7.2 EventBus] background work expired (tasks view)\n")
-	})
 
 	// Journey 03/05 surface: Show active background work, tied to sessions where possible
 	tasks := []map[string]interface{}{}
@@ -1574,6 +1551,28 @@ func reconcileExpiredBackgroundWork() []string {
 		}
 	}
 	return expired
+}
+
+// initEventBusReactivity centralizes the visible reactivity for the two 7.2 EventBus consumers.
+// Subscribing once at CLI startup (instead of re-subscribing inside every command) is more
+// robust and avoids duplicate handlers. The handlers provide immediate user-visible feedback
+// when autonomy or background work expires via timer.
+func initEventBusReactivity() {
+	eventbus.Subscribe("autonomy.expired", func(e eventbus.Event) {
+		sid := "unknown"
+		if e.Payload != nil {
+			var p map[string]any
+			if json.Unmarshal(e.Payload, &p) == nil {
+				if v, ok := p["session_id"].(string); ok {
+					sid = v
+				}
+			}
+		}
+		fmt.Printf("  [7.2 EventBus] autonomy expired for session %s\n", sid)
+	})
+	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
+		fmt.Printf("  [7.2 EventBus] background work expired\n")
+	})
 }
 
 func runAutonomyShow(cmd *cobra.Command, args []string) {
