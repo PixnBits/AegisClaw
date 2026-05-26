@@ -778,6 +778,10 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				}
 			}
 		case "version", "get-version":
+			// PILOT: Also exercise the design-sketch reuse from the version path (safe, low-frequency).
+			// In practice the pilot function is cheap and only logs once per process in spirit.
+			pilotDesignSketchReuse()
+
 			if msg.Command == "get-version" {
 				// For get-version from hub, send proper Message response back
 				response.Command = "version"
