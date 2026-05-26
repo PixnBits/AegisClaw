@@ -451,15 +451,18 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 		fmt.Printf("✓ State directory: %s\n", cfg.StateDir)
 	}
 
-	// 7.4: User workspace directory (for custom AGENTS.md / SOUL.md etc.)
+	// 7.4: User workspace directory (for custom AGENTS.md, SOUL.md, TOOLS.md, etc.)
 	// This is a safe, minimal-TCB bootstrap step. The daemon only ensures
-	// the directory exists with correct perms — it never loads or parses content.
+	// the directory tree exists with correct permissions — it never loads,
+	// parses, or interprets any customization files (those are consumed only
+	// by sandboxed agent runtimes per host-daemon.md rules).
 	if err := ensureUserWorkspaceDir(); err != nil {
 		fmt.Printf("✗ User workspace directory check failed: %v\n", err)
 		healthy = false
 	} else {
 		home, _ := os.UserHomeDir()
-		fmt.Printf("✓ User workspace directory: %s/.aegis (0700)\n", home)
+		fmt.Printf("✓ User workspace directory ready: %s/.aegis (0700) + agents/\n", home)
+		fmt.Println("    (Custom AGENTS.md/SOUL.md/TOOLS.md are loaded by agent VMs, not the daemon)")
 	}
 
 	// Check if daemon is running

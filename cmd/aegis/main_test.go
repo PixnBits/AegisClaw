@@ -373,3 +373,40 @@ func TestCLIHelpAndCommands(t *testing.T) {
 
 	t.Log("✓ CLI help + --json flag + subcommand surface verified (6.1.1)")
 }
+
+// TestEnsureUserWorkspaceDir verifies the 7.4 minimal-TCB helper that only
+// creates the user workspace directory tree with safe permissions.
+// This test does not require root and simulates a user home.
+func TestEnsureUserWorkspaceDir(t *testing.T) {
+	tmpHome := t.TempDir()
+
+	// Simulate user home
+	t.Setenv("HOME", tmpHome)
+
+	// Call the helper (unexported, but same package test can see it)
+	if err := ensureUserWorkspaceDir(); err != nil {
+		t.Fatalf("ensureUserWorkspaceDir failed: %v", err)
+	}
+
+	// Verify directories exist with reasonable permissions
+	wsDir := filepath.Join(tmpHome, ".aegis")
+	info, err := os.Stat(wsDir)
+	if err != nil {
+		t.Fatalf("~/.aegis was not created: %v", err)
+	}
+	if info.Mode().Perm()&0700 != 0700 {
+		t.Errorf("expected at least 0700 on workspace dir, got %o", info.Mode().Perm())
+	}
+
+	agentsDir := filepath.Join(wsDir, "agents")
+	if _, err := os.Stat(agentsDir); err != nil {
+		t.Errorf("~/.aegis/agents was not created: %v", err)
+	}
+
+	// Idempotent: calling again should be fine
+	if err := ensureUserWorkspaceDir(); err != nil {
+		t.Errorf("second call to ensureUserWorkspaceDir failed: %v", err)
+	}
+
+	t.Logf("✓ ensureUserWorkspaceDir created safe tree under simulated HOME")
+}
