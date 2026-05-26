@@ -19,6 +19,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// NOTE (7.1 real secrets): When the Store grows commands that push secret
+// material (e.g. "secrets.push" or rotation), import
+// "AegisClaw/internal/boundarycrypto" and use
+// boundarycrypto.BuildEncryptedSecretsUpdatePayload(...) to create the
+// encrypted payload, then sign the Message exactly like other privileged
+// commands. The Boundary will decrypt + zeroize on receipt.
+// See internal/boundarycrypto/encrypt.go for the AES-256-GCM implementation.
+
 type Message struct {
 	Source      string      `json:"source"`
 	Destination string      `json:"destination"`

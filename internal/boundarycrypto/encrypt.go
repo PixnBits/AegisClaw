@@ -28,9 +28,11 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 )
 
 // ErrCryptoFailure is returned for any decryption / integrity failure.
@@ -135,4 +137,29 @@ func ZeroSecretsMap(m map[string]string) {
 	for k := range m {
 		delete(m, k)
 	}
+}
+
+// BuildEncryptedSecretsUpdatePayload is a convenience the Store (or any
+// authorized secrets producer) can use to create the payload portion of a
+// signed "secrets.update" Hub message that carries an encrypted blob.
+//
+// The resulting map can be placed in Message.Payload before signing.
+func BuildEncryptedSecretsUpdatePayload(secrets map[string]string, symKey []byte, extra map[string]interface{}) (map[string]interface{}, error) {
+	ct, nonce, err := EncryptSecretsBlob(secrets, symKey)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]interface{}{
+		"encrypted_blob": base64.StdEncoding.EncodeToString(ct),
+		"nonce":          base64.StdEncoding.EncodeToString(nonce),
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Allow the caller to add "operations", "nonce" for replay, etc.
+	for k, v := range extra {
+		payload[k] = v
+	}
+
+	return payload, nil
 }
