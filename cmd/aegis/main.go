@@ -1629,8 +1629,12 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 			} else if s.BackgroundExpires != nil {
 				bgExpires = s.BackgroundExpires.Format(time.RFC3339)
 			}
-			fmt.Printf(`{"session_id":"%s","status":"%s","autonomy_preset":"%s","granted_scopes":%s,"expires":"%s","background_expires":"%s","note":"Surface state only"}\n`,
-				id, s.Status, s.AutonomyPreset, mustJSON(s.GrantedScopes), expires, bgExpires)
+			note := "Surface state only"
+			if s.AutonomyExpires != nil || s.BackgroundExpires != nil {
+				note += " | 7.2 EventBus timers active"
+			}
+			fmt.Printf(`{"session_id":"%s","status":"%s","autonomy_preset":"%s","granted_scopes":%s,"expires":"%s","background_expires":"%s","note":"%s"}\n`,
+				id, s.Status, s.AutonomyPreset, mustJSON(s.GrantedScopes), expires, bgExpires, note)
 			return
 		}
 
@@ -1646,6 +1650,9 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 			fmt.Println("  Background until: just expired (cleared by 7.2 timer in this command)")
 		} else if s.BackgroundExpires != nil {
 			fmt.Printf("  Background until: %s\n", s.BackgroundExpires.Format(time.RFC3339))
+		}
+		if s.AutonomyExpires != nil || s.BackgroundExpires != nil {
+			fmt.Println("  7.2: EventBus timers are active and will reconcile on next relevant command.")
 		}
 		fmt.Println("  (This is surface state. Real enforcement is in the Agent Runtime + 7.2 EventBus consumers.)")
 		return
