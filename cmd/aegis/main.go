@@ -1010,6 +1010,11 @@ func main() {
 	// (autonomy + background) have visible feedback in one place. Called once at startup.
 	initEventBusReactivity()
 
+	// 7.2 foundation demo: A small recurring background consumer using the new
+	// ScheduleRecurring primitive. In a real system this would be more sophisticated
+	// (e.g., stale session sweeper, health pings, etc.).
+	startExampleRecurringConsumer()
+
 	startCmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the daemon",
@@ -1572,6 +1577,22 @@ func initEventBusReactivity() {
 	})
 	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
 		fmt.Printf("  [7.2 EventBus] background work expired\n")
+	})
+}
+
+// startExampleRecurringConsumer demonstrates real usage of the new ScheduleRecurring
+// primitive for a simple background task (e.g., periodic health / sweep work).
+// This is a 7.2 foundation demo — in production a real consumer would do more useful work.
+func startExampleRecurringConsumer() {
+	// Publish a lightweight heartbeat every 30s (demo interval).
+	eventbus.DefaultBus.ScheduleRecurring(30*time.Second, "background.heartbeat", map[string]string{
+		"component": "cli",
+		"reason":    "7.2 recurring demo",
+	})
+
+	// A consumer can subscribe and react (here we just log at debug level so it doesn't spam normal usage).
+	eventbus.Subscribe("background.heartbeat", func(e eventbus.Event) {
+		logrus.Debug("7.2: received recurring background.heartbeat")
 	})
 }
 
