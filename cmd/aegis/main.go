@@ -1350,21 +1350,43 @@ func runSessionsList(cmd *cobra.Command, args []string) {
 
 func runSessionsStatus(cmd *cobra.Command, args []string) {
 	// Surface timer enforcement for autonomy + background (7.2 consumers)
-	_ = reconcileExpiredAutonomy()
-	_ = reconcileExpiredBackgroundWork()
+	expiredAutonomy := reconcileExpiredAutonomy()
+	expiredBackground := reconcileExpiredBackgroundWork()
 
 	id := "unknown"
 	if len(args) > 0 {
 		id = args[0]
 	}
 
+	autonomyJustCleared := false
+	for _, e := range expiredAutonomy {
+		if e == id {
+			autonomyJustCleared = true
+		}
+	}
+	backgroundJustCleared := false
+	for _, e := range expiredBackground {
+		if e == id {
+			backgroundJustCleared = true
+		}
+	}
+
 	if s, ok := getSession(id); ok {
 		if jsonOutput {
 			b, _ := json.Marshal(s)
 			fmt.Println(string(b))
+			if autonomyJustCleared || backgroundJustCleared {
+				fmt.Printf(`{"note":"7.2 timer reconciliation in this call","autonomy_just_cleared":%t,"background_just_cleared":%t}\n`, autonomyJustCleared, backgroundJustCleared)
+			}
 			return
 		}
 		fmt.Printf("Session %s: %s | VM: %s | Started: %s\n", s.ID, s.Status, s.VMID, s.Started.Format(time.RFC3339))
+		if autonomyJustCleared {
+			fmt.Println("  (Autonomy was cleared by 7.2 timer in this command)")
+		}
+		if backgroundJustCleared {
+			fmt.Println("  (Background expiration was cleared by 7.2 timer in this command)")
+		}
 		return
 	}
 
