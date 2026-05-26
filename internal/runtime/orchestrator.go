@@ -44,12 +44,22 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		return nil, fmt.Errorf("failed to load security keys: %w", err)
 	}
 
-	return &Orchestrator{
+	o := &Orchestrator{
 		config:  cfg,
 		backend: backend,
 		secMgr:  secMgr,
 		vms:     make(map[string]*VMLifecycle),
-	}, nil
+	}
+
+	// EventBus wiring (Task 7.2).
+	// Internal fast in-process coordination + events still flow through AegisHub
+	// for audit/signing when crossing VM boundaries (per event-system.md).
+	// Example:
+	//   eventbus.PublishJSON("orchestrator.ready", nil, eventbus.WithSource("orchestrator"))
+	//
+	// TODO: subscribe to autonomy timers, court signals, background task completion, etc.
+
+	return o, nil
 }
 
 // StartVM starts a new sandbox VM.
@@ -79,6 +89,11 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		PrivateKey: vmKP.PrivateKey, // backend will inject; we zero local copy below
 		NetworkConfig: &sandbox.NetworkConfig{
 			VsockPort: uint32(9000 + len(o.vms)), // Allocate sequential vsock ports
+			// 7.1: Most VMs must egress exclusively through the Network Boundary.
+			// The Boundary itself (and certain privileged components) may have direct access.
+			EgressViaBoundary:  vmType != "network-boundary",
+			BoundaryEgressAddr: "vsock://2:8081", // Convention: CID 2 is often the host-side proxy in vsock setups
+			BoundarySkillID:    id,               // The VM's own ID serves as its skill identity for scoping
 		},
 	}
 

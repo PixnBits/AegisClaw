@@ -57,7 +57,7 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	fcConfig := map[string]interface{}{
 		"boot-source": map[string]interface{}{
 			"kernel_image_path": config.KernelPath,
-			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off nomodules",
+			"boot_args":         buildBootArgs(config),
 		},
 		"drives": []map[string]interface{}{
 			{
@@ -80,6 +80,26 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 		fcConfig["vsock"] = map[string]interface{}{
 			"vsock_id": config.NetworkConfig.VsockPort,
 		}
+	}
+
+	// 7.1 Network Boundary integration (in progress)
+	// When EgressViaBoundary is true, this VM must have **no** direct outbound
+	// network interfaces. All egress must go through the Network Boundary
+	// over vsock (the boundary listens on a vsock port and performs allowlist
+	// enforcement, secret injection, and audit).
+	//
+	// The guest is expected to:
+	//   - Have no tap/network interfaces for outbound.
+	//   - Use the vsock address passed on the kernel cmdline (aegis.egress_boundary)
+	//     to connect to the boundary's vsock listener and send egress traffic.
+	if config.NetworkConfig != nil && config.NetworkConfig.EgressViaBoundary {
+		logrus.Infof("VM %s configured with EgressViaBoundary=true (skill=%s, boundary=%s) — no direct network interfaces; guest must use vsock egress to boundary",
+			config.ID,
+			config.NetworkConfig.BoundarySkillID,
+			config.NetworkConfig.BoundaryEgressAddr)
+	} else {
+		// For VMs that are allowed direct egress (e.g. the Boundary itself),
+		// we would configure a tap interface here. Currently left to defaults.
 	}
 
 	configBytes, _ := json.MarshalIndent(fcConfig, "", "  ")
@@ -226,6 +246,24 @@ func waitForSocket(sockPath string, timeout time.Duration) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("socket not created within timeout")
+}
+
+// buildBootArgs constructs the kernel command line, injecting 7.1 egress information
+// when the VM is configured to route all outbound through the Network Boundary.
+func buildBootArgs(config VMConfig) string {
+	base := "console=ttyS0 reboot=k panic=1 pci=off nomodules"
+
+	if config.NetworkConfig != nil && config.NetworkConfig.EgressViaBoundary {
+		// Pass boundary details to the guest via cmdline.
+		// The guest (or future init system) is expected to use this for its
+		// outbound proxy instead of a direct default route.
+		egress := fmt.Sprintf(" aegis.egress_boundary=%s aegis.skill_id=%s",
+			config.NetworkConfig.BoundaryEgressAddr,
+			config.NetworkConfig.BoundarySkillID)
+		base += egress
+	}
+
+	return base
 }
 
 func (fb *FirecrackerBackend) configureVM(sockPath string) error {

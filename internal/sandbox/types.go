@@ -20,9 +20,32 @@ type VMConfig struct {
 }
 
 // NetworkConfig specifies network setup for the VM.
+//
+// For Task 7.1 (Network Boundary), we are introducing egress routing concepts.
+// The long-term goal is that *no* VM (except the Boundary itself) is allowed
+// direct outbound network access. All egress must be explicitly routed through
+// the Network Boundary VM (Envoy + control plane) for allowlist enforcement,
+// secret injection, and audit.
+//
+// Fields added for 7.1 integration:
 type NetworkConfig struct {
 	VsockPort    uint32
 	ExposedPorts []string // e.g., "8080:8080"
+
+	// EgressViaBoundary, when true, indicates this VM must have its outbound
+	// traffic routed exclusively through the Network Boundary.
+	// The sandbox backend is responsible for configuring the VM networking
+	// (routes, iptables, vsock proxy, etc.) to enforce this.
+	EgressViaBoundary bool
+
+	// BoundaryEgressAddr is the address (host:port or vsock) of the Network
+	// Boundary's proxy endpoint that this VM should use for outbound requests.
+	// Populated by the orchestrator / Host Daemon when EgressViaBoundary is true.
+	BoundaryEgressAddr string
+
+	// BoundarySkillID is the identity this VM should present to the Network
+	// Boundary for per-skill allowlist and secret scoping (7.1+).
+	BoundarySkillID string
 }
 
 // Backend defines the interface for sandbox implementations.

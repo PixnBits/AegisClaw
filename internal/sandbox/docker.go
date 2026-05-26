@@ -74,6 +74,14 @@ func (db *DockerBackend) Start(ctx context.Context, config VMConfig) error {
 		_ = db.createNetwork(ctx, networkName)
 		args = append(args, "--network", networkName)
 
+		// 7.1 Network Boundary integration (in progress)
+		if config.NetworkConfig.EgressViaBoundary {
+			logrus.Infof("Docker VM %s configured with EgressViaBoundary=true (skill=%s)",
+				config.ID, config.NetworkConfig.BoundarySkillID)
+			// TODO(7.1): Configure Docker network / iptables so the container
+			// has no direct outbound except through the Network Boundary.
+		}
+
 		// Expose ports if specified
 		for _, port := range config.NetworkConfig.ExposedPorts {
 			args = append(args, "-p", port)

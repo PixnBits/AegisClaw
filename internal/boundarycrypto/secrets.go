@@ -16,6 +16,8 @@
 package boundarycrypto
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"sync"
 	"time"
@@ -145,4 +147,84 @@ func (c *NonceCache) Size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries)
+}
+
+// RateLimiter provides defensive token-bucket rate limiting (bounded, with refill).
+// Used for the privileged secrets paths (especially "secrets.update").
+//
+// Design goals (paranoid + practical):
+// - Bounded memory and CPU protection for expensive operations (signature verification).
+// - Generous but safe limits for normal Store-driven use.
+// - Simple and self-contained.
+type RateLimiter struct {
+	mu         sync.Mutex
+	tokens     int
+	lastRefill time.Time
+	maxTokens  int
+	refill     time.Duration
+}
+
+func NewRateLimiter(maxTokens int, refill time.Duration) *RateLimiter {
+	if maxTokens <= 0 {
+		maxTokens = 10
+	}
+	if refill <= 0 {
+		refill = time.Minute
+	}
+	return &RateLimiter{
+		tokens:     maxTokens,
+		lastRefill: time.Now().UTC(),
+		maxTokens:  maxTokens,
+		refill:     refill,
+	}
+}
+
+func (r *RateLimiter) Allow() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now().UTC()
+	elapsed := now.Sub(r.lastRefill)
+
+	if elapsed > 0 {
+		refillCount := int(elapsed / r.refill)
+		if refillCount > 0 {
+			r.tokens += refillCount
+			if r.tokens > r.maxTokens {
+				r.tokens = r.maxTokens
+			}
+			r.lastRefill = now
+		}
+	}
+
+	if r.tokens > 0 {
+		r.tokens--
+		return true
+	}
+	return false
+}
+
+// VerifyBoundarySignedResponse is the symmetric helper for the Store side.
+// It verifies a response (e.g. from secrets.get) that was signed by the boundary
+// using its registered private key.
+//
+// The payload should contain the "signer_pubkey" (base64) that was included in the response.
+// The signature is the Message.Signature field from the wire format.
+//
+// This makes the mutual authentication story complete and easy to implement on the Store side.
+func VerifyBoundarySignedResponse(payload map[string]interface{}, signatureB64 string, expectedPub []byte) bool {
+	if len(expectedPub) != ed25519.PublicKeySize {
+		return false
+	}
+
+	sig, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return false
+	}
+
+	// For response verification we use a simple canonical form of the payload
+	// (the same approach as incoming messages for consistency in the stub).
+	data, _ := json.Marshal(payload)
+
+	return ed25519.Verify(expectedPub, data, sig)
 }
