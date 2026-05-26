@@ -1510,11 +1510,16 @@ func runTasksCancel(cmd *cobra.Command, args []string) {
 // directly using the timer support added in Task 7.2.
 // Real enforcement (revoking in running agents, Court notification, etc.) belongs in the Agent Runtime.
 //
-// TODO(future): Because reconciliation is currently only called from CLI commands + the
-// new periodic goroutine, a listener that starts after an "autonomy.expired" event has
-// already been published will miss it. Same problem will appear for proposal lifecycle
-// events and other future use cases. A generic event replay / catch-up mechanism would
-// be the cleaner long-term solution.
+// TODO(architecture): Per docs/specs/store-vm.md and docs/specs/event-system.md,
+// persistent timers and reconciliation of autonomy/background grants must live in the
+// Store VM (or another component microVM) using the Hub-mediated event system.
+// The current implementation (CLI surface + in-process goroutine) is temporary.
+// A hard-coded timer inside the Store's event loop should eventually invoke this logic
+// (or a shared implementation) via the standard timer interface once the Store has
+// durable timer support.
+//
+// See also: proposal lifecycle events and other future cases that will need reliable
+// delivery + replay for late subscribers.
 func reconcileExpiredAutonomy() []string {
 	sessions := loadSessions()
 	var expired []string
@@ -1546,6 +1551,10 @@ func reconcileExpiredAutonomy() []string {
 // It demonstrates the pattern for background / long-running task expirations that power
 // monitoring journeys (03/05) and team workflows (08). For now it operates on the same
 // lightweight CLISession state; real enforcement lives in the Agent Runtime + Memory.
+//
+// TODO(architecture): See the detailed note in reconcileExpiredAutonomy. Per
+// docs/specs/store-vm.md and docs/specs/event-system.md, this logic belongs in
+// the Store VM (timer + event system) for the long term.
 func reconcileExpiredBackgroundWork() []string {
 	sessions := loadSessions()
 	var expired []string
@@ -1568,16 +1577,24 @@ func reconcileExpiredBackgroundWork() []string {
 	return expired
 }
 
-// TODO(future): The current EventBus is fire-and-forget. Listeners that start after an event
-// has already been published will miss it. This affects the reconciliation consumers above
-// (and will affect other future consumers, e.g. proposal lifecycle state changes).
-// A more generic "event replay" / "catch-up" mechanism (or durable event log + replay) would
-// solve this class of problem cleanly for many use cases. Deferring as a design improvement
-// for another day (see also event-system.md and future 7.x work).
+// TODO(architecture): Per docs/specs/store-vm.md and docs/specs/event-system.md,
+// persistent timers and grant reconciliation must ultimately live in the Store VM
+// (or another component microVM) using the Hub-mediated event system + hard-coded
+// timers. The current surface implementation (in-process goroutine + CLI calls)
+// is temporary scaffolding only.
+//
+// This starter will be replaced by a timer inside the Store's event loop that
+// invokes the reconciliation logic (or a shared implementation) via the standard
+// timer interface once durable timers exist in the Store.
+//
+// See the detailed note in reconcileExpiredAutonomy for the related replay concern.
 
 // startPeriodicReconciliation runs the two 7.2 reconciliation consumers on a timer
 // so that autonomy/background expiration happens proactively instead of only on the
 // next CLI command that happens to call them. This is a simple 7.2 foundation demo.
+//
+// It currently uses a plain ticker. Once ScheduleRecurring is more robust it can be
+// switched over for consistency with other background work.
 func startPeriodicReconciliation() {
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)

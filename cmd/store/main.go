@@ -182,6 +182,18 @@ func runStore(cmd *cobra.Command, args []string) {
 
 		mu.Lock()
 		switch msg.Command {
+		// TODO(architecture): Per docs/specs/store-vm.md and docs/specs/event-system.md,
+		// persistent timers and reconciliation of autonomy/background grants (and
+		// similar policy-driven background work) belong here in the Store VM.
+		//
+		// A hard-coded timer (or future standard timer interface via the event system)
+		// inside the Store should periodically invoke reconciliation logic.
+		// The actual reconciliation methods currently live in cmd/aegis as temporary
+		// surface scaffolding and will be moved/invoked from here.
+		//
+		// Example future command:
+		// case "reconcile.expired_grants":
+		//     // call shared reconciliation (autonomy + background)
 		case "proposal.create":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)

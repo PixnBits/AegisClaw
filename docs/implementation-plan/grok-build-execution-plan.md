@@ -1159,7 +1159,7 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 
 **7.2 foundation note**: ScheduleRecurring improved with real automatic re-scheduling + TestRecurringConsumerPattern. The example recurring consumer now performs a real lightweight stale-session sweep on every tick (visible logging when it cleans).
 
-Added `startPeriodicReconciliation()` background goroutine so the two 7.2 reconcile consumers run proactively. Added TODOs noting the current EventBus fire-and-forget limitation (listeners started later can miss events, e.g. proposal lifecycle changes and other future cases) and that a more generic replay/catch-up mechanism would be the cleaner long-term design (deferred). Committed after tests + build.
+Architectural correction (per docs/prd + specs): Long-term home for reconciliation trigger + persistent timers is the Store VM event system (hard-coded timer as specified in event-system.md / store-vm.md). Strengthened TODOs and added minimal placeholder + timer sketch in cmd/store. Current surface implementation in cmd/aegis remains as temporary scaffolding. Committed after tests + build.
 
 **Task 7.5 – Host Daemon TCB Completion (Remaining Items)**
 - Full watchdog + automatic crash containment (jailer/cgroups + restart policy).
