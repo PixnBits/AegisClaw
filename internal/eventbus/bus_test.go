@@ -219,3 +219,41 @@ func TestPublishHandlerPanicIsCounted(t *testing.T) {
 		t.Errorf("expected ErrorCount to be 1 after panic, got %d", bus.ErrorCount())
 	}
 }
+
+// 7.2: Test approval queue helpers and privileged signing hook.
+func TestApprovalAndPrivilegedEvents(t *testing.T) {
+	bus := New()
+
+	var receivedApproval Event
+	bus.Subscribe("approval.request", func(e Event) {
+		receivedApproval = e
+	})
+
+	req := ApprovalRequest{
+		ID:          "appr-123",
+		Source:      "agent:test",
+		Action:      "deploy-skill",
+		Description: "Deploy new monitoring skill",
+	}
+	bus.RequestApproval(req)
+
+	time.Sleep(20 * time.Millisecond)
+	if receivedApproval.Name != "approval.request" {
+		t.Errorf("expected approval.request event, got %s", receivedApproval.Name)
+	}
+
+	// Test privileged path with a no-op signer
+	var signedEvent Event
+	bus.Subscribe("privileged.test", func(e Event) {
+		signedEvent = e
+	})
+
+	bus.PublishPrivileged(Event{Name: "privileged.test", Payload: json.RawMessage(`{"secret":"stuff"}`)}, func(data []byte) (string, error) {
+		return "fake-sig-xyz", nil
+	})
+
+	time.Sleep(20 * time.Millisecond)
+	if signedEvent.Name != "privileged.test" {
+		t.Error("privileged event not received")
+	}
+}
