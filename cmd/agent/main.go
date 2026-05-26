@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -318,6 +319,17 @@ func runAgent(cmd *cobra.Command, args []string) {
 		log.Fatal("Registration failed:", error)
 	}
 	fmt.Println("Agent registered")
+
+	// 7.4: Load user workspace customizations (AGENTS.md, SOUL.md, TOOLS.md, etc.)
+	// with full security validation. This customizes the agent's personality,
+	// instructions, and tool awareness at startup.
+	wsCtx, wsErr := workspace.Load("")
+	if wsErr != nil {
+		log.Printf("7.4 WARNING: Failed to load workspace customizations: %v (using defaults)", wsErr)
+	} else if wsCtx.SOUL != "" || wsCtx.AGENTS != "" || wsCtx.TOOLS != "" {
+		log.Printf("7.4: Loaded workspace customizations (AGENTS=%d, SOUL=%d, TOOLS=%d chars)",
+			len(wsCtx.AGENTS), len(wsCtx.SOUL), len(wsCtx.TOOLS))
+	}
 
 	// 7.3: Fast local semantic skill/tool index (stdlib only, always available)
 	skillIndex := NewAgentSkillIndex()
