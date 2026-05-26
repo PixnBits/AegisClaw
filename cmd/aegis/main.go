@@ -1578,15 +1578,34 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	// 7.2.2 prominent expiration improvement: if the session the user asked about
+	// was one of the ones we just cleared in this command, make it very obvious.
+	autonomyJustCleared := false
+	backgroundJustCleared := false
+	for _, e := range expiredAutonomy {
+		if e == id {
+			autonomyJustCleared = true
+		}
+	}
+	for _, e := range expiredBackground {
+		if e == id {
+			backgroundJustCleared = true
+		}
+	}
+
 	if s, ok := getSession(id); ok {
 		expires := "never"
-		if s.AutonomyExpires != nil {
+		if autonomyJustCleared {
+			expires = "just expired (cleared by 7.2 timer in this command)"
+		} else if s.AutonomyExpires != nil {
 			expires = s.AutonomyExpires.Format(time.RFC3339)
 		}
 
 		if jsonOutput {
 			bgExpires := "never"
-			if s.BackgroundExpires != nil {
+			if backgroundJustCleared {
+				bgExpires = "just expired (cleared by 7.2 timer in this command)"
+			} else if s.BackgroundExpires != nil {
 				bgExpires = s.BackgroundExpires.Format(time.RFC3339)
 			}
 			fmt.Printf(`{"session_id":"%s","status":"%s","autonomy_preset":"%s","granted_scopes":%s,"expires":"%s","background_expires":"%s","note":"Surface state only"}\n`,
@@ -1602,7 +1621,9 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 			fmt.Println("  Granted scopes: (none — least privilege)")
 		}
 		fmt.Printf("  Expires: %s\n", expires)
-		if s.BackgroundExpires != nil {
+		if backgroundJustCleared {
+			fmt.Println("  Background until: just expired (cleared by 7.2 timer in this command)")
+		} else if s.BackgroundExpires != nil {
 			fmt.Printf("  Background until: %s\n", s.BackgroundExpires.Format(time.RFC3339))
 		}
 		fmt.Println("  (This is surface state. Real enforcement is in the Agent Runtime + 7.2 EventBus consumers.)")
