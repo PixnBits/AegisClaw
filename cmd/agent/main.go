@@ -371,6 +371,14 @@ func runAgent(cmd *cobra.Command, args []string) {
 			continue
 		}
 
+		// 7.2 consumer example: React to approval decisions (from Court or human via UI)
+		// This enables proactive/background agent actions and closes the approval loop.
+		if msg.Command == "approval.decision" {
+			log.Printf("7.2: Agent received approval decision: %+v", msg.Payload)
+			// Real implementation would trigger previously planned actions, tool calls, etc.
+			continue
+		}
+
 		// 7.3 + 7.2: Dynamic index update from Hub / future EventBus (skill.deployed etc.)
 		// This is the invalidation/refresh path. In a full EventBus world the Hub
 		// would forward "skill.deployed" events here.
