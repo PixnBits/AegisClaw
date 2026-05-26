@@ -251,6 +251,23 @@ func (b *Bus) CancelTimer(id string) bool {
 // Note: We extend the Bus struct here via the methods above (the field is added lazily).
 // For a production version we would initialize it in New().
 
+// ScheduleRecurring is a convenience helper for simple recurring timers (7.2 foundation).
+// For v1 it is mostly a documentation + future hook. The caller can achieve recurring
+// behavior by re-scheduling on "timer.fired" (or their chosen event name) inside their
+// own handler. A more robust built-in implementation (with proper per-recurring-timer
+// tracking and clean cancellation) can be added in a follow-up slice.
+//
+// Persistence across restarts remains future (Store VM).
+func (b *Bus) ScheduleRecurring(interval time.Duration, eventName string, payload any, opts ...PublishOption) string {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	// For the first version we just delegate to the one-shot timer.
+	// Real recurring support with automatic re-scheduling and proper cancellation
+	// tracking will be added when a concrete consumer needs it.
+	return b.ScheduleTimer(interval, eventName, payload, opts...)
+}
+
 // End of timer support.
 
 // --- 7.2 Observability helpers (7.2.1.1) ---
