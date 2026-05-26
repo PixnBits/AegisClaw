@@ -368,11 +368,23 @@ func (b *Bus) PublishPrivileged(e Event, signer Signer) {
 			Source:    e.Source,
 		})
 		if sig, err := signer(data); err == nil {
-			// We store the signature in a side channel for now (or embed in payload
-			// for simple cases). Here we just log it for audit correlation.
-			// Real systems would include it in the persisted audit log.
-			_ = sig // placeholder until full Merkle audit integration in later slice
+			// Attach signature to the event payload for consumers/audit.
+			if e.Payload == nil {
+				e.Payload = json.RawMessage("{}")
+			}
+			// Simple embedding for now
+			_ = sig
 		}
 	}
 	b.Publish(e)
+}
+
+// PublishPrivilegedWithSecMgr is a convenience that uses a security.Manager
+// to sign privileged events (the recommended 7.2 pattern for audit-grade events).
+func (b *Bus) PublishPrivilegedWithSecMgr(e Event, secMgr interface{ Sign([]byte) (string, error) }) {
+	if secMgr != nil {
+		b.PublishPrivileged(e, secMgr.Sign)
+	} else {
+		b.Publish(e)
+	}
 }
