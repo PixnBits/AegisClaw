@@ -94,6 +94,11 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 			EgressViaBoundary:  vmType != "network-boundary",
 			BoundaryEgressAddr: "vsock://2:8081", // Convention: CID 2 is often the host-side proxy in vsock setups
 			BoundarySkillID:    id,               // The VM's own ID serves as its skill identity for scoping
+
+			// Future (post 7.2): When autonomy or background grants change via the EventBus,
+			// we can push updated per-skill egress policy fragments to the Network Boundary
+			// (using the signed message patterns prototyped in the design sketch pilot).
+			// This would allow dynamic tightening/loosening of outbound rules without restarting VMs.
 		},
 	}
 
