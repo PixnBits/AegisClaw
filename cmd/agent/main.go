@@ -513,6 +513,18 @@ func (idx *AgentSkillIndex) SearchTools(query string, limit int) []SearchResult 
 			score += 0.15
 		}
 
+		// Cheap Levenshtein boost for very short queries (single concept match)
+		if len(qTokens) <= 3 {
+			for _, qt := range qTokens {
+				for _, tt := range tTokens {
+					if levenshtein(qt, tt) <= 2 { // allow 1-2 char typos
+						score += 0.1
+						break
+					}
+				}
+			}
+		}
+
 		if score > 0.05 { // filter out very weak matches
 			results = append(results, SearchResult{
 				Tool:        t,
@@ -578,6 +590,53 @@ func sortSearchResults(res []SearchResult) {
 			j--
 		}
 	}
+}
+
+// levenshtein is a tiny stdlib-only distance for close-match boosting in search.
+func levenshtein(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 0; i < len(a); i++ {
+		curr := make([]int, len(b)+1)
+		curr[0] = i + 1
+		for j := 0; j < len(b); j++ {
+			cost := 0
+			if a[i] != b[j] {
+				cost = 1
+			}
+			curr[j+1] = min(
+				curr[j]+1,      // insertion
+				prev[j+1]+1,    // deletion
+				prev[j]+cost,   // substitution
+			)
+		}
+		prev = curr
+	}
+	return prev[len(b)]
+}
+
+func min(a, b, c int) int {
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
 }
 
 // handleToolCommand is called from the agent's main message loop for tool.* commands.
