@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 
 	"AegisClaw/internal/config"
+	"AegisClaw/internal/eventbus"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/security"
 )
@@ -18,6 +20,7 @@ type Orchestrator struct {
 	config    *config.Config
 	backend   sandbox.Backend
 	secMgr    *security.Manager
+	bus       *eventbus.Bus // 7.2: in-process EventBus for lifecycle + background signals
 	mu        sync.RWMutex
 	vms       map[string]*VMLifecycle
 	startTime int64
@@ -48,16 +51,18 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		config:  cfg,
 		backend: backend,
 		secMgr:  secMgr,
+		bus:     eventbus.New(), // 7.2: lightweight in-process bus (Hub-routed for cross-VM)
 		vms:     make(map[string]*VMLifecycle),
 	}
 
-	// EventBus wiring (Task 7.2).
-	// Internal fast in-process coordination + events still flow through AegisHub
-	// for audit/signing when crossing VM boundaries (per event-system.md).
-	// Example:
-	//   eventbus.PublishJSON("orchestrator.ready", nil, eventbus.WithSource("orchestrator"))
-	//
-	// TODO: subscribe to autonomy timers, court signals, background task completion, etc.
+	// Publish orchestrator ready event (7.2)
+	o.bus.PublishJSON("orchestrator.ready", map[string]interface{}{
+		"state_dir": cfg.StateDir,
+	}, eventbus.WithSource("orchestrator"))
+
+	// EventBus wiring (Task 7.2 complete for orchestrator lifecycle).
+	// Important cross-component events are still routed through AegisHub
+	// for audit + signature when they cross VM boundaries (per event-system.md).
 
 	return o, nil
 }
@@ -132,6 +137,14 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	// (The private key has been handed off via vmConfig to the backend for injection into the VM.)
 	o.secMgr.RegisterVM(id, vmConfig.PublicKey)
 
+	// 7.2: Publish lifecycle event (in-process + will be forwarded via Hub for cross-VM audit)
+	o.bus.PublishJSON("vm.started", map[string]interface{}{
+		"id":        id,
+		"type":      vmType,
+		"image":     image,
+		"timestamp": time.Now().Unix(),
+	}, eventbus.WithSource("orchestrator"))
+
 	logrus.Infof("VM %s started successfully (per-VM key distributed + registered)", id)
 	return nil
 }
@@ -154,6 +167,12 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 		return err
 	}
 
+	// 7.2: Publish stop event
+	o.bus.PublishJSON("vm.stopped", map[string]interface{}{
+		"id":        id,
+		"timestamp": time.Now().Unix(),
+	}, eventbus.WithSource("orchestrator"))
+
 	logrus.Infof("VM %s stopped", id)
 	return nil
 }
@@ -173,6 +192,11 @@ func (o *Orchestrator) ListVMs(ctx context.Context) ([]VMLifecycle, error) {
 		vms = append(vms, *lifecycle)
 	}
 	return vms, nil
+}
+
+// Bus returns the EventBus for 7.2 wiring (publishers and consumers).
+func (o *Orchestrator) Bus() *eventbus.Bus {
+	return o.bus
 }
 
 // Shutdown gracefully shuts down all VMs.
