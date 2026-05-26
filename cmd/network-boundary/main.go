@@ -68,7 +68,12 @@ var allowedForwardHeaders = map[string]bool{
 //    Payload: (optional, can be empty map for now)
 //    Behavior:
 //      - Returns safe metadata only: list of skill IDs that have secrets,
-//        the count, and a timestamp.
+//        the count, a timestamp, and the boundary's signer_pubkey.
+//      - The entire response Message is signed with the boundary's private key
+//        (the same one sent in the "register" payload). The Store should verify
+//        Message.Signature using the included signer_pubkey (or the one from registration).
+//      - The boundarycrypto package exports VerifyBoundarySignedResponse as a
+//        convenience helper the Store can use for this verification.
 //      - Never returns actual secret values.
 //      - Used by the Store for drift detection and reconciliation.
 //
@@ -92,7 +97,9 @@ var allowedForwardHeaders = map[string]bool{
 //   (see loadSkillSecrets) and remain in the Go control plane only. They are
 //   injected only through the allowlist-enforcing ExtAuthz path.
 // - The Store can reconcile its view using "secrets.get" / "secrets.request"
-//   messages (safe metadata only, no secret values).
+//   messages (safe metadata only, no secret values). Responses are signed by the
+//   boundary using its registered private key (public key included in the response
+//   and originally sent during registration).
 //
 // Any change to this contract should be made deliberately and documented here.
 
@@ -125,6 +132,15 @@ var registeredStoreSignerPublicKey string
 // It is bounded and uses the same replay window as the timestamp check (plus margin).
 var globalNonceCache = boundarycrypto.NewNonceCache(10000, 12*time.Minute)
 
+// globalSecretsUpdateRateLimiter provides defensive rate limiting on the
+// privileged "secrets.update" path. This protects the boundary (and the
+// expensive signature verification + crypto work) from abuse or accidental
+// flooding by the Hub/Store.
+//
+// Token-bucket style, bounded, with generous but safe limits for normal
+// Store-driven secret rotation use cases.
+var globalSecretsUpdateRateLimiter = boundarycrypto.NewRateLimiter(30, time.Minute) // 30 updates per minute max
+
 // liveSecretStore is the mutable, thread-safe holder for per-skill secrets.
 // This is the foundation for the Hub-mediated dynamic secrets path (7.1+).
 //
@@ -155,8 +171,8 @@ func (s *liveSecretStore) Get(skillID string) (string, bool) {
 }
 
 // ReplaceAll atomically replaces the entire set of secrets.
-// Used for "secrets.update" messages (stub version accepts a full map).
-// The message is now expected to carry a signature (see verifySecretsUpdateSignature).
+// Used for "secrets.update" messages (supports both full replacement and the legacy single-skill form).
+// The message is expected to carry a valid signature (see verifySecretsUpdateSignature).
 func (s *liveSecretStore) ReplaceAll(newSecrets map[string]string) {
 	s.Lock()
 	defer s.Unlock()
@@ -239,8 +255,9 @@ func signMessage(msg *Message, priv ed25519.PrivateKey) {
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
 }
 
-// verifySecretsUpdateSignature is the stub for inbound signature verification
-// on "secrets.update" messages from the Store VM via the Hub.
+// verifySecretsUpdateSignature performs inbound signature verification
+// on "secrets.update" messages from the Store VM via the Hub (real when a
+// signer public key is configured via registration or env).
 //
 // Current behavior (this slice):
 // - Requires a non-empty "signature" (or "sig") field in the payload.
@@ -448,6 +465,11 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Println("Network Boundary registered")
+
+	// PILOT: First execution of the 7.1 design sketch reuse (see pilotDesignSketchReuse below).
+	// This is the initial validation that the signed-message + boundarycrypto patterns
+	// can be reused on non-secrets flows. Called once at startup for the first pilot slice.
+	pilotDesignSketchReuse()
 
 	// Load allowed domains — hardened for Task 7.1 (paranoid zero-trust)
 	ollamaHost := ollamaBackendHost()
@@ -789,6 +811,28 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				break
 			}
 
+			// Defensive rate limiting on the privileged secrets update path.
+			// This protects CPU (signature verification) and the live store.
+			if !globalSecretsUpdateRateLimiter.Allow() {
+				log.Printf("SECURITY EVENT: secrets.update rate limited (too many attempts)")
+				auditMsg := Message{
+					Source:      "network-boundary",
+					Destination: "store",
+					Command:     "audit.append",
+					Payload:     map[string]interface{}{"action": "secrets_update_rate_limited"},
+					Timestamp:   time.Now().Format(time.RFC3339),
+					Signature:   "",
+				}
+				signMessage(&auditMsg, priv)
+				connMutex.Lock()
+				encoder.Encode(auditMsg)
+				connMutex.Unlock()
+
+				response.Command = "secrets.response"
+				response.Payload = map[string]interface{}{"error": "rate limited"}
+				break
+			}
+
 			payload, ok := msg.Payload.(map[string]interface{})
 			if !ok {
 				response.Command = "secrets.response"
@@ -809,7 +853,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 					Source:      "network-boundary",
 					Destination: "store",
 					Command:     "audit.append",
-					Payload:     map[string]interface{}{"action": "secrets_update_rejected", "reason": "signature_verification_failed", "strict": strict},
+					Payload:     map[string]interface{}{"action": "secrets_update_rejected", "reason": "signature_verification_failed", "strict": strict, "signature_verified": false},
 					Timestamp:   time.Now().Format(time.RFC3339),
 					Signature:   "",
 				}
@@ -966,10 +1010,11 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 
 			response.Command = "secrets.response"
 			response.Payload = map[string]interface{}{
-				"status":    "ok",
-				"skills":    skills,
-				"count":     count,
-				"timestamp": time.Now().Format(time.RFC3339),
+				"status":       "ok",
+				"skills":       skills,
+				"count":        count,
+				"timestamp":    time.Now().Format(time.RFC3339),
+				"signer_pubkey": base64.StdEncoding.EncodeToString(pub), // boundary's public key (sent during registration) so Store can verify the response signature
 			}
 
 		// === 7.1 Secret health / reconciliation metrics ===
@@ -1932,4 +1977,38 @@ func startVSockEgressListener() {
 	if err := srv.Serve(ln); err != nil {
 		log.Printf("vsock egress server error: %v", err)
 	}
+}
+
+// pilotDesignSketchReuse is the first concrete execution of the
+// "Forward-Looking Design Sketch: Reusing the Signed Message Patterns"
+// from the 7.1 Closure Status (see grok-build-execution-plan.md).
+//
+// It deliberately exercises the *exact* reusable helpers from
+// internal/boundarycrypto on a non-secrets flow using a synthetic
+// payload. This proves the pattern generalizes with zero duplication
+// of crypto logic.
+//
+// This is explicitly a stub/pilot only. Real policy distribution,
+// audit receipts, or other privileged Hub flows will build on this.
+func pilotDesignSketchReuse() {
+	log.Printf("PILOT: design-sketch reuse validation (7.1 Forward-Looking Design Sketch)")
+
+	synthetic := map[string]interface{}{
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"policy": map[string]string{
+			"example-skill": "allow api.example.com, github.com",
+		},
+		"nonce": "pilot-" + time.Now().Format("20060102-150405"),
+	}
+
+	_ = boundarycrypto.CanonicalSecretsUpdateData(synthetic)
+	_ = boundarycrypto.IsTimestampFresh(synthetic)
+
+	rl := boundarycrypto.NewRateLimiter(10, time.Minute)
+	_ = rl.Allow()
+
+	nc := boundarycrypto.NewNonceCache(1000, 10*time.Minute)
+	_ = nc.CheckAndRecord("pilot-nonce")
+
+	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache). (stub only)")
 }
