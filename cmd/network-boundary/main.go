@@ -2000,6 +2000,8 @@ func startVSockEgressListener() {
 // 2. Use the registered private key (or a dedicated pilot key) for response signing.
 // 3. Add a real "policy.apply" path that the boundary actually acts on.
 // 4. Wire it through the same rate limiter / nonce cache instances used by secrets.
+// 5. Future integration: the EventBus (7.2) can feed signed policy updates here when
+//    autonomy/background grants change (see orchestrator comment on EgressViaBoundary).
 func pilotDesignSketchReuse() {
 	log.Printf("PILOT: design-sketch reuse validation (7.1 Forward-Looking Design Sketch)")
 
