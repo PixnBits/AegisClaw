@@ -1300,7 +1300,16 @@ func runSessionsList(cmd *cobra.Command, args []string) {
 	// This makes the "autonomy.expired" and "background.expired" events visibly active
 	// during a user command (proof that the two real consumers are publishing).
 	eventbus.Subscribe("autonomy.expired", func(e eventbus.Event) {
-		fmt.Printf("  [7.2 EventBus] autonomy expired for session (reactivity demo)\n")
+		sid := "unknown"
+		if e.Payload != nil {
+			var p map[string]any
+			if json.Unmarshal(e.Payload, &p) == nil {
+				if v, ok := p["session_id"].(string); ok {
+					sid = v
+				}
+			}
+		}
+		fmt.Printf("  [7.2 EventBus] autonomy expired for session %s (reactivity demo)\n", sid)
 	})
 	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
 		fmt.Printf("  [7.2 EventBus] background work expired (reactivity demo)\n")
