@@ -1585,15 +1585,38 @@ func initEventBusReactivity() {
 // primitive for a simple background task (e.g., periodic health / sweep work).
 // This is a 7.2 foundation demo — in production a real consumer would do more useful work.
 func startExampleRecurringConsumer() {
-	// Publish a lightweight heartbeat every 30s (demo interval).
-	eventbus.DefaultBus.ScheduleRecurring(30*time.Second, "background.heartbeat", map[string]string{
-		"component": "cli",
-		"reason":    "7.2 recurring demo",
-	})
+	// Every 30s, perform a lightweight "stale session sweep" against our surface state.
+	// This shows a real recurring consumer doing observable work using the 7.2 primitives.
+	eventbus.DefaultBus.ScheduleRecurring(30*time.Second, "background.sweep", nil)
 
-	// A consumer can subscribe and react (here we just log at debug level so it doesn't spam normal usage).
-	eventbus.Subscribe("background.heartbeat", func(e eventbus.Event) {
-		logrus.Debug("7.2: received recurring background.heartbeat")
+	eventbus.Subscribe("background.sweep", func(e eventbus.Event) {
+		sessions := loadSessions()
+		now := time.Now()
+		cleaned := 0
+		changed := false
+
+		for i := range sessions {
+			s := &sessions[i]
+			// Demo threshold: anything older than 24h with no active autonomy/background is "stale"
+			if now.Sub(s.Started) > 24*time.Hour &&
+				s.AutonomyExpires == nil && s.BackgroundExpires == nil &&
+				s.Status == "running" {
+				s.Status = "ended"
+				cleaned++
+				changed = true
+			}
+		}
+
+		if changed {
+			_ = saveSessions(sessions)
+		}
+
+		if cleaned > 0 {
+			fmt.Printf("  [7.2 Recurring] background.sweep cleaned %d stale session(s)\n", cleaned)
+			eventbus.PublishJSON("background.sweep.completed", map[string]any{
+				"cleaned": cleaned,
+			})
+		}
 	})
 }
 
