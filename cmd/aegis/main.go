@@ -1058,7 +1058,7 @@ func main() {
 	tasksCmd := &cobra.Command{
 		Use:   "tasks",
 		Short: "Manage background tasks and monitoring (surface only)",
-		Long:  "List, inspect, and control background tasks. Currently operates on local session tracking + simulated tasks.\nReal long-running execution and proactive updates require the full Agent Runtime and EventBus.",
+		Long:  "List, inspect, and control background tasks. Currently operates on local session tracking + simulated tasks.\n7.2: Two EventBus consumers (autonomy + background expiration) now provide observable timer-driven reconciliation on the surface. Real enforcement still requires Agent Runtime + Memory.",
 	}
 	tasksListCmd := &cobra.Command{Use: "list", Short: "List tasks", Run: runTasksList}
 	tasksStatusCmd := &cobra.Command{Use: "status <id>", Short: "Task status", Run: runTasksStatus}
@@ -1554,8 +1554,12 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 		}
 
 		if jsonOutput {
-			fmt.Printf(`{"session_id":"%s","status":"%s","autonomy_preset":"%s","granted_scopes":%s,"expires":"%s","note":"Surface state only"}\n`,
-				id, s.Status, s.AutonomyPreset, mustJSON(s.GrantedScopes), expires)
+			bgExpires := "never"
+			if s.BackgroundExpires != nil {
+				bgExpires = s.BackgroundExpires.Format(time.RFC3339)
+			}
+			fmt.Printf(`{"session_id":"%s","status":"%s","autonomy_preset":"%s","granted_scopes":%s,"expires":"%s","background_expires":"%s","note":"Surface state only"}\n`,
+				id, s.Status, s.AutonomyPreset, mustJSON(s.GrantedScopes), expires, bgExpires)
 			return
 		}
 
@@ -1567,7 +1571,10 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 			fmt.Println("  Granted scopes: (none — least privilege)")
 		}
 		fmt.Printf("  Expires: %s\n", expires)
-		fmt.Println("  (This is surface state. Real enforcement is in the Agent Runtime.)")
+		if s.BackgroundExpires != nil {
+			fmt.Printf("  Background until: %s\n", s.BackgroundExpires.Format(time.RFC3339))
+		}
+		fmt.Println("  (This is surface state. Real enforcement is in the Agent Runtime + 7.2 EventBus consumers.)")
 		return
 	}
 
