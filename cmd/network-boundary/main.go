@@ -2038,5 +2038,21 @@ func pilotDesignSketchReuse() {
 	_ = boundarycrypto.VerifyBoundarySignedResponse(responseDemo, "", nil)
 	log.Printf("PILOT: also exercised response signing pattern + VerifyBoundarySignedResponse (symmetric to secrets.get mutual auth).")
 
-	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache [replay=%v] + response signing + verification). (stub only)", !second)
+	// Additional design-sketch demonstration: "policy reconciliation" response style
+	// (the pull side, mirroring secrets.get / secrets.request behavior).
+	// In a real flow the Store would ask "what policy do you currently have?" and
+	// receive a signed, safe metadata-only response.
+	policyReconcile := map[string]interface{}{
+		"status":        "reconcile_ok",
+		"timestamp":     time.Now().UTC().Format(time.RFC3339),
+		"signer_pubkey": "pilot-demo-key",
+		"known_policies": []string{"example-skill"},
+		"note":          "stub - real implementation would return actual applied policy metadata",
+	}
+	// Reuse the same signing helper used for secrets.get responses.
+	signMessage(&Message{Payload: policyReconcile}, ed25519.PrivateKey{}) // demo key (real version would use registered key)
+	_ = boundarycrypto.VerifyBoundarySignedResponse(policyReconcile, "", nil) // exercise the verifier on the response side too
+	log.Printf("PILOT: exercised policy reconciliation response style (signed + verifiable, metadata only).")
+
+	log.Printf("PILOT: boundarycrypto helpers exercised successfully (canonical + timestamp + rate limiter + nonce cache [replay=%v] + response signing + verification + reconciliation response). (stub only)", !second)
 }

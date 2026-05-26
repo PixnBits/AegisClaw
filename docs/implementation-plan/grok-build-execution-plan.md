@@ -1141,8 +1141,9 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 - Single startup call after registration.
 - Also demonstrated symmetric response signing pattern + called VerifyBoundarySignedResponse (closing the mutual auth loop).
 - Added explicit nonce replay rejection demo using the shared NonceCache.
+- Added "policy reconciliation" response style demo (pull side, mirroring secrets.get) with signing + verification.
 - Tests + build green before commit. Only new pilot work committed (old 7.1 uncommitted files untouched).
-- Stronger initial proof of the design sketch (inbound + outbound + replay protection + verification). (stub/pilot only).
+- Stronger initial proof of the design sketch (inbound + outbound + replay protection + verification + reconciliation pull). (stub/pilot only).
 
 **7.2.2 reactivity demo** (small continuous slice):
 - Added EventBus subscribers in sessions list that react to the two consumers publishing "autonomy.expired" / "background.expired".
@@ -1208,6 +1209,8 @@ Combined 7.2.1.1 + 7.2.1.2 now deliver two distinct, observable EventBus consume
 - Detailed "7.1 Closure Status" section with honest limitations and prioritized remaining work.
 - Forward-looking design sketch for pattern reuse.
 - Full unit test coverage for the `boundarycrypto` package.
+
+**7.1 closure work committed** (8f80167) at user request to preserve history (capabilities doc, secrets_test.go, sandbox integration, vsock/go-control-plane deps).
 
 **7.2 execution resumed (post-7.1)**: First slice 7.2.1.1 landed (EventBus error containment + `ErrorCount()` observability). See detailed progress in the 7.2 section above + session plan 019e5d7f.... Committed per original discipline.
 - All prior cryptographic and operational hardening (loading, signing, verification, replay protection, rate limiting, reconciliation, metrics, registration integration).
