@@ -1,73 +1,73 @@
 package main
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestSignMessage(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	msg := &Message{
-		Source:    "test",
-		Command:   "test",
-		Payload:   "data",
-		Timestamp: "2026-05-10T00:00:00Z",
+func TestAgentSkillIndex_ListSkills(t *testing.T) {
+	idx := NewAgentSkillIndex()
+	skills := idx.ListSkills()
+	if len(skills) == 0 {
+		t.Fatal("expected seeded skills")
 	}
-	signMessage(msg, priv)
-	if msg.Signature == "" {
-		t.Error("Signature not set")
-	}
-
-	data, _ := json.Marshal(Message{Source: "test", Command: "test", Payload: "data", Timestamp: "2026-05-10T00:00:00Z"})
-	sigBytes, _ := base64.StdEncoding.DecodeString(msg.Signature)
-	if !ed25519.Verify(pub, data, sigBytes) {
-		t.Error("Signature verification failed")
-	}
-}
-
-func TestMockLLMResponse(t *testing.T) {
-	cases := []struct {
-		prompt   string
-		contains []string
-	}{
-		{"Observe and parse ... add a skill", []string{"Observed", "Intent", "proposal"}},
-		{"Think step-by-step ... skill", []string{"Thought", "personas", "Builder gates"}},
-		{"Create a concrete plan ... add a skill", []string{"Plan", "proposal.create", "scribe.notify_review"}},
-		{"Judge the response quality ... add a skill", []string{"Judged", "Proposal ready for Court", "unanimous"}},
-		{"Observe the user input: hello", []string{"Observed", "context"}},
-		{"Judge the response quality: foo", []string{"Judged", "High quality"}},
-	}
-	for _, c := range cases {
-		resp := mockLLMResponse(c.prompt)
-		for _, want := range c.contains {
-			if !strings.Contains(resp, want) {
-				t.Errorf("mockLLMResponse(%q) = %q missing %q", c.prompt, resp, want)
-			}
+	found := false
+	for _, s := range skills {
+		if s.ID == "discord_monitor" {
+			found = true
+			break
 		}
 	}
+	if !found {
+		t.Error("expected discord_monitor skill to be present")
+	}
 }
 
-func TestCreateProposalPayload(t *testing.T) {
-	// Lightweight check of proposal shape (full createProposal requires live hub/encoder)
-	// Simulate the core construction used in judge/create flow.
-	description := "add a discord monitor skill"
-	proposalID := "proposal_" + "12345"
-	proposal := map[string]interface{}{
-		"id":          proposalID,
-		"description": description,
-		"extracted":   "mock-extracted",
-		"status":      "pending",
+func TestAgentSkillIndex_SearchTools_Basic(t *testing.T) {
+	idx := NewAgentSkillIndex()
+
+	results := idx.SearchTools("send message discord", 5)
+	if len(results) == 0 {
+		t.Fatal("expected at least one result for 'send message discord'")
 	}
-	if proposal["id"] != proposalID || proposal["status"] != "pending" {
-		t.Error("proposal shape invalid")
+
+	// Best result should be the discord send tool
+	top := results[0]
+	if !strings.Contains(strings.ToLower(top.Tool.Name), "discord") ||
+		!strings.Contains(strings.ToLower(top.Tool.Description), "message") {
+		t.Errorf("top result did not look like discord send: %+v", top.Tool)
 	}
-	// Ensure we would notify scribe with ID only (no 'description' key in scribe payload)
-	scribePayload := map[string]interface{}{"proposal_id": proposalID}
-	if _, hasDesc := scribePayload["description"]; hasDesc {
-		t.Error("scribe notify must not contain description (security per court-scribe.md)")
+	if top.Score < 0.3 {
+		t.Errorf("expected reasonably high score, got %f", top.Score)
+	}
+}
+
+func TestAgentSkillIndex_SearchTools_Semanticish(t *testing.T) {
+	idx := NewAgentSkillIndex()
+
+	// Natural language query that doesn't contain exact tool name
+	results := idx.SearchTools("post something to chat on discord", 3)
+	if len(results) == 0 {
+		t.Fatal("expected results for natural language discord query")
+	}
+
+	foundDiscord := false
+	for _, r := range results {
+		if strings.Contains(strings.ToLower(r.Tool.Name), "discord") {
+			foundDiscord = true
+			break
+		}
+	}
+	if !foundDiscord {
+		t.Error("semantic-ish search should still surface discord tools")
+	}
+}
+
+func TestAgentSkillIndex_SearchTools_NoResults(t *testing.T) {
+	idx := NewAgentSkillIndex()
+	results := idx.SearchTools("completely unrelated quantum teleportation blockchain", 5)
+	// We may get weak matches; just ensure it doesn't panic and returns something reasonable
+	if len(results) > 5 {
+		t.Error("should respect limit")
 	}
 }

@@ -313,6 +313,9 @@ func runAgent(cmd *cobra.Command, args []string) {
 	}
 	fmt.Println("Agent registered")
 
+	// 7.3: Fast local semantic skill/tool index (stdlib only, always available)
+	skillIndex := NewAgentSkillIndex()
+
 	// Agent loop
 	for {
 		var msg Message
@@ -323,6 +326,22 @@ func runAgent(cmd *cobra.Command, args []string) {
 		}
 
 		fmt.Println("Agent received message:", msg.Command, "from", msg.Source)
+
+		// 7.3: Fast local tool discovery commands (bypass heavy 6-step LLM loop)
+		if msg.Command == "tool.list" || msg.Command == "tool.search" {
+			result := handleToolCommand(msg.Command, msg.Payload, skillIndex)
+			resp := Message{
+				Source:      "agent",
+				Destination: msg.Source,
+				Command:     msg.Command + ".response",
+				Payload:     result,
+				Timestamp:   time.Now().Format(time.RFC3339),
+				Signature:   "",
+			}
+			signMessage(&resp, priv)
+			encoder.Encode(resp)
+			continue
+		}
 
 		// Log to file for debugging
 		if f, err := os.OpenFile("/tmp/agent-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666); err == nil {
@@ -385,3 +404,202 @@ func main() {
 
 	rootCmd.Execute()
 }
+
+// === 7.3 Semantic Tool/Skill Discovery (stdlib-only fast local index) ===
+//
+// Per plan: available inside every Agent VM for the 6-step loop and direct
+// "tool.list" / "tool.search" commands. No external vector DB deps.
+//
+// Design: simple in-memory index with keyword overlap + lightweight scoring.
+// Future: can be invalidated/refreshed via EventBus on skill deploy (7.2).
+
+type Skill struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Version     string   `json:"version,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+}
+
+type Tool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	SkillID     string `json:"skill_id"`
+}
+
+type SearchResult struct {
+	Tool        Tool    `json:"tool"`
+	SkillName   string  `json:"skill_name"`
+	Score       float64 `json:"score"`
+	Description string  `json:"description"`
+}
+
+// AgentSkillIndex is the fast local index every agent runtime carries.
+type AgentSkillIndex struct {
+	skills []Skill
+	tools  []Tool
+}
+
+func NewAgentSkillIndex() *AgentSkillIndex {
+	idx := &AgentSkillIndex{}
+	// Seed a few realistic examples so the index is immediately useful in dev.
+	// In real operation these come from Store/Hub on startup or via events.
+	idx.AddSkill(Skill{
+		ID: "discord_monitor", Name: "discord_monitor",
+		Description: "Monitor Discord channels and send messages. Supports sending alerts and summaries.",
+		Version: "1.2.0", Tags: []string{"discord", "social", "notification"},
+	})
+	idx.AddTool(Tool{Name: "discord_monitor.send_message", Description: "Send a message to a specific Discord channel", SkillID: "discord_monitor"})
+	idx.AddTool(Tool{Name: "discord_monitor.get_recent", Description: "Retrieve recent messages from a channel", SkillID: "discord_monitor"})
+
+	idx.AddSkill(Skill{
+		ID: "web_research", Name: "web_research",
+		Description: "Search the web, fetch pages, and summarize information from public sources.",
+		Version: "0.9.1", Tags: []string{"web", "research", "search"},
+	})
+	idx.AddTool(Tool{Name: "web_research.search", Description: "Perform a web search for a query", SkillID: "web_research"})
+	idx.AddTool(Tool{Name: "web_research.summarize_url", Description: "Fetch and summarize the content of a URL", SkillID: "web_research"})
+
+	return idx
+}
+
+func (idx *AgentSkillIndex) AddSkill(s Skill) {
+	idx.skills = append(idx.skills, s)
+}
+
+func (idx *AgentSkillIndex) AddTool(t Tool) {
+	idx.tools = append(idx.tools, t)
+}
+
+// ListSkills returns all known skills (exact, fast path).
+func (idx *AgentSkillIndex) ListSkills() []Skill {
+	return append([]Skill(nil), idx.skills...) // copy
+}
+
+// SearchTools performs a simple stdlib-only semantic-ish search.
+// Uses token overlap (Jaccard-style) + bonus for name/description substring matches.
+// Returns top results sorted by score (highest first).
+func (idx *AgentSkillIndex) SearchTools(query string, limit int) []SearchResult {
+	if limit <= 0 {
+		limit = 10
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return nil
+	}
+
+	qTokens := tokenize(q)
+	results := make([]SearchResult, 0, len(idx.tools))
+
+	for _, t := range idx.tools {
+		skillName := t.SkillID
+		for _, s := range idx.skills {
+			if s.ID == t.SkillID {
+				skillName = s.Name
+				break
+			}
+		}
+
+		text := strings.ToLower(t.Name + " " + t.Description + " " + skillName)
+		tTokens := tokenize(text)
+
+		score := jaccardScore(qTokens, tTokens)
+
+		// Bonus for direct substring matches (makes it feel more "semantic" without embeddings)
+		if strings.Contains(text, q) {
+			score += 0.25
+		}
+		if strings.Contains(t.Name, q) {
+			score += 0.15
+		}
+
+		if score > 0.05 { // filter out very weak matches
+			results = append(results, SearchResult{
+				Tool:        t,
+				SkillName:   skillName,
+				Score:       score,
+				Description: t.Description,
+			})
+		}
+	}
+
+	// Sort by score desc
+	sortSearchResults(results)
+
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results
+}
+
+func tokenize(s string) []string {
+	// Very simple word tokenizer (good enough for this phase)
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
+	seen := make(map[string]bool)
+	var out []string
+	for _, f := range fields {
+		if len(f) > 2 && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func jaccardScore(a, b []string) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	setA := make(map[string]bool, len(a))
+	for _, x := range a {
+		setA[x] = true
+	}
+	inter := 0
+	for _, x := range b {
+		if setA[x] {
+			inter++
+		}
+	}
+	union := len(setA) + len(b) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+func sortSearchResults(res []SearchResult) {
+	// Simple insertion sort (tiny data, no need for sort package dependency concerns)
+	for i := 1; i < len(res); i++ {
+		j := i
+		for j > 0 && res[j].Score > res[j-1].Score {
+			res[j], res[j-1] = res[j-1], res[j]
+			j--
+		}
+	}
+}
+
+// handleToolCommand is called from the agent's main message loop for tool.* commands.
+func handleToolCommand(cmd string, payload interface{}, idx *AgentSkillIndex) interface{} {
+	switch cmd {
+	case "tool.list":
+		return map[string]interface{}{
+			"skills": idx.ListSkills(),
+			"tools":  idx.tools,
+		}
+	case "tool.search":
+		q := ""
+		if p, ok := payload.(map[string]interface{}); ok {
+			if qq, ok := p["query"].(string); ok {
+				q = qq
+			}
+		}
+		return map[string]interface{}{
+			"query":   q,
+			"results": idx.SearchTools(q, 8),
+		}
+	}
+	return map[string]string{"error": "unknown tool command"}
+}
+
