@@ -1300,10 +1300,10 @@ func runSessionsList(cmd *cobra.Command, args []string) {
 	// This makes the "autonomy.expired" and "background.expired" events visibly active
 	// during a user command (proof that the two real consumers are publishing).
 	eventbus.Subscribe("autonomy.expired", func(e eventbus.Event) {
-		logrus.Debugf("7.2 EventBus: received autonomy.expired (session reactivity demo)")
+		fmt.Printf("  [7.2 EventBus] autonomy expired for session (reactivity demo)\n")
 	})
 	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
-		logrus.Debugf("7.2 EventBus: received background.expired (session reactivity demo)")
+		fmt.Printf("  [7.2 EventBus] background work expired (reactivity demo)\n")
 	})
 
 	// Surface timer enforcement for autonomy + background work (7.2 consumers)
@@ -1386,6 +1386,10 @@ func runSessionsKill(cmd *cobra.Command, args []string) {
 }
 
 func runTasksList(cmd *cobra.Command, args []string) {
+	// 7.2 consumers: ensure we reconcile before showing tasks (symmetry with sessions)
+	_ = reconcileExpiredAutonomy()
+	_ = reconcileExpiredBackgroundWork()
+
 	// Journey 03/05 surface: Show active background work, tied to sessions where possible
 	tasks := []map[string]interface{}{}
 
