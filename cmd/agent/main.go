@@ -576,6 +576,16 @@ func (idx *AgentSkillIndex) SearchTools(query string, limit int) []SearchResult 
 			}
 		}
 
+		// Light TF boost: reward tools whose description contains the query terms multiple times
+		tfBoost := 0.0
+		for _, qt := range qTokens {
+			count := strings.Count(text, qt)
+			if count > 1 {
+				tfBoost += 0.05 * float64(count-1)
+			}
+		}
+		score += tfBoost
+
 		if score > 0.05 { // filter out very weak matches
 			results = append(results, SearchResult{
 				Tool:        t,
