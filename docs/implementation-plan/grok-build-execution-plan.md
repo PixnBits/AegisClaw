@@ -1163,6 +1163,22 @@ Architectural correction (per docs/prd + specs): Long-term home for reconciliati
 
 Follow-up: Switched `startPeriodicReconciliation()` from raw ticker to the improved `ScheduleRecurring` primitive for consistency with the 7.2 foundation. Committed after tests + build.
 
+**Current State & Handoff (as of latest work on this branch)**
+
+**7.2 (EventBus & Background Services)** is in good interim shape:
+- Two real consumers + reactivity + visibility/UX across autonomy + tasks surfaces.
+- `ScheduleRecurring` with real auto re-scheduling + working example consumer.
+- Reconciliation is now proactive via the recurring primitive.
+- **Critical architectural decision recorded**: Long-term home for persistent timers, grant state, and reconciliation is the **Store VM + Event System** (hard-coded timers per event-system.md). Current code in `cmd/aegis` is explicitly temporary scaffolding. Placeholder + TODOs already exist in `cmd/store/main.go`.
+
+**Strong bias for all future work (user directive):**  
+Minimize new stubs, temporary surface code, and premature abstractions. Prefer real, durable implementations that will become production code (especially anything that will eventually live in the Store VM).
+
+**Recommended starting point for next Grok Build session**:
+- Begin real durable storage + APIs for autonomy grants, background work, and scheduled timers inside `cmd/store`.
+- This is the "move it just once when the timers are ready" path.
+- Re-read the TODOs in `cmd/aegis/main.go` and `cmd/store/main.go` first.
+
 **Task 7.5 – Host Daemon TCB Completion (Remaining Items)**
 - Full watchdog + automatic crash containment (jailer/cgroups + restart policy).
 - Complete secure key distribution to all VMs at bootstrap.
