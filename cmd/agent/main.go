@@ -128,9 +128,10 @@ func callLLMWithFallback(prompt string, encoder *json.Encoder, decoder *json.Dec
 	return resp
 }
 
-func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
+func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
-	prompt := "Observe and parse the user/agent request. Extract intent, key entities, and whether this requires a proposal (e.g. new skill). Input: " + input + ". Return structured observation."
+	available := formatAvailableTools(idx)
+	prompt := "Observe and parse the user/agent request. Extract intent, key entities, and whether this requires a proposal (e.g. new skill). Available local tools/skills: " + available + ". Input: " + input + ". Return structured observation."
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("1. Observe:", llmResponse)
 
@@ -160,36 +161,41 @@ func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 	fmt.Println("Context received (short-term + relevant long-term):", contextResp.Payload)
 }
 
-func think(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
+func think(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
-	prompt := "Think step-by-step about the observed request using prior context. Identify risks, required skills/tools, autonomy implications. Request: " + input
+	available := formatAvailableTools(idx)
+	prompt := "Think step-by-step about the observed request using prior context. Identify risks, required skills/tools, autonomy implications. Available local tools you can actually call: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("2. Think:", llmResponse)
 }
 
-func plan(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
+func plan(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
-	prompt := "Create a concrete plan: steps, which tools/skills via Hub, whether to create a formal proposal for Court review (per governance-court.md). Be specific. Request: " + input
+	available := formatAvailableTools(idx)
+	prompt := "Create a concrete plan: steps, which tools/skills via Hub (only use ones from the available local index), whether to create a formal proposal for Court review (per governance-court.md). Be specific. Available tools: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("3. Plan:", llmResponse)
 }
 
-func act(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
+func act(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
-	prompt := "Execute the 'Act' phase: prepare specific tool invocations (signed via Hub) or proposal payload. If skill creation, prepare for proposal.create. Request: " + input
+	available := formatAvailableTools(idx)
+	prompt := "Execute the 'Act' phase: prepare specific tool invocations (signed via Hub, only from available local index) or proposal payload. If skill creation, prepare for proposal.create. Available tools: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("4. Act:", llmResponse)
 }
 
-func execute(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
+func execute(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
-	prompt := "Perform the execution: actually send signed tool/skill calls to Hub or invoke proposal creation flow. Capture results. Request: " + input
+	available := formatAvailableTools(idx)
+	prompt := "Perform the execution: actually send signed tool/skill calls to Hub (only use tools from the available local index) or invoke proposal creation flow. Capture results. Available: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("5. Execute:", llmResponse)
 }
 
-func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey) {
-	llmResponse := callLLMWithFallback("Judge the response quality, compliance with policy, and whether Court review is required. Payload: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
+func judge(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
+	available := formatAvailableTools(idx)
+	llmResponse := callLLMWithFallback("Judge the response quality, compliance with policy, and whether Court review is required. Available local tools: "+available+". Payload: "+fmt.Sprintf("%v", msg.Payload), encoder, decoder, priv)
 	fmt.Println("6. Judge:", llmResponse)
 
 	// If the request is to add a skill, create a proposal (triggers Court per Phase 3 / governance-court.md)
@@ -209,26 +215,26 @@ func mockLLMResponse(prompt string) string {
 		return "Observed: General request. Loaded recent context + 2 long-term memories."
 	} else if strings.Contains(prompt, "Think") || strings.Contains(lower, "think step-by-step") {
 		if isSkill {
-			return "Thought: New skill increases attack surface; must go through all 7 personas + Builder gates. Low autonomy change."
+			return "Thought: New skill increases attack surface; must go through all 7 personas + Builder gates. Low autonomy change. Available tools considered: discord_monitor.send_message, web_research.search."
 		}
-		return "Thought: Straightforward Q&A or tool use. No governance trigger."
+		return "Thought: Straightforward Q&A or tool use. No governance trigger. Relevant local tools: web_research.* if research needed."
 	} else if strings.Contains(prompt, "Plan") || strings.Contains(lower, "create a concrete plan") {
 		if isSkill {
-			return "Plan: 1. Extract spec via LLM. 2. proposal.create to Store. 3. scribe.notify_review (ID only). 4. Await Court votes. 5. On approve, Builder."
+			return "Plan: 1. Extract spec via LLM. 2. proposal.create to Store. 3. scribe.notify_review (ID only). 4. Await Court votes. 5. On approve, Builder. (Will only propose tools that exist in local index.)"
 		}
-		return "Plan: Answer directly or call 1-2 tools via Hub."
+		return "Plan: Answer directly or call 1-2 tools via Hub from local index (e.g. discord_monitor.send_message or web_research.search)."
 	} else if strings.Contains(prompt, "Act") || strings.Contains(lower, "execute the 'act' phase") {
-		return "Acted: Prepared proposal payload or tool call list."
+		return "Acted: Prepared proposal payload or tool call list using only available local tools from index."
 	} else if strings.Contains(prompt, "Execute") || strings.Contains(lower, "perform the execution") {
 		if isSkill {
 			return "Executed: Sent signed proposal.create + scribe notify (ID only) to Hub."
 		}
-		return "Executed: Tool results received and merged into response."
+		return "Executed: Tool results received from local index tools and merged into response."
 	} else if strings.Contains(prompt, "Judge") || strings.Contains(lower, "judge the response quality") {
 		if isSkill {
-			return "Judged: Proposal ready for Court. Quality good; unanimous-approve path expected for trivial skill."
+			return "Judged: Proposal ready for Court. Quality good; unanimous-approve path expected for trivial skill. (Considered local tool availability.)"
 		}
-		return "Judged: High quality, safe, no further action. Stored summary to Memory."
+		return "Judged: High quality, safe, no further action. Stored summary to Memory. Used local tool index for awareness."
 	}
 	return "LLM response: " + prompt
 }
@@ -370,13 +376,13 @@ func runAgent(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		// 6-step loop
-		observe(&msg, encoder, decoder, priv)
-		think(&msg, encoder, decoder, priv)
-		plan(&msg, encoder, decoder, priv)
-		act(&msg, encoder, decoder, priv)
-		execute(&msg, encoder, decoder, priv)
-		judge(&msg, encoder, decoder, priv)
+		// 6-step loop (now with local tool awareness via 7.3 index)
+		observe(&msg, encoder, decoder, priv, skillIndex)
+		think(&msg, encoder, decoder, priv, skillIndex)
+		plan(&msg, encoder, decoder, priv, skillIndex)
+		act(&msg, encoder, decoder, priv, skillIndex)
+		execute(&msg, encoder, decoder, priv, skillIndex)
+		judge(&msg, encoder, decoder, priv, skillIndex)
 
 		// Respond
 		response := Message{
@@ -637,6 +643,33 @@ func min(a, b, c int) int {
 		return b
 	}
 	return c
+}
+
+// formatAvailableTools returns a compact string of the local skill/tool index
+// for injection into LLM prompts (keeps context reasonable).
+func formatAvailableTools(idx *AgentSkillIndex) string {
+	if idx == nil {
+		return "(no local tool index available)"
+	}
+	var b strings.Builder
+	b.WriteString("Skills: ")
+	for i, s := range idx.skills {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(s.Name)
+		b.WriteString(" (")
+		b.WriteString(s.Description)
+		b.WriteString(")")
+	}
+	b.WriteString(". Tools: ")
+	for i, t := range idx.tools {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(t.Name)
+	}
+	return b.String()
 }
 
 // handleToolCommand is called from the agent's main message loop for tool.* commands.
