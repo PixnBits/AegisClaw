@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/eventbus"
 	"github.com/spf13/cobra"
 )
 
@@ -104,6 +105,17 @@ func analyzeProposal(persona, proposalDesc string) (string, string) {
 	if vote != "Approve" {
 		reason += " | specific_feedback: [Review details from Store; propose minimal changes if needed]"
 	}
+
+	// 7.2: Publish local decision event (in-process). In full system this (or a
+	// signed version) flows through AegisHub so approval queues and proactive
+	// agents can react.
+	localBus := eventbus.New()
+	localBus.PublishJSON("court.decision.made", map[string]interface{}{
+		"persona": persona,
+		"vote":    vote,
+		"reason":  reason,
+	}, eventbus.WithSource("court-persona"))
+
 	return vote, reason
 }
 
