@@ -173,6 +173,29 @@ func TestScheduleRecurring(t *testing.T) {
 	}
 }
 
+// TestRecurringConsumerPattern demonstrates a realistic usage of ScheduleRecurring
+// by a 7.2 background consumer (e.g. a stale session sweeper).
+func TestRecurringConsumerPattern(t *testing.T) {
+	bus := New()
+
+	var sweepCount atomic.Int32
+	bus.Subscribe("background.sweep", func(e Event) {
+		sweepCount.Add(1)
+	})
+
+	id := bus.ScheduleRecurring(15*time.Millisecond, "background.sweep", map[string]string{"reason": "stale-sessions"})
+	if id == "" {
+		t.Fatal("expected recurring id")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	_ = bus.CancelTimer(id)
+
+	if sweepCount.Load() < 2 {
+		t.Errorf("expected consumer to have been invoked multiple times via recurring timer, got %d", sweepCount.Load())
+	}
+}
+
 // TestPublishHandlerPanicIsCounted exercises the new 7.2.1.1 error containment.
 // A panicking handler must be recovered and the ErrorCount must increase.
 func TestPublishHandlerPanicIsCounted(t *testing.T) {
