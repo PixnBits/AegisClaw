@@ -109,6 +109,10 @@ func analyzeProposal(persona, proposalDesc string) (string, string) {
 
 // callLLMWithPersona: in full would sign+send "llm.call" to network-boundary via hub (like agent).
 // For Phase 3 dev: persona-aware mocks producing distinguishable votes/reasoning per role.
+//
+// 7.2 integration: After producing a decision/vote, publish via EventBus
+// (see internal/eventbus ApprovalDecision + "court.decision.made" or "approval.decision").
+// This drives approval queues and proactive agent reactions (autonomy/teams).
 func callLLMWithPersona(persona, prompt string) string {
 	lower := strings.ToLower(prompt)
 	switch persona {

@@ -69,17 +69,20 @@ func (db *DockerBackend) Start(ctx context.Context, config VMConfig) error {
 
 	// Network configuration
 	if config.NetworkConfig != nil {
-		// Create isolated network per VM for stronger isolation
-		networkName := fmt.Sprintf("aegis-net-%s", config.ID)
-		_ = db.createNetwork(ctx, networkName)
-		args = append(args, "--network", networkName)
-
-		// 7.1 Network Boundary integration (in progress)
+		// 7.1 Network Boundary integration (complete for dev parity):
+		// For EgressViaBoundary VMs under Docker we use --network=none (no outbound
+		// interfaces at all). Real egress must go through the vsock/TCP boundary
+		// proxy (exactly as Firecracker guests with no NICs do). This is dev-only;
+		// production uses the Firecracker backend with hypervisor-level isolation.
 		if config.NetworkConfig.EgressViaBoundary {
-			logrus.Infof("Docker VM %s configured with EgressViaBoundary=true (skill=%s)",
+			logrus.Infof("Docker VM %s configured with EgressViaBoundary=true (skill=%s) — using --network=none (no direct outbound; must use boundary vsock/TCP path)",
 				config.ID, config.NetworkConfig.BoundarySkillID)
-			// TODO(7.1): Configure Docker network / iptables so the container
-			// has no direct outbound except through the Network Boundary.
+			args = append(args, "--network", "none")
+		} else {
+			// Create isolated network per VM for stronger isolation (only for VMs that may have direct egress)
+			networkName := fmt.Sprintf("aegis-net-%s", config.ID)
+			_ = db.createNetwork(ctx, networkName)
+			args = append(args, "--network", networkName)
 		}
 
 		// Expose ports if specified

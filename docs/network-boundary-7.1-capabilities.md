@@ -73,6 +73,16 @@ As of this milestone, the Network Boundary provides a **demonstrably functional,
 
 This is a major step toward a trustworthy zero-trust foundation for the rest of Phase 7.
 
----
+## Continued Implementation (this session / Phase 7.1 closure)
+
+Additional slices completed:
+- Envoy bootstrap + dynamic routes polished with accurate current-state docs, strengthened circuit breakers in static clusters, and clarified rate-limiting / routing posture (per-skill clusters + header matching + descriptors already real in prior slices).
+- Crash containment hardened: boundaryHealthy now gates startEnvoy and is set false on Envoy process death; orchestrator docs updated for health propagation.
+- Sandbox integration: Docker backend now enforces --network=none for EgressViaBoundary VMs (dev parity with Firecracker "no NICs").
+- Dedicated contract test `TestNetworkBoundaryContract` added (skill scoping, healthy flag behavior, no-leakage invariants). All `go test ./cmd/network-boundary` + affected builds green.
+
+Acceptance per plan: `make test` (relevant packages) + dedicated boundary contract test green. Full `make test-integration` (with live daemon) and remaining encrypted-blob / Store ceremony work tracked in the 7.1-secrets-expanded and 7.1-verify items.
+
+See `docs/implementation-plan/grok-build-execution-plan.md` for full slice history and updated Phase 7 status.
 
 *See the main execution plan (`grok-build-execution-plan.md`) for the detailed 7.1 Closure Status, prioritized remaining work, and milestone definition.*

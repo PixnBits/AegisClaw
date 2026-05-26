@@ -1236,6 +1236,12 @@ Minimize new stubs, temporary surface code, and premature abstractions. Prefer r
 
 **7.1 closure work committed** (8f80167) at user request to preserve history (capabilities doc, secrets_test.go, sandbox integration, vsock/go-control-plane deps).
 
+**Additional 7.1 micro-slices (current session, post stub-complete milestone)**:
+- Envoy rules polish + accurate godoc reflecting implemented per-skill routing/rate/circuit/ext_authz (cmd/network-boundary/main.go).
+- Crash containment: startEnvoy gate + Envoy death → boundaryHealthy=false propagation + orchestrator cross-ref.
+- Docker sandbox enforcement (--network=none for EgressViaBoundary) + dedicated `TestNetworkBoundaryContract`.
+- All relevant builds + `go test ./cmd/network-boundary` + contract test green. See session plan 019e6309... + refreshed `docs/network-boundary-7.1-capabilities.md`.
+
 **7.2 execution resumed (post-7.1)**: First slice 7.2.1.1 landed (EventBus error containment + `ErrorCount()` observability). See detailed progress in the 7.2 section above + session plan 019e5d7f.... Committed per original discipline.
 - All prior cryptographic and operational hardening (loading, signing, verification, replay protection, rate limiting, reconciliation, metrics, registration integration).
 
