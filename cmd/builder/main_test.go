@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"AegisClaw/internal/workspace"
 )
 
 func TestRunSecurityGates(t *testing.T) {
@@ -98,7 +100,16 @@ func TestIndividualGates(t *testing.T) {
 		t.Error("SCA should catch vulnerable-dep pattern")
 	}
 	if pass, _ := runSCA("module example\nrequire bad-license v1.0 // GPL-3"); pass {
-		t.Error("SCA should catch license policy violation")
+		t.Error("SCA should catch GPL-3 license policy violation")
+	}
+
+	// 7.6 + 7.7: Test custom policy context from workspace (injected into runPolicyCheck)
+	loadedWorkspace = &workspace.Context{TOOLS: "custom-rule: no direct net.Dial ever"}
+	defer func() { loadedWorkspace = nil }()
+	if pass, msg := runPolicyCheck(`package main; import "net"; func main() { net.Dial("tcp", "example.com:80") }`); pass {
+		t.Error("Should fail policy with custom workspace rule")
+	} else if !strings.Contains(msg, "custom-rule") && !strings.Contains(msg, "Network Boundary") {
+		t.Errorf("Policy error should reflect custom workspace context. Got: %s", msg)
 	}
 
 	// Secrets
