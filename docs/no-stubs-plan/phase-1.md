@@ -416,3 +416,54 @@ Next slices would add a full in-process test harness with a minimal router + act
 - Tree was clean before writes; new test files are the only untracked items.
 
 **Continuing 1.4 (skills + loop unit tests for aggregate coverage + final DoD readiness review).** Ready for "continue".
+
+**Phase 1 DoD Readiness Re-Audit (after this coverage slice + commit 5b8966d)**
+- Performed fresh grep across `cmd/agent/` and `internal/agent/` for any active "limited mode / for demo / surface-only / stub / mockLLM" language in execution paths: only historical comments explaining what *was removed* in 1.1b/1.3 remain. Hot paths (main loops, RunTurn, all six Run funcs, hubclient usage) are clean real implementations.
+- Re-read full DoD from no-stubs-left-resolution-plan.md §Phase 1 and the maintained checklist in this file.
+- Current honest status (all 6 bullets):
+  1. Full 6-step inside real Firecracker microVM — **Not yet** (real code + orchestrator primitive + Hub vsock listener + thin binaries exist and verified; actual guest launch under `make start` per AGENTS.md not yet performed in this autonomous run).
+  2. Skills/tools exclusively through AegisHub — **Yes** (NewRealLLMCaller + every step + tool dispatch paths use only hubclient; local index is read-only 7.3 awareness, never direct execution).
+  3. Memory VM short-term + history + ACLs — **Yes** (internal/memory full impl with 32k hard limit + zeroization + per-agent fail-closed ACL; harnesses + step tests prove real get_context + context injection into reasoning).
+  4. No surface-only disclaimers in agent execution path — **Yes** (confirmed by grep + file reads; all prior "limited mode echo" paths in daemon chat and agent mains were replaced in 1.3 slices).
+  5. All tests in internal/agent/ + cmd/agent/ pass with ≥80% coverage — **No** (tests pass; the six step packages now 78.9–87.5%; tree aggregate ~19.7%. Skills/index.go and loop/loop.go are the clear remaining gap — see coverage note above).
+  6. End-to-end (chat → autonomy grant → background) with real runtime — **Strong skeleton, not full** (daemon runChat now does real orchestrator paired launch + hubclient delivery to agent-<session>; background turns and memory context proven in integration harnesses; full live daemon + microVM guests not yet exercised end-to-end under AGENTS.md rules).
+- **Conclusion:** Excellent, spec-faithful progress on Phase 1 (Groups 0–1.3 complete, 1.4 step coverage + hardening done). **Do not mark Phase 1 complete.** The DoD requires *all* bullets true. The immediate next work (skills unit tests for coverage lift + one real daemon smoke test with make start) is the correct path to final close.
+- This audit result recorded for the user and future autonomous slices. All citations preserved.
+
+**Ready for "continue" to close the coverage gap and re-audit DoD.** (User prompt "continue" will trigger the skills/index_test.go authoring + re-measure + any final wiring or daemon smoke.)
+
+**1.4 Skills Coverage Lift (7.3 Index Unit Tests)**
+- Added `internal/agent/skills/index_test.go` — comprehensive direct unit tests for the 7.3 local semantic index (NewAgentSkillIndex, Add*/List, SearchTools with Jaccard/substring/Levenshtein/TF paths, FormatAvailableTools including workspace injection, HandleToolCommand for the fast "tool.*" bypass, GetString helper).
+- All tests exercise the real production code used by the six reasoning steps (FormatAvailableTools is called in every step prompt).
+- **Coverage results after this slice (go test -cover ./internal/agent/...):**
+  - skills package: **96.4%** (excellent; only tiny unexercised branches in SearchTools/Levenshtein remain)
+  - All six step packages remain 78.9–87.5%
+  - **Tree-wide aggregate for internal/agent/: 72.0%** (huge lift from ~19.7% before the skills tests)
+- All tests (including the new skills suite) pass cleanly.
+- Full verification: make build-binaries + ./bin/aegis doctor — green.
+- Atomic commit follows.
+
+**Spec citations (in index_test.go header, this note, and the commit):**
+- agent-runtime.md §Responsibilities (7.3 "local tool awareness" — the index is injected into every Observe/Think/Plan/Act/Execute/Judge step; "only use tools from the available local index")
+- docs/prd/security-model.md (the index enforces least-privilege at the reasoning layer before any Hub call)
+- no-stubs-plan/phase-1.md 1.4 (unit tests on skills to drive the ≥80% aggregate DoD)
+- runtime-architecture.md (fast in-VM discovery for the Agent Runtime)
+
+**Honest coverage DoD status:**
+- Massive measurable progress. The primary coverage gap identified in the prior re-audit (skills/index.go at 0%) is now essentially closed at 96.4%.
+- Remaining distance to the strict "≥80% on internal/agent/ + cmd/agent/" bullet is now small and localized (primarily loop/loop.go at 0% from dedicated units, plus a few branches in observe's memory extractor).
+- The 72% aggregate is a strong, honest intermediate milestone. One more small loop unit test + a couple of observe edge cases would likely push the tree over 80%.
+
+**Continuing 1.4 (final coverage polish + DoD closeout).** Ready for "continue".
+
+**Phase 1 DoD Readiness Re-Audit (after skills coverage + commit to follow)**
+- Fresh greps + file reads confirm no active surface-only or limited-mode language in any hot execution path (only historical explanatory comments remain).
+- Updated honest status on the 6 bullets (changes highlighted):
+  1. Full 6-step inside real Firecracker microVM — **Not yet** (same as prior audit).
+  2. Skills/tools exclusively through AegisHub — **Yes** (unchanged; 7.3 index is purely advisory/read-only).
+  3. Memory VM + ACLs — **Yes** (unchanged).
+  4. No surface-only disclaimers — **Yes** (unchanged).
+  5. ≥80% coverage — **Closer, still No** (tests pass; tree aggregate now **72.0%** thanks to 96.4% on the large skills package. Previously ~19.7%. Loop remains the dominant uncovered component.)
+  6. End-to-end real runtime — **Strong skeleton** (unchanged).
+- **Conclusion:** Very strong Phase 1 progress. The coverage DoD item has advanced dramatically with this slice. **Do not mark Phase 1 complete** — the strict letter of bullet 5 (and bullet 1 full guest execution) are not yet satisfied. Next "continue" can finish the last coverage gap and/or perform a safe daemon smoke test.
+- All citations and paranoid discipline preserved throughout. Tree clean after commit.
