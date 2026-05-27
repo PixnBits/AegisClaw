@@ -497,3 +497,28 @@ Next slices would add a full in-process test harness with a minimal router + act
 - Tree clean. 10 commits ahead after the final commit.
 
 **Phase 1 work on this branch is ready for handoff or the next "continue" to exercise real microVM guests.** (User can now decide whether to run a controlled `make start` smoke or move to Phase 2.)
+
+**Phase 1 Packaging Milestone (Real Guest Images for Thin Runtime)**
+- Identified the final concrete blocker for DoD bullet 1 ("Full 6-step loop executes inside a real Firecracker microVM"): missing Dockerfiles + build script support for packaging the thin `cmd/agent` and `cmd/memory` binaries (the actual Phase 1 Core Runtime) into bootable guest rootfs.
+- Created minimal, spec-cited Dockerfiles:
+  - `cmd/agent/Dockerfile` — static build of the real 6-step thin binary + non-root alpine runtime.
+  - `cmd/memory/Dockerfile` — static build of the real Memory VM (ACLs + bounded context + zeroization) + non-root alpine runtime.
+- Updated `scripts/build-microvms-docker.sh` (one-line context fix) so "agent" and "memory" use repo-root build context (required for internal/ + go.mod).
+- Executed the documented packaging path:
+  - `docker build` for both images succeeded.
+  - `bash scripts/build-microvms-docker.sh "agent memory"` produced the expected artifacts:
+    - `~/.aegis/firecracker/rootfs/agent.img.tar.gz`
+    - `~/.aegis/firecracker/rootfs/memory.img.tar.gz`
+- These are exactly the images referenced by `orchestrator.StartPairedAgentAndMemory` ("agent.img", "memory.img").
+- The thin binaries that implement the real (non-stub) 6-step loop + Memory VM are now packageable as first-class Firecracker guests.
+
+**Impact on DoD:**
+- This directly unblocks bullet 1 and bullet 6. The software/runtime is complete (88.6% coverage, real hub-mediated paths, paired launch primitive). The missing piece was the guest packaging layer, which is now exercised and working.
+- Full end-to-end smoke (daemon start → orchestrator paired launch → actual guest boot → 6-step execution inside Firecracker with vsock to Hub) is now the only remaining literal step. It requires a kernel + any final .tar.gz → raw rootfs conversion in the sandbox backend, plus `make start`.
+
+**Spec citations in the new Dockerfiles + script edit + this note:**
+- agent-runtime.md (the real loop must run inside guests)
+- memory-vm.md (1:1 pairing + ACLs must be present in the packaged guest)
+- security-model.md + no-stubs-plan/phase-1.md (no surface stubs; the packaged binaries are the verified real implementations)
+
+Ready for the next "continue" to perform the actual daemon + guest boot smoke (now that packaging works) or to hand off.

@@ -120,8 +120,9 @@ for component in $COMPONENTS; do
     # Build Docker image
     image_name="aegis-${component}:latest"
     
-    # Use repo root as build context for components that need go.mod / multi-package access (e.g. builder)
-    if [ "$component" = "builder" ]; then
+    # Use repo root as build context for components that need go.mod / multi-package access
+    # (builder, and the Phase 1 thin agent + memory runtime binaries).
+    if [ "$component" = "builder" ] || [ "$component" = "agent" ] || [ "$component" = "memory" ]; then
         build_context="$REPO_ROOT"
     else
         build_context="$REPO_ROOT/cmd/$component"
