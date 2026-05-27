@@ -276,6 +276,29 @@ func reconcileExpiredTimers() []string {
 	return expired
 }
 
+// publishExpirationEvent sends a signed event.publish message to the Hub for
+// Store-owned timer/expiration events. This fulfills event-system.md:
+// "Persistent timers are stored in Store VM" and "Persistent timers (cron-like)
+// are managed by Store VM + Event System". Examples: autonomy.expired,
+// background.expired, timer.fired.<id>.
+// Called from both the Hub command path and the autonomous ticker loop.
+func publishExpirationEvent(encoder *json.Encoder, priv ed25519.PrivateKey, timestamp string, eventName string, payload map[string]interface{}) {
+	eventMsg := Message{
+		Source:      "store",
+		Destination: "hub",
+		Command:     "event.publish",
+		Payload: map[string]interface{}{
+			"event":   eventName,
+			"payload": payload,
+		},
+		Timestamp: timestamp,
+		Signature: "",
+	}
+	signMessage(&eventMsg, priv)
+	// Best-effort; ignore encode error in autonomous path (consistent with existing pattern)
+	_ = encoder.Encode(eventMsg)
+}
+
 func runStore(cmd *cobra.Command, args []string) {
 	// Generate keys
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -327,11 +350,52 @@ func runStore(cmd *cobra.Command, args []string) {
 	prs := loadFromFile("prs.json")
 	teams := loadFromFile("teams.json")
 
-	// Phase 2.1a: Load durable grant state at startup for recovery
+	// Phase 2.1a + 2.3 recovery (store-vm.md + event-system.md):
+	// Explicitly load ALL durable timer/ grant state at startup.
+	// "Persistent timers are stored in Store VM" (event-system.md).
+	// We perform an immediate catch-up reconciliation of anything that
+	// expired while the Store VM was down. This is the concrete implementation
+	// of "Timers survive daemon and Store VM restarts" (Phase 2 DoD).
+	// Because reconciliation is a full scan of the 0600 JSON files on every
+	// 30s ticker signal (or on-demand via reconcile.expired_grants), there is
+	// no separate "re-arm heap" — loading + one boot-time reconcile + the
+	// running ticker is the recovery model. Any non-expired timers remain in
+	// timers.json and will be caught on the next post-restart signal.
 	grants := loadGrants()
 	background := loadBackgroundWork()
+	timers := loadTimers()
 	_ = grants
 	_ = background
+	_ = timers
+
+	// Immediate boot-time catch-up (before entering the message loop).
+	// Any expirations missed during downtime are processed and their events
+	// published exactly as during normal autonomous operation.
+	expiredBootA := ReconcileExpiredAutonomy()
+	expiredBootB := ReconcileExpiredBackgroundWork()
+	expiredBootT := reconcileExpiredTimers()
+	for _, sid := range expiredBootA {
+		publishExpirationEvent(encoder, priv, "2026-05-27T00:00:00Z", "autonomy.expired", map[string]interface{}{
+			"session_id": sid,
+			"reason":     "store_startup_recovery",
+		})
+	}
+	for _, sid := range expiredBootB {
+		publishExpirationEvent(encoder, priv, "2026-05-27T00:00:00Z", "background.expired", map[string]interface{}{
+			"session_id": sid,
+			"reason":     "store_startup_recovery",
+		})
+	}
+	for _, id := range expiredBootT {
+		publishExpirationEvent(encoder, priv, "2026-05-27T00:00:00Z", "timer.fired", map[string]interface{}{
+			"timer_id": id,
+			"reason":   "store_startup_recovery",
+		})
+	}
+	if len(expiredBootA)+len(expiredBootB)+len(expiredBootT) > 0 {
+		fmt.Printf("Store startup recovery: processed %d autonomy, %d background, %d timers that expired while offline\n",
+			len(expiredBootA), len(expiredBootB), len(expiredBootT))
+	}
 
 	var mu sync.Mutex
 
@@ -716,48 +780,34 @@ func runStore(cmd *cobra.Command, args []string) {
 		case <-reconcileCh:
 			expiredA := ReconcileExpiredAutonomy()
 			expiredB := ReconcileExpiredBackgroundWork()
-			if len(expiredA) > 0 || len(expiredB) > 0 {
-				fmt.Printf("Store timer: auto-reconciled expirations - autonomy=%v background=%v\n", expiredA, expiredB)
+			expiredT := reconcileExpiredTimers()
+			if len(expiredA) > 0 || len(expiredB) > 0 || len(expiredT) > 0 {
+				fmt.Printf("Store timer: auto-reconciled expirations - autonomy=%v background=%v timers=%v\n", expiredA, expiredB, expiredT)
 
 				// Phase 2: Publish expiration events via the Hub so downstream
 				// components (Agent Runtimes, etc.) can react without relying on
 				// the daemon-local EventBus. This is the Store-driven event path
-				// per event-system.md.
+				// per event-system.md §"Persistent timers are stored in Store VM"
+				// and "Persistent timers (cron-like) are managed by Store VM + Event System".
+				// timer.fired events use the general form (id in payload) so callers
+				// can distinguish scheduled vs grant timers.
 				for _, sid := range expiredA {
-					eventMsg := Message{
-						Source:      "store",
-						Destination: "hub",
-						Command:     "event.publish",
-						Payload: map[string]interface{}{
-							"event": "autonomy.expired",
-							"payload": map[string]interface{}{
-								"session_id": sid,
-								"reason":     "store_timer",
-							},
-						},
-						Timestamp: response.Timestamp,
-						Signature: "",
-					}
-					signMessage(&eventMsg, priv)
-					encoder.Encode(eventMsg)
+					publishExpirationEvent(encoder, priv, response.Timestamp, "autonomy.expired", map[string]interface{}{
+						"session_id": sid,
+						"reason":     "store_timer",
+					})
 				}
 				for _, sid := range expiredB {
-					eventMsg := Message{
-						Source:      "store",
-						Destination: "hub",
-						Command:     "event.publish",
-						Payload: map[string]interface{}{
-							"event": "background.expired",
-							"payload": map[string]interface{}{
-								"session_id": sid,
-								"reason":     "store_timer",
-							},
-						},
-						Timestamp: response.Timestamp,
-						Signature: "",
-					}
-					signMessage(&eventMsg, priv)
-					encoder.Encode(eventMsg)
+					publishExpirationEvent(encoder, priv, response.Timestamp, "background.expired", map[string]interface{}{
+						"session_id": sid,
+						"reason":     "store_timer",
+					})
+				}
+				for _, id := range expiredT {
+					publishExpirationEvent(encoder, priv, response.Timestamp, "timer.fired", map[string]interface{}{
+						"timer_id": id,
+						"reason":   "store_timer",
+					})
 				}
 			}
 		default:

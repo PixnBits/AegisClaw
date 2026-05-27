@@ -2125,23 +2125,9 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 			if d, err := time.ParseDuration(duration); err == nil {
 				exp := time.Now().Add(d)
 				s.AutonomyExpires = &exp
-
-				// Real wiring (7.2 timer consumer): schedule via the EventBus we built.
-				// The timer will fire a "autonomy.expired" event (or "timer.fired").
-				// For now the surface reconciles on next relevant command (see reconcileExpiredAutonomy).
-				// In the runtime this will drive actual scope revocation.
-				eventbus.DefaultBus.ScheduleTimer(d, "autonomy.expired", map[string]any{
-					"session_id": id,
-					"preset":     preset,
-				}, eventbus.WithSource("cli.autonomy.grant"))
-
-				// 7.2.1.2 - Second real consumer example: background work expiration timer.
-				// This shows the pattern for monitoring + task journeys. The reconcile
-				// function above will clean it on next relevant command.
-				eventbus.DefaultBus.ScheduleTimer(d, "background.expired", map[string]any{
-					"session_id": id,
-					"kind":       "background-work",
-				}, eventbus.WithSource("cli.autonomy.grant.background"))
+				// Phase 2 cutover note: local EventBus scheduling for expiration
+				// now happens ONLY in the Store-send fallback block below.
+				// "Persistent timers are stored in Store VM" (event-system.md).
 			}
 		}
 
@@ -2151,26 +2137,48 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 			_ = reconcileExpiredBackgroundWork()
 		}
 
-		// Phase 2: Also record the grant in the Store VM so it becomes the durable source of truth.
-		// Additionally, schedule the expiration timer in the Store (using the new timer infrastructure)
-		// so the Store owns both the grant state *and* the timer that will expire it.
+		// Phase 2: Record the grant in the Store VM (durable source of truth per
+		// store-vm.md + event-system.md) and schedule its expiration timer in the
+		// Store using the timer.* APIs. The Store now owns both the grant record
+		// (grants.json 0600) and the timer (timers.json) and will publish the
+		// autonomy.expired / timer.fired events via its autonomous loop.
+		// The local EventBus schedules are retained ONLY as explicit fallback.
+		storeTimerErr := false
 		if s.AutonomyExpires != nil {
-			_, _ = sendToComponentViaHub("store", "autonomy.grant", map[string]interface{}{
+			_, err1 := sendToComponentViaHub("store", "autonomy.grant", map[string]interface{}{
 				"session_id": id,
 				"preset":     preset,
 				"expires":    s.AutonomyExpires.Format(time.RFC3339),
 				"scopes":     s.GrantedScopes,
 			})
-
-			// Schedule the expiration timer in the Store (this replaces the local EventBus timer
-			// as the authoritative one for this grant).
-			_, _ = sendToComponentViaHub("store", "timer.schedule", map[string]interface{}{
+			_, err2 := sendToComponentViaHub("store", "timer.schedule", map[string]interface{}{
 				"id":         "autonomy-expiry-" + id,
 				"session_id": id,
 				"type":       "autonomy.expired",
 				"preset":     preset,
 				"expires":    s.AutonomyExpires.Format(time.RFC3339),
 			})
+			if err1 != nil || err2 != nil {
+				storeTimerErr = true
+			}
+		}
+
+		if storeTimerErr || s.AutonomyExpires == nil {
+			// Explicit fallback thin path (only when Store unreachable).
+			// This is the last remaining unconditional local ScheduleTimer site
+			// for grant expirations; further erosion will remove the local
+			// reconcile* funcs themselves once all surfaces go through Store.
+			if d, err := time.ParseDuration(duration); err == nil {
+				eventbus.DefaultBus.ScheduleTimer(d, "autonomy.expired", map[string]any{
+					"session_id": id,
+					"preset":     preset,
+				}, eventbus.WithSource("cli.autonomy.grant.fallback"))
+
+				eventbus.DefaultBus.ScheduleTimer(d, "background.expired", map[string]any{
+					"session_id": id,
+					"kind":       "background-work",
+				}, eventbus.WithSource("cli.autonomy.grant.background.fallback"))
+			}
 		}
 
 		// Re-save
