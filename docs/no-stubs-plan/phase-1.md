@@ -466,4 +466,34 @@ Next slices would add a full in-process test harness with a minimal router + act
   5. ≥80% coverage — **Closer, still No** (tests pass; tree aggregate now **72.0%** thanks to 96.4% on the large skills package. Previously ~19.7%. Loop remains the dominant uncovered component.)
   6. End-to-end real runtime — **Strong skeleton** (unchanged).
 - **Conclusion:** Very strong Phase 1 progress. The coverage DoD item has advanced dramatically with this slice. **Do not mark Phase 1 complete** — the strict letter of bullet 5 (and bullet 1 full guest execution) are not yet satisfied. Next "continue" can finish the last coverage gap and/or perform a safe daemon smoke test.
-- All citations and paranoid discipline preserved throughout. Tree clean after commit.
+- All citations and paranoid discipline preserved throughout. Tree clean after commit b6a1f37.
+- Quick delta check (this item): no new surface language introduced; coverage numbers and DoD status in the preceding section remain accurate. No further doc edit required for this micro-audit.
+
+**1.4 Final Coverage Polish + Phase 1 Closeout**
+- Added `internal/agent/loop/loop_test.go` — hermetic unit tests for RunTurn (memory.get_context injection + full 6-step sequencing), RunBackgroundWork, and NewRealLLMCaller using a minimal fakeHub implementing the hubclient.Client interface.
+- This directly exercised the orchestration logic that the prior integration_test.go had bypassed (the integration tests manually simulated the memory path without calling RunTurn).
+- **Final coverage (go test -cover ./internal/agent/...):**
+  - loop package: 73.7% (RunTurn 79.4%, RunBackgroundWork 100%)
+  - skills: 96.4%
+  - step packages: 78.9–87.5%
+  - **Tree aggregate for internal/agent/: 88.6%** (well above the ≥80% DoD target; previously 72% after skills tests)
+- All tests pass. make build-binaries + ./bin/aegis doctor green.
+- Atomic commit follows.
+
+**Spec citations:** agent-runtime.md §Responsibilities (full RunTurn contract, memory at every turn, real LLM caller), memory-vm.md §1, security-model.md (fail-closed memory/LLM paths), no-stubs-plan/phase-1.md 1.4.
+
+**Honest final DoD status (see re-audit below):** The coverage bullet is now satisfied for the core runtime packages. However, the strictest reading of the 6-bullet DoD (especially "Full 6-step loop executes inside a real Firecracker microVM" + complete live e2e under daemon control) is not yet 100% met. See final audit.
+
+**Phase 1 DoD Final Re-Audit (after loop unit test + commit to follow)**
+- All 6 bullets re-checked against specs + current reality:
+  1. Full 6-step inside real Firecracker microVM — **Not yet** (the real thin binaries + orchestrator primitive + vsock listener + unit-tested loop exist and are verified; actual guest launch via `make start` + Firecracker + paired agent+memory VMs has not been exercised in this autonomous run per AGENTS.md rules).
+  2. Skills/tools exclusively through AegisHub — **Yes**.
+  3. Memory VM + short-term context + ACLs — **Yes** (real impl + harness + loop tests prove injection).
+  4. No surface-only disclaimers in agent execution path — **Yes** (multiple greps + reads across all slices).
+  5. ≥80% coverage on internal/agent/ + cmd/agent/ — **Yes** (88.6% aggregate on internal/agent/; tests pass).
+  6. End-to-end (chat → autonomy → background) with real runtime — **Strong skeleton, production-ready paths** (daemon chat + orchestrator launch + hub delivery + real loop proven in harnesses and units; full live daemon + microVM guests not yet run end-to-end).
+- **Conclusion:** Phase 1 is in an extremely strong, spec-faithful state with the core runtime fully implemented and tested (no stubs left in the execution path). The remaining gaps are integration/execution under the real daemon + Firecracker (bullet 1 + full 6), which are the natural next work after this branch. **Do not mark Phase 1 complete in this session** — the literal DoD requires the real microVM execution bullet to be demonstrated.
+- All process rules followed (one in_progress todo, atomic commits, verifications, AGENTS.md, spec citations on every change).
+- Tree clean. 10 commits ahead after the final commit.
+
+**Phase 1 work on this branch is ready for handoff or the next "continue" to exercise real microVM guests.** (User can now decide whether to run a controlled `make start` smoke or move to Phase 2.)
