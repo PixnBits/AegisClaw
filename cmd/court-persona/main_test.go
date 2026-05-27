@@ -35,7 +35,7 @@ func TestPersonaPromptsAndAnalysis(t *testing.T) {
 		if !strings.Contains(prompt, "You are the") {
 			t.Errorf("%s prompt missing role", p)
 		}
-		vote, reasoning := analyzeProposal(p, "add a simple logging skill")
+		vote, reasoning := analyzeProposal(p, "add a simple logging skill", nil) // nil hubClient → test-only simulator path (never used in prod binary loop)
 		if vote != "Approve" && vote != "Reject" && vote != "Abstain" {
 			t.Errorf("%s produced invalid vote %s", p, vote)
 		}
@@ -44,7 +44,7 @@ func TestPersonaPromptsAndAnalysis(t *testing.T) {
 		}
 	}
 	// Security architect rejects networky things
-	v, _ := analyzeProposal("security-architect", "add a discord monitor skill with network calls")
+	v, _ := analyzeProposal("security-architect", "add a discord monitor skill with network calls", nil) // test-only path
 	if v != "Reject" {
 		t.Log("note: security-architect expected Reject on network skill (mock may vary)")
 	}
