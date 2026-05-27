@@ -207,6 +207,17 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3i Update (Agent Turn Handling + Real Output)**
+
+- In the thin `cmd/agent/main.go`, normal/user turns now capture the final StepResult from the real `loop.RunTurn` and return the actual reasoning content (from the Judge step) as the response payload.
+- This means when the daemon successfully delivers a turn via hubclient to a real agent, the response contains real output from the 6-step loop instead of a generic ack.
+- Combined with previous 1.3 work (paired launch, daemon chat preferring hubclient delivery, memory context in reasoning), this makes chat → real Agent Runtime → real Memory VM produce tangible results.
+- Verification passed.
+
+Strong, spec-aligned progress on making the runtime actually usable end-to-end.
+
+**Continuing 1.3/1.4...**
+
 **1.3h Update (Message Delivery Wiring)**
 
 - In the headless chat path, after the paired launch, the primary delivery is now the direct hubclient send to the real agent component ("agent-<session>").

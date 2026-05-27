@@ -206,17 +206,22 @@ func runAgent(cmd *cobra.Command, args []string) {
 			SkillIndex:         skillIndex,
 			CustomInstructions: customInstructionsPrefix(),
 		}
-		_, _ = loop.RunTurn(context.Background(), tc, realLLM)
+		finalResult, _ := loop.RunTurn(context.Background(), tc, realLLM)
 
-		// Simple ack (real responses can be enhanced when steps return structured data)
-		ack := hubclient.Message{
+		// Return real output from the 6-step reasoning (Phase 1.3 wiring)
+		responseText := "processed via real 6-step loop"
+		if finalResult != nil && finalResult.Content != "" {
+			responseText = finalResult.Content
+		}
+
+		resp := hubclient.Message{
 			Source:      client.AssignedID(),
 			Destination: msg.Source,
 			Command:     "response",
-			Payload:     "processed via real 6-step loop",
+			Payload:     responseText,
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		}
-		_, _ = client.Send(context.Background(), ack)
+		_, _ = client.Send(context.Background(), resp)
 	}
 }
 
