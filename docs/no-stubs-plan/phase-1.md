@@ -207,6 +207,21 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3l / 1.4 Transition Update**
+
+- Full verification run for this slice: focused tests + coverage on agent packages, make build-binaries, ./bin/aegis doctor — all green.
+- Current coverage on the new internal/agent/* packages is low (expected at skeleton stage; the strong harness tests prove the paths, but dedicated unit tests per step are still needed for the 80%+ target).
+- No remaining bad surface-only disclaimers in the hot execution paths (only honest transitional comments remain).
+- Group 1.3 (Integration & Wiring) is now considered largely complete.
+- Transitioning into the final 1.4 (Testing & Hardening + Cleanup + DoD Close).
+
+**Next focus areas for 1.4:**
+- Increase unit test coverage on the individual step packages toward ≥80%.
+- Final surface cleanup and spec notes.
+- Mark Phase 1 complete when the DoD criteria are met.
+
+**Continuing into 1.4...**
+
 **1.3k Update (Background Turn Harness + 1.3 Closeout)**
 
 - Strengthened the integration harness with `TestBackgroundTurn_RealMemoryContext`, which exercises a background-style turn against a real Memory VM (memory.get_context + context injection + 6-step loop).
