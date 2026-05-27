@@ -207,6 +207,16 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3d Update (Fuller Integration + Cleanup)**
+
+- Enhanced `observe` step to properly parse and surface the structured memory context returned by the real Memory VM (short_term + long_term) into the reasoning prompt.
+- Cleaned noisy per-message `fmt.Println` from the hot paths in both thin `cmd/agent/main.go` and `cmd/memory/main.go` (replaced with minimal placeholders; real audit will go through Store + Scribe).
+- Verification passed.
+
+This makes the memory context actually participate in the agent's reasoning, not just be fetched.
+
+**Continuing the integration arc...**
+
 **1.3c Update (End-to-End Harness Refinement)**
 
 - Cleaned and stabilized the integration harness test (`TestAgentMemoryIntegration_RealPath`).

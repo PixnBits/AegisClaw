@@ -13,12 +13,13 @@ import (
 )
 
 func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*agent.StepResult, error) {
-	// Incorporate memory context (fetched at start of RunTurn per memory-vm.md)
-	input := fmt.Sprintf("%v", tc.Input)
-	available := "" // TODO: wire skills.FormatAvailableTools properly
+	// Incorporate memory context from real Memory VM (memory-vm.md §1 + §Communication Interface)
+	memoryContext := extractMemoryContextForPrompt(tc)
 
+	available := "" // TODO: wire skills.FormatAvailableTools properly
 	custom := tc.CustomInstructions
-	prompt := custom + "Observe and parse the user/agent request using the provided memory context. Extract intent, key entities, and whether this requires a proposal. Available local tools/skills: " + available + ". Context + Input: " + input + ". Return structured observation."
+
+	prompt := custom + "Observe and parse the user/agent request. Use the provided recent conversation history and relevant long-term memories. Extract intent, key entities, and whether this requires a proposal (e.g. new skill). Available local tools/skills: " + available + ". Memory context: " + memoryContext + ". Current input: " + fmt.Sprintf("%v", tc.Input) + ". Return structured observation."
 
 	text, err := llm(ctx, prompt)
 	if err != nil {
@@ -28,4 +29,28 @@ func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*ag
 		Phase:   "observe",
 		Content: text,
 	}, nil
+}
+
+// extractMemoryContextForPrompt pulls short-term history + long-term notes from the
+// structure that loop.RunTurn injects after a successful memory.get_context call
+// against a real Memory VM.
+func extractMemoryContextForPrompt(tc *agent.TurnContext) string {
+	if tc == nil || tc.Input == nil {
+		return "(no memory context available)"
+	}
+
+	m, ok := tc.Input.(map[string]interface{})
+	if !ok {
+		return fmt.Sprintf("%v", tc.Input)
+	}
+
+	mem, ok := m["memory"].(map[string]interface{})
+	if !ok {
+		return fmt.Sprintf("%v", tc.Input)
+	}
+
+	short := mem["short_term"]
+	long := mem["long_term"]
+
+	return fmt.Sprintf("Recent history: %v. Relevant long-term: %v", short, long)
 }

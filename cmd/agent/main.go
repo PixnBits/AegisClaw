@@ -167,7 +167,9 @@ func runAgent(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		fmt.Println("Agent received:", msg.Command, "from", msg.Source)
+		// High-volume per-message logging removed from hot path (surface noise).
+		// Real audit will go through Store + Court Scribe later.
+		_ = msg.Command // keep for future structured handling
 
 		// Fast-path special handlers (preserved for 7.3/7.6 compatibility)
 		if msg.Command == "tool.list" || msg.Command == "tool.search" {

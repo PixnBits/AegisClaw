@@ -97,7 +97,8 @@ func runMemory(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		fmt.Println("Memory received:", msg.Command, "from", msg.Source)
+		// Per-message logging reduced (will be proper audit via Store later)
+		_ = msg.Command
 
 		payload, handleErr := memVM.Handle(context.Background(), msg)
 		if handleErr != nil {
