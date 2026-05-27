@@ -514,6 +514,15 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 	// All are best-effort and must not break the "All systems healthy" Journey 01 path.
 	// References: host-daemon.md:Test Requirements (Audit Root Signing, Static Binary, Memory Usage, Keypair Isolation)
 
+	// 7.8 supply-chain note (additive, best-effort, non-fatal).
+	// SBOM + signing are primarily build-time (make sbom + build scripts). If a local artifact is visible,
+	// we surface it for the user (no impact on healthy flag or TCB paths).
+	if _, err := os.Stat("sbom/aegis-sbom.cdx.json"); err == nil {
+		fmt.Println("✓ Supply-chain (7.8): SBOM artifact present (sbom/aegis-sbom.cdx.json; see make sbom + threat-model.md:3)")
+	} else if _, err := os.Stat("sbom/aegis-sbom.txt"); err == nil {
+		fmt.Println("✓ Supply-chain (7.8): SBOM fallback manifest present (see make sbom)")
+	}
+
 	// Merkle / audit signing health (TCB responsibility)
 	if isDaemonRunning() {
 		fmt.Println("✓ Merkle / audit signing: TCB path active (genesis root signed on daemon start)")
