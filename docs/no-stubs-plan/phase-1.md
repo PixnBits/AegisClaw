@@ -207,6 +207,16 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.4 Surface Language Cleanup Slice**
+
+- Performed a targeted pass to soften or remove outdated "skeleton", "thin main", and transitional language in the agent runtime files (cmd/agent/main.go and internal/agent/loop/loop.go).
+- The hot paths are already clean; remaining comments are now more current and honest.
+- Verification passed.
+
+Small but real 1.4 progress toward the "no surface-only disclaimers remain" DoD item.
+
+**Continuing 1.4...**
+
 **1.4 Early Hardening Update**
 
 - Wired the real local skill/tool index (`agentSkills.FormatAvailableTools`) into all six reasoning step packages (observe, think, plan, act, execute, judge). This makes the 7.3 local awareness requirement actually participate in the agent's reasoning (previously all steps had empty `available := ""`).

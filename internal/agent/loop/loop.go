@@ -83,7 +83,7 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 		return nil, fmt.Errorf("observe step: %w", err)
 	}
 	lastResult = obs
-	// (real step output is returned; no surface prints in hot path per agent-runtime.md)
+	// (real step output is returned; no surface prints in hot path)
 
 	// 2. Think
 	th, err := think.Run(ctx, tc, llmCall)

@@ -105,9 +105,9 @@ func getBuildVersion() string {
 // and the thin runAgent wiring remain for 7.3/7.6 compatibility during the refactor.
 // They will be further cleaned in 1.3/1.4.
 
-// runAgent is now a thin skeleton (Phase 1 1.1b).
-// All heavy lifting (real 6-step loop, key hygiene, transport selection) lives in
-// internal/agent/* and the hubclient.
+// runAgent is the thin launcher for the real Agent Runtime.
+// All heavy lifting (real 6-step loop, key hygiene, transport selection, reasoning)
+// lives in internal/agent/* and the hubclient.
 //
 // SPEC: agent-runtime.md §Communication + §Security (real vsock path when running
 // inside Firecracker, distributed per-VM key only, no more GenerateKey in prod path).
@@ -285,7 +285,7 @@ func main() {
 //
 // Re-exports of the 7.3 skills index for the fast-path command handlers
 // (tool.list, skills.snapshot, etc.). The real 6-step loop uses the package
-// directly.
+// directly (as required by agent-runtime.md).
 type (
 	Skill        = agentSkills.Skill
 	Tool         = agentSkills.Tool
