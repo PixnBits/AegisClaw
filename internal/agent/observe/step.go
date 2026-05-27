@@ -13,10 +13,12 @@ import (
 )
 
 func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*agent.StepResult, error) {
+	// Incorporate memory context (fetched at start of RunTurn per memory-vm.md)
 	input := fmt.Sprintf("%v", tc.Input)
-	available := "" // TODO in 1.1b follow-up: use skills.FormatAvailableTools(tc.SkillIndex, ...)
+	available := "" // TODO: wire skills.FormatAvailableTools properly
+
 	custom := tc.CustomInstructions
-	prompt := custom + "Observe and parse the user/agent request. Extract intent, key entities, and whether this requires a proposal (e.g. new skill). Available local tools/skills: " + available + ". Input: " + input + ". Return structured observation."
+	prompt := custom + "Observe and parse the user/agent request using the provided memory context. Extract intent, key entities, and whether this requires a proposal. Available local tools/skills: " + available + ". Context + Input: " + input + ". Return structured observation."
 
 	text, err := llm(ctx, prompt)
 	if err != nil {

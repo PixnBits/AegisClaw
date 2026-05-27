@@ -12,7 +12,7 @@ func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*ag
 	input := fmt.Sprintf("%v", tc.Input)
 	available := ""
 	custom := tc.CustomInstructions
-	prompt := custom + "Think step-by-step about the observed request using prior context. Identify risks, required skills/tools, autonomy implications. Available local tools you can actually call: " + available + ". Request: " + input
+	prompt := custom + "Think step-by-step about the observed request using the memory context from this turn. Identify risks, required skills/tools, autonomy implications. Available local tools: " + available + ". Context + Request: " + input
 	text, err := llm(ctx, prompt)
 	if err != nil {
 		return nil, err

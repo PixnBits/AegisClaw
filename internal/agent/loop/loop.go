@@ -83,7 +83,7 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 		return nil, fmt.Errorf("observe step: %w", err)
 	}
 	lastResult = obs
-	fmt.Println("1. Observe (real):", obs.Content)
+	// (real step output is returned; no surface prints in hot path per agent-runtime.md)
 
 	// 2. Think
 	th, err := think.Run(ctx, tc, llmCall)
@@ -91,7 +91,6 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 		return nil, fmt.Errorf("think step: %w", err)
 	}
 	lastResult = th
-	fmt.Println("2. Think (real):", th.Content)
 
 	// 3. Plan
 	pl, err := plan.Run(ctx, tc, llmCall)
@@ -99,7 +98,6 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 		return nil, fmt.Errorf("plan step: %w", err)
 	}
 	lastResult = pl
-	fmt.Println("3. Plan (real):", pl.Content)
 
 	// 4. Act
 	ac, err := act.Run(ctx, tc, llmCall)
@@ -107,7 +105,6 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 		return nil, fmt.Errorf("act step: %w", err)
 	}
 	lastResult = ac
-	fmt.Println("4. Act (real):", ac.Content)
 
 	// 5. Execute (this is where real tool/skill calls via Hub will happen in later slices)
 	ex, err := execute.Run(ctx, tc, llmCall)
@@ -115,7 +112,6 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 		return nil, fmt.Errorf("execute step: %w", err)
 	}
 	lastResult = ex
-	fmt.Println("5. Execute (real):", ex.Content)
 
 	// 6. Judge (final quality + governance gate)
 	ju, err := judge.Run(ctx, tc, llmCall)
@@ -123,7 +119,6 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 		return nil, fmt.Errorf("judge step: %w", err)
 	}
 	lastResult = ju
-	fmt.Println("6. Judge (real):", ju.Content)
 
 	// The judge step may have side-effects (e.g. proposal creation) — those are
 	// performed inside the judge package using the hub client when appropriate.

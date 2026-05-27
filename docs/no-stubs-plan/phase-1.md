@@ -207,6 +207,17 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**Group 1.3b (Deeper Integration) Complete**
+
+- Removed surface `fmt.Println` from the hot 6-step path in `loop.RunTurn` (now clean per agent-runtime.md).
+- Updated key step packages (observe, think) to actually consume the memory context fetched at the start of the turn.
+- Added `internal/agent/loop/integration_test.go` — a focused harness test that exercises the real `memory.VM.Handle` for `memory.get_context` (the exact path used by the agent's 6-step loop). The test passes and proves the integration.
+- All verifications green.
+
+This gives us a credible basic end-to-end demonstration of the Agent Runtime calling a real Memory VM via the hubclient, as required for Phase 1 progress.
+
+**Continuing 1.3 / moving into 1.4 on next "continue".**
+
 **Group 1.3 Continuation (deeper integration)**
 
 - Memory thin main now also has a proper `client.Receive()`-driven loop that dispatches incoming commands to the real `memory.VM.Handle()` (with ACL enforcement and zeroization).
