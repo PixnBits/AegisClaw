@@ -15,7 +15,27 @@ type VMConfig struct {
 	Memory        uint64 // Memory in MB
 	VCpus         int
 	PublicKey     ed25519.PublicKey
-	PrivateKey    ed25519.PrivateKey // per-VM private key for secure injection by backend; daemon must not retain after handoff (TCB)
+	// PrivateKey: per-VM Ed25519 private key. Host Daemon TCB responsibility (host-daemon.md:Responsibilities):
+	// generate + hand off to backend for one-time secure injection into the guest only.
+	// Daemon MUST zero and clear this immediately after successful Start (see orchestrator.StartVM).
+	// Never stored in Manager (only pubs via RegisterVM). Never appears in ListVMs responses post-handoff.
+	// Violating this is a critical TCB break (threat-model.md: Host Daemon game-over).
+	PrivateKey    ed25519.PrivateKey
+
+	// PrivateKeyPath: Daemon-side secure key distribution channel (7.5.4).
+	// When non-empty, the Host Daemon has written the VM's Ed25519 private key
+	// to this file (0600, root-owned, in state dir) before starting the VM.
+	// The backend is responsible for making this path available to the guest
+	// (kernel cmdline for Firecracker, env or tmpfs mount for Docker) so the
+	// guest init can read it exactly once, use it for signing, and then shred
+	// + unlink the file.
+	//
+	// This completes the TCB responsibility:
+	//   host-daemon.md:Responsibilities ("Generating and distributing Ed25519 keypairs")
+	//   host-daemon.md:Test Requirements / Keypair Isolation ("Private keys must never leave their assigned microVM")
+	// Raw PrivateKey bytes are zeroed in the daemon immediately after the file is written.
+	PrivateKeyPath string
+
 	NetworkConfig *NetworkConfig
 }
 

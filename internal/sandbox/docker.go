@@ -96,6 +96,16 @@ func (db *DockerBackend) Start(ctx context.Context, config VMConfig) error {
 		}
 	}
 
+	// 7.5.4: Pass the ephemeral private key path to the guest (daemon-side
+	// secure distribution channel). For Docker dev we use an env var (weaker
+	// than the Firecracker cmdline + file model; real secrets should use
+	// tmpfs secret mounts in production). The guest init should consume once
+	// and shred.
+	// See VMConfig.PrivateKeyPath and host-daemon.md key distribution rules.
+	if config.PrivateKeyPath != "" {
+		args = append(args, "-e", fmt.Sprintf("AEGIS_VM_PRIVATE_KEY_PATH=%s", config.PrivateKeyPath))
+	}
+
 	// Mount the filesystem/image
 	if config.RootfsPath != "" {
 		args = append(args, "-v", fmt.Sprintf("%s:/rootfs:ro", config.RootfsPath))
@@ -158,6 +168,12 @@ func (db *DockerBackend) Stop(ctx context.Context, vmID string) error {
 	// Clean up network
 	networkName := fmt.Sprintf("aegis-net-%s", vmID)
 	_ = db.removeNetwork(ctx, networkName)
+
+	// 7.5.4: Best-effort cleanup of the ephemeral VM private key file
+	// (defense in depth — the guest should have already shredded it).
+	if sandbox.config.PrivateKeyPath != "" {
+		_ = os.Remove(sandbox.config.PrivateKeyPath)
+	}
 
 	logrus.Infof("Sandbox %s stopped", vmID)
 	return nil

@@ -172,6 +172,12 @@ func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
 	_ = os.Remove(vm.sockPath)
 	_ = os.Remove(filepath.Join(fb.stateDir, "fc-"+vmID+".json"))
 
+	// 7.5.4: Best-effort cleanup of the ephemeral VM private key file
+	// (defense in depth — the guest should have already shredded it).
+	if vm.config.PrivateKeyPath != "" {
+		_ = os.Remove(vm.config.PrivateKeyPath)
+	}
+
 	logrus.Infof("VM %s stopped", vmID)
 	return nil
 }
@@ -261,6 +267,14 @@ func buildBootArgs(config VMConfig) string {
 			config.NetworkConfig.BoundaryEgressAddr,
 			config.NetworkConfig.BoundarySkillID)
 		base += egress
+	}
+
+	// 7.5.4: Pass the ephemeral private key path to the guest (daemon-side
+	// secure distribution channel). The guest init is expected to read the
+	// file once, load the key, and then shred + unlink it.
+	// See VMConfig.PrivateKeyPath and host-daemon.md key distribution rules.
+	if config.PrivateKeyPath != "" {
+		base += fmt.Sprintf(" aegis.vm_private_key_path=%s", config.PrivateKeyPath)
 	}
 
 	return base
