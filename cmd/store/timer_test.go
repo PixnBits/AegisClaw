@@ -197,9 +197,11 @@ func TestFilePerms0600(t *testing.T) {
 	})
 }
 
-// Phase 2.6 grant read command tests (store-vm.md durable ownership).
-// These directly exercise the new grant.list / grant.get paths that enable
-// CLI surfaces to consume authoritative state from the Store.
+// Phase 2.6 + 2.7 grant tests (store-vm.md durable ownership).
+// These exercise the grant write + read paths. After the 2.7 cutover in
+// runAutonomyGrant, the Store (via autonomy.grant) is the primary writer
+// for new grants. The local CLISession is only a cache on success or full
+// fallback on Store failure.
 
 func TestGrantListAndGet(t *testing.T) {
 	withTempDir(t, func() {

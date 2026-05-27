@@ -259,4 +259,49 @@ Citations for 2.5: phase-2.md (this section + prior 2.4/DoD), event-system.md (P
 
 Citations for 2.6: phase-2.md (this section + DoD), store-vm.md (Responsibility Boundaries + Architecture for durable data), event-system.md (Persistent timers section + "Persistent timers are stored in Store VM").
 
-Next "continue" can finish more call sites (e.g. deeper into runAutonomyGrant, other status commands), begin actually guarding/deprecating the local grant mutation paths, or tackle the store-vm.md spec update.
+## Phase 2.7 Group Complete (Primary-path cutover in runAutonomyGrant + legacy language hardening)
+
+**Changes in this group (2.7) — directly targeting the two open DoD checkboxes:**
+
+- **Major behavioral cutover in `runAutonomyGrant`** ([cmd/aegis/main.go](/home/pixnbits/AegisClaw/docs/lessons-learned/cmd/aegis/main.go)):
+  - Store (`autonomy.grant` + `timer.schedule`) is now attempted **first** — it is the happy path and authoritative writer.
+  - Local `CLISession` grant mutation (`AutonomyPreset`, `GrantedScopes`, `AutonomyExpires`) + local `EventBus.ScheduleTimer` only happens on Store failure (explicit fallback).
+  - On successful Store grant, we still update the local struct as a best-effort cache (so display paths that read `sessions.json` continue to work during the final migration).
+  - Updated success output messages to clearly state that the authoritative record lives in the Store VM.
+
+- **Stronger "scheduled for removal" language** across the remaining thin surface:
+  - The large TODO block before `startPeriodicReconciliation` now explicitly labels `reconcileExpiredAutonomy`, `reconcileExpiredBackgroundWork`, the `reconciliation.tick`, and the grant fields in `CLISession` as **legacy thin fallback scaffolding** that will be removed once the migration is complete.
+  - The two `reconcileExpired*` function headers received even more direct "LEGACY THIN FALLBACK (scheduled for removal)" wording.
+  - This makes the intent unmistakable for future contributors.
+
+- **Test documentation**: Added clarifying comments in the grant tests noting that after 2.7, Store (via `autonomy.grant`) is the primary writer.
+
+These changes directly attack the two remaining red items in the DoD:
+- "No thin wrapper functions remaining in `cmd/aegis`"
+- "All expiration logic removed from CLI surface"
+
+**Verification performed (this group):**
+- `go build ./cmd/aegis ./cmd/store` → clean (after significant logic change in the grant command)
+- `go test -count=1 ./cmd/store ./cmd/aegis` → both packages pass
+- `make build-binaries` → all binaries succeeded
+- `./bin/aegis doctor` → clean
+- AGENTS.md followed exactly.
+
+**Honest DoD re-audit after 2.7:**
+- [x] `reconcile.expired_grants` fully implemented and functional in Store VM
+- [x] Durable storage (JSON 0600) for autonomy grants, background work, and general timers
+- [x] Timers survive daemon and Store VM restarts
+- [x] Full test coverage for timer scheduling, reconciliation, and persistence
+- [ ] **No thin wrapper functions remaining in `cmd/aegis`** — Significant real progress: `runAutonomyGrant` (the primary writer of new grants) now treats Store as the only happy path. Local mutation is fallback-only. However, the local `reconcileExpired*` bodies, `reconciliation.tick`, and `CLISession` grant fields still exist as documented legacy scaffolding. Full deletion is now the next logical step.
+- [ ] **All expiration logic removed from CLI surface** — Same status as above. The local expiration scheduling and reconciliation logic are now clearly labeled as temporary and only used on failure. The Store owns the authoritative path for new grants and their timers.
+
+**Remaining work to declare Phase 2 complete:**
+- Finish the removal: either delete or reduce to no-ops the local `reconcileExpired*` functions, the `reconciliation.tick` subscriber, and the grant-related fields/mutation inside `CLISession`.
+- Clean up any remaining "surface state" language in help text and `runAutonomyShow`.
+- (Optional but nice) Update `docs/specs/store-vm.md` to officially document the grant/timer responsibilities that were added during Phase 2.
+
+**Status:** This group took the final major step toward the original Phase 2 completion criteria. We stopped adding alongside the old code and started making the old code the explicit fallback. The two checkboxes are now much closer to being checkable. The remaining work is primarily cleanup/deletion of scaffolding that we have already replaced and isolated.
+
+Citations for 2.7: phase-2.md (this section + DoD + "Removal of Surface Code"), store-vm.md (durable state ownership), event-system.md (Store as manager of persistent timers and events).
+
+Next "continue" can finish the actual deletion of the legacy thin functions (making the checkboxes green) or move on if the user is satisfied with the current state of the foundation.
