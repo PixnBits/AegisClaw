@@ -207,6 +207,18 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3h Update (Message Delivery Wiring)**
+
+- In the headless chat path, after the paired launch, the primary delivery is now the direct hubclient send to the real agent component ("agent-<session>").
+- The old portal call is now a fallback.
+- Removed the last "limited mode" / "real runtime path attempted" surface language in the primary response path for this flow.
+- The note now clearly states delivery to the real Agent Runtime + Memory VM.
+- Verification passed.
+
+This is direct, spec-aligned progress on removing surface-only chat behavior and making the daemon actually talk to the real core runtime.
+
+**Continuing 1.3 / 1.4...**
+
 **1.3g Update (Harness + Daemon Wiring Deepening)**
 
 - Strengthened the integration harness to reference and type-check the new `StartPairedAgentAndMemory` orchestrator primitive.

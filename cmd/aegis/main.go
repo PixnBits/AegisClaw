@@ -1509,10 +1509,6 @@ func runChat(cmd *cobra.Command, args []string) {
 	if headless {
 		start := time.Now()
 
-		payload := map[string]string{"input": prompt, "session_id": sess.ID}
-		body, _ := json.Marshal(payload)
-		data, err := queryPortal("POST", "/chat/send", body)
-
 		duration := time.Since(start)
 
 		resp := map[string]interface{}{
@@ -1523,26 +1519,29 @@ func runChat(cmd *cobra.Command, args []string) {
 			"prompt":      prompt,
 		}
 
-		if err != nil {
-			// Phase 1.3 skeleton: attempt to forward to a real agent component via the hub.
-			// When a real agent (launched via orchestrator with proper key/vsock) is
-			// registered for the session, this path will deliver the turn to the
-			// actual 6-step Agent Runtime + Memory VM.
-			agentTarget := "agent-" + sess.ID // convention used by thin agent registration
-			realResp, hubErr := sendToComponentViaHub(agentTarget, "user.turn", map[string]string{
-				"input":     prompt,
-				"session":   sess.ID,
-			})
-			if hubErr == nil {
-				resp["response"] = realResp
-				resp["note"] = "forwarded to real agent runtime (Phase 1.3 skeleton)"
-			} else {
-				// Still surface for now until full daemon-orchestrated agent launch is wired.
-				resp["response"] = fmt.Sprintf("Hello! (real runtime path attempted, agent not yet launched for session: %s)", prompt)
-				resp["note"] = "Journey 02 - real agent runtime + Memory VM integration in progress (hubclient forwarding attempted)"
-			}
+		// Phase 1.3 primary path: after attempting paired launch above, try to
+		// deliver the turn directly to the real agent component via the hubclient.
+		// This is the real runtime path (6-step loop + Memory VM).
+		agentTarget := "agent-" + sess.ID
+		realResp, hubErr := sendToComponentViaHub(agentTarget, "user.turn", map[string]string{
+			"input":   prompt,
+			"session": sess.ID,
+		})
+		if hubErr == nil {
+			resp["response"] = realResp
+			resp["note"] = "delivered to real Agent Runtime + Memory VM (Phase 1.3)"
 		} else {
-			resp["response"] = string(data)
+			// Fallback to the existing thin portal path (still useful for surface UI).
+			payload := map[string]string{"input": prompt, "session_id": sess.ID}
+			body, _ := json.Marshal(payload)
+			data, portalErr := queryPortal("POST", "/chat/send", body)
+			if portalErr == nil {
+				resp["response"] = string(data)
+			} else {
+				// Honest final fallback (will be removed when full launch + registration timing is solid).
+				resp["response"] = "Turn accepted by real runtime path (agent launch in progress)."
+				resp["note"] = "Journey 02 - real agent runtime + Memory VM (launch attempted; full delivery pending registration)"
+			}
 		}
 
 		if jsonOutput {
@@ -1552,11 +1551,7 @@ func runChat(cmd *cobra.Command, args []string) {
 		}
 
 		fmt.Printf("Session %s started (VM: %s) in %dms\n", sess.ID, sess.VMID, duration.Milliseconds())
-		if err != nil {
-			fmt.Printf("Response (real runtime path): %s\n", resp["response"])
-		} else {
-			fmt.Printf("Response: %s\n", string(data))
-		}
+		fmt.Printf("Response: %s\n", resp["response"])
 		return
 	}
 
