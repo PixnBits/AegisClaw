@@ -81,20 +81,45 @@ func runMemory(cmd *cobra.Command, args []string) {
 	}
 	fmt.Println("Memory VM registered, assigned ID:", regResp.AssignedID)
 
-	// === Real Memory VM ===
-	memVM := memory.NewVM(7 * 24 * time.Hour) // 7-day TTL for long-term in skeleton
+	// === Real Memory VM (Phase 1.3 integration) ===
+	memVM := memory.NewVM(7 * 24 * time.Hour) // 7-day TTL
 	memVM.SetHubClient(client)
-	memVM.BindAgent(regResp.AssignedID) // 1:1 pairing
+	memVM.BindAgent(regResp.AssignedID) // 1:1 with its agent
 
-	// Main loop - delegate everything to the real VM
+	fmt.Println("memory: real receive-driven loop active, dispatching to VM with ACL enforcement + zeroization")
+
+	// Proper message loop (symmetric to agent)
 	for {
-		// For the transitional skeleton we keep a simple receive loop.
-		// In full integration the hubclient will drive this.
-		fmt.Println("memory (thin 1.2 skeleton): real VM active with ACLs + 32k limit + zeroization")
+		msg, err := client.Receive(context.Background())
+		if err != nil {
+			log.Println("memory receive error:", err)
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
 
-		// Placeholder: in real usage the Hub would deliver messages here.
-		// For now we just keep the process alive so it can be launched as a guest.
-		time.Sleep(5 * time.Second)
+		fmt.Println("Memory received:", msg.Command, "from", msg.Source)
+
+		payload, handleErr := memVM.Handle(context.Background(), msg)
+		if handleErr != nil {
+			resp := hubclient.Message{
+				Source:      client.AssignedID(),
+				Destination: msg.Source,
+				Command:     "error",
+				Payload:     handleErr.Error(),
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}
+			_, _ = client.Send(context.Background(), resp)
+			continue
+		}
+
+		resp := hubclient.Message{
+			Source:      client.AssignedID(),
+			Destination: msg.Source,
+			Command:     "memory.response",
+			Payload:     payload,
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		}
+		_, _ = client.Send(context.Background(), resp)
 	}
 }
 

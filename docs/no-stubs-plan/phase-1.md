@@ -206,3 +206,15 @@ Further work in this group (or 1.4) will include:
 - Removal of remaining limited-mode chat paths in cmd/aegis
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
+
+**Group 1.3 Continuation (deeper integration)**
+
+- Memory thin main now also has a proper `client.Receive()`-driven loop that dispatches incoming commands to the real `memory.VM.Handle()` (with ACL enforcement and zeroization).
+- Both Agent Runtime and Memory VM are now symmetric in how they use the hubclient for bidirectional communication.
+- The real `memory.get_context` path inside `loop.RunTurn` (and the 6 steps) is now wired to talk to real Memory VM instances over the hubclient.
+- This completes the core "agent calls Memory exclusively through AegisHub (vsock/JSON-RPC)" requirement for the skeleton phase.
+- Build and tests still green.
+
+Next slices would add a full in-process test harness with a minimal router + actual message passing between a live agent loop and live memory loop, plus daemon-side launching of the pair.
+
+**Onward to the rest of 1.3 / 1.4 on next "continue".**
