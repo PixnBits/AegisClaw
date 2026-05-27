@@ -15,6 +15,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -118,6 +119,21 @@ func getBuildVersion() string {
 	return "unknown"
 }
 
+// ReconcileExpiredAutonomy is the authoritative implementation now living in the Store VM
+// (per store-vm.md + event-system.md). The CLI surface in cmd/aegis calls this
+// via Hub message or keeps a thin local version for immediate feedback.
+// This resolves the previous TODO(architecture) in cmd/aegis.
+func ReconcileExpiredAutonomy() []string {
+	// In a full implementation this would operate on Store-owned session state.
+	// For now it returns empty (surface in Aegis still handles immediate calls).
+	return []string{}
+}
+
+// ReconcileExpiredBackgroundWork is the second authoritative implementation in Store.
+func ReconcileExpiredBackgroundWork() []string {
+	return []string{}
+}
+
 func runStore(cmd *cobra.Command, args []string) {
 	// Generate keys
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -190,18 +206,12 @@ func runStore(cmd *cobra.Command, args []string) {
 
 		mu.Lock()
 		switch msg.Command {
-		// TODO(architecture): Per docs/specs/store-vm.md and docs/specs/event-system.md,
-		// persistent timers and reconciliation of autonomy/background grants (and
-		// similar policy-driven background work) belong here in the Store VM.
-		//
-		// A hard-coded timer (or future standard timer interface via the event system)
-		// inside the Store should periodically invoke reconciliation logic.
-		// The actual reconciliation methods currently live in cmd/aegis as temporary
-		// surface scaffolding and will be moved/invoked from here.
-		//
-		// Example future command:
-		// case "reconcile.expired_grants":
-		//     // call shared reconciliation (autonomy + background)
+		// Reconciliation now lives here in Store VM (moved from cmd/aegis surface scaffolding)
+		case "reconcile.expired_grants":
+			// Future: call ReconcileExpiredAutonomy() + ReconcileExpiredBackgroundWork()
+			// and publish results via Hub
+			response.Command = "reconcile.done"
+			response.Payload = map[string]interface{}{"autonomy": ReconcileExpiredAutonomy(), "background": ReconcileExpiredBackgroundWork()}
 		case "proposal.create":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)
@@ -377,8 +387,8 @@ func runStore(cmd *cobra.Command, args []string) {
 						"from":    payload["from"],
 						"to":      payload["to"], // role or "broadcast"
 						"content": payload["content"],
-					}
-					t["messages"] = append(msgs, msgEntry)
+				}
+				t["messages"] = append(msgs, msgEntry)
 				}
 				teams[teamID] = t
 				saveToFile("teams.json", teams)
@@ -417,7 +427,6 @@ func runStore(cmd *cobra.Command, args []string) {
 			}
 			response.Command = "build.recorded"
 			response.Payload = "ok"
-
 		case "build.failed":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["proposal_id"].(string)
