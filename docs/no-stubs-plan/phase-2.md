@@ -108,3 +108,14 @@ Gap analysis performed against live code (cmd/aegis/main.go:1769-1841 and cmd/st
 This completes the user's explicit starting tasks for this Phase 2 session (real timer loop + the three management functions + durable metadata + full reconcile command).
 
 Citations: phase-2.md §2.1, store-vm.md, event-system.md.
+
+**2.3 Surface Cutover Progress (this slice):**
+- Wired additional call sites in cmd/aegis to prefer Store VM reconciliation via Hub:
+  - `runTasksList`
+  - Main paths inside `runAutonomyGrant` (pre- and post-grant reconciliation)
+- Combined with prior slices (`reconciliation.tick` subscriber and `runSessionsStatus`), several high-visibility surfaces now delegate to the authoritative Store implementation when the daemon is running.
+- Local thin `reconcileExpired*` functions remain only as explicit, documented fallbacks.
+
+This is steady, measurable progress on the DoD item "No thin wrapper functions remaining in `cmd/aegis`".
+
+Citations: phase-2.md DoD, event-system.md (Hub-mediated), store-vm.md.

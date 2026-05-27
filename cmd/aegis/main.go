@@ -1708,9 +1708,12 @@ func runSessionsKill(cmd *cobra.Command, args []string) {
 }
 
 func runTasksList(cmd *cobra.Command, args []string) {
-	// 7.2 consumers: ensure we reconcile before showing tasks (symmetry with sessions)
-	_ = reconcileExpiredAutonomy()
-	_ = reconcileExpiredBackgroundWork()
+	// Phase 2: Prefer Store VM for reconciliation
+	if _, _, err := reconcileExpiredGrantsViaStore(); err != nil {
+		// Fallback to local thin implementation
+		_ = reconcileExpiredAutonomy()
+		_ = reconcileExpiredBackgroundWork()
+	}
 
 	// Journey 03/05 surface: Show active background work, tied to sessions where possible
 	tasks := []map[string]interface{}{}
@@ -1982,9 +1985,14 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 		id = args[0]
 	}
 
-	// Surface enforcement via timer reconciliation (7.2 consumers)
-	expiredAutonomy := reconcileExpiredAutonomy()
-	expiredBackground := reconcileExpiredBackgroundWork()
+	// Phase 2: Prefer Store VM for reconciliation before acting on autonomy
+	var expiredAutonomy, expiredBackground []string
+	if a, b, err := reconcileExpiredGrantsViaStore(); err == nil {
+		expiredAutonomy, expiredBackground = a, b
+	} else {
+		expiredAutonomy = reconcileExpiredAutonomy()
+		expiredBackground = reconcileExpiredBackgroundWork()
+	}
 	if len(expiredAutonomy) > 0 || len(expiredBackground) > 0 {
 		// Make the 7.2 timer consumers visibly useful on the surface.
 		if jsonOutput {
@@ -2135,9 +2143,11 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		// Run reconciliation on grant too (in case other grants expired)
-		_ = reconcileExpiredAutonomy()
-		_ = reconcileExpiredBackgroundWork() // second 7.2 consumer
+		// Phase 2: Prefer Store VM for post-grant reconciliation
+		if _, _, err := reconcileExpiredGrantsViaStore(); err != nil {
+			_ = reconcileExpiredAutonomy()
+			_ = reconcileExpiredBackgroundWork()
+		}
 		// Re-save
 		sessions := loadSessions()
 		for i := range sessions {
