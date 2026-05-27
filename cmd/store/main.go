@@ -472,10 +472,27 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = map[string]interface{}{"id": id}
 
 		case "timer.list":
+			// Phase 2.6 enhancement: return full timer records (not just IDs) so
+			// callers (CLI surfaces, future components) can see session_id, expires,
+			// preset etc. without extra roundtrips. Backward-compatible in spirit
+			// (previous []string callers can be updated; we control the main ones).
+			timers := loadTimers()
+			list := []interface{}{}
+			for id, t := range timers {
+				if tm, ok := t.(map[string]interface{}); ok {
+					tmCopy := make(map[string]interface{})
+					for k, v := range tm {
+						tmCopy[k] = v
+					}
+					tmCopy["id"] = id // ensure id is present
+					list = append(list, tmCopy)
+				}
+			}
 			response.Command = "timer.list"
-			response.Payload = ListActiveTimers()
+			response.Payload = list
 
 		// Phase 2: Record an autonomy grant in the Store (source of truth for durable grants)
+		// Per store-vm.md durable state ownership + event-system.md persistent timers.
 		case "autonomy.grant":
 			payload := msg.Payload.(map[string]interface{})
 			sessionID := payload["session_id"].(string)
@@ -493,6 +510,31 @@ func runStore(cmd *cobra.Command, args []string) {
 			saveGrants(grants)
 			response.Command = "autonomy.granted"
 			response.Payload = map[string]interface{}{"session_id": sessionID}
+
+		// Phase 2.6: Read commands so CLI surfaces can source authoritative current
+		// grant state from the Store instead of (or in addition to) local sessions.json.
+		// This is the key step that allows progressive removal of thin local grant
+		// display + expiration logic. Citations: store-vm.md (Store owns durable
+		// structured data), event-system.md (Store as source for persistent timer/grant state).
+		case "grant.list":
+			grants := loadGrants()
+			list := []interface{}{}
+			for _, g := range grants {
+				list = append(list, g)
+			}
+			response.Command = "grant.list"
+			response.Payload = list
+
+		case "grant.get":
+			payload := msg.Payload.(map[string]interface{})
+			sessionID := payload["session_id"].(string)
+			grants := loadGrants()
+			response.Command = "grant.get"
+			if g, ok := grants[sessionID]; ok {
+				response.Payload = g
+			} else {
+				response.Payload = nil
+			}
 		case "proposal.create":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)

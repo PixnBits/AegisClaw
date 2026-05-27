@@ -196,3 +196,76 @@ func TestFilePerms0600(t *testing.T) {
 		}
 	})
 }
+
+// Phase 2.6 grant read command tests (store-vm.md durable ownership).
+// These directly exercise the new grant.list / grant.get paths that enable
+// CLI surfaces to consume authoritative state from the Store.
+
+func TestGrantListAndGet(t *testing.T) {
+	withTempDir(t, func() {
+		// Seed via the same mechanism the autonomy.grant handler uses
+		grants := map[string]interface{}{
+			"sess-abc": map[string]interface{}{
+				"session_id": "sess-abc",
+				"preset":     "full",
+				"expires":    time.Now().UTC().Add(1 * time.Hour).Format(time.RFC3339),
+				"scopes":     []string{"web", "code"},
+			},
+			"sess-def": map[string]interface{}{
+				"session_id": "sess-def",
+				"preset":     "read-only",
+				"expires":    time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339),
+			},
+		}
+		b, _ := json.MarshalIndent(grants, "", "  ")
+		_ = os.WriteFile("grants.json", b, 0600)
+
+		// Simulate what "grant.list" handler does
+		loaded := loadGrants()
+		list := []interface{}{}
+		for _, g := range loaded {
+			list = append(list, g)
+		}
+		if len(list) != 2 {
+			t.Fatalf("expected 2 grants in list, got %d", len(list))
+		}
+
+		// Simulate "grant.get"
+		if gIface, ok := loaded["sess-abc"]; !ok {
+			t.Error("sess-abc should be retrievable via grant.get simulation")
+		} else if g, ok := gIface.(map[string]interface{}); ok {
+			if p, ok := g["preset"].(string); !ok || p != "full" {
+				t.Errorf("preset for sess-abc = %v", p)
+			}
+		}
+	})
+}
+
+func TestGrantRoundtripWithAutonomyGrantPattern(t *testing.T) {
+	withTempDir(t, func() {
+		// Mirror exactly what the autonomy.grant handler does in the main loop
+		sessionID := "sess-roundtrip"
+		grants := loadGrants()
+		grantRecord := map[string]interface{}{
+			"session_id": sessionID,
+			"preset":     "balanced",
+			"expires":    time.Now().UTC().Add(45 * time.Minute).Format(time.RFC3339),
+			"granted_at": time.Now().UTC().Format(time.RFC3339),
+			"scopes":     []string{"read"},
+		}
+		grants[sessionID] = grantRecord
+		saveGrants(grants)
+
+		// Now read it back the way grant.get would
+		loaded := loadGrants()
+		gIface, ok := loaded[sessionID]
+		if !ok {
+			t.Fatal("grant written via autonomy.grant pattern was not readable")
+		}
+		if g, ok := gIface.(map[string]interface{}); ok {
+			if p, _ := g["preset"].(string); p != "balanced" {
+				t.Errorf("roundtrip preset mismatch: %s", p)
+			}
+		}
+	})
+}

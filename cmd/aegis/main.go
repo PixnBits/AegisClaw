@@ -120,6 +120,52 @@ func reconcileExpiredGrantsViaStore() (autonomy []string, background []string, e
 	return autonomy, background, nil
 }
 
+// Phase 2.6: New helpers to fetch authoritative current grant state from the
+// Store VM. These allow display surfaces (runSessionsList, runSessionsStatus,
+// etc.) to show grant/preset/expiration data that lives in the Store's durable
+// grants.json (0600) instead of relying solely on the local CLISession cache.
+// Combined with the existing autonomy.grant + timer.schedule writes, this moves
+// us closer to "Store as single source of truth" so the local thin
+// reconcileExpired* and sessions.json grant fields can eventually be removed.
+// Citations: store-vm.md (Store owns durable structured data and grant state),
+// event-system.md (persistent timers/grants managed via Store + Hub events).
+func getActiveGrantsFromStore() (map[string]map[string]interface{}, error) {
+	resp, err := sendToComponentViaHub("store", "grant.list", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]map[string]interface{})
+	if list, ok := resp.([]interface{}); ok {
+		for _, item := range list {
+			if g, ok := item.(map[string]interface{}); ok {
+				if sid, ok := g["session_id"].(string); ok {
+					result[sid] = g
+				} else if sidIface, ok := g["session_id"]; ok {
+					// tolerate non-string in defensive way
+					if s, ok := sidIface.(string); ok {
+						result[s] = g
+					}
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+func getGrantFromStore(sessionID string) (map[string]interface{}, error) {
+	resp, err := sendToComponentViaHub("store", "grant.get", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if g, ok := resp.(map[string]interface{}); ok {
+		return g, nil
+	}
+	return nil, nil // not found is not an error for caller
+}
+
 var (
 	socketPath   string
 	pidFile      string
@@ -1606,6 +1652,13 @@ func runSessionsList(cmd *cobra.Command, args []string) {
 		_ = reconcileExpiredBackgroundWork()
 	}
 
+	// Phase 2.6: Attempt to source current authoritative grant state from Store.
+	// This lets the displayed autonomy/preset/expiration come from the durable
+	// grants.json in the Store VM (single source of truth) rather than only the
+	// local CLISession cache in sessions.json. Local data remains as fallback.
+	// Citations: store-vm.md, event-system.md (see getActiveGrantsFromStore).
+	storeGrants, storeErr := getActiveGrantsFromStore()
+
 	// Journey 02: Use real tracked sessions from chat
 	tracked := listActiveSessions()
 
@@ -1626,6 +1679,32 @@ func runSessionsList(cmd *cobra.Command, args []string) {
 		if len(s.GrantedScopes) > 0 {
 			autonomy += " + " + strings.Join(s.GrantedScopes, ",")
 		}
+
+		// Phase 2.6 enrichment from Store when available (happy path for display)
+		if storeErr == nil {
+			if g, ok := storeGrants[s.ID]; ok {
+				if preset, ok := g["preset"].(string); ok && preset != "" {
+					autonomy = preset
+				}
+				if scopes, ok := g["scopes"]; ok {
+					if scList, ok := scopes.([]interface{}); ok && len(scList) > 0 {
+						parts := []string{}
+						for _, sc := range scList {
+							if ss, ok := sc.(string); ok {
+								parts = append(parts, ss)
+							}
+						}
+						if len(parts) > 0 {
+							autonomy += " + " + strings.Join(parts, ",")
+						}
+					}
+				}
+				if exp, ok := g["expires"].(string); ok && exp != "" {
+					autonomy += " (until " + exp + ")"
+				}
+			}
+		}
+
 		bg := ""
 		if s.BackgroundExpires != nil {
 			bg = " bg-until=" + s.BackgroundExpires.Format(time.RFC3339)
@@ -1665,6 +1744,30 @@ func runSessionsStatus(cmd *cobra.Command, args []string) {
 	}
 
 	if s, ok := getSession(id); ok {
+		// Phase 2.6: Enrich with authoritative grant details from Store when possible.
+		// This continues the cutover so displayed autonomy state reflects the
+		// Store's durable record (the real source of truth).
+		if grant, err := getGrantFromStore(id); err == nil && grant != nil {
+			if preset, ok := grant["preset"].(string); ok && preset != "" {
+				s.AutonomyPreset = preset
+			}
+			if scopes, ok := grant["scopes"]; ok {
+				if scList, ok := scopes.([]interface{}); ok {
+					s.GrantedScopes = nil
+					for _, sc := range scList {
+						if ss, ok := sc.(string); ok {
+							s.GrantedScopes = append(s.GrantedScopes, ss)
+						}
+					}
+				}
+			}
+			if expStr, ok := grant["expires"].(string); ok && expStr != "" {
+				if t, err := time.Parse(time.RFC3339, expStr); err == nil {
+					s.AutonomyExpires = &t
+				}
+			}
+		}
+
 		if jsonOutput {
 			b, _ := json.Marshal(s)
 			fmt.Println(string(b))
