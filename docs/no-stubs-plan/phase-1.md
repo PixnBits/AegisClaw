@@ -95,3 +95,23 @@ When this phase is complete, an agent should be able to:
 **No surface/stub code added.** All future changes will delete surface (mockLLMWithFallback etc. from cmd/agent/main.go:146-153,147) and replace with real per specs.
 
 **Ready for "continue" to Group 1.1a.** (User prompt will trigger next group; this session works completely autonomously per query.)
+
+**Group 1.1a COMPLETE (Transport Hub Client – foundational vsock/unix client)**
+
+- Created `internal/transport/hubclient/types.go` + `client.go` + `client_test.go` (new package).
+- Full paranoid Client interface + DialUnix / DialVsock + Register (exact handshake per aegishub.md) + Send (auto-sign + reply) + zeroization on Close + context deadlines + error mapping to all ERR_* sentinels.
+- 100% wire-compatible Message + signMessage logic copied from cmd/agent:68 and cmd/aegishub:170.
+- Unit tests: hermetic net.Pipe() simulation of full register + Send roundtrip (the exact flow the future 6-step loop will use), early fail-closed on bad key material, pre-register guard, vsock graceful failure, ZeroPrivateKey hygiene.
+- All tests pass, new pkg integrated into tree.
+- **No changes to hub, agent, or memory binaries yet** (per plan: "prep hub (no change yet)").
+- Verification (this group): targeted go test + make build-binaries + ./bin/aegis doctor — all green, no regressions.
+- Commit will follow immediately after this note (atomic, spec-referenced).
+
+**Spec citations in the new code + this note + upcoming commit message:**
+- aegishub.md §Handshake Sequence (1-4, "via vsock", register with pubkey, receive ACLs + assigned_id)
+- agent-runtime.md §Communication ("Only allowed interfaces: vsock / JSON-RPC to AegisHub")
+- security-model.md §Communication & Mediation + §Isolation Strategy (fail-closed, least-privilege, every boundary is a boundary)
+- no-stubs-plan/phase-1.md 1.1a (transport before any agent runtime changes)
+- runtime-architecture.md (Agent + Memory VMs only talk via the router)
+
+**Next on "continue":** Group 1.1b — the real 6-step packages under internal/agent/ + thin cmd/agent/main.go skeleton (remove all mockLLMWithFallback + inline steps from the prod execution path).
