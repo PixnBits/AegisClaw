@@ -92,6 +92,34 @@ func sendToComponentViaHub(target string, cmd string, payload interface{}) (inte
 	return resp.Payload, nil
 }
 
+// reconcileExpiredGrantsViaStore asks the Store VM (via Hub) for authoritative
+// reconciliation of expired autonomy and background grants. This is the Phase 2
+// path that moves enforcement out of the daemon surface.
+func reconcileExpiredGrantsViaStore() (autonomy []string, background []string, err error) {
+	resp, err := sendToComponentViaHub("store", "reconcile.expired_grants", nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if m, ok := resp.(map[string]interface{}); ok {
+		if a, ok := m["autonomy_expired"].([]interface{}); ok {
+			for _, v := range a {
+				if s, ok := v.(string); ok {
+					autonomy = append(autonomy, s)
+				}
+			}
+		}
+		if b, ok := m["background_expired"].([]interface{}); ok {
+			for _, v := range b {
+				if s, ok := v.(string); ok {
+					background = append(background, s)
+				}
+			}
+		}
+	}
+	return autonomy, background, nil
+}
+
 var (
 	socketPath   string
 	pidFile      string
@@ -1606,9 +1634,15 @@ func runSessionsList(cmd *cobra.Command, args []string) {
 }
 
 func runSessionsStatus(cmd *cobra.Command, args []string) {
-	// Surface timer enforcement for autonomy + background (7.2 consumers)
-	expiredAutonomy := reconcileExpiredAutonomy()
-	expiredBackground := reconcileExpiredBackgroundWork()
+	// Phase 2: Prefer Store VM for reconciliation when possible
+	var expiredAutonomy, expiredBackground []string
+	if a, b, err := reconcileExpiredGrantsViaStore(); err == nil {
+		expiredAutonomy, expiredBackground = a, b
+	} else {
+		// Fallback to local surface implementation
+		expiredAutonomy = reconcileExpiredAutonomy()
+		expiredBackground = reconcileExpiredBackgroundWork()
+	}
 
 	id := "unknown"
 	if len(args) > 0 {
@@ -1862,6 +1896,20 @@ func startPeriodicReconciliation() {
 	eventbus.DefaultBus.ScheduleRecurring(15*time.Second, "reconciliation.tick", nil)
 
 	eventbus.Subscribe("reconciliation.tick", func(e eventbus.Event) {
+		// Phase 2: Prefer authoritative reconciliation from the Store VM over Hub.
+		if a, b, err := reconcileExpiredGrantsViaStore(); err == nil {
+			// If Store gave us results, we can still publish local events for UI reactivity
+			// (the local functions also publish, but we avoid double work here).
+			for _, sid := range a {
+				eventbus.PublishJSON("autonomy.expired", map[string]any{"session_id": sid, "reason": "timer"}, eventbus.WithSource("store.reconcile"))
+			}
+			for _, sid := range b {
+				eventbus.PublishJSON("background.expired", map[string]any{"session_id": sid, "reason": "timer"}, eventbus.WithSource("store.reconcile"))
+			}
+			return
+		}
+
+		// Fallback to local thin implementation (still useful when Store is unreachable)
 		_ = reconcileExpiredAutonomy()
 		_ = reconcileExpiredBackgroundWork()
 	})

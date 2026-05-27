@@ -87,19 +87,19 @@ Gap analysis performed against live code (cmd/aegis/main.go:1769-1841 and cmd/st
 
 **Honest starting point:** Reconciliation logic has only been stubbed in Store. The real enforcement + state still lives in the daemon's local `CLISession` + file system with active `reconcileExpired*` functions called from the CLI surface.
 
-**Proposed First Implementation Slice (2.1a) — Status: In Progress / Core Done**
+**Phase 2 Slice Progress (2.1a + 2.1b)**
 
-Completed in this slice:
-- Added proper 0600 persistence helpers for `grants.json` and `background.json`.
-- Implemented real `ReconcileExpiredAutonomy()` and `ReconcileExpiredBackgroundWork()` that actually expire entries and persist changes.
-- Activated the `reconcile.expired_grants` Hub command so it returns real results.
-- Added startup loading of grant state (basic recovery).
+**2.1a (Durable core in Store):**
+- Real Reconcile* functions + 0600 grants.json / background.json.
+- Functional `reconcile.expired_grants` Hub command.
+- Startup loading for basic recovery.
 
-Remaining in 2.1a / next micro-slice:
-- Wire some surface calls in `cmd/aegis` to prefer the Store version via Hub.
-- Add unit tests for the new reconcile functions.
-- Improve the data model (currently very loose map[string]interface{}).
+**2.1b (Wiring surface - this slice):**
+- Added `reconcileExpiredGrantsViaStore()` helper using the existing Hub send pattern.
+- Wired the main periodic "reconciliation.tick" EventBus subscriber to prefer Store results (with local fallback).
+- Wired `runSessionsStatus` (visible command) to prefer Store reconciliation.
+- Local thin `reconcileExpired*` functions are now explicitly treated as fallback scaffolding.
 
-This is the first concrete transfer of authority for timer reconciliation into the Store VM.
+The surface is starting to delegate to the authoritative Store implementation when available. This is direct progress on removing thin wrappers.
 
-Citations: store-vm.md (durable state), event-system.md (Hub-mediated timers), phase-2.md DoD items 1-4.
+Citations: store-vm.md, event-system.md, phase-2.md DoD.
