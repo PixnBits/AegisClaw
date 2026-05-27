@@ -718,9 +718,47 @@ func runStore(cmd *cobra.Command, args []string) {
 			expiredB := ReconcileExpiredBackgroundWork()
 			if len(expiredA) > 0 || len(expiredB) > 0 {
 				fmt.Printf("Store timer: auto-reconciled expirations - autonomy=%v background=%v\n", expiredA, expiredB)
-				// Future enhancement: publish proper "timer.fired.*" events via the Hub
-				// using the encoder (or a dedicated publish path) so Agent Runtimes
-				// and other components can react in real time.
+
+				// Phase 2: Publish expiration events via the Hub so downstream
+				// components (Agent Runtimes, etc.) can react without relying on
+				// the daemon-local EventBus. This is the Store-driven event path
+				// per event-system.md.
+				for _, sid := range expiredA {
+					eventMsg := Message{
+						Source:      "store",
+						Destination: "hub",
+						Command:     "event.publish",
+						Payload: map[string]interface{}{
+							"event": "autonomy.expired",
+							"payload": map[string]interface{}{
+								"session_id": sid,
+								"reason":     "store_timer",
+							},
+						},
+						Timestamp: response.Timestamp,
+						Signature: "",
+					}
+					signMessage(&eventMsg, priv)
+					encoder.Encode(eventMsg)
+				}
+				for _, sid := range expiredB {
+					eventMsg := Message{
+						Source:      "store",
+						Destination: "hub",
+						Command:     "event.publish",
+						Payload: map[string]interface{}{
+							"event": "background.expired",
+							"payload": map[string]interface{}{
+								"session_id": sid,
+								"reason":     "store_timer",
+							},
+						},
+						Timestamp: response.Timestamp,
+						Signature: "",
+					}
+					signMessage(&eventMsg, priv)
+					encoder.Encode(eventMsg)
+				}
 			}
 		default:
 			// No timer signal this cycle

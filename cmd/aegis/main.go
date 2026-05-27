@@ -2151,14 +2151,25 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 			_ = reconcileExpiredBackgroundWork()
 		}
 
-		// Phase 2: Also record the grant in the Store VM so it becomes the durable source of truth
-		// (this is the bridge toward removing thin local grant state for autonomy).
+		// Phase 2: Also record the grant in the Store VM so it becomes the durable source of truth.
+		// Additionally, schedule the expiration timer in the Store (using the new timer infrastructure)
+		// so the Store owns both the grant state *and* the timer that will expire it.
 		if s.AutonomyExpires != nil {
 			_, _ = sendToComponentViaHub("store", "autonomy.grant", map[string]interface{}{
 				"session_id": id,
 				"preset":     preset,
 				"expires":    s.AutonomyExpires.Format(time.RFC3339),
 				"scopes":     s.GrantedScopes,
+			})
+
+			// Schedule the expiration timer in the Store (this replaces the local EventBus timer
+			// as the authoritative one for this grant).
+			_, _ = sendToComponentViaHub("store", "timer.schedule", map[string]interface{}{
+				"id":         "autonomy-expiry-" + id,
+				"session_id": id,
+				"type":       "autonomy.expired",
+				"preset":     preset,
+				"expires":    s.AutonomyExpires.Format(time.RFC3339),
 			})
 		}
 

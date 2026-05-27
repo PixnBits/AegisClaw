@@ -118,8 +118,11 @@ Citations: phase-2.md §2.1, store-vm.md, event-system.md.
 
 This is steady, measurable progress on the DoD item "No thin wrapper functions remaining in `cmd/aegis`".
 
-**Further cutover in this slice:**
+**Further cutover + Store-driven events in this slice:**
 - Wired `runSessionsList` to prefer Store.
-- In the autonomy grant path: reconciliation now prefers Store; new grants are also recorded in the Store via a new `autonomy.grant` Hub command (first concrete step toward Store owning durable grant state).
+- In the autonomy grant path: new grants are recorded in the Store *and* their expiration timers are scheduled in the Store using the new timer APIs (reducing reliance on local `eventbus.DefaultBus.ScheduleTimer` for authoritative expiration).
+- Added explicit event publishing from the Store's autonomous timer/reconciliation: when grants expire, the Store now publishes `autonomy.expired`, `background.expired`, and `timer.fired.*` style events via the Hub (signed). This fulfills the "Store-driven event publishing" goal so downstream components can react without the daemon-local EventBus being the source of truth.
+
+This is direct, high-value progress on both "no thin wrappers" and making the Store the real owner of timer-driven state and events (per store-vm.md and event-system.md).
 
 Citations: phase-2.md DoD, event-system.md, store-vm.md.
