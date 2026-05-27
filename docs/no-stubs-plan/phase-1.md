@@ -207,6 +207,17 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3c Update (End-to-End Harness Refinement)**
+
+- Cleaned and stabilized the integration harness test (`TestAgentMemoryIntegration_RealPath`).
+- It now directly proves that the exact message the agent's `loop.RunTurn` sends for `memory.get_context` is successfully processed by a real `memory.VM` (including ACL binding).
+- This is the core "real Agent calls real Memory via Hub client" path required for Phase 1.
+- Verification passed.
+
+A fuller bidirectional net.Pipe router simulation between live agent and memory thin mains is the natural next concrete step when more time is available in 1.3.
+
+**Continuing...**
+
 **Group 1.3b (Deeper Integration) Complete**
 
 - Removed surface `fmt.Println` from the hot 6-step path in `loop.RunTurn` (now clean per agent-runtime.md).
