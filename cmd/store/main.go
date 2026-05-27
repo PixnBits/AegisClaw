@@ -15,6 +15,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -79,6 +80,41 @@ func loadAuditFromFile(filename string) []interface{} {
 	return data
 }
 
+// === Phase 2.1a: Durable autonomy & background grant storage (0600) ===
+// These will become the authoritative source for timer reconciliation.
+
+func loadGrants() map[string]interface{} {
+	data := make(map[string]interface{})
+	file, err := os.Open("grants.json")
+	if err != nil {
+		return data
+	}
+	defer file.Close()
+	json.NewDecoder(file).Decode(&data)
+	return data
+}
+
+func saveGrants(data interface{}) {
+	bytes, _ := json.MarshalIndent(data, "", "  ")
+	os.WriteFile("grants.json", bytes, 0600)
+}
+
+func loadBackgroundWork() map[string]interface{} {
+	data := make(map[string]interface{})
+	file, err := os.Open("background.json")
+	if err != nil {
+		return data
+	}
+	defer file.Close()
+	json.NewDecoder(file).Decode(&data)
+	return data
+}
+
+func saveBackgroundWork(data interface{}) {
+	bytes, _ := json.MarshalIndent(data, "", "  ")
+	os.WriteFile("background.json", bytes, 0600)
+}
+
 func saveAuditToFile(filename string, data []interface{}) {
 	bytes, _ := json.Marshal(data)
 	ioutil.WriteFile(filename, bytes, 0644)
@@ -119,18 +155,54 @@ func getBuildVersion() string {
 }
 
 // ReconcileExpiredAutonomy is the authoritative implementation now living in the Store VM
-// (per store-vm.md + event-system.md). The CLI surface in cmd/aegis calls this
-// via Hub message or keeps a thin local version for immediate feedback.
-// This resolves the previous TODO(architecture) in cmd/aegis.
+// (per store-vm.md + event-system.md). It operates on durable grants.json (0600).
 func ReconcileExpiredAutonomy() []string {
-	// In a full implementation this would operate on Store-owned session state.
-	// For now it returns empty (surface in Aegis still handles immediate calls).
-	return []string{}
+	grants := loadGrants()
+	var expired []string
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	for id, v := range grants {
+		if g, ok := v.(map[string]interface{}); ok {
+			if exp, has := g["expires"]; has {
+				if expStr, ok := exp.(string); ok {
+					if expStr < now {
+						expired = append(expired, id)
+						delete(grants, id)
+					}
+				}
+			}
+		}
+	}
+
+	if len(expired) > 0 {
+		saveGrants(grants)
+	}
+	return expired
 }
 
 // ReconcileExpiredBackgroundWork is the second authoritative implementation in Store.
 func ReconcileExpiredBackgroundWork() []string {
-	return []string{}
+	bg := loadBackgroundWork()
+	var expired []string
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	for id, v := range bg {
+		if b, ok := v.(map[string]interface{}); ok {
+			if exp, has := b["expires"]; has {
+				if expStr, ok := exp.(string); ok {
+					if expStr < now {
+						expired = append(expired, id)
+						delete(bg, id)
+					}
+				}
+			}
+		}
+	}
+
+	if len(expired) > 0 {
+		saveBackgroundWork(bg)
+	}
+	return expired
 }
 
 func runStore(cmd *cobra.Command, args []string) {
@@ -183,6 +255,13 @@ func runStore(cmd *cobra.Command, args []string) {
 	memories := loadFromFile("memories.json")
 	prs := loadFromFile("prs.json")
 	teams := loadFromFile("teams.json")
+
+	// Phase 2.1a: Load durable grant state at startup for recovery
+	grants := loadGrants()
+	background := loadBackgroundWork()
+	_ = grants
+	_ = background
+
 	var mu sync.Mutex
 
 	// Store loop
@@ -205,12 +284,17 @@ func runStore(cmd *cobra.Command, args []string) {
 
 		mu.Lock()
 		switch msg.Command {
-		// Reconciliation now lives here in Store VM (moved from cmd/aegis surface scaffolding)
+		// Phase 2.1a: Reconciliation is now real and authoritative in Store VM
 		case "reconcile.expired_grants":
-			// Future: call ReconcileExpiredAutonomy() + ReconcileExpiredBackgroundWork()
-			// and publish results via Hub
+			expiredAutonomy := ReconcileExpiredAutonomy()
+			expiredBackground := ReconcileExpiredBackgroundWork()
+
 			response.Command = "reconcile.done"
-			response.Payload = map[string]interface{}{"autonomy": ReconcileExpiredAutonomy(), "background": ReconcileExpiredBackgroundWork()}
+			response.Payload = map[string]interface{}{
+				"autonomy_expired":   expiredAutonomy,
+				"background_expired": expiredBackground,
+				"note":               "authoritative reconciliation from Store VM (Phase 2)",
+			}
 		case "proposal.create":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)
