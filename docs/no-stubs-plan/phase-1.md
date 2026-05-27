@@ -207,6 +207,15 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3k Update (Background Turn Harness + 1.3 Closeout)**
+
+- Strengthened the integration harness with `TestBackgroundTurn_RealMemoryContext`, which exercises a background-style turn against a real Memory VM (memory.get_context + context injection + 6-step loop).
+- This covers the "Background work + autonomy.granted paths use full loop" requirement from the 1.3 plan.
+- Group 1.3 (Integration & Wiring) is now in very strong shape across all major bullets.
+- Verification passed.
+
+**Ready to move into the final 1.4 (Testing & Hardening + Cleanup + DoD Close).**
+
 **1.3j Update (Background/Autonomy + Orchestrator Polish)**
 
 - Reviewed and confirmed that background.work / proactive.task handlers in the thin agent now invoke the full real loop.RunTurn (no remaining mini/demo paths in execution).
