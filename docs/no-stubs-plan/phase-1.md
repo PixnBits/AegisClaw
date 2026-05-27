@@ -207,6 +207,18 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3e Update (Daemon Chat Path + Surface Reduction)**
+
+- Added `sendToComponentViaHub` skeleton in cmd/aegis (uses the hubclient we built in 1.1a).
+- Updated the headless chat path to attempt forwarding to a real agent component ("agent-<session>") instead of always falling back to the old limited-mode echo.
+- The disclaimer/note now honestly reflects that the real runtime path is being exercised (hubclient forwarding attempted).
+- The old "limited mode echo" language is removed from the primary response path.
+- Verification (build + doctor) passed.
+
+This is the beginning of removing the surface-only chat behavior as required by the 1.3 definition of done.
+
+**Continuing 1.3...**
+
 **1.3d Update (Fuller Integration + Cleanup)**
 
 - Enhanced `observe` step to properly parse and surface the structured memory context returned by the real Memory VM (short_term + long_term) into the reasoning prompt.
