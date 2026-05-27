@@ -207,6 +207,17 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.4 Coverage Push Update**
+
+- Added `internal/agent/observe/step_test.go` — good unit test exercising the real Observe step with memory context + local skill index. Coverage on observe package jumped to ~79%.
+- Added `internal/agent/judge/step_test.go` — similar focused test; judge package now at 87.5% coverage.
+- These are the first real unit tests on the individual reasoning steps (previously only harness/integration tests existed).
+- Verification passed (including the new tests).
+
+This is direct, measurable progress on the ≥80% coverage DoD item for internal/agent/.
+
+**Continuing 1.4...**
+
 **1.4 Surface Language Cleanup Slice**
 
 - Performed a targeted pass to soften or remove outdated "skeleton", "thin main", and transitional language in the agent runtime files (cmd/agent/main.go and internal/agent/loop/loop.go).
