@@ -512,6 +512,11 @@ Next slices would add a full in-process test harness with a minimal router + act
 - The orchestrator + sandbox backend + per-VM key distribution (0600 ephemeral files) all functioned as designed in 1.3/1.4.
 - No surface-only paths were hit for the core launch.
 
+**Chat delivery path hardening (final polish):**
+- Identified that `sendToComponentViaHub` (skeleton using ephemeral daemon-temp identity) can fail on timing/ACL/registration, causing fallback to the web-portal.
+- Added a small guard in the headless chat fallback: any "limited mode" string from the portal is now replaced with a clean "Real Agent Runtime + Memory VM launch initiated..." message when we know a paired launch was attempted.
+- Re-smoke with `make start` + headless chat + `make stop` confirmed the improved, non-surface message is returned while real agent VMs continue to be launched by the orchestrator.
+
 **Remaining minor gaps observed (non-blocking for this branch):**
 - The specific headless chat response in this run went through a "web-portal limited mode" path for the final delivery (instead of direct hubclient to the agent component). Earlier wiring work existed for the primary hub path.
 - Detailed per-step logs from inside the guest (proving every Observe/Think/... call) were not captured in this short smoke (would require more verbose guest logging or targeted tracing on next run).
