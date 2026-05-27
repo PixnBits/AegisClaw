@@ -7,7 +7,12 @@
 #   - docs/specs/threat-model.md & security-model.md (minimal image, supply-chain hardening)
 
 # === Build stage ===
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
+
+# Allow the container to download a newer Go toolchain if the module requires it
+# (go.mod currently pins 1.26.2). This makes the image build resilient when the
+# official base image lags behind the repo's declared Go version.
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /app
 

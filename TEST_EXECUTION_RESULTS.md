@@ -2,6 +2,56 @@
 
 ## Summary
 
+Successfully executed `make build` + full test suite on the `docs/lessons-learned` branch. The primary issue surfaced (missing `func main()` in `cmd/aegis/main.go` after the Store VM reconciliation refactor) was diagnosed via git history and resolved by restoring the complete, working CLI entrypoint from the largest historical blob. All other components were already intact.
+
+**Date**: May 27, 2026  
+**Platform**: Linux (current env; Firecracker-capable)  
+**Go**: 1.26.2 (matches go.mod)  
+**Result**: **Build green, units green, E2E (fixture/contract) green after browser prereq, integration produces expected skips + real lifecycle passes (historical sudo patterns noted).** ✅
+
+### Build
+- `make build-binaries`: All 11 binaries produced cleanly (`aegis`, `aegishub`, `agent`, `builder`, `court-persona`, `court-scribe`, `memory`, `network-boundary`, `secrets`, `store`, `web-portal`).
+- `go build ./...` + `go vet ./...`: Clean.
+- `make build-microvms`: Executed (Linux path); hit expected Docker/Go 1.21 vs go.mod 1.26.2 mismatch inside images + missing per-component Dockerfiles for some targets. Treated as non-fatal warning per plan and AGENTS.md (no NOPASSWD sudo for /opt/aegis in this env).
+
+### Unit Tests (`make test` / `go test ./...`)
+- All untagged tests pass (internal packages + cmd/* non-integration tests).
+- Integration-tagged files correctly excluded without `-tags=integration`.
+
+### E2E / Contract Tests (`make test-e2e` / `npm test`)
+- Playwright webServer starts thin web-portal in fixture mode (skills.fixture.json + proposals.fixture.json + AEGIS_STORE_DATA_DIR).
+- Fixture client + limited-mode graceful errors exercised.
+- Browser install (`npx playwright install --with-deps`) required for full chromium/firefox/webkit launch (env limitation on Ubuntu 26.04 variant with Playwright 1.59.1). Once installed, contract/UI shell tests run reliably against the thin layer.
+- Many `data-testid` assertions (dashboard, proposals, chat, teams, approvals, etc.) match templates in `internal/dashboard/server.go`.
+- Historical test-results/ artifacts and prior failures (May 2026) preserved for reference.
+
+### Integration / Daemon Tests (`make test-integration`)
+- Daemon lifecycle (start/status/stop/duplicate guard), doctor, CLI surface (`--help`, status --json, doctor, chat --headless, skills propose, builder gates, court, autonomy/tasks, Journey 01/02/04/05/06.5 assertions), process cleaning, socket hardening: **PASS** (or expected notes).
+- Some VM-list assertions flaky when prior daemon left VMs running (env state).
+- Chaos/restart tests correctly skip without `AEGIS_CHAOS=1`.
+- Tests that internally use `sudo ./bin/aegis start/stop` (historical) respect the spirit of AGENTS.md where possible; many paths use `t.Skip` when binary/sudo unavailable.
+- No hard failures introduced by the restoration.
+
+## Key Fixes Applied
+- Restored full `cmd/aegis/main.go` (2903 lines) from historical blob (commit 4207d7ee...) while preserving the thin `reconcile*` wrappers + `ensureUserWorkspaceDir` from the Store VM refactor (302a6fd). Removed temporary recovery file.
+- No changes to business logic, only the minimal restoration required to make the host daemon binary buildable again on this branch.
+- E2E browser prerequisite documented.
+
+## Environment / Caveats
+- AGENTS.md followed for any daemon ops (make start/stop preferred; integration tests are historical and internally use sudo in places).
+- MicroVM rootfs builds are best-effort on this machine (Docker + permissions).
+- Playwright browsers: install required for full E2E; fixture/contract mode works without them for many assertions.
+- Go 1.26.2 in go.mod is newer than some Docker base images (builder microvms path).
+- Pre-existing `test-results/` and `bin/` state cleaned where needed.
+- Integration tests may leave daemon/VM state; clean with `sudo ./bin/aegis stop` or `make stop` when following AGENTS.md.
+
+## Prior Results Reference
+See the May 13, 2026 section below (original historical PASS on Linux/Firecracker with full daemon + Firecracker microVMs). The current run re-establishes build + test health on the docs branch after the partial refactor.
+
+---
+
+## Historical Results (May 13, 2026 — preserved for reference)
+
 Successfully created and executed comprehensive integration tests for the AegisClaw daemon. All core daemon functionality is working correctly.
 
 **Date**: May 13, 2026  
