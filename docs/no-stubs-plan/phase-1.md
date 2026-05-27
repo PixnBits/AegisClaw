@@ -115,3 +115,32 @@ When this phase is complete, an agent should be able to:
 - runtime-architecture.md (Agent + Memory VMs only talk via the router)
 
 **Next on "continue":** Group 1.1b — the real 6-step packages under internal/agent/ + thin cmd/agent/main.go skeleton (remove all mockLLMWithFallback + inline steps from the prod execution path).
+
+**Group 1.1b COMPLETE (Agent Runtime Skeleton + 6 Real Step Packages)**
+
+- Moved the proven 7.3 AgentSkillIndex (Jaccard/Levenshtein search, format helpers, etc.) to `internal/agent/skills/index.go` with full spec citations.
+- Created `internal/agent/types.go` (TurnContext, StepResult, LLMCallFunc, MemoryClient).
+- Created `internal/agent/loop/loop.go` — RunTurn that:
+  - Calls memory.get_context first (real, via hubclient, per memory-vm.md)
+  - Executes the 6 steps in order using the injected real LLMCallFunc (no mocks/fallbacks in the hot path)
+  - Provides NewRealLLMCaller (the production path: signed "llm.call" via hubclient to network-boundary)
+- Created the 6 separate packages (`internal/agent/{observe,think,plan,act,execute,judge}/step.go`) — each a real (if minimal) step that performs LLM reasoning via the hubclient.
+- **Thinned cmd/agent/main.go** from ~875 lines of inline surface code + mocks to a small skeleton:
+  - Uses hubclient.DialUnix / DialVsock + Register (real distributed key consumption + zeroization)
+  - Wires the real loop + NewRealLLMCaller for the 6-step path
+  - Preserves useful 7.3/7.6 surface (tool.list, autonomy, background, index updates) via aliases to the new skills package
+  - Removed callLLMWithFallback, mockLLMResponse, the 6 old inline funcs, the massive duplicated index, and all "for demo / in full system" disclaimers from the execution path.
+- cmd/agent and all new internal/agent packages build and the legacy tests still pass.
+- Full verification (this group): `go test ./internal/agent/... ./cmd/agent/...`, `make build-binaries`, `./bin/aegis doctor` — all green.
+- Atomic commit follows.
+
+**Spec citations (in every new file, the thinned main, this note, and the commit):**
+- agent-runtime.md §Responsibilities (full 6-step loop executes, skills/tools exclusively through Hub, Memory context at start of every turn, no surface-only disclaimers)
+- agent-runtime.md §Communication + §Key Interfaces
+- memory-vm.md §Communication Interface §1
+- security-model.md (fail-closed on LLM/tool/memory paths; only through AegisHub)
+- no-stubs-plan/phase-1.md 1.1b + resolution-plan §Phase 1
+
+**Coverage note:** New packages currently have no dedicated _test.go (the loop is exercised via the thin main + existing cmd/agent tests). ≥80% coverage target will be achieved across 1.1b + 1.3/1.4 as more tests are added (per plan).
+
+**Ready for "continue" to 1.1c (hub vsock listener) or 1.2 (Memory skeleton).**
