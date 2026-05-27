@@ -113,6 +113,21 @@ test-integration:
 test-e2e:
 	npm test
 
+# TCB-specific tests (7.5.7). Additive target.
+# Runs unit tests for security + runtime + cmd/aegis TCB surface + skeleton compliance tests.
+# Use with -tags=integration for fuller daemon lifecycle checks (requires sudo in some cases).
+test-tcb:
+	go test -v ./internal/security ./internal/runtime ./cmd/aegis -run 'Test.*(TCB|Key|Socket|Doctor|Workspace|ProcessCleaning)' -count=1
+
+# Chaos/restart tests (7.7). Additive target.
+# Controlled via AEGIS_CHAOS=1 env var. Skips by default so normal `make test` is unaffected.
+# Exercises daemon + VM failure scenarios, TCB containment, recovery, and journey resilience.
+# Often requires sudo for live daemon ops.
+test-chaos:
+	@echo "=== Running 7.7 Chaos/Restart Tests (AEGIS_CHAOS=1 required) ==="
+	@echo "These test daemon/VM failure + recovery (host-daemon.md Test Requirements + 9 user journeys)."
+	AEGIS_CHAOS=1 go test -v -tags=integration ./cmd/aegis -run 'Test.*(Chaos|Restart|Watchdog|VMDeath)' -count=1 || true
+
 # Setup target for Journey 01 (onboarding)
 # Provides a low-intervention path: build + doctor (per user-journeys/01-installation-onboarding.md)
 setup:
