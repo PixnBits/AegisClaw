@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/eventbus"
+	"AegisClaw/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +29,11 @@ type Message struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 var persona string
+
+// 7.6: Loaded workspace customizations (AGENTS.md, SOUL.md, etc.) so that
+// Court personas can respect user-defined instructions during reviews.
+// This is the symmetric integration to what was done in the Agent 6-step loop.
+var loadedWorkspace *workspace.Context
 
 func init() {
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
@@ -69,24 +75,40 @@ func getBuildVersion() string {
 }
 
 func getPersonaPrompt(persona string) string {
+	// 7.6: Prepend user workspace customizations (SOUL + AGENTS) if present.
+	// This allows custom instructions to influence how the 7 personas review proposals,
+	// consistent with the Agent 6-step integration and agent-customization.md.
+	custom := ""
+	if loadedWorkspace != nil {
+		if loadedWorkspace.SOUL != "" {
+			custom += "Core values and soul for this system: " + loadedWorkspace.SOUL + ". "
+		}
+		if loadedWorkspace.AGENTS != "" {
+			custom += "Custom agent/Court instructions: " + loadedWorkspace.AGENTS + ". "
+		}
+	}
+
+	base := ""
 	switch persona {
 	case "ciso":
-		return "You are the Chief Information Security Officer. Evaluate the proposal for security risks, compliance, and business impact. Respond with vote (Approve/Reject/Abstain) and detailed reasoning."
+		base = "You are the Chief Information Security Officer. Evaluate the proposal for security risks, compliance, and business impact. Respond with vote (Approve/Reject/Abstain) and detailed reasoning."
 	case "security-architect":
-		return "You are the Security Architect. Assess technical security design, attack surface, and implementation risks. Respond with vote and reasoning."
+		base = "You are the Security Architect. Assess technical security design, attack surface, and implementation risks. Respond with vote and reasoning."
 	case "architect":
-		return "You are the System Architect. Review system design, modularity, maintainability, and long-term implications. Respond with vote and reasoning."
+		base = "You are the System Architect. Review system design, modularity, maintainability, and long-term implications. Respond with vote and reasoning."
 	case "senior-coder":
-		return "You are the Senior Coder. Evaluate code quality, readability, and implementation standards. Respond with vote and reasoning."
+		base = "You are the Senior Coder. Evaluate code quality, readability, and implementation standards. Respond with vote and reasoning."
 	case "tester":
-		return "You are the Tester. Assess testing strategy, coverage, reliability, and quality assurance. Respond with vote and reasoning."
+		base = "You are the Tester. Assess testing strategy, coverage, reliability, and quality assurance. Respond with vote and reasoning."
 	case "efficiency":
-		return "You are the Efficiency Expert. Review performance, resource usage, cost implications, and optimizations. Respond with vote and reasoning."
+		base = "You are the Efficiency Expert. Review performance, resource usage, cost implications, and optimizations. Respond with vote and reasoning."
 	case "user-advocate":
-		return "You are the User Advocate. Consider usability, UX, and human impact. Respond with vote and reasoning."
+		base = "You are the User Advocate. Consider usability, UX, and human impact. Respond with vote and reasoning."
 	default:
-		return "Evaluate the proposal. Respond with vote (Approve/Reject/Abstain) and reasoning."
+		base = "Evaluate the proposal. Respond with vote (Approve/Reject/Abstain) and reasoning."
 	}
+
+	return custom + base
 }
 
 func analyzeProposal(persona, proposalDesc string) (string, string) {
@@ -155,6 +177,17 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 	// Generate keys
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	pubStr := base64.StdEncoding.EncodeToString(pub)
+
+	// 7.6: Load user workspace customizations so Court personas can respect
+	// custom AGENTS/SOUL instructions during reviews (symmetric to Agent integration).
+	wsCtx, wsErr := workspace.Load("")
+	if wsErr != nil {
+		log.Printf("7.6 WARNING: Failed to load workspace customizations for Court: %v (using defaults)", wsErr)
+	} else if wsCtx.SOUL != "" || wsCtx.AGENTS != "" {
+		log.Printf("7.6: Court loaded workspace customizations (AGENTS=%d, SOUL=%d chars)",
+			len(wsCtx.AGENTS), len(wsCtx.SOUL))
+	}
+	loadedWorkspace = wsCtx
 
 	socket := expandPath(hubSocket)
 	conn, err := net.Dial("unix", socket)

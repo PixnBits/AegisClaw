@@ -34,6 +34,12 @@ type Event struct {
 	Timestamp time.Time       `json:"timestamp"`
 	TraceID   string          `json:"trace_id,omitempty"`
 	Source    string          `json:"source,omitempty"` // e.g. "orchestrator", "cli", "hub"
+
+	// Signature is populated by PublishPrivileged* when a signer is provided.
+	// Used for high-privilege / audit-grade events (court decisions, autonomy grants,
+	// critical component failures, etc.) per threat-model.md and host-daemon.md
+	// (Merkle-style signing path on the TCB side).
+	Signature string `json:"signature,omitempty"`
 }
 
 // Handler is the signature for event subscribers.
@@ -349,7 +355,11 @@ type Signer func(data []byte) (signature string, err error)
 // PublishPrivileged publishes an event and attaches a cryptographic signature
 // when a signer is provided. This is the hook for Merkle-style audit signing
 // on high-privilege events (court decisions, autonomy grants, secret updates,
-// etc.) as required by the threat model and Phase 7.2.
+// critical component failures, etc.) as required by the threat model and Phase 7.2.
+//
+// The signature is placed directly on the Event (see Event.Signature) so that
+// downstream consumers and the audit trail can verify it. The signer is
+// typically a *security.Manager (TCB path).
 func (b *Bus) PublishPrivileged(e Event, signer Signer) {
 	if signer != nil {
 		// Best-effort: sign a canonical representation of the core event fields.
@@ -368,12 +378,7 @@ func (b *Bus) PublishPrivileged(e Event, signer Signer) {
 			Source:    e.Source,
 		})
 		if sig, err := signer(data); err == nil {
-			// Attach signature to the event payload for consumers/audit.
-			if e.Payload == nil {
-				e.Payload = json.RawMessage("{}")
-			}
-			// Simple embedding for now
-			_ = sig
+			e.Signature = sig
 		}
 	}
 	b.Publish(e)

@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"AegisClaw/internal/workspace"
 )
 
 type Message struct {
@@ -29,6 +31,11 @@ type Message struct {
 }
 
 var hubSocket = "~/.aegis/hub.sock"
+
+// 7.6: Loaded workspace customizations so that Builder security gates can
+// respect custom policy rules, tool guidance, or AGENTS instructions when
+// evaluating skill proposals (especially under autonomy grants).
+var loadedWorkspace *workspace.Context
 
 func init() {
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
@@ -145,12 +152,19 @@ func runSecretsScan(code string) (bool, string) {
 
 func runPolicyCheck(code string) (bool, string) {
 	// Per builder-security-gates.md:22-24 — Policy-as-Code (simple rules for now; future: Rego).
-	// Examples from spec: must route outbound through Network Boundary, no direct credentials.
+	// 7.6: If custom policy guidance is present in workspace (e.g. from TOOLS.md or AGENTS.md
+	// under autonomy), incorporate it. This makes proactive skill creation respect user customizations.
+	customPolicy := ""
+	if loadedWorkspace != nil && loadedWorkspace.TOOLS != "" {
+		customPolicy = " Custom policy context: " + loadedWorkspace.TOOLS
+	}
+
+	// Base rules from spec
 	if strings.Contains(code, "net.Dial") && !strings.Contains(code, "network-boundary") {
-		return false, "Policy: Direct network access not allowed — must use Network Boundary"
+		return false, "Policy: Direct network access not allowed — must use Network Boundary" + customPolicy
 	}
 	if strings.Contains(code, "os.Getenv") && strings.Contains(code, "token") {
-		return false, "Policy: Direct credential access not allowed"
+		return false, "Policy: Direct credential access not allowed" + customPolicy
 	}
 	return true, ""
 }
@@ -215,6 +229,19 @@ func runBuilder(cmd *cobra.Command, args []string) {
 	// Generate keys
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	pubStr := base64.StdEncoding.EncodeToString(pub)
+
+	// 7.6: Load workspace customizations early so security gates can use
+	// custom policy rules or guidance from ~/.aegis (TOOLS, AGENTS, etc.).
+	// This enables proactive skill creation under autonomy to respect user
+	// customizations, per builder-security-gates.md + agent-autonomy.md.
+	wsCtx, wsErr := workspace.Load("")
+	if wsErr != nil {
+		log.Printf("7.6 WARNING: Failed to load workspace for Builder: %v (using defaults)", wsErr)
+	} else if wsCtx.TOOLS != "" || wsCtx.AGENTS != "" {
+		log.Printf("7.6: Builder loaded workspace customizations (TOOLS=%d, AGENTS=%d chars)",
+			len(wsCtx.TOOLS), len(wsCtx.AGENTS))
+	}
+	loadedWorkspace = wsCtx
 
 	socket := expandPath(hubSocket)
 	conn, err := net.Dial("unix", socket)

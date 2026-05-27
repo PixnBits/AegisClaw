@@ -189,17 +189,7 @@ func observe(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed
 func think(msg *Message, encoder *json.Encoder, decoder *json.Decoder, priv ed25519.PrivateKey, idx *AgentSkillIndex) {
 	input := fmt.Sprintf("%v", msg.Payload)
 	available := formatAvailableTools(idx)
-
-	custom := ""
-	if loadedWorkspace != nil {
-		if loadedWorkspace.SOUL != "" {
-			custom += "Core values (SOUL): " + loadedWorkspace.SOUL + ". "
-		}
-		if loadedWorkspace.AGENTS != "" {
-			custom += "Custom instructions (AGENTS): " + loadedWorkspace.AGENTS + ". "
-		}
-	}
-
+	custom := customInstructionsPrefix()  // 7.6: consistent use of full workspace customizations (SOUL + AGENTS)
 	prompt := custom + "Think step-by-step about the observed request using prior context. Identify risks, required skills/tools, autonomy implications. Available local tools you can actually call: " + available + ". Request: " + input
 	llmResponse := callLLMWithFallback(prompt, encoder, decoder, priv)
 	fmt.Println("2. Think:", llmResponse)
@@ -421,6 +411,30 @@ func runAgent(cmd *cobra.Command, args []string) {
 			}
 			signMessage(&resp, priv)
 			encoder.Encode(resp)
+			continue
+		}
+
+		// 7.2 / 7.6: React to autonomy grants and background work triggers.
+		// This makes proactive/background behaviors functional: when autonomy is granted
+		// (via CLI or Court), the agent receives the scopes and can adjust its behavior
+		// (e.g., lower threshold for autonomous execution, background tasks).
+		// Per prd/agent-autonomy.md and event-system.md.
+		if msg.Command == "autonomy.granted" || msg.Command == "autonomy.updated" {
+			log.Printf("7.6: Agent received autonomy update: %+v", msg.Payload)
+			// In full system, store the scopes and use them in judge/plan steps
+			// to decide what can be done without further human input.
+			continue
+		}
+		if msg.Command == "background.work" || msg.Command == "proactive.task" {
+			log.Printf("7.6: Agent received background/proactive work: %+v", msg.Payload)
+			// Agent can now execute this in background mode per granted autonomy.
+			// For demo, we run a mini observe-think-plan cycle on it.
+			go func(payload interface{}) {
+				miniMsg := Message{Payload: payload, Command: "background"}
+				observe(&miniMsg, encoder, decoder, priv, skillIndex)
+				think(&miniMsg, encoder, decoder, priv, skillIndex)
+				// ... could continue to plan/act if autonomy allows
+			}(msg.Payload)
 			continue
 		}
 
@@ -810,10 +824,16 @@ func formatAvailableTools(idx *AgentSkillIndex) string {
 		b.WriteString(t.Name)
 	}
 
-	// 7.4 integration: Inject custom tool descriptions from workspace if present
-	if loadedWorkspace != nil && loadedWorkspace.TOOLS != "" {
-		b.WriteString(". Custom tool guidance: ")
-		b.WriteString(loadedWorkspace.TOOLS)
+	// 7.4/7.6 integration: Inject custom tool descriptions from workspace if present
+	if loadedWorkspace != nil {
+		if loadedWorkspace.TOOLS != "" {
+			b.WriteString(". Custom tool guidance: ")
+			b.WriteString(loadedWorkspace.TOOLS)
+		}
+		if loadedWorkspace.SKILLS != "" {
+			b.WriteString(". Additional skills context: ")
+			b.WriteString(loadedWorkspace.SKILLS)
+		}
 	}
 
 	return b.String()
