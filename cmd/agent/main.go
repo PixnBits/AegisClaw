@@ -283,9 +283,9 @@ func main() {
 // === 7.3 Semantic Tool/Skill Discovery now lives in internal/agent/skills ===
 // (moved in Phase 1 1.1b per no-stubs-plan/phase-1.md)
 //
-// We re-export the types and a couple of helpers here for the thin surface
-// command handlers that still run during the 1.1b+ transition.
-// The real 6-step loop (internal/agent/loop) uses the package directly.
+// Re-exports of the 7.3 skills index for the fast-path command handlers
+// (tool.list, skills.snapshot, etc.). The real 6-step loop uses the package
+// directly.
 type (
 	Skill        = agentSkills.Skill
 	Tool         = agentSkills.Tool
@@ -294,11 +294,9 @@ type (
 
 var NewAgentSkillIndex = agentSkills.NewAgentSkillIndex
 
-// formatAvailableTools is a tiny bridge to the new skills package for the
-// remaining surface handlers in this thin main (the real loop uses it directly).
+// formatAvailableTools is a small bridge for the fast-path handlers.
+// The real reasoning path uses the skills package directly.
 func formatAvailableTools(idx *agentSkills.AgentSkillIndex) string {
-	// The new package version accepts a small interface; here we adapt from the
-	// old global for the legacy handlers only.
 	return agentSkills.FormatAvailableTools(idx, loadedWorkspaceAdapter{})
 }
 

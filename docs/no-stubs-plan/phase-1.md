@@ -207,6 +207,17 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3j Update (Background/Autonomy + Orchestrator Polish)**
+
+- Reviewed and confirmed that background.work / proactive.task handlers in the thin agent now invoke the full real loop.RunTurn (no remaining mini/demo paths in execution).
+- Added a small orchestrator comment + context for passing hub vsock port info to agent VMs (aligns with the plan's call for vsock/hub port wiring to launched guests).
+- Cleaned some transitional "thin surface" language in the agent main.
+- Verification passed.
+
+Group 1.3 is now in very strong shape across all its major bullets.
+
+**Ready to wrap 1.3 or move into 1.4 hardening.**
+
 **1.3i Update (Agent Turn Handling + Real Output)**
 
 - In the thin `cmd/agent/main.go`, normal/user turns now capture the final StepResult from the real `loop.RunTurn` and return the actual reasoning content (from the Judge step) as the response payload.

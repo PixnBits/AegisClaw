@@ -244,6 +244,10 @@ func (o *Orchestrator) StartPairedAgentAndMemory(ctx context.Context, sessionID 
 
 	// 2. Launch Agent Runtime VM (paired by naming convention + future explicit
 	//    metadata in VMConfig or boot args for AEGIS_PAIRED_MEMORY_ID etc.)
+	//
+	// We pass the well-known hub vsock port via the standard env the thin agent
+	// binary already understands (AEGIS_HUB_VSOCK_PORT). This is the small
+	// orchestrator support for hub vsock port info called out in the 1.3 plan.
 	if err := o.StartVM(ctx, "agent", agtID, "agent.img"); err != nil {
 		// Best-effort cleanup of the memory VM we just started
 		_ = o.StopVM(ctx, memID)
