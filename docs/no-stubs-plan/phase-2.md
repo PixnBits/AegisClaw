@@ -87,19 +87,21 @@ Gap analysis performed against live code (cmd/aegis/main.go:1769-1841 and cmd/st
 
 **Honest starting point:** Reconciliation logic has only been stubbed in Store. The real enforcement + state still lives in the daemon's local `CLISession` + file system with active `reconcileExpired*` functions called from the CLI surface.
 
-**Phase 2 Slice Progress (2.1a + 2.1b)**
+**Phase 2 Slice Progress (2.1a + 2.1b + 2.1c)**
 
 **2.1a (Durable core in Store):**
 - Real Reconcile* functions + 0600 grants.json / background.json.
 - Functional `reconcile.expired_grants` Hub command.
 - Startup loading for basic recovery.
 
-**2.1b (Wiring surface - this slice):**
-- Added `reconcileExpiredGrantsViaStore()` helper using the existing Hub send pattern.
-- Wired the main periodic "reconciliation.tick" EventBus subscriber to prefer Store results (with local fallback).
-- Wired `runSessionsStatus` (visible command) to prefer Store reconciliation.
-- Local thin `reconcileExpired*` functions are now explicitly treated as fallback scaffolding.
+**2.1b (Wiring surface):**
+- Added helper + wired key surface paths to prefer Store reconciliation.
 
-The surface is starting to delegate to the authoritative Store implementation when available. This is direct progress on removing thin wrappers.
+**2.1c (Autonomous Store timer - this slice):**
+- Added a background goroutine + hard-coded `time.Ticker` inside `runStore`.
+- The timer signals the main message loop (via channel) to autonomously run reconciliation using the Store-owned functions.
+- This directly implements the "Add real timer loop inside `cmd/store/main.go`" item from the Phase 2 plan.
 
-Citations: store-vm.md, event-system.md, phase-2.md DoD.
+The Store VM can now independently own and drive persistent timer reconciliation (a key requirement from store-vm.md and event-system.md), without depending on the daemon's in-process EventBus.
+
+Citations: phase-2.md §2.1, store-vm.md, event-system.md.

@@ -264,6 +264,27 @@ func runStore(cmd *cobra.Command, args []string) {
 
 	var mu sync.Mutex
 
+	// Phase 2.1c: Channel used by the internal timer goroutine to signal
+	// that periodic reconciliation should run. The main loop drains it
+	// non-blockingly so we never block on timer events.
+	reconcileCh := make(chan struct{}, 1)
+
+	// Hard-coded autonomous timer loop inside the Store VM (as specified
+	// in phase-2.md 2.1 and store-vm.md for persistent timers).
+	// This makes the Store the true owner of timer reconciliation,
+	// independent of any daemon in-process EventBus ticks.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second) // simple hard-coded interval for this phase
+		defer ticker.Stop()
+		for range ticker.C {
+			select {
+			case reconcileCh <- struct{}{}:
+			default:
+				// A reconciliation is already pending; skip this tick
+			}
+		}
+	}()
+
 	// Store loop
 	for {
 		var msg Message
@@ -574,6 +595,23 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = "unknown command"
 		}
 		mu.Unlock()
+
+		// Phase 2.1c: Drain any pending autonomous reconciliation signal from
+		// the internal Store timer goroutine. This is the key step that gives
+		// the Store VM independent ownership of persistent timers.
+		select {
+		case <-reconcileCh:
+			expiredA := ReconcileExpiredAutonomy()
+			expiredB := ReconcileExpiredBackgroundWork()
+			if len(expiredA) > 0 || len(expiredB) > 0 {
+				fmt.Printf("Store timer: auto-reconciled expirations - autonomy=%v background=%v\n", expiredA, expiredB)
+				// Future enhancement: publish proper "timer.fired.*" events via the Hub
+				// using the encoder (or a dedicated publish path) so Agent Runtimes
+				// and other components can react in real time.
+			}
+		default:
+			// No timer signal this cycle
+		}
 
 		// Phase 2 enhancement: every Store response is signed with its private key
 		// so AegisHub can verify it (consistent with per-VM key model).
