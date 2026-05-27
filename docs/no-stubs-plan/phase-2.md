@@ -334,10 +334,17 @@ These removals, combined with the 2.7 primary-path cutover in `runAutonomyGrant`
 
 Phase 2 is now complete according to its own Definition of Done.
 
-The remaining stubs (the empty `reconcileExpired*` functions and the disabled `startPeriodicReconciliation`) can be deleted in a trivial follow-up cleanup commit if desired, but they no longer represent "thin wrapper functions" or "expiration logic on the CLI surface" — they are inert.
+## Final Phase 2 Cleanup (Post-2.8)
 
-This fulfills the original Phase 2 goal: the Store VM is the single source of truth for persistent timers, autonomy grants, background work, and scheduled tasks. No meaningful expiration logic or thin wrappers remain in `cmd/aegis`.
+After the main removal work in 2.8, this final cleanup pass completed the following:
 
-Citations for 2.8: phase-2.md (this section + DoD + "Removal of Surface Code"), store-vm.md, event-system.md.
+- Deleted the three now-inert stub functions (`reconcileExpiredAutonomy`, `reconcileExpiredBackgroundWork`, `startPeriodicReconciliation`) and the large legacy TODO block.
+- Removed all remaining call sites and fallback paths that referenced the deleted functions.
+- Cleaned outdated "7.2 EventBus", "surface state", and local timer language in command help text and `runAutonomy*` surfaces.
+- Updated `docs/specs/store-vm.md` to officially document the Phase 2 Timer & Grant Management responsibilities (autonomy.grant, grant.list/get, timer.*, reconcile.expired_grants, Store-owned expiration events).
 
-Phase 2 is complete. Ready for the next phase or a final tiny cleanup commit.
+**Phase 2 Status:** Fully complete and cleaned.
+
+All thin local expiration logic, reconciliation drivers, and outdated messaging have been removed. The Store VM is the undisputed single source of truth. The project is now ready for Phase 3 (Full Court + Governance Runtime).
+
+Citations: store-vm.md (updated with new ownership), event-system.md, phase-2.md (full history + DoD).

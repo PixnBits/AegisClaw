@@ -1313,13 +1313,12 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format (machine-parseable)")
 	rootCmd.PersistentFlags().Bool("headless", false, "Non-interactive mode (for automation/scripts)")
 
-	// 7.2.2: Centralize EventBus reactivity subscriptions so the two consumers
+	// Phase 2: Centralize reactivity subscriptions for Store-driven expiration events
 	// (autonomy + background) have visible feedback in one place. Called once at startup.
 	initEventBusReactivity()
 
-	// Phase 2.8: Local periodic reconciliation is disabled (Store owns expiration).
-	// The call is kept temporarily during final migration.
-	startPeriodicReconciliation()
+	// Phase 2.8 final cleanup: Local periodic reconciliation fully removed.
+	// All expiration logic now lives exclusively in the Store VM.
 
 	// 7.2 foundation demo: A small recurring background consumer using the new
 	// ScheduleRecurring primitive. In a real system this would be more sophisticated
@@ -1379,7 +1378,7 @@ func main() {
 	tasksCmd := &cobra.Command{
 		Use:   "tasks",
 		Short: "Manage background tasks and monitoring (surface only)",
-		Long:  "List, inspect, and control background tasks. Currently operates on local session tracking + simulated tasks.\n7.2: Two EventBus consumers (autonomy + background expiration) now provide observable timer-driven reconciliation on the surface. Real enforcement still requires Agent Runtime + Memory.",
+		Long:  "List, inspect, and control background tasks. Store VM is the authoritative source for timers, grants, and expiration events (Phase 2). Real enforcement lives in the Agent Runtime + Memory VM.",
 	}
 	tasksListCmd := &cobra.Command{Use: "list", Short: "List tasks", Run: runTasksList}
 	tasksStatusCmd := &cobra.Command{Use: "status <id>", Short: "Task status", Run: runTasksStatus}
@@ -1647,11 +1646,8 @@ func runChat(cmd *cobra.Command, args []string) {
 }
 
 func runSessionsList(cmd *cobra.Command, args []string) {
-	// Phase 2: Prefer Store VM for reconciliation (symmetry with tasks list)
-	if _, _, err := reconcileExpiredGrantsViaStore(); err != nil {
-		_ = reconcileExpiredAutonomy()
-		_ = reconcileExpiredBackgroundWork()
-	}
+	// Phase 2: Store VM is the sole source of truth for grant reconciliation and timers.
+	_, _, _ = reconcileExpiredGrantsViaStore()
 
 	// Phase 2.6: Attempt to source current authoritative grant state from Store.
 	// This lets the displayed autonomy/preset/expiration come from the durable
@@ -1716,15 +1712,8 @@ func runSessionsList(cmd *cobra.Command, args []string) {
 }
 
 func runSessionsStatus(cmd *cobra.Command, args []string) {
-	// Phase 2: Prefer Store VM for reconciliation when possible
-	var expiredAutonomy, expiredBackground []string
-	if a, b, err := reconcileExpiredGrantsViaStore(); err == nil {
-		expiredAutonomy, expiredBackground = a, b
-	} else {
-		// Fallback to local surface implementation
-		expiredAutonomy = reconcileExpiredAutonomy()
-		expiredBackground = reconcileExpiredBackgroundWork()
-	}
+	// Phase 2 final: Store VM is the only source for grant reconciliation.
+	expiredAutonomy, expiredBackground, _ := reconcileExpiredGrantsViaStore()
 
 	id := "unknown"
 	if len(args) > 0 {
@@ -1814,12 +1803,8 @@ func runSessionsKill(cmd *cobra.Command, args []string) {
 }
 
 func runTasksList(cmd *cobra.Command, args []string) {
-	// Phase 2: Prefer Store VM for reconciliation
-	if _, _, err := reconcileExpiredGrantsViaStore(); err != nil {
-		// Fallback to local thin implementation
-		_ = reconcileExpiredAutonomy()
-		_ = reconcileExpiredBackgroundWork()
-	}
+	// Phase 2 final: Store is the sole reconciliation source.
+	_, _, _ = reconcileExpiredGrantsViaStore()
 
 	// Journey 03/05 surface: Show active background work, tied to sessions where possible
 	tasks := []map[string]interface{}{}
@@ -1909,93 +1894,11 @@ func runTasksCancel(cmd *cobra.Command, args []string) {
 	fmt.Printf("Task %s: cancellation requested (surface only for now).\n", id)
 }
 
-// reconcileExpiredAutonomy — LEGACY THIN FALLBACK (scheduled for removal in Phase 2 completion)
-//
-// This only executes when the Store is unreachable. After the 2.7 runAutonomyGrant
-// cutover, new grants are written to the Store first. The local CLISession grant fields
-// and this function exist only for compatibility during the final migration.
-//
-// See the large TODO above + phase-2.md §2.4 "Removal of Surface Code".
-// Citations: store-vm.md, event-system.md.
-func reconcileExpiredAutonomy() []string {
-	// Phase 2.8 removal: This function is now a no-op.
-	// All grant expiration logic and authoritative state lives in the Store VM
-	// (durable grants.json + autonomous timer + event.publish).
-	// Local CLISession expiration is deprecated.
-	// See store-vm.md and event-system.md.
-	// The function is kept only as a temporary compatibility stub during final migration.
-	_ = "deprecated - Store is authoritative for autonomy expiration"
-	return []string{}
-}
 
-// reconcileExpiredBackgroundWork — LEGACY THIN FALLBACK (scheduled for removal)
-//
-// Companion to reconcileExpiredAutonomy. Only runs on Store unavailability.
-// The real background expiration ownership moved to the Store in Phase 2.
-//
-// See large TODO above + phase-2.md for removal plan.
-// Citations: store-vm.md, event-system.md.
-func reconcileExpiredBackgroundWork() []string {
-	// Phase 2.8 removal: This function is now a no-op.
-	// Background work expiration is owned by the Store VM.
-	// See the comment in reconcileExpiredAutonomy for citations (store-vm.md + event-system.md).
-	_ = "deprecated - Store is authoritative for background expiration"
-	return []string{}
-}
 
-// TODO(architecture) Phase 2.7 status — Legacy thin surface (scheduled for removal)
-//
-// The hard-coded autonomous timer + durable grants.json/background.json/timers.json
-// (0600) + reconcile.expired_grants + timer.* + grant.* commands now live in the
-// Store VM. After the 2.7 cutover in runAutonomyGrant, Store is the primary writer
-// for new grants and owns all expiration timers + events.
-//
-// The two functions below (`reconcileExpiredAutonomy` / `reconcileExpiredBackgroundWork`),
-// `startPeriodicReconciliation` (the reconciliation.tick), and the grant fields inside
-// CLISession + ~/.aegis/sessions.json are now **legacy thin fallback / compatibility
-// scaffolding**.
-//
-// They will be removed (or reduced to no-ops) once all remaining writers and readers
-// have been fully cut over. See phase-2.md §2.4 "Removal of Surface Code" and the
-// 2.7 group for the current removal plan.
-//
-// Citations: store-vm.md (Store as durable owner), event-system.md (persistent timers
-// and events managed by Store), phase-2.md DoD (no thin wrappers + remove expiration logic).
-
-// startPeriodicReconciliation runs the two 7.2 reconciliation consumers on a timer
-// so that autonomy/background expiration happens proactively instead of only on the
-// next CLI command that happens to call them.
-//
-// Phase 2 (post 2.4): The authoritative reconciliation + timer firing now lives
-// entirely in the Store VM (hard-coded 30s ticker + durable 0600 JSON + autonomous
-// event.publish of autonomy.expired / background.expired / timer.fired per
-// event-system.md "Persistent timers are stored in Store VM" and
-// "Persistent timers (cron-like) are managed by Store VM + Event System").
-//
-// This local function is now a compatibility / UI-reactivity bridge:
-// - Primary: call reconcileExpiredGrantsViaStore (which hits the real Store)
-// - When Store succeeds we only publish local events so existing UI / subscribers
-//   continue to see reactivity without depending on the daemon-local EventBus as
-//   source of truth.
-// - Fallback (explicit thin path): only when Store is unreachable we still run the
-//   legacy local reconcile* against ~/.aegis/sessions.json.
-//
-// Citations: store-vm.md (durable state ownership), event-system.md (timer storage
-// + event flow), phase-2.md §2.3/2.4/DoD.
-func startPeriodicReconciliation() {
-	// Phase 2.8 removal: The local reconciliation.tick is disabled.
-	// All periodic expiration reconciliation now happens inside the Store VM
-	// (its hard-coded 30s autonomous timer + ReconcileExpired* + event.publish).
-	// This function is kept only as a stub during final migration.
-	// Citations: store-vm.md, event-system.md.
-	_ = "deprecated - local reconciliation.tick removed in favor of Store autonomous timer"
-	// (No ScheduleRecurring or subscription is created.)
-}
-
-// initEventBusReactivity centralizes the visible reactivity for the two 7.2 EventBus consumers.
-// Subscribing once at CLI startup (instead of re-subscribing inside every command) is more
-// robust and avoids duplicate handlers. The handlers provide immediate user-visible feedback
-// when autonomy or background work expires via timer.
+// initEventBusReactivity centralizes visible reactivity for Store-published expiration events
+// (autonomy.expired, background.expired, timer.fired.* via the Hub per event-system.md).
+// Subscribing once at startup avoids duplicate handlers.
 func initEventBusReactivity() {
 	eventbus.Subscribe("autonomy.expired", func(e eventbus.Event) {
 		sid := "unknown"
@@ -2007,16 +1910,16 @@ func initEventBusReactivity() {
 				}
 			}
 		}
-		fmt.Printf("  [7.2 EventBus] autonomy expired for session %s\n", sid)
+		fmt.Printf("  [Store] autonomy expired for session %s\n", sid)
 	})
 	eventbus.Subscribe("background.expired", func(e eventbus.Event) {
-		fmt.Printf("  [7.2 EventBus] background work expired\n")
+		fmt.Printf("  [Store] background work expired\n")
 	})
 }
 
 // startExampleRecurringConsumer demonstrates real usage of the new ScheduleRecurring
 // primitive for a simple background task (e.g., periodic health / sweep work).
-// This is a 7.2 foundation demo — in production a real consumer would do more useful work.
+// This is a Phase 2 reactivity bridge for events published by the Store VM.
 func startExampleRecurringConsumer() {
 	// Every 30s, perform a lightweight "stale session sweep" against our surface state.
 	// This shows a real recurring consumer doing observable work using the 7.2 primitives.
@@ -2064,8 +1967,8 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 	if a, b, err := reconcileExpiredGrantsViaStore(); err == nil {
 		expiredAutonomy, expiredBackground = a, b
 	} else {
-		expiredAutonomy = reconcileExpiredAutonomy()
-		expiredBackground = reconcileExpiredBackgroundWork()
+		// Phase 2 final cleanup: local thin functions removed.
+		expiredAutonomy, expiredBackground = nil, nil
 	}
 	if len(expiredAutonomy) > 0 || len(expiredBackground) > 0 {
 		// Make the 7.2 timer consumers visibly useful on the surface.
@@ -2192,11 +2095,8 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 	// ("Persistent timers are stored in Store VM" and Store-managed events).
 	if s, ok := getSession(id); ok {
 
-		// Phase 2: Prefer Store VM for post-grant reconciliation first
-		if _, _, err := reconcileExpiredGrantsViaStore(); err != nil {
-			_ = reconcileExpiredAutonomy()
-			_ = reconcileExpiredBackgroundWork()
-		}
+		// Phase 2 final: Store is the only reconciliation path.
+		_, _, _ = reconcileExpiredGrantsViaStore()
 
 		// Compute the intended expiration (needed for both paths)
 		var localExpires *time.Time
