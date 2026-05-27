@@ -97,11 +97,14 @@ Gap analysis performed against live code (cmd/aegis/main.go:1769-1841 and cmd/st
 **2.1b (Wiring surface):**
 - Added helper + wired key surface paths to prefer Store reconciliation.
 
-**2.1c (Autonomous Store timer - this slice):**
-- Added a background goroutine + hard-coded `time.Ticker` inside `runStore`.
-- The timer signals the main message loop (via channel) to autonomously run reconciliation using the Store-owned functions.
-- This directly implements the "Add real timer loop inside `cmd/store/main.go`" item from the Phase 2 plan.
+**2.1c (Autonomous Store timer):**
+- Added background timer loop in Store.
 
-The Store VM can now independently own and drive persistent timer reconciliation (a key requirement from store-vm.md and event-system.md), without depending on the daemon's in-process EventBus.
+**2.1d (Timer management API + Hub surface - this slice):**
+- Implemented `ScheduleTimer`, `CancelTimer`, and `ListActiveTimers` in Store with durable 0600 storage (`timers.json`).
+- Wired the three APIs as Hub commands (`timer.schedule`, `timer.cancel`, `timer.list`).
+- Enhanced `reconcile.expired_grants` to also reconcile the general timer collection.
+
+This completes the user's explicit starting tasks for this Phase 2 session (real timer loop + the three management functions + durable metadata + full reconcile command).
 
 Citations: phase-2.md §2.1, store-vm.md, event-system.md.

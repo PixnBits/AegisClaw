@@ -115,6 +115,52 @@ func saveBackgroundWork(data interface{}) {
 	os.WriteFile("background.json", bytes, 0600)
 }
 
+// === Phase 2: General-purpose durable timers (store-vm.md + event-system.md) ===
+
+func loadTimers() map[string]interface{} {
+	data := make(map[string]interface{})
+	file, err := os.Open("timers.json")
+	if err != nil {
+		return data
+	}
+	defer file.Close()
+	json.NewDecoder(file).Decode(&data)
+	return data
+}
+
+func saveTimers(data interface{}) {
+	bytes, _ := json.MarshalIndent(data, "", "  ")
+	os.WriteFile("timers.json", bytes, 0600)
+}
+
+// ScheduleTimer stores a durable timer record.
+// Metadata includes session_id, preset/scope, expiration (RFC3339), and signature for auditability.
+func ScheduleTimer(id string, metadata map[string]interface{}) error {
+	timers := loadTimers()
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+	metadata["scheduled_at"] = time.Now().UTC().Format(time.RFC3339)
+	timers[id] = metadata
+	saveTimers(timers)
+	return nil
+}
+
+func CancelTimer(id string) {
+	timers := loadTimers()
+	delete(timers, id)
+	saveTimers(timers)
+}
+
+func ListActiveTimers() []string {
+	timers := loadTimers()
+	ids := make([]string, 0, len(timers))
+	for id := range timers {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func saveAuditToFile(filename string, data []interface{}) {
 	bytes, _ := json.Marshal(data)
 	ioutil.WriteFile(filename, bytes, 0644)
@@ -201,6 +247,31 @@ func ReconcileExpiredBackgroundWork() []string {
 
 	if len(expired) > 0 {
 		saveBackgroundWork(bg)
+	}
+	return expired
+}
+
+// reconcileExpiredTimers handles general scheduled timers stored via ScheduleTimer.
+func reconcileExpiredTimers() []string {
+	timers := loadTimers()
+	var expired []string
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	for id, v := range timers {
+		if t, ok := v.(map[string]interface{}); ok {
+			if exp, has := t["expires"]; has {
+				if expStr, ok := exp.(string); ok {
+					if expStr < now {
+						expired = append(expired, id)
+						delete(timers, id)
+					}
+				}
+			}
+		}
+	}
+
+	if len(expired) > 0 {
+		saveTimers(timers)
 	}
 	return expired
 }
@@ -310,12 +381,35 @@ func runStore(cmd *cobra.Command, args []string) {
 			expiredAutonomy := ReconcileExpiredAutonomy()
 			expiredBackground := ReconcileExpiredBackgroundWork()
 
+			// Also reconcile general scheduled timers (Phase 2 timer infrastructure)
+			expiredTimers := reconcileExpiredTimers()
+
 			response.Command = "reconcile.done"
 			response.Payload = map[string]interface{}{
 				"autonomy_expired":   expiredAutonomy,
 				"background_expired": expiredBackground,
+				"timers_expired":     expiredTimers,
 				"note":               "authoritative reconciliation from Store VM (Phase 2)",
 			}
+
+		case "timer.schedule":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["id"].(string)
+			// Store full metadata (session_id, preset, expires, signature, etc.)
+			ScheduleTimer(id, payload)
+			response.Command = "timer.scheduled"
+			response.Payload = map[string]interface{}{"id": id}
+
+		case "timer.cancel":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["id"].(string)
+			CancelTimer(id)
+			response.Command = "timer.cancelled"
+			response.Payload = map[string]interface{}{"id": id}
+
+		case "timer.list":
+			response.Command = "timer.list"
+			response.Payload = ListActiveTimers()
 		case "proposal.create":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)
