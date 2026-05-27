@@ -207,6 +207,20 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3f / 1.4 Prep Update (Orchestrator Paired Launch Primitive)**
+
+- Added `StartPairedAgentAndMemory` to the Orchestrator (internal/runtime/orchestrator.go).
+  - Launches Memory VM + 1:1 Agent Runtime VM with consistent naming and the existing secure per-VM key distribution.
+  - Directly implements the "1:1 relationship" contract from memory-vm.md and the Phase 1 DoD.
+  - Uses the same vsock/key mechanisms the thin agent/memory binaries now expect.
+- Added a basic test skeleton that references the new primitive.
+- This is the daemon-side mechanism that will actually create the real paired runtime instances for user sessions (unblocking full e2e chat → real agent → real memory).
+- Verification (build + doctor) passed.
+
+This is a high-leverage piece of the "minor orchestrator updates" and "real runtime" requirements.
+
+**Continuing...**
+
 **1.3e Update (Daemon Chat Path + Surface Reduction)**
 
 - Added `sendToComponentViaHub` skeleton in cmd/aegis (uses the hubclient we built in 1.1a).

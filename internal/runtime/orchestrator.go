@@ -203,6 +203,57 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 	return nil
 }
 
+// StartPairedAgentAndMemory launches a dedicated Memory VM and its 1:1
+// paired Agent Runtime VM for a given session.
+//
+// This is the key integration primitive for Phase 1 (Core Runtime).
+// It satisfies:
+//   - memory-vm.md: "There is a 1:1 relationship between an Agent Runtime VM
+//     and a Memory VM."
+//   - agent-runtime.md §Responsibilities + Communication (agent talks to its
+//     Memory exclusively via AegisHub).
+//   - security-model.md (separate keypairs, ACL boundaries, no cross-agent
+//     memory access).
+//
+// The method:
+//   1. Starts the Memory VM first (so the agent can discover it on registration).
+//   2. Starts the Agent VM with the same session-derived ID namespace.
+//   3. Uses the existing per-VM key distribution (ephemeral 0600 file).
+//   4. Allocates distinct vsock resources.
+//   5. Publishes the usual vm.started events.
+//
+// For the thin agent binary (cmd/agent) the launched guest will receive its
+// private key via the standard AEGIS_VM_PRIVATE_KEY_PATH mechanism and can
+// use the hubclient (unix or vsock) to reach AegisHub and thus its paired
+// memory peer.
+//
+// This is the "minor orchestrator/sandbox updates for launching paired
+// agent+memory" work item from the 1.3 plan.
+func (o *Orchestrator) StartPairedAgentAndMemory(ctx context.Context, sessionID string) (memoryID, agentID string, err error) {
+	if sessionID == "" {
+		return "", "", fmt.Errorf("sessionID required for paired launch")
+	}
+
+	memID := "memory-" + sessionID
+	agtID := "agent-" + sessionID
+
+	// 1. Launch Memory VM (the agent will talk to it via the Hub after registration)
+	if err := o.StartVM(ctx, "memory", memID, "memory.img"); err != nil {
+		return "", "", fmt.Errorf("failed to start paired memory VM %s: %w", memID, err)
+	}
+
+	// 2. Launch Agent Runtime VM (paired by naming convention + future explicit
+	//    metadata in VMConfig or boot args for AEGIS_PAIRED_MEMORY_ID etc.)
+	if err := o.StartVM(ctx, "agent", agtID, "agent.img"); err != nil {
+		// Best-effort cleanup of the memory VM we just started
+		_ = o.StopVM(ctx, memID)
+		return "", "", fmt.Errorf("failed to start paired agent VM %s: %w", agtID, err)
+	}
+
+	logrus.Infof("Started paired runtime: memory=%s agent=%s (session=%s)", memID, agtID, sessionID)
+	return memID, agtID, nil
+}
+
 // GetVMStatus returns the current status of a VM.
 func (o *Orchestrator) GetVMStatus(ctx context.Context, id string) (sandbox.Status, error) {
 	return o.backend.Status(ctx, id)
