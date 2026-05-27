@@ -1808,20 +1808,13 @@ func runTasksCancel(cmd *cobra.Command, args []string) {
 // reconcileExpiredAutonomy is the surface-level timer consumer for autonomy expirations.
 // It is called on relevant commands (show, grant, sessions list, etc.) to enforce
 // time-bounded grants that were scheduled via the EventBus (or directly via duration).
-// This makes `aegis autonomy grant --duration=...` actually expire on the CLI surface,
-// directly using the timer support added in Task 7.2.
-// Real enforcement (revoking in running agents, Court notification, etc.) belongs in the Agent Runtime.
+// This makes `aegis autonomy grant --duration=...` actually expire on the CLI surface.
 //
-// TODO(architecture): Per docs/specs/store-vm.md and docs/specs/event-system.md,
-// persistent timers and reconciliation of autonomy/background grants must live in the
-// Store VM (or another component microVM) using the Hub-mediated event system.
-// The current implementation (CLI surface + in-process goroutine) is temporary.
-// A hard-coded timer inside the Store's event loop should eventually invoke this logic
-// (or a shared implementation) via the standard timer interface once the Store has
-// durable timer support.
-//
-// See also: proposal lifecycle events and other future cases that will need reliable
-// delivery + replay for late subscribers.
+// Phase 2 (post-2.4): This is now the explicit thin fallback implementation only.
+// The single source of truth (durable grants.json + autonomous reconciliation +
+// event.publish) lives in the Store VM. See the large TODO above startPeriodicReconciliation
+// for status + citations to event-system.md ("Persistent timers are stored in Store VM")
+// and store-vm.md.
 func reconcileExpiredAutonomy() []string {
 	sessions := loadSessions()
 	var expired []string
@@ -1854,9 +1847,9 @@ func reconcileExpiredAutonomy() []string {
 // monitoring journeys (03/05) and team workflows (08). For now it operates on the same
 // lightweight CLISession state; real enforcement lives in the Agent Runtime + Memory.
 //
-// TODO(architecture): See the detailed note in reconcileExpiredAutonomy. Per
-// docs/specs/store-vm.md and docs/specs/event-system.md, this logic belongs in
-// the Store VM (timer + event system) for the long term.
+// Phase 2 (post-2.4): Explicit thin fallback only. Authoritative implementation
+// (background.json + timer reconciliation + Store-published events) is in the Store VM.
+// See large TODO above + event-system.md / store-vm.md citations in this file.
 func reconcileExpiredBackgroundWork() []string {
 	sessions := loadSessions()
 	var expired []string
@@ -1879,24 +1872,40 @@ func reconcileExpiredBackgroundWork() []string {
 	return expired
 }
 
-// TODO(architecture): Per docs/specs/store-vm.md and docs/specs/event-system.md,
-// persistent timers and grant reconciliation must ultimately live in the Store VM
-// (or another component microVM) using the Hub-mediated event system + hard-coded
-// timers. The current surface implementation (in-process goroutine + CLI calls)
-// is temporary scaffolding only.
+// TODO(architecture) Phase 2 post-2.4 status:
+// The hard-coded autonomous timer + durable grants.json/background.json/timers.json
+// (0600) + reconcile.expired_grants + timer.* commands now live in the Store VM
+// (cmd/store/main.go). Store publishes the real events via Hub (event-system.md).
 //
-// This starter will be replaced by a timer inside the Store's event loop that
-// invokes the reconciliation logic (or a shared implementation) via the standard
-// timer interface once durable timers exist in the Store.
+// The functions below + the reconciliation.tick + local sessions.json are the
+// documented thin fallback / compatibility layer for the CLI surface while we
+// finish cutting every call site over to prefer the Store as single source of
+// truth (see startPeriodicReconciliation and run* sites for the current pattern).
 //
-// See the detailed note in reconcileExpiredAutonomy for the related replay concern.
+// Full removal is tracked in phase-2.md §2.4 "Removal of Surface Code".
+// Citations: event-system.md ("Persistent timers are stored in Store VM"),
+// store-vm.md (durable state), phase-2.md DoD + 2.3/2.4.
 
 // startPeriodicReconciliation runs the two 7.2 reconciliation consumers on a timer
 // so that autonomy/background expiration happens proactively instead of only on the
-// next CLI command that happens to call them. This is a simple 7.2 foundation demo.
+// next CLI command that happens to call them.
 //
-// It now uses the ScheduleRecurring primitive for consistency with other 7.2
-// background/recurring work.
+// Phase 2 (post 2.4): The authoritative reconciliation + timer firing now lives
+// entirely in the Store VM (hard-coded 30s ticker + durable 0600 JSON + autonomous
+// event.publish of autonomy.expired / background.expired / timer.fired per
+// event-system.md "Persistent timers are stored in Store VM" and
+// "Persistent timers (cron-like) are managed by Store VM + Event System").
+//
+// This local function is now a compatibility / UI-reactivity bridge:
+// - Primary: call reconcileExpiredGrantsViaStore (which hits the real Store)
+// - When Store succeeds we only publish local events so existing UI / subscribers
+//   continue to see reactivity without depending on the daemon-local EventBus as
+//   source of truth.
+// - Fallback (explicit thin path): only when Store is unreachable we still run the
+//   legacy local reconcile* against ~/.aegis/sessions.json.
+//
+// Citations: store-vm.md (durable state ownership), event-system.md (timer storage
+// + event flow), phase-2.md §2.3/2.4/DoD.
 func startPeriodicReconciliation() {
 	eventbus.DefaultBus.ScheduleRecurring(15*time.Second, "reconciliation.tick", nil)
 
@@ -1914,7 +1923,10 @@ func startPeriodicReconciliation() {
 			return
 		}
 
-		// Fallback to local thin implementation (still useful when Store is unreachable)
+		// Explicit thin fallback (local sessions.json + in-process EventBus).
+		// Only reached when Store is unreachable. This path will continue to shrink
+		// as more surfaces are cut over to the Store as single source of truth.
+		fmt.Printf("  [thin fallback] using local reconcileExpired* (Store unavailable)\n")
 		_ = reconcileExpiredAutonomy()
 		_ = reconcileExpiredBackgroundWork()
 	})
