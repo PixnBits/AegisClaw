@@ -937,9 +937,14 @@ This keeps momentum while giving us the clear endpoint the user asked for.
 
 Or just say "go" and we'll execute the first concrete closure item (package move + closure section polish).
 
-**Task 7.2 – EventBus & Background Services** ✅ **Good progress**
+**Task 7.2 – EventBus & Background Services** ✅ **COMPLETE** (wired + consumers + Merkle signing before starting 7.4)
 
-Strong next options (following the remaining prior suggestions):
+Strong foundation delivered:
+- Orchestrator VM lifecycle events (vm.started/stopped).
+- Court decision publishing.
+- Agent as consumer (approval decisions) + dynamic refresh.
+- PublishPrivilegedWithSecMgr for privileged/Merkle events.
+- Tests + spec updates.
 1. Move the rateLimiter + any remaining helpers (nonceCache is already partially packaged) fully into internal/boundarycrypto for consistency.
 2. Add a "secrets.get" response signature (using the boundary's registered private key) — we did a lightweight version; make it more explicit with verification notes for the Store.
 3. (Larger) Start a small design sketch for reusing the signed message + verification + rate limit + nonce + reconciliation patterns for other future Hub flows (e.g., policy updates, audit acknowledgments).
