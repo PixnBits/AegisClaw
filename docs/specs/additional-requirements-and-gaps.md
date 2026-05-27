@@ -30,7 +30,7 @@ This enables strong personalization.
 - SAST, SCA, secrets scanning
 - Policy-as-code enforcement
 - Composition with health checks + automatic rollback
-- SBOM (CycloneDX) generation
+- SBOM (CycloneDX) generation — implemented in 7.8 via `make sbom` + Builder VM hooks + cosign placeholders (see Makefile, scripts/build-microvms-docker.sh, threat-model.md:3). Fallback manifest always produced; full JSON when cyclonedx-gomod/syft present.
 
 ### 5. EventBus & Background Services
 - Internal event bus for scheduled tasks, timers, signals

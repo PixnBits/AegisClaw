@@ -206,6 +206,14 @@ sudo ./bin/aegis start
 %wheel ALL=(ALL) NOPASSWD: /path/to/aegis
 ```
 
+### Supply-Chain & Release (7.8)
+- `make sbom` — produces CycloneDX JSON (via cyclonedx-gomod or syft) or a high-quality fallback manifest with Builder gates + spec cross-refs.
+- Image signing hooks (cosign, keyless or COSIGN_* env) are present as non-fatal placeholders in Makefile and build scripts.
+- All changes are additive and preserve the sacred `make start/stop/test/test-chaos` and doctor behavior (AGENTS.md).
+- References: threat-model.md:3 (backdoored skill mitigation), additional-requirements-and-gaps.md, builder-security-gates.md, grok-build-execution-plan.md:7.8.
+
+See `make help` and the SBOM target for details.
+
 
 ### MicroVM/Firecracker issues (Linux)
 

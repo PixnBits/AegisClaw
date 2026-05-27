@@ -70,6 +70,7 @@ Many E2E and integration tests require the full daemon + Hub + components to be 
 - `make build` / `make build-binaries`
 - `make doctor`
 - `make status`
+- `make sbom` (7.8 SBOM + cosign hooks; additive, see Makefile)
 - `make clean`
 
 See the Makefile for the full list of targets and the current implementation of start/stop.
