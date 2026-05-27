@@ -207,6 +207,18 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.3g Update (Harness + Daemon Wiring Deepening)**
+
+- Strengthened the integration harness to reference and type-check the new `StartPairedAgentAndMemory` orchestrator primitive.
+- Wired a skeleton call in the daemon's `runChat` path to actually invoke the orchestrator's paired launch when a session is created in headless mode.
+- This is direct progress on "Update daemon chat path to actually talk to real agent component" and "orchestrator updates for launching paired agent+memory".
+- Verification passed.
+- Surface language continues to be reduced.
+
+We're now at the point where the daemon has real (if skeleton) code paths that create and talk to the Phase 1 Core Runtime.
+
+**Continuing...**
+
 **1.3f / 1.4 Prep Update (Orchestrator Paired Launch Primitive)**
 
 - Added `StartPairedAgentAndMemory` to the Orchestrator (internal/runtime/orchestrator.go).

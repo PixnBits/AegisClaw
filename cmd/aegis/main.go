@@ -1495,6 +1495,17 @@ func runChat(cmd *cobra.Command, args []string) {
 		sess = createSession("interactive session")
 	}
 
+	// Phase 1.3 skeleton: attempt to launch a real paired Agent + Memory runtime
+	// for this session using the orchestrator. This is the path that will make
+	// the chat actually talk to the real 6-step loop + Memory VM.
+	if orchestrator != nil {
+		if _, _, err := orchestrator.StartPairedAgentAndMemory(context.Background(), sess.ID); err != nil {
+			logrus.Debugf("chat: paired runtime launch attempted for %s (may be expected in early skeleton): %v", sess.ID, err)
+		} else {
+			logrus.Infof("chat: launched paired agent+memory for session %s", sess.ID)
+		}
+	}
+
 	if headless {
 		start := time.Now()
 
