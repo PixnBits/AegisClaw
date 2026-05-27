@@ -118,4 +118,8 @@ Citations: phase-2.md §2.1, store-vm.md, event-system.md.
 
 This is steady, measurable progress on the DoD item "No thin wrapper functions remaining in `cmd/aegis`".
 
-Citations: phase-2.md DoD, event-system.md (Hub-mediated), store-vm.md.
+**Further cutover in this slice:**
+- Wired `runSessionsList` to prefer Store.
+- In the autonomy grant path: reconciliation now prefers Store; new grants are also recorded in the Store via a new `autonomy.grant` Hub command (first concrete step toward Store owning durable grant state).
+
+Citations: phase-2.md DoD, event-system.md, store-vm.md.

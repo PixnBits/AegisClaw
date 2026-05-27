@@ -410,6 +410,25 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "timer.list":
 			response.Command = "timer.list"
 			response.Payload = ListActiveTimers()
+
+		// Phase 2: Record an autonomy grant in the Store (source of truth for durable grants)
+		case "autonomy.grant":
+			payload := msg.Payload.(map[string]interface{})
+			sessionID := payload["session_id"].(string)
+			grants := loadGrants()
+			grantRecord := map[string]interface{}{
+				"session_id": sessionID,
+				"preset":     payload["preset"],
+				"expires":    payload["expires"],
+				"granted_at": response.Timestamp,
+			}
+			if scopes, ok := payload["scopes"]; ok {
+				grantRecord["scopes"] = scopes
+			}
+			grants[sessionID] = grantRecord
+			saveGrants(grants)
+			response.Command = "autonomy.granted"
+			response.Payload = map[string]interface{}{"session_id": sessionID}
 		case "proposal.create":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)

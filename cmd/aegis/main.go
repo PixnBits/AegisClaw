@@ -1600,9 +1600,11 @@ func runChat(cmd *cobra.Command, args []string) {
 }
 
 func runSessionsList(cmd *cobra.Command, args []string) {
-	// Surface timer enforcement for autonomy + background work (7.2 consumers)
-	_ = reconcileExpiredAutonomy()
-	_ = reconcileExpiredBackgroundWork()
+	// Phase 2: Prefer Store VM for reconciliation (symmetry with tasks list)
+	if _, _, err := reconcileExpiredGrantsViaStore(); err != nil {
+		_ = reconcileExpiredAutonomy()
+		_ = reconcileExpiredBackgroundWork()
+	}
 
 	// Journey 02: Use real tracked sessions from chat
 	tracked := listActiveSessions()
@@ -2148,6 +2150,18 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 			_ = reconcileExpiredAutonomy()
 			_ = reconcileExpiredBackgroundWork()
 		}
+
+		// Phase 2: Also record the grant in the Store VM so it becomes the durable source of truth
+		// (this is the bridge toward removing thin local grant state for autonomy).
+		if s.AutonomyExpires != nil {
+			_, _ = sendToComponentViaHub("store", "autonomy.grant", map[string]interface{}{
+				"session_id": id,
+				"preset":     preset,
+				"expires":    s.AutonomyExpires.Format(time.RFC3339),
+				"scopes":     s.GrantedScopes,
+			})
+		}
+
 		// Re-save
 		sessions := loadSessions()
 		for i := range sessions {
