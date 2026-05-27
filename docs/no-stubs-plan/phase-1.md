@@ -166,3 +166,25 @@ When this phase is complete, an agent should be able to:
 This completes the "Add a basic vsock client to AegisHub" starting task from the user query (server-side listener for guests).
 
 **Ready for "continue" to Group 1.2 (Memory VM real skeleton in cmd/memory + internal/memory).**
+
+**Group 1.2 COMPLETE (Memory VM Real Skeleton)**
+
+- Created `internal/memory/`:
+  - `context.go`: ShortTermContext (hard 32k limit + auto-eviction + zeroization), LongTermMemory (TTL + semantic search + zeroization on purge).
+  - `acl.go`: Strict per-agent ACL enforcement (fail-closed; one agent cannot read another's memories — memory-vm.md Test Requirements).
+  - `vm.go`: VM orchestrator that ties everything together and delegates commands securely.
+- Thinned `cmd/memory/main.go` to skeleton using hubclient (distributed key + zeroization, unix/vsock transport, real delegation to internal/memory).
+- Removed all surface-only code, fake global stores, and disclaimers from the memory execution path.
+- Added basic tests in `internal/memory/context_test.go`.
+- Full verification passed (tests, build-binaries, doctor).
+- Atomic commit follows.
+
+**Spec citations (heavy emphasis on memory-vm.md):**
+- memory-vm.md (Purpose, Communication Interface §1 `memory.get_context`, 32k limit + auto-summarize, ACLs, Test Requirements)
+- security-model.md (per-agent isolation, zeroization, fail-closed)
+- agent-runtime.md (1:1 pairing)
+- aegishub.md (vsock path)
+
+This completes the fourth starting task from the user query.
+
+**Ready for "continue" to Group 1.3 (Integration & Wiring).**
