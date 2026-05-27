@@ -377,3 +377,42 @@ This gives us a credible basic end-to-end demonstration of the Agent Runtime cal
 Next slices would add a full in-process test harness with a minimal router + actual message passing between a live agent loop and live memory loop, plus daemon-side launching of the pair.
 
 **Onward to the rest of 1.3 / 1.4 on next "continue".**
+
+**1.4 Coverage Completion (All Six Reasoning Steps + Hardening Close)**
+- Completed the 1.4 unit test authoring for the six steps of the real 6-step loop (agent-runtime.md §Responsibilities).
+- Polished/added `internal/agent/{plan,think,act,execute}/step_test.go` (plus earlier observe/judge) — all replicate the proven pattern using:
+  - Realistic `TurnContext` with structured memory (short_term + long_term) exactly as injected by `loop.RunTurn` after a real `memory.get_context` call.
+  - The live 7.3 `agentSkills.NewAgentSkillIndex()` + `FormatAvailableTools` (wired in the prior hardening slice).
+  - Controllable `LLMCallFunc` + prompt inspection asserting that memory context and the local tool index actually participate in every reasoning step's prompt construction.
+- All six step packages now have dedicated, spec-cited unit tests.
+- **Coverage results (go test -cover ./internal/agent/...):**
+  - act: 87.5%
+  - execute: 87.5%
+  - judge: 87.5%
+  - plan: 87.5%
+  - think: 87.5%
+  - observe: 78.9% (minor branches in extractMemoryContextForPrompt)
+- All tests in `internal/agent/` and `cmd/agent/` continue to pass cleanly.
+- Full post-group verification: `make build-binaries` (all binaries including thin agent/memory) + `./bin/aegis doctor` — green, no regressions.
+- Atomic commit will follow with full citations.
+
+**Spec citations (in the four new/updated _test.go files, this note, and the commit):**
+- agent-runtime.md §Responsibilities (full 6-step: Observe → Think → Plan → Act → Execute → Judge; every step receives Memory context + must respect the local skill index for tool awareness)
+- memory-vm.md §1 + §Communication Interface (memory.get_context at start of every turn; context must be used in reasoning)
+- no-stubs-plan/phase-1.md 1.4 (Unit tests for each step of the 6-step loop; push toward ≥80% coverage on internal/agent/)
+- security-model.md (tool invocations constrained to the local index — least privilege enforced in every step prompt)
+
+**Honest DoD status on coverage item:**
+- The individual reasoning step packages now have strong (≈80-87%) dedicated unit test coverage — direct, measurable completion of the "Unit tests for each step" 1.4 task.
+- Aggregate coverage for the whole `internal/agent/` tree remains ~19.7% (dominated by the large uncovered `skills/index.go` 7.3 implementation and `loop/loop.go` orchestration, which are exercised by integration/harness tests but lack dedicated unit tests).
+- The strict DoD checkbox "All tests in `internal/agent/` and `cmd/agent/` pass with ≥80% coverage" is therefore still false. The step tests are necessary but not sufficient by themselves.
+- Next immediate micro-task (on continue): add focused unit tests for `internal/agent/skills/index.go` (pure funcs: SearchTools, FormatAvailableTools, Jaccard/Levenshtein paths) + a unit test for `loop.RunTurn` with mock clients. This is the fastest path to closing the aggregate gap.
+
+**Paranoid / process notes:**
+- No surface-only or limited-mode code touched or re-introduced.
+- All new tests use only the real production step implementations (no mocks of the steps themselves).
+- Zeroization, ACL, and hub-only paths remain untouched and enforced in the runtime under test.
+- Followed AGENTS.md (no direct sudo; used documented make + doctor paths).
+- Tree was clean before writes; new test files are the only untracked items.
+
+**Continuing 1.4 (skills + loop unit tests for aggregate coverage + final DoD readiness review).** Ready for "continue".
