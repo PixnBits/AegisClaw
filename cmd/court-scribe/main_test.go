@@ -83,3 +83,42 @@ func TestExpandPath(t *testing.T) {
 		t.Errorf("expandPath(~/foo) = %s, expected to end with /foo", p2)
 	}
 }
+
+// Phase 3: Test the new tamper-evident signed decision builder
+// Citations: court-scribe.md §Security Requirements (signed votes + Scribe aggregate decision);
+// governance-court.md §Voting Rules + §Traceability.
+func TestBuildSignedDecision(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	_ = pub
+
+	votes := map[string]string{
+		"ciso":               "Approve",
+		"security-architect": "Approve",
+		"architect":          "Approve",
+		"senior-coder":       "Approve",
+		"tester":             "Abstain",
+		"efficiency":         "Approve",
+		"user-advocate":      "Approve",
+	}
+	approved := true // after decideReview on the above
+
+	dec := buildSignedDecision("prop-xyz-123", votes, approved, priv)
+
+	if dec["proposal_id"] != "prop-xyz-123" {
+		t.Error("missing proposal_id in signed decision")
+	}
+	if dec["decision_merkle"] == "" || dec["decision_sig"] == "" {
+		t.Error("decision must include decision_merkle and decision_sig for tamper-evidence (Phase 3 DoD)")
+	}
+	if dec["approved"] != true {
+		t.Error("approved flag not preserved")
+	}
+
+	// Signature must be verifiable with the public key (tamper-evident)
+	sigB64 := dec["decision_sig"].(string)
+	sig, _ := base64.StdEncoding.DecodeString(sigB64)
+	merkle := dec["decision_merkle"].(string)
+	if !ed25519.Verify(pub, []byte(merkle), sig) {
+		t.Error("Scribe signature on decision Merkle root failed verification")
+	}
+}

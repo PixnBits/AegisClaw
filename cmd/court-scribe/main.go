@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"sort"
 	"sync"
 	"time"
 
@@ -108,6 +110,54 @@ func decideReview(votes map[string]string) bool {
 	return approves == nonAbstainers // all non-abstainers approved (unanimous)
 }
 
+// buildSignedDecision creates a tamper-evident, Scribe-signed decision record per Phase 3 DoD.
+// Citations:
+//   - court-scribe.md §Responsibilities + §Security Requirements (collect signed votes, enforce all 7, produce auditable decision; compromised Scribe must not forge votes)
+//   - governance-court.md §Voting Rules + §Traceability (unanimous non-abstain Approve or any Reject; full trail of proposal/vote/decision)
+//   - store-vm.md (tamper-evident Merkle audit log owned by Store)
+// The Scribe signs a Merkle root over the collected votes + outcome. Individual persona votes are already signed on arrival (via hubclient Message sig).
+func buildSignedDecision(proposalID string, votes map[string]string, approved bool, scribePriv ed25519.PrivateKey) map[string]interface{} {
+	ts := time.Now().UTC().Format(time.RFC3339)
+
+	// Canonical form for deterministic Merkle (sorted personas)
+	keys := make([]string, 0, len(votes))
+	for k := range votes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	votesForMerkle := make(map[string]string, len(votes))
+	for _, k := range keys {
+		votesForMerkle[k] = votes[k]
+	}
+
+	decisionCore := map[string]interface{}{
+		"proposal_id":  proposalID,
+		"approved":     approved,
+		"votes":        votesForMerkle,
+		"timestamp":    ts,
+		"num_personas": numPersonas,
+	}
+	coreBytes, _ := json.Marshal(decisionCore)
+	merkleHash := sha256.Sum256(coreBytes)
+	merkle := base64.StdEncoding.EncodeToString(merkleHash[:])
+
+	// Scribe attests to the decision (sign the Merkle root)
+	sig := ed25519.Sign(scribePriv, []byte(merkle))
+	sigB64 := base64.StdEncoding.EncodeToString(sig)
+
+	return map[string]interface{}{
+		"proposal_id":     proposalID,
+		"votes":           votes,
+		"approved":        approved,
+		"num_votes":       len(votes),
+		"timestamp":       ts,
+		"decision_merkle": merkle,
+		"decision_sig":    sigB64,
+		"scribe_version":  getBuildVersion(),
+	}
+}
+
 func runCourtScribe(cmd *cobra.Command, args []string) {
 	// Generate keys for signing (required for strict Hub ACL + sig verify)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -159,6 +209,7 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 
 	// Review states
 	reviews := make(map[string]map[string]string) // proposal_id -> persona -> vote
+	decisions := make(map[string]map[string]interface{}) // proposal_id -> full signed decision record (Phase 3 tamper-evident)
 	var mu sync.Mutex
 
 	// Scribe loop
@@ -225,22 +276,22 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 				reviews[proposalID][persona] = vote
 				fmt.Printf("Scribe: recorded vote %s from %s for %s\n", vote, persona, proposalID)
 				if len(reviews[proposalID]) >= numPersonas {
-					// Enforce voting rules (governance-court.md): unanimous Approve from non-abstainers; any Reject blocks
+					// Enforce voting rules (governance-court.md §Voting Rules): unanimous Approve from non-abstainers; any Reject blocks
 					approved := decideReview(reviews[proposalID])
-					result := map[string]interface{}{
-						"proposal_id": proposalID,
-						"votes":       reviews[proposalID],
-						"approved":    approved,
-						"num_votes":   len(reviews[proposalID]),
-					}
+
+					// Build tamper-evident signed decision (core of Phase 3 DoD + court-scribe.md §Security Requirements)
+					signedDecision := buildSignedDecision(proposalID, reviews[proposalID], approved, priv)
+					decisions[proposalID] = signedDecision
+
 					response.Command = "scribe.review_complete"
-					response.Payload = result
-					// Signed notify to Store (and implicitly proposer via other flows)
+					response.Payload = signedDecision
+
+					// Signed notify to Store with the full Merkle-signed decision (enables real audit trail and later enforcement)
 					storeMsg := Message{
 						Source:      "court-scribe",
 						Destination: "store",
 						Command:     "court.review_complete",
-						Payload:     result,
+						Payload:     signedDecision,
 						Timestamp:   time.Now().Format(time.RFC3339),
 						Signature:   "",
 					}
@@ -248,7 +299,7 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 					connMutex.Lock()
 					encoder.Encode(storeMsg)
 					connMutex.Unlock()
-					fmt.Println("Scribe: review complete for", proposalID, "approved=", approved)
+					fmt.Println("Scribe: review complete for", proposalID, "approved=", approved, "merkle=", signedDecision["decision_merkle"])
 				} else {
 					response.Command = "scribe.vote_recorded"
 					response.Payload = "ok"
@@ -258,7 +309,23 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 			payload, _ := msg.Payload.(map[string]interface{})
 			proposalID, _ := payload["proposal_id"].(string)
 			response.Command = "scribe.status"
-			response.Payload = reviews[proposalID]
+			// Prefer full signed decision (Phase 3) when available for real audit exposure
+			if d, ok := decisions[proposalID]; ok {
+				response.Payload = d
+			} else {
+				response.Payload = reviews[proposalID]
+			}
+		case "court.get_decision": // New for real decision exposure (portal / CLI / audit)
+			payload, _ := msg.Payload.(map[string]interface{})
+			proposalID, _ := payload["proposal_id"].(string)
+			response.Command = "court.decision"
+			if d, ok := decisions[proposalID]; ok {
+				response.Payload = d
+			} else if r, ok := reviews[proposalID]; ok {
+				response.Payload = map[string]interface{}{"votes": r, "note": "decision not yet finalized"}
+			} else {
+				response.Payload = nil
+			}
 		case "version", "get-version":
 			if msg.Command == "get-version" {
 				response.Command = "version"

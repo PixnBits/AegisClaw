@@ -590,6 +590,13 @@ func runStore(cmd *cobra.Command, args []string) {
 			votes := payload["votes"].(map[string]interface{})
 			if p, ok := proposals[id].(map[string]interface{}); ok {
 				p["reviews"] = votes
+
+				// Phase 3: Persist the full tamper-evident signed decision from Scribe
+				// (includes decision_merkle + decision_sig per court-scribe.md + governance-court.md)
+				if _, hasMerkle := payload["decision_merkle"]; hasMerkle {
+					p["court_decision"] = payload // the complete signed record
+				}
+
 				approved := false
 				if a, ok := payload["approved"].(bool); ok {
 					approved = a
@@ -622,7 +629,12 @@ func runStore(cmd *cobra.Command, args []string) {
 			id := payload["id"].(string)
 			if p, ok := proposals[id].(map[string]interface{}); ok {
 				response.Command = "court.reviews"
-				response.Payload = p["reviews"]
+				// Phase 3: Return the full signed decision (Merkle + sig) when available for real audit/exposure
+				if cd, has := p["court_decision"]; has && cd != nil {
+					response.Payload = cd
+				} else {
+					response.Payload = p["reviews"]
+				}
 			} else {
 				response.Command = "error"
 				response.Payload = "proposal not found"

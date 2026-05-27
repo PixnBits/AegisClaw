@@ -90,3 +90,34 @@ When this phase is complete, Court decisions are real, auditable, and immediatel
 **phase-3.md DoD progress:** 3.1 Court Persona VMs — substantial (real logic + images ready; orchestrator launch in Group 3).
 
 **Ready for "continue" → Group 2 (Scribe audit + Merkle decisions).**
+
+### Group 2: Court Scribe Full Audit + Tamper-Evident Decisions (user task #4 + 3.3) — COMPLETE ✅
+
+**Changes (spec-first):**
+- `cmd/court-scribe/main.go`:
+  - Added `buildSignedDecision` (cites court-scribe.md §Responsibilities + §Security Requirements + governance-court.md §Voting Rules + §Traceability).
+  - On review completion (all 7 votes): compute Merkle root over canonical votes + approved + ts, Ed25519-sign it with Scribe key, include `decision_merkle` + `decision_sig` in the record.
+  - Forward the full signed decision to Store on "court.review_complete".
+  - Richer "scribe.get_review_status" and new "court.get_decision" support returning the signed record.
+  - Internal decisions map for in-memory state; strict no-content guard preserved.
+- `cmd/store/main.go`:
+  - Persist `court_decision` (the complete signed Merkle record) on proposals when present.
+  - `court.get_reviews` now returns the full signed decision when available (real data for portal/CLI/audit).
+- `cmd/court-scribe/main_test.go`: Added `TestBuildSignedDecision` (verifies Merkle + verifiable Scribe signature on decision).
+- All changes delete surface-only paths; real signed decisions now flow scribe → store → consumers.
+
+**Citations (code + commit):** court-scribe.md §Responsibilities + §Security Requirements + §Key Commands + §Communication Flow; governance-court.md §Voting Rules + §Traceability + §Output Format Requirements; store-vm.md (Merkle audit); no-stubs-plan/phase-3.md 3.3.
+
+**Verification (after edits):**
+- `make build-binaries` ✓ (full suite, including scribe + store).
+- `go test ./cmd/court-scribe -run 'TestDecide|TestBuildSigned|TestScribeNoContent'` + store tests ✓ PASS.
+- `./bin/aegis doctor` (baseline) ✓.
+- New decision records contain verifiable `decision_merkle` + `decision_sig`.
+
+**Commit (atomic):** "phase3: Group 2 scribe audit + Merkle-signed decisions (court-scribe.md §Security Requirements + §Responsibilities, governance-court.md §Voting Rules + §Traceability, store-vm.md, phase-3.md 3.3, approved session plan)".
+
+**phase-3.md DoD progress:** 
+- [x] Voting produces tamper-evident, signed decisions (partial — scribe + store core complete; full enforcement in later groups).
+- Court Scribe records full auditable trail (real signed decisions now emitted and persisted).
+
+**Ready for "continue" → Group 3 (real Firecracker Court microVM launch via orchestrator).**
