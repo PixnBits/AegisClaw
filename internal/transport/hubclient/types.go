@@ -127,6 +127,18 @@ type Client interface {
 
 	// IsVsock reports whether this client is using the vsock transport (useful for logging/audit).
 	IsVsock() bool
+
+	// Receive reads the next incoming message from the hub.
+	// This is required for long-lived components (Agent Runtime, Memory VM) that
+	// need to receive pushed messages (user turns, autonomy grants, background work,
+	// skill updates, etc.) in addition to replying to Send calls.
+	//
+	// The hubclient maintains the underlying connection; callers should typically
+	// run Receive in a loop or with select on context.
+	//
+	// SPEC: agent-runtime.md §Communication + §Key Interfaces (event subscription
+	// for user messages and court feedback); aegishub.md (bidirectional signed JSON-RPC).
+	Receive(ctx context.Context) (Message, error)
 }
 
 // dialer is an internal seam for testability (real net.Dial vs. vsock.Dial vs. net.Pipe in tests).
@@ -383,6 +395,19 @@ func (c *client) decodeWithCtx(ctx context.Context, v interface{}) error {
 	case r := <-resCh:
 		return r.err
 	}
+}
+
+// Receive implements Client.Receive for long-lived components.
+func (c *client) Receive(ctx context.Context) (Message, error) {
+	if c.conn == nil {
+		return Message{}, errors.New("hubclient: connection closed")
+	}
+
+	var msg Message
+	if err := c.decodeWithCtx(ctx, &msg); err != nil {
+		return Message{}, err
+	}
+	return msg, nil
 }
 
 // Close implements Client.Close. It also attempts best-effort zeroization of the private key material

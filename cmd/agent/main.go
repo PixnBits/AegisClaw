@@ -152,22 +152,69 @@ func runAgent(cmd *cobra.Command, args []string) {
 	// Real LLM caller for the 6-step loop (no mocks, no fallbacks in this path)
 	realLLM := loop.NewRealLLMCaller(client, os.Getenv("AEGIS_DEFAULT_MODEL"))
 
-	// === Main message loop (thin surface + real core loop) ===
-	for {
-		// The real 6-step loop (no mocks in the hot path) is exercised on every iteration.
-		fmt.Println("agent (thin 1.1b): exercising real 6-step loop via internal/agent/loop")
+	// === Real bidirectional message loop (Phase 1.3 integration) ===
+	// All communication now goes through hubclient (Send + Receive).
+	// Special commands are handled with the local skill index.
+	// Normal turns and background work use the *real* 6-step loop with
+	// real memory.get_context calls and real LLM via network-boundary.
+	fmt.Println("agent: real message-driven loop active (hubclient Receive + real loop.RunTurn)")
 
+	for {
+		msg, err := client.Receive(context.Background())
+		if err != nil {
+			log.Println("agent receive error:", err)
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+
+		fmt.Println("Agent received:", msg.Command, "from", msg.Source)
+
+		// Fast-path special handlers (preserved for 7.3/7.6 compatibility)
+		if msg.Command == "tool.list" || msg.Command == "tool.search" {
+			result := agentSkills.HandleToolCommand(msg.Command, msg.Payload, skillIndex)
+			resp := hubclient.Message{
+				Source:      client.AssignedID(),
+				Destination: msg.Source,
+				Command:     msg.Command + ".response",
+				Payload:     result,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}
+			_, _ = client.Send(context.Background(), resp)
+			continue
+		}
+
+		if msg.Command == "background.work" || msg.Command == "proactive.task" {
+			log.Printf("7.6: background work → running FULL real 6-step loop (no mini/demo)")
+			go func(payload interface{}) {
+				tc := &agent.TurnContext{
+					Input:              payload,
+					Hub:                client,
+					SkillIndex:         skillIndex,
+					CustomInstructions: customInstructionsPrefix(),
+				}
+				_, _ = loop.RunTurn(context.Background(), tc, realLLM)
+			}(msg.Payload)
+			continue
+		}
+
+		// All other messages (user turns, etc.) go through the real loop
 		tc := &agent.TurnContext{
-			Input:              "synthetic turn (real loop path)",
+			Input:              msg.Payload,
 			Hub:                client,
 			SkillIndex:         skillIndex,
 			CustomInstructions: customInstructionsPrefix(),
 		}
 		_, _ = loop.RunTurn(context.Background(), tc, realLLM)
 
-		// The special surface handlers (tool.list, autonomy, etc.) are abbreviated in 1.1b.
-		// The production reasoning path is now the real one.
-		time.Sleep(3 * time.Second)
+		// Simple ack (real responses can be enhanced when steps return structured data)
+		ack := hubclient.Message{
+			Source:      client.AssignedID(),
+			Destination: msg.Source,
+			Command:     "response",
+			Payload:     "processed via real 6-step loop",
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		}
+		_, _ = client.Send(context.Background(), ack)
 	}
 }
 

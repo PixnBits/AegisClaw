@@ -188,3 +188,21 @@ This completes the "Add a basic vsock client to AegisHub" starting task from the
 This completes the fourth starting task from the user query.
 
 **Ready for "continue" to Group 1.3 (Integration & Wiring).**
+
+**Group 1.3 Progress (Integration & Wiring – partial but meaningful)**
+
+- Enhanced `hubclient.Client` with `Receive(ctx)` for long-lived bidirectional components (Agent Runtime and Memory VM can now receive pushed messages).
+- Rewired the thin `cmd/agent/main.go` main loop to be driven by `client.Receive()`:
+  - Special fast-path commands (tool.list, background, etc.) handled with local skill index.
+  - Normal user turns and `background.work` / proactive tasks now call the *real* `loop.RunTurn` (with real memory.get_context via hubclient + real LLM via network-boundary).
+  - Removed the last major placeholder sleep loop and "synthetic only" behavior.
+- Agent now has a proper real message-driven execution path using the hubclient for both directions.
+- All verifications passed.
+- This is the first real end-to-end wiring of Agent ↔ Hub ↔ Memory using the infrastructure built in 1.1a–1.2.
+
+Further work in this group (or 1.4) will include:
+- Full structured response flow from steps
+- Daemon-side launching of paired agent+memory VMs with proper key/vsock port injection
+- Removal of remaining limited-mode chat paths in cmd/aegis
+
+**Ready for "continue" (next slice of 1.3 or 1.4).**
