@@ -7,11 +7,12 @@ import (
 	"fmt"
 
 	"AegisClaw/internal/agent"
+	agentSkills "AegisClaw/internal/agent/skills"
 )
 
 func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*agent.StepResult, error) {
 	input := fmt.Sprintf("%v", tc.Input)
-	available := ""
+	available := agentSkills.FormatAvailableTools(tc.SkillIndex, nil)
 	custom := tc.CustomInstructions
 	prompt := custom + "Judge the response quality, compliance with policy, and whether Court review is required. Available local tools: " + available + ". Payload: " + input
 	text, err := llm(ctx, prompt)

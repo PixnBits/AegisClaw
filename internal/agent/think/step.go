@@ -6,11 +6,12 @@ import (
 	"fmt"
 
 	"AegisClaw/internal/agent"
+	agentSkills "AegisClaw/internal/agent/skills"
 )
 
 func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*agent.StepResult, error) {
 	input := fmt.Sprintf("%v", tc.Input)
-	available := ""
+	available := agentSkills.FormatAvailableTools(tc.SkillIndex, nil)
 	custom := tc.CustomInstructions
 	prompt := custom + "Think step-by-step about the observed request using the memory context from this turn. Identify risks, required skills/tools, autonomy implications. Available local tools: " + available + ". Context + Request: " + input
 	text, err := llm(ctx, prompt)

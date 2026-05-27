@@ -8,11 +8,12 @@ import (
 	"fmt"
 
 	"AegisClaw/internal/agent"
+	agentSkills "AegisClaw/internal/agent/skills"
 )
 
 func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*agent.StepResult, error) {
 	input := fmt.Sprintf("%v", tc.Input)
-	available := ""
+	available := agentSkills.FormatAvailableTools(tc.SkillIndex, nil)
 	custom := tc.CustomInstructions
 	prompt := custom + "Perform the execution: actually send signed tool/skill calls to Hub (only use tools from the available local index) or invoke proposal creation flow. Capture results. Available: " + available + ". Request: " + input
 	text, err := llm(ctx, prompt)

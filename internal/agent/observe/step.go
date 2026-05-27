@@ -10,13 +10,16 @@ import (
 	"fmt"
 
 	"AegisClaw/internal/agent"
+	agentSkills "AegisClaw/internal/agent/skills"
 )
 
 func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*agent.StepResult, error) {
 	// Incorporate memory context from real Memory VM (memory-vm.md §1 + §Communication Interface)
 	memoryContext := extractMemoryContextForPrompt(tc)
 
-	available := "" // TODO: wire skills.FormatAvailableTools properly
+	// Use the real local skill/tool index (7.3 requirement + agent-runtime.md)
+	available := agentSkills.FormatAvailableTools(tc.SkillIndex, nil)
+
 	custom := tc.CustomInstructions
 
 	prompt := custom + "Observe and parse the user/agent request. Use the provided recent conversation history and relevant long-term memories. Extract intent, key entities, and whether this requires a proposal (e.g. new skill). Available local tools/skills: " + available + ". Memory context: " + memoryContext + ". Current input: " + fmt.Sprintf("%v", tc.Input) + ". Return structured observation."

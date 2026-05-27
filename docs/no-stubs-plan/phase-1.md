@@ -207,6 +207,16 @@ Further work in this group (or 1.4) will include:
 
 **Ready for "continue" (next slice of 1.3 or 1.4).**
 
+**1.4 Early Hardening Update**
+
+- Wired the real local skill/tool index (`agentSkills.FormatAvailableTools`) into all six reasoning step packages (observe, think, plan, act, execute, judge). This makes the 7.3 local awareness requirement actually participate in the agent's reasoning (previously all steps had empty `available := ""`).
+- Removed the last TODO in the step packages.
+- Verification passed.
+
+This is concrete 1.4 hardening: the real 6-step loop is now more faithful to the full spec (including 7.3 tool awareness).
+
+**Continuing 1.4...**
+
 **1.3l / 1.4 Transition Update**
 
 - Full verification run for this slice: focused tests + coverage on agent packages, make build-binaries, ./bin/aegis doctor — all green.
