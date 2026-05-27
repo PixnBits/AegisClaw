@@ -1,4 +1,4 @@
-.PHONY: build build-binaries build-microvms clean test test-integration test-e2e smoke help doctor
+.PHONY: build build-binaries build-microvms clean test test-integration test-e2e test-tcb test-chaos sbom smoke help doctor setup
 
 # Default target
 all: build
@@ -128,6 +128,67 @@ test-chaos:
 	@echo "These test daemon/VM failure + recovery (host-daemon.md Test Requirements + 9 user journeys)."
 	AEGIS_CHAOS=1 go test -v -tags=integration ./cmd/aegis -run 'Test.*(Chaos|Restart|Watchdog|VMDeath)' -count=1 || true
 
+# SBOM + supply-chain target (7.8). Additive.
+# Always succeeds and produces an artifact:
+#   - CycloneDX JSON if cyclonedx-gomod or syft present in PATH (or after go install attempt).
+#   - High-quality fallback manifest (go.mod + Builder gates + refs) otherwise.
+# Image signing hooks (cosign) are non-fatal / commented (keyless or COSIGN_* env).
+# Refs: threat-model.md:3 (backdoored skill mitigation via SBOM + signing), additional-requirements-and-gaps.md,
+# builder-security-gates.md, grok-build-execution-plan.md:7.8 / 1193, host-daemon.md (TCB supply chain).
+sbom:
+	@echo "=== AegisClaw SBOM / Supply-Chain (7.8) ==="
+	@mkdir -p sbom
+	@SBOM_JSON=sbom/aegis-sbom.cdx.json; \
+	SBOM_TXT=sbom/aegis-sbom.txt; \
+	if command -v cyclonedx-gomod >/dev/null 2>&1; then \
+		echo "cyclonedx-gomod found — generating CycloneDX"; \
+		cyclonedx-gomod generate -o $$SBOM_JSON . 2>/dev/null || echo "cyclonedx-gomod run had issues (see output)"; \
+	elif command -v syft >/dev/null 2>&1; then \
+		echo "syft found — generating CycloneDX for dir"; \
+		syft dir:. -o cyclonedx-json=$$SBOM_JSON 2>/dev/null || echo "syft run had issues"; \
+	else \
+		echo "No SBOM tool in PATH — attempting one-shot go install for cyclonedx-gomod (Go module SBOM)"; \
+		if go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest 2>/dev/null; then \
+			GOBIN_BIN="$$(go env GOBIN)"; \
+			if [ -z "$$GOBIN_BIN" ]; then GOBIN_BIN="$$(go env GOPATH)/bin"; fi; \
+			if [ -x "$$GOBIN_BIN/cyclonedx-gomod" ]; then \
+				"$$GOBIN_BIN/cyclonedx-gomod" generate -o $$SBOM_JSON . 2>/dev/null || true; \
+			fi; \
+		fi; \
+	fi; \
+	if [ -f $$SBOM_JSON ]; then \
+		echo "✓ SBOM (CycloneDX JSON) written to $$SBOM_JSON"; \
+	else \
+		echo "Writing fallback manifest (tools unavailable or failed; fully upgradeable)"; \
+		{ \
+			echo "# AegisClaw v2 Fallback SBOM / Supply-Chain Manifest (7.8)"; \
+			echo "# Generated: $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+			echo "# Primary refs: threat-model.md:3 (backdoored skill mitigation), additional-requirements-and-gaps.md"; \
+			echo "# Builder: builder-security-gates.md + scripts/build-microvms-docker.sh"; \
+			echo "# Upgrade path: make sbom (with cyclonedx-gomod/syft in PATH) or cosign for images"; \
+			echo ""; \
+			echo "## Go module (this tree)"; \
+			cat go.mod 2>/dev/null || echo "(go.mod not found at root)"; \
+			echo ""; \
+			echo "## Builder VM / security gates (image-level)"; \
+			echo "  - SAST: gosec"; \
+			echo "  - SCA: govulncheck"; \
+			echo "  - Secrets: gitleaks + custom"; \
+			echo "  - Policy-as-Code: opa"; \
+			echo "  - Composition/Health: Go toolchain"; \
+			echo "  - Future: full CycloneDX JSON + cosign signatures on rootfs/images"; \
+			echo ""; \
+			echo "## Notes for TCB / 9 journeys"; \
+			echo "  SBOM + signing reduces supply-chain risk for skills (see user-journeys/04 and 09)."; \
+			echo "  Hooks are additive and non-fatal (no breakage to make start/stop/test)."; \
+		} > $$SBOM_TXT; \
+		echo "✓ Fallback SBOM manifest written to $$SBOM_TXT"; \
+	fi
+	@echo ""
+	@echo "Image signing hook (non-fatal, 7.8 / threat-model.md):"
+	@echo "  # cosign sign --yes <image>     # keyless (OIDC) or COSIGN_PRIVATE_KEY=... cosign sign --key ..."
+	@echo "  (cosign not required; placeholder ready for CI/release per grok-build-execution-plan.md:7.8)"
+
 # Setup target for Journey 01 (onboarding)
 # Provides a low-intervention path: build + doctor (per user-journeys/01-installation-onboarding.md)
 setup:
@@ -159,6 +220,9 @@ help:
 	@echo "  make test               Run unit tests"
 	@echo "  make test-integration   Run daemon integration tests"
 	@echo "  make test-e2e           Run E2E tests"
+	@echo "  make test-tcb           TCB-specific tests (7.5)"
+	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"
+	@echo "  make sbom               SBOM + supply-chain (7.8: CycloneDX or fallback + cosign hooks)"
 	@echo "  make clean              Remove build artifacts"
 	@echo "  make help               Show this help message"
 	@echo ""

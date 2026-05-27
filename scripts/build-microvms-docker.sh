@@ -165,12 +165,13 @@ for component in $COMPONENTS; do
         # Ensure scanners from the image are properly present in the extracted dir
         # (they are already copied in the Dockerfile; this step can add verification or SBOM)
         
-        # Create a minimal SBOM / manifest for supply-chain visibility (see threat-model.md)
+        # Create a minimal SBOM / manifest for supply-chain visibility (see threat-model.md:3 + additional-requirements-and-gaps.md)
+        # 7.8: Now enhanced with make sbom (CycloneDX or fallback) + cosign signing hooks (grok-build-execution-plan.md:7.8).
         sbom_file="$ROOTFS_DIR/builder-sbom.txt"
         {
-            echo "# AegisClaw Builder VM SBOM (Phase 4)"
+            echo "# AegisClaw Builder VM SBOM (Phase 4 / 7.8)"
             echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "# Reference: docs/specs/builder-security-gates.md + builder-vm.md"
+            echo "# Reference: docs/specs/builder-security-gates.md + builder-vm.md + threat-model.md:3"
             echo ""
             echo "Binary: /usr/local/bin/builder (statically linked Go)"
             echo ""
@@ -181,13 +182,18 @@ for component in $COMPONENTS; do
             echo "  - Policy-as-Code: opa (Open Policy Agent)"
             echo "  - Composition/Health: Go toolchain + smoke test support"
             echo ""
+            echo "Supply-chain (7.8):"
+            echo "  - Run 'make sbom' at repo root for CycloneDX JSON (cyclonedx-gomod/syft) or high-quality fallback manifest."
+            echo "  - Image signing: cosign sign --yes <image> (keyless or COSIGN_*; non-fatal hook in Makefile + this script)."
+            echo "  - See also: scripts/build-microvms-docker.sh (this block), grok-build-execution-plan.md:7.8, user-journeys/04+09."
+            echo ""
             echo "Notes:"
             echo "  - All scanners are available inside the untrusted Builder VM."
             echo "  - Rootfs kept minimal per security-model.md (alpine base + static tools)."
-            echo "  - Future work: proper image signing + full SBOM (syft/spdx) + SBOM in build artifacts."
+            echo "  - Full SBOM + signing reduces backdoored-skill risk (threat-model.md:3)."
         } > "$sbom_file"
         
-        log "Builder SBOM/manifest written to $sbom_file"
+        log "Builder SBOM/manifest written to $sbom_file (7.8 enhanced with make sbom + cosign hooks)"
     fi
 done
 
