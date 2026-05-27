@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -275,6 +276,24 @@ func buildBootArgs(config VMConfig) string {
 	// See VMConfig.PrivateKeyPath and host-daemon.md key distribution rules.
 	if config.PrivateKeyPath != "" {
 		base += fmt.Sprintf(" aegis.vm_private_key_path=%s", config.PrivateKeyPath)
+	}
+
+	// Group 3 (Court): Support persona identity injection for the 7 court-persona VMs
+	// via kernel cmdline. The thin court-persona binary already parses aegis.persona=
+	// (and AEGIS_COURT_PERSONA env) so a single court-persona.img works for all personas.
+	if config.ExtraBootArgs != "" {
+		base += " " + strings.TrimSpace(config.ExtraBootArgs)
+	}
+
+	// Group 3 Court support (governance-court.md §Architecture):
+	// If this is a court-persona-* VM, auto-inject the persona identity via kernel cmdline.
+	// The thin court-persona binary (cmd/court-persona/main.go) parses aegis.persona=
+	// from /proc/cmdline at startup. This lets us use a single court-persona.img for all 7 personas.
+	if strings.HasPrefix(config.ID, "court-persona-") {
+		persona := strings.TrimPrefix(config.ID, "court-persona-")
+		if persona != "" {
+			base += fmt.Sprintf(" aegis.persona=%s", persona)
+		}
 	}
 
 	return base

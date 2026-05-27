@@ -37,6 +37,13 @@ type VMConfig struct {
 	PrivateKeyPath string
 
 	NetworkConfig *NetworkConfig
+
+	// ExtraBootArgs are appended to the kernel command line for Firecracker guests.
+	// Used by Court components (Group 3) to receive persona identity (aegis.persona=xxx)
+	// without requiring 7 separate rootfs images. The guest binary (court-persona)
+	// parses this from /proc/cmdline (see cmd/court-persona/main.go).
+	// Backward compatible (empty = no change).
+	ExtraBootArgs string
 }
 
 // NetworkConfig specifies network setup for the VM.

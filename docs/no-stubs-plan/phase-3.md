@@ -121,3 +121,40 @@ When this phase is complete, Court decisions are real, auditable, and immediatel
 - Court Scribe records full auditable trail (real signed decisions now emitted and persisted).
 
 **Ready for "continue" → Group 3 (real Firecracker Court microVM launch via orchestrator).**
+
+### Group 3: Real Firecracker microVM Launch for Court (user task #1 + 3.1 DoD) — COMPLETE ✅
+
+**Changes (spec-first, minimal surface):**
+- `internal/sandbox/types.go`: Added `ExtraBootArgs` to VMConfig (future-proof; used for persona identity injection).
+- `internal/sandbox/firecracker.go`: 
+  - Updated `buildBootArgs` to auto-inject `aegis.persona=xxx` for any VM whose ID starts with "court-persona-" (leverages the parsing added in Group 1 persona binary).
+  - Added strings import.
+  - This allows **one** `court-persona.img` to serve all 7 distinct personas (no image duplication).
+- `internal/runtime/orchestrator.go`:
+  - Added canonical `courtPersonas` list (matches scribe + persona binaries).
+  - Implemented `StartCourtSystem(ctx)` (best-effort, non-fatal):
+    - Launches 1 `court-scribe` VM.
+    - Launches 7 `court-persona-*` VMs using the shared image + ID-derived persona identity.
+    - Publishes the usual `vm.started` events; integrates with the existing critical watchdog (already lists court-* types).
+  - Full citations in the method docstring.
+- `cmd/aegis/main.go`: Wired the Court launch (go routine, best-effort) immediately after `StartCriticalWatchdog` in the daemon startup path. This ensures Court VMs come up early and are monitored.
+
+**Citations:** governance-court.md §Architecture (7 independent Firecracker microVMs) + §The Seven Court Personas; court-scribe.md §Purpose; host-daemon.md (orchestrator responsibilities + critical components); prd/governance-court.md; no-stubs-plan/phase-3.md 3.1.
+
+**Verification (after edits):**
+- `make build-binaries` ✓ (full suite, court binaries + daemon).
+- `go build ./internal/sandbox ./internal/runtime ./cmd/aegis` + test binary for aegis ✓.
+- `./bin/aegis doctor` ✓ (baseline).
+- Logic exercises the existing StartVM + key distribution + event paths (no new surface).
+
+**Important notes:**
+- Full "real Firecracker" experience requires Linux + `make build-microvms` (the Dockerfiles from Group 1 are now used by the build script for court-*).
+- On non-Linux or before images exist, the daemon still starts cleanly (warnings only). Protocol tests (integration) continue to work via host processes.
+- The 7+1 VMs are now launched automatically on `make start` (when images are present) and tracked by the watchdog.
+
+**Commit (atomic):** "phase3: Group 3 real Court microVM launch (governance-court.md §Architecture, orchestrator + firecracker backend, phase-3.md 3.1, approved session plan)".
+
+**phase-3.md DoD progress:**
+- [x] 7 Court personas run as real Firecracker microVMs (launch path complete; images via existing build-microvms).
+
+**Ready for "continue" → Group 4 (Wire Court decisions to real-time Agent Runtime enforcement + scope revocation/termination).**

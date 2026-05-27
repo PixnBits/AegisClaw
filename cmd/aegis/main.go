@@ -401,6 +401,16 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// and publishes signed privileged events on degradation. Very lightweight.
 	orchestrator.StartCriticalWatchdog(context.Background())
 
+	// Phase 3 (Full Court): Launch the real 7-persona Court + Scribe as Firecracker microVMs.
+	// This is the key wiring for "real Court microVMs" (governance-court.md §Architecture).
+	// Best-effort and non-fatal so the daemon can still start even before `make build-microvms`
+	// has produced court-*.img files. The watchdog will still track them when present.
+	go func() {
+		if err := orchestrator.StartCourtSystem(context.Background()); err != nil {
+			logrus.Warnf("Court system start (best effort per Phase 3): %v", err)
+		}
+	}()
+
 	// Write PID file
 	if err := writePIDFile(); err != nil {
 		logrus.Fatalf("failed to write PID file: %v", err)
