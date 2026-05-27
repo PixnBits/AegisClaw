@@ -1233,6 +1233,14 @@ Minimize new stubs, temporary surface code, and premature abstractions. Prefer r
 
 **Current Overall Progress**: Phase 6 — **COMPLETE & COMMITTED** (bb62530).
 
+**Post-Merge Health (2026-05-26)**: 
+- Pulled commit 302a6fd: reconciliation logic moved to Store VM (thin wrappers in cmd/aegis, authoritative logic in cmd/store per store-vm.md + event-system.md).
+- Temporary build breakage from large deletion in cmd/aegis/main.go in the lessons-learned snapshot (unused imports, missing ensureUserWorkspaceDir, corrupted cobra import) — resolved autonomously.
+- `make test` fully green. No breakage to start/stop/test-chaos/doctor.
+- Reconciliation correctly implemented as thin surface + Store-authoritative model. No surface regression for autonomy/background expiration.
+- 7.4 TCB workspace helper (`ensureUserWorkspaceDir`) restored as minimal collateral-damage fix (host-daemon.md minimal TCB rules).
+- Project in high-health, merge-ready state for the reconciliation change. All invariants protected. Spec alignment maintained (event-system.md, store-vm.md, host-daemon.md).
+
 **Phase 7.1 — COMPLETE (stub)**: The Network Boundary (the only component authorized for outbound traffic and secrets) now has a demonstrably functional, cryptographically protected, mutually authenticated, per-skill secrets and egress control plane via the Hub. Major artifacts delivered during closure:
 - Standalone `docs/network-boundary-7.1-capabilities.md` (public-facing real vs stub summary).
 - Detailed "7.1 Closure Status" section with honest limitations and prioritized remaining work.
