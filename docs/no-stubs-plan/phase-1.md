@@ -144,3 +144,25 @@ When this phase is complete, an agent should be able to:
 **Coverage note:** New packages currently have no dedicated _test.go (the loop is exercised via the thin main + existing cmd/agent tests). ≥80% coverage target will be achieved across 1.1b + 1.3/1.4 as more tests are added (per plan).
 
 **Ready for "continue" to 1.1c (hub vsock listener) or 1.2 (Memory skeleton).**
+
+**Group 1.1c COMPLETE (AegisHub vsock listener for guest microVMs)**
+
+- Added `startVsockListener` in `cmd/aegishub/main.go` (launched as goroutine from startHub).
+  - Listens on vsock port 9999 (using `hubclient.HubVsockPort`).
+  - Reuses `handleConnection(net.Conn, ...)` exactly (vsock.Conn satisfies the interface).
+  - Graceful degradation on non-Linux / no vsock (logs and continues with unix only).
+  - Matches the convention used by the client side (hubclient.DialVsock + Host=2).
+- Updated `config/acls.yaml` with additive wildcard rules for `agent*` / `memory*` (so per-session "agent-uuid" and "memory-uuid" instances work when we launch real microVMs). Cited specs in comments.
+- Added note to `cmd/aegishub/main_test.go` acknowledging the new vsock path (existing unix tests still cover the shared handshake/message logic).
+- Full verification passed: `go test ./cmd/aegishub/...`, `make build-binaries`, `./bin/aegis doctor`.
+- Atomic commit follows.
+
+**Spec citations (code, comments, this note, commit):**
+- `aegishub.md` §Handshake Sequence ("MicroVM connects to AegisHub via vsock")
+- `agent-runtime.md` §Communication ("Only allowed interfaces: vsock / JSON-RPC to AegisHub")
+- `security-model.md` §Isolation Strategy + §Communication & Mediation
+- `no-stubs-plan/phase-1.md` 1.1c + resolution plan §Phase 1
+
+This completes the "Add a basic vsock client to AegisHub" starting task from the user query (server-side listener for guests).
+
+**Ready for "continue" to Group 1.2 (Memory VM real skeleton in cmd/memory + internal/memory).**

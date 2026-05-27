@@ -54,6 +54,19 @@ rules:
   commands:
     - memory.*
 
+# Phase 1.1c: Support multiple concurrent agent/memory instances (real per-session Firecracker microVMs).
+# Use wildcards so "agent-*" and "memory-*" (assigned at registration) are allowed.
+# This is additive and does not change behavior for the legacy "agent"/"memory" singleton names.
+# See aegishub.md §ACL Management + agent-runtime.md §Communication.
+- source: "agent*"
+  destination: "memory*"
+  commands:
+    - memory.*
+- source: "memory*"
+  destination: "agent*"
+  commands:
+    - memory.*
+
 # Agent <-> Store (proposals, and responses)
 - source: agent
   destination: store

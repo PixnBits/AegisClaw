@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"AegisClaw/internal/transport/hubclient" // for HubVsockPort constant (Phase 1.1c vsock support)
+	"github.com/mdlayher/vsock"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -210,10 +212,41 @@ func startHub(cmd *cobra.Command, args []string) {
 
 	conns := &sync.Map{}
 
+	// Phase 1.1c: Start vsock listener for real Firecracker guest microVMs (Agent Runtime, Memory VM, etc.).
+	// Guests connect via vsock using the well-known port (matches hubclient.HubVsockPort = 9999 and Host CID convention).
+	// handleConnection is reused exactly (vsock.Conn implements net.Conn).
+	// This satisfies aegishub.md §Handshake Sequence: "MicroVM connects to AegisHub via vsock".
+	go startVsockListener(conns)
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Printf("Accept error: %v", err)
+			continue
+		}
+		go handleConnection(conn, conns)
+	}
+}
+
+// startVsockListener starts a parallel listener for guest microVMs over vsock.
+// Port 9999 is the documented control-plane port for AegisHub (distinct from per-VM egress ports 9xxx).
+// On non-Linux or environments without vsock support it logs and returns gracefully (no hard failure).
+// References: agent-runtime.md §Communication, security-model.md §Isolation Strategy.
+func startVsockListener(conns *sync.Map) {
+	port := uint32(hubclient.HubVsockPort) // 9999 — matches hubclient and guest dialing convention
+	l, err := vsock.Listen(port, nil)
+	if err != nil {
+		log.Printf("AegisHub: vsock listen on port %d failed (expected on non-Linux or without /dev/vsock): %v — real Firecracker guests (agent/memory VMs) will fall back to unix socket in dev", port, err)
+		return
+	}
+	defer l.Close()
+
+	fmt.Printf("AegisHub: listening on vsock port %d for guest microVMs (Agent Runtime + Memory VM per Phase 1)\n", port)
+
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			log.Printf("vsock accept error: %v", err)
 			continue
 		}
 		go handleConnection(conn, conns)
