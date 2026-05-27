@@ -1,33 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
-	"os/exec"
-	"os/signal"
-	"os/user"
 	"path/filepath"
-	"regexp"
-	stdruntime "runtime"
-	"strconv"
-	"strings"
-	"syscall"
-	"time"
-
-	"github.com/sirup13/cobra"
-
-	"AegisClaw/internal/config"
-	"AegisClaw/internal/eventbus"
-	"AegisClaw/internal/runtime"
-	"AegisClaw/internal/workspace"
 )
 
 // ... (rest of file remains the same, but replace the two reconciliation functions with thin wrappers)
@@ -48,3 +24,26 @@ func reconcileExpiredBackgroundWork() []string {
 }
 
 // ... (rest of file unchanged)
+
+// ensureUserWorkspaceDir ensures the user-facing ~/.aegis directory tree exists
+// with safe permissions. This supports 7.4 workspace customizations
+// (AGENTS.md, SOUL.md, etc.) without the daemon ever reading or parsing
+// those files (per host-daemon.md minimal TCB rules).
+// It is intentionally a no-op if the dirs already exist.
+func ensureUserWorkspaceDir() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot determine user home: %w", err)
+	}
+	wsDir := filepath.Join(home, ".aegis")
+	if err := os.MkdirAll(wsDir, 0700); err != nil {
+		return fmt.Errorf("failed to create user workspace dir %s: %w", wsDir, err)
+	}
+	agentsDir := filepath.Join(wsDir, "agents")
+	if err := os.MkdirAll(agentsDir, 0700); err != nil {
+		return fmt.Errorf("failed to create agents dir %s: %w", agentsDir, err)
+	}
+	// Additional subdirs can be added here in the future if needed for other
+	// user customization files (e.g. tools, skills), still without interpretation.
+	return nil
+}

@@ -15,7 +15,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/spf13/cobra"
 )
