@@ -318,10 +318,12 @@ The daemon will automatically discover kernels and images in the *original user'
 
 ### Control Socket & Running CLI Commands as a Normal User
 
-The daemon often runs as root (required for Firecracker). The control socket lives at `/tmp/aegis/daemon.sock` (chosen so both root and normal users can reach it).
+The daemon often runs as root (required for Firecracker on Linux).
 
-- The daemon now creates this socket with `0666` permissions (and chowns it to the original invoking user via `SUDO_USER`).
-- This allows normal users to run `./bin/aegis status`, `./bin/aegis vm list`, etc. without sudo after the daemon is started.
+- On Linux we now use an **abstract Unix socket** (no filesystem entry). This cleanly solves the "root daemon + normal user CLI" problem without `/tmp` or relaxed permissions.
+- On other platforms we fall back to a conventional socket under `~/.aegis/`.
+
+- On non-abstract platforms the socket uses relaxed permissions for cross-user access. Abstract sockets on Linux do not require this.
 - **Note:** Because the socket is world-writable, any local user can currently send basic commands (including stop). For production use you may want to tighten this (e.g. 0660 + a dedicated group) or add simple UID checks in the handler.
 
 If you see "unable to query live state" or "Daemon not running or socket error" even after the daemon has printed "daemon started", wait 10–15 seconds (real microVMs take time to boot) and try again. The "daemon started" message is now tied to both the PID file *and* the control socket being ready.

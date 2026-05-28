@@ -207,11 +207,12 @@ type SocketResponse struct {
 func init() {
 	cfg = config.New()
 
-	// Use /tmp for the PID file so it's accessible to both root and non-root users
-	// This avoids issues where sudo runs as root but status checks as regular user
+	// PID file still lives in /tmp for cross-user accessibility (root daemon vs
+	// normal user `status` / `stop`). The control socket itself is now handled
+	// in an OS-specific way (see getControlSocketAddr and the socket_*.go files).
 	stateDir := filepath.Join("/tmp", "aegis")
 
-	socketPath = filepath.Join(stateDir, "daemon.sock")
+	socketPath = getControlSocketAddr()
 	pidFile = filepath.Join(stateDir, "daemon.pid")
 }
 
@@ -350,19 +351,23 @@ func startDaemon(cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 
-		// Wait for PID file + control socket to appear.
-		// This makes "daemon started" mean the CLI (status, vm list) can talk
-		// to the daemon immediately, even from a normal user after sudo start.
+		// Wait for PID file + control socket to be ready.
+		// On Linux we use an abstract socket (no filesystem entry), so we
+		// detect readiness by attempting a dial instead of os.Stat.
 		const maxWait = 150 // 15 seconds
 		for i := 0; i < maxWait; i++ {
 			pidReady := false
 			socketReady := false
+
 			if _, err := os.Stat(pidFile); err == nil {
 				pidReady = true
 			}
-			if _, err := os.Stat(socketPath); err == nil {
+
+			// Platform-aware readiness for the control socket
+			if isControlSocketReady(socketPath) {
 				socketReady = true
 			}
+
 			if pidReady && socketReady {
 				fmt.Println("daemon started")
 				return
@@ -372,7 +377,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 		// Final check
 		if _, err := os.Stat(pidFile); err == nil {
-			if _, err := os.Stat(socketPath); err == nil {
+			if isControlSocketReady(socketPath) {
 				fmt.Println("daemon started")
 				return
 			}
@@ -792,8 +797,12 @@ func expandPath(path string) string {
 // Used for enriched CLI <-> daemon communication (6.1.2+).
 // Security: small fixed buffers, no user-controlled data in op beyond allowlist in handler, 5s implicit via caller.
 func sendSocketRequest(op string, args map[string]string, useJSON bool) (SocketResponse, error) {
-	socket := expandPath(socketPath)
-	conn, err := net.Dial("unix", socket)
+	addr := socketPath
+	if !isAbstractSocket(addr) {
+		addr = expandPath(addr)
+	}
+
+	conn, err := net.Dial("unix", addr)
 	if err != nil {
 		return SocketResponse{OK: false, Error: "daemon not running"}, err
 	}
@@ -812,17 +821,20 @@ func sendSocketRequest(op string, args map[string]string, useJSON bool) (SocketR
 		return SocketResponse{OK: false, Error: "write error"}, err
 	}
 
-	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
+	// Read the full response (server closes the connection after sending the reply).
+	// This is robust for both small text responses and large JSON lists,
+	// and works correctly with abstract Unix sockets.
+	respBytes, err := io.ReadAll(conn)
 	if err != nil {
 		return SocketResponse{OK: false, Error: "read error"}, err
 	}
+
 	var resp SocketResponse
-	if json.Unmarshal(buf[:n], &resp) == nil {
+	if json.Unmarshal(respBytes, &resp) == nil {
 		return resp, nil
 	}
 	// Fallback for text responses during transition
-	text := strings.TrimSpace(string(buf[:n]))
+	text := strings.TrimSpace(string(respBytes))
 	return SocketResponse{OK: true, Text: text}, nil
 }
 
@@ -1063,40 +1075,41 @@ func getPeerUID(conn net.Conn) (int, bool) {
 }
 
 // startSocketServer sets up the hardened Unix socket for CLI/daemon communication.
-func startSocketServer(socketPath string, orch *runtime.Orchestrator) error {
-	socket := expandPath(socketPath)
-	dir := filepath.Dir(socket)
+func startSocketServer(socketAddr string, orch *runtime.Orchestrator) error {
+	addr := socketAddr
 
-	// Create socket directory
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create socket directory: %w", err)
+	// Only treat as a filesystem path (and do ~ expansion + mkdir) for real paths
+	if !isAbstractSocket(addr) {
+		addr = expandPath(addr)
+		dir := filepath.Dir(addr)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create socket directory: %w", err)
+		}
+		// Best-effort cleanup of stale filesystem socket
+		_ = os.Remove(addr)
 	}
 
-	// Remove old socket if it exists
-	os.Remove(socket)
-
-	listener, err := net.Listen("unix", socket)
+	listener, err := net.Listen("unix", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on socket: %w", err)
 	}
 
-	// Make the control socket accessible to the original user (and root).
-	// The daemon often runs as root (via sudo wrapper for Firecracker), but normal
-	// users need to run `aegis status`, `aegis vm list`, etc.
-	// We chown to the original invoking user and set 0666 so the CLI works across
-	// the privilege boundary. (The protocol itself has very limited commands.)
-	if u, err := getOriginalUser(); err == nil {
-		if uid, perr := strconv.Atoi(u.Uid); perr == nil {
-			gid := uid
-			if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
-				gid = g
+	// For conventional filesystem sockets, make the socket reachable by the
+	// original invoking user (and root). Abstract sockets don't need this.
+	if !isAbstractSocket(addr) {
+		if u, err := getOriginalUser(); err == nil {
+			if uid, perr := strconv.Atoi(u.Uid); perr == nil {
+				gid := uid
+				if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
+					gid = g
+				}
+				_ = os.Chown(addr, uid, gid)
 			}
-			_ = os.Chown(socket, uid, gid)
 		}
-	}
-	// 0666 so non-root users who invoked the sudo start can still use the CLI
-	if err := os.Chmod(socket, 0666); err != nil {
-		logrus.Warnf("could not chmod control socket to 0666: %v", err)
+		// 0666 so non-root users can use the CLI after a root-started daemon.
+		if err := os.Chmod(addr, 0666); err != nil {
+			logrus.Warnf("could not chmod control socket to 0666: %v", err)
+		}
 	}
 
 	go func() {
@@ -1111,7 +1124,7 @@ func startSocketServer(socketPath string, orch *runtime.Orchestrator) error {
 		}
 	}()
 
-	logrus.Infof("socket server listening on %s", socket)
+	logrus.Infof("socket server listening on %s", addr)
 	return nil
 }
 
