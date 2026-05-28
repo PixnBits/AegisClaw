@@ -748,6 +748,56 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Command = "pr.data"
 			response.Payload = prs[id]
 
+		// Phase 4: secrets.push — Store produces and sends encrypted secret blobs to the Network Boundary.
+		// SPEC: secret-management.md §Key Guarantees (Store is the sole producer of encrypted blobs)
+		//       + network-boundary.md (encrypted blobs over Hub, decryption + zeroization only inside Boundary).
+		// This is the production path that replaces all file/dir/env secret distribution.
+		case "secrets.push":
+			payload := msg.Payload.(map[string]interface{})
+			secretsMap, _ := payload["secrets"].(map[string]interface{}) // or map[string]string
+
+			// Convert to map[string]string for the crypto helper
+			secrets := make(map[string]string)
+			for k, v := range secretsMap {
+				if s, ok := v.(string); ok {
+					secrets[k] = s
+				}
+			}
+
+			// Load symmetric key (same env convention as the Boundary for Phase 4)
+			symKeyB64 := strings.TrimSpace(os.Getenv("AEGIS_SECRETS_SYMMETRIC_KEY"))
+			symKey, _ := base64.StdEncoding.DecodeString(symKeyB64)
+			if len(symKey) != 32 {
+				response.Command = "error"
+				response.Payload = "AEGIS_SECRETS_SYMMETRIC_KEY missing or invalid (must be 32-byte base64)"
+				break
+			}
+
+			blobPayload, err := createEncryptedSecretBlobPayload(secrets, symKey, map[string]interface{}{
+				"source": "secrets.push",
+			})
+			if err != nil {
+				response.Command = "error"
+				response.Payload = err.Error()
+				break
+			}
+
+			// Send signed message to the Network Boundary
+			updateMsg := Message{
+				Source:      "store",
+				Destination: "network-boundary",
+				Command:     "secrets.update", // or "secrets.push" — boundary accepts either in current wiring
+				Payload:     blobPayload,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				Signature:   "",
+			}
+			signMessage(&updateMsg, priv)
+			// Send to Boundary (no extra mutex needed here — follows the same pattern as court-scribe notifications)
+			encoder.Encode(updateMsg)
+
+			response.Command = "secrets.pushed"
+			response.Payload = map[string]interface{}{"status": "encrypted blob sent", "skills": len(secrets)}
+
 		// === Teams (minimal stub for Phase 5 Teams plan slice) ===
 		case "team.create":
 			payload := msg.Payload.(map[string]interface{})

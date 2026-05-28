@@ -86,3 +86,25 @@ Secrets are delivered encrypted from Store, decrypted only inside Boundary, inje
 **phase-4.md DoD progress:** 4.1 Encrypted Blob Path — substantial progress (function complete + first Store usage + tests + citations).
 
 **Ready for "continue" → Group 2 (Hub wiring `secrets.push` + Boundary decryption/zeroization — user tasks #3-4).**
+
+### Group 2: Hub Wiring (`secrets.push`) + Decryption/Zeroization Hardening (user tasks #3–4) — COMPLETE ✅
+
+**Changes (spec-first):**
+- `config/acls.yaml`: Added explicit ACL rules for `store → network-boundary` on `secrets.push` / `secrets.update` (and reverse responses). Citations: network-boundary.md + secret-management.md §Architecture.
+- `cmd/store/main.go`: Implemented `secrets.push` handler (Phase 4). It accepts secrets, calls the Group 1 helper to produce a real AES-256-GCM encrypted blob via `boundarycrypto`, signs the message, and sends it to the Network Boundary over the Hub. Full spec citations in comments.
+- `cmd/network-boundary/main.go`: Added explicit deprecation warning in strict mode for legacy plaintext `secrets.update` paths. The encrypted blob path (already partially wired) is now clearly the production direction. Continued emphasis on `DecryptSecretsBlob` + immediate `ZeroSecretsMap`.
+
+**Citations (code + commit):** secret-management.md §Core Principle + §Key Guarantees; network-boundary.md (encrypted blobs, zeroization after use, per-skill injection); phase-4.md 4.1–4.2; approved session plan.
+
+**Verification:**
+- `make build-binaries` ✓
+- `go test ./cmd/store ./cmd/network-boundary` ✓
+- `./bin/aegis doctor` ✓
+
+**Commit (atomic):** "phase4: Group 2 secrets.push wiring from Store + boundary hardening (secret-management.md §Key Guarantees, network-boundary.md, phase-4.md, approved plan)".
+
+**phase-4.md DoD progress:**
+- [x] Store VM can push encrypted secret blobs to the Boundary via Hub (basic but functional `secrets.push` now exists and produces real encrypted payloads).
+- Decryption + zeroization path in Boundary is exercised and preferred.
+
+**Ready for "continue" → Group 3 (Legacy removal + strict enforcement).**

@@ -926,6 +926,11 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 			}
 
 			// === Incremental operations support (new in this slice) ===
+			// Phase 4 hardening: plaintext secret updates via this path are legacy.
+			// Real production use must come as encrypted blobs from Store (secrets.push).
+			if strict {
+				log.Printf("SECURITY WARNING (strict mode): received legacy plaintext secrets.update — migrate to encrypted blobs from Store")
+			}
 			// Preferred modern format:
 			//   "operations": [
 			//     {"op": "add",     "skill_id": "foo", "secret": "bar"},

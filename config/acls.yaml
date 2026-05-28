@@ -117,6 +117,18 @@ rules:
     - scribe.submit_vote
     - scribe.*
 
+# Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
+- source: store
+  destination: network-boundary
+  commands:
+    - secrets.push
+    - secrets.update
+- source: network-boundary
+  destination: store
+  commands:
+    - secrets.response
+    - secrets.*
+
 # Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
 - source: court-scribe
   destination: court-persona-*
