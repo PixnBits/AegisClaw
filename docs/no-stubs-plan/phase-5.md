@@ -79,6 +79,15 @@ When this phase is complete, the project has **zero stubs** and is ready for pro
 
 **Ready for "continue" → remaining Group 1 polish or Group 2 (Canvas + full streaming chat with Markdown).**
 
+### Group 1 continued (approvals fixture improvement)
+
+**Additional change:**
+- Improved `event.approvals.list` in the fixture client to return a small realistic pending approval. This makes the Approvals screen render useful content in isolated E2E tests.
+
+**Verification:** Build + tests + doctor green.
+
+Group 1 is advancing well on both the "wire handlers" and "add stable data-testid" fronts.
+
 ### Group 1 continued (data-testid improvements)
 
 **Additional changes:**

@@ -219,7 +219,19 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "event.approvals.list":
-		data := []byte("[]")
+		// Phase 5 Group 1 improvement: Return a small but realistic set of pending approvals
+		// so the Approvals UI renders meaningfully in fixture mode.
+		approvals := []interface{}{
+			map[string]interface{}{
+				"approval_id": "appr-demo-001",
+				"title":       "Approve new Discord Monitor skill",
+				"risk":        "medium",
+				"status":      "pending",
+				"requested_by": "user",
+				"created_at":  "2026-05-20T10:00:00Z",
+			},
+		}
+		data, _ := json.Marshal(approvals)
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "court.get_reviews":
