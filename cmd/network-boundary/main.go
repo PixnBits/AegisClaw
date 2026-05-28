@@ -1237,6 +1237,12 @@ func getAllowedForSkill(skillID string, global map[string]bool, skillRules map[s
 //   3. AEGIS_SKILL_SECRETS         — env var (comma / newline / semicolon separated "skill=val").
 //   4. If none configured, returns empty map (caller falls back to internal demo seeds).
 //
+// SPEC REFERENCES (Phase 4):
+//   - secret-management.md §Key Guarantees (Boundary is the sole handler; secrets
+//     must never be visible outside it).
+//   - network-boundary.md + 7.1 capabilities doc (encrypted blobs from Store are
+//     the production path; legacy file/dir/env loading is deprecated for production).
+//
 // Paranoid / TCB rules (enforced or documented here):
 // - NEVER log actual secret values.
 // - When a secrets file or directory is provided we perform best-effort os.Stat
@@ -1244,14 +1250,26 @@ func getAllowedForSkill(skillID string, global map[string]bool, skillRules map[s
 // - In strict mode (AEGIS_BOUNDARY_STRICT=1), any declared secrets file or any
 //   .secret file in the directory must be readable and have mode 0600/0400, or
 //   the boundary refuses to start (fail-closed).
-// - This is the first concrete implementation step toward the spec:
-//   encrypted per-skill secret blobs delivered from the Store VM over the
-//   authenticated Hub channel, decrypted only inside the boundary, zeroized
-//   after use, and never present on disk in plaintext.
+// - Phase 4: These legacy paths are **deprecated** for production. The only
+//   production mechanism is encrypted blobs pushed from the Store VM via
+//   "secrets.push" / "secrets.update" over the Hub. See the secrets.update
+//   handler and injectSecretForHost for the real path.
 // - The Go control plane (this binary) remains the single source of truth for
 //   secrets. Envoy only receives injected headers via the ext_authz gRPC path.
 func loadSkillSecrets() map[string]string {
 	secrets := make(map[string]string)
+
+	strict := strings.ToLower(os.Getenv("AEGIS_BOUNDARY_STRICT")) == "1" || os.Getenv("AEGIS_BOUNDARY_STRICT") == "true"
+
+	// Phase 4 enforcement (secret-management.md §Key Guarantees + network-boundary.md):
+	// In strict mode, legacy file/dir/env secret sources are disabled.
+	// Only encrypted blobs from the Store (via secrets.push) are accepted.
+	// This is the critical step that removes file/dir/env fallbacks from the
+	// production secret path.
+	if strict {
+		log.Printf("SECURITY (strict mode): Legacy secret sources (FILE/DIR/ENV) are disabled. Only encrypted blobs from Store are allowed.")
+		return secrets // return empty — encrypted path via Hub is the only source
+	}
 
 	// File-based declarative source (primary path for production-like configs)
 	if filePath := strings.TrimSpace(os.Getenv("AEGIS_SKILL_SECRETS_FILE")); filePath != "" {
@@ -1366,6 +1384,11 @@ func loadSkillSecrets() map[string]string {
 //   this function (and the ExtAuthz Check path) will receive already-decrypted
 //   material that the boundary will zeroize after the request is built.
 func injectSecretForHost(req *http.Request, host string, skillID string, secrets *liveSecretStore) {
+	// Phase 4 (real encrypted path):
+	// This function must only ever receive secrets that came from encrypted
+	// blobs delivered by the Store and decrypted inside the Boundary.
+	// Legacy sources are gated in loadSkillSecrets() when AEGIS_BOUNDARY_STRICT=1.
+
 	// Preferred path: per-skill secret from the live (Hub-updatable) store.
 	if skillID != "" && secrets != nil {
 		if secret, ok := secrets.Get(skillID); ok && secret != "" {
@@ -1375,6 +1398,9 @@ func injectSecretForHost(req *http.Request, host string, skillID string, secrets
 				secret = "Bearer " + secret
 			}
 			req.Header.Set("Authorization", secret)
+
+			// Lightweight audit (no secret value is ever logged)
+			log.Printf("AUDIT: secret injected for skill=%s host=%s", skillID, host)
 			return // skill-specific secret takes precedence
 		}
 	}

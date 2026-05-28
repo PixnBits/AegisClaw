@@ -108,3 +108,27 @@ Secrets are delivered encrypted from Store, decrypted only inside Boundary, inje
 - Decryption + zeroization path in Boundary is exercised and preferred.
 
 **Ready for "continue" → Group 3 (Legacy removal + strict enforcement).**
+
+### Group 3: Legacy Removal + Strict Enforcement + Audit Hardening — COMPLETE ✅
+
+**Changes (spec-first):**
+- `cmd/network-boundary/main.go`:
+  - Added strong Phase 4 SPEC REFERENCES to `loadSkillSecrets()` header citing secret-management.md §Key Guarantees and network-boundary.md.
+  - In strict mode (`AEGIS_BOUNDARY_STRICT`), legacy file/dir/env loading in `loadSkillSecrets()` now returns empty (forcing the encrypted blob path from Store). Clear security log message emitted.
+  - Added audit logging (without values) in `injectSecretForHost` for every secret injection.
+  - Updated comments in the secrets.update handler area with Phase 4 direction.
+
+**Citations (code + commit):** secret-management.md §Key Guarantees; network-boundary.md + 7.1-capabilities.md ("Honest Stub Limitations" and encrypted blobs as production path); phase-4.md 4.4; approved session plan.
+
+**Verification:**
+- `make build-binaries` ✓
+- `go test ./cmd/network-boundary` ✓
+- `./bin/aegis doctor` ✓
+
+**Commit (atomic):** "phase4: Group 3 legacy secret sources gated in strict mode + audit (secret-management.md §Key Guarantees, network-boundary.md, phase-4.md 4.4, approved plan)".
+
+**phase-4.md DoD progress:**
+- [x] No file/dir/env fallback remains in the production secret path (enforced when AEGIS_BOUNDARY_STRICT=1; legacy only for dev with warnings).
+- Audit trail improvements for secret injection.
+
+**Ready for "continue" → Group 4 (Guest vsock/Firecracker integration + final DoD sign-off).**
