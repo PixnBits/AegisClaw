@@ -132,3 +132,30 @@ Secrets are delivered encrypted from Store, decrypted only inside Boundary, inje
 - Audit trail improvements for secret injection.
 
 **Ready for "continue" → Group 4 (Guest vsock/Firecracker integration + final DoD sign-off).**
+
+### Group 4: Guest vsock / Firecracker Integration + Final DoD Sign-Off — COMPLETE ✅
+
+**Work performed:**
+- Enhanced vsock egress path audit logging to include `X-Aegis-Origin-Vsock` provenance when secrets are injected via the ExtAuthz (Envoy) path for guests using the real vsock egress listener (startVSockEgressListener). This completes the "full per-skill policy chain including secret injection for vsock-originated requests".
+- Confirmed kernel cmdline conventions (`aegis.egress_boundary`, skill identity) are already wired in the orchestrator/sandbox and consumed by the boundary vsock listener.
+- Full verification suite executed:
+  - `make build-binaries` ✓
+  - `make test` ✓ (all packages)
+  - `./bin/aegis doctor` ✓
+  - Safe daemon smoke using **only** `make start` / `make stop` (per AGENTS.md): daemon healthy, TCB reports good, watchdog active.
+- Updated vsock handler comments with Phase 4 secret delivery context.
+
+**Citations:** network-boundary.md (vsock guest client, full policy chain for EgressViaBoundary VMs); secret-management.md §Key Guarantees; 7.1 capabilities doc.
+
+**Final phase-4.md update:**
+- All 5 DoD checkboxes marked true.
+- Status changed to **Complete ✅**.
+- Comprehensive summary of the real encrypted secrets path added.
+
+**Atomic final commit:** "phase4: Group 4 vsock audit + final DoD sign-off (all specs, full verification suite, phase-4.md Complete, approved plan)".
+
+**Phase 4 is complete per Definition of Done.**
+
+All encrypted secret delivery, decryption, per-skill injection, and zeroization paths are now the production reality, with legacy file/dir/env sources gated behind non-strict/dev mode.
+
+**Phase 4 complete. Ready for review or Phase 5 handoff.**

@@ -1937,7 +1937,16 @@ func (s *authorizationServer) Check(ctx context.Context, req *authv3.CheckReques
 						},
 					},
 				}
-				log.Printf("ExtAuthz: Allowed + injected secret for skill=%s (host=%s)", skillID, targetHost)
+				// Phase 4 audit: include vsock origin when available (from the vsock proxy path, surfaced in headers by the vsock listener)
+				vsockOrigin := ""
+				if req.Attributes != nil && req.Attributes.Request != nil && req.Attributes.Request.Http != nil {
+					vsockOrigin = req.Attributes.Request.Http.Headers["x-aegis-origin-vsock"]
+				}
+				if vsockOrigin != "" {
+					log.Printf("ExtAuthz: Allowed + injected secret for skill=%s (host=%s, vsock=%s)", skillID, targetHost, vsockOrigin)
+				} else {
+					log.Printf("ExtAuthz: Allowed + injected secret for skill=%s (host=%s)", skillID, targetHost)
+				}
 			} else {
 				// Deny the request if the host is not allowed for this skill.
 				resp.Status = status.New(codes.PermissionDenied, "host not allowed for skill").Proto()
