@@ -79,6 +79,19 @@ When this phase is complete, the project has **zero stubs** and is ready for pro
 
 **Ready for "continue" → remaining Group 1 polish or Group 2 (Canvas + full streaming chat with Markdown).**
 
+### Group 1 Status Summary (as of latest slice)
+
+**Strong progress achieved:**
+- Extended `e2eFixtureClient` to return clean, useful data for `git.branches/brows/commits/diff`, `workspace.list/read`, `memory.list/search`, and improved `event.approvals.list`.
+- Added multiple stable `data-testid` attributes across Git History, Workspace, and Memory sections.
+- All changes include direct citations to `web-portal.md` and related specs.
+- Multiple atomic commits created following the plan's discipline.
+- Verification (build + tests + doctor) green after each slice.
+
+Group 1 is in excellent shape on the "wire handlers" and "add data-testid" fronts. We are well positioned to either wrap this group soon or move forward.
+
+On next "continue", we can either do final polish for Group 1 (e.g., any remaining real-path gaps for `dashboard.skills` or approvals) or transition toward Group 2.
+
 ### Group 1 continued (approvals fixture improvement)
 
 **Additional change:**
