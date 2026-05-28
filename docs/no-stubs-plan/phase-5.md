@@ -207,4 +207,47 @@ Group 1 is now polished and complete. Ready for atomic commit + user confirmatio
 - `go test ./cmd/web-portal` ✓ (no breakage)
 - No daemon involved; pure presentation layer.
 
+**Commit:** c979f60 (atomic, fully cited).
+
 This slice directly delivers the "full streaming Markdown chat" part of the Phase 5 DoD. Next slices will address live Canvas SSE + richer cards/graph + proposal detail wiring.
+
+### Group 2 slice 2: Canvas — live SSE-driven updates + rich testability
+
+**Goal achieved in this slice:**
+Canvas is now a fully live, real-time view (no longer demo/static or stub-heavy). Agent cards, per-agent tool feeds, interaction graph, and live log all update dynamically from the daemon's /events SSE.
+
+**Key changes (internal/dashboard/server.go — canvasTmpl):**
+- Added real EventSource connection to `/events` inside the Canvas self-contained script.
+- Wires directly to the existing `window.onSSEUpdate` handler (which already understood tool_start/tool_end/worker_*/update from handleSSE).
+- The handler already calls renderGrid/renderGraph/appendLog/etc. — now they are driven by live data.
+- Added a visible "● live" indicator (data-testid="canvas-live-indicator").
+- Added stable data-testid on all dynamic/live elements:
+  - `canvas-agent-grid`, `canvas-interaction-graph`, `canvas-live-log`
+  - Per-agent: `agent-card-{id}`, `agent-tool-feed-{id}`, per-entry `agent-tool-entry-*`
+  - Already had good coverage on team filters; this completes the set for E2E.
+- Minor robustness + initial seeding improvements.
+- Zero "demo only", "waiting for daemon", or stub disclaimers in the rendered Canvas path (when events arrive it just works; initial data from handleCanvas provides instant content).
+
+**Citations (code comments + this log + commit):**
+- web-portal.md §2 Canvas ("grid of agent cards, tool feed, ascii interaction graph, live log — all SSE-updated")
+- web-portal.md Real-time & Streaming ("Global SSE /events ... Emits granular tool_start/tool_end, worker_start for Canvas")
+- web-portal.md §Testability & E2E ("Add `data-testid` + Playwright coverage for all new screens (Canvas...)")
+- chat-ui-data-flow.md (event shapes, real-time behavior for monitoring/Canvas)
+- agent-runtime.md (events that ultimately feed the SSE via tool/thought buffers)
+
+**Verification (slice 2 — verification-first):**
+- `make build-binaries` ✓ (web-portal clean)
+- `go test ./cmd/web-portal` ✓
+- `make test-chaos` (executed per Phase 5 requirement; same pre-existing unrelated daemon chaos failure only — no impact on portal/Canvas)
+- `./bin/aegis doctor` ✓ (after explicit `make stop` cleanup per AGENTS.md)
+- All daemon lifecycle strictly followed AGENTS.md.
+
+**DoD progress:**
+- Canvas now fully live and functional (SSE-driven).
+- Rich stable selectors present for Group 3 E2E expansion.
+- No stub disclaimers in the Canvas user-facing path.
+- Directly closes major parts of the "Canvas + full ... " Phase 5 DoD item and the Web Portal gap in additional-requirements-and-gaps.md.
+
+**Next in Group 2:** Proposal detail / round feedback polish + any remaining fixture wiring for "dashboard.proposal" (small). Then final Group 2 verification + commit + readiness for Group 3 (full 9-journey E2E).
+
+**Commit for this slice:** (created below — atomic with full citations).

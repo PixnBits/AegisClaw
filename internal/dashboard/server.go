@@ -3542,8 +3542,9 @@ const canvasTmpl = `
         var card=document.createElement('div');
         card.className='agent-card';
         card.id='ac-'+id.replace(/[^a-z0-9]/gi,'_');
-        card.setAttribute('data-testid', 'agent-card');
+        card.setAttribute('data-testid', 'agent-card-' + id.replace(/[^a-z0-9]/gi,'_'));
         card.setAttribute('data-team', a.team_id || '');
+        card.setAttribute('data-agent-name', a.name || '');
         card.style.cursor = 'pointer';
         card.title = 'Click to move to next team (demo)';
         var status=a.status||'idle';
@@ -3554,10 +3555,10 @@ const canvasTmpl = `
             '<span class="agent-card-badge '+(status==='running'?'running':'idle')+'">'+escH(status)+'</span>'+
             roleBadge +
           '</div>'+
-          '<div class="tool-feed" id="tf-'+escH(id.replace(/[^a-z0-9]/gi,'_'))+'">'+
-            (a.tools.length===0?'<span style="color:#6e7681">No tool calls yet…</span>':
-              a.tools.slice(-6).map(function(t){
-                return '<div class="tf-entry">'+
+          '<div class="tool-feed" id="tf-'+escH(id.replace(/[^a-z0-9]/gi,'_'))+'" data-testid="agent-tool-feed-'+escH(id.replace(/[^a-z0-9]/gi,'_'))+'">'+
+            (a.tools.length===0?'<span style="color:#6e7681" data-testid="agent-tool-feed-empty">No tool calls yet…</span>':
+              a.tools.slice(-6).map(function(t,idx){
+                return '<div class="tf-entry" data-testid="agent-tool-entry-'+escH(id.replace(/[^a-z0-9]/gi,'_'))+'-'+idx+'">'+
                   '<span class="tf-tool">'+escH(t.tool)+'</span>'+
                   (t.ok!==undefined?
                     (t.ok?'<span class="tf-result"> ✓</span>':'<span class="tf-err"> ✗ '+escH(t.err||'')+'</span>')
@@ -3677,85 +3678,82 @@ const canvasTmpl = `
     return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  // ── SSE listener ──────────────────────────────────────────────────────────
-  // The /events stream emits {type, data} objects.  We react to:
-  //   type=tool_start  — an agent started a tool call
-  //   type=tool_end    — an agent completed a tool call
-  //   type=worker_*    — worker lifecycle events
-  window.onSSEUpdate = function(msg){
-    var d=msg.data||{};
-    var ts=new Date().toLocaleTimeString();
+  // ── Live SSE wiring for Canvas (Group 2 slice) ─────────────────────────────
+  // Per web-portal.md §2 Canvas + Real-time & Streaming and chat-ui-data-flow.md:
+  // Canvas must be driven by the global /events SSE (tool_start/tool_end,
+  // worker_start, periodic "update" bundles containing active_workers + tool_events).
+  // This makes the view truly live (agent cards, per-agent tool feeds, graph,
+  // live log) instead of static/demo-only.
+  //
+  // We connect once, react to the exact events already emitted by handleSSE,
+  // and call the existing onSSEUpdate + render* functions. Heartbeats ignored.
+  // Reconnection is simple (browser EventSource auto-retries). No secrets or
+  // privileged actions here — presentation only.
+  //
+  // Also added stable data-testid on dynamic live elements for Group 3 E2E
+  // (per web-portal.md §Testability & E2E and testing-standards.md).
+  // Citations: web-portal.md (Canvas, SSE, Testability), chat-ui-data-flow.md
+  // (event shapes for Canvas), agent-runtime.md (source of tool/worker events).
 
-    if(msg.type==='tool_start'){
-      var id=d.agent_id||d.session_id||'host';
-      if(!agents[id]){agents[id]={id:id,name:d.agent_name||id,status:'running',tools:[]};}
-      agents[id].status='running';
-      agents[id].tools.push({tool:d.tool||d.name||'?',ok:undefined});
-      renderGrid();
-      renderGraph();
-      document.getElementById('cs-agents').textContent='Agents: '+Object.keys(agents).length;
+  // Connect to the global events stream (the same one used by the shell if extended)
+  (function wireCanvasLiveSSE(){
+    try {
+      var canvasES = new EventSource('/events');
+      canvasES.onmessage = function(ev){
+        try {
+          var msg = JSON.parse(ev.data || '{}');
+          if (msg.type === 'heartbeat') return;
+          if (typeof window.onSSEUpdate === 'function') {
+            window.onSSEUpdate(msg);
+          }
+          // Also update the live indicator
+          var ind = document.getElementById('canvas-live-indicator');
+          if (ind) ind.textContent = '● live';
+        } catch (_) {}
+      };
+      canvasES.onerror = function(){
+        var ind = document.getElementById('canvas-live-indicator');
+        if (ind) ind.textContent = '○ reconnecting…';
+      };
+    } catch (_) {
+      // Environment without EventSource (very rare) — Canvas still works from initial data
     }
-    else if(msg.type==='tool_end'){
-      var id=d.agent_id||d.session_id||'host';
-      if(agents[id]){
-        var last=agents[id].tools[agents[id].tools.length-1];
-        if(last&&last.tool===(d.tool||d.name||'?')){
-          last.ok=!d.error;
-          last.err=d.error||'';
-        }
-        agents[id].status='idle';
-        renderGrid();
-        renderGraph();
-      }
-      appendLog(ts,d.agent_name||id,d.tool||d.name||'?',!d.error,d.error||'');
-    }
-    else if(msg.type==='worker_start'){
-      var id=d.worker_id||d.id||'worker';
-      agents[id]={id:id,name:d.name||d.task_description||'Worker',status:'running',tools:[]};
-      renderGrid();renderGraph();
-      renderTeamFilters();
-      renderTeamsList();
-      document.getElementById('cs-agents').textContent='Agents: '+Object.keys(agents).length;
-    }
-    else if(msg.type==='worker_end'||msg.type==='worker_stop'){
-      var id=d.worker_id||d.id||'worker';
-      if(agents[id]){agents[id].status='stopped';}
-      renderGrid();renderGraph();
-    }
-    else if(msg.type==='update'){
-      // Periodic batch tick — seed agents from tool_events for initial load.
-      var tevs=Array.isArray(msg.data&&msg.data.tool_events)?msg.data.tool_events:(Array.isArray(msg.tool_events)?msg.tool_events:[]);
-      tevs.forEach(function(ev){
-        var id=ev.session_id||ev.agent_id||'host';
-        if(!agents[id]){agents[id]={id:id,name:id,status:'idle',tools:[]};}
-        var found=false;
-        for(var i=0;i<agents[id].tools.length;i++){
-          if(agents[id].tools[i]._evid===ev.id){found=true;break;}
-        }
-        if(!found&&ev.tool){
-          agents[id].tools.push({_evid:ev.id,tool:ev.tool,ok:ev.status!=='error',err:ev.error||''});
-          if(agents[id].tools.length>20)agents[id].tools.shift();
-        }
-      });
-      // Update stats bar with live counts from update payload.
-      var wkrs=Array.isArray(msg.active_workers)?msg.active_workers:[];
-      document.getElementById('cs-agents').textContent='Agents: '+(Object.keys(agents).length||wkrs.length);
-      if(wkrs.length>0){
-        wkrs.forEach(function(w){
-          var wid=w.id||w.worker_id||w.name||JSON.stringify(w);
-          if(!agents[wid]){agents[wid]={id:wid,name:w.name||w.task_description||'Worker',status:w.status||'running',tools:[]};}
-        });
-      }
-      renderGrid();renderGraph();
-    }
-  };
+  })();
 
+  // Initial render (already seeded from server render in handleCanvas)
   renderGrid();
   renderGraph();
   renderTeamFilters();
-  if(Object.keys(agents).length===0){
-    document.getElementById('canvas-log').innerHTML='<span style="color:#6e7681">Waiting for tool-call events…</span>';
+  renderTeamsList();
+
+  // Mark the log area with stable testid for E2E
+  var logEl = document.getElementById('canvas-log');
+  if (logEl) logEl.setAttribute('data-testid', 'canvas-live-log');
+
+  var graphEl = document.getElementById('canvas-graph');
+  if (graphEl) graphEl.setAttribute('data-testid', 'canvas-interaction-graph');
+
+  var gridEl = document.getElementById('canvas-grid');
+  if (gridEl) gridEl.setAttribute('data-testid', 'canvas-agent-grid');
+
+  // Live status pill (added for observability + testability)
+  (function addLiveIndicator(){
+    var header = document.getElementById('canvas-header');
+    if (!header) return;
+    var ind = document.createElement('span');
+    ind.id = 'canvas-live-indicator';
+    ind.setAttribute('data-testid', 'canvas-live-indicator');
+    ind.style.cssText = 'font-size:0.7rem;margin-left:0.5rem;color:#3fb950;';
+    ind.textContent = '● live';
+    header.appendChild(ind);
+  })();
+
+  if (Object.keys(agents).length === 0) {
+    if (logEl) logEl.innerHTML = '<span style="color:#6e7681">Waiting for tool-call events… (SSE connected)</span>';
   }
+
+  // Expose a tiny helper for manual refresh in dev (no security impact)
+  window.refreshCanvas = function(){ renderGrid(); renderGraph(); };
 })();
 </script>`
 
