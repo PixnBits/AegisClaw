@@ -248,6 +248,14 @@ Canvas is now a fully live, real-time view (no longer demo/static or stub-heavy)
 - No stub disclaimers in the Canvas user-facing path.
 - Directly closes major parts of the "Canvas + full ... " Phase 5 DoD item and the Web Portal gap in additional-requirements-and-gaps.md.
 
-**Next in Group 2:** Proposal detail / round feedback polish + any remaining fixture wiring for "dashboard.proposal" (small). Then final Group 2 verification + commit + readiness for Group 3 (full 9-journey E2E).
+**Next in Group 2:** Proposal detail / round feedback polish + any remaining fixture wiring for "dashboard.proposal" (small) — done below. Then final Group 2 verification + commit + readiness for Group 3 (full 9-journey E2E).
+
+#### Group 2 closing micro-slice: Proposal detail fixture (round feedback)
+
+- Added `dashboard.proposal` case to e2eFixtureClient (cmd/web-portal/main.go) with realistic current_round_feedback, previous_rounds, review_status.
+- This makes the rich proposal detail screen (already excellent template with Court persona feedback tables) render deterministically in isolated E2E.
+- Citations: web-portal.md (proposal detail / round feedback), §Testability & E2E.
+
+Build + test green. This completes the "proposal detail with round feedback" DoD item for Group 2.
 
 **Commit for this slice:** (created below — atomic with full citations).

@@ -306,6 +306,41 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		data, _ := json.Marshal([]interface{}{})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
+	// Group 2: Minimal realistic fixture for proposal detail (round feedback etc.)
+	// so /skills/proposals/* renders fully in isolated E2E without daemon.
+	// Shape matches what handleSkillProposal + proposalDetailTmpl expect.
+	// Citations: web-portal.md §Key Features & Screens (proposal detail with round feedback);
+	// web-portal.md §Testability & E2E; chat-ui-data-flow.md related flows.
+	case "dashboard.proposal":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		id := req["id"]
+		if id == "" { id = "prop-demo-001" }
+		proposal := map[string]interface{}{
+			"id": id, "title": "Demo skill proposal", "description": "Fixture proposal for E2E contract tests of round feedback.",
+			"status": "in_review", "round": 2, "risk": "medium",
+		}
+		currentFeedback := []interface{}{
+			map[string]interface{}{"persona": "ciso", "verdict": "approve", "risk_score": 3, "comments": "Looks safe for network scope.", "timestamp": "2026-05-27T12:00:00Z"},
+			map[string]interface{}{"persona": "architect", "verdict": "ask", "risk_score": 5, "comments": "Consider adding rate limiting.", "questions": []string{"How will you bound the external calls?"}, "timestamp": "2026-05-27T12:05:00Z"},
+		}
+		previousRounds := []interface{}{
+			map[string]interface{}{
+				"round": 1,
+				"reviews": []interface{}{
+					map[string]interface{}{"persona": "ciso", "verdict": "approve", "risk_score": 2, "comments": "Initial pass.", "timestamp": "2026-05-26T10:00:00Z"},
+				},
+			},
+		}
+		data, _ := json.Marshal(map[string]interface{}{
+			"proposal":             proposal,
+			"review_status":        map[string]interface{}{"current_round": 2, "current_count": 2, "pending_reviews": 1, "approval_count": 1, "reject_count": 0, "ask_count": 1, "abstain_count": 0},
+			"current_round_feedback": currentFeedback,
+			"previous_rounds":        previousRounds,
+			"revision_history":       []interface{}{},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
 	default:
 		// Unwired actions return neutral empty for contract stability in fixture/E2E mode.
 		// Group 1 targeted the Git/Workspace/Memory/Approvals surfaces (per plan).
