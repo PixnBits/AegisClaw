@@ -1400,16 +1400,19 @@ func main() {
 	// Autonomy
 	autonomyCmd := &cobra.Command{
 		Use:   "autonomy",
-		Short: "View and adjust agent autonomy (surface only)",
+		Short: "View and adjust agent autonomy",
 		Long: `Manage autonomy for sessions.
 
-This is a CLI surface tool. All changes are recorded locally and are NOT authoritative.
+When the daemon is running, ` + "`autonomy show`" + ` queries real session state.
+Grant/revoke/reset operations are recorded and reconciled via the Store + EventBus (7.2).
 
 Security model (paranoid defaults):
 - Least privilege by default.
-- High-risk scopes (code-execution, external-api, broad background, file-write) trigger strong warnings.
+- High-risk scopes (code-execution, external-api, broad background, file-write) trigger strong warnings and usually Court review.
 - Unknown scopes are flagged.
-- Real enforcement, Court oversight, and persistence happen in the Agent Runtime + Hub.
+- Real enforcement, Court oversight, and runtime reflection happen in the Agent Runtime + Hub.
+
+Citations: docs/specs/cli.md (Autonomy section); additional-requirements-and-gaps.md (CLI coverage gaps); user-journeys/07-granting-adjusting-autonomy.md.
 
 Use explicit --scope values when possible. Natural language mapping is conservative.`,
 	}
@@ -1970,6 +1973,28 @@ func runAutonomyShow(cmd *cobra.Command, args []string) {
 	id := "unknown"
 	if len(args) > 0 {
 		id = args[0]
+	}
+
+	// Group 4 improvement: Attempt real daemon query for current session autonomy state
+	// when the daemon is running. Falls back gracefully otherwise.
+	// This reduces the "surface only" nature for J07.
+	resp, err := sendSocketRequest("status", map[string]string{"session": id}, jsonOutput)
+	if err == nil && resp.OK {
+		if jsonOutput {
+			fmt.Printf("%s\n", mustJSON(resp))
+		} else {
+			fmt.Printf("Autonomy status for %s (queried from live daemon):\n", id)
+			// Best-effort pretty print of relevant fields if present in response
+			if data, ok := resp.Data.(map[string]interface{}); ok {
+				if autonomy, ok := data["autonomy"]; ok {
+					fmt.Printf("  Current autonomy: %v\n", autonomy)
+				}
+			}
+		}
+	} else {
+		if !jsonOutput {
+			fmt.Printf("Autonomy status for %s (daemon not reachable — showing local notes only):\n", id)
+		}
 	}
 
 	// Phase 2: Prefer Store VM for reconciliation before acting on autonomy

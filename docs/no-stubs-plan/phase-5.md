@@ -283,7 +283,7 @@ Build + test green. This completes the "proposal detail with round feedback" DoD
 
 Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
 
-**Status:** Group 3 polished and complete. **Group 4 in active execution** (Slice 2: Web Portal action wiring cleanup + gaps document progress).
+**Status:** Group 3 polished and complete. **Group 4 in active execution** (Slice 3: CLI autonomy real-query improvement + citations).
 
 ### Group 4 Slice 1: Authoritative Gaps Document Update + Working List Refinement
 
@@ -333,6 +333,29 @@ This is a measurable reduction in "stub-like" language in a user-facing fallback
 **Atomic commit:** Created below.
 
 Good incremental progress on the Web Portal residual item from the Group 4 working list.
+
+### Group 4 Slice 3: CLI autonomy commands — first real daemon query improvement
+
+**Changes in `cmd/aegis/main.go`:**
+- Updated `autonomy` command description (removed unqualified "surface only" language; now describes real daemon query behavior for `show` when daemon is running).
+- Enhanced `runAutonomyShow` to attempt a real `sendSocketRequest("status", ...)` against the live daemon for the session's current autonomy state. Falls back gracefully with a clear message if the daemon is unreachable.
+- This is a direct, measurable step toward closing the "CLI coverage" and "end-to-end" gaps for autonomy (J07) listed in additional-requirements-and-gaps.md.
+
+**Citations (in code + this log):**
+- `docs/specs/cli.md` (Autonomy section)
+- `additional-requirements-and-gaps.md` (CLI coverage gaps + Journey automation)
+- `user-journeys/07-granting-adjusting-autonomy.md`
+- `docs/no-stubs-left-resolution-plan.md` (Phase 5 Group 4)
+
+**Verification (full suite):**
+- `make build-binaries` ✓
+- `make test` ✓
+- `make test-chaos` (executed; known pre-existing unrelated failure only)
+- `make stop` + `./bin/aegis doctor` ✓ (AGENTS.md)
+
+**Atomic commit:** Created below.
+
+This slice makes the `autonomy show` command meaningfully less "surface only" when a daemon is present — real progress on one of the major CLI gaps.
 
 ### Group 3 slice 1: Initial expansion of journeys.spec.js with dedicated failure + recovery tests
 
