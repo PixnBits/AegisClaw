@@ -78,3 +78,16 @@ When this phase is complete, the project has **zero stubs** and is ready for pro
 **phase-5.md update:** Group 1 progress recorded. Additional real daemon-side action registration (if any specific actions still return errors in live mode) can be addressed as part of completing this group on future "continue".
 
 **Ready for "continue" → remaining Group 1 polish or Group 2 (Canvas + full streaming chat with Markdown).**
+
+### Group 1 continued: Additional wiring + testability improvements
+
+**Additional changes in this slice:**
+- Added stable `data-testid` attributes to key elements in Git History template (`data-testid="git-branches-section"`, branch badges, etc.).
+- Added `data-testid` to Workspace files section for better E2E targeting.
+- These directly support the plan item "Add stable `data-testid` attributes for all new screens".
+
+**Citations:** web-portal.md §Testability & E2E; testing-standards.md.
+
+**Verification:** build + tests + doctor all green.
+
+This brings Group 1 closer to completion. On next "continue" we can either finish any remaining real-path gaps or move to Group 2 (Canvas + streaming chat polish).

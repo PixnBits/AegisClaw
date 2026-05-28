@@ -3808,9 +3808,9 @@ const workspaceTmpl = `
 <h1>{{.Title}}</h1>
 <p class="muted">Edit your workspace configuration files (SOUL.md, AGENTS.md, TOOLS.md, *.SKILL.md)</p>
 
-<div class="section">
+<div class="section" data-testid="workspace-files-section">
   <div class="section-header">Core Workspace Files</div>
-  <div style="padding:1rem">
+  <div style="padding:1rem" data-testid="workspace-files-list">
     <div class="workspace-files">
       <div class="file-card">
         <div class="file-header">
@@ -3930,14 +3930,14 @@ const gitHistoryTmpl = `
 <h1>{{.Title}}</h1>
 
 {{if .Branches}}
-<div class="section">
+<div class="section" data-testid="git-branches-section">
   <div class="section-header">Branches</div>
-  <div style="padding:1rem">
+  <div style="padding:1rem" data-testid="git-branches-list">
     {{$branches := .Branches}}
     {{if $branches.branches}}
       <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       {{range $branches.branches}}
-        <div class="badge">{{.}}</div>
+        <div class="badge" data-testid="git-branch-{{.}}">{{.}}</div>
       {{end}}
       </div>
       <div class="muted" style="margin-top:.75rem">Current branch: <strong>{{$branches.current_branch}}</strong></div>
