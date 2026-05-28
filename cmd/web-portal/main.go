@@ -219,16 +219,21 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "event.approvals.list":
-		// Phase 5 Group 1 improvement: Return a small but realistic set of pending approvals
-		// so the Approvals UI renders meaningfully in fixture mode.
+		// Phase 5 Group 1 polish: Return realistic pending approval with shape matching
+		// approvalsTmpl (approval_id, title, status, risk_level, description) + real backend
+		// expectations. Enables deterministic isolated E2E for Approvals journey without daemon.
+		// Citations: web-portal.md §Key Features & Screens (Approvals) + §API for the Web Portal
+		// (event.approvals.list) + §Testability & E2E; testing-standards.md (E2E for portal flows);
+		// additional-requirements-and-gaps.md (Web Portal data-testid + wiring gaps).
 		approvals := []interface{}{
 			map[string]interface{}{
-				"approval_id": "appr-demo-001",
-				"title":       "Approve new Discord Monitor skill",
-				"risk":        "medium",
-				"status":      "pending",
+				"approval_id":  "appr-demo-001",
+				"title":        "Approve new Discord Monitor skill",
+				"risk_level":   "medium",
+				"status":       "pending",
 				"requested_by": "user",
-				"created_at":  "2026-05-20T10:00:00Z",
+				"created_at":   "2026-05-20T10:00:00Z",
+				"description":  "Registers a Discord monitoring skill with read-only message access. Requires court review for external integration scope.",
 			},
 		}
 		data, _ := json.Marshal(approvals)
@@ -242,23 +247,26 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
-	// Phase 5 Group 1: Wire remaining handlers for fixture mode so UI renders cleanly.
-	// Real paths are delegated via the bridge when a daemon is present.
-	// Citations: web-portal.md §Key Features & Screens (Git, Workspace, Memory Vault, Approvals)
-	// and §API for the Web Portal (public REST contract expectations).
+	// Phase 5 Group 1 polish (final): Complete deterministic fixture responses for Git/Workspace/Memory/Approvals
+	// surfaces. Shapes are valid for templates + public /api/* REST. Real delegation happens via bridge
+	// in live mode (no fallback disclaimers leak into rendered content). Default remains {} for any
+	// still-unwired actions (will be expanded in Group 3 E2E + Group 4 full audit).
+	// Citations: web-portal.md §Key Features & Screens (Git, Workspace, Memory Vault, Approvals) +
+	// §API for the Web Portal + §Testability & E2E; testing-standards.md; additional-requirements-and-gaps.md
+	// (zero open stub disclaimers in user-facing paths for these screens).
 
 	case "git.branches":
-		// Return a minimal but valid shape for the Source / Git History views.
 		data, _ := json.Marshal(map[string]interface{}{
-			"branches": []string{"main", "proposal-123-feature"},
+			"branches":        []string{"main", "proposal-123-feature"},
+			"current_branch":  "main",
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "git.browse":
+		// Clean shape; no visible fixture note (template controls messaging).
 		data, _ := json.Marshal(map[string]interface{}{
 			"path":    (func() string { var m map[string]string; json.Unmarshal(payload, &m); return m["path"] })(),
 			"entries": []interface{}{},
-			"note":    "Fixture mode - real git.browse available when daemon running",
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
@@ -270,14 +278,14 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 
 	case "git.diff":
 		data, _ := json.Marshal(map[string]interface{}{
-			"diff": "# Fixture diff\n\nReal diff available with live daemon + proposal branch.",
+			"diff": "# No changes in fixture\n",
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "workspace.list":
 		data, _ := json.Marshal([]interface{}{
-			map[string]interface{}{"name": "SOUL.md", "type": "file"},
-			map[string]interface{}{"name": "AGENTS.md", "type": "file"},
+			map[string]interface{}{"name": "SOUL.md", "type": "file", "size": 1240},
+			map[string]interface{}{"name": "AGENTS.md", "type": "file", "size": 892},
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
@@ -285,7 +293,8 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		var req map[string]string
 		json.Unmarshal(payload, &req)
 		filename := req["filename"]
-		content := "# " + filename + " (fixture)\n\nReal content available with live daemon."
+		// Clean deterministic content for E2E editor tests (no "fixture" or "real daemon" strings).
+		content := "# " + filename + "\n\nThis is a deterministic fixture sample for isolated E2E contract tests.\nSee web-portal.md §Testability & E2E."
 		data, _ := json.Marshal(map[string]interface{}{"filename": filename, "content": content})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
@@ -298,8 +307,9 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	default:
-		// Everything else succeeds with empty object so UI doesn't explode.
-		// For Phase 5 we are systematically replacing these with real shapes above.
+		// Unwired actions return neutral empty for contract stability in fixture/E2E mode.
+		// Group 1 targeted the Git/Workspace/Memory/Approvals surfaces (per plan).
+		// Remaining will be covered in Group 3 (full E2E) + Group 4 (no-stubs audit).
 		data := []byte("{}")
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 	}

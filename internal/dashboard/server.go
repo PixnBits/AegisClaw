@@ -1664,9 +1664,9 @@ const memoryTmpl = `
 
 const approvalsTmpl = `
 <h1>{{.Title}}</h1>
-<div style="margin-bottom:1rem">
-  {{if .ShowAll}}<a href="/approvals" class="nav-link">Show pending only</a>
-  {{else}}<a href="/approvals?all=1" class="nav-link">Show all approvals</a>{{end}}
+<div style="margin-bottom:1rem" data-testid="approvals-toggle">
+  {{if .ShowAll}}<a href="/approvals" class="nav-link" data-testid="approvals-show-pending">Show pending only</a>
+  {{else}}<a href="/approvals?all=1" class="nav-link" data-testid="approvals-show-all">Show all approvals</a>{{end}}
 </div>
 <div class="section" data-testid="approvals-section">
   <div class="section-header">{{if .ShowAll}}All Approvals{{else}}Pending Approvals{{end}}</div>
@@ -1676,12 +1676,12 @@ const approvalsTmpl = `
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.5rem">
       <div>
         <strong>{{index . "title"}}</strong>
-        <span class="badge badge-{{index . "status"}}" style="margin-left:.5rem">{{index . "status"}}</span>
-        <span class="badge badge-pending" style="margin-left:.25rem">risk: {{index . "risk_level"}}</span>
+        <span class="badge badge-{{index . "status"}}" style="margin-left:.5rem" data-testid="approval-status-{{index . "approval_id"}}">{{index . "status"}}</span>
+        <span class="badge badge-pending" style="margin-left:.25rem" data-testid="approval-risk-{{index . "approval_id"}}">risk: {{index . "risk_level"}}</span>
       </div>
       <code style="font-size:.75rem;color:#8b949e" data-testid="approval-id">{{index . "approval_id"}}</code>
     </div>
-    {{with index . "description"}}<p style="color:#8b949e;font-size:.875rem;margin-bottom:.75rem">{{truncate . 200}}</p>{{end}}
+    {{with index . "description"}}<p style="color:#8b949e;font-size:.875rem;margin-bottom:.75rem" data-testid="approval-description-{{index . "approval_id"}}">{{truncate . 200}}</p>{{end}}
     {{if eq (index . "status") "pending"}}
     <form method="POST" action="/approvals/decide" style="display:flex;gap:.5rem;align-items:center" data-testid="approval-decide-form-{{index . "approval_id"}}">
       <input type="hidden" name="approval_id" value="{{index . "approval_id"}}">
@@ -1693,7 +1693,7 @@ const approvalsTmpl = `
   </div>
   {{end}}
   {{else}}
-  <p class="empty">{{if .ShowAll}}No approval requests found.{{else}}No pending approvals.{{end}}</p>
+  <p class="empty" data-testid="approvals-empty-state">{{if .ShowAll}}No approval requests found.{{else}}No pending approvals.{{end}}</p>
   {{end}}
 </div>`
 
@@ -3772,27 +3772,27 @@ const sourceTmpl = `
 <h1>{{.Title}}</h1>
     
 {{if .Branches}}
-<div class="section">
+<div class="section" data-testid="source-branches-section">
   <div class="section-header">Branches</div>
-  <div style="padding:1rem">
+  <div style="padding:1rem" data-testid="source-branches-list">
     {{$branches := .Branches}}
     {{if $branches.branches}}
       {{range $branches.branches}}
-        <div class="badge">{{.}}</div>
+        <div class="badge" data-testid="source-branch-{{.}}">{{.}}</div>
       {{end}}
       <div class="muted" style="margin-top:.5rem">Current: {{$branches.current_branch}}</div>
     {{else}}
-      <div class="empty">No branches found</div>
+      <div class="empty" data-testid="source-branches-empty">No branches found</div>
     {{end}}
   </div>
 </div>
 {{end}}
 
-<div class="file-tree" id="file-tree">
+<div class="file-tree" id="file-tree" data-testid="source-file-tree">
   <div class="empty">Select a repository to browse</div>
 </div>
 
-<div class="code-viewer" id="code-viewer" style="display:none">
+<div class="code-viewer" id="code-viewer" style="display:none" data-testid="source-code-viewer">
   <pre id="code-content"></pre>
 </div>`
 
@@ -3812,26 +3812,26 @@ const workspaceTmpl = `
   <div class="section-header">Core Workspace Files</div>
   <div style="padding:1rem" data-testid="workspace-files-list">
     <div class="workspace-files">
-      <div class="file-card">
+      <div class="file-card" data-testid="workspace-file-card-SOUL.md">
         <div class="file-header">
           <span class="file-name">SOUL.md</span>
-          <button onclick="editFile('SOUL.md')">Edit</button>
+          <button onclick="editFile('SOUL.md')" data-testid="workspace-edit-button-SOUL.md">Edit</button>
         </div>
         <div class="muted">Your personal agent configuration</div>
       </div>
       
-      <div class="file-card">
+      <div class="file-card" data-testid="workspace-file-card-AGENTS.md">
         <div class="file-header">
           <span class="file-name">AGENTS.md</span>
-          <button onclick="editFile('AGENTS.md')">Edit</button>
+          <button onclick="editFile('AGENTS.md')" data-testid="workspace-edit-button-AGENTS.md">Edit</button>
         </div>
         <div class="muted">Multi-agent system configuration</div>
       </div>
       
-      <div class="file-card">
+      <div class="file-card" data-testid="workspace-file-card-TOOLS.md">
         <div class="file-header">
           <span class="file-name">TOOLS.md</span>
-          <button onclick="editFile('TOOLS.md')">Edit</button>
+          <button onclick="editFile('TOOLS.md')" data-testid="workspace-edit-button-TOOLS.md">Edit</button>
         </div>
         <div class="muted">Custom tool definitions</div>
       </div>
@@ -3854,13 +3854,13 @@ const workspaceTmpl = `
           <th>Actions</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody data-testid="workspace-dynamic-files-tbody">
         {{range $files.files}}
-        <tr>
-          <td>{{.name}}</td>
+        <tr data-testid="workspace-file-row-{{.name}}">
+          <td data-testid="workspace-file-name">{{.name}}</td>
           <td>{{.size}} bytes</td>
           <td class="muted">{{fmtTime .mod_time}}</td>
-          <td><button onclick="editFile('{{.name}}')">Edit</button></td>
+          <td><button onclick="editFile('{{.name}}')" data-testid="workspace-edit-button-{{.name}}">Edit</button></td>
         </tr>
         {{end}}
       </tbody>
@@ -3876,14 +3876,14 @@ const workspaceTmpl = `
       <h3 id="editor-title">Edit File</h3>
       <button onclick="closeEditor()">Close</button>
     </div>
-    <form id="editor-form" action="/workspace/edit" method="post">
-      <input type="hidden" name="filename" id="editor-filename">
+    <form id="editor-form" action="/workspace/edit" method="post" data-testid="workspace-editor-form">
+      <input type="hidden" name="filename" id="editor-filename" data-testid="workspace-editor-filename">
       <div class="editor-area">
-        <textarea name="content" id="editor-content"></textarea>
+        <textarea name="content" id="editor-content" data-testid="workspace-editor-content"></textarea>
       </div>
       <div style="padding:1rem;border-top:1px solid #30363d;display:flex;gap:.5rem">
-        <button type="submit" class="approve">Save Changes</button>
-        <button type="button" onclick="closeEditor()">Cancel</button>
+        <button type="submit" class="approve" data-testid="workspace-editor-save">Save Changes</button>
+        <button type="button" onclick="closeEditor()" data-testid="workspace-editor-cancel">Cancel</button>
       </div>
     </form>
   </div>
@@ -3954,19 +3954,19 @@ const gitHistoryTmpl = `
   {{if .Commits}}
     {{$commits := .Commits}}
     {{if $commits.commits}}
-    <div class="commit-list">
+    <div class="commit-list" data-testid="git-commit-list">
       {{range $commits.commits}}
-      <div class="commit-item">
+      <div class="commit-item" data-testid="git-commit-item-{{truncate .Hash 12}}">
         <div style="flex:1">
           <div class="commit-message">{{.Message}}</div>
           <div class="commit-meta">
-            <span class="commit-hash">{{truncate .Hash 12}}</span> &mdash;
+            <span class="commit-hash" data-testid="git-commit-hash">{{truncate .Hash 12}}</span> &mdash;
             by {{.Author}} &mdash;
             {{fmtTime .Timestamp}}
           </div>
         </div>
         <div>
-          <a href="/git/diff?proposal={{$.ProposalID}}" class="nav-link">View Diff</a>
+          <a href="/git/diff?proposal={{$.ProposalID}}" class="nav-link" data-testid="git-view-diff-link">View Diff</a>
         </div>
       </div>
       {{end}}
@@ -3990,7 +3990,7 @@ const gitHistoryTmpl = `
       {{range $branches.branches}}
         {{if ne . "main"}}
         <div>
-          <a href="/git?proposal={{substr . 9}}" class="nav-link">{{.}}</a>
+          <a href="/git?proposal={{substr . 9}}" class="nav-link" data-testid="git-proposal-branch-{{substr . 9}}">{{.}}</a>
         </div>
         {{end}}
       {{end}}
