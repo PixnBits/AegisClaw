@@ -1636,11 +1636,11 @@ const asyncTmpl = `
 
 const memoryTmpl = `
 <h1>{{.Title}}</h1>
-<form method="GET" action="/memory" style="margin-bottom:1rem;display:flex;gap:.5rem">
-  <input type="search" name="q" value="{{.Query}}" placeholder="Search memories..." style="width:300px">
-  <button type="submit">Search</button>
+<form method="GET" action="/memory" style="margin-bottom:1rem;display:flex;gap:.5rem" data-testid="memory-search-form">
+  <input type="search" name="q" value="{{.Query}}" placeholder="Search memories..." style="width:300px" data-testid="memory-search-input">
+  <button type="submit" data-testid="memory-search-button">Search</button>
 </form>
-<div class="section">
+<div class="section" data-testid="memory-results-section">
   <div class="section-header">Memory Entries{{if .Query}} &mdash; searching: &#8220;{{.Query}}&#8221;{{end}}</div>
   {{if .Error}}
   <p class="empty" style="color:#f85149">Failed to load memories: {{.Error}}</p>

@@ -79,6 +79,16 @@ When this phase is complete, the project has **zero stubs** and is ready for pro
 
 **Ready for "continue" → remaining Group 1 polish or Group 2 (Canvas + full streaming chat with Markdown).**
 
+### Group 1 continued (data-testid improvements)
+
+**Additional changes:**
+- Added `data-testid="memory-search-form"`, `memory-search-input`, `memory-search-button`, and `memory-results-section` in the Memory Vault template.
+- These complement the earlier Git/Workspace testids added in previous slices.
+
+**Verification:** Build + tests + doctor green.
+
+Group 1 is making excellent progress on both handler wiring (via fixture client) and testability (data-testid). We are well-positioned to either wrap this group or move forward.
+
 ### Group 1 continued: Additional wiring + testability improvements
 
 **Additional changes in this slice:**
