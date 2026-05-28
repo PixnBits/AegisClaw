@@ -48,7 +48,7 @@ brew install docker go
 
 Install Docker Desktop from https://www.docker.com/products/docker-desktop
 
-> **Important for Linux users:** After installing the Firecracker binary, make sure `which firecracker` works and that you set `AEGIS_KERNEL_PATH` + `AEGIS_ROOTFS_DIR` when starting the daemon (the helper wrapper script pattern shown below is recommended).
+> **Important for Linux users:** After installing the Firecracker binary, make sure `which firecracker` works. The daemon will now automatically look in your own `~/.aegis/firecracker/` directory (even when started via `sudo`) for the kernel and images. The old mandatory wrapper that only existed to pass two environment variables is no longer required for most people.
 
 ### 2. Build the System
 
@@ -141,7 +141,7 @@ The build script automatically:
 **Other requirements:**
 - Requires KVM access (`/dev/kvm` must be readable by the daemon process)
 - Firecracker binary must be in `$PATH` (see "Installing Firecracker on Linux" below)
-- The daemon is normally started with `sudo` (via `make start` or a small wrapper script) so it can create microVMs and set the required environment variables (`AEGIS_ROOTFS_DIR` and `AEGIS_KERNEL_PATH`)
+- The daemon is normally started with `sudo` (via `make start` or `sudo ./bin/aegis start`). Thanks to `SUDO_USER` detection, it will automatically find kernels and images in your normal user's `~/.aegis/firecracker/` directory.
 - Firecracker socket files are created under `~/.aegis/state/`
 
 #### macOS/Windows (Docker)
@@ -212,11 +212,11 @@ sudo ./bin/aegis start
 
 **To enable passwordless sudo (recommended for development):**
 
-Create a small wrapper script (see the "Installing Firecracker on Linux" section) and allow passwordless execution of the wrapper. Example:
+Allow passwordless sudo for the aegis binary (recommended for daily development):
 
 ```bash
 # Add to sudoers (sudo visudo):
-yourusername ALL=(ALL) NOPASSWD: /usr/local/sbin/aegis-start
+yourusername ALL=(ALL) NOPASSWD: /path/to/bin/aegis, /path/to/scripts/build-microvms-docker.sh
 ```
 
 ### Supply-Chain & Release (7.8)
@@ -284,30 +284,7 @@ Then update your wrapper (or export the variable):
 export AEGIS_KERNEL_PATH=~/.aegis/firecracker/vmlinux
 ```
 
-**Recommended wrapper script** (update the example below with the correct kernel path):
-
-```bash
-sudo tee /usr/local/sbin/aegis-start > /dev/null << 'EOF'
-#!/bin/bash
-# Wrapper so normal users can start the daemon with the right env vars
-# even though the daemon itself must run as root (for Firecracker + KVM).
-export AEGIS_ROOTFS_DIR=${HOME}/.aegis/firecracker/rootfs
-export AEGIS_KERNEL_PATH=${HOME}/.aegis/firecracker/vmlinux
-# export AEGIS_DEBUG=1
-
-# Adjust the path below to wherever your built aegis binary lives
-exec /path/to/your/aegis "$@"
-EOF
-
-sudo chmod 755 /usr/local/sbin/aegis-start
-sudo chown root:root /usr/local/sbin/aegis-start
-```
-
-Start with:
-
-```bash
-sudo /usr/local/sbin/aegis-start start
-```
+A full wrapper is no longer required in most cases (see the "Pro tip" below). You only need one if you want to force specific paths or always enable debug logging.
 
 ### MicroVM/Firecracker issues (Linux)
 
@@ -329,14 +306,22 @@ ls -lh ~/.aegis/firecracker/rootfs/*.img
 make build-microvms
 ```
 
-**Pro tip for daily use:** The cleanest experience is to use a small root-owned wrapper script (example above) that sets `AEGIS_ROOTFS_DIR` and `AEGIS_KERNEL_PATH` automatically. This removes the need to remember environment variables every time you start the daemon.
+**Pro tip for daily use:** For the simplest experience, just run:
+
+```bash
+sudo ./bin/aegis start
+```
+
+(or `sudo make start`).
+
+The daemon will automatically discover kernels and images in the *original user's* `~/.aegis/firecracker/` directory thanks to `SUDO_USER` detection. You only need a wrapper if you want to force specific paths, enable debug logging, or put the binary in a non-standard location.
 
 ### Control Socket & Running CLI Commands as a Normal User
 
 The daemon often runs as root (required for Firecracker). The control socket lives at `/tmp/aegis/daemon.sock` (chosen so both root and normal users can reach it).
 
 - The daemon now creates this socket with `0666` permissions (and chowns it to the original invoking user via `SUDO_USER`).
-- This allows normal users to run `./bin/aegis status`, `./bin/aegis vm list`, etc. without sudo after the daemon is started via the wrapper.
+- This allows normal users to run `./bin/aegis status`, `./bin/aegis vm list`, etc. without sudo after the daemon is started.
 - **Note:** Because the socket is world-writable, any local user can currently send basic commands (including stop). For production use you may want to tighten this (e.g. 0660 + a dedicated group) or add simple UID checks in the handler.
 
 If you see "unable to query live state" or "Daemon not running or socket error" even after the daemon has printed "daemon started", wait 10–15 seconds (real microVMs take time to boot) and try again. The "daemon started" message is now tied to both the PID file *and* the control socket being ready.
@@ -373,7 +358,7 @@ Common Firecracker errors we hit during development (and their usual causes):
 | `invalid type: integer `9000`, expected a string` (vsock) | Old vsock JSON shape (Firecracker main is strict) | We now emit `"vsock_id": "string"`, `"guest_cid": N`, `"uds_path": "..."` |
 | `missing field 'uds_path'` | Same as above (newer main builds require it) | Fixed in current code |
 | `The requested operation is not supported after starting the microVM` (InstanceStart 400) | Sending `InstanceStart` action when using a complete `--config-file` (which auto-starts the VM) | We no longer send `InstanceStart` after a full config file |
-| Kernel "No such file or directory" when running via sudo | `AEGIS_KERNEL_PATH` not exported through sudo (sudo strips most env vars) | Use the `aegis-start` wrapper shown above |
+| Kernel "No such file or directory" when running via sudo | The daemon is looking in `/root/.aegis/...` instead of your normal user's home | Fixed in current code via `SUDO_USER` detection (no wrapper needed for paths) |
 | Web portal returns `{"error":"web portal temporarily unavailable"}` | The reverse proxy is still wired for the old thin host-child web-portal. Real microVM web-portal support is in progress. | The VM itself boots; only the presentation proxy needs wiring updates |
 
 After any change to Dockerfiles or the build script, always re-run `make build-microvms` so the raw `.img` files contain the latest `/init` and binaries.

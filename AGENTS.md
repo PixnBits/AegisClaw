@@ -23,6 +23,11 @@ The Host Daemon **must** run as root on Linux (for Firecracker microVMs and priv
   ```
   (Adjust paths and be extremely careful with NOPASSWD rules.)
 
+**Environment variables under sudo:**
+- The daemon no longer requires you to manually export `AEGIS_ROOTFS_DIR` and `AEGIS_KERNEL_PATH` through sudo in most cases.
+- When started via `sudo`, it automatically detects the original user via `SUDO_USER` and prefers that user's `~/.aegis/firecracker/` directory for kernels and images.
+- A wrapper script is now *optional* (only needed if you want to force specific paths or enable debug logging). Simple `sudo ./bin/aegis start` or `sudo make start` should "just work" after you run `make build-microvms` as your normal user.
+
 **MicroVM / rootfs builds:**
 - `make build-microvms` (or direct `bash scripts/build-microvms-docker.sh`)
 - The script internally uses `sudo` when it needs to create or chown directories under `/opt/aegis` (common on Linux). It will prompt unless you have configured NOPASSWD for the specific operations or run the whole build as root (not recommended).
