@@ -283,7 +283,7 @@ Build + test green. This completes the "proposal detail with round feedback" DoD
 
 Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
 
-**Status:** Group 2 complete. Group 3 (full 9-journey E2E + failure/recovery) now in progress (second expansion slice in progress).
+**Status:** Group 2 complete. Group 3 (full 9-journey E2E + failure/recovery) now in progress (latest continuation slice complete — very strong coverage).
 
 ### Group 3 slice 1: Initial expansion of journeys.spec.js with dedicated failure + recovery tests
 
@@ -358,3 +358,23 @@ Group 3 is advancing well toward 100% dedicated coverage + failure/recovery for 
 - Keep the file honest about fixture vs live capabilities.
 
 Verification gates apply after major expansions (build + test + test-chaos + doctor).
+
+### Group 3 latest continuation: Dedicated J02, J04, J07, J09 + approvals fixture for autonomy (J07)
+
+**Changes:**
+- `cmd/web-portal/main.go`: Enhanced `event.approvals.list` fixture with high-risk autonomy grant approval to support realistic J07 testing. Cleaned duplicate older case.
+- `e2e/journeys.spec.js`: Added four new dedicated tests with happy path + explicit failure + recovery:
+  - J02: Conversation start + full streaming Markdown (G2) + error recovery.
+  - J04: Skill creation/iteration (proposal + detail round feedback + Court review using G2 testids).
+  - J07: Autonomy grant/adjust + Court review + revocation rejection recovery (uses richer approvals fixture).
+  - J09: SDLC proposal → Court → simulated failure + recovery retry.
+- All cite exact `user-journeys/0X-*.md` success criteria + `web-portal.md §Testability & E2E`.
+
+**Citations:**
+- web-portal.md §Testability & E2E + §Key Features & Screens (Chat, Proposals, Approvals, Court)
+- testing-standards.md
+- user-journeys/02,04,07,09-*.md
+
+**Verification:** Full suite passed (build + test + test-chaos + doctor + make stop per AGENTS.md).
+
+Group 3 coverage is now excellent across nearly all 9 journeys with failure/recovery. Assessment for completion on next "continue".

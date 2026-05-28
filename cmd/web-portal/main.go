@@ -218,27 +218,6 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		data, _ := json.Marshal(list)
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
-	case "event.approvals.list":
-		// Phase 5 Group 1 polish: Return realistic pending approval with shape matching
-		// approvalsTmpl (approval_id, title, status, risk_level, description) + real backend
-		// expectations. Enables deterministic isolated E2E for Approvals journey without daemon.
-		// Citations: web-portal.md §Key Features & Screens (Approvals) + §API for the Web Portal
-		// (event.approvals.list) + §Testability & E2E; testing-standards.md (E2E for portal flows);
-		// additional-requirements-and-gaps.md (Web Portal data-testid + wiring gaps).
-		approvals := []interface{}{
-			map[string]interface{}{
-				"approval_id":  "appr-demo-001",
-				"title":        "Approve new Discord Monitor skill",
-				"risk_level":   "medium",
-				"status":       "pending",
-				"requested_by": "user",
-				"created_at":   "2026-05-20T10:00:00Z",
-				"description":  "Registers a Discord monitoring skill with read-only message access. Requires court review for external integration scope.",
-			},
-		}
-		data, _ := json.Marshal(approvals)
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
 	case "court.get_reviews":
 		// Phase 3: No simulation in Court path. When running in pure fixture mode (no daemon),
 		// we return a neutral shape that does not fake Court approval or decisions.
@@ -318,6 +297,33 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 	// in fixture mode without a real daemon. Shapes match what handleCanvas + canvasTmpl + SSE handler expect.
 	// Citations: web-portal.md §2 Canvas + Real-time & Streaming; user-journeys/05-monitoring-agent-activity.md,
 	// user-journeys/08-multi-agent-team-workflows.md; testing-standards.md (E2E for portal flows).
+	case "event.approvals.list":
+		// Enhanced for Group 3 J07 (autonomy) + J06 (Court). Provide richer pending approvals
+		// with risk_level and description so detail views and rejection flows render deterministically.
+		// Citations: web-portal.md §Key Features & Screens (Approvals); user-journeys/07-granting-adjusting-autonomy.md,
+		// user-journeys/06-reviewing-court-decisions.md.
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{
+				"approval_id":  "appr-demo-001",
+				"title":        "Approve new Discord Monitor skill",
+				"risk_level":   "medium",
+				"status":       "pending",
+				"requested_by": "user",
+				"created_at":   "2026-05-20T10:00:00Z",
+				"description":  "Registers a Discord monitoring skill with read-only message access. Requires court review for external integration scope.",
+			},
+			map[string]interface{}{
+				"approval_id":  "appr-demo-007",
+				"title":        "Grant elevated autonomy to researcher agent",
+				"risk_level":   "high",
+				"status":       "pending",
+				"requested_by": "operator",
+				"created_at":   "2026-05-28T09:15:00Z",
+				"description":  "High-risk autonomy grant for external tool execution. Must pass Court review per J07.",
+			},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
 	case "worker.list":
 		data, _ := json.Marshal([]interface{}{
 			map[string]interface{}{"id": "worker-research", "name": "researcher", "status": "running", "task": "Analyzing proposal", "team_id": "alpha", "role": "researcher", "progress": "65%"},
