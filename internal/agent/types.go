@@ -20,6 +20,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/agent/skills"
@@ -47,6 +48,15 @@ type TurnContext struct {
 	// AutonomyScopes (future): when populated, judge/plan steps can use them
 	// to decide what may be done without further human input.
 	AutonomyScopes []string
+
+	// RevokedScopes: populated from Court decisions (Phase 3).
+	// The Agent Runtime must fail-closed on any action that would use these scopes.
+	// See agent-runtime.md §Event subscription for court feedback + security-model.md (fail-closed).
+	RevokedScopes []string
+
+	// ActiveCourtDecisions carries recent signed Court decisions that affect this agent.
+	// Used for immediate respect of revocations and terminations.
+	ActiveCourtDecisions []map[string]interface{}
 
 	// Metadata for audit / tracing.
 	SessionID string
@@ -82,3 +92,26 @@ type MemoryClient interface {
 
 // DefaultLLMModel is the fallback model when AEGIS_DEFAULT_MODEL is not set.
 const DefaultLLMModel = "qwen3-coder:30b"
+
+// IsScopeRevoked is the central fail-closed governance check for the Agent Runtime.
+// It must be called before any privileged action (tool execution, scope expansion,
+// background work, etc.).
+//
+// If the requested scope (or any prefix) appears in RevokedScopes (populated from
+// real Court decisions via hub), the action is denied.
+//
+// SPEC: agent-runtime.md §Event subscription for court feedback
+//       + §Responsibilities (respect Court decisions immediately)
+//       security-model.md (fail-closed on every privileged operation)
+//       governance-court.md §Court Process (decisions revoke scopes or terminate)
+func IsScopeRevoked(tc *TurnContext, scope string) bool {
+	if tc == nil || scope == "" {
+		return false
+	}
+	for _, revoked := range tc.RevokedScopes {
+		if revoked == scope || strings.HasPrefix(scope, revoked+".") || strings.HasPrefix(revoked, scope+".") {
+			return true
+		}
+	}
+	return false
+}

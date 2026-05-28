@@ -39,6 +39,10 @@ type Message struct {
 
 var hubSocket = "~/.aegis/hub.sock"
 
+// revocations holds active Court enforcement actions (revoked scopes, terminations).
+// In a fuller Store VM this would be durable + queryable (store-vm.md).
+var revocations = make(map[string]interface{})
+
 func init() {
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
 		hubSocket = env
@@ -639,6 +643,36 @@ func runStore(cmd *cobra.Command, args []string) {
 				response.Command = "error"
 				response.Payload = "proposal not found"
 			}
+
+		// Phase 3: Record enforcement actions coming from Court decisions (revoke scopes, terminate agents).
+		// This is the Store as the single source of truth for active revocations (store-vm.md).
+		case "court.record_enforcement":
+			payload := msg.Payload.(map[string]interface{})
+			proposalID := ""
+			if p, ok := payload["proposal_id"].(string); ok {
+				proposalID = p
+			}
+			action := fmt.Sprintf("%v", payload["action"])
+			scopes, _ := payload["revoked_scopes"].([]interface{})
+			agentID, _ := payload["agent_id"].(string)
+
+			enforcement := map[string]interface{}{
+				"proposal_id":    proposalID,
+				"action":         action,
+				"revoked_scopes": scopes,
+				"agent_id":       agentID,
+				"timestamp":      response.Timestamp,
+			}
+
+			// Store under a simple revocations key for now (real impl would have a dedicated revocations collection)
+			if revocations == nil {
+				revocations = make(map[string]interface{})
+			}
+			revocations[proposalID+"-"+action] = enforcement
+
+			// If this is a termination, the orchestrator/daemon is expected to act on "court.terminate" events.
+			response.Command = "court.enforcement_recorded"
+			response.Payload = enforcement
 		case "git.clone":
 			payload := msg.Payload.(map[string]interface{})
 			repo := payload["repo"].(string)

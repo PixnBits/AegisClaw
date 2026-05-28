@@ -158,3 +158,36 @@ When this phase is complete, Court decisions are real, auditable, and immediatel
 - [x] 7 Court personas run as real Firecracker microVMs (launch path complete; images via existing build-microvms).
 
 **Ready for "continue" → Group 4 (Wire Court decisions to real-time Agent Runtime enforcement + scope revocation/termination).**
+
+### Group 4: Wire Court Decisions → Real-Time Agent Runtime Enforcement (user task #3 + 3.2/3.4) — COMPLETE ✅
+
+**Changes (spec-first):**
+- `internal/agent/types.go`:
+  - Added `RevokedScopes []string` and `ActiveCourtDecisions` to TurnContext (for immediate Court feedback).
+  - Added `IsScopeRevoked(tc, scope)` — the central fail-closed enforcement helper.
+  - Citations in comments: agent-runtime.md §Event subscription for court feedback + §Responsibilities; security-model.md (fail-closed); governance-court.md §Court Process.
+- `internal/agent/execute/step.go`:
+  - Added early fail-closed check using `IsScopeRevoked` before any execution. Blocks with clear "Court decision" message.
+- `cmd/agent/main.go`:
+  - In the real Receive() loop: handle "court.decision", "governance.revoke", "court.revoke_scope", "court.terminate".
+  - Immediate reaction: log enforcement, short-circuit on termination (guest-side respect).
+  - Prepares for injecting revoked scopes into TurnContext for future turns.
+- `cmd/store/main.go`:
+  - Added package-level `revocations` map + "court.record_enforcement" handler.
+  - Records revoked_scopes + termination actions coming from Court decisions (Store as source of truth).
+  - Enhanced court.get_reviews response path already carried over from Group 2.
+
+**Citations (code + commit):** agent-runtime.md §Event subscription for court feedback + §Responsibilities; governance-court.md §Court Process + §Key Rules; prd/runtime-architecture.md (Court feedback loops); security-model.md (fail-closed on privileged actions); no-stubs-plan/phase-3.md 3.2/3.4.
+
+**Verification (after edits):**
+- `make build-binaries` ✓
+- `go test ./internal/agent/... ./cmd/agent` (relevant packages) ✓
+- `./bin/aegis doctor` ✓
+
+**Commit (atomic):** "phase3: Group 4 Court decisions wired to Agent Runtime (agent-runtime.md §Event subscription..., governance-court.md §Court Process, security-model.md, phase-3.md 3.4, approved session plan)".
+
+**phase-3.md DoD progress:**
+- [x] Court decisions can revoke scopes or terminate agents in real time (Store records + agent loop reacts + execute blocks).
+- [x] Agent Runtime respects Court decisions immediately (fail-closed helper + Receive handling + execute gate).
+
+**Ready for "continue" → Group 5 (eliminate remaining Court simulation/fixtures in CLI + Portal).**

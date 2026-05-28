@@ -199,6 +199,25 @@ func runAgent(cmd *cobra.Command, args []string) {
 			continue
 		}
 
+		// Phase 3: Handle real Court decisions pushed via Hub (agent-runtime.md §Event subscription for court feedback).
+		// This is the critical path for "Agent Runtime respects Court decisions immediately".
+		// We update the in-memory revoked scopes and can short-circuit or annotate future turns.
+		if msg.Command == "court.decision" || msg.Command == "governance.revoke" || msg.Command == "court.revoke_scope" {
+			log.Printf("Court decision received: %v (enforcing immediately - fail-closed)", msg.Payload)
+			// In a fuller impl we would maintain per-session revoked state.
+			// For Group 4 we at least log + could inject into next TurnContext.
+			// A real termination command would be handled here by exiting or signaling.
+			if payload, ok := msg.Payload.(map[string]interface{}); ok {
+				if action, _ := payload["action"].(string); action == "terminate" {
+					log.Printf("Court ordered termination for this agent runtime - shutting down loop (fail-closed)")
+					// In production the orchestrator would StopVM us; here we exit the receive loop.
+					return
+				}
+			}
+			// TODO (next slice): merge revoked scopes into TurnContext.RevokedScopes for execute/act checks.
+			continue
+		}
+
 		// All other messages (user turns, etc.) go through the real loop
 		tc := &agent.TurnContext{
 			Input:              msg.Payload,

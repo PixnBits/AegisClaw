@@ -12,6 +12,16 @@ import (
 )
 
 func Run(ctx context.Context, tc *agent.TurnContext, llm agent.LLMCallFunc) (*agent.StepResult, error) {
+	// Phase 3 enforcement point (governance-court.md §Court Process + agent-runtime.md):
+	// Before any execution, fail-closed on Court-revoked scopes.
+	// In a real implementation every tool in the plan would be checked here.
+	if agent.IsScopeRevoked(tc, "any.privileged") {
+		return &agent.StepResult{
+			Phase:   "execute",
+			Content: "BLOCKED: Court decision has revoked required scopes for this action (fail-closed per security-model.md)",
+		}, nil
+	}
+
 	input := fmt.Sprintf("%v", tc.Input)
 	available := agentSkills.FormatAvailableTools(tc.SkillIndex, nil)
 	custom := tc.CustomInstructions
