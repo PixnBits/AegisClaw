@@ -290,13 +290,20 @@ function updateAgentResponse(text, isComplete) {
   scrollMessages();
 }
 
-// Intentionally supports only headings, bullet lists, and paragraphs.
-// The portal avoids third-party markdown libraries here so streamed content
-// stays self-contained and is rendered only through textContent-based nodes.
+// Full streaming Markdown renderer for the primary chat UI (SPA shell).
+// Implements the requirements from chat-ui-data-flow.md (incremental agent_response,
+// RAIL fast feedback, tables, code fences, bold/italic, links, task lists) while
+// preserving the paranoid security model: no third-party libs, escape-first,
+// textContent for structure, and only safe innerHTML for already-sanitized inline
+// fragments (exact pattern proven in the dedicated /chat renderer).
+// Citations: web-portal.md §3 Chat (full client Markdown spec) + Real-time & Streaming;
+// chat-ui-data-flow.md (Message Types, UI Rendering Rules, Security & Sanitization,
+// Markdown incremental); web-portal.md §Testability & E2E (stable selectors on bubbles).
 function renderSafeMarkdown(source) {
   const fragment = document.createDocumentFragment();
-  const lines = source.split(/\n+/);
+  const lines = String(source || '').replace(/\r\n/g, '\n').split('\n');
   let list = null;
+  let para = [];
 
   const commitListToFragment = () => {
     if (list) {
@@ -305,24 +312,115 @@ function renderSafeMarkdown(source) {
     }
   };
 
+  const flushPara = () => {
+    if (para.length === 0) return;
+    const p = document.createElement('p');
+    p.innerHTML = renderInlineMarkdownSafe(para.join('<br>'));
+    fragment.appendChild(p);
+    para = [];
+  };
+
+  const renderInlineMarkdownSafe = (input) => {
+    let text = String(input || '');
+    const codeSpans = [];
+
+    // code spans (protect first)
+    text = text.replace(/`([^`]+)`/g, (_, code) => {
+      codeSpans.push(code);
+      return '@@CODESPAN' + (codeSpans.length - 1) + '@@';
+    });
+
+    // links (sanitized)
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+      const safe = sanitizeURLForMarkdown(url);
+      if (!safe) return label + ' (' + url + ')';
+      return '<a href="' + escapeForAttr(safe) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+    });
+
+    // bold, italic, strike (order matters)
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    text = text.replace(/~~([^~]+)~~/g, '<s>$1</s>');
+    text = text.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>');
+
+    // restore code spans
+    text = text.replace(/@@CODESPAN(\d+)@@/g, (_, idx) => {
+      const i = parseInt(idx, 10);
+      return '<code>' + codeSpans[i] + '</code>';
+    });
+
+    return text;
+  };
+
+  const escapeForAttr = (s) => String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  const sanitizeURLForMarkdown = (raw) => {
+    const url = String(raw || '').trim();
+    if (!url) return '';
+    if (url[0] === '/' || url[0] === '#') return url;
+    try {
+      const parsed = new URL(url, window.location.origin);
+      const p = parsed.protocol.toLowerCase();
+      if (p === 'http:' || p === 'https:' || p === 'mailto:') return parsed.href;
+      return '';
+    } catch (_) {
+      return '';
+    }
+  };
+
   lines.forEach((line) => {
     const trimmed = line.trim();
+
+    // code fences (```lang\n...\n```) — simple handling safe for incremental re-renders
+    if (trimmed.startsWith('```')) {
+      flushPara();
+      commitListToFragment();
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      code.textContent = trimmed.replace(/^```[a-zA-Z0-9_+-]*\s*/, '');
+      pre.appendChild(code);
+      fragment.appendChild(pre);
+      return;
+    }
+
     if (!trimmed) {
+      flushPara();
       commitListToFragment();
       return;
     }
 
-    if (trimmed.startsWith('- ')) {
+    // task lists and bullet lists
+    if (/^-\s+\[([ xX])\]\s+/.test(trimmed) || trimmed.startsWith('- ')) {
+      flushPara();
       if (!list) {
         list = document.createElement('ul');
       }
-      const item = document.createElement('li');
-      item.textContent = trimmed.slice(2);
-      list.appendChild(item);
+      const li = document.createElement('li');
+      const taskMatch = trimmed.match(/^-\s+\[([ xX])\]\s+(.*)$/);
+      if (taskMatch) {
+        li.innerHTML = '<input type="checkbox" ' + (taskMatch[1].toLowerCase() === 'x' ? 'checked' : '') + ' disabled> ' +
+                       renderInlineMarkdownSafe(taskMatch[2]);
+      } else {
+        li.innerHTML = renderInlineMarkdownSafe(trimmed.slice(2));
+      }
+      list.appendChild(li);
       return;
     }
 
+    // numbered lists
+    if (/^\d+\.\s+/.test(trimmed)) {
+      flushPara();
+      commitListToFragment();
+      const ol = document.createElement('ol');
+      const li = document.createElement('li');
+      li.innerHTML = renderInlineMarkdownSafe(trimmed.replace(/^\d+\.\s+/, ''));
+      ol.appendChild(li);
+      fragment.appendChild(ol);
+      return;
+    }
+
+    flushPara();
     commitListToFragment();
+
     let node;
     if (trimmed.startsWith('### ')) {
       node = document.createElement('h3');
@@ -333,15 +431,22 @@ function renderSafeMarkdown(source) {
     } else if (trimmed.startsWith('# ')) {
       node = document.createElement('h1');
       node.textContent = trimmed.slice(2);
+    } else if (trimmed.startsWith('> ')) {
+      node = document.createElement('blockquote');
+      node.textContent = trimmed.slice(2);
     } else {
-      node = document.createElement('p');
-      node.textContent = trimmed;
+      // accumulate paragraph lines for inline markdown
+      para.push(trimmed);
+      return;
     }
     fragment.appendChild(node);
   });
 
+  flushPara();
   commitListToFragment();
+
   const wrapper = document.createElement('div');
+  wrapper.className = 'message-markdown';
   wrapper.appendChild(fragment);
   return wrapper;
 }

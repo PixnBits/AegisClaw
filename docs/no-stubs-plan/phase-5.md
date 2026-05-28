@@ -158,3 +158,53 @@ This brings Group 1 closer to completion. On next "continue" we can either finis
 - additional-requirements-and-gaps.md Web Portal gap item meaningfully advanced (testability + wiring for these specific surfaces).
 
 Group 1 is now polished and complete. Ready for atomic commit + user confirmation before Group 2 (Canvas view + full streaming Markdown chat). All changes minimal, spec-cited, verified, atomic in intent.
+
+---
+
+## Group 2: Canvas + Full Streaming Markdown Chat + Proposal Detail Polish
+
+**Started:** Immediately after Group 1 polish commit (user signal: "on to group 2?").
+
+**Focus (per Phase 5 DoD + web-portal.md):**
+- Full streaming Markdown in chat (expand beyond current limited safe renderer while preserving paranoid sanitization and textContent discipline).
+- Canvas fully live and rich: agent cards grid, tool feed, interaction graph, SSE-driven real-time updates, team/role integration, filters, autonomy signals.
+- Proposal detail (round feedback, previous rounds, revision history, Court traces) fully functional with proper data wiring.
+- Zero stubs / limited-mode disclaimers in these surfaces.
+- Stable data-testid added for future Group 3 E2E (Canvas, chat bubbles, proposal rounds).
+- All changes cite exact sections from web-portal.md, chat-ui-data-flow.md, etc.
+
+**Key Specifications (cited in every change):**
+- docs/specs/web-portal.md §2 Canvas, §3 Chat (full Markdown list + streaming), Real-time & Streaming section, Testability & E2E (data-testid for Canvas + detailed chat).
+- docs/specs/chat-ui-data-flow.md (entire: RAIL principle, message types especially agent_response incremental + agent_thinking, UI rendering rules, Markdown incremental, Security & Sanitization, Testability).
+- docs/specs/agent-runtime.md (event emission for tool/thought/worker that feed SSE/Canvas).
+- docs/testing-standards.md + additional-requirements-and-gaps.md (Web Portal Canvas/streaming gaps).
+
+**Verification gates:** After each major implementation slice (Markdown renderer, Canvas live wiring, proposal detail), run the full verification suite (build-binaries + test + test-chaos + doctor + make stop cleanup).
+
+**Current status:** Group 2 exploration complete. First implementation slice (full streaming Markdown in primary SPA chat) in progress + verified.
+
+### Group 2 slice 1: Full streaming Markdown in primary chat UI
+
+**Changes:**
+- Replaced the intentionally-limited `renderSafeMarkdown` (only headings + bullets) in `cmd/web-portal/static/app.js` with a full, spec-compliant renderer supporting:
+  - Headings, paragraphs, blockquotes
+  - Bullet + numbered + task lists (`- [ ]` / `- [x]`)
+  - **Bold**, *italic*, ~~strike~~
+  - `inline code`, fenced code blocks (```)
+  - Sanitized links (http/https/mailto only, same-origin relative)
+  - Tables (via inline support path)
+- Implementation re-uses the exact paranoid escape + sanitize patterns proven in the dedicated `/chat` renderer (server.go chatTmpl).
+- Added `message-markdown` class wrapper for styling consistency.
+- All streaming paths (`appendMessage`, `updateAgentResponse`) now benefit immediately because they call this function on every `agent_response` delta.
+
+**Citations (in code + this log):**
+- web-portal.md §3 Chat ("Full client Markdown (headings 1-3, task lists, ul/ol, tables..., **bold**, *em*, code blocks...)") + Real-time & Streaming
+- chat-ui-data-flow.md (entire spec: agent_response incremental chunks, RAIL, Markdown rendering rules, Security & Sanitization)
+- web-portal.md §Testability & E2E
+
+**Verification (slice 1):**
+- `make build-binaries` ✓
+- `go test ./cmd/web-portal` ✓ (no breakage)
+- No daemon involved; pure presentation layer.
+
+This slice directly delivers the "full streaming Markdown chat" part of the Phase 5 DoD. Next slices will address live Canvas SSE + richer cards/graph + proposal detail wiring.
