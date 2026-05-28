@@ -126,6 +126,58 @@ func TestZeroBytes(t *testing.T) {
 	}
 }
 
+func TestBuildEncryptedSecretsUpdatePayload(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets := map[string]string{
+		"discord-bot": "xoxb-very-secret-token",
+		"github":      "ghp_supersecret",
+	}
+
+	extra := map[string]interface{}{
+		"operations": []string{"replace"},
+		"skill_ids":  []string{"discord-bot", "github"},
+	}
+
+	payload, err := BuildEncryptedSecretsUpdatePayload(secrets, key, extra)
+	if err != nil {
+		t.Fatalf("BuildEncryptedSecretsUpdatePayload failed: %v", err)
+	}
+
+	// Verify required fields for the encrypted blob path (Phase 4)
+	if _, ok := payload["encrypted_blob"]; !ok {
+		t.Error("payload missing encrypted_blob")
+	}
+	if _, ok := payload["nonce"]; !ok {
+		t.Error("payload missing nonce")
+	}
+	if _, ok := payload["timestamp"]; !ok {
+		t.Error("payload missing timestamp")
+	}
+
+	// Extra fields should be preserved (for operations, replay nonce, etc.)
+	if payload["operations"] == nil {
+		t.Error("extra fields not preserved")
+	}
+
+	// Round-trip sanity: the encrypted_blob + nonce should decrypt back with same key
+	ctB64, _ := payload["encrypted_blob"].(string)
+	nonceB64, _ := payload["nonce"].(string)
+	ct, _ := base64.StdEncoding.DecodeString(ctB64)
+	nonce, _ := base64.StdEncoding.DecodeString(nonceB64)
+
+	decrypted, err := DecryptSecretsBlob(ct, nonce, key)
+	if err != nil {
+		t.Fatalf("roundtrip decrypt failed: %v", err)
+	}
+	if decrypted["discord-bot"] != "xoxb-very-secret-token" {
+		t.Error("roundtrip secret content mismatch")
+	}
+}
+
 // Helper to make a base64 key for manual testing / env var usage.
 func TestGenerateExampleKey(t *testing.T) {
 	key := make([]byte, 32)

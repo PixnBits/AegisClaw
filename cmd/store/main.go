@@ -17,16 +17,22 @@ import (
 	"sync"
 	"time"
 
+	"AegisClaw/internal/boundarycrypto"
 	"github.com/spf13/cobra"
 )
 
-// NOTE (7.1 real secrets): When the Store grows commands that push secret
-// material (e.g. "secrets.push" or rotation), import
-// "AegisClaw/internal/boundarycrypto" and use
-// boundarycrypto.BuildEncryptedSecretsUpdatePayload(...) to create the
-// encrypted payload, then sign the Message exactly like other privileged
-// commands. The Boundary will decrypt + zeroize on receipt.
-// See internal/boundarycrypto/encrypt.go for the AES-256-GCM implementation.
+// Phase 4 (Real Encrypted Secrets):
+// The Store VM is the sole producer of encrypted secret blobs (per
+// secret-management.md §Architecture + §Key Guarantees and
+// network-boundary.md).
+//
+// We import boundarycrypto here to produce AES-256-GCM encrypted blobs
+// signed for the Boundary. This replaces all legacy file/dir/env secret
+// distribution.
+//
+// See internal/boundarycrypto/encrypt.go (BuildEncryptedSecretsUpdatePayload,
+// EncryptSecretsBlob, Zero* helpers) for the implementation with full
+// citations.
 
 type Message struct {
 	Source      string      `json:"source"`
@@ -185,6 +191,27 @@ func signMessage(msg *Message, priv ed25519.PrivateKey) {
 	data, _ := json.Marshal(msgCopy)
 	signature := ed25519.Sign(priv, data)
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+}
+
+// createEncryptedSecretBlobPayload is the Phase 4 Store-side helper (Group 1).
+// It uses boundarycrypto.BuildEncryptedSecretsUpdatePayload (AES-256-GCM +
+// the required timestamp/nonce structure) to produce the payload for a
+// signed "secrets.push" or "secrets.update" message.
+//
+// SPEC: secret-management.md §Key Guarantees (Store produces blobs; Boundary
+// is the only decryptor) + network-boundary.md (encrypted blobs over Hub).
+//
+// The caller (future secrets.push handler) is responsible for signing the
+// full Message and sending it to the Boundary via the Hub.
+//
+// symKey is the 32-byte shared secret between Store and this Boundary instance.
+// In production this will come from secure out-of-band distribution or
+// future attested registration.
+func createEncryptedSecretBlobPayload(secrets map[string]string, symKey []byte, extra map[string]interface{}) (map[string]interface{}, error) {
+	if len(symKey) != 32 {
+		return nil, fmt.Errorf("store: secrets symmetric key must be 32 bytes for AES-256-GCM (Phase 4)")
+	}
+	return boundarycrypto.BuildEncryptedSecretsUpdatePayload(secrets, symKey, extra)
 }
 
 func getBuildVersion() string {
