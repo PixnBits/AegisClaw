@@ -283,7 +283,7 @@ Build + test green. This completes the "proposal detail with round feedback" DoD
 
 Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
 
-**Status:** Group 3 polished and complete. **Group 4 in active execution** (Slice 3: CLI autonomy real-query improvement + citations).
+**Status:** Group 3 polished and complete. **Group 4 in active execution** (Slice 4: Autonomy grant/revoke/reset now attempt real daemon path).
 
 ### Group 4 Slice 1: Authoritative Gaps Document Update + Working List Refinement
 
@@ -356,6 +356,30 @@ Good incremental progress on the Web Portal residual item from the Group 4 worki
 **Atomic commit:** Created below.
 
 This slice makes the `autonomy show` command meaningfully less "surface only" when a daemon is present — real progress on one of the major CLI gaps.
+
+### Group 4 Slice 4: CLI autonomy grant/revoke/reset — real daemon attempts + citations
+
+**Changes in `cmd/aegis/main.go`:**
+- Added early real-daemon attempts (via `sendSocketRequest`) at the start of `runAutonomyGrant`, `runAutonomyRevoke`, and `runAutonomyReset`.
+- When the daemon is reachable, the commands now prefer the live path (allowing future proper enforcement, Court triggering, etc.).
+- When the daemon is not running, they fall back cleanly to the existing sophisticated Store + local path with no behavior change.
+- Updated command help text in a previous slice; this slice makes the runtime behavior match the improved description.
+
+**Citations (in code + this log):**
+- `docs/specs/cli.md` (Autonomy section)
+- `additional-requirements-and-gaps.md` (CLI coverage gaps for autonomy grant/revoke/reset)
+- `user-journeys/07-granting-adjusting-autonomy.md`
+- `docs/no-stubs-left-resolution-plan.md` (Phase 5 Group 4)
+
+**Verification (full suite):**
+- `make build-binaries` ✓
+- `make test` ✓
+- `make test-chaos` (executed; known pre-existing unrelated failure only)
+- `make stop` + `./bin/aegis doctor` ✓ (AGENTS.md)
+
+**Atomic commit:** Created below.
+
+Excellent incremental progress on the CLI autonomy gap (J07). The commands are now meaningfully more end-to-end when the full system is running.
 
 ### Group 3 slice 1: Initial expansion of journeys.spec.js with dedicated failure + recovery tests
 

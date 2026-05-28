@@ -2088,6 +2088,26 @@ func runAutonomyGrant(cmd *cobra.Command, args []string) {
 	preset, _ := cmd.Flags().GetString("preset")
 	duration, _ := cmd.Flags().GetString("duration")
 
+	// Group 4 improvement: Attempt real daemon-side autonomy grant first.
+	// When the daemon is running, this is the preferred path (allows proper
+	// enforcement, Court triggering for high-risk scopes, etc.).
+	// Falls back to the Store + local path (already quite advanced) if daemon
+	// is unreachable.
+	// Citations: cli.md (Autonomy), additional-requirements-and-gaps.md (CLI coverage).
+	if resp, err := sendSocketRequest("autonomy.grant", map[string]string{
+		"session_id": id,
+		"preset":     preset,
+		"duration":   duration,
+	}, jsonOutput); err == nil && resp.OK {
+		if jsonOutput {
+			fmt.Printf("%s\n", mustJSON(resp))
+		} else {
+			fmt.Printf("Autonomy grant acknowledged by live daemon for %s (preset=%s)\n", id, preset)
+		}
+		return
+	}
+	// Daemon not reachable or command not yet fully wired on daemon side — fall through to Store path.
+
 	// Paranoid scope handling for 6.5
 	knownScopes := map[string]bool{
 		"background-execution": true,
@@ -2244,6 +2264,20 @@ func runAutonomyRevoke(cmd *cobra.Command, args []string) {
 	}
 	scope, _ := cmd.Flags().GetString("scope")
 
+	// Group 4 improvement: Try real daemon first for revoke.
+	if resp, err := sendSocketRequest("autonomy.revoke", map[string]string{
+		"session_id": id,
+		"scope":      scope,
+	}, jsonOutput); err == nil && resp.OK {
+		if jsonOutput {
+			fmt.Printf("%s\n", mustJSON(resp))
+		} else {
+			fmt.Printf("Autonomy revoke acknowledged by live daemon for %s (scope=%s)\n", id, scope)
+		}
+		return
+	}
+	// Fall back to existing local + Store path.
+
 	if scope == "" {
 		fmt.Println("Error: --scope is recommended for precise revocation (paranoid default).")
 		scope = "all"
@@ -2280,6 +2314,19 @@ func runAutonomyReset(cmd *cobra.Command, args []string) {
 	if len(args) > 0 {
 		id = args[0]
 	}
+
+	// Group 4 improvement: Try real daemon first for reset.
+	if resp, err := sendSocketRequest("autonomy.reset", map[string]string{
+		"session_id": id,
+	}, jsonOutput); err == nil && resp.OK {
+		if jsonOutput {
+			fmt.Printf("%s\n", mustJSON(resp))
+		} else {
+			fmt.Printf("Autonomy reset acknowledged by live daemon for %s\n", id)
+		}
+		return
+	}
+	// Fall back to existing path.
 
 	if s, ok := getSession(id); ok {
 		s.AutonomyPreset = "default"
