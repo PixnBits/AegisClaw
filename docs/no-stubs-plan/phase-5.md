@@ -259,3 +259,76 @@ Canvas is now a fully live, real-time view (no longer demo/static or stub-heavy)
 Build + test green. This completes the "proposal detail with round feedback" DoD item for Group 2.
 
 **Commit for this slice:** (created below — atomic with full citations).
+
+---
+
+## Group 2 Complete — Summary
+
+**All major Group 2 deliverables achieved:**
+- Full streaming Markdown chat in the primary UI (SPA) — rich, incremental, spec-compliant, paranoid-safe.
+- Canvas fully live (real /events SSE driving agent cards, tool feeds, graph, log + rich data-testid).
+- Proposal detail with round feedback / previous rounds fully functional in fixture + real paths.
+- Zero stub/limited-mode disclaimers in these user-facing surfaces.
+- Comprehensive stable data-testid added (prepares Group 3 E2E 100% journey coverage).
+- All changes spec-cited, verification-first, atomic commits.
+
+**Commits in Group 2:**
+- c979f60 (Markdown chat)
+- 7f33472 (Canvas live SSE + testids)
+- 73679a1 (Proposal detail fixture)
+
+**Verification across Group 2:** Every slice followed build + test + (test-chaos + doctor + make stop) discipline. AGENTS.md followed strictly.
+
+**Ready for Group 3:** Full expansion of e2e/journeys.spec.js for all 9 user journeys (incl. failure+recovery) + any final no-stubs audit prep.
+
+Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
+
+**Status:** Group 2 complete. Group 3 (full 9-journey E2E + failure/recovery) now in progress (first expansion slice committed).
+
+### Group 3 slice 1: Initial expansion of journeys.spec.js with dedicated failure + recovery tests
+
+**Changes in e2e/journeys.spec.js:**
+- Added a full block of explicit "Failure + Recovery" tests covering Journeys 1, 6, 7, 8, 9 (and cross-journey resilience).
+- New tests exercise chat stream error + recovery (using G2 full Markdown renderer), approvals rejection + Court audit, Canvas live disconnect recovery, proposal Court reject + retry, autonomy/Court tie-ins, and a final "all 9 journeys nav + testid smoke after failure".
+- All new tests use the stable data-testid added in G1/G2 (approvals-*, canvas-*, chat-*, nav-*, proposals-section, etc.).
+- Tests remain resilient for fixture mode (default) and document the live mode path (AEGIS_E2E_LIVE + make start).
+- Existing 7.7 recovery test left in place and referenced.
+
+**Citations (in test file + this log):**
+- docs/specs/user-journeys/01-installation-onboarding.md through 09-adding-discord-monitor-skill.md (Success Criteria + explicit recoverability requirements)
+- web-portal.md §Testability & E2E
+- testing-standards.md (all 9 journeys must have automated E2E including failure + recovery)
+- chat-ui-data-flow.md (for chat failure handling)
+
+**Verification:**
+- `make build-binaries` ✓
+- `go test ./cmd/web-portal` ✓
+
+This is the first meaningful step toward "complete automated E2E for all 9 journeys". More dedicated per-journey happy-path strengthening + additional failure cases will follow in subsequent slices.
+
+Next: Continue expanding dedicated tests for the remaining journeys and run full E2E where possible.
+
+## Group 3: Complete 100% Automated E2E for All 9 User Journeys (incl. Failure + Recovery)
+
+**Started:** After Group 2 (Canvas + streaming Markdown + proposal detail) completion.
+
+**DoD for this group:**
+- Every one of the 9 journeys (docs/specs/user-journeys/01–09) has dedicated, automated Playwright tests in e2e/journeys.spec.js.
+- Tests cover happy path + explicit failure scenarios + recovery paths.
+- Heavy use of stable data-testid added in G1/G2 (nav-*, approvals-*, canvas-*, chat-*, agent-card-*, etc.).
+- Tests are resilient and documented for both fixture mode (default, no daemon) and live mode (AEGIS_E2E_LIVE=1 + `make start` per AGENTS.md).
+- Citations to the exact journey spec files + web-portal.md §Testability & E2E + testing-standards.md.
+
+**Key Specifications (cited in every test addition):**
+- docs/specs/user-journeys/*.md (01-installation-onboarding through 09-adding-discord-monitor-skill)
+- docs/specs/web-portal.md §Testability & E2E
+- docs/testing-standards.md (E2E for portal flows, all user journeys must have automated tests)
+- docs/specs/chat-ui-data-flow.md (for chat-related journeys)
+
+**Approach:**
+- Refactor combined tests into dedicated per-journey tests where needed.
+- Add new `test('User Journey X: ... (failure + recovery)')` blocks.
+- Leverage the new Canvas, approvals, chat, and git/workspace testids.
+- Keep the file honest about fixture vs live capabilities.
+
+Verification gates apply after major expansions (build + test + test-chaos + doctor).
