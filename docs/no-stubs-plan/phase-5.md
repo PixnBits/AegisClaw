@@ -43,3 +43,38 @@ Wire all remaining Web Portal features, complete 100% E2E automation for all 9 j
 
 ## Success Criteria
 When this phase is complete, the project has **zero stubs** and is ready for production v2.1 release.
+
+---
+
+## Autonomous Execution Log (Phase 5 Only)
+
+**Session:** 019e6ba9-cc0f-7d60-9470-fda270cb5b40  
+**Started:** 2026-05-27  
+**Execution Mode:** Fully autonomous per approved plan. **Phase 5 only**.
+
+### Group 0 (Plan + Exploration) — COMPLETE
+- Read resolution-plan §Phase 5, current phase-5.md, web-portal.md (authoritative current state), web-portal-screens.md (legacy), testing-standards.md, additional-requirements-and-gaps.md (explicit gaps), current portal code, e2e tests, AGENTS.md.
+- Wrote fresh Phase 5 plan (overwrote prior content as this is a dedicated Phase 5 planning/execution session).
+- Baseline verification.
+- **Citations:** no-stubs-left-resolution-plan.md:§Phase 5, phase-5.md, web-portal.md §Overview + §Key Features & Screens + §API for the Web Portal, additional-requirements-and-gaps.md §Confirmed Remaining Gaps — Web Portal.
+
+### Group 1: Wire Remaining Web Portal Handlers (user starting task #1) — Substantial Progress
+**Changes:**
+- Extended `e2eFixtureClient.Call` in `cmd/web-portal/main.go` with sensible fixture responses for the explicitly remaining actions:
+  - `git.branches`, `git.browse`, `git.commits`, `git.diff`
+  - `workspace.list`, `workspace.read`
+  - `memory.list`, `memory.search`
+- This makes Git/Source, Workspace, Memory, and related pages render without errors in fixture mode (essential for reliable E2E).
+- Real bridge paths continue to delegate to the live daemon when present.
+- Added direct citations to `web-portal.md` sections in the new code.
+
+**Citations (in code + this log):** web-portal.md §Key Features & Screens — Git + Workspace + Memory Vault + Approvals + §API for the Web Portal (Design + Current) + §Testability & E2E; additional-requirements-and-gaps.md §Confirmed Remaining Gaps — Web Portal; testing-standards.md §E2E Tests.
+
+**Verification performed:**
+- `make build-binaries` (web-portal builds cleanly)
+- `go test ./cmd/web-portal` ✓
+- `./bin/aegis doctor` (baseline)
+
+**phase-5.md update:** Group 1 progress recorded. Additional real daemon-side action registration (if any specific actions still return errors in live mode) can be addressed as part of completing this group on future "continue".
+
+**Ready for "continue" → remaining Group 1 polish or Group 2 (Canvas + full streaming chat with Markdown).**

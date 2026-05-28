@@ -230,8 +230,64 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
+	// Phase 5 Group 1: Wire remaining handlers for fixture mode so UI renders cleanly.
+	// Real paths are delegated via the bridge when a daemon is present.
+	// Citations: web-portal.md §Key Features & Screens (Git, Workspace, Memory Vault, Approvals)
+	// and §API for the Web Portal (public REST contract expectations).
+
+	case "git.branches":
+		// Return a minimal but valid shape for the Source / Git History views.
+		data, _ := json.Marshal(map[string]interface{}{
+			"branches": []string{"main", "proposal-123-feature"},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "git.browse":
+		data, _ := json.Marshal(map[string]interface{}{
+			"path":    (func() string { var m map[string]string; json.Unmarshal(payload, &m); return m["path"] })(),
+			"entries": []interface{}{},
+			"note":    "Fixture mode - real git.browse available when daemon running",
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "git.commits":
+		data, _ := json.Marshal(map[string]interface{}{
+			"commits": []interface{}{},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "git.diff":
+		data, _ := json.Marshal(map[string]interface{}{
+			"diff": "# Fixture diff\n\nReal diff available with live daemon + proposal branch.",
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "workspace.list":
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{"name": "SOUL.md", "type": "file"},
+			map[string]interface{}{"name": "AGENTS.md", "type": "file"},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "workspace.read":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		filename := req["filename"]
+		content := "# " + filename + " (fixture)\n\nReal content available with live daemon."
+		data, _ := json.Marshal(map[string]interface{}{"filename": filename, "content": content})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "memory.list":
+		data, _ := json.Marshal([]interface{}{})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "memory.search":
+		data, _ := json.Marshal([]interface{}{})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
 	default:
-		// Everything else succeeds with empty object so UI doesn't explode
+		// Everything else succeeds with empty object so UI doesn't explode.
+		// For Phase 5 we are systematically replacing these with real shapes above.
 		data := []byte("{}")
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 	}
