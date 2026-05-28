@@ -408,3 +408,88 @@ Group 3 coverage is now excellent across nearly all 9 journeys with failure/reco
 **DoD for Group 3:** Fully achieved. "All 9 user journeys have complete, automated E2E tests (including failure + recovery)" + "Zero remaining 'limited mode'/'surface-only'/stub disclaimers in user-facing E2E paths."
 
 Group 3 is **done**. Ready for Group 4 on next "continue".
+
+---
+
+## Group 4: Full "No Stubs Left" Audit, Gap Closure, Coverage, and Certification
+
+**Started:** Immediately after Group 3 polish completion (user signal: "on to group 4").
+
+**Goal:** Achieve the final "no stubs left" certification for Phase 5 by driving every remaining open item in `docs/specs/additional-requirements-and-gaps.md` to zero, ensuring ≥85% test coverage, removing any last "limited mode"/"surface-only"/stub disclaimers in user-facing paths, and making every Phase 5 DoD item verifiably true.
+
+**Primary Reference Document:**
+- `docs/specs/additional-requirements-and-gaps.md` (especially "Confirmed Remaining Gaps In This Branch" section)
+
+**Key Open Items at Start of Group 4 (from additional-requirements-and-gaps.md):**
+- CLI coverage gaps (`restart`, `team *`, `skills status`, `court decisions show`, session/task control, autonomy verbs, `audit verify`, secrets lifecycle)
+- Host Daemon gaps (watchdog, audit-root signing, static-binary verification, socket hardening, lifecycle containment)
+- AegisHub gaps (ACL hot reload, denied-message audit, handshake/signature enforcement)
+- Web Portal remaining wiring / public REST / coverage (many items already closed in G1–G3; audit for residuals)
+- Operational scripts under `scripts/`
+- Overall test coverage target (≥85%)
+- Any remaining "stub", "limited mode", or "surface-only" language in production/user-facing paths
+
+**Approach for Group 4:**
+- Systematic audit of the gaps document + codebase.
+- Prioritized closure of items (highest user-facing / security impact first).
+- Spec-first changes: Every fix cites the exact section in `additional-requirements-and-gaps.md` + related specs (e.g., `cli.md`, `host-daemon.md`, `web-portal.md`, `aegishub.md`).
+- Verification-first after every major chunk.
+- Live updates to this file (`phase-5.md`).
+- Atomic commits.
+- Final certification that `additional-requirements-and-gaps.md` shows **zero open items** and all Phase 5 DoD criteria are met.
+
+**Key Specifications (cited in every change):**
+- `docs/specs/additional-requirements-and-gaps.md` (primary)
+- `docs/specs/web-portal.md`, `docs/specs/cli.md`, `docs/specs/host-daemon.md`, `docs/specs/aegishub.md`
+- `docs/testing-standards.md`
+- `docs/no-stubs-left-resolution-plan.md` (Phase 5 DoD)
+
+Verification gates and AGENTS.md rules apply throughout.
+
+Group 4 will be executed in focused slices with "continue" signals between them.
+
+### Group 4 Working List (Initial Prioritization)
+
+**Source:** `docs/specs/additional-requirements-and-gaps.md` §Confirmed Remaining Gaps In This Branch (as of Group 4 start).
+
+**Prioritized Items (highest user-facing / security / certification impact first):**
+
+1. **Web Portal residuals** (from the gaps doc description):
+   - Any remaining unwired `git.*` / `workspace.*` / `dashboard.skills` actions.
+   - Completeness of public REST surface (`/api/proposals*`, workspace read, etc.).
+   - Final confirmation that stable `data-testid` + Playwright coverage is sufficient (post G1–G3).
+
+2. **CLI coverage gaps** (highest day-to-day usability impact):
+   - `restart`, `team *`, `skills status`, `court decisions show`
+   - Session/task status and control verbs
+   - Autonomy grant/revoke/reset
+   - `audit verify`
+   - CLI secrets lifecycle
+
+3. **Host Daemon gaps** (`host-daemon.md`):
+   - Watchdog behavior
+   - Audit-root signing
+   - Static-binary verification
+   - Socket-hardening tests
+   - Lifecycle-containment coverage
+
+4. **AegisHub gaps** (`aegishub.md`):
+   - ACL hot reload
+   - Denied-message audit persistence
+   - Fuller handshake/signature enforcement
+
+5. **Operational scripts**:
+   - Image-build and live-test scripts under `scripts/` as expected by CI.
+
+6. **Overall coverage & certification**:
+   - Drive test coverage to ≥85%.
+   - Ensure `additional-requirements-and-gaps.md` shows **zero open items**.
+   - Final certification that every Phase 5 DoD item is true.
+
+**Process:** Each slice will pick 1–2 items, make spec-cited improvements, run full verification, update this document, and commit atomically.
+
+**Success Criteria for Group 4 End:**
+- `additional-requirements-and-gaps.md` has zero items under "Confirmed Remaining Gaps".
+- No user-facing "limited mode", "surface-only", or stub disclaimers remain in production paths.
+- ≥85% coverage.
+- All Phase 5 DoD items verifiably complete.

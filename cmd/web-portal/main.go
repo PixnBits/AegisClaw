@@ -387,8 +387,10 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 
 	default:
 		// Unwired actions return neutral empty for contract stability in fixture/E2E mode.
-		// Group 1 targeted the Git/Workspace/Memory/Approvals surfaces (per plan).
-		// Remaining will be covered in Group 3 (full E2E) + Group 4 (no-stubs audit).
+		// Group 1–3 targeted the Git/Workspace/Memory/Approvals/Canvas/Streaming/Chat surfaces.
+		// Any remaining items will be closed during the Group 4 full "no stubs left" audit
+		// (see additional-requirements-and-gaps.md §Confirmed Remaining Gaps).
+		// Citations: additional-requirements-and-gaps.md (Web Portal + overall gaps); web-portal.md §Testability & E2E.
 		data := []byte("{}")
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 	}
