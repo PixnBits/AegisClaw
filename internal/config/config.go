@@ -3,6 +3,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 )
 
@@ -74,6 +75,17 @@ func getKernelPath() string {
 	if kernelPath := os.Getenv("AEGIS_KERNEL_PATH"); kernelPath != "" {
 		return kernelPath
 	}
+
+	// Prefer a user-writable minimal kernel location (recommended)
+	home, err := os.UserHomeDir()
+	if err == nil {
+		userKernel := filepath.Join(home, ".aegis/firecracker/vmlinux")
+		if _, err := os.Stat(userKernel); err == nil {
+			return userKernel
+		}
+	}
+
+	// Fallback to system location
 	return "/opt/aegis/firecracker/vmlinux"
 }
 

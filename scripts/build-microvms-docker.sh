@@ -65,6 +65,86 @@ ensure_writable_dir() {
     fi
 }
 
+# create_raw_rootfs_image turns a tarball (from docker export) into a bootable raw ext4 .img
+# suitable for Firecracker. It produces both the raw .img and keeps the .tar.gz.
+create_raw_rootfs_image() {
+    local tarball="$1"
+    local img_file="$2"
+    local size="${3:-512M}"
+
+    log "Creating raw bootable rootfs image: $img_file (size=$size)"
+
+    # Create sparse file
+    if ! truncate -s "$size" "$img_file" 2>/dev/null; then
+        local count=$(echo "$size" | sed 's/M//')
+        dd if=/dev/zero of="$img_file" bs=1M count="$count" status=none 2>/dev/null || {
+            rm -f "$img_file"
+            warn "Failed to allocate raw image file $img_file"
+            return 1
+        }
+    fi
+
+    # Format as ext4
+    if ! mkfs.ext4 -F -L rootfs "$img_file" >/dev/null 2>&1; then
+        rm -f "$img_file"
+        warn "mkfs.ext4 failed for $img_file"
+        return 1
+    fi
+
+    # Prepare mount point
+    local mnt
+    mnt=$(mktemp -d) || {
+        rm -f "$img_file"
+        warn "Failed to create temp mount dir for $img_file"
+        return 1
+    }
+
+    local used_sudo=0
+
+    # Try direct loop mount first
+    if ! mount -o loop "$img_file" "$mnt" 2>/dev/null; then
+        if [ "$EUID" -ne 0 ]; then
+            warn "Direct loop mount failed for $img_file, retrying with sudo..."
+            if sudo mount -o loop "$img_file" "$mnt" 2>/dev/null; then
+                used_sudo=1
+            else
+                rmdir "$mnt" 2>/dev/null || true
+                rm -f "$img_file"
+                warn "Failed to mount loop device for $img_file even with sudo (check /dev/loop* permissions)"
+                return 1
+            fi
+        else
+            rmdir "$mnt" 2>/dev/null || true
+            rm -f "$img_file"
+            warn "Failed to mount loop device for $img_file"
+            return 1
+        fi
+    fi
+
+    # Populate using the tarball (correct ownership from Docker export)
+    if [ "$used_sudo" -eq 1 ]; then
+        sudo tar -xzf "$tarball" -C "$mnt" --numeric-owner --same-owner 2>/dev/null || \
+        sudo tar -xzf "$tarball" -C "$mnt" --numeric-owner
+    else
+        tar -xzf "$tarball" -C "$mnt" --numeric-owner 2>/dev/null || true
+    fi
+
+    # Unmount
+    if [ "$used_sudo" -eq 1 ]; then
+        sudo umount "$mnt" 2>/dev/null || warn "sudo umount had issues for $img_file"
+    else
+        umount "$mnt" 2>/dev/null || warn "umount had issues for $img_file"
+    fi
+    rmdir "$mnt" 2>/dev/null || true
+
+    # Fix ownership of the final image
+    if [ "$used_sudo" -eq 1 ]; then
+        sudo chown "$(id -u):$(id -g)" "$img_file" 2>/dev/null || true
+    fi
+
+    log "Created raw image: $img_file"
+}
+
 # Determine the rootfs directory to use
 determine_rootfs_dir() {
     # First, check if ROOTFS_DIR is explicitly set
@@ -120,13 +200,12 @@ for component in $COMPONENTS; do
     # Build Docker image
     image_name="aegis-${component}:latest"
     
-    # Use repo root as build context for components that need go.mod / multi-package access
-    # (builder, and the Phase 1 thin agent + memory runtime binaries).
-    if [ "$component" = "builder" ] || [ "$component" = "agent" ] || [ "$component" = "memory" ]; then
-        build_context="$REPO_ROOT"
-    else
-        build_context="$REPO_ROOT/cmd/$component"
-    fi
+    # Always use the full repository root as build context.
+    # All current Dockerfiles (and any new ones for base components) expect access to
+    # go.mod/go.sum + internal/ packages. Using the narrow per-cmd dir was causing
+    # "not found" checksum errors for court-* and would break store/web-portal/etc.
+    # This matches the comments in the Dockerfiles themselves.
+    build_context="$REPO_ROOT"
     
     docker build \
         -f "$dockerfile_path" \
@@ -152,10 +231,20 @@ for component in $COMPONENTS; do
     log "Creating rootfs archive for $component..."
     tar -czf "${rootfs_file}.tar.gz" -C "$component_rootfs_dir" . || error "Failed to create filesystem archive"
     
-    # Optional: clean up per-component dir to save space (keep tarball)
+    # Also create a ready-to-boot raw .img file (the format the Firecracker backend expects)
+    raw_size="512M"
+    case "$component" in
+        builder) raw_size="1G" ;;
+        store|network-boundary|web-portal) raw_size="1G" ;;
+        *) raw_size="512M" ;;
+    esac
+    create_raw_rootfs_image "${rootfs_file}.tar.gz" "$rootfs_file" "$raw_size" || \
+        warn "Raw .img creation skipped for $component (loop device / sudo mount not available in this environment — tarball is still usable)"
+    
+    # Optional: clean up per-component dir to save space (keep tarball + raw img)
     rm -rf "$component_rootfs_dir"
     
-    log "Filesystem for $component saved to ${rootfs_file}.tar.gz"
+    log "Filesystem for $component saved to ${rootfs_file}.tar.gz (and raw ${rootfs_file} if successful)"
     
     docker rm "$container_id" > /dev/null 2>&1 || true
 

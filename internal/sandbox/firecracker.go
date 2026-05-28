@@ -4,11 +4,13 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +55,22 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 
 	sockPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".sock")
 	configPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".json")
+	logPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".log")
+	consoleLogPath := filepath.Join(fb.stateDir, "fc-"+config.ID+"-console.log")
+	vsockUdsPath := filepath.Join(fb.stateDir, "fc-"+config.ID+"-vsock.sock")
+	keyPath := filepath.Join(fb.stateDir, config.ID+".vmkey") // ephemeral private key from orchestrator
+
+	// Clean up any stale artifacts from previous crashed/killed attempts.
+	// This is required for reliable restarts: Firecracker refuses to bind if the
+	// .sock already exists ("FailedToBindSocket ... Check that it is not already used").
+	_ = os.Remove(sockPath)
+	_ = os.Remove(configPath)
+	_ = os.Remove(logPath)
+	_ = os.Remove(consoleLogPath)
+	_ = os.Remove(vsockUdsPath)
+	_ = os.Remove(keyPath)
+
+	// Build Firecracker configuration
 
 	// Build Firecracker configuration
 	fcConfig := map[string]interface{}{
@@ -71,15 +89,35 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 		"machine-config": map[string]interface{}{
 			"vcpu_count":   config.VCpus,
 			"mem_size_mib": config.Memory,
-			"ht_enabled":   false,
+			"smt":          false,
 		},
 		"iommu": false,
+		// Capture guest kernel + init console output to a file next to the other fc-* artifacts.
+		// This is invaluable when the VM reaches "process started" but then fails to become
+		// ready (the exact symptom seen with connection refused on the API socket).
+		"console": map[string]interface{}{
+			"console_type": "File",
+			"file_path":    consoleLogPath,
+		},
 	}
 
-	// Add vsock device if port is specified
+	// Add vsock device if allocated.
+	// Modern Firecracker (v1.8+, including main builds) --config-file schema requires:
+	//   - "vsock_id": string (device identifier)
+	//   - "guest_cid": integer (the CID the guest will use; small values like 3-10)
+	// The previous code put a large integer directly into "vsock_id", which produces
+	// "invalid type: integer `9000`, expected a string".
 	if config.NetworkConfig != nil && config.NetworkConfig.VsockPort > 0 {
+		// Firecracker v1.16+ (main) --config-file requires `uds_path` for vsock devices.
+		// This tells Firecracker where to create the host-side Unix domain socket for
+		// the vsock device. We generate a per-VM path alongside the other fc-* artifacts.
+		// (The actual vsock communication model in AegisClaw uses guest-initiated
+		// connections to CID 2 or to the Network Boundary's listener; the UDS is
+		// required for the VMM config to be accepted.)
 		fcConfig["vsock"] = map[string]interface{}{
-			"vsock_id": config.NetworkConfig.VsockPort,
+			"vsock_id":  fmt.Sprintf("vsock-%s", config.ID),
+			"guest_cid": config.NetworkConfig.VsockPort,
+			"uds_path":  vsockUdsPath,
 		}
 	}
 
@@ -110,31 +148,56 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 
 	logrus.Infof("Starting Firecracker VM %s with kernel %s, rootfs %s",
 		config.ID, config.KernelPath, config.RootfsPath)
+	if os.Getenv("AEGIS_DEBUG") != "" {
+		logrus.Debugf("Firecracker command: firecracker --api-sock %s --config-file %s --log-path %s --level Debug",
+			sockPath, configPath, logPath)
+		logrus.Debugf("Firecracker config for %s:\n%s", config.ID, string(configBytes))
+	}
 
 	cmd := exec.CommandContext(ctx, "firecracker",
 		"--api-sock", sockPath,
-		"--config-file", configPath)
+		"--config-file", configPath,
+		"--log-path", logPath,
+		"--level", "Debug")
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Pdeathsig: syscall.SIGTERM,
 	}
 
+	// Capture Firecracker's own logs (very important for diagnosing boot failures)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
 	if err := cmd.Start(); err != nil {
+		logrus.Errorf("Firecracker stdout:\n%s", stdout.String())
+		logrus.Errorf("Firecracker stderr:\n%s", stderr.String())
+		dumpFirecrackerLog(logPath, config.ID)
+		cleanupVMArtifacts(sockPath, configPath, logPath, consoleLogPath, vsockUdsPath, config.PrivateKeyPath)
 		return fmt.Errorf("failed to start Firecracker: %w", err)
 	}
 
 	logrus.Infof("Firecracker process started for VM %s, PID %d", config.ID, cmd.Process.Pid)
 
-	// Wait for socket to be created
+	// Wait for socket to be created (confirms the Firecracker API is responsive).
+	// With a complete --config-file the microVM is started automatically by
+	// Firecracker during process startup. We must NOT send an extra "InstanceStart"
+	// action afterwards (it produces HTTP 400 "not supported after starting the microVM").
 	if err := waitForSocket(sockPath, 10*time.Second); err != nil {
 		cmd.Process.Kill()
+		logrus.Errorf("Firecracker stdout for %s:\n%s", config.ID, stdout.String())
+		logrus.Errorf("Firecracker stderr for %s:\n%s", config.ID, stderr.String())
+		dumpFirecrackerLog(logPath, config.ID)
+		dumpConsoleLog(consoleLogPath, config.ID)
+		cleanupVMArtifacts(sockPath, configPath, logPath, consoleLogPath, vsockUdsPath, config.PrivateKeyPath)
 		return fmt.Errorf("failed to wait for Firecracker socket: %w", err)
 	}
 
-	// Configure the VM via API
-	if err := fb.configureVM(sockPath); err != nil {
-		cmd.Process.Kill()
-		return fmt.Errorf("failed to configure VM: %w", err)
-	}
+	// NOTE: We deliberately do NOT call configureVM / send InstanceStart here.
+	// When using --config-file with a full boot-source + drives + machine-config,
+	// Firecracker starts the microVM automatically (see successful "build microvm
+	// from one single json" + "Successfully started microvm" in the VMM log).
+	// Sending InstanceStart afterwards is rejected with HTTP 400.
 
 	fb.vms[config.ID] = &firecrackerVM{
 		config:    config,
@@ -169,9 +232,13 @@ func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
 		vm.cmd.Process.Kill()
 	}
 
-	// Clean up socket and config files
+	// Clean up all per-VM artifacts (including the vsock UDS that Firecracker creates)
+	stateDir := filepath.Dir(vm.sockPath)
 	_ = os.Remove(vm.sockPath)
-	_ = os.Remove(filepath.Join(fb.stateDir, "fc-"+vmID+".json"))
+	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".json"))
+	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".log"))
+	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+"-console.log"))
+	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+"-vsock.sock"))
 
 	// 7.5.4: Best-effort cleanup of the ephemeral VM private key file
 	// (defense in depth — the guest should have already shredded it).
@@ -247,12 +314,20 @@ func (fb *FirecrackerBackend) Cleanup(ctx context.Context) error {
 func waitForSocket(sockPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		// Real readiness: the socket file must exist *and* be connectable.
+		// Stat-only checks are racy because Firecracker creates the file before
+		// the listener is fully accepting (or before the guest is far enough
+		// for the VMM API to be responsive).
 		if _, err := os.Stat(sockPath); err == nil {
-			return nil
+			conn, dialErr := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+			if dialErr == nil {
+				conn.Close()
+				return nil
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("socket not created within timeout")
+	return fmt.Errorf("socket not accepting connections within timeout")
 }
 
 // buildBootArgs constructs the kernel command line, injecting 7.1 egress information
@@ -300,32 +375,88 @@ func buildBootArgs(config VMConfig) string {
 }
 
 func (fb *FirecrackerBackend) configureVM(sockPath string) error {
-	// Send InstanceStart action
+	// Send InstanceStart action via the proper Firecracker HTTP-over-unix-socket API.
+	// The previous raw JSON write was not a valid HTTP request and commonly resulted
+	// in "connection refused" or immediate close even when the socket file existed.
 	return fb.sendVMAction(sockPath, "InstanceStart")
 }
 
+// sendVMAction sends a Firecracker action (InstanceStart, InstanceHalt, etc.)
+// using a proper HTTP PUT to /actions over the unix socket. This matches the
+// documented Firecracker API (used by the official SDK and all recent versions).
 func (fb *FirecrackerBackend) sendVMAction(sockPath string, actionType string) error {
-	addr := &net.UnixAddr{Name: sockPath, Net: "unix"}
-	conn, err := net.DialUnix("unix", nil, addr)
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return net.Dial("unix", sockPath)
+		},
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   8 * time.Second,
+	}
+
+	body := bytes.NewBufferString(`{"action_type": "` + actionType + `"}`)
+	req, err := http.NewRequest("PUT", "http://localhost/actions", body)
+	if err != nil {
+		return fmt.Errorf("failed to create action request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer resp.Body.Close()
 
-	action := map[string]interface{}{
-		"action_type": actionType,
+	// Accept 200/204 (success) or 400 with specific messages in some versions.
+	// Any non-2xx is treated as error for now (caller will log + kill).
+	if resp.StatusCode >= 300 {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("firecracker action %s failed: HTTP %d: %s", actionType, resp.StatusCode, strings.TrimSpace(string(respBytes)))
 	}
-	payload, _ := json.Marshal(action)
-
-	if _, err := conn.Write(payload); err != nil {
-		return err
-	}
-
-	// Read response
-	buf := make([]byte, 1024)
-	if _, err := conn.Read(buf); err != nil && err != io.EOF {
-		return err
-	}
-
 	return nil
+}
+
+// dumpFirecrackerLog reads and logs the tail of the VMM log file (the one passed to
+// --log-path). This is the most useful artifact when a VM reaches "process started"
+// but then fails the readiness or action steps (guest boot failure, kernel panic,
+// bad rootfs, missing /init, etc.).
+func dumpFirecrackerLog(logPath, vmID string) {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		logrus.Debugf("no Firecracker VMM log yet for %s at %s: %v", vmID, logPath, err)
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	start := len(lines) - 60
+	if start < 0 {
+		start = 0
+	}
+	tail := strings.Join(lines[start:], "\n")
+	logrus.Errorf("Firecracker VMM log tail for %s (from %s):\n%s", vmID, logPath, tail)
+}
+
+// dumpConsoleLog does the same for the guest serial console log we configured in the
+// Firecracker JSON. This shows the actual kernel boot messages + whatever /init prints.
+func dumpConsoleLog(consolePath, vmID string) {
+	data, err := os.ReadFile(consolePath)
+	if err != nil {
+		logrus.Debugf("no guest console log yet for %s at %s: %v", vmID, consolePath, err)
+		return
+	}
+	logrus.Errorf("Guest console output for %s (from %s):\n%s", vmID, consolePath, string(data))
+}
+
+// cleanupVMArtifacts removes the on-disk files for a VM launch attempt.
+// Called on failure paths so that the next start of the same VM ID does not
+// see stale sockets/configs (Firecracker refuses to bind if the .sock exists).
+func cleanupVMArtifacts(sockPath, configPath, logPath, consolePath, vsockUdsPath, keyPath string) {
+	_ = os.Remove(sockPath)
+	_ = os.Remove(configPath)
+	_ = os.Remove(logPath)
+	_ = os.Remove(consolePath)
+	_ = os.Remove(vsockUdsPath)
+	if keyPath != "" {
+		_ = os.Remove(keyPath)
+	}
 }

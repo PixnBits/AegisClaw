@@ -47,6 +47,16 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 		listenAddr = ":8080"
 	}
 
+	// Enforce daemon mediation per web-portal-vm.md §Startup & Runtime Characteristics
+	// and host-daemon.md (Web Portal receives traffic ONLY through the Host Daemon's reverse proxy).
+	// Direct public binding is only allowed for explicit fixture/E2E test modes.
+	isFixture := os.Getenv("AEGIS_E2E_FIXTURE") != "" || os.Getenv("AEGIS_SKILLS_FILE") != "" || os.Getenv("AEGIS_PROPOSALS_FILE") != ""
+	if listenAddr == ":8080" && !isFixture {
+		log.Printf("web-portal: direct public listen on :8080 is not allowed. Must be started by Host Daemon (AEGIS_WEB_PORTAL_LISTEN_ADDR set to internal addr, traffic via daemon proxy on :8080). See web-portal-vm.md and AGENTS.md.")
+		log.Printf("  (For local E2E/contract testing use the fixture env vars or explicit internal addr.)")
+		os.Exit(1)
+	}
+
 	srv, err := dashboard.New(listenAddr, client)
 	if err != nil {
 		log.Fatalf("Failed to create rich dashboard server: %v", err)

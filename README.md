@@ -14,11 +14,13 @@ AegisClaw is a secure, sandboxed AI agent runtime built for safety and reliabili
 ## System Requirements
 
 ### Linux (Firecracker)
-- Linux 5.10+ with KVM support
-- Firecracker (minimal: 0.24.x)
+- Linux 5.10+ with KVM support (`/dev/kvm` must be readable by your user or the daemon)
+- Firecracker binary (see installation instructions below)
+- A **minimal Firecracker-compatible kernel** (vmlinux) — **do not use a full distro kernel** like `/boot/vmlinuz-*` (this is the #1 cause of "connection refused" on the API socket)
+- **Firecracker version sensitivity**: The JSON machine configuration schema and vsock device format have changed across releases. We have successfully used both v1.15.x static builds and recent `main` (v1.16.0-dev) builds. Newer builds removed `ht_enabled` (use `"smt": false` instead) and require an `uds_path` inside the vsock object. See the troubleshooting section below for the exact errors and fixes.
 - Go 1.22+
 - Docker (for building microVM filesystems)
-- `sudo` configured for passwordless execution of firecracker
+- Proper environment variables for kernel and rootfs (see below)
 
 ### macOS/Windows (Docker Sandbox)
 - Docker Desktop (or equivalent)
@@ -29,16 +31,24 @@ AegisClaw is a secure, sandboxed AI agent runtime built for safety and reliabili
 
 ### 1. Install Dependencies
 
+**Linux (Firecracker)** — Firecracker is **not** reliably available via `apt`. Use the official static binary (see detailed instructions in the "Installing Firecracker on Linux" section below).
+
 ```bash
-# On Linux with Debian/Ubuntu:
-sudo apt-get install -y firecracker docker.io go-tools
-
-# On macOS:
-brew install docker go
-
-# On Windows:
-# Install Docker Desktop from https://www.docker.com/products/docker-desktop
+# Required on most Linux systems
+sudo apt-get install -y docker.io
 ```
+
+**macOS:**
+
+```bash
+brew install docker go
+```
+
+**Windows:**
+
+Install Docker Desktop from https://www.docker.com/products/docker-desktop
+
+> **Important for Linux users:** After installing the Firecracker binary, make sure `which firecracker` works and that you set `AEGIS_KERNEL_PATH` + `AEGIS_ROOTFS_DIR` when starting the daemon (the helper wrapper script pattern shown below is recommended).
 
 ### 2. Build the System
 
@@ -129,9 +139,10 @@ The build script automatically:
 - If using `/opt/aegis`, script requests `sudo` to create directory and set permissions
 
 **Other requirements:**
-- Requires KVM access: `/dev/kvm` must be readable
-- Firecracker daemon needs sudo for VM operations (handled by `make start`)
-- Firecracker socket files created in `~/.aegis/state/`
+- Requires KVM access (`/dev/kvm` must be readable by the daemon process)
+- Firecracker binary must be in `$PATH` (see "Installing Firecracker on Linux" below)
+- The daemon is normally started with `sudo` (via `make start` or a small wrapper script) so it can create microVMs and set the required environment variables (`AEGIS_ROOTFS_DIR` and `AEGIS_KERNEL_PATH`)
+- Firecracker socket files are created under `~/.aegis/state/`
 
 #### macOS/Windows (Docker)
 - Sandboxes run in Docker with resource limits
@@ -150,11 +161,11 @@ export AEGIS_SOCKET=~/.aegis/daemon.sock
 # Override state directory
 export AEGIS_STATE_DIR=~/.aegis/state
 
-# Linux only: Override kernel path
-export AEGIS_KERNEL_PATH=/opt/aegis/firecracker/vmlinux
+# Linux only: Override kernel path (MUST be a minimal Firecracker vmlinux, not a full vmlinuz)
+export AEGIS_KERNEL_PATH=~/.aegis/firecracker/vmlinux
 
 # Linux only: Override rootfs directory
-export AEGIS_ROOTFS_DIR=/opt/aegis/firecracker/rootfs
+export AEGIS_ROOTFS_DIR=~/.aegis/firecracker/rootfs
 ```
 
 ### Configuration Files
@@ -199,11 +210,13 @@ make start        # Uses sudo automatically
 sudo ./bin/aegis start
 ```
 
-**To enable passwordless sudo for specific commands:**
+**To enable passwordless sudo (recommended for development):**
+
+Create a small wrapper script (see the "Installing Firecracker on Linux" section) and allow passwordless execution of the wrapper. Example:
+
 ```bash
 # Add to sudoers (sudo visudo):
-%wheel ALL=(ALL) NOPASSWD: /path/to/firecracker
-%wheel ALL=(ALL) NOPASSWD: /path/to/aegis
+yourusername ALL=(ALL) NOPASSWD: /usr/local/sbin/aegis-start
 ```
 
 ### Supply-Chain & Release (7.8)
@@ -215,6 +228,87 @@ sudo ./bin/aegis start
 See `make help` and the SBOM target for details.
 
 
+### Installing Firecracker on Linux (Required)
+
+The `apt` package for Firecracker is usually missing or extremely outdated. Use the official static release instead:
+
+```bash
+# 1. Download a recent release (example uses v1.15.1)
+cd ~/Downloads
+wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz
+
+# 2. Extract
+tar -zxvf firecracker-v1.15.1-x86_64.tgz
+
+# 3. Install into a clean, versioned location (recommended pattern)
+sudo mkdir -p /usr/local/firecracker/v1.15.1
+sudo cp release-v1.15.1-x86_64/firecracker-v1.15.1-x86_64 /usr/local/firecracker/v1.15.1/firecracker
+sudo cp release-v1.15.1-x86_64/jailer-v1.15.1-x86_64     /usr/local/firecracker/v1.15.1/jailer
+sudo chmod +x /usr/local/firecracker/v1.15.1/firecracker /usr/local/firecracker/v1.15.1/jailer
+
+# 4. Create symlinks so `firecracker` and `jailer` are in PATH
+sudo ln -sf /usr/local/firecracker/v1.15.1/firecracker /usr/local/bin/firecracker
+sudo ln -sf /usr/local/firecracker/v1.15.1/jailer     /usr/local/bin/jailer
+
+# 5. Verify
+which firecracker
+firecracker --version
+which jailer
+```
+
+### Installing a Proper Minimal Firecracker Kernel (Critical)
+
+**Do not use your host kernel** (`/boot/vmlinuz-*`). It is too large and incompatible, and will cause Firecracker to start the process but then fail with "connection refused" on the API socket (as seen in recent logs).
+
+Use the helper script instead:
+
+```bash
+# Download a small, Firecracker-optimized vmlinux
+./scripts/download-firecracker-kernel.sh
+```
+
+This installs a minimal kernel to `~/.aegis/firecracker/vmlinux` (the new recommended default location).
+
+You can also download one manually:
+
+```bash
+mkdir -p ~/.aegis/firecracker
+curl -fsSL -o ~/.aegis/firecracker/vmlinux \
+  https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
+chmod 644 ~/.aegis/firecracker/vmlinux
+```
+
+Then update your wrapper (or export the variable):
+
+```bash
+export AEGIS_KERNEL_PATH=~/.aegis/firecracker/vmlinux
+```
+
+**Recommended wrapper script** (update the example below with the correct kernel path):
+
+```bash
+sudo tee /usr/local/sbin/aegis-start > /dev/null << 'EOF'
+#!/bin/bash
+# Wrapper so normal users can start the daemon with the right env vars
+# even though the daemon itself must run as root (for Firecracker + KVM).
+export AEGIS_ROOTFS_DIR=${HOME}/.aegis/firecracker/rootfs
+export AEGIS_KERNEL_PATH=${HOME}/.aegis/firecracker/vmlinux
+# export AEGIS_DEBUG=1
+
+# Adjust the path below to wherever your built aegis binary lives
+exec /path/to/your/aegis "$@"
+EOF
+
+sudo chmod 755 /usr/local/sbin/aegis-start
+sudo chown root:root /usr/local/sbin/aegis-start
+```
+
+Start with:
+
+```bash
+sudo /usr/local/sbin/aegis-start start
+```
+
 ### MicroVM/Firecracker issues (Linux)
 
 ```bash
@@ -223,10 +317,66 @@ test -r /dev/kvm && echo "KVM available" || echo "KVM not available"
 
 # Check firecracker installation
 which firecracker
+firecracker --version
+
+# Check that the daemon sees the images
+ls -lh ~/.aegis/firecracker/rootfs/*.img
+
+# Download a proper minimal kernel (highly recommended)
+./scripts/download-firecracker-kernel.sh
 
 # Rebuild microVM filesystems
 make build-microvms
 ```
+
+**Pro tip for daily use:** The cleanest experience is to use a small root-owned wrapper script (example above) that sets `AEGIS_ROOTFS_DIR` and `AEGIS_KERNEL_PATH` automatically. This removes the need to remember environment variables every time you start the daemon.
+
+### Control Socket & Running CLI Commands as a Normal User
+
+The daemon often runs as root (required for Firecracker). The control socket lives at `/tmp/aegis/daemon.sock` (chosen so both root and normal users can reach it).
+
+- The daemon now creates this socket with `0666` permissions (and chowns it to the original invoking user via `SUDO_USER`).
+- This allows normal users to run `./bin/aegis status`, `./bin/aegis vm list`, etc. without sudo after the daemon is started via the wrapper.
+- **Note:** Because the socket is world-writable, any local user can currently send basic commands (including stop). For production use you may want to tighten this (e.g. 0660 + a dedicated group) or add simple UID checks in the handler.
+
+If you see "unable to query live state" or "Daemon not running or socket error" even after the daemon has printed "daemon started", wait 10–15 seconds (real microVMs take time to boot) and try again. The "daemon started" message is now tied to both the PID file *and* the control socket being ready.
+
+**Note on real microVMs for base infrastructure:** The Dockerfiles for `store`, `network-boundary`, and `web-portal` now include a minimal `/init` script. After running `make build-microvms` (or the download kernel script + rebuild), the generated `.img` files should be more suitable for booting as real Firecracker guests.
+
+### Firecracker boot diagnostics (2026-05+ improvements)
+
+If you still see "Firecracker process started for VM ..., PID NNN" followed by "failed to configure VM: dial unix ... connection refused" (or the socket wait error), the daemon now automatically does the following on failure:
+
+- Writes a detailed VMM log to `~/.aegis/state/fc-<name>.log` (or `/root/.aegis/state/...` when running via sudo).
+- Writes the full guest serial console (kernel boot + /init output) to `fc-<name>-console.log` in the same directory.
+- On the next failure, the daemon logs the tail of both files directly into `daemon.log` (look for "Firecracker VMM log tail" and "Guest console output").
+
+After a failed start:
+
+```bash
+# From the machine running the daemon (use sudo if state is under /root)
+sudo tail -200 /root/.aegis/daemon.log | grep -A 100 -E "(VMM log tail|Guest console|Failed to start VM)"
+
+# Or inspect the artifacts directly
+sudo ls -l /root/.aegis/state/fc-network-boundary*
+sudo cat /root/.aegis/state/fc-network-boundary.log | tail -100
+sudo cat /root/.aegis/state/fc-network-boundary-console.log | tail -100
+```
+
+Common Firecracker errors we hit during development (and their usual causes):
+
+| Symptom | Most Common Cause | Fix |
+|---------|-------------------|-----|
+| `exec: "firecracker": executable file not found` | Firecracker not in `$PATH` for root | Use the versioned layout + symlinks or wrapper |
+| `connection refused` on `fc-*.sock` right after process starts | Wrong kernel (distro vmlinuz instead of minimal vmlinux) or unbootable rootfs | Use `scripts/download-firecracker-kernel.sh` + fresh `make build-microvms` |
+| `FailedToBindSocket` (socket already in use) | Stale `.sock` from previous crashed attempt | Daemon now aggressively cleans on next `Start()`; manual `rm -f /tmp/aegis/daemon.sock` also works |
+| `invalid type: integer `9000`, expected a string` (vsock) | Old vsock JSON shape (Firecracker main is strict) | We now emit `"vsock_id": "string"`, `"guest_cid": N`, `"uds_path": "..."` |
+| `missing field 'uds_path'` | Same as above (newer main builds require it) | Fixed in current code |
+| `The requested operation is not supported after starting the microVM` (InstanceStart 400) | Sending `InstanceStart` action when using a complete `--config-file` (which auto-starts the VM) | We no longer send `InstanceStart` after a full config file |
+| Kernel "No such file or directory" when running via sudo | `AEGIS_KERNEL_PATH` not exported through sudo (sudo strips most env vars) | Use the `aegis-start` wrapper shown above |
+| Web portal returns `{"error":"web portal temporarily unavailable"}` | The reverse proxy is still wired for the old thin host-child web-portal. Real microVM web-portal support is in progress. | The VM itself boots; only the presentation proxy needs wiring updates |
+
+After any change to Dockerfiles or the build script, always re-run `make build-microvms` so the raw `.img` files contain the latest `/init` and binaries.
 
 ### Docker issues (macOS/Windows)
 
