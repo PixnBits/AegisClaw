@@ -283,7 +283,32 @@ Build + test green. This completes the "proposal detail with round feedback" DoD
 
 Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
 
-**Status:** Group 2 complete. **Group 3 polished and complete** (see final polish section below). Ready for Group 4.
+**Status:** Group 3 polished and complete. **Group 4 in active execution** (first slice: gaps document audit + status updates + working list refinement).
+
+### Group 4 Slice 1: Authoritative Gaps Document Update + Working List Refinement
+
+**Work performed:**
+- Updated `docs/specs/additional-requirements-and-gaps.md`:
+  - Revised the "Journey automation" gap entry to accurately reflect the major completion achieved in Group 3 (with forward reference to phase-5.md).
+  - Significantly revised the "Web Portal" gap entry to document the substantial progress from Groups 1–3 while clearly listing the true remaining residuals. This is the correct Group 4 behavior: actively driving the source-of-truth gaps document toward zero open items.
+- Refined the "Group 4 Working List" in this document to mark Web Portal and Journey items with updated status.
+- Performed a small related cleanup in `cmd/web-portal/main.go` (outdated Group 3 reference comment replaced with proper citation to the gaps document).
+
+**Citations (in all changes):**
+- `additional-requirements-and-gaps.md` (primary source document being driven to zero open items)
+- `docs/no-stubs-left-resolution-plan.md` (Phase 5 Group 4 definition)
+- `web-portal.md` §Testability & E2E (cross-reference)
+
+**Verification:**
+- `make build-binaries` ✓
+- `go test ./cmd/web-portal` ✓
+- `./bin/aegis doctor` ✓
+
+**Atomic commit:** Created below.
+
+This slice demonstrates the correct Group 4 approach: honest status updates in the authoritative gaps document + incremental closure of items, always with citations.
+
+Next slices will target concrete code changes (CLI verbs, remaining daemon wiring, etc.).
 
 ### Group 3 slice 1: Initial expansion of journeys.spec.js with dedicated failure + recovery tests
 
@@ -455,9 +480,9 @@ Group 4 will be executed in focused slices with "continue" signals between them.
 **Prioritized Items (highest user-facing / security / certification impact first):**
 
 1. **Web Portal residuals** (from the gaps doc description):
-   - Any remaining unwired `git.*` / `workspace.*` / `dashboard.skills` actions.
-   - Completeness of public REST surface (`/api/proposals*`, workspace read, etc.).
-   - Final confirmation that stable `data-testid` + Playwright coverage is sufficient (post G1–G3).
+   - Any remaining unwired `git.*` / `workspace.*` / `dashboard.skills` actions in the *live* daemon path (fixture support is strong post G1-G3).
+   - Completeness of advanced public REST surface (rich proposal status, build logs, etc.).
+   - Status update performed in Group 4: Major progress in G1–G3; see updated entry in `additional-requirements-and-gaps.md`.
 
 2. **CLI coverage gaps** (highest day-to-day usability impact):
    - `restart`, `team *`, `skills status`, `court decisions show`

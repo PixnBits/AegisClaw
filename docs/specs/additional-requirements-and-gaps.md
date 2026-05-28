@@ -48,10 +48,15 @@ This enables strong personalization.
 ## Confirmed Remaining Gaps In This Branch
 
 - **CLI coverage (`docs/specs/cli.md`)**: `restart`, `team *`, `skills status`, `court decisions show`, session/task status and control verbs, autonomy grant/revoke/reset, `audit verify`, and the CLI secrets lifecycle are not implemented end-to-end yet.
-- **Journey automation (`docs/tasks/phase-0-foundations.md`, `docs/roadmap.md`)**: only User Journey #1 is currently automated in CI; journeys #2-#9 are still partial, placeholder, or documentation-only.
+- **Journey automation (`docs/tasks/phase-0-foundations.md`, `docs/roadmap.md`)**: Major progress in Phase 5 Group 3. All 9 journeys now have dedicated or strongly enhanced automated Playwright E2E coverage in `e2e/journeys.spec.js`, including explicit failure + recovery paths, using stable data-testid from Groups 1-2. Some journeys remain fixture-heavy; full live daemon coverage is expected in later phases. (See `docs/no-stubs-plan/phase-5.md` Group 3 completion notes.)
 - **Host Daemon (`docs/specs/host-daemon.md`)**: watchdog behavior, audit-root signing, static-binary verification, socket-hardening tests, and lifecycle-containment coverage remain incomplete.
 - **AegisHub (`docs/specs/aegishub.md`)**: ACL hot reload, denied-message audit persistence, and fuller handshake/signature enforcement coverage still need implementation.
-- **Web Portal (`docs/specs/web-portal.md`)**: The rich UI (Canvas, full streaming Chat with Markdown, proposal detail with round feedback, source/workspace/git/PR scaffolding, approvals, memory search, etc.) and many handlers are present in `internal/dashboard/server.go` + supporting files (`handlers_git.go`, `dashboard_pr_handlers.go`, event buffers). However, not all actions are registered/wired (some `git.*`/`workspace.*`/`dashboard.skills`), the public REST `/api/*` surface expected by E2E (`/api/proposals*`, workspace read) and issue-35 vision is partial, and stable `data-testid` + full Playwright coverage for new screens is incomplete. See the new `web-portal.md` for current vs. design state.
+- **Web Portal (`docs/specs/web-portal.md`)**: Significant progress across Phase 5 Groups 1-3. 
+  - Handlers for Git, Workspace, Memory, Approvals, Canvas, and full streaming Markdown chat are wired with deterministic E2E fixture support.
+  - Stable `data-testid` added across all major surfaces (G1/G2).
+  - All 9 user journeys have automated E2E coverage (G3), including failure + recovery.
+  - Public REST surface (`/api/proposals*`, `/api/approvals`, etc.) is substantially implemented via thin delegation.
+  - Residuals remain: some `git.*`/`workspace.*`/`dashboard.skills` actions may still be partial in the live daemon path (delegation to Store/Builder); certain advanced `/api/*` endpoints (rich proposal status, build logs) are still thin or fixture-only. See `docs/no-stubs-plan/phase-5.md` Group 4 working list for specific next targets.
 - **Operational scripts referenced by CI**: the repository does not yet contain the image-build and live-test scripts that future phases expect under `scripts/`.
 
 ## Next Actions
