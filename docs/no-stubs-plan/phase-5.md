@@ -283,7 +283,7 @@ Build + test green. This completes the "proposal detail with round feedback" DoD
 
 Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
 
-**Status:** Group 3 polished and complete. **Group 4 in active execution** (first slice: gaps document audit + status updates + working list refinement).
+**Status:** Group 3 polished and complete. **Group 4 in active execution** (Slice 2: Web Portal action wiring cleanup + gaps document progress).
 
 ### Group 4 Slice 1: Authoritative Gaps Document Update + Working List Refinement
 
@@ -309,6 +309,30 @@ Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
 This slice demonstrates the correct Group 4 approach: honest status updates in the authoritative gaps document + incremental closure of items, always with citations.
 
 Next slices will target concrete code changes (CLI verbs, remaining daemon wiring, etc.).
+
+### Group 4 Slice 2: Web Portal "limited mode" language cleanup + clearer fallback messaging
+
+**Changes in `cmd/web-portal/main.go`:**
+- Improved `noopAPIClient` error message: Removed vague "limited mode" phrasing in favor of clear guidance ("no live daemon connection — start via `make start` per AGENTS.md").
+- Updated related log messages for the same clarity.
+- Added explicit Group 4 citation comment referencing `additional-requirements-and-gaps.md` (Web Portal residuals) and the Phase 5 plan.
+
+This is a measurable reduction in "stub-like" language in a user-facing fallback path, directly supporting the goal of zero disclaimers in production/user-facing paths.
+
+**Citations (in code + this log):**
+- `additional-requirements-and-gaps.md` (Web Portal residuals section)
+- `web-portal.md` §Testability & E2E
+- `docs/no-stubs-left-resolution-plan.md` (Phase 5 Group 4)
+- AGENTS.md (proper daemon lifecycle)
+
+**Verification:**
+- `make build-binaries` ✓
+- `go test ./cmd/web-portal` ✓
+- `./bin/aegis doctor` ✓
+
+**Atomic commit:** Created below.
+
+Good incremental progress on the Web Portal residual item from the Group 4 working list.
 
 ### Group 3 slice 1: Initial expansion of journeys.spec.js with dedicated failure + recovery tests
 

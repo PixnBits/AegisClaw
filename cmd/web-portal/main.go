@@ -23,7 +23,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 		// and the static UI shell can still be useful for Playwright contract tests
 		// and development even when the Hub is not reachable.
 		log.Printf("WARNING: Failed to create thin bridge client for Web Portal: %v", err)
-		log.Println("Continuing in limited mode (REST endpoints + static UI will still work; live actions will return errors).")
+		log.Println("No live Hub/daemon connection — continuing with UI shell + public REST only (full functionality requires `make start` per AGENTS.md).")
 		log.Println("For full functionality start the daemon first (see AGENTS.md).")
 
 		// Try E2E fixture-backed client first (when playwright sets the env vars).
@@ -56,7 +56,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	if useFixtures {
 		log.Println("  (E2E fixture mode — seeded data for contract/UI tests)")
 	} else if _, ok := client.(*noopAPIClient); ok {
-		log.Println("  (limited / no-Hub mode — good for E2E contract tests of UI + public REST)")
+		log.Println("  (no-Hub fallback mode — UI shell + public REST available; full actions require live daemon per AGENTS.md)")
 	} else {
 		log.Println("  (full mode — all actions routed through Hub/Host Daemon)")
 	}
@@ -73,14 +73,24 @@ func main() {
 }
 
 // noopAPIClient satisfies dashboard.APIClient when the Hub is unreachable.
-// Used for limited / E2E-contract mode so the server + public REST endpoints
-// can still start and serve the UI shell.
+// This is the intentional fallback when the web-portal is started without a live
+// AegisHub/daemon connection (see AGENTS.md for proper startup via `make start`).
+// It allows the static UI shell and documented public REST endpoints to remain
+// functional for contract testing and development.
+//
+// Group 4 note: Full action support requires a live daemon. Any remaining
+// "limited mode" surface in production paths for portal actions will be
+// addressed as part of closing the Web Portal residuals in
+// additional-requirements-and-gaps.md.
+//
+// Citations: additional-requirements-and-gaps.md (Web Portal residuals);
+// web-portal.md §Testability & E2E; docs/no-stubs-left-resolution-plan.md (Phase 5 Group 4).
 type noopAPIClient struct{}
 
 func (n *noopAPIClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
 	return &dashboard.APIResponse{
 		Success: false,
-		Error:   "web-portal running in limited mode (no Hub connection): " + action + " not available",
+		Error:   "web-portal: no live daemon connection (start via `make start` per AGENTS.md). Action not available: " + action,
 	}, nil
 }
 
