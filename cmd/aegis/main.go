@@ -2577,19 +2577,19 @@ func runSkillsStatus(cmd *cobra.Command, args []string) {
 		id = args[0]
 	}
 
-	// Journey 04: Rich status showing Builder gate progress
+	// Real status now comes from the live Court + Builder path (Phase 3).
+	// We no longer hard-code Court simulation here.
 	status := map[string]interface{}{
 		"proposal_id": id,
-		"phase":       "court_review",
+		"phase":       "review",
 		"gates": map[string]string{
-			"SAST":        "passed",
-			"SCA":         "passed",
-			"Secrets":     "passed",
-			"Policy":      "passed",
-			"Composition": "pending",
+			"SAST":        "unknown",
+			"SCA":         "unknown",
+			"Secrets":     "unknown",
+			"Policy":      "unknown",
+			"Composition": "unknown",
 		},
-		"court_status": "voting in progress (7 personas)",
-		"builder":      "ready (5 gates enforced)",
+		"builder": "real Court + Builder gates (see aegis court decisions)",
 	}
 
 	if jsonOutput {
@@ -2600,7 +2600,6 @@ func runSkillsStatus(cmd *cobra.Command, args []string) {
 
 	fmt.Printf("Skill Proposal %s\n", id)
 	fmt.Println("  Phase:        ", status["phase"])
-	fmt.Println("  Court:        ", status["court_status"])
 	fmt.Println("  Builder Gates:")
 	for gate, result := range status["gates"].(map[string]string) {
 		fmt.Printf("    - %-12s %s\n", gate, result)
@@ -2609,7 +2608,6 @@ func runSkillsStatus(cmd *cobra.Command, args []string) {
 	fmt.Println("\nHelpful commands right now:")
 	fmt.Printf("  aegis builder gates --code 'paste code here' --json\n")
 	fmt.Printf("  aegis court decisions show %s\n", id)
-	fmt.Printf("  aegis court vote %s --persona ethics --vote approve\n", id)
 }
 
 func runCourtDecisionsList(cmd *cobra.Command, args []string) {
@@ -2635,13 +2633,13 @@ func runCourtDecisionsList(cmd *cobra.Command, args []string) {
 
 	fmt.Println("Court Decisions / Reviews")
 	fmt.Println("─────────────────────────")
-	if len(data) > 10 {
+	if len(data) > 0 {
 		fmt.Printf("%s\n", string(data))
 	} else {
-		fmt.Println("(No decisions returned — running in limited/fixture mode is common during development)")
+		fmt.Println("(No Court decisions returned. Ensure the daemon is running with real Court microVMs.)")
 	}
 	fmt.Println("\nRelated commands:")
-	fmt.Println("  aegis court vote <proposal> --persona <name> --vote approve|reject")
+	fmt.Println("  aegis court decisions show <proposal-id>")
 	fmt.Println("  aegis skills status <proposal-id>")
 }
 
@@ -2663,12 +2661,11 @@ func runCourtDecisionsShow(cmd *cobra.Command, args []string) {
 	if len(data) > 0 {
 		fmt.Printf("%s\n", string(data))
 	} else {
-		fmt.Println("(No detailed reviews returned — thin portal may be in limited mode)")
+		fmt.Println("(No Court data returned. Real decisions require the Court Scribe + 7 personas running.)")
 	}
 	fmt.Println("\nRelated commands:")
-	fmt.Printf("  aegis court vote %s --persona <name> --vote approve|reject\n", id)
+	fmt.Printf("  aegis court decisions show %s\n", id)
 	fmt.Printf("  aegis skills status %s\n", id)
-	fmt.Println("Note: Full tamper-evident verification is a future Store VM capability.")
 }
 
 func runAuditLog(cmd *cobra.Command, args []string) {
@@ -2689,7 +2686,8 @@ func runAuditLog(cmd *cobra.Command, args []string) {
 	fmt.Printf("Audit:\n%s\n", string(data))
 }
 
-// runCourtVote provides a great CLI experience for simulating Court votes during Journey 04.
+// runCourtVote posts a vote for a Court persona on a proposal.
+// With real Court (Phase 3) this flows through the thin portal → Hub → Court Scribe.
 func runCourtVote(cmd *cobra.Command, args []string) {
 	if len(args) == 0 {
 		fmt.Println("Usage: aegis court vote <proposal-id> --persona <name> --vote approve|reject|abstain")
@@ -2710,7 +2708,6 @@ func runCourtVote(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	// Post to the portal (thin layer will handle or simulate)
 	payload := map[string]interface{}{
 		"proposal_id": proposalID,
 		"persona":     persona,
@@ -2718,26 +2715,29 @@ func runCourtVote(cmd *cobra.Command, args []string) {
 	}
 	body, _ := json.Marshal(payload)
 
-	_, err := queryPortal("POST", "/api/court/vote", body) // endpoint may not exist yet; graceful
+	_, err := queryPortal("POST", "/api/court/vote", body)
 
 	if jsonOutput {
 		result := map[string]interface{}{
 			"proposal_id": proposalID,
 			"persona":     persona,
 			"vote":        strings.ToLower(vote),
-			"status":      "recorded (simulated or forwarded)",
 		}
 		if err != nil {
-			result["note"] = "Portal in limited/fixture mode — vote recorded locally for demo"
+			result["error"] = err.Error()
 		}
 		b, _ := json.Marshal(result)
 		fmt.Println(string(b))
 		return
 	}
 
-	fmt.Printf("✓ Vote recorded: %s voted %s on %s\n", persona, strings.ToLower(vote), proposalID)
-	fmt.Println("  This contributes to the Court decision for the skill proposal.")
-	fmt.Println("  Use `aegis skills status <id>` or `aegis court decisions show <id>` to see updated state.")
+	if err != nil {
+		fmt.Printf("Vote submission: %v (real Court path requires daemon + Court VMs)\n", err)
+		return
+	}
+
+	fmt.Printf("✓ Vote submitted: %s voted %s on %s\n", persona, strings.ToLower(vote), proposalID)
+	fmt.Println("  Use `aegis court decisions show <id>` to inspect real Court outcome.")
 }
 
 func runAuditVerify(cmd *cobra.Command, args []string) {

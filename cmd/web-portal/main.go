@@ -223,8 +223,11 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "court.get_reviews":
-		// Minimal shape so status enrichment works
-		data, _ := json.Marshal(map[string]interface{}{"approved": true})
+		// Phase 3: No simulation in Court path. When running in pure fixture mode (no daemon),
+		// we return a neutral shape that does not fake Court approval or decisions.
+		data, _ := json.Marshal(map[string]interface{}{
+			"note": "Court data requires real daemon + Court Scribe + personas (see Phase 3)",
+		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	default:

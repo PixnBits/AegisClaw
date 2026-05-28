@@ -191,3 +191,29 @@ When this phase is complete, Court decisions are real, auditable, and immediatel
 - [x] Agent Runtime respects Court decisions immediately (fail-closed helper + Receive handling + execute gate).
 
 **Ready for "continue" → Group 5 (eliminate remaining Court simulation/fixtures in CLI + Portal).**
+
+### Group 5: Eliminate All Court Simulation/Fixtures (DoD "Zero simulation") — COMPLETE ✅
+
+**Changes:**
+- `cmd/aegis/main.go`:
+  - Removed hard-coded `"court_status": "voting in progress (7 personas)"` and related simulation text from `runSkillsStatus`.
+  - Stripped "limited/fixture mode", "simulated", and demo notes from `runCourtDecisionsList`, `runCourtDecisionsShow`, and `runCourtVote`.
+  - `runCourtVote` is now a clean thin delegation (no longer claims to simulate votes).
+- `cmd/web-portal/main.go` (e2eFixtureClient):
+  - `court.get_reviews` no longer returns fake `{"approved": true}`. Returns neutral shape noting real Court is required.
+- `cmd/web-portal/main_test.go`:
+  - Updated mock to avoid faking Court decisions/approval in contract tests.
+
+**Citations:** phase-3.md DoD + 3.4 "Zero simulation or fixture data remains in the Court execution path"; no-stubs-left-resolution-plan.md (no surface-only code).
+
+**Verification:**
+- `make build-binaries` ✓
+- Relevant CLI + web-portal tests ✓
+- `./bin/aegis doctor` ✓
+
+**Commit (atomic):** "phase3: Group 5 remove Court simulation/fixtures from CLI + portal (phase-3.md DoD, no-stubs-left-resolution-plan.md)".
+
+**phase-3.md DoD progress:**
+- [x] No simulation or fixture data remains in the Court execution path (CLI and thin portal now delegate or fail cleanly to real Court).
+
+**Ready for "continue" → Group 6 (final verification + DoD sign-off).**

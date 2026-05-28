@@ -186,8 +186,11 @@ func (m *mockAPIClient) Call(ctx context.Context, action string, payload json.Ra
 	case "proposal.create":
 		// Simulate store response shape (in real flow store returns "proposal.created" but bridge maps to Data)
 		return &dashboard.APIResponse{Success: true, Data: json.RawMessage(`{"id":"prop-new-123"}`)}, nil
-	case "proposal.get", "court.get_reviews", "proposal.get_audit":
-		return &dashboard.APIResponse{Success: true, Data: json.RawMessage(`{"state":"review","approved":false}`)}, nil
+	case "proposal.get", "proposal.get_audit":
+		return &dashboard.APIResponse{Success: true, Data: json.RawMessage(`{"state":"review"}`)}, nil
+	case "court.get_reviews":
+		// No fake Court decisions in test mocks for the real execution path.
+		return &dashboard.APIResponse{Success: true, Data: json.RawMessage(`{"note":"real Court path only"}`)}, nil
 	case "skill.list":
 		return &dashboard.APIResponse{Success: true, Data: json.RawMessage(`[{"name":"baseline"}]`)}, nil
 	case "event.approvals.list":
