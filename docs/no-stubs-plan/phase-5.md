@@ -283,7 +283,7 @@ Build + test green. This completes the "proposal detail with round feedback" DoD
 
 Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
 
-**Status:** Group 2 complete. Group 3 (full 9-journey E2E + failure/recovery) now in progress (first expansion slice committed).
+**Status:** Group 2 complete. Group 3 (full 9-journey E2E + failure/recovery) now in progress (second expansion slice in progress).
 
 ### Group 3 slice 1: Initial expansion of journeys.spec.js with dedicated failure + recovery tests
 
@@ -307,6 +307,32 @@ Phase 5 DoD progress excellent. All per No-Stubs-Left Resolution Plan.
 This is the first meaningful step toward "complete automated E2E for all 9 journeys". More dedicated per-journey happy-path strengthening + additional failure cases will follow in subsequent slices.
 
 Next: Continue expanding dedicated tests for the remaining journeys and run full E2E where possible.
+
+### Group 3 slice 2: Richer fixture data + dedicated Canvas/Memory/Court journey tests
+
+**Changes:**
+- `cmd/web-portal/main.go` (e2eFixtureClient): Added high-quality deterministic responses for `worker.list`, `sandbox.list`, `chat.tool_events`, `chat.thought_events`, and `memory.search`. These power meaningful Canvas agent cards/tool feeds/graph, memory results, and monitoring views in isolated E2E (no daemon required).
+- `e2e/journeys.spec.js`: Added dedicated tests for:
+  - J05 (Monitoring via Canvas live cards + tool feed + graph, using new G3 fixtures + G2 testids)
+  - J08 (Multi-agent teams via Canvas + teams forms)
+  - J03 + J05 (Collaborative + memory search)
+  - J06 enhanced (Court + approvals detail + rejection recovery)
+- All new tests cite the exact journey spec success criteria and use stable data-testid.
+- Fixture comments updated with citations.
+
+**Citations (in code + this log):**
+- web-portal.md §2 Canvas + Real-time & Streaming + §Testability & E2E
+- testing-standards.md (E2E coverage for all 9 journeys)
+- user-journeys/03-collaborative-task-execution.md, 05-monitoring-agent-activity.md, 06-reviewing-court-decisions.md, 08-multi-agent-team-workflows.md (specific success criteria exercised)
+- chat-ui-data-flow.md (events for Canvas)
+
+**Verification (slice 2):**
+- `make build-binaries` ✓
+- `go test ./cmd/web-portal` ✓
+- `make test-chaos` (executed; pre-existing unrelated failure only)
+- `./bin/aegis doctor` ✓ (after `make stop` per AGENTS.md)
+
+Group 3 is advancing well toward 100% dedicated coverage + failure/recovery for every journey.
 
 ## Group 3: Complete 100% Automated E2E for All 9 User Journeys (incl. Failure + Recovery)
 

@@ -303,7 +303,45 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "memory.search":
-		data, _ := json.Marshal([]interface{}{})
+		// Group 3: Return realistic memory entries so Journey 03/05 (collaborative task + monitoring)
+		// can assert meaningful vault content in isolated E2E.
+		// Citations: web-portal.md §Testability & E2E; user-journeys/03-collaborative-task-execution.md,
+		// user-journeys/05-monitoring-agent-activity.md.
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{"key": "session.last_prompt", "value": "Analyze the new Discord integration", "ttl_tier": "session"},
+			map[string]interface{}{"key": "agent.researcher.context", "value": "Current focus: skill proposal for web_search", "ttl_tier": "short"},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	// Group 3 (E2E enablement): Rich worker + sandbox data for Canvas (J05/J08 monitoring + teams).
+	// This lets the live SSE-driven Canvas render meaningful agent cards, roles, teams, and tool feeds
+	// in fixture mode without a real daemon. Shapes match what handleCanvas + canvasTmpl + SSE handler expect.
+	// Citations: web-portal.md §2 Canvas + Real-time & Streaming; user-journeys/05-monitoring-agent-activity.md,
+	// user-journeys/08-multi-agent-team-workflows.md; testing-standards.md (E2E for portal flows).
+	case "worker.list":
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{"id": "worker-research", "name": "researcher", "status": "running", "task": "Analyzing proposal", "team_id": "alpha", "role": "researcher", "progress": "65%"},
+			map[string]interface{}{"id": "worker-builder", "name": "builder", "status": "idle", "task": "Waiting", "team_id": "alpha", "role": "builder"},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "sandbox.list":
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{"id": "vm-1", "name": "researcher-vm", "status": "running", "cpu": "23%", "mem": "180MB"},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	// Tool/thought events for Canvas live log and per-agent tool feeds (J05 monitoring).
+	case "chat.tool_events":
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{"id": 42, "tool": "web.search", "session_id": "worker-research", "status": "success", "duration_ms": 340},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "chat.thought_events":
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{"id": 99, "description": "Evaluating risk of external call", "session_id": "worker-research"},
+		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	// Group 2: Minimal realistic fixture for proposal detail (round feedback etc.)
