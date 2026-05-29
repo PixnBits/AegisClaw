@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"AegisClaw/internal/dashboard"
@@ -40,9 +41,12 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	}
 
 	// Support being managed by the Host Daemon (reverse proxy mode per web-portal-vm.md)
-	// When AEGIS_WEB_PORTAL_LISTEN_ADDR is set, listen there instead of the default.
-	// This allows the daemon to start us on an internal address and proxy from :8080.
-	listenAddr := os.Getenv("AEGIS_WEB_PORTAL_LISTEN_ADDR")
+	// When AEGIS_WEB_PORTAL_LISTEN_ADDR (or kernel cmdline aegis.web_portal_listen_addr= for
+	// Firecracker guests) is set, listen there instead of the unsafe default.
+	// This allows the daemon to start us on an internal address (127.0.0.1:18080) and proxy
+	// from :8080. The cmdline fallback is the exact pattern used by court-persona for persona
+	// injection (see cmd/court-persona/main.go).
+	listenAddr := getWebPortalListenAddr()
 	if listenAddr == "" {
 		listenAddr = ":8080"
 	}
@@ -70,6 +74,22 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	} else {
 		log.Println("  (full mode — all actions routed through Hub/Host Daemon)")
 	}
+
+	// Additionally serve the exact same handler over vsock port 18080 when possible.
+	// This is the path the Host Daemon reverse proxy uses for Firecracker microVM web-portal
+	// instances (no NIC / no direct network per web-portal-vm.md). Safe no-op on Docker
+	// Sandbox, host dev runs, or non-Linux (the stub returns nil).
+	go func() {
+		if l, err := tryVsockListen(18080); err == nil && l != nil {
+			log.Printf("Web Portal also serving over vsock:18080 for host daemon proxy (Firecracker path)")
+			// Separate server so the main tcp ListenAndServe below can still be fatal.
+			s2 := &http.Server{Handler: srv}
+			if serveErr := s2.Serve(l); serveErr != nil && serveErr != http.ErrServerClosed {
+				log.Printf("vsock HTTP server exited: %v", serveErr)
+			}
+		}
+	}()
+
 	log.Fatal(http.ListenAndServe(listenAddr, srv))
 }
 
@@ -419,4 +439,28 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 // tiny helper (no rand import needed for test fixture ids)
 func randomSuffix() string {
 	return time.Now().Format("05000")
+}
+
+// getWebPortalListenAddr returns the address the web-portal should listen on.
+// Priority: AEGIS_WEB_PORTAL_LISTEN_ADDR env (set by daemon for managed start),
+// then kernel cmdline "aegis.web_portal_listen_addr=..." (injected via ExtraBootArgs
+// for real Firecracker web-portal VMs), then empty (caller defaults to unsafe :8080
+// which the guard below will reject outside fixture mode).
+//
+// This is the canonical way the Host Daemon tells the presentation VM its *internal*
+// (to the sandbox) HTTP address (web-portal-vm.md §Startup & Readiness + Networking).
+func getWebPortalListenAddr() string {
+	if env := os.Getenv("AEGIS_WEB_PORTAL_LISTEN_ADDR"); env != "" {
+		return env
+	}
+	// Firecracker microVM path (no env from host; kernel cmdline only).
+	// Mirrors the parser in cmd/court-persona/main.go exactly.
+	if data, err := os.ReadFile("/proc/cmdline"); err == nil {
+		for _, kv := range strings.Fields(string(data)) {
+			if strings.HasPrefix(kv, "aegis.web_portal_listen_addr=") {
+				return strings.TrimPrefix(kv, "aegis.web_portal_listen_addr=")
+			}
+		}
+	}
+	return ""
 }

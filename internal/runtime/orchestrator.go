@@ -153,6 +153,22 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		vmConfig.RootfsPath = filepath.Join(o.config.RootfsDir, imgName)
 	}
 
+	// Web Portal special wiring (reverse proxy + guest listen injection).
+	// - ExtraBootArgs: parsed by web-portal binary (getWebPortalListenAddr) so it
+	//   listens on 127.0.0.1:18080 inside the guest instead of the forbidden :8080.
+	// - ExposedPorts: used by Docker Sandbox backend to -p map the port so the
+	//   host reverse proxy can reach it via plain TCP (Firecracker ignores this
+	//   and uses the vsock path instead).
+	// See web-portal-vm.md §Networking/Startup, cmd/aegis/main.go proxy, and
+	// the vsock listener in cmd/web-portal/main.go.
+	if vmType == "web-portal" || id == "web-portal" {
+		vmConfig.ExtraBootArgs = "aegis.web_portal_listen_addr=127.0.0.1:18080"
+		if vmConfig.NetworkConfig == nil {
+			vmConfig.NetworkConfig = &sandbox.NetworkConfig{}
+		}
+		vmConfig.NetworkConfig.ExposedPorts = []string{"18080:18080"}
+	}
+
 	if err := o.backend.Start(ctx, vmConfig); err != nil {
 		logrus.Errorf("Failed to start VM %s: %v", id, err)
 		// Clean up the ephemeral key file on failure (best effort)
@@ -360,6 +376,26 @@ func (o *Orchestrator) ListVMs(ctx context.Context) ([]VMLifecycle, error) {
 // Bus returns the EventBus for 7.2 wiring (publishers and consumers).
 func (o *Orchestrator) Bus() *eventbus.Bus {
 	return o.bus
+}
+
+// GetWebPortalGuestCID returns the vsock guest CID allocated for the web-portal VM
+// (if it has been started). The Host Daemon reverse proxy uses this + the well-known
+// vsock port 18080 to reach the portal's HTTP handler over the Firecracker vsock device
+// (no NIC, per web-portal-vm.md). Returns 0, false when not a Firecracker web-portal or
+// not yet started.
+func (o *Orchestrator) GetWebPortalGuestCID() (uint32, bool) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	lc, ok := o.vms["web-portal"]
+	if !ok || lc == nil || lc.Config.NetworkConfig == nil {
+		return 0, false
+	}
+	cid := lc.Config.NetworkConfig.VsockPort
+	if cid == 0 {
+		return 0, false
+	}
+	return cid, true
 }
 
 // Shutdown gracefully shuts down all VMs.

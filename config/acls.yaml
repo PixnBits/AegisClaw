@@ -197,6 +197,12 @@ rules:
   destination: web-portal
   commands:
     - "*"
+# web-portal talks to the Host Daemon (via hub) for the bulk of dashboard actions
+# (chat.*, approvals.*, system.stats, etc.). The daemon then fans out as needed.
+- source: web-portal
+  destination: daemon
+  commands:
+    - "*"
 
 # --- Catch common response patterns (signed replies often mirror cmd names or use response/*) ---
 # Broad but explicit for known components during Phase 3 iteration

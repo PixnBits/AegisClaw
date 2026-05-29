@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"AegisClaw/internal/dashboard"
+	"AegisClaw/internal/transport/hubclient"
+
+	"github.com/mdlayher/vsock"
 )
 
 // hubBridgeClient implements dashboard.APIClient by speaking the project's
@@ -33,7 +36,18 @@ func newHubBridgeClient() (dashboard.APIClient, error) {
 	socket := expandPath(getHubSocket())
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
-		return nil, fmt.Errorf("web-portal: failed to connect to Hub: %w", err)
+		// VM path (Firecracker): no unix socket filesystem sharing. Fall back to the
+		// standard vsock control plane that AegisHub already listens on (port 9999).
+		// This is the missing piece that lets the web-portal binary inside a real
+		// microVM reach the Hub/daemon for rich dashboard actions (chat, approvals,
+		// Canvas SSE, etc.). The unix path is kept for host-child dev and fixture runs.
+		// See web-portal-vm.md §Communication and hubclient.DialVsock.
+		if vconn, verr := vsock.Dial(vsock.Host, hubclient.HubVsockPort, nil); verr == nil {
+			conn = vconn
+			err = nil
+		} else {
+			return nil, fmt.Errorf("web-portal: failed to connect to Hub (unix and vsock both failed): %w (vsock err: %v)", err, verr)
+		}
 	}
 
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)

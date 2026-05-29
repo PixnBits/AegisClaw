@@ -35,6 +35,8 @@ import (
 	"AegisClaw/internal/runtime"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
+
+	"github.com/mdlayher/vsock" // for web-portal reverse proxy over Firecracker vsock (host -> guest HTTP)
 )
 
 // sendToComponentViaHub is a skeleton helper (Phase 1.3) to forward a message
@@ -178,6 +180,11 @@ var (
 	// Pdeathsig set on the cmd, this gives strong crash containment for
 	// auxiliary children (host-daemon.md:Test Requirements / Lifecycle Containment).
 	webPortalCmd *exec.Cmd
+
+	// webPortalProxyServer holds the *http.Server for the hardened reverse proxy
+	// so we can call Shutdown on it during graceful daemon stop (signal or socket "stop").
+	// Started in startWebPortalProxy; only the foreground daemon goroutine sets it.
+	webPortalProxyServer *http.Server
 
 	// Base infrastructure managed children (AegisHub first, then Network Boundary, Store, Web Portal).
 	// These fulfill the documented requirement that the Host Daemon acts as bootstrap/lifecycle
@@ -459,9 +466,24 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// The Web Portal must receive traffic ONLY through the Host Daemon.
 	// Note: The actual web-portal microVM is started earlier in startBaseInfrastructure()
 	// with no thin fallback allowed (paranoid security model).
+	//
+	// Target selection:
+	// - Firecracker: vsock:<guest_cid>:18080 (the web-portal binary inside the guest
+	//   additionally listens on vsock 18080; see cmd/web-portal/main.go + vsock_*_listener.go)
+	// - Docker Sandbox (mac/windows) or override: plain 127.0.0.1:18080 (ExposedPorts + -e
+	//   make the tcp port reachable on the host after publish)
+	// Env var AEGIS_WEB_PORTAL_INTERNAL_ADDR still wins for manual/debug.
 	internalPortal := os.Getenv("AEGIS_WEB_PORTAL_INTERNAL_ADDR")
 	if internalPortal == "" {
-		internalPortal = "127.0.0.1:18080"
+		if cfg.SandboxType == config.Firecracker {
+			if cid, ok := orchestrator.GetWebPortalGuestCID(); ok && cid > 0 {
+				internalPortal = fmt.Sprintf("vsock:%d:18080", cid)
+			} else {
+				internalPortal = "127.0.0.1:18080" // fallback (should not normally happen)
+			}
+		} else {
+			internalPortal = "127.0.0.1:18080"
+		}
 	}
 	publicProxy := os.Getenv("AEGIS_WEB_PORTAL_PROXY_ADDR")
 	if publicProxy == "" {
@@ -469,9 +491,22 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	// Start the public-facing reverse proxy (users hit this at http://localhost:8080)
-	// This is the only inbound path to the Web Portal.
-	if err := startWebPortalProxy(publicProxy, "http://"+internalPortal); err != nil {
+	// This is the only inbound path to the Web Portal. startWebPortalProxy now handles
+	// both "http://..." tcp targets and "vsock:cid:port" descriptors transparently.
+	targetForProxy := internalPortal
+	if !strings.HasPrefix(targetForProxy, "vsock:") && !strings.HasPrefix(targetForProxy, "http") {
+		targetForProxy = "http://" + targetForProxy
+	}
+	if err := startWebPortalProxy(publicProxy, targetForProxy); err != nil {
 		logrus.Fatalf("failed to start web portal reverse proxy: %v", err)
+	}
+
+	logrus.Info("WEB_PORTAL_READY: reverse proxy active on " + publicProxy + " (target " + targetForProxy + ")")
+	if orchestrator != nil {
+		orchestrator.Bus().PublishJSON("web_portal.ready", map[string]interface{}{
+			"proxy_addr": publicProxy,
+			"target":     targetForProxy,
+		}, eventbus.WithSource("host-daemon"))
 	}
 
 	// Setup signal handling
@@ -481,6 +516,12 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	go func() {
 		<-sigChan
 		logrus.Info("shutting down daemon")
+		// Stop the reverse proxy first (drain in-flight SSE/chat streams gracefully).
+		if webPortalProxyServer != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = webPortalProxyServer.Shutdown(shutdownCtx)
+			cancel()
+		}
 		killManagedChildren()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -3231,8 +3272,12 @@ func startBaseInfrastructure() error {
 		return fmt.Errorf("failed to start real Firecracker microVM for web-portal: %w (thin fallback is forbidden)", err)
 	}
 	logrus.Info("Started real Firecracker microVM for web-portal")
+	logrus.Info("WEB_PORTAL_STARTED: web-portal VM launched (will be reached only via daemon reverse proxy)")
 	if orchestrator != nil {
 		orchestrator.RegisterAuxComponent("web-portal", "web-portal", nil, nil)
+		orchestrator.Bus().PublishJSON("web_portal.started", map[string]interface{}{
+			"id": "web-portal",
+		}, eventbus.WithSource("host-daemon"))
 	}
 
 	logrus.Info("base infrastructure (hub + boundary + store + web-portal) launch sequence complete — all critical components running as real Firecracker microVMs")
@@ -3408,23 +3453,77 @@ func startManagedComponent(name, binaryBase, hubSocket string) error {
 // startWebPortalProxy starts a minimal, hardened reverse proxy on the public
 // address (typically 127.0.0.1:8080) that forwards to the internal web-portal.
 // This is the ONLY way users should reach the Web Portal (per web-portal-vm.md threat model).
-func startWebPortalProxy(listenAddr, targetURL string) error {
-	target, err := url.Parse(targetURL)
-	if err != nil {
-		return fmt.Errorf("invalid web portal target: %w", err)
+//
+// target may be a normal "http://host:port" (Docker Sandbox or override) or a
+// "vsock:<guest_cid>:18080" descriptor (Firecracker path). The vsock path lets the
+// proxy reach the HTTP handler that the web-portal binary additionally serves over
+// vsock inside the guest (see cmd/web-portal/*vsock_listener*.go and main.go).
+func startWebPortalProxy(listenAddr, target string) error {
+	var proxy *httputil.ReverseProxy
+
+	if strings.HasPrefix(target, "vsock:") {
+		// vsock:<cid>:<port> — Firecracker web-portal case.
+		// We create a ReverseProxy whose Transport dials vsock instead of TCP.
+		// The Director points at a dummy host (the actual bytes go over the vsock conn;
+		// the guest http server only cares about Path and headers).
+		parts := strings.SplitN(strings.TrimPrefix(target, "vsock:"), ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid vsock target %q (expected vsock:<cid>:<port>)", target)
+		}
+		var cid, port uint32
+		if _, err := fmt.Sscanf(parts[0], "%d", &cid); err != nil {
+			return fmt.Errorf("bad vsock cid in %s: %w", target, err)
+		}
+		if _, err := fmt.Sscanf(parts[1], "%d", &port); err != nil {
+			return fmt.Errorf("bad vsock port in %s: %w", target, err)
+		}
+
+		proxy = &httputil.ReverseProxy{
+			Director: func(r *http.Request) {
+				// Preserve the original path/query the browser sent; only rewrite
+				// the host to something stable. The vsock dial ignores addr anyway.
+				r.URL.Scheme = "http"
+				r.URL.Host = "web-portal.internal"
+				// r.URL.Path and RawQuery are left as-is by the caller.
+			},
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return vsock.Dial(cid, port, nil)
+				},
+				MaxIdleConns:          100,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
+			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				logrus.Warnf("web-proxy (vsock backend) error for %s: %v", r.URL.Path, err)
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"error":"web portal temporarily unavailable"}`))
+			},
+		}
+	} else {
+		// Normal TCP path (Docker or explicit override)
+		u, err := url.Parse(target)
+		if err != nil {
+			return fmt.Errorf("invalid web portal target: %w", err)
+		}
+		proxy = httputil.NewSingleHostReverseProxy(u)
+
+		proxy.Transport = &http.Transport{
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			logrus.Warnf("web-proxy backend error for %s: %v", r.URL.Path, err)
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":"web portal temporarily unavailable"}`))
+		}
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
-
-	// Transport hardening
-	proxy.Transport = &http.Transport{
-		MaxIdleConns:        100,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-
-	// Hardened handler with security headers, limits, and logging
+	// Hardened handler with security headers, limits, and logging (common to both paths)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. Body size limit (protect against DoS / huge uploads)
 		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10 MiB
@@ -3440,26 +3539,22 @@ func startWebPortalProxy(listenAddr, targetURL string) error {
 		// 3. Audit-relevant logging (high signal, no sensitive bodies)
 		logrus.Infof("web-proxy: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
 
-		// 4. Forward with error shielding (do not leak internal errors to browser)
-		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			logrus.Warnf("web-proxy backend error for %s: %v", r.URL.Path, err)
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write([]byte(`{"error":"web portal temporarily unavailable"}`))
-		}
-
 		proxy.ServeHTTP(w, r)
 	})
 
 	server := &http.Server{
-		Addr:         listenAddr,
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 90 * time.Second, // generous for SSE + large chat streams
-		IdleTimeout:  120 * time.Second,
+		Addr:           listenAddr,
+		Handler:        handler,
+		ReadTimeout:    15 * time.Second,
+		WriteTimeout:   90 * time.Second, // generous for SSE + large chat streams (real-time Canvas/chat)
+		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1 MiB header limit
 	}
 
-	logrus.Infof("web portal reverse proxy listening on %s (forwarding to %s)", listenAddr, targetURL)
+	// Remember for graceful shutdown in signal handler.
+	webPortalProxyServer = server
+
+	logrus.Infof("web portal reverse proxy listening on %s (forwarding to %s)", listenAddr, target)
 	if !strings.HasPrefix(listenAddr, "127.0.0.1") && !strings.HasPrefix(listenAddr, "localhost") {
 		logrus.Warn("WARNING: Web portal proxy is bound to a non-localhost address. This exposes the UI to the network. Use only for trusted review/debug sessions.")
 	}

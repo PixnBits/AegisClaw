@@ -106,6 +106,15 @@ func (db *DockerBackend) Start(ctx context.Context, config VMConfig) error {
 		args = append(args, "-e", fmt.Sprintf("AEGIS_VM_PRIVATE_KEY_PATH=%s", config.PrivateKeyPath))
 	}
 
+	// Web Portal (presentation only) must receive AEGIS_WEB_PORTAL_LISTEN_ADDR so it
+	// does not default to :8080 and hit the public-bind guard in cmd/web-portal/main.go.
+	// ExposedPorts (set by orchestrator for web-portal) already caused the -p mapping.
+	// This makes the Docker Sandbox path (macOS/Windows) behave identically to the
+	// Firecracker path for the host reverse proxy on :8080.
+	if config.ID == "web-portal" {
+		args = append(args, "-e", "AEGIS_WEB_PORTAL_LISTEN_ADDR=127.0.0.1:18080")
+	}
+
 	// Mount the filesystem/image
 	if config.RootfsPath != "" {
 		args = append(args, "-v", fmt.Sprintf("%s:/rootfs:ro", config.RootfsPath))
