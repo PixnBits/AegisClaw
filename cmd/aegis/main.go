@@ -249,6 +249,42 @@ func setupLogging() error {
 	return nil
 }
 
+// refreshRuntimePaths re-reads kernel/rootfs locations from the environment.
+// config.New() runs in init(), which is too early for the background daemon child
+// (HOME=/root, SUDO_USER sometimes unset), so we refresh before starting VMs.
+func refreshRuntimePaths() {
+	cfg.RootfsDir = config.ResolveRootfsDir()
+	cfg.KernelPath = config.ResolveKernelPath()
+}
+
+// daemonChildEnv builds the environment for the re-execed foreground daemon.
+// Explicit AEGIS_* paths ensure the child finds user-built artifacts even when
+// SUDO_USER is not propagated by sudo/sudo-rs.
+func daemonChildEnv() []string {
+	env := os.Environ()
+	env = setEnvPair(env, "AEGIS_ROOTFS_DIR", config.ResolveRootfsDir())
+	env = setEnvPair(env, "AEGIS_KERNEL_PATH", config.ResolveKernelPath())
+	if su := os.Getenv("SUDO_USER"); su != "" {
+		env = setEnvPair(env, "SUDO_USER", su)
+	}
+	return env
+}
+
+// setEnvPair returns env with key=value set or replaced.
+func setEnvPair(env []string, key, value string) []string {
+	if value == "" {
+		return env
+	}
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return append(out, prefix+value)
+}
+
 func ensureStateDir() error {
 	stateDir := filepath.Join("/tmp", "aegis")
 
@@ -409,6 +445,11 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if !foreground {
 		daemonCmd := exec.Command(os.Args[0], "start", "--foreground")
 
+		// Pin paths into the child environment. The foreground daemon re-exec may
+		// not inherit SUDO_USER (depends on sudo/sudo-rs), but images almost always
+		// live under the invoking user's ~/.aegis after `make build-microvms`.
+		daemonCmd.Env = daemonChildEnv()
+
 		// Set Setsid on Unix-like platforms for process group isolation
 		setSetsid(daemonCmd)
 
@@ -463,6 +504,11 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		fmt.Printf("failed to setup logging: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Re-resolve artifact paths at runtime (config.New() in init() may have run
+	// before SUDO_USER was visible, or with HOME=/root in the background child).
+	refreshRuntimePaths()
+	logrus.Infof("using rootfs dir %s (kernel %s)", cfg.RootfsDir, cfg.KernelPath)
 
 	// Build / debug ID for this daemon run (helps confirm we are not running stale binary)
 	logrus.Infof("Aegis daemon starting — build/debug ID: %s", time.Now().UTC().Format("2006-01-02T15:04:05Z")+" (debug-build)")
@@ -3663,27 +3709,12 @@ func startBaseInfrastructure() error {
 func ensureRealRootfsImage(component string) (string, error) {
 	debug := os.Getenv("AEGIS_DEBUG") != ""
 
-	// Always prefer the configured RootfsDir (comes from AEGIS_ROOTFS_DIR in the
-	// sudo wrapper, or the user's ~/.aegis path). This is critical when the daemon
-	// runs as root (via sudo) but the images live in a regular user's home.
-	//
-	// We deliberately re-use the same getEffectiveHomeDir logic that config.New()
-	// already used when populating cfg.RootfsDir (via SUDO_USER). If cfg.RootfsDir
-	// is still empty here we fall back the same way, so we don't accidentally look
-	// in /root/.aegis when the developer built the images under their own home.
-	rootfsDir := cfg.RootfsDir
-	if rootfsDir == "" {
-		// Same SUDO_USER logic used by config.getEffectiveHomeDir() and expandPath().
-		if su := os.Getenv("SUDO_USER"); su != "" {
-			if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
-				rootfsDir = filepath.Join(u.HomeDir, ".aegis/firecracker/rootfs")
-			}
-		}
-		if rootfsDir == "" {
-			home, _ := os.UserHomeDir()
-			rootfsDir = filepath.Join(home, ".aegis/firecracker/rootfs")
-		}
-		logrus.Warnf("ensureRealRootfsImage: cfg.RootfsDir was empty; using effective home path %s", rootfsDir)
+	// Always resolve at call time — cfg.RootfsDir may still point at /opt/aegis
+	// if config.New() ran in init() before SUDO_USER was available.
+	rootfsDir := config.ResolveRootfsDir()
+	if rootfsDir != cfg.RootfsDir {
+		logrus.Infof("ensureRealRootfsImage(%s): refreshed rootfsDir %s -> %s (SUDO_USER=%q)", component, cfg.RootfsDir, rootfsDir, os.Getenv("SUDO_USER"))
+		cfg.RootfsDir = rootfsDir
 	}
 
 	logrus.Infof("ensureRealRootfsImage(%s): using rootfsDir=%s (SUDO_USER=%q)", component, rootfsDir, os.Getenv("SUDO_USER"))

@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 type Platform string
@@ -87,36 +88,90 @@ func getEffectiveHomeDir() string {
 }
 
 func getKernelPath() string {
+	return ResolveKernelPath()
+}
+
+func getRootfsDir() string {
+	return ResolveRootfsDir()
+}
+
+// ResolveKernelPath returns the Firecracker kernel path, re-reading the environment
+// each call. Prefer explicit AEGIS_KERNEL_PATH, then the invoking user's
+// ~/.aegis/firecracker/vmlinux (via SUDO_USER when running under sudo).
+func ResolveKernelPath() string {
 	if kernelPath := os.Getenv("AEGIS_KERNEL_PATH"); kernelPath != "" {
 		return kernelPath
 	}
 
-	// Prefer a user-writable minimal kernel location (recommended).
-	// When the daemon runs as root via sudo, we still want to find the kernel
-	// the normal user built/downloaded into their own home.
-	home := getEffectiveHomeDir()
-	userKernel := filepath.Join(home, ".aegis/firecracker/vmlinux")
-	if _, err := os.Stat(userKernel); err == nil {
-		return userKernel
+	for _, home := range candidateHomes() {
+		userKernel := filepath.Join(home, ".aegis/firecracker/vmlinux")
+		if _, err := os.Stat(userKernel); err == nil {
+			return userKernel
+		}
 	}
 
-	// Fallback to system location
 	return "/opt/aegis/firecracker/vmlinux"
 }
 
-func getRootfsDir() string {
+// ResolveRootfsDir returns the microVM rootfs directory, re-reading the environment
+// each call. This must be invoked at daemon startup (not only in init()) because
+// the background daemon child may lose SUDO_USER while AEGIS_ROOTFS_DIR is unset,
+// causing a stale fallback to /opt/aegis even when images were built under the
+// developer's ~/.aegis/firecracker/rootfs (common when /opt is not writable).
+func ResolveRootfsDir() string {
 	if rootfsDir := os.Getenv("AEGIS_ROOTFS_DIR"); rootfsDir != "" {
 		return rootfsDir
 	}
 
-	// Prefer the effective (original) user's home for images.
-	// The build script already defaults to putting images here.
-	home := getEffectiveHomeDir()
-	userRootfs := filepath.Join(home, ".aegis/firecracker/rootfs")
-	// Only use it if something actually exists there (otherwise fall back to /opt).
-	if _, err := os.Stat(userRootfs); err == nil {
-		return userRootfs
+	for _, home := range candidateHomes() {
+		candidate := filepath.Join(home, ".aegis/firecracker/rootfs")
+		if rootfsDirUsable(candidate) {
+			return candidate
+		}
 	}
 
 	return "/opt/aegis/firecracker/rootfs"
+}
+
+// candidateHomes returns home directories to search for user-built artifacts.
+// SUDO_USER is listed first so we prefer the invoking developer's tree when
+// the daemon runs as root via sudo (even if HOME=/root in the child process).
+func candidateHomes() []string {
+	seen := make(map[string]bool)
+	var homes []string
+	add := func(h string) {
+		if h == "" || seen[h] {
+			return
+		}
+		seen[h] = true
+		homes = append(homes, h)
+	}
+
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		if u, err := user.Lookup(sudoUser); err == nil {
+			add(u.HomeDir)
+		}
+	}
+	add(getEffectiveHomeDir())
+	return homes
+}
+
+// rootfsDirUsable reports whether dir exists and contains at least one built
+// .img (preferred) or is an existing directory (tarball-only / mid-build).
+func rootfsDirUsable(dir string) bool {
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".img") {
+			return true
+		}
+	}
+	// Directory exists (may hold tarballs awaiting conversion).
+	return true
 }
