@@ -37,6 +37,9 @@ WORKDIR /app
 COPY --from=builder /web-portal /usr/local/bin/web-portal
 
 # Minimal init script for Firecracker boot.
+# We explicitly redirect all output to the serial console so that
+# our debug prints (and any crashes) appear in the host-captured
+# fc-web-portal-console.log.
 COPY <<'EOF' /init
 #!/bin/sh
 export PATH=/usr/local/bin:/usr/bin:/bin
@@ -45,6 +48,13 @@ export HOME=/root
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
+
+# Force all stdout + stderr to the serial console.
+# This is the most reliable way to get application output visible
+# in Firecracker's captured console log for minimal guests.
+exec >/dev/console 2>&1
+
+echo "=== WEB-PORTAL GUEST /init STARTING ==="
 
 exec /usr/local/bin/web-portal
 EOF

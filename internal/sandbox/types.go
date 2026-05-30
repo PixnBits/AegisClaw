@@ -44,6 +44,17 @@ type VMConfig struct {
 	// parses this from /proc/cmdline (see cmd/court-persona/main.go).
 	// Backward compatible (empty = no change).
 	ExtraBootArgs string
+
+	// InitProcess, when set, is passed to the guest kernel as `init=<path>`
+	// (Firecracker only). This is REQUIRED for rootfs images whose entrypoint is
+	// a custom /init script: `docker export` (used by build-microvms-docker.sh)
+	// flattens only the filesystem and drops the image ENTRYPOINT, so without an
+	// explicit init= the kernel falls back to the base image's /sbin/init (Alpine
+	// BusyBox init -> /etc/inittab -> /sbin/openrc), which isn't installed and the
+	// application binary never launches ("can't run '/sbin/openrc'"). Set this for
+	// any component whose image ships an /init wrapper.
+	// Empty = kernel default (backward compatible).
+	InitProcess string
 }
 
 // NetworkConfig specifies network setup for the VM.
@@ -105,4 +116,9 @@ type VMInfo struct {
 	Uptime    int64  // seconds
 	Memory    uint64 // in MB
 	CreatedAt int64  // Unix timestamp
+
+	// ConsoleLogPath is the path to the captured guest serial console output
+	// (for Firecracker backends this is typically fc-<id>-console.log in the state dir).
+	// Empty for backends that do not capture console output.
+	ConsoleLogPath string
 }

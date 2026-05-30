@@ -70,6 +70,12 @@ const (
 	// HostCID is the CID that guests use to reach the host over vsock.
 	// This is the established Firecracker + vsock convention used elsewhere in the tree.
 	HostCID = 2
+
+	// LogVsockPort (Phase 1 microvm-observability) is the dedicated port on which
+	// guests emit structured logs to the Host Daemon over vsock. This provides
+	// reliable application-level visibility (startup events, vsock listener status,
+	// errors) that is independent of fragile serial console capture.
+	LogVsockPort = 18099
 )
 
 // Sentinel errors for AegisHub protocol responses (exact strings from aegishub/main.go).

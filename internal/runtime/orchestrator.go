@@ -44,6 +44,11 @@ type VMLifecycle struct {
 	Status    sandbox.Status
 	Config    sandbox.VMConfig
 	CreatedAt int64
+
+	// ConsoleLogPath (Phase 0 observability) points to the captured serial console
+	// output for this VM when using the Firecracker backend. This is the primary
+	// mechanism for seeing early guest boot and application startup messages.
+	ConsoleLogPath string
 }
 
 // New creates a new Orchestrator.
@@ -169,6 +174,15 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		vmConfig.NetworkConfig.ExposedPorts = []string{"18080:18080"}
 	}
 
+	// Boot via the image's custom /init wrapper for components whose Dockerfile
+	// ships one. Required because docker export drops the ENTRYPOINT, so without
+	// init=/init the kernel would run the Alpine base init (-> /sbin/openrc, which
+	// isn't installed) and the component binary would never start. See
+	// sandbox.VMConfig.InitProcess and cmd/<component>/Dockerfile.
+	if o.config.SandboxType == config.Firecracker && componentShipsInit(vmType, id) {
+		vmConfig.InitProcess = "/init"
+	}
+
 	if err := o.backend.Start(ctx, vmConfig); err != nil {
 		logrus.Errorf("Failed to start VM %s: %v", id, err)
 		// Clean up the ephemeral key file on failure (best effort)
@@ -200,6 +214,46 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 
 	logrus.Infof("VM %s started successfully (per-VM key distributed + registered)", id)
 	return nil
+}
+
+// GetVMConsoleLog returns recent lines from the captured guest serial console
+// for the given VM (Phase 0 observability). Returns empty string + nil error
+// if the VM has no console log or the file does not exist yet.
+//
+// Phase 0 robustness: If the VMLifecycle doesn't have the path stored yet
+// (common right after StartVM for Firecracker), we fall back to the
+// conventional location used by the Firecracker backend.
+func (o *Orchestrator) GetVMConsoleLog(ctx context.Context, vmID string, tailLines int) (string, error) {
+	o.mu.RLock()
+	lc, ok := o.vms[vmID]
+	o.mu.RUnlock()
+
+	consolePath := ""
+	if ok && lc != nil && lc.ConsoleLogPath != "" {
+		consolePath = lc.ConsoleLogPath
+	} else if o.config.SandboxType == config.Firecracker {
+		// Conventional path used inside FirecrackerBackend
+		consolePath = filepath.Join(o.config.StateDir, "fc-"+vmID+"-console.log")
+	}
+
+	if consolePath == "" {
+		return "", nil
+	}
+
+	data, err := os.ReadFile(consolePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	// Simple tail implementation (good enough for Phase 0)
+	lines := strings.Split(string(data), "\n")
+	if tailLines > 0 && len(lines) > tailLines {
+		lines = lines[len(lines)-tailLines:]
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // StopVM stops a running sandbox VM.
@@ -465,6 +519,24 @@ func (o *Orchestrator) TCBHealthReport() map[string]interface{} {
 	}
 
 	return report
+}
+
+// initShippingComponents lists the component rootfs images that ship a custom
+// /init wrapper (see cmd/<component>/Dockerfile). These MUST be booted with
+// init=/init on Firecracker (docker export drops the ENTRYPOINT). Components not
+// listed here have not yet been migrated to the /init convention and are left on
+// the kernel default to avoid an init-not-found panic until their images are
+// rebuilt with an /init wrapper.
+var initShippingComponents = map[string]bool{
+	"web-portal":       true,
+	"store":            true,
+	"network-boundary": true,
+}
+
+// componentShipsInit reports whether the given VM (by type or id) is built from
+// an image that contains a bootable /init wrapper.
+func componentShipsInit(vmType, id string) bool {
+	return initShippingComponents[vmType] || initShippingComponents[id]
 }
 
 // criticalTypes defines the component types that the watchdog considers

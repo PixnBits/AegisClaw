@@ -3,19 +3,68 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"AegisClaw/internal/dashboard"
+	guestlog "AegisClaw/internal/guest/log"
 
 	"github.com/spf13/cobra"
 )
 
 func runWebPortal(cmd *cobra.Command, args []string) {
+	// === HOLISTIC DEBUG BUILD FOR WEB-PORTAL GUEST ===
+	// Build ID / timestamp printed as early as possible.
+	debugBuildID := time.Now().UTC().Format("2006-01-02T15:04:05Z") + " (debug-build)"
+	fmt.Printf("!!! WEB-PORTAL GUEST BUILD ID: %s\n", debugBuildID)
+	writeToConsole("!!! WEB-PORTAL GUEST BUILD ID: " + debugBuildID + "\n")
+	writeToSerial("!!! WEB-PORTAL GUEST BUILD ID: " + debugBuildID + "\n")
+
+	// Open persistent debug log file inside the guest.
+	// This survives even if serial console capture is broken.
+	debugLogPath := "/tmp/web-portal-guest-debug.log"
+	debugLogFile, _ := os.OpenFile(debugLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if debugLogFile != nil {
+		fmt.Fprintf(debugLogFile, "=== WEB-PORTAL GUEST DEBUG LOG STARTED %s ===\n", debugBuildID)
+		debugLogFile.Sync()
+	}
+
+	debug := func(format string, a ...interface{}) {
+		msg := fmt.Sprintf(format, a...)
+		log.Print(msg)
+		writeToConsole(msg + "\n")
+		writeToSerial(msg + "\n")
+		if debugLogFile != nil {
+			fmt.Fprintln(debugLogFile, msg)
+			debugLogFile.Sync()
+		}
+	}
+
+	debug("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+	debug("!!! WEB-PORTAL GUEST BINARY STARTING (runWebPortal)      !!!")
+	debug("!!! Hostname: %s", getHostname())
+	debug("!!! AEGIS_WEB_PORTAL_LISTEN_ADDR env: %q", os.Getenv("AEGIS_WEB_PORTAL_LISTEN_ADDR"))
+	debug("!!! Full /proc/cmdline: %s", getProcCmdline())
+	debug("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+
+	// === AGGRESSIVE EARLY CONSOLE OUTPUT (for debugging vsock / startup issues) ===
+	// These go straight to the serial console captured by Firecracker.
+	fmt.Fprintf(os.Stdout, "!!! WEB-PORTAL GUEST [EARLY]: entered runWebPortal, build=%s\n", debugBuildID)
+	fmt.Fprintf(os.Stdout, "!!! WEB-PORTAL GUEST [EARLY]: AEGIS_WEB_PORTAL_LISTEN_ADDR=%q\n", os.Getenv("AEGIS_WEB_PORTAL_LISTEN_ADDR"))
+
+	// Start Phase 1 structured logger as early as possible
+	guestLogger := guestlog.NewDefault()
+	guestLogger.Info("web-portal guest binary starting", "build_id", debugBuildID)
+	fmt.Fprintf(os.Stdout, "!!! WEB-PORTAL GUEST [EARLY]: guest structured logger initialized\n")
+
 	client, err := newHubBridgeClient()
 	useFixtures := false
 	if err != nil {
@@ -47,8 +96,10 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	// from :8080. The cmdline fallback is the exact pattern used by court-persona for persona
 	// injection (see cmd/court-persona/main.go).
 	listenAddr := getWebPortalListenAddr()
+	log.Printf("!!! DEBUG: getWebPortalListenAddr() returned: %q", listenAddr)
 	if listenAddr == "" {
 		listenAddr = ":8080"
+		log.Println("!!! DEBUG: No listen addr from env or cmdline — falling back to :8080 (will likely hit guard)")
 	}
 
 	// Enforce daemon mediation per web-portal-vm.md §Startup & Runtime Characteristics
@@ -66,6 +117,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 		log.Fatalf("Failed to create rich dashboard server: %v", err)
 	}
 
+	log.Printf("!!! DEBUG: About to start listeners. TCP target=%s", listenAddr)
 	log.Printf("Web Portal (thin) starting on %s", listenAddr)
 	if useFixtures {
 		log.Println("  (E2E fixture mode — seeded data for contract/UI tests)")
@@ -80,16 +132,54 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	// instances (no NIC / no direct network per web-portal-vm.md). Safe no-op on Docker
 	// Sandbox, host dev runs, or non-Linux (the stub returns nil).
 	go func() {
+		fmt.Fprintf(os.Stdout, "!!! WEB-PORTAL GUEST [VSOCK]: Attempting vsock listener on port 18080\n")
+		log.Println("!!! DEBUG: Attempting vsock listener on port 18080 (for host proxy reachability)")
+		guestLogger.Info("attempting vsock listener", "port", 18080)
+
 		if l, err := tryVsockListen(18080); err == nil && l != nil {
-			log.Printf("Web Portal also serving over vsock:18080 for host daemon proxy (Firecracker path)")
+			fmt.Fprintf(os.Stdout, "!!! WEB-PORTAL GUEST [VSOCK]: SUCCESS - listening on vsock:18080\n")
+			log.Printf("!!! DEBUG: SUCCESS - Web Portal also serving over vsock:18080 for host daemon proxy")
+			guestLogger.Info("vsock listener ready", "port", 18080, "status", "success")
 			// Separate server so the main tcp ListenAndServe below can still be fatal.
 			s2 := &http.Server{Handler: srv}
 			if serveErr := s2.Serve(l); serveErr != nil && serveErr != http.ErrServerClosed {
 				log.Printf("vsock HTTP server exited: %v", serveErr)
 			}
+		} else {
+			fmt.Fprintf(os.Stdout, "!!! WEB-PORTAL GUEST [VSOCK]: FAILED on port 18080: %v\n", err)
+			log.Printf("!!! DEBUG: vsock listen on 18080 FAILED or not available: %v (normal outside real Firecracker)", err)
+			guestLogger.Error("vsock listener failed", "port", 18080, "error", fmt.Sprintf("%v", err))
 		}
 	}()
 
+	// === SECONDARY VSOCK DEBUG CHANNEL (port 18081) ===
+	// Host can connect here (e.g. via a future `aegis debug` or raw vsock tool)
+	// to retrieve the persistent guest debug log even if serial console is broken.
+	go func() {
+		if l, err := tryVsockListen(18081); err == nil && l != nil {
+			debug("!!! DEBUG: Started secondary debug vsock listener on port 18081")
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					continue
+				}
+				go func(c net.Conn) {
+					defer c.Close()
+					if debugLogFile != nil {
+						// Rewind and send current log content
+						debugLogFile.Seek(0, 0)
+						io.Copy(c, debugLogFile)
+					} else {
+						c.Write([]byte("No debug log file available yet\n"))
+					}
+				}(conn)
+			}
+		} else {
+			debug("!!! DEBUG: Secondary debug vsock on 18081 not available: %v", err)
+		}
+	}()
+
+	log.Println("!!! DEBUG: Starting main TCP ListenAndServe on", listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, srv))
 }
 
@@ -463,4 +553,62 @@ func getWebPortalListenAddr() string {
 		}
 	}
 	return ""
+}
+
+// === TEMPORARY DEBUG HELPERS ===
+
+func getHostname() string {
+	h, _ := os.Hostname()
+	return h
+}
+
+func getProcCmdline() string {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return fmt.Sprintf("<error reading /proc/cmdline: %v>", err)
+	}
+	return string(data)
+}
+
+// writeToConsole opens the serial console device and writes directly to it.
+// This is a debugging aid for minimal Firecracker guests where normal
+// stdout/stderr may not reach the captured console.
+func writeToConsole(s string) {
+	f, err := os.OpenFile("/dev/console", os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		// Fallback: try to write anyway via syscall if open fails
+		// (rare, but helps in some early-boot scenarios).
+		_, _ = syscall.Write(1, []byte(s))
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(s)
+}
+
+// forceSerialOpenForDebug explicitly opens the serial port early.
+// In some Firecracker setups, this is what actually causes the backend
+// console log file to be created on the host.
+func forceSerialOpenForDebug() {
+	// Try the standard serial port name first
+	for _, dev := range []string{"/dev/ttyS0", "/dev/console"} {
+		if f, err := os.OpenFile(dev, os.O_WRONLY|os.O_APPEND, 0); err == nil {
+			f.WriteString("!!! DEBUG: Serial port opened successfully from web-portal binary\n")
+			f.Close()
+			return
+		}
+	}
+}
+
+// writeToSerial writes directly to the first available serial port.
+// This is more aggressive than writeToConsole for forcing output visibility.
+func writeToSerial(s string) {
+	for _, dev := range []string{"/dev/ttyS0", "/dev/console"} {
+		if f, err := os.OpenFile(dev, os.O_WRONLY|os.O_APPEND, 0); err == nil {
+			f.WriteString(s)
+			f.Close()
+			return
+		}
+	}
+	// Last resort
+	_, _ = syscall.Write(1, []byte(s))
 }

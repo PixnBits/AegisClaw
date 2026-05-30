@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	stdruntime "runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -33,10 +34,9 @@ import (
 	"AegisClaw/internal/config"
 	"AegisClaw/internal/eventbus"
 	"AegisClaw/internal/runtime"
+	"AegisClaw/internal/sandbox" // for FirecrackerVsockUDSPath (host -> guest web-portal reverse proxy)
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
-
-	"github.com/mdlayher/vsock" // for web-portal reverse proxy over Firecracker vsock (host -> guest HTTP)
 )
 
 // sendToComponentViaHub is a skeleton helper (Phase 1.3) to forward a message
@@ -174,6 +174,13 @@ var (
 	orchestrator *runtime.Orchestrator
 	cfg          *config.Config
 	jsonOutput   bool
+
+	// debugMode is enabled by AEGIS_DEBUG=1 (or any non-empty value).
+	// When on, we emit very detailed step-by-step traces of the startup path,
+	// image directory decisions, VM launch ordering, and the web-portal
+	// vsock readiness probe. Extremely useful for confidence checks during
+	// early daemon + microVM bring-up.
+	debugMode bool
 
 	// webPortalCmd tracks the managed web-portal child process for explicit
 	// termination during clean shutdown and panic recovery. Combined with
@@ -333,9 +340,61 @@ func removePIDFile() {
 }
 
 func startDaemon(cmd *cobra.Command, args []string) {
+	// Enable copious debug tracing as early as possible.
+	// Use AEGIS_DEBUG=1 (any truthy value works).
+	if v := os.Getenv("AEGIS_DEBUG"); v != "" && v != "0" && v != "false" {
+		debugMode = true
+		logrus.SetLevel(logrus.DebugLevel)
+	}
+
 	if os.Getuid() != 0 {
 		fmt.Println("daemon must be started with root privileges (use: sudo aegis start)")
 		os.Exit(1)
+	}
+
+	// === RICH DEBUG BANNER (only when AEGIS_DEBUG is set) ===
+	// This is the single most valuable thing for "am I even running the binary I just built?"
+	// and "what exact code path am I on right now?" during the kinds of early startup
+	// races we have been debugging (hub socket readiness, rootfs image location under sudo,
+	// VM launch ordering, vsock readiness probe, etc.).
+	if debugMode {
+		exePath, _ := os.Executable()
+		exeInfo, _ := os.Stat(exePath)
+		buildTime := "unknown"
+		if exeInfo != nil {
+			buildTime = exeInfo.ModTime().UTC().Format(time.RFC3339)
+		}
+
+		// Try to get real build info (vcs revision, time, etc.) when the binary
+		// was built with `go build` from a git checkout.
+		buildInfo := "no build info"
+		if bi, ok := debug.ReadBuildInfo(); ok {
+			buildInfo = fmt.Sprintf("go=%s", bi.GoVersion)
+			for _, s := range bi.Settings {
+				if s.Key == "vcs.revision" || s.Key == "vcs.time" || s.Key == "vcs.modified" {
+					buildInfo += fmt.Sprintf(" %s=%s", s.Key, s.Value)
+				}
+			}
+		}
+
+		fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════════════════")
+		fmt.Fprintf(os.Stderr, "AEGIS DEBUG MODE ENABLED (AEGIS_DEBUG=%s)\n", os.Getenv("AEGIS_DEBUG"))
+		fmt.Fprintf(os.Stderr, "  Executable: %s\n", exePath)
+		fmt.Fprintf(os.Stderr, "  Binary mtime (best proxy for compile time): %s\n", buildTime)
+		fmt.Fprintf(os.Stderr, "  Build info: %s\n", buildInfo)
+		fmt.Fprintf(os.Stderr, "  PID: %d   UID: %d   SUDO_USER: %q\n", os.Getpid(), os.Getuid(), os.Getenv("SUDO_USER"))
+		effHome := os.Getenv("HOME")
+		if su := os.Getenv("SUDO_USER"); su != "" {
+			if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
+				effHome = u.HomeDir
+			}
+		}
+		fmt.Fprintf(os.Stderr, "  Effective home (for images/kernels): %s\n", effHome)
+		fmt.Fprintf(os.Stderr, "  AEGIS_ROOTFS_DIR: %q\n", os.Getenv("AEGIS_ROOTFS_DIR"))
+		fmt.Fprintf(os.Stderr, "  AEGIS_WEB_PORTAL_PROXY_ADDR: %q\n", os.Getenv("AEGIS_WEB_PORTAL_PROXY_ADDR"))
+		fmt.Fprintf(os.Stderr, "  AEGIS_WEB_PORTAL_INTERNAL_ADDR: %q\n", os.Getenv("AEGIS_WEB_PORTAL_INTERNAL_ADDR"))
+		fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════════════════")
+		dlog("early startup banner printed")
 	}
 
 	// Check if already running
@@ -405,6 +464,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// Build / debug ID for this daemon run (helps confirm we are not running stale binary)
+	logrus.Infof("Aegis daemon starting — build/debug ID: %s", time.Now().UTC().Format("2006-01-02T15:04:05Z")+" (debug-build)")
+
 	// Ensure state directory (runtime, privileged)
 	if err := ensureStateDir(); err != nil {
 		logrus.Fatalf("failed to ensure state directory: %v", err)
@@ -425,6 +487,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	logrus.Infof("daemon starting on platform %s with sandbox type %s",
 		cfg.Platform, cfg.SandboxType)
+	dlog("post-orchestrator creation, about to start critical watchdog + base infrastructure")
 
 	// 7.5.3: Start the minimal critical component watchdog (host-daemon.md:Responsibilities).
 	// It monitors known critical VMs (hub, store, network-boundary, web-portal, etc.)
@@ -476,8 +539,15 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	internalPortal := os.Getenv("AEGIS_WEB_PORTAL_INTERNAL_ADDR")
 	if internalPortal == "" {
 		if cfg.SandboxType == config.Firecracker {
+			// Firecracker exposes the guest's vsock ONLY through a host-side Unix
+			// domain socket (the device `uds_path`), reached via the "hybrid vsock"
+			// CONNECT handshake — NOT through the host kernel's AF_VSOCK. A raw
+			// vsock.Dial(cid, port) from the host fails with ENODEV ("no such
+			// device"), which previously surfaced as a permanent 502 from this
+			// proxy. We therefore target the UDS directly.
 			if cid, ok := orchestrator.GetWebPortalGuestCID(); ok && cid > 0 {
-				internalPortal = fmt.Sprintf("vsock:%d:18080", cid)
+				udsPath := sandbox.FirecrackerVsockUDSPath(cfg.StateDir, "web-portal")
+				internalPortal = fmt.Sprintf("fcvsock:%s:18080", udsPath)
 			} else {
 				internalPortal = "127.0.0.1:18080" // fallback (should not normally happen)
 			}
@@ -494,19 +564,49 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// This is the only inbound path to the Web Portal. startWebPortalProxy now handles
 	// both "http://..." tcp targets and "vsock:cid:port" descriptors transparently.
 	targetForProxy := internalPortal
-	if !strings.HasPrefix(targetForProxy, "vsock:") && !strings.HasPrefix(targetForProxy, "http") {
+	if !strings.HasPrefix(targetForProxy, "fcvsock:") && !strings.HasPrefix(targetForProxy, "vsock:") && !strings.HasPrefix(targetForProxy, "http") {
 		targetForProxy = "http://" + targetForProxy
 	}
+
+	// Readiness probe (the fix for the immediate 502 race after 21e266f).
+	// We wait here (with clear logs + exponential backoff) so that:
+	//   - startWebPortalProxy's ListenAndServe only begins after the guest
+	//     is actually serving /health over the chosen transport (vsock for
+	//     Firecracker, TCP for Docker Sandbox).
+	//   - WEB_PORTAL_READY (and the bus event) is only emitted when the
+	//     backend has responded successfully.
+	// This eliminates the window where the first browser curls (or make smoke)
+	// would hit the ErrorHandler and receive 502 "temporarily unavailable".
+	//
+	// The 60s budget is generous; normal boots succeed in 5-15s. On timeout we
+	// still proceed (proxy binds) so the rest of daemon startup isn't blocked,
+	// but we do NOT emit the READY event (per the requirement that it only
+	// fires on actual reachability). Subsequent requests will either work or
+	// produce real backend errors (logged) if the guest never came up.
+	logrus.Info("ensuring web-portal microVM is serving before activating reverse proxy (per web-portal-vm.md §Startup & Readiness)")
+	dlog("about to call waitForWebPortalReady for target=%s (this is the key fix for the original 502 race)", targetForProxy)
+	probeErr := waitForWebPortalReady(targetForProxy, 60*time.Second)
+	if probeErr != nil {
+		logrus.Warnf("web-portal readiness probe timed out after 60s: %v — starting proxy anyway (early requests may see 502 until guest finishes booting; see fc-*-console.log and the probe attempt lines above)", probeErr)
+	}
+
 	if err := startWebPortalProxy(publicProxy, targetForProxy); err != nil {
 		logrus.Fatalf("failed to start web portal reverse proxy: %v", err)
 	}
 
-	logrus.Info("WEB_PORTAL_READY: reverse proxy active on " + publicProxy + " (target " + targetForProxy + ")")
-	if orchestrator != nil {
-		orchestrator.Bus().PublishJSON("web_portal.ready", map[string]interface{}{
-			"proxy_addr": publicProxy,
-			"target":     targetForProxy,
-		}, eventbus.WithSource("host-daemon"))
+	// Only emit WEB_PORTAL_READY (and the corresponding bus event) when the
+	// probe actually succeeded. This is the observable signal that the UI is
+	// safe to use and matches the documented contract in web-portal-vm.md.
+	if probeErr == nil {
+		logrus.Info("WEB_PORTAL_READY: reverse proxy active on " + publicProxy + " (target " + targetForProxy + ")")
+		if orchestrator != nil {
+			orchestrator.Bus().PublishJSON("web_portal.ready", map[string]interface{}{
+				"proxy_addr": publicProxy,
+				"target":     targetForProxy,
+			}, eventbus.WithSource("host-daemon"))
+		}
+	} else {
+		logrus.Warn("web portal reverse proxy is listening but WEB_PORTAL_READY was not emitted because the backend probe never succeeded within the timeout")
 	}
 
 	// Setup signal handling
@@ -522,6 +622,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 			_ = webPortalProxyServer.Shutdown(shutdownCtx)
 			cancel()
 		}
+		stopGuestLogCollector()
 		killManagedChildren()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -673,6 +774,24 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	} else {
 		fmt.Println("    (unable to query live state)")
 	}
+}
+
+// dlog prints copious debug output both to stderr (so it is visible immediately
+// in `sudo ... --foreground | tee` sessions) and through logrus (so it also
+// ends up in ~/.aegis/daemon.log when JSON logging is active).
+// Only active when AEGIS_DEBUG is set.
+func dlog(format string, a ...interface{}) {
+	if !debugMode {
+		return
+	}
+	msg := fmt.Sprintf("[AEGIS-DEBUG] "+format, a...)
+	fmt.Fprintln(os.Stderr, msg)
+	logrus.Debug(msg)
+}
+
+// isDebug returns whether detailed debug tracing is enabled.
+func isDebug() bool {
+	return debugMode
 }
 
 func doctorDaemon(cmd *cobra.Command, args []string) {
@@ -1213,6 +1332,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		// Structured path - strict validation
 		allowedOps := map[string]bool{
 			"vm.list": true, "vm list": true,
+			"vm.logs": true,
 			"stop": true,
 			"restart": true,
 			"status": true,
@@ -1233,6 +1353,61 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 				resp = SocketResponse{OK: false, Error: err.Error()}
 			} else {
 				resp.Data = vms
+			}
+		case "vm.logs":
+			// Phase 0 + Phase 1 observability
+			vmID := req.Args["id"]
+			if vmID == "" {
+				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else {
+				tail := 200
+				if t := req.Args["tail"]; t != "" {
+					if n, err := strconv.Atoi(t); err == nil && n > 0 {
+						tail = n
+					}
+				}
+				logs := gatherVMLogs(cfg.StateDir, vmID, tail)
+				resp.Data = map[string]interface{}{
+					"id":   vmID,
+					"logs": logs,
+				}
+			}
+
+		case "vm.diagnose":
+			// Bundled diagnostic snapshot for a VM (very useful for the current web-portal vsock issues)
+			vmID := req.Args["id"]
+			if vmID == "" {
+				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else {
+				tail := 300
+				if t := req.Args["tail"]; t != "" {
+					if n, err := strconv.Atoi(t); err == nil && n > 0 {
+						tail = n
+					}
+				}
+
+				logs := gatherVMLogs(cfg.StateDir, vmID, tail)
+
+				// Try to get basic VM info
+				vmInfo := map[string]interface{}{"id": vmID}
+				if vms, err := orch.ListVMs(context.Background()); err == nil {
+					for _, v := range vms {
+						if v.ID == vmID {
+							vmInfo["type"] = v.Type
+							vmInfo["status"] = v.Status
+							vmInfo["created_at"] = v.CreatedAt
+							break
+						}
+					}
+				}
+
+				resp.Data = map[string]interface{}{
+					"id":            vmID,
+					"timestamp":     time.Now().UTC().Format(time.RFC3339),
+					"vm":            vmInfo,
+					"logs":          logs,
+					"note":          "Phase 0/1 diagnostic bundle. Check 'logs' section for VMM, console, and guest structured output.",
+				}
 			}
 		case "stop":
 			resp.Text = "stopping"
@@ -1372,6 +1547,46 @@ func getMapString(m map[string]interface{}, keys ...string) string {
 	return ""
 }
 
+// --- VM Observability Helpers (Phase 0 + Phase 1) ---
+
+func getRecentFileContent(path string, tailLines int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if tailLines > 0 && len(lines) > tailLines {
+		lines = lines[len(lines)-tailLines:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func gatherVMLogs(stateDir, vmID string, tailLines int) map[string]string {
+	result := map[string]string{}
+
+	// Firecracker VMM log
+	vmmPath := filepath.Join(stateDir, "fc-"+vmID+".log")
+	if content := getRecentFileContent(vmmPath, tailLines); content != "" {
+		result["vmm"] = content
+	}
+
+	// Guest serial console
+	consolePath := filepath.Join(stateDir, "fc-"+vmID+"-console.log")
+	if content := getRecentFileContent(consolePath, tailLines); content != "" {
+		result["console"] = content
+	}
+
+	// Phase 1 structured guest logs
+	guestPath := filepath.Join(stateDir, vmID+".guest.log")
+	if content := getRecentFileContent(guestPath, tailLines); content != "" {
+		result["guest"] = content
+	}
+
+	return result
+}
+
+// --- End VM Observability Helpers ---
+
 func listVMs(cmd *cobra.Command, args []string) {
 	resp, err := sendSocketRequest("vm.list", nil, jsonOutput)
 	if err != nil || !resp.OK {
@@ -1423,6 +1638,133 @@ func listVMs(cmd *cobra.Command, args []string) {
 		status := getMapString(v, "status", "Status")
 		fmt.Printf("  %s  type=%s  status=%s\n", id, typ, status)
 	}
+}
+
+// runVMLogs implements `aegis vm logs <id>` (Phase 0 observability).
+// It retrieves recent guest serial console output for a running microVM.
+func runVMLogs(cmd *cobra.Command, args []string) {
+	vmID := args[0]
+	tail, _ := cmd.Flags().GetInt("tail")
+
+	resp, err := sendSocketRequest("vm.logs", map[string]string{
+		"id":   vmID,
+		"tail": strconv.Itoa(tail),
+	}, jsonOutput)
+
+	if err != nil || !resp.OK {
+		fmt.Printf("Failed to fetch logs for VM %s: %v\n", vmID, err)
+		if resp.Error != "" {
+			fmt.Printf("  error: %s\n", resp.Error)
+		}
+		return
+	}
+
+	if jsonOutput {
+		b, _ := json.MarshalIndent(resp.Data, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+
+	if data, ok := resp.Data.(map[string]interface{}); ok {
+		if logs, ok := data["logs"].(map[string]interface{}); ok {
+			fmt.Printf("=== Logs for VM %s (tail=%d) ===\n\n", vmID, tail)
+
+			if vmm, ok := logs["vmm"].(string); ok && vmm != "" {
+				fmt.Printf("--- Firecracker VMM Log (fc-%s.log) ---\n", vmID)
+				fmt.Print(vmm)
+				if !strings.HasSuffix(vmm, "\n") {
+					fmt.Println()
+				}
+				fmt.Println()
+			}
+			if console, ok := logs["console"].(string); ok && console != "" {
+				fmt.Printf("--- Guest Console Log (fc-%s-console.log) ---\n", vmID)
+				fmt.Print(console)
+				if !strings.HasSuffix(console, "\n") {
+					fmt.Println()
+				}
+				fmt.Println()
+			}
+			if guest, ok := logs["guest"].(string); ok && guest != "" {
+				fmt.Printf("--- Guest Structured Logs (%s.guest.log) [Phase 1] ---\n", vmID)
+				fmt.Print(guest)
+				if !strings.HasSuffix(guest, "\n") {
+					fmt.Println()
+				}
+				fmt.Println()
+			}
+
+			if len(logs) == 0 {
+				fmt.Printf("No log files found yet for VM %s\n", vmID)
+			}
+			return
+		}
+	}
+	fmt.Printf("No logs available yet for VM %s\n", vmID)
+}
+
+// runVMDiagnose implements `aegis vm diagnose <id>` - a bundled diagnostic snapshot.
+func runVMDiagnose(cmd *cobra.Command, args []string) {
+	vmID := args[0]
+	tail, _ := cmd.Flags().GetInt("tail")
+
+	resp, err := sendSocketRequest("vm.diagnose", map[string]string{
+		"id":   vmID,
+		"tail": strconv.Itoa(tail),
+	}, jsonOutput)
+
+	if err != nil || !resp.OK {
+		fmt.Printf("Failed to diagnose VM %s: %v\n", vmID, err)
+		if resp.Error != "" {
+			fmt.Printf("  error: %s\n", resp.Error)
+		}
+		return
+	}
+
+	if jsonOutput {
+		b, _ := json.MarshalIndent(resp.Data, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+
+	if data, ok := resp.Data.(map[string]interface{}); ok {
+		fmt.Printf("=== Diagnostic Bundle for VM %s ===\n", vmID)
+		fmt.Printf("Timestamp: %s\n\n", data["timestamp"])
+
+		if vm, ok := data["vm"].(map[string]interface{}); ok {
+			fmt.Println("--- VM Info ---")
+			for k, v := range vm {
+				fmt.Printf("  %s: %v\n", k, v)
+			}
+			fmt.Println()
+		}
+
+		if logs, ok := data["logs"].(map[string]interface{}); ok {
+			fmt.Println("--- Log Sources ---")
+			for source, contentIface := range logs {
+				if content, ok := contentIface.(string); ok && content != "" {
+					fmt.Printf("\n--- %s ---\n", source)
+					lines := strings.Split(content, "\n")
+					maxLines := 80
+					if len(lines) > maxLines {
+						fmt.Printf("(showing last %d of %d lines)\n", maxLines, len(lines))
+						lines = lines[len(lines)-maxLines:]
+					}
+					fmt.Print(strings.Join(lines, "\n"))
+					if !strings.HasSuffix(content, "\n") {
+						fmt.Println()
+					}
+				}
+			}
+		}
+
+		if note, ok := data["note"].(string); ok {
+			fmt.Printf("\nNote: %s\n", note)
+		}
+		return
+	}
+
+	fmt.Printf("No diagnostic data available for VM %s\n", vmID)
 }
 
 func main() {
@@ -1629,6 +1971,26 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	}
 	listCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	vmCmd.AddCommand(listCmd)
+
+	logsCmd := &cobra.Command{
+		Use:   "logs <id>",
+		Short: "Show recent logs for a running VM (console + VMM + guest structured logs)",
+		Args:  cobra.ExactArgs(1),
+		Run:   runVMLogs,
+	}
+	logsCmd.Flags().Int("tail", 200, "Number of lines to show from the end")
+	logsCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	vmCmd.AddCommand(logsCmd)
+
+	diagnoseCmd := &cobra.Command{
+		Use:   "diagnose <id>",
+		Short: "Collect diagnostic information for a VM (logs, status, readiness hints) - Phase 0/1 observability",
+		Args:  cobra.ExactArgs(1),
+		Run:   runVMDiagnose,
+	}
+	diagnoseCmd.Flags().Int("tail", 300, "Number of lines from each log source")
+	diagnoseCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	vmCmd.AddCommand(diagnoseCmd)
 
 	// Wire full tree (per cli.md + gaps)
 	rootCmd.AddCommand(
@@ -3213,6 +3575,8 @@ func killManagedChildren() {
 // All children get Pdeathsig + Setpgid for containment. They are registered with the
 // orchestrator for unified vm list / watchdog visibility.
 func startBaseInfrastructure() error {
+	dlog("ENTER startBaseInfrastructure (hub first, then real Firecracker VMs for boundary/store/web-portal)")
+
 	// 1. Determine a stable hub socket (used by all subsequent components and the daemon itself).
 	hubSocket := expandPath("~/.aegis/hub.sock")
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
@@ -3233,6 +3597,13 @@ func startBaseInfrastructure() error {
 	if orchestrator != nil {
 		orchestrator.RegisterAuxComponent("hub", "aegishub", hubCmd, func() error { return startManagedHub(hubSocket) })
 	}
+
+	logrus.Info("host AegisHub is up; now launching real Firecracker microVMs for base infrastructure (network-boundary, store, web-portal). If the process appears to hang here, check that ensureRealRootfsImage can find your images and that loop mounts / mkfs succeed as root.")
+	dlog("hub registration complete, moving to first real VM (network-boundary)")
+
+	// Phase 1 observability: start structured guest logging collector over vsock.
+	// Guests (starting with web-portal) can now emit early startup and vsock status logs.
+	startGuestLogCollector(cfg.StateDir)
 
 	// 3. Network Boundary (only component allowed secrets + outbound).
 	// MUST run as real Firecracker microVM per paranoid security model.
@@ -3295,19 +3666,35 @@ func ensureRealRootfsImage(component string) (string, error) {
 	// Always prefer the configured RootfsDir (comes from AEGIS_ROOTFS_DIR in the
 	// sudo wrapper, or the user's ~/.aegis path). This is critical when the daemon
 	// runs as root (via sudo) but the images live in a regular user's home.
+	//
+	// We deliberately re-use the same getEffectiveHomeDir logic that config.New()
+	// already used when populating cfg.RootfsDir (via SUDO_USER). If cfg.RootfsDir
+	// is still empty here we fall back the same way, so we don't accidentally look
+	// in /root/.aegis when the developer built the images under their own home.
 	rootfsDir := cfg.RootfsDir
 	if rootfsDir == "" {
-		home, _ := os.UserHomeDir()
-		rootfsDir = filepath.Join(home, ".aegis/firecracker/rootfs")
+		// Same SUDO_USER logic used by config.getEffectiveHomeDir() and expandPath().
+		if su := os.Getenv("SUDO_USER"); su != "" {
+			if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
+				rootfsDir = filepath.Join(u.HomeDir, ".aegis/firecracker/rootfs")
+			}
+		}
+		if rootfsDir == "" {
+			home, _ := os.UserHomeDir()
+			rootfsDir = filepath.Join(home, ".aegis/firecracker/rootfs")
+		}
+		logrus.Warnf("ensureRealRootfsImage: cfg.RootfsDir was empty; using effective home path %s", rootfsDir)
 	}
+
+	logrus.Infof("ensureRealRootfsImage(%s): using rootfsDir=%s (SUDO_USER=%q)", component, rootfsDir, os.Getenv("SUDO_USER"))
 
 	rawPath := filepath.Join(rootfsDir, component+".img")
 	tarPath := rawPath + ".tar.gz"
 
+	dlog("ensureRealRootfsImage(%s): looking for %s or %s (will convert from tarball if needed)", component, rawPath, tarPath)
+
 	if _, err := os.Stat(rawPath); err == nil {
-		if debug {
-			logrus.Debugf("ensureRealRootfsImage: found existing raw image for %s at %s", component, rawPath)
-		}
+		dlog("ensureRealRootfsImage(%s): raw .img already present → short-circuit success", component)
 		return rawPath, nil // already have a raw image
 	}
 
@@ -3398,16 +3785,25 @@ func startManagedHub(hubSocket string) error {
 		}
 	}()
 
-	// Wait for the socket to appear (ready signal).
-	const maxWait = 50 // 5s
+	// Wait for the socket to be ready (ready signal).
+	// Use a dial-based check (like the main daemon wrapper and isControlSocketReady)
+	// instead of pure os.Stat. This is more reliable on Linux, especially with
+	// abstract sockets, timing races after the child creates the socket, or when
+	// running under sudo where filesystem visibility / permissions can be subtle.
+	const maxWait = 80 // 8s (a bit more generous than before)
 	for i := 0; i < maxWait; i++ {
+		// First check existence (cheap)
 		if _, err := os.Stat(hubSocket); err == nil {
-			logrus.Infof("aegishub ready (socket present: %s)", hubSocket)
-			return nil
+			// Then prove it's actually accepting connections (the important part)
+			if conn, dialErr := net.DialTimeout("unix", hubSocket, 200*time.Millisecond); dialErr == nil {
+				conn.Close()
+				logrus.Infof("aegishub ready (socket accepting connections: %s)", hubSocket)
+				return nil
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("timeout waiting for aegishub socket %s", hubSocket)
+	return fmt.Errorf("timeout waiting for aegishub socket %s to become ready", hubSocket)
 }
 
 // startManagedComponent launches one of the thin base components (store, network-boundary, etc.)
@@ -3450,6 +3846,89 @@ func startManagedComponent(name, binaryBase, hubSocket string) error {
 	return nil
 }
 
+// parseFcVsockTarget parses a "fcvsock:<udsPath>:<port>" descriptor into the
+// host-side Firecracker vsock Unix domain socket path and the guest vsock port.
+// The port is taken from the final ":<digits>" segment so that udsPath may
+// contain arbitrary path characters.
+func parseFcVsockTarget(target string) (string, uint32, error) {
+	rest := strings.TrimPrefix(target, "fcvsock:")
+	idx := strings.LastIndex(rest, ":")
+	if idx <= 0 || idx == len(rest)-1 {
+		return "", 0, fmt.Errorf("invalid fcvsock target %q (expected fcvsock:<udsPath>:<port>)", target)
+	}
+	udsPath := rest[:idx]
+	portStr := rest[idx+1:]
+	port, err := strconv.ParseUint(portStr, 10, 32)
+	if err != nil || port == 0 {
+		return "", 0, fmt.Errorf("bad vsock port %q in %s: %w", portStr, target, err)
+	}
+	return udsPath, uint32(port), nil
+}
+
+// dialFirecrackerVsock opens a connection to a guest's vsock port over
+// Firecracker's "hybrid vsock" host-side Unix domain socket.
+//
+// Protocol (per Firecracker vsock docs): connect to the UDS, send
+// "CONNECT <port>\n", then Firecracker replies with "OK <assigned_host_port>\n"
+// before tunneling the byte stream to the guest's vsock listener. We read the
+// ack one byte at a time so we never consume any of the guest's HTTP response.
+//
+// This replaces the previous host-side vsock.Dial(cid, port), which always
+// failed with ENODEV ("no such device") because Firecracker never exposes the
+// guest CID through the host kernel's AF_VSOCK transport.
+func dialFirecrackerVsock(ctx context.Context, udsPath string, port uint32) (net.Conn, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", udsPath)
+	if err != nil {
+		return nil, fmt.Errorf("dial firecracker vsock uds %s: %w", udsPath, err)
+	}
+
+	// Bound the handshake by the caller's context deadline when present,
+	// otherwise apply a conservative default so a wedged VMM cannot hang us.
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	}
+
+	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", port); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("firecracker vsock CONNECT write failed: %w", err)
+	}
+
+	// Read the "OK <port>\n" acknowledgement one byte at a time so we stop
+	// exactly at the newline and leave the HTTP bytes untouched.
+	var line []byte
+	buf := make([]byte, 1)
+	for {
+		n, rerr := conn.Read(buf)
+		if n > 0 {
+			if buf[0] == '\n' {
+				break
+			}
+			line = append(line, buf[0])
+			if len(line) > 64 { // sanity cap; a valid ack is short
+				_ = conn.Close()
+				return nil, fmt.Errorf("firecracker vsock ack too long: %q", string(line))
+			}
+		}
+		if rerr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("firecracker vsock ack read failed (got %q): %w", string(line), rerr)
+		}
+	}
+
+	if ack := strings.TrimRight(string(line), "\r"); !strings.HasPrefix(ack, "OK ") {
+		_ = conn.Close()
+		return nil, fmt.Errorf("firecracker vsock CONNECT rejected by VMM: %q", ack)
+	}
+
+	// Clear the handshake deadline; the HTTP transport manages its own timeouts
+	// (and long-lived SSE/chat streams must not be cut off by a stale deadline).
+	_ = conn.SetDeadline(time.Time{})
+	return conn, nil
+}
+
 // startWebPortalProxy starts a minimal, hardened reverse proxy on the public
 // address (typically 127.0.0.1:8080) that forwards to the internal web-portal.
 // This is the ONLY way users should reach the Web Portal (per web-portal-vm.md threat model).
@@ -3461,21 +3940,19 @@ func startManagedComponent(name, binaryBase, hubSocket string) error {
 func startWebPortalProxy(listenAddr, target string) error {
 	var proxy *httputil.ReverseProxy
 
-	if strings.HasPrefix(target, "vsock:") {
-		// vsock:<cid>:<port> — Firecracker web-portal case.
-		// We create a ReverseProxy whose Transport dials vsock instead of TCP.
-		// The Director points at a dummy host (the actual bytes go over the vsock conn;
-		// the guest http server only cares about Path and headers).
-		parts := strings.SplitN(strings.TrimPrefix(target, "vsock:"), ":", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid vsock target %q (expected vsock:<cid>:<port>)", target)
-		}
-		var cid, port uint32
-		if _, err := fmt.Sscanf(parts[0], "%d", &cid); err != nil {
-			return fmt.Errorf("bad vsock cid in %s: %w", target, err)
-		}
-		if _, err := fmt.Sscanf(parts[1], "%d", &port); err != nil {
-			return fmt.Errorf("bad vsock port in %s: %w", target, err)
+	if strings.HasPrefix(target, "fcvsock:") {
+		// fcvsock:<udsPath>:<port> — Firecracker web-portal case.
+		//
+		// Firecracker does NOT register the guest CID with the host kernel's
+		// AF_VSOCK, so a raw vsock.Dial(cid, port) from the host returns ENODEV
+		// ("no such device") and the proxy returns a permanent 502. Instead the
+		// host reaches the guest through Firecracker's "hybrid vsock" host-side
+		// Unix domain socket (the device `uds_path`): connect to the UDS, write
+		// "CONNECT <guest_port>\n", read the "OK <host_port>\n" ack, then the
+		// stream is tunneled to the guest's vsock listener.
+		udsPath, port, err := parseFcVsockTarget(target)
+		if err != nil {
+			return err
 		}
 
 		proxy = &httputil.ReverseProxy{
@@ -3488,7 +3965,7 @@ func startWebPortalProxy(listenAddr, target string) error {
 			},
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return vsock.Dial(cid, port, nil)
+					return dialFirecrackerVsock(ctx, udsPath, port)
 				},
 				MaxIdleConns:          100,
 				IdleConnTimeout:       90 * time.Second,
@@ -3496,7 +3973,7 @@ func startWebPortalProxy(listenAddr, target string) error {
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-				logrus.Warnf("web-proxy (vsock backend) error for %s: %v", r.URL.Path, err)
+				logrus.Warnf("web-proxy (firecracker vsock backend) error for %s: %v", r.URL.Path, err)
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write([]byte(`{"error":"web portal temporarily unavailable"}`))
 			},
@@ -3566,4 +4043,125 @@ func startWebPortalProxy(listenAddr, target string) error {
 	}()
 
 	return nil
+}
+
+// waitForWebPortalReady blocks until the web-portal backend (the HTTP server
+// running inside its dedicated Firecracker microVM or Docker Sandbox) answers
+// a GET /health successfully over the *exact* transport the reverse proxy will
+// use.
+//
+// This is the core of the fix for the 502-on-startup race introduced by
+// commit 21e266f: orchestrator.StartVM only waits for the Firecracker VMM
+// API socket (see internal/sandbox/firecracker.go:186 waitForSocket), but
+// the real guest boot + /init + web-portal binary + vsock.Listen(18080) +
+// dashboard server startup takes additional seconds. Previously the proxy
+// was started and WEB_PORTAL_READY emitted immediately, so the first curls
+// hit the ErrorHandler and got 502.
+//
+// The probe reuses:
+//   - the identical dialFirecrackerVsock UDS handshake primitive from the
+//     production proxy Transport (Firecracker host -> guest hybrid vsock)
+//   - the existing trivial /health handler (internal/dashboard/server.go:153)
+//     — no new routes, no surface increase in the portal
+//   - the same target string format already computed for startWebPortalProxy
+//
+// All paranoid constraints are preserved: web-portal still has zero direct
+// network exposure; everything still flows exclusively through the daemon's
+// hardened :8080 proxy (or AEGIS_WEB_PORTAL_PROXY_ADDR). No thin host-child
+// fallback is used or re-introduced.
+//
+// Logs are high-signal and match the style of the rest of startBaseInfrastructure
+// and the socket readiness waits so operators can see exactly what is happening
+// during the (expected) 5-15s window on a normal boot.
+func waitForWebPortalReady(target string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	start := time.Now()
+
+	logrus.Infof("waiting for web-portal readiness on %s (timeout %v — typical Firecracker guest boot 5-15s)", target, timeout)
+	dlog("waitForWebPortalReady: starting probe loop for target=%s (deadline in %v)", target, timeout)
+
+	var lastErr error
+	attempt := 0
+	backoff := 150 * time.Millisecond
+
+	for time.Now().Before(deadline) {
+		attempt++
+		elapsed := time.Since(start).Truncate(time.Millisecond)
+
+		var client *http.Client
+		var probeURL string
+
+		if strings.HasPrefix(target, "fcvsock:") {
+			// Parse exactly like startWebPortalProxy does (fcvsock:<udsPath>:<port>)
+			// and probe over the identical Firecracker hybrid-vsock UDS transport
+			// the production proxy uses, so a successful probe guarantees the proxy
+			// path also works.
+			if udsPath, port, err := parseFcVsockTarget(target); err == nil {
+				tr := &http.Transport{
+					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+						return dialFirecrackerVsock(ctx, udsPath, port)
+					},
+				}
+				client = &http.Client{Transport: tr, Timeout: 2 * time.Second}
+				probeURL = "http://web-portal.internal/health"
+			}
+		} else {
+			// TCP path (Docker Sandbox or AEGIS_WEB_PORTAL_INTERNAL_ADDR override).
+			u := target
+			if !strings.HasPrefix(u, "http") {
+				u = "http://" + u
+			}
+			client = &http.Client{Timeout: 2 * time.Second}
+			// Our targets at this point are always host:port (after the normalization
+			// block in startDaemon), so simply append /health.
+			probeURL = u + "/health"
+		}
+
+		if client != nil && probeURL != "" {
+			dlog("waitForWebPortalReady: attempt %d — trying GET %s (via vsock or TCP as appropriate)", attempt, probeURL)
+			resp, err := client.Get(probeURL)
+			if err == nil {
+				// Drain and close to reuse conn resources cleanly (even though
+				// this client is short-lived).
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode == 200 {
+					logrus.Infof("web-portal backend ready (200 from /health over %s after %v, %d attempts)", target, elapsed, attempt)
+					dlog("waitForWebPortalReady: SUCCESS on attempt %d after %v", attempt, elapsed)
+					return nil
+				}
+				lastErr = fmt.Errorf("HTTP %d from %s", resp.StatusCode, probeURL)
+			} else {
+				lastErr = err
+			}
+		} else {
+			lastErr = fmt.Errorf("could not construct probe client for target %q", target)
+		}
+
+		// Occasional high-signal progress log (every attempt is too noisy once
+		// backoff grows; every 1-2s is good).
+		if attempt == 1 || attempt%4 == 0 {
+			logrus.Infof("web-portal readiness probe attempt %d (elapsed %v) to %s: %v", attempt, elapsed, target, lastErr)
+		}
+
+		// Compute next backoff (exponential, capped).
+		if backoff < 2*time.Second {
+			backoff = time.Duration(float64(backoff) * 1.6)
+			if backoff > 2*time.Second {
+				backoff = 2 * time.Second
+			}
+		}
+
+		// Sleep respecting the overall deadline.
+		remaining := time.Until(deadline)
+		if backoff > remaining {
+			backoff = remaining
+		}
+		if backoff > 0 {
+			time.Sleep(backoff)
+		}
+	}
+
+	dlog("waitForWebPortalReady: TIMEOUT after %v (%d attempts). Last error: %v", timeout, attempt, lastErr)
+	return fmt.Errorf("web-portal not reachable after %v (target %s, %d attempts, last error: %w)", timeout, target, attempt, lastErr)
 }

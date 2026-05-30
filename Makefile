@@ -1,4 +1,8 @@
-.PHONY: build build-binaries build-microvms clean test test-integration test-e2e test-tcb test-chaos sbom smoke help doctor setup
+SHELL := /bin/bash
+
+SHELL := /bin/bash
+
+.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-tcb test-chaos sbom smoke help doctor setup
 
 # Default target
 all: build
@@ -101,9 +105,32 @@ smoke:
 	@echo ""
 	@echo "=== Smoke test passed! System is up and the proxy/portal + team UI features are reachable. ==="
 
-# Clean build artifacts
+# Clean build artifacts (binaries + common generated files).
+# This is safe and fast. Use `make clean-microvms` for the heavy rootfs images.
 clean:
-	rm -rf bin/
+	rm -rf bin/ sbom/ test-results/
+	@rm -f aegis.log 2>/dev/null || true
+	@go clean -testcache 2>/dev/null || true
+	@echo "✓ Cleaned build artifacts (bin/, sbom/, test-results/, aegis.log, test cache)."
+	@echo "  Run 'make clean-microvms' if you also want to delete the built microVM images/tarballs."
+
+# Remove built microVM images and tarballs (both user and system locations).
+# This is DESTRUCTIVE and slow to recover from — only use when you suspect
+# stale rootfs images (common cause of "web portal not reachable" during development).
+clean-microvms:
+	@echo "⚠ WARNING: This will permanently delete all built microVM rootfs images and tarballs."
+	@echo "   You will need to run 'make build-microvms' again afterwards (can take 10-30+ minutes)."
+	@read -r -p "Are you sure? [y/N] " REPLY; \
+	if [[ "$$REPLY" =~ ^[Yy]$$ ]]; then \
+		echo "Removing user-local microVM artifacts..."; \
+		rm -rf ~/.aegis/firecracker/rootfs/*.img ~/.aegis/firecracker/rootfs/*.img.tar.gz 2>/dev/null || true; \
+		echo "Removing system microVM artifacts (requires sudo)..."; \
+		sudo rm -rf /opt/aegis/firecracker/rootfs/*.img /opt/aegis/firecracker/rootfs/*.img.tar.gz 2>/dev/null || true; \
+		echo "✓ MicroVM build artifacts removed."; \
+		echo "   Next step: make build-microvms"; \
+	else \
+		echo "Aborted clean-microvms."; \
+	fi
 
 # Run unit tests
 test:
@@ -227,7 +254,8 @@ help:
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
 	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"
 	@echo "  make sbom               SBOM + supply-chain (7.8: CycloneDX or fallback + cosign hooks)"
-	@echo "  make clean              Remove build artifacts"
+	@echo "  make clean              Remove build artifacts (binaries, sbom, test results, etc.)"
+	@echo "  make clean-microvms     ⚠ DANGER: Delete all built microVM images & tarballs (requires confirmation)"
 	@echo "  make help               Show this help message"
 	@echo ""
 	@echo "Setup:"

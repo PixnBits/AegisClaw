@@ -30,10 +30,26 @@ type FirecrackerBackend struct {
 }
 
 type firecrackerVM struct {
-	config    VMConfig
-	cmd       *exec.Cmd
-	startTime time.Time
-	sockPath  string
+	config         VMConfig
+	cmd            *exec.Cmd
+	startTime      time.Time
+	sockPath       string
+	consoleLogPath string   // Phase 0: path to captured guest serial console
+	consoleFile    *os.File // open handle that Firecracker writes guest console to (closed on Stop)
+}
+
+// FirecrackerVsockUDSPath returns the host-side Unix domain socket path that
+// Firecracker creates for a VM's vsock device (the `uds_path` in the machine
+// config). This is the single source of truth for the naming convention so the
+// Host Daemon's reverse proxy and the backend's cleanup logic never drift.
+//
+// IMPORTANT: Firecracker does NOT expose the guest over the host kernel's
+// AF_VSOCK. Host -> guest connections must go through this UDS using the
+// Firecracker "hybrid vsock" handshake (connect to the UDS, then write
+// "CONNECT <guest_port>\n"). A raw vsock.Dial(cid, port) from the host fails
+// with ENODEV ("no such device"). See cmd/aegis/main.go dialFirecrackerVsock.
+func FirecrackerVsockUDSPath(stateDir, vmID string) string {
+	return filepath.Join(stateDir, "fc-"+vmID+"-vsock.sock")
 }
 
 // NewFirecrackerBackend creates a new Firecracker backend.
@@ -57,7 +73,7 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	configPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".json")
 	logPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".log")
 	consoleLogPath := filepath.Join(fb.stateDir, "fc-"+config.ID+"-console.log")
-	vsockUdsPath := filepath.Join(fb.stateDir, "fc-"+config.ID+"-vsock.sock")
+	vsockUdsPath := FirecrackerVsockUDSPath(fb.stateDir, config.ID)
 	keyPath := filepath.Join(fb.stateDir, config.ID+".vmkey") // ephemeral private key from orchestrator
 
 	// Clean up any stale artifacts from previous crashed/killed attempts.
@@ -92,13 +108,11 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 			"smt":          false,
 		},
 		"iommu": false,
-		// Capture guest kernel + init console output to a file next to the other fc-* artifacts.
-		// This is invaluable when the VM reaches "process started" but then fails to become
-		// ready (the exact symptom seen with connection refused on the API socket).
-		"console": map[string]interface{}{
-			"console_type": "File",
-			"file_path":    consoleLogPath,
-		},
+		// NOTE: Firecracker has no "console" object in its machine config schema.
+		// The guest serial console (ttyS0, see buildBootArgs "console=ttyS0") is
+		// emitted on the Firecracker *process* stdout/stderr, which we redirect to
+		// consoleLogPath below. A "console" config key here is silently ignored at
+		// best and rejected at worst, so we deliberately do not set one.
 	}
 
 	// Add vsock device if allocated.
@@ -164,15 +178,31 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 		Pdeathsig: syscall.SIGTERM,
 	}
 
-	// Capture Firecracker's own logs (very important for diagnosing boot failures)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Capture the guest serial console (ttyS0) + Firecracker's own process output.
+	// Firecracker streams the guest console to its stdout/stderr for the entire VM
+	// lifetime, so we redirect both to a real file (consoleLogPath). This is the
+	// only reliable window into guest boot + application startup (e.g. the
+	// web-portal binary's vsock listener messages) and is invaluable when a VM
+	// boots but never becomes ready. The file is closed when the VM is stopped.
+	consoleFile, consoleErr := os.OpenFile(consoleLogPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if consoleErr != nil {
+		logrus.Warnf("could not open console log %s for VM %s (continuing without persisted guest console): %v", consoleLogPath, config.ID, consoleErr)
+		// Fall back to an in-memory buffer purely so the cmd.Start error path below
+		// still has something to report; this should be rare.
+		var buf bytes.Buffer
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+	} else {
+		cmd.Stdout = consoleFile
+		cmd.Stderr = consoleFile
+	}
 
 	if err := cmd.Start(); err != nil {
-		logrus.Errorf("Firecracker stdout:\n%s", stdout.String())
-		logrus.Errorf("Firecracker stderr:\n%s", stderr.String())
+		dumpConsoleLog(consoleLogPath, config.ID)
 		dumpFirecrackerLog(logPath, config.ID)
+		if consoleFile != nil {
+			_ = consoleFile.Close()
+		}
 		cleanupVMArtifacts(sockPath, configPath, logPath, consoleLogPath, vsockUdsPath, config.PrivateKeyPath)
 		return fmt.Errorf("failed to start Firecracker: %w", err)
 	}
@@ -185,10 +215,11 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	// action afterwards (it produces HTTP 400 "not supported after starting the microVM").
 	if err := waitForSocket(sockPath, 10*time.Second); err != nil {
 		cmd.Process.Kill()
-		logrus.Errorf("Firecracker stdout for %s:\n%s", config.ID, stdout.String())
-		logrus.Errorf("Firecracker stderr for %s:\n%s", config.ID, stderr.String())
 		dumpFirecrackerLog(logPath, config.ID)
 		dumpConsoleLog(consoleLogPath, config.ID)
+		if consoleFile != nil {
+			_ = consoleFile.Close()
+		}
 		cleanupVMArtifacts(sockPath, configPath, logPath, consoleLogPath, vsockUdsPath, config.PrivateKeyPath)
 		return fmt.Errorf("failed to wait for Firecracker socket: %w", err)
 	}
@@ -200,10 +231,12 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	// Sending InstanceStart afterwards is rejected with HTTP 400.
 
 	fb.vms[config.ID] = &firecrackerVM{
-		config:    config,
-		cmd:       cmd,
-		startTime: time.Now(),
-		sockPath:  sockPath,
+		config:         config,
+		cmd:            cmd,
+		startTime:      time.Now(),
+		sockPath:       sockPath,
+		consoleLogPath: consoleLogPath, // Phase 0 observability
+		consoleFile:    consoleFile,    // kept open for the VM lifetime; closed on Stop
 	}
 
 	logrus.Infof("VM %s started successfully", config.ID)
@@ -232,13 +265,18 @@ func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
 		vm.cmd.Process.Kill()
 	}
 
+	// Close the guest console capture file (Firecracker has now exited / been killed).
+	if vm.consoleFile != nil {
+		_ = vm.consoleFile.Close()
+	}
+
 	// Clean up all per-VM artifacts (including the vsock UDS that Firecracker creates)
 	stateDir := filepath.Dir(vm.sockPath)
 	_ = os.Remove(vm.sockPath)
 	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".json"))
 	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".log"))
 	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+"-console.log"))
-	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+"-vsock.sock"))
+	_ = os.Remove(FirecrackerVsockUDSPath(stateDir, vmID))
 
 	// 7.5.4: Best-effort cleanup of the ephemeral VM private key file
 	// (defense in depth — the guest should have already shredded it).
@@ -282,11 +320,12 @@ func (fb *FirecrackerBackend) List(ctx context.Context) ([]VMInfo, error) {
 	for vmID, vm := range fb.vms {
 		uptime := int64(now.Sub(vm.startTime).Seconds())
 		vms = append(vms, VMInfo{
-			ID:        vmID,
-			Status:    StatusRunning,
-			Uptime:    uptime,
-			Memory:    vm.config.Memory,
-			CreatedAt: vm.startTime.Unix(),
+			ID:             vmID,
+			Status:         StatusRunning,
+			Uptime:         uptime,
+			Memory:         vm.config.Memory,
+			CreatedAt:      vm.startTime.Unix(),
+			ConsoleLogPath: vm.consoleLogPath, // Phase 0: make console logs discoverable
 		})
 	}
 
@@ -334,6 +373,15 @@ func waitForSocket(sockPath string, timeout time.Duration) error {
 // when the VM is configured to route all outbound through the Network Boundary.
 func buildBootArgs(config VMConfig) string {
 	base := "console=ttyS0 reboot=k panic=1 pci=off nomodules"
+
+	// Tell the kernel which init to run. Our component rootfs images are produced
+	// via `docker export`, which keeps the filesystem but DROPS the image
+	// ENTRYPOINT, so the kernel would otherwise fall back to the base image's
+	// /sbin/init (Alpine -> openrc, which isn't installed) and never launch the
+	// component binary. Images that ship a custom /init wrapper set InitProcess.
+	if config.InitProcess != "" {
+		base += " init=" + config.InitProcess
+	}
 
 	if config.NetworkConfig != nil && config.NetworkConfig.EgressViaBoundary {
 		// Pass boundary details to the guest via cmdline.
