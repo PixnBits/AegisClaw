@@ -133,6 +133,27 @@ func ResolveRootfsDir() string {
 	return "/opt/aegis/firecracker/rootfs"
 }
 
+// ResolveAegisDataDir returns the effective user's ~/.aegis directory (host-side
+// state: chat sessions, CLI registries, hub socket, etc.). Used by the daemon
+// reverse proxy for server-backed web-portal chat history.
+func ResolveAegisDataDir() string {
+	if dir := os.Getenv("AEGIS_DATA_DIR"); dir != "" {
+		return dir
+	}
+	for _, home := range candidateHomes() {
+		candidate := filepath.Join(home, ".aegis")
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+			return candidate
+		}
+		// Prefer creating under the invoking user's home even if .aegis does not exist yet.
+		if home != "" && os.Getenv("SUDO_USER") != "" {
+			return candidate
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".aegis")
+}
+
 // candidateHomes returns home directories to search for user-built artifacts.
 // SUDO_USER is listed first so we prefer the invoking developer's tree when
 // the daemon runs as root via sudo (even if HOME=/root in the child process).

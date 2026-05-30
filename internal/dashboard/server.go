@@ -2191,7 +2191,6 @@ const chatTmpl = `
 </div>
 <script>
 (function(){
-  var SESSION_KEY='aegisclaw.chat.sessions.v1';
   var MAX=120;
   var sessions=[];
   var activeSessionId='';
@@ -2679,22 +2678,59 @@ const chatTmpl = `
   }
 
   function loadSessions(){
-    try{
-      var raw=localStorage.getItem(SESSION_KEY);
-      sessions=raw?JSON.parse(raw):[];
-      if(!Array.isArray(sessions))sessions=[];
-    }catch(_){
-      sessions=[];
-    }
-    if(sessions.length===0){
-      createSession('New session');
-      return;
-    }
-    activeSessionId=sessions[0].id;
+    return fetch('/api/chat/sessions')
+      .then(function(res){
+        if(!res.ok){throw new Error('HTTP '+res.status);}
+        return res.json();
+      })
+      .then(function(data){
+        sessions=Array.isArray(data.sessions)?data.sessions:[];
+        if(sessions.length===0){
+          return createSession('New session');
+        }
+        activeSessionId=sessions[0].id;
+        return loadSessionHistory(activeSessionId);
+      })
+      .catch(function(){
+        sessions=[];
+        return createSession('New session');
+      });
+  }
+
+  function loadSessionHistory(sessionId){
+    return fetch('/api/chat/history?session_id='+encodeURIComponent(sessionId))
+      .then(function(res){
+        if(!res.ok){throw new Error('HTTP '+res.status);}
+        return res.json();
+      })
+      .then(function(data){
+        if(!data.session)return;
+        for(var i=0;i<sessions.length;i++){
+          if(sessions[i].id===sessionId){
+            sessions[i].title=data.session.title;
+            sessions[i].created_at=data.session.created_at;
+            sessions[i].updated_at=data.session.updated_at;
+            sessions[i].messages=Array.isArray(data.session.messages)?data.session.messages:[];
+            break;
+          }
+        }
+        renderActiveSession();
+      })
+      .catch(function(){});
   }
 
   function saveSessions(){
-    localStorage.setItem(SESSION_KEY,JSON.stringify(sessions));
+    var s=getActiveSession();
+    if(!s||!s.id)return Promise.resolve();
+    return fetch('/api/chat/sessions/'+encodeURIComponent(s.id),{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        id:s.id,
+        title:s.title,
+        messages:s.messages||[]
+      })
+    }).catch(function(){});
   }
 
   function getActiveSession(){
@@ -2705,18 +2741,36 @@ const chatTmpl = `
   }
 
   function createSession(title){
-    var s={
-      id:uid(),
-      title:title||'New session',
-      created_at:Date.now(),
-      updated_at:Date.now(),
-      messages:[]
-    };
-    sessions.unshift(s);
-    activeSessionId=s.id;
-    saveSessions();
-    renderSessionList();
-    renderActiveSession();
+    return fetch('/api/chat/sessions',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({title:title||'New session'})
+    })
+      .then(function(res){
+        if(!res.ok){throw new Error('HTTP '+res.status);}
+        return res.json();
+      })
+      .then(function(data){
+        var s=data.session||{};
+        if(!s.messages)s.messages=[];
+        sessions.unshift(s);
+        activeSessionId=s.id;
+        renderSessionList();
+        renderActiveSession();
+      })
+      .catch(function(){
+        var s={
+          id:uid(),
+          title:title||'New session',
+          created_at:Date.now(),
+          updated_at:Date.now(),
+          messages:[]
+        };
+        sessions.unshift(s);
+        activeSessionId=s.id;
+        renderSessionList();
+        renderActiveSession();
+      });
   }
 
   function renderSessionList(){
@@ -2737,7 +2791,7 @@ const chatTmpl = `
         item.addEventListener('click',function(){
           activeSessionId=s.id;
           renderSessionList();
-          renderActiveSession();
+          loadSessionHistory(s.id);
         });
         root.appendChild(item);
       })(sessions[i]);
@@ -3054,10 +3108,10 @@ const chatTmpl = `
   async function sendMessage(input){
     var s=getActiveSession();
     if(!s){
-      createSession('New session');
+      await createSession('New session');
       s=getActiveSession();
     }
-
+    if(!s)return;
     var snapshot=[];
     for(var i=0;i<s.messages.length;i++){
       if(s.messages[i].role==='user' || s.messages[i].role==='assistant'){
@@ -3242,11 +3296,10 @@ const chatTmpl = `
     }
   };
 
-  loadSessions();
-  renderSessionList();
-  renderActiveSession();
-
-  document.getElementById('chat-input').focus();
+  loadSessions().then(function(){
+    renderSessionList();
+    document.getElementById('chat-input').focus();
+  });
 })();
 </script>`
 

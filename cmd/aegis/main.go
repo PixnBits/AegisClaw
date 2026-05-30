@@ -508,6 +508,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// Re-resolve artifact paths at runtime (config.New() in init() may have run
 	// before SUDO_USER was visible, or with HOME=/root in the background child).
 	refreshRuntimePaths()
+	initChatSessionsStore()
 	logrus.Infof("using rootfs dir %s (kernel %s)", cfg.RootfsDir, cfg.KernelPath)
 
 	// Build / debug ID for this daemon run (helps confirm we are not running stale binary)
@@ -4046,6 +4047,12 @@ func startWebPortalProxy(listenAddr, target string) error {
 
 		// 3. Audit-relevant logging (high signal, no sensitive bodies)
 		logrus.Infof("web-proxy: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+
+		// Host-persisted chat sessions (cross-browser/device; not localStorage).
+		if strings.HasPrefix(r.URL.Path, "/api/chat/") {
+			handleChatSessionsAPI(w, r)
+			return
+		}
 
 		proxy.ServeHTTP(w, r)
 	})
