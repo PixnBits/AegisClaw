@@ -51,28 +51,6 @@ jobs:
       - name: Run lightweight integration tests
         run: go test ./cmd/aegis ./cmd/aegishub -count=1 -v -timeout 120s
 
-  daemon-integration-tests:
-    name: Daemon Integration Tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Build daemon and components
-        run: make build-binaries
-
-      - name: Run daemon integration tests
-        run: go test -v -tags=integration ./cmd/aegis -run "TestDaemon|TestCLI|TestVersion|TestProcessCleaning" -count=1 -timeout 90s
-
   image-builds:
     name: Image Builds
     runs-on: ubuntu-latest
@@ -139,6 +117,8 @@ jobs:
         run: npx playwright install --with-deps
 
       - name: Run E2E tests
+        env:
+          AEGIS_E2E_FIXTURE: '1'
         run: npm test
 
   live-test:

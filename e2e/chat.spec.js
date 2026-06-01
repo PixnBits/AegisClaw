@@ -111,6 +111,8 @@ async function readCapturedSseFrames(page) {
  */
 test.describe('Chat (real system)', () => {
   test.describe.configure({ mode: 'serial', timeout: 300_000 });
+  // Real-system tests require a live daemon + agent VMs (make start). Skip in fixture/CI mode.
+  test.skip(!process.env.AEGIS_E2E_LIVE, 'Set AEGIS_E2E_LIVE=1 with a running daemon (make start) to enable real-system chat tests');
 
   test('loads the chat page', async ({ page }) => {
     const sessionsLoaded = page.waitForResponse(

@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"testing"
+	"time"
 
 	"AegisClaw/internal/agent"
 	agentSkills "AegisClaw/internal/agent/skills"
@@ -66,6 +67,14 @@ func (f *fakeHub) AssignedID() string                 { return f.assignedID }
 func (f *fakeHub) IsVsock() bool                      { return false }
 func (f *fakeHub) Receive(ctx context.Context) (hubclient.Message, error) {
 	return hubclient.Message{}, nil // not used in RunTurn
+}
+
+func (f *fakeHub) Reply(ctx context.Context, msg hubclient.Message) error {
+	return nil // not used in RunTurn
+}
+
+func (f *fakeHub) TryReceive(ctx context.Context, timeout time.Duration) (hubclient.Message, bool, error) {
+	return hubclient.Message{}, false, nil // not used in RunTurn
 }
 
 func (f *fakeHub) ZeroPrivateKey() {} // not part of the public interface but harmless if present in some builds
@@ -161,6 +170,10 @@ func (f *failingMemoryHub) Close() error { return nil }
 func (f *failingMemoryHub) IsVsock() bool { return false }
 func (f *failingMemoryHub) Receive(ctx context.Context) (hubclient.Message, error) {
 	return hubclient.Message{}, nil
+}
+func (f *failingMemoryHub) Reply(ctx context.Context, msg hubclient.Message) error { return nil }
+func (f *failingMemoryHub) TryReceive(ctx context.Context, timeout time.Duration) (hubclient.Message, bool, error) {
+	return hubclient.Message{}, false, nil
 }
 
 type testErr struct{ msg string }
