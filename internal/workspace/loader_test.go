@@ -77,8 +77,15 @@ func TestLoad_Security_SizeLimit(t *testing.T) {
 
 func TestLoad_Security_UnsafePermissions(t *testing.T) {
 	tmp := t.TempDir()
+	path := filepath.Join(tmp, "SOUL.md")
 
-	err := os.WriteFile(filepath.Join(tmp, "SOUL.md"), []byte("secret"), 0777) // world-writable
+	err := os.WriteFile(path, []byte("secret"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use chmod to force an unsafe mode independent of process umask.
+	err = os.Chmod(path, 0777) // world-writable
 	if err != nil {
 		t.Fatal(err)
 	}
