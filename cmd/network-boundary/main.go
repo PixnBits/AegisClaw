@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"AegisClaw/internal/boundarycrypto"
+	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/transport/hubclient"
 
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
@@ -434,6 +436,12 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	socket := expandPath(hubSocket)
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
+		if bootargs.UseHubVsock() {
+			fmt.Printf("network-boundary: waiting for host hub bridge on vsock :%d (Firecracker inverted path)\n", hubclient.GuestHubBridgePort)
+			conn, err = hubclient.AcceptVsockHubBridgeConn(hubclient.GuestHubBridgePort)
+		}
+	}
+	if err != nil {
 		log.Fatal("Failed to connect to AegisHub:", err)
 	}
 	defer conn.Close()
@@ -488,7 +496,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	// PILOT: First execution of the 7.1 design sketch reuse (see pilotDesignSketchReuse below).
 	// This is the initial validation that the signed-message + boundarycrypto patterns
 	// can be reused on non-secrets flows. Called once at startup for the first pilot slice.
-	pilotDesignSketchReuse()
+	pilotDesignSketchReuse(priv)
 
 	// Load allowed domains — hardened for Task 7.1 (paranoid zero-trust)
 	ollamaHost := ollamaBackendHost()
@@ -802,7 +810,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		case "version", "get-version":
 			// PILOT: Also exercise the design-sketch reuse from the version path (safe, low-frequency).
 			// In practice the pilot function is cheap and only logs once per process in spirit.
-			pilotDesignSketchReuse()
+			pilotDesignSketchReuse(priv)
 
 			if msg.Command == "get-version" {
 				// For get-version from hub, send proper Message response back
@@ -2111,7 +2119,7 @@ func startVSockEgressListener() {
 // 4. Wire it through the same rate limiter / nonce cache instances used by secrets.
 // 5. Future integration: the EventBus (7.2) can feed signed policy updates here when
 //    autonomy/background grants change (see orchestrator comment on EgressViaBoundary).
-func pilotDesignSketchReuse() {
+func pilotDesignSketchReuse(priv ed25519.PrivateKey) {
 	log.Printf("PILOT: design-sketch reuse validation (7.1 Forward-Looking Design Sketch) [pilot v1]")
 
 	synthetic := map[string]interface{}{
@@ -2159,7 +2167,7 @@ func pilotDesignSketchReuse() {
 		"note":          "stub - real implementation would return actual applied policy metadata",
 	}
 	// Reuse the same signing helper used for secrets.get responses.
-	signMessage(&Message{Payload: policyReconcile}, ed25519.PrivateKey{}) // demo key (real version would use registered key)
+	signMessage(&Message{Payload: policyReconcile, Timestamp: time.Now().Format(time.RFC3339)}, priv)
 	_ = boundarycrypto.VerifyBoundarySignedResponse(policyReconcile, "", nil) // exercise the verifier on the response side too
 	log.Printf("PILOT: exercised policy reconciliation response style (signed + verifiable, metadata only).")
 

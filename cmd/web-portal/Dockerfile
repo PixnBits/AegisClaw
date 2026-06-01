@@ -49,6 +49,12 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 
+# Seed entropy early so crypto/rand does not block guest startup for ~60s (502 on host proxy).
+if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
+  echo 1024 > /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || true
+fi
+dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null || true
+
 # Force all stdout + stderr to the serial console.
 # This is the most reliable way to get application output visible
 # in Firecracker's captured console log for minimal guests.

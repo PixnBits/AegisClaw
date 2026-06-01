@@ -31,6 +31,25 @@ error() {
     exit 1
 }
 
+CREATE_ROOTFS_SCRIPT="$SCRIPT_DIR/create-firecracker-rootfs.sh"
+ENSURE_DIR_SCRIPT="$SCRIPT_DIR/ensure-aegis-dir.sh"
+
+run_sudo_script() {
+	local script="$1"
+	shift
+	if [ ! -x "$script" ]; then
+		warn "Missing executable script: $script"
+		return 1
+	fi
+	if sudo -n "$script" "$@" 2>/dev/null; then
+		return 0
+	fi
+	warn "NOPASSWD sudo failed for $script"
+	warn "Add to /etc/sudoers.d/aegisclaw:"
+	warn "  $(whoami) ALL=(root) NOPASSWD: $script"
+	return 1
+}
+
 # Check if directory is writable, request sudo if needed
 ensure_writable_dir() {
     local dir="$1"
@@ -44,8 +63,7 @@ ensure_writable_dir() {
         if ! mkdir -p "$dir" 2>/dev/null; then
             warn "Cannot write to $dir, requesting sudo..."
             if [ "$EUID" -ne 0 ]; then
-                sudo mkdir -p "$dir"
-                sudo chown "$(id -u):$(id -g)" "$dir"
+                run_sudo_script "$ENSURE_DIR_SCRIPT" "$dir" || return 1
                 log "Created $dir with appropriate permissions"
             else
                 mkdir -p "$dir"
@@ -56,7 +74,7 @@ ensure_writable_dir() {
         if [ ! -w "$dir" ]; then
             warn "Directory $dir is not writable, requesting sudo..."
             if [ "$EUID" -ne 0 ]; then
-                sudo chown "$(id -u):$(id -g)" "$dir"
+                run_sudo_script "$ENSURE_DIR_SCRIPT" "$dir" || return 1
                 log "Fixed permissions on $dir"
             else
                 chown "$(whoami)" "$dir"
@@ -99,50 +117,25 @@ create_raw_rootfs_image() {
         return 1
     }
 
-    local used_sudo=0
-
-    # Try direct loop mount first
-    if ! mount -o loop "$img_file" "$mnt" 2>/dev/null; then
-        if [ "$EUID" -ne 0 ]; then
-            warn "Direct loop mount failed for $img_file, retrying with sudo..."
-            if sudo mount -o loop "$img_file" "$mnt" 2>/dev/null; then
-                used_sudo=1
-            else
-                rmdir "$mnt" 2>/dev/null || true
-                rm -f "$img_file"
-                warn "Failed to mount loop device for $img_file even with sudo (check /dev/loop* permissions)"
-                return 1
-            fi
-        else
-            rmdir "$mnt" 2>/dev/null || true
-            rm -f "$img_file"
-            warn "Failed to mount loop device for $img_file"
-            return 1
-        fi
-    fi
-
-    # Populate using the tarball (correct ownership from Docker export)
-    if [ "$used_sudo" -eq 1 ]; then
-        sudo tar -xzf "$tarball" -C "$mnt" --numeric-owner --same-owner 2>/dev/null || \
-        sudo tar -xzf "$tarball" -C "$mnt" --numeric-owner
-    else
+    # Try direct loop mount (no sudo)
+    if mount -o loop "$img_file" "$mnt" 2>/dev/null; then
         tar -xzf "$tarball" -C "$mnt" --numeric-owner 2>/dev/null || true
-    fi
-
-    # Unmount
-    if [ "$used_sudo" -eq 1 ]; then
-        sudo umount "$mnt" 2>/dev/null || warn "sudo umount had issues for $img_file"
-    else
         umount "$mnt" 2>/dev/null || warn "umount had issues for $img_file"
+        rmdir "$mnt" 2>/dev/null || true
+        log "Created raw image: $img_file"
+        return 0
     fi
+
+    # Privileged path via sudoers-approved script (no password when configured)
     rmdir "$mnt" 2>/dev/null || true
-
-    # Fix ownership of the final image
-    if [ "$used_sudo" -eq 1 ]; then
-        sudo chown "$(id -u):$(id -g)" "$img_file" 2>/dev/null || true
+    rm -f "$img_file"
+    if run_sudo_script "$CREATE_ROOTFS_SCRIPT" "$tarball" "$img_file" "$size"; then
+        log "Created raw image: $img_file"
+        return 0
     fi
 
-    log "Created raw image: $img_file"
+    warn "Raw .img creation skipped for $(basename "$img_file" .img) (loop mount / NOPASSWD script unavailable — tarball is still usable)"
+    return 1
 }
 
 # Determine the rootfs directory to use
@@ -238,8 +231,7 @@ for component in $COMPONENTS; do
         store|network-boundary|web-portal) raw_size="1G" ;;
         *) raw_size="512M" ;;
     esac
-    create_raw_rootfs_image "${rootfs_file}.tar.gz" "$rootfs_file" "$raw_size" || \
-        warn "Raw .img creation skipped for $component (loop device / sudo mount not available in this environment — tarball is still usable)"
+    create_raw_rootfs_image "${rootfs_file}.tar.gz" "$rootfs_file" "$raw_size" || true
     
     # Optional: clean up per-component dir to save space (keep tarball + raw img)
     rm -rf "$component_rootfs_dir"

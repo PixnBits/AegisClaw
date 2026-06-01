@@ -63,7 +63,7 @@ Stat cards grid (Running MicroVMs, Active Workers, Pending Approvals, Active Tim
 Agent cards grid (from workers), tool-call feed per agent, "Agent Interaction Graph" (text), Live Tool-Call Log. Uses initial data + SSE (`tool_start`/`tool_end`, `worker_start`). Real-time collaborative monitoring view. (Implements monitoring + team concepts from journeys #5/#8.)
 
 ### 3. Chat (`/chat`) — Full Interactive Sessions
-Sidebar: sessions list + New button (server-backed via host-persisted `/api/chat/sessions`, `/api/chat/history`, and `/api/chat/sessions/{id}` on the daemon reverse proxy; the previous `aegisclaw.chat.sessions.v1` localStorage silo has been removed so conversations are visible across browsers/devices connected to the same daemon).
+Sidebar: sessions list + New button (server-backed via Store VM through thin `/api/chat/sessions`, `/api/chat/history`, and `/api/chat/sessions/{id}` bridge actions; the previous `aegisclaw.chat.sessions.v1` localStorage silo has been removed so conversations are visible across browsers/devices). Chat turns are sent via `/chat/send` → `chat.message` through the agent chat system; the portal only forwards messages and persists the session thread back to Store.
 Main: message stream (user/assistant/error bubbles), rich input textarea.
 - Full client Markdown (headings 1-3, task lists [x], ul/ol, tables with align, code blocks/fences, inline code, **bold**, *em*, ~~s~~, blockquotes, hr, sanitized links).
 - Streaming: `/chat/send` with Accept SSE or `?stream=1` → progressive `content_delta`/`thought_delta`, tool/thought events, progress via `chat.stream_progress`.

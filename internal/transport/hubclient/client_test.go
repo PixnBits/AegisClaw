@@ -182,6 +182,8 @@ func TestErrorMapping(t *testing.T) {
 		out error
 	}{
 		{"ERR_ACL_VIOLATION", ErrACLViolation},
+		{"ERR_DESTINATION_NOT_FOUND", ErrDestinationNotFound},
+		{"ERR_RPC_TIMEOUT", ErrRPCTimeout},
 		{"ERR_INVALID_SIGNATURE", ErrInvalidSignature},
 		{"ERR_SIGNATURE_REQUIRED", ErrSignatureRequired},
 		{"SOME_RANDOM", ErrUnknown},

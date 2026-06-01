@@ -1,6 +1,6 @@
-// Package chatstore persists web-portal chat sessions on the host (not in the
-// browser). The Host Daemon serves /api/chat/* at the reverse-proxy edge so
-// conversations are visible across browsers/devices connected to the same daemon.
+// Package chatstore persists web-portal chat session records in the Store VM
+// (not in the browser or Host Daemon). The Web Portal forwards session CRUD to
+// Store via AegisHub; chat turns flow through the agent chat system separately.
 package chatstore
 
 import (

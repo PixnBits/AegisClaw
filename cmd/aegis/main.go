@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -48,6 +49,10 @@ import (
 // SPEC: agent-runtime.md §Communication (all calls via Hub), runtime-architecture.md
 // (daemon as thin TCB that starts and talks to sandboxes via Hub).
 func sendToComponentViaHub(target string, cmd string, payload interface{}) (interface{}, error) {
+	return sendToComponentViaHubContext(context.Background(), target, cmd, payload)
+}
+
+func sendToComponentViaHubContext(ctx context.Context, target string, cmd string, payload interface{}) (interface{}, error) {
 	// Minimal implementation: dial the hub socket (same as thin components do)
 	// and perform a signed send. In real use the daemon would have long-lived
 	// hubclient connections per its TCB responsibilities.
@@ -71,7 +76,7 @@ func sendToComponentViaHub(target string, cmd string, payload interface{}) (inte
 	}
 	defer client.Close()
 
-	_, err = client.Register(context.Background(), "aegis-daemon-temp", pub, "phase1")
+	_, err = client.Register(ctx, "aegis-daemon-temp", pub, "phase1")
 	if err != nil {
 		return nil, err
 	}
@@ -84,14 +89,47 @@ func sendToComponentViaHub(target string, cmd string, payload interface{}) (inte
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	}
 
-	resp, err := client.Send(context.Background(), msg)
+	resp, err := client.Send(ctx, msg)
 	if err != nil {
 		return nil, err
 	}
 	if resp.Command == "error" {
 		return nil, fmt.Errorf("hub error: %v", resp.Payload)
 	}
+	if resp.Payload == nil && resp.Command == "" {
+		return nil, fmt.Errorf("hub: empty response from %s for %s", target, cmd)
+	}
 	return resp.Payload, nil
+}
+
+func isHubDestinationNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, hubclient.ErrDestinationNotFound) {
+		return true
+	}
+	return strings.Contains(err.Error(), "ERR_DESTINATION_NOT_FOUND")
+}
+
+// sendToComponentViaHubRetry retries when the target has not registered on AegisHub yet
+// (common for a few seconds after StartPairedAgentAndMemory).
+func sendToComponentViaHubRetry(target, cmd string, payload interface{}, maxWait time.Duration) (interface{}, error) {
+	deadline := time.Now().Add(maxWait)
+	delay := 300 * time.Millisecond
+	for {
+		resp, err := sendToComponentViaHub(target, cmd, payload)
+		if err == nil {
+			return resp, nil
+		}
+		if !isHubDestinationNotFound(err) || time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(delay)
+		if delay < 1500*time.Millisecond {
+			delay += 200 * time.Millisecond
+		}
+	}
 }
 
 // reconcileExpiredGrantsViaStore asks the Store VM (via Hub) for authoritative
@@ -508,7 +546,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// Re-resolve artifact paths at runtime (config.New() in init() may have run
 	// before SUDO_USER was visible, or with HOME=/root in the background child).
 	refreshRuntimePaths()
-	initChatSessionsStore()
 	logrus.Infof("using rootfs dir %s (kernel %s)", cfg.RootfsDir, cfg.KernelPath)
 
 	// Build / debug ID for this daemon run (helps confirm we are not running stale binary)
@@ -549,6 +586,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if err := startBaseInfrastructure(); err != nil {
 		logrus.Fatalf("CRITICAL: base infrastructure startup failed (no thin fallback allowed per security model): %v", err)
 	}
+	go reconcileGuestHubBridges()
 
 	// Phase 3 (Full Court): Launch the real 7-persona Court + Scribe as Firecracker microVMs.
 	// This is the key wiring for "real Court microVMs" (governance-court.md §Architecture).
@@ -2116,6 +2154,7 @@ func runChat(cmd *cobra.Command, args []string) {
 			logrus.Debugf("chat: paired runtime launch attempted for %s (may be expected in early skeleton): %v", sess.ID, err)
 		} else {
 			logrus.Infof("chat: launched paired agent+memory for session %s", sess.ID)
+			startGuestHubBridgesForSession(sess.ID)
 		}
 	}
 
@@ -3648,6 +3687,9 @@ func startBaseInfrastructure() error {
 	logrus.Info("host AegisHub is up; now launching real Firecracker microVMs for base infrastructure (network-boundary, store, web-portal). If the process appears to hang here, check that ensureRealRootfsImage can find your images and that loop mounts / mkfs succeed as root.")
 	dlog("hub registration complete, moving to first real VM (network-boundary)")
 
+	// Web Portal microVM bridge (vsock 1030): forwards chat/sessions/dashboard actions to Hub.
+	startPortalBridge()
+
 	// Phase 1 observability: start structured guest logging collector over vsock.
 	// Guests (starting with web-portal) can now emit early startup and vsock status logs.
 	startGuestLogCollector(cfg.StateDir)
@@ -3662,6 +3704,7 @@ func startBaseInfrastructure() error {
 		return fmt.Errorf("failed to start real Firecracker microVM for network-boundary: %w (thin fallback is forbidden)", err)
 	}
 	logrus.Info("Started real Firecracker microVM for network-boundary")
+	startGuestHubBridge("network-boundary")
 	if orchestrator != nil {
 		orchestrator.RegisterAuxComponent("network-boundary", "network-boundary", nil, nil)
 	}
@@ -3676,6 +3719,7 @@ func startBaseInfrastructure() error {
 		return fmt.Errorf("failed to start real Firecracker microVM for store: %w (thin fallback is forbidden)", err)
 	}
 	logrus.Info("Started real Firecracker microVM for store")
+	startGuestHubBridge("store")
 	if orchestrator != nil {
 		orchestrator.RegisterAuxComponent("store", "store", nil, nil)
 	}
@@ -3708,83 +3752,12 @@ func startBaseInfrastructure() error {
 // (this daemon runs as root during `make start`, so loop mounts are possible).
 // This closes the gap between "images were built" and "real Firecracker microVMs actually start".
 func ensureRealRootfsImage(component string) (string, error) {
-	debug := os.Getenv("AEGIS_DEBUG") != ""
-
-	// Always resolve at call time — cfg.RootfsDir may still point at /opt/aegis
-	// if config.New() ran in init() before SUDO_USER was available.
 	rootfsDir := config.ResolveRootfsDir()
 	if rootfsDir != cfg.RootfsDir {
 		logrus.Infof("ensureRealRootfsImage(%s): refreshed rootfsDir %s -> %s (SUDO_USER=%q)", component, cfg.RootfsDir, rootfsDir, os.Getenv("SUDO_USER"))
 		cfg.RootfsDir = rootfsDir
 	}
-
-	logrus.Infof("ensureRealRootfsImage(%s): using rootfsDir=%s (SUDO_USER=%q)", component, rootfsDir, os.Getenv("SUDO_USER"))
-
-	rawPath := filepath.Join(rootfsDir, component+".img")
-	tarPath := rawPath + ".tar.gz"
-
-	dlog("ensureRealRootfsImage(%s): looking for %s or %s (will convert from tarball if needed)", component, rawPath, tarPath)
-
-	if _, err := os.Stat(rawPath); err == nil {
-		dlog("ensureRealRootfsImage(%s): raw .img already present → short-circuit success", component)
-		return rawPath, nil // already have a raw image
-	}
-
-	if _, err := os.Stat(tarPath); err != nil {
-		return "", fmt.Errorf("neither raw %s nor tarball %s exists (run 'make build-microvms')", rawPath, tarPath)
-	}
-
-	logrus.Infof("ensureRealRootfsImage: converting tarball %s → raw bootable %s (one-time, running as root during make start)", tarPath, rawPath)
-	if debug {
-		logrus.Debugf("ensureRealRootfsImage: rootfsDir=%s component=%s", rootfsDir, component)
-	}
-
-	// Match the sizing the build script uses for the important base components.
-	size := "512M"
-	switch component {
-	case "builder", "store", "network-boundary", "web-portal":
-		size = "1G"
-	}
-
-	if err := os.MkdirAll(filepath.Dir(rawPath), 0755); err != nil {
-		return "", err
-	}
-
-	if _, err := exec.Command("truncate", "-s", size, rawPath).CombinedOutput(); err != nil {
-		if _, err2 := exec.Command("dd", "if=/dev/zero", "of="+rawPath, "bs=1M", "count=1024", "status=none").CombinedOutput(); err2 != nil {
-			return "", fmt.Errorf("failed to create image file: %v", err2)
-		}
-	}
-
-	if out, err := exec.Command("mkfs.ext4", "-F", "-L", "rootfs", rawPath).CombinedOutput(); err != nil {
-		os.Remove(rawPath)
-		return "", fmt.Errorf("mkfs.ext4 failed on %s: %s (is e2fsprogs installed?)", rawPath, strings.TrimSpace(string(out)))
-	}
-
-	mnt, err := os.MkdirTemp("", "aegis-rootfs-mnt-*")
-	if err != nil {
-		os.Remove(rawPath)
-		return "", err
-	}
-	defer os.RemoveAll(mnt)
-
-	if out, err := exec.Command("mount", "-o", "loop", rawPath, mnt).CombinedOutput(); err != nil {
-		os.Remove(rawPath)
-		return "", fmt.Errorf("loop mount failed for %s: %s\n(Hint: the daemon must be started with sufficient privileges, e.g. via 'make start' which uses sudo)", rawPath, strings.TrimSpace(string(out)))
-	}
-
-	if out, err := exec.Command("tar", "-xzf", tarPath, "-C", mnt).CombinedOutput(); err != nil {
-		exec.Command("umount", mnt).Run()
-		os.Remove(rawPath)
-		return "", fmt.Errorf("tar extract into mounted image failed: %s", strings.TrimSpace(string(out)))
-	}
-
-	if out, err := exec.Command("umount", mnt).CombinedOutput(); err != nil {
-		logrus.Warnf("umount warning after extract for %s: %s", rawPath, strings.TrimSpace(string(out)))
-	}
-
-	logrus.Infof("Successfully created raw rootfs image: %s (from %s)", rawPath, tarPath)
-	return rawPath, nil
+	return sandbox.EnsureBootableRootfsImage(rootfsDir, component)
 }
 
 // startManagedHub starts the AegisHub router (must be first).
@@ -4048,9 +4021,23 @@ func startWebPortalProxy(listenAddr, target string) error {
 		// 3. Audit-relevant logging (high signal, no sensitive bodies)
 		logrus.Infof("web-proxy: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
 
-		// Host-persisted chat sessions (cross-browser/device; not localStorage).
+		// Chat session registry: host has Hub unix access to Store VM; the guest
+		// microVM bridge is often unavailable over vsock during boot.
 		if strings.HasPrefix(r.URL.Path, "/api/chat/") {
-			handleChatSessionsAPI(w, r)
+			handleHostChatSessionsAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/host/dashboard-stats" {
+			handleHostDashboardStats(w, r)
+			return
+		}
+		if r.URL.Path == "/events" {
+			handleHostSSE(w, r)
+			return
+		}
+		// Chat turns: guest bridge often stays on noopAPIClient; host has Hub → agent.
+		if r.URL.Path == "/chat/send" && r.Method == http.MethodPost {
+			handleHostChatSend(w, r)
 			return
 		}
 
@@ -4061,7 +4048,7 @@ func startWebPortalProxy(listenAddr, target string) error {
 		Addr:           listenAddr,
 		Handler:        handler,
 		ReadTimeout:    15 * time.Second,
-		WriteTimeout:   90 * time.Second, // generous for SSE + large chat streams (real-time Canvas/chat)
+		WriteTimeout:   300 * time.Second, // SSE chat on cold agent boot can exceed 90s
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1 MiB header limit
 	}

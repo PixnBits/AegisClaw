@@ -49,6 +49,9 @@ type TurnContext struct {
 	// to decide what may be done without further human input.
 	AutonomyScopes []string
 
+	// DrainPolls is called between loop steps to service chat progress polls.
+	DrainPolls func()
+
 	// RevokedScopes: populated from Court decisions (Phase 3).
 	// The Agent Runtime must fail-closed on any action that would use these scopes.
 	// See agent-runtime.md §Event subscription for court feedback + security-model.md (fail-closed).
@@ -60,6 +63,7 @@ type TurnContext struct {
 
 	// Metadata for audit / tracing.
 	SessionID string
+	StreamID  string
 	TurnID    string
 }
 

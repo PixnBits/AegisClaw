@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
 
+// Contract tests for the thin web-portal fixture — not the real daemon stack.
+test.skip(!process.env.AEGIS_E2E_FIXTURE, 'Use make test-e2e-contract for fixture journey tests');
+
 test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + web-portal.md)', () => {
-  // These primarily exercise the thin presentation layer + documented public REST contract (web-portal.md).
-  // Fixture mode (default via playwright.config webServer + e2eFixtureClient): reliable, no daemon/sudo.
-  // Live mode (AEGIS_E2E_LIVE=1 + `make start` per AGENTS.md): exercises real streaming/Court/Builder/autonomy.
-  // All tests are resilient to limited/fixture (expect graceful errors or partial data).
-  // 6.7 hardening: covers all 9 journeys (skeletons + nav for 07/08), opt-in visuals, extra waits/reliability.
+  // These exercise the thin presentation layer + documented public REST contract (web-portal.md).
+  // Real-system E2E (daemon + microVMs) lives in e2e/chat.spec.js — run via make test-e2e.
   test('User Journey 1: Onboarding and initial dashboard + chat entry (per 01-installation-onboarding.md)', async ({ page }) => {
     // J01 success criteria: basic onboarding, system visible, chat entrypoint works.
     // Uses stable data-testid added in G1/G2.
@@ -294,10 +294,8 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   //   04-creating-iterating-new-skill.md, 05-monitoring-agent-activity.md, 06-reviewing-court-decisions.md,
   //   07-granting-adjusting-autonomy.md, 08-multi-agent-team-workflows.md, 09-adding-discord-monitor-skill.md
   //   (Success Criteria + explicit "recoverability after daemon/VM failure" for each).
-  test('7.7 Journey recovery + TCB: doctor + per-journey surfaces post-daemon/VM restart (opt-in AEGIS_E2E_LIVE + chaos)', async ({ page, request }) => {
-    if (!process.env.AEGIS_E2E_LIVE) {
-      test.skip(true, 'Set AEGIS_E2E_LIVE=1 (live daemon via make start) + run after or with chaos helper (TestDaemon*Restart etc) for full 7.7 recovery matrix across 9 journeys');
-    }
+  test('7.7 Journey recovery + TCB: doctor + per-journey surfaces post-daemon/VM restart (real system only)', async ({ page, request }) => {
+    test.skip(true, 'Run against real daemon (make test-e2e) after chaos helper — not in contract fixture mode');
 
     // Assume prior chaos (e.g. TestDaemonRestartMidJourney or manual unclean kill + restart) has occurred.
     // This E2E asserts the *post-recovery* state for the full journey matrix.

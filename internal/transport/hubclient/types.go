@@ -33,7 +33,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/mdlayher/vsock"
@@ -76,6 +79,17 @@ const (
 	// reliable application-level visibility (startup events, vsock listener status,
 	// errors) that is independent of fragile serial console capture.
 	LogVsockPort = 18099
+
+	// PortalBridgeVsockPort is the host listener for the Web Portal microVM when
+	// direct guest→hub vsock is unavailable. The daemon forwards actions to Hub/backends.
+	// See docs/specs/web-portal.md (portalAPIClient dials host bridge vsock 1030).
+	PortalBridgeVsockPort = 1030
+
+	// GuestHubBridgePort is used on Firecracker when guest→host AF_VSOCK is unavailable
+	// (connection reset / ENODEV). The guest listens on this port; the Host Daemon dials
+	// in via the Firecracker hybrid-vsock UDS (CONNECT handshake) and bridges bytes to
+	// the AegisHub unix socket. Same pattern as web-portal :18080 but inverted direction.
+	GuestHubBridgePort = 9101
 )
 
 // Sentinel errors for AegisHub protocol responses (exact strings from aegishub/main.go).
@@ -90,8 +104,10 @@ var (
 	ErrUnauthorized       = errors.New("ERR_UNAUTHORIZED")
 	ErrSignatureRequired  = errors.New("ERR_SIGNATURE_REQUIRED")
 	ErrInvalidSignature   = errors.New("ERR_INVALID_SIGNATURE")
-	ErrACLViolation       = errors.New("ERR_ACL_VIOLATION")
-	ErrUnknown            = errors.New("ERR_UNKNOWN")
+	ErrACLViolation         = errors.New("ERR_ACL_VIOLATION")
+	ErrDestinationNotFound  = errors.New("ERR_DESTINATION_NOT_FOUND")
+	ErrRPCTimeout           = errors.New("ERR_RPC_TIMEOUT")
+	ErrUnknown              = errors.New("ERR_UNKNOWN")
 )
 
 // RegisterResponse is returned after a successful "register" handshake (aegishub.md §Handshake Sequence).
@@ -125,6 +141,11 @@ type Client interface {
 	// Returns the hub's reply (which may itself be an error response — check Command == "error").
 	Send(ctx context.Context, msg Message) (Message, error)
 
+	// Reply sends a one-way signed message without waiting for a hub reply.
+	// Long-lived components (agent, memory) must use this for inbound RPC responses;
+	// using Send for replies deadlocks the shared JSON decoder with Receive.
+	Reply(ctx context.Context, msg Message) error
+
 	// Close releases the underlying transport (unix or vsock).
 	Close() error
 
@@ -145,6 +166,9 @@ type Client interface {
 	// SPEC: agent-runtime.md §Communication + §Key Interfaces (event subscription
 	// for user messages and court feedback); aegishub.md (bidirectional signed JSON-RPC).
 	Receive(ctx context.Context) (Message, error)
+
+	// TryReceive waits up to timeout for an inbound message. ok=false on timeout (not an error).
+	TryReceive(ctx context.Context, timeout time.Duration) (Message, bool, error)
 }
 
 // dialer is an internal seam for testability (real net.Dial vs. vsock.Dial vs. net.Pipe in tests).
@@ -157,6 +181,7 @@ type client struct {
 	conn       net.Conn
 	enc        *json.Encoder
 	dec        *json.Decoder
+	decMu      sync.Mutex
 	priv       ed25519.PrivateKey // captured at Dial; caller MUST zero their original copy immediately after Dial
 	assignedID string
 	isVsock    bool
@@ -196,7 +221,14 @@ func mapHubError(errStr string) error {
 		return ErrInvalidSignature
 	case "ERR_ACL_VIOLATION":
 		return ErrACLViolation
+	case "ERR_DESTINATION_NOT_FOUND":
+		return ErrDestinationNotFound
+	case "ERR_RPC_TIMEOUT":
+		return ErrRPCTimeout
 	default:
+		if strings.HasPrefix(errStr, "ERR_ACL_VIOLATION") {
+			return ErrACLViolation
+		}
 		return ErrUnknown
 	}
 }
@@ -242,6 +274,63 @@ func DialVsock(cid uint32, port uint32, priv ed25519.PrivateKey) (Client, error)
 	return newClientFromDialer(d, priv, true)
 }
 
+// AcceptVsockHubBridge waits for the Host Daemon to connect over Firecracker's inverted
+// hub bridge (guest listens, host dials via fc-*-vsock.sock CONNECT). Use this instead
+// of DialVsock when aegis.hub_vsock=1 inside a Firecracker guest.
+func AcceptVsockHubBridge(port uint32, priv ed25519.PrivateKey) (Client, error) {
+	if port == 0 {
+		port = GuestHubBridgePort
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil, ErrInvalidPublicKey
+	}
+	ln, err := vsock.Listen(port, nil)
+	if err != nil {
+		return nil, fmt.Errorf("hubclient: vsock listen on port %d: %w", port, err)
+	}
+	defer ln.Close()
+
+	conn, err := ln.Accept()
+	if err != nil {
+		return nil, fmt.Errorf("hubclient: vsock accept on port %d: %w", port, err)
+	}
+	return newClientFromConn(conn, priv, true)
+}
+
+// AcceptVsockHubBridgeConn waits for the host hub bridge and returns the raw connection.
+// Use when the component speaks the hub JSON protocol directly (store, network-boundary).
+func AcceptVsockHubBridgeConn(port uint32) (net.Conn, error) {
+	if port == 0 {
+		port = GuestHubBridgePort
+	}
+	ln, err := vsock.Listen(port, nil)
+	if err != nil {
+		return nil, fmt.Errorf("hubclient: vsock listen on port %d: %w", port, err)
+	}
+	defer ln.Close()
+	conn, err := ln.Accept()
+	if err != nil {
+		return nil, fmt.Errorf("hubclient: vsock accept on port %d: %w", port, err)
+	}
+	return conn, nil
+}
+
+// newClientFromConn wraps an established connection (used by AcceptVsockHubBridge).
+func newClientFromConn(conn net.Conn, priv ed25519.PrivateKey, isVsock bool) (Client, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil, ErrInvalidPublicKey
+	}
+	c := &client{
+		conn:    conn,
+		enc:     json.NewEncoder(conn),
+		dec:     json.NewDecoder(conn),
+		priv:    make([]byte, ed25519.PrivateKeySize),
+		isVsock: isVsock,
+	}
+	copy(c.priv, priv)
+	return c, nil
+}
+
 // newClientFromDialer is the common constructor. It performs the low-level dial and wraps the conn.
 func newClientFromDialer(d dialer, priv ed25519.PrivateKey, isVsock bool) (Client, error) {
 	if len(priv) != ed25519.PrivateKeySize {
@@ -252,20 +341,7 @@ func newClientFromDialer(d dialer, priv ed25519.PrivateKey, isVsock bool) (Clien
 	if err != nil {
 		return nil, err
 	}
-
-	c := &client{
-		conn:    conn,
-		enc:     json.NewEncoder(conn),
-		dec:     json.NewDecoder(conn),
-		priv:    make([]byte, ed25519.PrivateKeySize),
-		isVsock: isVsock,
-	}
-	copy(c.priv, priv)
-
-	// Note: we do NOT zero the caller's priv here — the contract requires the caller to do it
-	// right after the Dial call so they have visibility and can choose the right moment
-	// (e.g. after also writing the key to the ephemeral file for the guest).
-	return c, nil
+	return newClientFromConn(conn, priv, isVsock)
 }
 
 // Register implements the mandatory handshake (aegishub.md §Handshake Sequence).
@@ -367,6 +443,18 @@ func (c *client) Send(ctx context.Context, msg Message) (Message, error) {
 	return resp, nil
 }
 
+// Reply implements Client.Reply — fire-and-forget outbound message (no decode).
+func (c *client) Reply(ctx context.Context, msg Message) error {
+	if c.assignedID == "" {
+		return errors.New("hubclient: Register must succeed before any Reply")
+	}
+	if len(c.priv) == 0 {
+		return errors.New("hubclient: client closed or key material cleared")
+	}
+	signMessage(&msg, c.priv)
+	return c.sendRaw(ctx, msg)
+}
+
 // sendRaw writes a Message without additional signing (used internally by Register and by Send after it signs).
 func (c *client) sendRaw(ctx context.Context, msg Message) error {
 	// Best-effort deadline from context
@@ -389,8 +477,8 @@ func (c *client) decodeWithCtx(ctx context.Context, v interface{}) error {
 	resCh := make(chan decodeResult, 1)
 
 	go func() {
-		// Note: json.Decoder does not honor deadlines on the conn in all Go versions for reads
-		// after the first byte; the goroutine + ctx is our robust cancellation mechanism.
+		c.decMu.Lock()
+		defer c.decMu.Unlock()
 		err := c.dec.Decode(v)
 		resCh <- decodeResult{err: err}
 	}()
@@ -414,6 +502,32 @@ func (c *client) Receive(ctx context.Context) (Message, error) {
 		return Message{}, err
 	}
 	return msg, nil
+}
+
+func (c *client) TryReceive(ctx context.Context, timeout time.Duration) (Message, bool, error) {
+	if c.conn == nil {
+		return Message{}, false, errors.New("hubclient: connection closed")
+	}
+	if timeout <= 0 {
+		timeout = 50 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	if err := c.conn.SetReadDeadline(deadline); err != nil {
+		return Message{}, false, err
+	}
+	defer c.conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+
+	var msg Message
+	c.decMu.Lock()
+	err := c.dec.Decode(&msg)
+	c.decMu.Unlock()
+	if err != nil {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return Message{}, false, nil
+		}
+		return Message{}, false, err
+	}
+	return msg, true, nil
 }
 
 // Close implements Client.Close. It also attempts best-effort zeroization of the private key material

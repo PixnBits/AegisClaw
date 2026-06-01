@@ -64,6 +64,14 @@ The Store VM acts as the central, trusted authority for both structured data and
 ### Timer & Grant Management (Phase 2)
 The Store VM is the single source of truth for persistent timers, autonomy grants, and background work expiration.
 
+### Chat Session Registry (Web Portal)
+The Store VM owns durable web-portal chat session records (id, title, timestamps, message thread snapshots). The Web Portal forwards `sessions.*` bridge actions here; live chat turns flow through the agent chat system (`chat.message`), not the Host Daemon.
+
+- `sessions.list` — Session summaries for the chat sidebar
+- `sessions.create` — Create a new session
+- `sessions.history` / `sessions.get` — Load a session including messages
+- `sessions.save` — Persist title and/or messages after a turn
+
 - `autonomy.grant` — Record a new autonomy grant (durable in grants.json)
 - `grant.list` — List all current grants
 - `grant.get` — Retrieve grant for a specific session

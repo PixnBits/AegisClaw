@@ -55,7 +55,20 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 
-# Hand off to the real Network Boundary binary
+if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
+  echo 1024 > /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || true
+fi
+i=0
+while [ "$i" -lt 60 ]; do
+  if dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 0.05
+done
+
+exec >/dev/console 2>&1
+echo "=== network-boundary guest /init: entropy ready, starting boundary ==="
 exec /usr/local/bin/network-boundary
 EOF
 

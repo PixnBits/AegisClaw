@@ -27,10 +27,12 @@ import (
 
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/act"
+	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/agent/execute"
 	"AegisClaw/internal/agent/judge"
 	"AegisClaw/internal/agent/observe"
 	"AegisClaw/internal/agent/plan"
+	"AegisClaw/internal/agent/progress"
 	"AegisClaw/internal/agent/think"
 	"AegisClaw/internal/transport/hubclient"
 )
@@ -50,10 +52,14 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 
 	// === Memory VM context fetch (memory-vm.md §Communication Interface) ===
 	// This happens automatically before every agent turn.
+	memDest := "memory"
+	if paired := bootargs.PairedMemoryID(); paired != "" {
+		memDest = paired
+	}
 	memPayload := map[string]interface{}{"reason": "turn-start"}
 	memMsg := hubclient.Message{
 		Source:      tc.Hub.AssignedID(),
-		Destination: "memory",
+		Destination: memDest,
 		Command:     "memory.get_context",
 		Payload:     memPayload,
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
@@ -71,59 +77,98 @@ func RunTurn(ctx context.Context, tc *agent.TurnContext, llmCall agent.LLMCallFu
 		}
 	}
 
-	// === The 6-step loop (real implementation, no mocks in this path) ===
-	// Each step package receives the same TurnContext and the real llmCall.
-	// Steps may return structured actions (future Execute will actually invoke them via Hub).
+	sessionID := tc.SessionID
+	streamID := tc.StreamID
+	progress.BeginTurn(sessionID, streamID)
+	progress.StepStarted(sessionID, streamID, "memory", "Loaded memory context")
+	if tc.DrainPolls != nil {
+		tc.DrainPolls()
+	}
 
 	var lastResult *agent.StepResult
 
-	// 1. Observe
-	obs, err := observe.Run(ctx, tc, llmCall)
+	lastResult, err = runStep(ctx, tc, llmCall, "observe", observe.Run)
 	if err != nil {
 		return nil, fmt.Errorf("observe step: %w", err)
 	}
-	lastResult = obs
-	// (real step output is returned; no surface prints in hot path)
 
-	// 2. Think
-	th, err := think.Run(ctx, tc, llmCall)
+	lastResult, err = runStep(ctx, tc, llmCall, "think", think.Run)
 	if err != nil {
 		return nil, fmt.Errorf("think step: %w", err)
 	}
-	lastResult = th
 
-	// 3. Plan
-	pl, err := plan.Run(ctx, tc, llmCall)
+	lastResult, err = runStep(ctx, tc, llmCall, "plan", plan.Run)
 	if err != nil {
 		return nil, fmt.Errorf("plan step: %w", err)
 	}
-	lastResult = pl
 
-	// 4. Act
-	ac, err := act.Run(ctx, tc, llmCall)
+	lastResult, err = runStep(ctx, tc, llmCall, "act", act.Run)
 	if err != nil {
 		return nil, fmt.Errorf("act step: %w", err)
 	}
-	lastResult = ac
 
-	// 5. Execute (this is where real tool/skill calls via Hub will happen in later slices)
-	ex, err := execute.Run(ctx, tc, llmCall)
+	lastResult, err = runStep(ctx, tc, llmCall, "execute", execute.Run)
 	if err != nil {
 		return nil, fmt.Errorf("execute step: %w", err)
 	}
-	lastResult = ex
 
-	// 6. Judge (final quality + governance gate)
-	ju, err := judge.Run(ctx, tc, llmCall)
+	lastResult, err = runStep(ctx, tc, llmCall, "judge", judge.Run)
 	if err != nil {
 		return nil, fmt.Errorf("judge step: %w", err)
 	}
-	lastResult = ju
 
-	// The judge step may have side-effects (e.g. proposal creation) — those are
-	// performed inside the judge package using the hub client when appropriate.
+	if lastResult != nil && lastResult.Content != "" {
+		progress.SetStreamContent(streamID, lastResult.Content)
+	}
+	progress.FinishTurn(sessionID, streamID, stepContent(lastResult))
 
 	return lastResult, nil
+}
+
+var stepLabels = map[string][2]string{
+	"observe": {"Observe", "Observing your message and context"},
+	"think":   {"Think", "Reasoning about intent and constraints"},
+	"plan":    {"Plan", "Planning the next actions"},
+	"act":     {"Act", "Choosing concrete actions"},
+	"execute": {"Execute", "Executing tools and skills"},
+	"judge":   {"Judge", "Reviewing quality and safety"},
+}
+
+func runStep(
+	ctx context.Context,
+	tc *agent.TurnContext,
+	llmCall agent.LLMCallFunc,
+	name string,
+	run func(context.Context, *agent.TurnContext, agent.LLMCallFunc) (*agent.StepResult, error),
+) (*agent.StepResult, error) {
+	if tc != nil && tc.DrainPolls != nil {
+		tc.DrainPolls()
+	}
+	labels := stepLabels[name]
+	if labels[0] == "" {
+		labels = [2]string{name, name}
+	}
+	progress.StepStarted(tc.SessionID, tc.StreamID, name, labels[0]+"…")
+	if tc != nil && tc.DrainPolls != nil {
+		tc.DrainPolls()
+	}
+	result, err := run(ctx, tc, llmCall)
+	if err != nil {
+		return nil, err
+	}
+	details := stepContent(result)
+	progress.StepFinished(tc.SessionID, tc.StreamID, name, labels[0]+" complete", details)
+	if tc != nil && tc.DrainPolls != nil {
+		tc.DrainPolls()
+	}
+	return result, nil
+}
+
+func stepContent(result *agent.StepResult) string {
+	if result == nil {
+		return ""
+	}
+	return result.Content
 }
 
 // RunBackgroundWork is a convenience for proactive / autonomy-granted tasks.

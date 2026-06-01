@@ -1,8 +1,11 @@
 SHELL := /bin/bash
 
-SHELL := /bin/bash
+CLEAN_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/clean-firecracker-rootfs.sh
+CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.sh
+ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
+AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-tcb test-chaos sbom smoke help doctor setup
+.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-tcb test-chaos sbom smoke help doctor setup
 
 # Default target
 all: build
@@ -40,13 +43,13 @@ build-microvms:
 		echo "MicroVM building not needed on $(shell uname -s) (uses Docker Sandboxes)"; \
 	fi
 
-# Start the daemon
+# Start the daemon (absolute path for NOPASSWD sudoers rules)
 start:
-	sudo ./bin/aegis start
+	sudo -n $(AEGIS_BIN) start
 
 # Start daemon in foreground for debugging
 start-foreground:
-	sudo ./bin/aegis start --foreground
+	sudo -n $(AEGIS_BIN) start --foreground
 
 # Stop the daemon
 stop:
@@ -117,20 +120,23 @@ clean:
 # Remove built microVM images and tarballs (both user and system locations).
 # This is DESTRUCTIVE and slow to recover from — only use when you suspect
 # stale rootfs images (common cause of "web portal not reachable" during development).
+# Pass YES=1 to skip the confirmation prompt (automated dev loops).
 clean-microvms:
 	@echo "⚠ WARNING: This will permanently delete all built microVM rootfs images and tarballs."
 	@echo "   You will need to run 'make build-microvms' again afterwards (can take 10-30+ minutes)."
-	@read -r -p "Are you sure? [y/N] " REPLY; \
-	if [[ "$$REPLY" =~ ^[Yy]$$ ]]; then \
-		echo "Removing user-local microVM artifacts..."; \
-		rm -rf ~/.aegis/firecracker/rootfs/*.img ~/.aegis/firecracker/rootfs/*.img.tar.gz 2>/dev/null || true; \
-		echo "Removing system microVM artifacts (requires sudo)..."; \
-		sudo rm -rf /opt/aegis/firecracker/rootfs/*.img /opt/aegis/firecracker/rootfs/*.img.tar.gz 2>/dev/null || true; \
-		echo "✓ MicroVM build artifacts removed."; \
-		echo "   Next step: make build-microvms"; \
-	else \
-		echo "Aborted clean-microvms."; \
+	@if [ "$(YES)" != "1" ]; then \
+		read -r -p "Are you sure? [y/N] " REPLY; \
+		if [[ ! "$$REPLY" =~ ^[Yy]$$ ]]; then \
+			echo "Aborted clean-microvms."; \
+			exit 0; \
+		fi; \
 	fi
+	@echo "Removing user-local microVM artifacts..."
+	@rm -rf ~/.aegis/firecracker/rootfs/*.img ~/.aegis/firecracker/rootfs/*.img.tar.gz 2>/dev/null || true
+	@echo "Removing system microVM artifacts (via sudoers-approved cleanup script)..."
+	@sudo -n "$(CLEAN_FIRECRACKER_ROOTFS_SCRIPT)" 2>/dev/null || true
+	@echo "✓ MicroVM build artifacts removed."
+	@echo "   Next step: make build-microvms"
 
 # Run unit tests
 test:
@@ -140,9 +146,13 @@ test:
 test-integration:
 	go test -v -tags=integration ./cmd/aegis -run "TestDaemon|TestCLI|TestVersion|TestProcessCleaning|TestVMList|TestSocket" -count=1 -timeout 90s
 
-# Run E2E tests
+# Run E2E tests in a real browser against the live daemon + microVMs (make start first)
 test-e2e:
-	npm test
+	bash scripts/run-playwright-e2e.sh e2e/chat.spec.js --project=chromium
+
+# Contract-only E2E against the thin web-portal fixture (no daemon). For CI without Firecracker.
+test-e2e-contract:
+	AEGIS_E2E_FIXTURE=1 bash scripts/run-playwright-e2e.sh e2e/journeys.spec.js --project=chromium
 
 # TCB-specific tests (7.5.7). Additive target.
 # Runs unit tests for security + runtime + cmd/aegis TCB surface + skeleton compliance tests.
@@ -240,7 +250,7 @@ help:
 	@echo "Targets:"
 	@echo "  make build              Build binaries and microVMs"
 	@echo "  make build-binaries     Build Go binaries only"
-	@echo "  make build-microvms     Build microVM filesystems (Linux only)"
+	@echo "  make build-microvms     Build microVM filesystems (NOPASSWD: scripts/create-firecracker-rootfs.sh)"
 	@echo "  make setup              Onboarding helper (build + doctor) - Journey 01"
 	@echo "  make start              Start the daemon with sudo"
 	@echo "  make start-foreground   Start daemon in foreground (debugging)"
@@ -250,12 +260,13 @@ help:
 	@echo "  make smoke              Quick smoke test after 'make start' (CLI + portal + teams)"
 	@echo "  make test               Run unit tests"
 	@echo "  make test-integration   Run daemon integration tests"
-	@echo "  make test-e2e           Run E2E tests"
+	@echo "  make test-e2e           Browser E2E vs real daemon + microVMs (requires make start)"
+	@echo "  make test-e2e-contract  Thin-portal contract tests only (no daemon; AEGIS_E2E_FIXTURE=1)"
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
 	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"
 	@echo "  make sbom               SBOM + supply-chain (7.8: CycloneDX or fallback + cosign hooks)"
 	@echo "  make clean              Remove build artifacts (binaries, sbom, test results, etc.)"
-	@echo "  make clean-microvms     ⚠ DANGER: Delete all built microVM images & tarballs (requires confirmation)"
+	@echo "  make clean-microvms     ⚠ DANGER: Delete microVM images (YES=1 skips prompt; /opt via scripts/clean-firecracker-rootfs.sh)"
 	@echo "  make help               Show this help message"
 	@echo ""
 	@echo "Setup:"

@@ -18,6 +18,11 @@ import (
 	"time"
 
 	"AegisClaw/internal/boundarycrypto"
+	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/chatstore"
+	"AegisClaw/internal/transport/hubclient"
+
+	"github.com/mdlayher/vsock"
 	"github.com/spf13/cobra"
 )
 
@@ -77,6 +82,34 @@ func loadFromFile(filename string) map[string]interface{} {
 func saveToFile(filename string, data interface{}) {
 	bytes, _ := json.Marshal(data)
 	ioutil.WriteFile(filename, bytes, 0644)
+}
+
+func decodeChatMessages(raw []interface{}) []chatstore.Message {
+	out := make([]chatstore.Message, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		msg := chatstore.Message{}
+		if role, ok := m["role"].(string); ok {
+			msg.Role = role
+		}
+		if content, ok := m["content"].(string); ok {
+			msg.Content = content
+		}
+		if model, ok := m["model"].(string); ok {
+			msg.Model = model
+		}
+		if tc, ok := m["tool_calls"]; ok {
+			msg.ToolCalls, _ = json.Marshal(tc)
+		}
+		if tt, ok := m["thinking_trace"]; ok {
+			msg.ThinkingTrace, _ = json.Marshal(tt)
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 func loadAuditFromFile(filename string) []interface{} {
@@ -338,6 +371,17 @@ func runStore(cmd *cobra.Command, args []string) {
 	socket := expandPath(hubSocket)
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
+		if bootargs.UseHubVsock() {
+			fmt.Printf("store: waiting for host hub bridge on vsock :%d (Firecracker inverted path)\n", hubclient.GuestHubBridgePort)
+			conn, err = hubclient.AcceptVsockHubBridgeConn(hubclient.GuestHubBridgePort)
+		} else if vconn, verr := vsock.Dial(vsock.Host, hubclient.HubVsockPort, nil); verr == nil {
+			conn = vconn
+			err = nil
+		} else {
+			log.Fatal("Failed to connect to AegisHub (unix and vsock):", err, verr)
+		}
+	}
+	if err != nil {
 		log.Fatal("Failed to connect to AegisHub:", err)
 	}
 	defer conn.Close()
@@ -380,6 +424,7 @@ func runStore(cmd *cobra.Command, args []string) {
 	memories := loadFromFile("memories.json")
 	prs := loadFromFile("prs.json")
 	teams := loadFromFile("teams.json")
+	chatSessions := chatstore.New("chat-sessions.json")
 
 	// Phase 2.1a + 2.3 recovery (store-vm.md + event-system.md):
 	// Explicitly load ALL durable timer/ grant state at startup.
@@ -841,6 +886,77 @@ func runStore(cmd *cobra.Command, args []string) {
 			}
 			response.Command = "team.message.sent"
 			response.Payload = "ok"
+
+		// Web-portal chat session registry (store-vm.md: Store owns durable structured data).
+		// Message turns are handled by the agent chat system; the portal persists the
+		// session thread here after each exchange via sessions.save / sessions.history.
+		case "sessions.list":
+			list, err := chatSessions.ListSummaries()
+			if err != nil {
+				response.Command = "error"
+				response.Payload = err.Error()
+			} else {
+				if list == nil {
+					list = []chatstore.Summary{}
+				}
+				response.Command = "sessions.list"
+				response.Payload = list
+			}
+		case "sessions.create":
+			payload := msg.Payload.(map[string]interface{})
+			title, _ := payload["title"].(string)
+			sess, err := chatSessions.Create(title)
+			if err != nil {
+				response.Command = "error"
+				response.Payload = err.Error()
+			} else {
+				response.Command = "sessions.created"
+				response.Payload = map[string]interface{}{"session": sess}
+			}
+		case "sessions.history", "sessions.get":
+			payload := msg.Payload.(map[string]interface{})
+			id, _ := payload["session_id"].(string)
+			if id == "" {
+				id, _ = payload["id"].(string)
+			}
+			if id == "" {
+				response.Command = "error"
+				response.Payload = "session_id required"
+			} else if sess, ok, err := chatSessions.Get(id); err != nil {
+				response.Command = "error"
+				response.Payload = err.Error()
+			} else if !ok {
+				response.Command = "error"
+				response.Payload = "session not found"
+			} else {
+				response.Command = "sessions.history"
+				response.Payload = map[string]interface{}{"session": sess}
+			}
+		case "sessions.save":
+			payload := msg.Payload.(map[string]interface{})
+			id, _ := payload["id"].(string)
+			if id == "" {
+				response.Command = "error"
+				response.Payload = "id required"
+			} else {
+				sess := chatstore.Session{ID: id}
+				if title, ok := payload["title"].(string); ok {
+					sess.Title = title
+				}
+				if rawMsgs, ok := payload["messages"].([]interface{}); ok {
+					sess.Messages = decodeChatMessages(rawMsgs)
+				}
+				if err := chatSessions.Save(sess); err != nil {
+					response.Command = "error"
+					response.Payload = err.Error()
+				} else if updated, ok, err := chatSessions.Get(id); err != nil || !ok {
+					response.Command = "error"
+					response.Payload = "failed to reload session"
+				} else {
+					response.Command = "sessions.saved"
+					response.Payload = map[string]interface{}{"session": updated}
+				}
+			}
 		case "skill.register":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)

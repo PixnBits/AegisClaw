@@ -27,6 +27,45 @@ var registeredMutex sync.RWMutex
 var tempConnCounter int = 0
 var tempConnMutex sync.Mutex
 
+// pendingRPC correlates synchronous hub RPC replies (daemon ephemeral → agent/store).
+var pendingRPC = struct {
+	sync.Mutex
+	ch map[string]chan Message
+}{ch: make(map[string]chan Message)}
+
+func isEphemeralHubClient(id string) bool {
+	return id == "aegis-daemon-temp" || strings.HasPrefix(id, "daemon-temp-")
+}
+
+func registerPendingRPC(requesterID string) chan Message {
+	ch := make(chan Message, 1)
+	pendingRPC.Lock()
+	pendingRPC.ch[requesterID] = ch
+	pendingRPC.Unlock()
+	return ch
+}
+
+func clearPendingRPC(requesterID string) {
+	pendingRPC.Lock()
+	delete(pendingRPC.ch, requesterID)
+	pendingRPC.Unlock()
+}
+
+func deliverPendingRPC(destID string, msg Message) bool {
+	pendingRPC.Lock()
+	ch, ok := pendingRPC.ch[destID]
+	pendingRPC.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
 type ComponentEncoders struct {
 	Encoder *json.Encoder
 	Decoder *json.Decoder
@@ -317,11 +356,9 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			log.Printf("Hub: Fresh daemon connection registered as %s (original daemon still at %s)", componentID, regMsg.Source)
 		}
 	} else {
-		// Other components cannot re-register
+		// Allow re-registration when a guest hub bridge reconnects or a VM restarts.
 		if _, exists := registered[regMsg.Source]; exists {
-			registeredMutex.Unlock()
-			encoder.Encode(map[string]string{"error": "ERR_DUPLICATE_COMPONENT"})
-			return
+			log.Printf("Hub: component %s re-registering — replacing previous connection", regMsg.Source)
 		}
 	}
 
@@ -332,6 +369,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	}
 	registered[componentID] = &RegisteredComponent{ID: componentID, PublicKey: pubKey, Encoders: encoders, Version: version}
 	registeredMutex.Unlock()
+	debugLog("hub", fmt.Sprintf("Registered component %s (hub id %s) version %s", regMsg.Source, componentID, version))
 
 	conns.Store(componentID, conn)
 
@@ -353,6 +391,11 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	encoders.Mutex.Lock()
 	encoders.Encoder.Encode(response)
 	encoders.Mutex.Unlock()
+
+	if isEphemeralHubClient(componentID) {
+		ephemeralHubRPCLoop(componentID, encoders)
+		return
+	}
 
 	// Now handle normal messages
 	for {
@@ -450,24 +493,103 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				encoder.Encode(response)
 			}
 		} else {
-			// Forward message to destination
-			registeredMutex.RLock()
-			destComponent, exists := registered[msg.Destination]
-			registeredMutex.RUnlock()
-
-			if exists && destComponent.Encoders != nil {
-				debugLog("hub", fmt.Sprintf("Forwarding %s->%s command %s to persistent encoder", msg.Source, msg.Destination, msg.Command))
-				destComponent.Encoders.Mutex.Lock()
-				destComponent.Encoders.Encoder.Encode(msg)
-				destComponent.Encoders.Mutex.Unlock()
-
-			} else {
-				debugLog("hub", fmt.Sprintf("Destination %s not found or no encoders", msg.Destination))
-				errorMsg := map[string]string{"error": "ERR_DESTINATION_NOT_FOUND"}
-				encoder.Encode(errorMsg)
-			}
+			forwardReplyToRequester(msg)
 		}
 	}
+}
+
+// ephemeralHubRPCLoop serves one-shot daemon hub clients (sendToComponentViaHub).
+// It is the only reader on the connection, avoiding races with hubclient.Send.
+func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders) {
+	for {
+		var msg Message
+		encoders.Mutex.Lock()
+		err := encoders.Decoder.Decode(&msg)
+		encoders.Mutex.Unlock()
+		if err != nil {
+			debugLog("hub", fmt.Sprintf("ephemeral RPC %s decode end: %v", requesterID, err))
+			return
+		}
+		if msg.Command != "get-version" && !checkACL(msg.Source, msg.Destination, msg.Command) {
+			reply := Message{Command: "error", Payload: "ERR_ACL_VIOLATION"}
+			encoders.Mutex.Lock()
+			_ = encoders.Encoder.Encode(reply)
+			encoders.Mutex.Unlock()
+			continue
+		}
+		reply := forwardHubRPC(requesterID, msg)
+		encoders.Mutex.Lock()
+		_ = encoders.Encoder.Encode(reply)
+		encoders.Mutex.Unlock()
+	}
+}
+
+func forwardHubRPC(requesterID string, msg Message) Message {
+	registeredMutex.RLock()
+	destComponent, exists := registered[msg.Destination]
+	registeredMutex.RUnlock()
+	if !exists || destComponent.Encoders == nil {
+		debugLog("hub", fmt.Sprintf("RPC %s -> %s: ERR_DESTINATION_NOT_FOUND (registered=%d)", msg.Source, msg.Destination, len(registered)))
+		return Message{Command: "error", Payload: "ERR_DESTINATION_NOT_FOUND"}
+	}
+
+	debugLog("hub", fmt.Sprintf("RPC %s -> %s command %s (awaiting reply)", msg.Source, msg.Destination, msg.Command))
+	waitCh := registerPendingRPC(requesterID)
+	defer clearPendingRPC(requesterID)
+
+	destComponent.Encoders.Mutex.Lock()
+	if err := destComponent.Encoders.Encoder.Encode(msg); err != nil {
+		destComponent.Encoders.Mutex.Unlock()
+		return Message{Command: "error", Payload: err.Error()}
+	}
+	destComponent.Encoders.Mutex.Unlock()
+
+	rpcTimeout := 120 * time.Second
+	switch msg.Command {
+	case "chat.message", "user.turn":
+		rpcTimeout = 300 * time.Second
+	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
+		rpcTimeout = 8 * time.Second
+	}
+
+	select {
+	case reply := <-waitCh:
+		return reply
+	case <-time.After(rpcTimeout):
+		return Message{Command: "error", Payload: "ERR_RPC_TIMEOUT"}
+	}
+}
+
+func forwardReplyToRequester(msg Message) {
+	registeredMutex.RLock()
+	destComponent, exists := registered[msg.Destination]
+	registeredMutex.RUnlock()
+	if !exists || destComponent.Encoders == nil {
+		return
+	}
+	if deliverPendingRPC(msg.Destination, msg) {
+		// Ephemeral daemon RPC consumed the reply; ack the sender so hubclient.Send
+		// decode does not block and steal the next inbound RPC (e.g. chat.message).
+		registeredMutex.RLock()
+		srcComponent, srcOK := registered[msg.Source]
+		registeredMutex.RUnlock()
+		if srcOK && srcComponent.Encoders != nil {
+			ack := Message{
+				Source:      "hub",
+				Destination: msg.Source,
+				Command:     "ack",
+				Payload:     map[string]string{"status": "delivered"},
+				Timestamp:   time.Now().Format(time.RFC3339),
+			}
+			srcComponent.Encoders.Mutex.Lock()
+			_ = srcComponent.Encoders.Encoder.Encode(ack)
+			srcComponent.Encoders.Mutex.Unlock()
+		}
+		return
+	}
+	destComponent.Encoders.Mutex.Lock()
+	_ = destComponent.Encoders.Encoder.Encode(msg)
+	destComponent.Encoders.Mutex.Unlock()
 }
 
 func debugLog(component, msg string) {

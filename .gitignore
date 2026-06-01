@@ -20,7 +20,11 @@ proposals.json
 skills.json
 audit.json
 
+# Node.js and npm
+node_modules
+
 # E2E / browser test artifacts (Playwright)
 test-results/
 playwright-report/
 playwright/.cache/
+

@@ -28,6 +28,25 @@ rules:
     - version
     - get-version
     - "*"
+# Ephemeral hub RPC connections from sendToComponentViaHub (host chat/sessions proxy)
+- source: aegis-daemon-temp
+  destination: "*"
+  commands:
+    - "*"
+- source: daemon-temp-*
+  destination: "*"
+  commands:
+    - "*"
+- source: "agent*"
+  destination: aegis-daemon-temp
+  commands:
+    - response
+    - "*"
+- source: "agent*"
+  destination: daemon-temp-*
+  commands:
+    - response
+    - "*"
 - source: "*"
   destination: daemon
   commands:
@@ -76,6 +95,14 @@ rules:
   destination: agent
   commands:
     - proposal.*
+- source: "agent*"
+  destination: store
+  commands:
+    - proposal.*
+- source: store
+  destination: "agent*"
+  commands:
+    - proposal.*
 
 # Agent <-> Network Boundary (LLM calls via signed, for callLLMWithFallback and tool use)
 - source: agent
@@ -86,9 +113,22 @@ rules:
   destination: agent
   commands:
     - llm.*
+# Per-session agent VMs (agent-<session>) use the same LLM path as the singleton name.
+- source: "agent*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "agent*"
+  commands:
+    - llm.*
 
 # Agent <-> Court Scribe (notify on proposal creation per governance)
 - source: agent
+  destination: court-scribe
+  commands:
+    - scribe.*
+- source: "agent*"
   destination: court-scribe
   commands:
     - scribe.*
@@ -146,6 +186,12 @@ rules:
     - team.get
     - team.message
     - team.*
+    - sessions.list
+    - sessions.create
+    - sessions.history
+    - sessions.get
+    - sessions.save
+    - sessions.*
 - source: aegis
   destination: store
   commands:
@@ -203,6 +249,19 @@ rules:
   destination: daemon
   commands:
     - "*"
+# Chat turns go to the agent chat system (agent-runtime.md); portal bridge also routes chat.* here.
+- source: web-portal
+  destination: agent
+  commands:
+    - chat.*
+    - chat.message
+    - user.turn
+- source: web-portal
+  destination: "agent*"
+  commands:
+    - chat.*
+    - chat.message
+    - user.turn
 
 # --- Catch common response patterns (signed replies often mirror cmd names or use response/*) ---
 # Broad but explicit for known components during Phase 3 iteration

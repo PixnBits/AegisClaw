@@ -36,20 +36,48 @@ FROM alpine:3.18
 
 RUN apk add --no-cache ca-certificates tzdata
 
-# Non-root (defense in depth for the untrusted Agent Runtime VM)
+# Non-root user exists for future hardening; /init runs the agent as root in the guest (matches store VM).
 RUN addgroup -S aegis && adduser -S -G aegis aegis
-USER aegis
 
 WORKDIR /app
 
 COPY --from=builder /agent /usr/local/bin/agent
 
-# The thin main (cmd/agent/main.go) is the entrypoint.
-# It expects:
-#   - Distributed per-VM private key via AEGIS_VM_PRIVATE_KEY_PATH (or default location)
-#   - To register with AegisHub (unix inside dev guests or vsock:9999 for real Firecracker)
-#   - To drive the real 6-step loop via hubclient for LLM + memory + tools
-ENTRYPOINT ["/usr/local/bin/agent"]
+# Minimal init for Firecracker (docker export drops ENTRYPOINT; kernel must use init=/init).
+COPY <<'EOF' /init
+#!/bin/sh
+export PATH=/usr/local/bin:/usr/bin:/bin
+export HOME=/root
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sys /sys 2>/dev/null || true
+mount -t devtmpfs dev /dev 2>/dev/null || true
+
+if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
+  echo 1024 > /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || true
+fi
+i=0
+while [ "$i" -lt 60 ]; do
+  if dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 0.05
+done
+
+mkdir -p /etc/aegis 2>/dev/null || true
+
+exec >/dev/console 2>&1
+echo "=== agent guest /init: key path=${AEGIS_VM_PRIVATE_KEY_PATH:-/etc/aegis/vmkey} hex_len=$(tr ' ' '\n' </proc/cmdline | grep -c vm_private_key_hex || true) ==="
+/usr/local/bin/agent || {
+  echo "=== agent exited $?, holding guest open for logs ==="
+  sleep 86400
+}
+EOF
+
+RUN chmod +x /init
+
+ENTRYPOINT ["/init"]
 
 # Notes:
 # - This binary contains the complete real Agent Runtime (no surface stubs).

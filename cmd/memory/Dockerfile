@@ -32,16 +32,41 @@ FROM alpine:3.18
 RUN apk add --no-cache ca-certificates tzdata
 
 RUN addgroup -S aegis && adduser -S -G aegis aegis
-USER aegis
 
 WORKDIR /app
 
 COPY --from=builder /memory /usr/local/bin/memory
 
-# The thin memory main (cmd/memory/main.go) is the entrypoint.
-# It loads its distributed private key, registers with Hub, and serves the real
-# Memory VM (internal/memory) over the hubclient (unix or vsock).
-ENTRYPOINT ["/usr/local/bin/memory"]
+COPY <<'EOF' /init
+#!/bin/sh
+export PATH=/usr/local/bin:/usr/bin:/bin
+export HOME=/root
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sys /sys 2>/dev/null || true
+mount -t devtmpfs dev /dev 2>/dev/null || true
+
+if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
+  echo 1024 > /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || true
+fi
+i=0
+while [ "$i" -lt 60 ]; do
+  if dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 0.05
+done
+
+mkdir -p /etc/aegis 2>/dev/null || true
+
+exec >/dev/console 2>&1
+exec /usr/local/bin/memory
+EOF
+
+RUN chmod +x /init
+
+ENTRYPOINT ["/init"]
 
 # Notes:
 # - Implements hard-bounded short-term context + TTL long-term + explicit zeroization.

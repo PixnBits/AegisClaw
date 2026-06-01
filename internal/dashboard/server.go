@@ -139,6 +139,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/teams", s.handleTeamList)
 	s.mux.HandleFunc("/api/teams/create", s.handleTeamCreate)
 	s.mux.HandleFunc("/api/teams/message", s.handleTeamMessage)
+	// Chat session registry (Store VM via bridge; not browser localStorage or daemon)
+	s.mux.HandleFunc("/api/chat/sessions", s.handleChatSessionsListOrCreate)
+	s.mux.HandleFunc("/api/chat/history", s.handleChatHistory)
+	s.mux.HandleFunc("/api/chat/sessions/", s.handleChatSessionSave)
 	// Phase 2: Source Code & Git routes
 	s.mux.HandleFunc("/source", s.handleSource)
 	s.mux.HandleFunc("/source/browse", s.handleSourceBrowse)
@@ -726,195 +730,7 @@ func enhanceWorkersWithTeams(workers interface{}) interface{} {
 }
 
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 512<<10) // 512 KB limit
-	var req struct {
-		Input     string `json:"input"`
-		SessionID string `json:"session_id,omitempty"`
-		History []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"history,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON: " + err.Error()}) //nolint:errcheck
-		return
-	}
-	req.Input = strings.TrimSpace(req.Input)
-	if req.Input == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "input required"}) //nolint:errcheck
-		return
-	}
-	if r.URL.Query().Get("stream") == "1" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") {
-		streamID := fmt.Sprintf("chat-%d", time.Now().UnixNano())
-		payload := mustMarshal(map[string]interface{}{
-			"input":      req.Input,
-			"history":    req.History,
-			"session_id": req.SessionID,
-			"stream_id":  streamID,
-		})
-		s.handleChatSendStream(w, r, payload, streamID)
-		return
-	}
-	payload := mustMarshal(map[string]interface{}{
-		"input":      req.Input,
-		"history":    req.History,
-		"session_id": req.SessionID,
-	})
-	resp, err := s.apiClient.Call(r.Context(), "chat.message", payload)
-	w.Header().Set("Content-Type", "application/json")
-	if err != nil {
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
-		return
-	}
-	if resp == nil || !resp.Success {
-		errMsg := "unknown error"
-		if resp != nil && resp.Error != "" {
-			errMsg = resp.Error
-		}
-		json.NewEncoder(w).Encode(map[string]string{"error": errMsg}) //nolint:errcheck
-		return
-	}
-	w.Write(resp.Data) //nolint:errcheck
-}
-
-func (s *Server) handleChatSendStream(w http.ResponseWriter, r *http.Request, payload json.RawMessage, streamID string) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	writeSSE := func(v interface{}) bool {
-		b, err := json.Marshal(v)
-		if err != nil {
-			return false
-		}
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
-			return false
-		}
-		flusher.Flush()
-		return true
-	}
-
-	ctx := r.Context()
-	lastToolID := s.latestEventID(ctx, "chat.tool_events", 60)
-	lastThoughtID := s.latestEventID(ctx, "chat.thought_events", 80)
-	emittedThinkingRunes := 0
-	emittedContentRunes := 0
-  lastProgressRequestID := ""
-
-	if !writeSSE(map[string]interface{}{"type": "start", "ts": time.Now().UTC().Format(time.RFC3339)}) {
-		return
-	}
-
-	type callResult struct {
-		resp *APIResponse
-		err  error
-	}
-	callDone := make(chan callResult, 1)
-	go func() {
-		resp, err := s.apiClient.Call(ctx, "chat.message", payload)
-		callDone <- callResult{resp: resp, err: err}
-	}()
-
-	ticker := time.NewTicker(700 * time.Millisecond)
-	defer ticker.Stop()
-
-	sendNewEvents := func() bool {
-		toolEvents := s.fetchEventsSince(ctx, "chat.tool_events", 60, lastToolID)
-		for _, ev := range toolEvents {
-			if id := eventID(ev); id > lastToolID {
-				lastToolID = id
-			}
-			if !writeSSE(map[string]interface{}{"type": "tool_event", "event": ev}) {
-				return false
-			}
-		}
-		if streamID != "" {
-			progressRaw, err := s.fetchRaw(ctx, "chat.stream_progress", map[string]string{"stream_id": streamID})
-			if err == nil {
-				if progress, ok := progressRaw.(map[string]interface{}); ok {
-          requestID := toString(progress["request_id"])
-          if requestID != "" && requestID != lastProgressRequestID {
-            lastProgressRequestID = requestID
-            emittedThinkingRunes = 0
-            emittedContentRunes = 0
-          }
-					if !emitSnapshotDelta(writeSSE, "thought_delta", toString(progress["thinking"]), &emittedThinkingRunes) {
-						return false
-					}
-          content := suppressInFlightStructuredContent(toString(progress["content"]))
-          if !emitSnapshotDelta(writeSSE, "content_delta", content, &emittedContentRunes) {
-						return false
-					}
-				}
-			}
-		}
-		thoughtEvents := s.fetchEventsSince(ctx, "chat.thought_events", 80, lastThoughtID)
-		for _, ev := range thoughtEvents {
-			if id := eventID(ev); id > lastThoughtID {
-				lastThoughtID = id
-			}
-			if !writeSSE(map[string]interface{}{"type": "thought_event", "event": ev}) {
-				return false
-			}
-		}
-		return true
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !sendNewEvents() {
-				return
-			}
-		case out := <-callDone:
-			if !sendNewEvents() {
-				return
-			}
-			if out.err != nil {
-				writeSSE(map[string]interface{}{"type": "error", "error": out.err.Error()}) //nolint:errcheck
-				return
-			}
-			if out.resp == nil || !out.resp.Success {
-				errMsg := "unknown error"
-				if out.resp != nil && out.resp.Error != "" {
-					errMsg = out.resp.Error
-				}
-				writeSSE(map[string]interface{}{"type": "error", "error": errMsg}) //nolint:errcheck
-				return
-			}
-			var data interface{}
-			if len(out.resp.Data) > 0 {
-				if err := json.Unmarshal(out.resp.Data, &data); err != nil {
-					writeSSE(map[string]interface{}{"type": "error", "error": "invalid chat response JSON: " + err.Error()}) //nolint:errcheck
-					return
-				}
-			}
-			if m, ok := data.(map[string]interface{}); ok {
-				if !emitSnapshotDelta(writeSSE, "content_delta", toString(m["content"]), &emittedContentRunes) {
-					return
-				}
-			}
-			writeSSE(map[string]interface{}{"type": "final", "data": data}) //nolint:errcheck
-			return
-		}
-	}
+	HandleChatSend(w, r, s.apiClient)
 }
 
 func suppressInFlightStructuredContent(text string) string {
@@ -1017,33 +833,11 @@ func eventID(ev map[string]interface{}) int {
 }
 
 func (s *Server) latestEventID(ctx context.Context, action string, limit int) int {
-	raw, err := s.fetchRaw(ctx, action, map[string]int{"limit": limit})
-	if err != nil {
-		return 0
-	}
-	items := toEventMaps(raw)
-	maxID := 0
-	for _, ev := range items {
-		if id := eventID(ev); id > maxID {
-			maxID = id
-		}
-	}
-	return maxID
+	return latestEventID(ctx, s.apiClient, action, limit, "")
 }
 
 func (s *Server) fetchEventsSince(ctx context.Context, action string, limit int, lastID int) []map[string]interface{} {
-	raw, err := s.fetchRaw(ctx, action, map[string]int{"limit": limit})
-	if err != nil {
-		return nil
-	}
-	items := toEventMaps(raw)
-	out := make([]map[string]interface{}, 0, len(items))
-	for _, ev := range items {
-		if eventID(ev) > lastID {
-			out = append(out, ev)
-		}
-	}
-	return out
+	return fetchEventsSince(ctx, s.apiClient, action, limit, lastID, "")
 }
 
 func toEventMaps(raw interface{}) []map[string]interface{} {
@@ -1176,26 +970,7 @@ func toFloat(v interface{}) float64 {
 }
 
 func (s *Server) fetchRaw(ctx context.Context, action string, req interface{}) (interface{}, error) {
-	var payload json.RawMessage
-	if req != nil {
-		payload, _ = json.Marshal(req)
-	}
-	resp, err := s.apiClient.Call(ctx, action, payload)
-	if err != nil {
-		return nil, err
-	}
-	if resp == nil {
-		return nil, fmt.Errorf("empty response for action: %s", action)
-	}
-	if !resp.Success {
-		if resp.Error != "" {
-			return nil, fmt.Errorf("%s", resp.Error)
-		}
-		return nil, fmt.Errorf("action failed: %s", action)
-	}
-	var out interface{}
-	json.Unmarshal(resp.Data, &out) //nolint:errcheck
-	return out, nil
+	return fetchRaw(ctx, s.apiClient, action, req)
 }
 
 func (s *Server) renderTemplate(w http.ResponseWriter, title, tmplStr string, data map[string]interface{}) {
@@ -1819,48 +1594,67 @@ const overviewTmpl = `
 <h1>{{.Title}}</h1>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem" data-testid="dashboard-stats">
   <div class="section" style="padding:1.25rem;text-align:center" data-testid="stat-running-vms">
-    <div style="font-size:2rem;font-weight:700;color:#f2cc60">{{.RunningVMCount}}</div>
+    <div id="stat-running-vms" style="font-size:2rem;font-weight:700;color:#f2cc60">{{.RunningVMCount}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Running MicroVMs</div>
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
-    <div style="font-size:2rem;font-weight:700;color:#3fb950">{{.WorkerCount}}</div>
+    <div id="stat-workers" style="font-size:2rem;font-weight:700;color:#3fb950">{{.WorkerCount}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Active Workers</div>
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
-    <div style="font-size:2rem;font-weight:700;color:#d29922">{{.ApprovalCount}}</div>
+    <div id="stat-approvals" style="font-size:2rem;font-weight:700;color:#d29922">{{.ApprovalCount}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Pending Approvals</div>
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
-    <div style="font-size:2rem;font-weight:700;color:#58a6ff">{{.TimerCount}}</div>
+    <div id="stat-timers" style="font-size:2rem;font-weight:700;color:#58a6ff">{{.TimerCount}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Active Timers</div>
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
-    <div style="font-size:2rem;font-weight:700;color:#a5d6ff">{{.MemoryCount}}</div>
+    <div id="stat-memory" style="font-size:2rem;font-weight:700;color:#a5d6ff">{{.MemoryCount}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Memory Entries</div>
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
-    <div style="font-size:2rem;font-weight:700;color:#7ee787">{{.RunningVMVCPUs}}</div>
+    <div id="stat-vcpus" style="font-size:2rem;font-weight:700;color:#7ee787">{{.RunningVMVCPUs}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">Allocated vCPUs</div>
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
-    <div style="font-size:2rem;font-weight:700;color:#79c0ff">{{.RunningVMMemoryMB}} MB</div>
+    <div id="stat-vm-mem" style="font-size:2rem;font-weight:700;color:#79c0ff">{{.RunningVMMemoryMB}} MB</div>
     {{if .RunningVMRSSMB}}<div style="font-size:.8rem;color:#e8916a;margin-top:.15rem">{{.RunningVMRSSMB}} MB actual RSS</div>{{end}}
     <div style="font-size:.85rem;color:#8b949e;margin-top:.15rem">Allocated VM Memory</div>
   </div>
 {{if .HostRAMLabel}}
   <div class="section" style="padding:1.25rem;text-align:center">
-    <div style="font-size:1.5rem;font-weight:700;color:#e8916a">{{.HostRAMLabel}}</div>
+    <div id="stat-host-ram" style="font-size:1.5rem;font-weight:700;color:#e8916a">{{.HostRAMLabel}}</div>
     <div style="height:6px;border-radius:3px;background:#30363d;margin:.5rem 0">
-      <div style="height:100%;border-radius:3px;background:#e8916a;width:{{.HostRAMPct}}%"></div>
+      <div id="stat-host-ram-bar" style="height:100%;border-radius:3px;background:#e8916a;width:{{.HostRAMPct}}%"></div>
     </div>
-    <div style="font-size:.85rem;color:#8b949e">Host RAM ({{.HostRAMPct}}%)</div>
+    <div style="font-size:.85rem;color:#8b949e">Host RAM (<span id="stat-host-ram-pct">{{.HostRAMPct}}</span>%)</div>
   </div>
   <div class="section" style="padding:1.25rem;text-align:center">
-    <div style="font-size:2rem;font-weight:700;color:#d2a8ff">{{.HostLoadLabel}}</div>
+    <div id="stat-load" style="font-size:2rem;font-weight:700;color:#d2a8ff">{{.HostLoadLabel}}</div>
     <div style="font-size:.85rem;color:#8b949e;margin-top:.25rem">CPU Load Avg (1m)</div>
   </div>
 {{end}}
 </div>
+<script>
+(function(){
+  function set(id,val){var el=document.getElementById(id);if(el)el.textContent=val;}
+  function applyOverview(d){
+    if(!d)return;
+    set('stat-running-vms',d.running_vm_count);
+    set('stat-workers',d.worker_count);
+    set('stat-approvals',d.approval_count);
+    set('stat-timers',d.timer_count);
+    set('stat-memory',d.memory_count);
+    set('stat-vcpus',d.running_vm_vcpus);
+    set('stat-vm-mem',d.running_vm_memory_mb+' MB');
+    if(d.host_ram_label){set('stat-host-ram',d.host_ram_label);set('stat-host-ram-pct',d.host_ram_pct);var bar=document.getElementById('stat-host-ram-bar');if(bar)bar.style.width=d.host_ram_pct+'%';}
+    if(d.host_load_label)set('stat-load',d.host_load_label);
+  }
+  window.onSSEUpdate=function(ev){if(ev.overview)applyOverview(ev.overview);};
+  fetch('/api/host/dashboard-stats').then(function(r){return r.json();}).then(applyOverview).catch(function(){});
+})();
+</script>
 
 {{if .RunningVMs}}
 <div class="section">
@@ -2533,13 +2327,14 @@ const chatTmpl = `
         var isThinking=(step.phase==='model_thinking');
         var entry=document.createElement('div');
         entry.className='thought-step'+(isThinking?' thought-step--thinking':'');
+        entry.setAttribute('data-testid','thought-step');
 
         var summary=document.createElement('div');
         summary.className='thought-summary';
 
         var phase=document.createElement('span');
         phase.className=isThinking?'thought-phase--thinking':'thought-phase';
-        phase.textContent=isThinking?'reasoning':safeText(step.phase||'step');
+        phase.textContent=isThinking?'reasoning':phaseLabel(step.phase);
         summary.appendChild(phase);
 
         if(step.model){
@@ -2780,6 +2575,8 @@ const chatTmpl = `
       (function(s){
         var item=document.createElement('div');
         item.className='session-item'+(s.id===activeSessionId?' active':'');
+        item.setAttribute('data-session-id',s.id);
+        item.setAttribute('data-testid','chat-session-item');
         var t=document.createElement('div');
         t.className='session-title';
         t.textContent=s.title||'Untitled session';
@@ -2843,9 +2640,10 @@ const chatTmpl = `
       stack.className='assistant-stack';
       liveThoughtLog=document.createElement('div');
       liveThoughtLog.className='thought-log';
+      liveThoughtLog.setAttribute('data-testid','chat-progress-log');
       var title=document.createElement('div');
       title.className='thought-log-title';
-      title.textContent='Thinking (live)';
+      title.textContent='Agent progress';
       liveThoughtLog.appendChild(title);
       stack.appendChild(liveThoughtLog);
       liveThoughtRow.appendChild(stack);
@@ -2924,6 +2722,21 @@ const chatTmpl = `
     msgs.scrollTop=msgs.scrollHeight;
   }
 
+  function phaseLabel(phase){
+    var labels={
+      starting:'Starting',
+      memory:'Memory',
+      observe:'Observe',
+      think:'Think',
+      plan:'Plan',
+      act:'Act',
+      execute:'Execute',
+      judge:'Judge',
+      model_thinking:'Reasoning'
+    };
+    return labels[phase]||safeText(phase||'step');
+  }
+
   function appendLiveThoughtEvent(ev){
 	if(ev && ev.phase==='final'){
 	  return;
@@ -2932,13 +2745,14 @@ const chatTmpl = `
     var isThinking=(ev.phase==='model_thinking');
     var step=document.createElement('div');
     step.className='thought-step'+(isThinking?' thought-step--thinking':'');
+    step.setAttribute('data-testid','thought-step');
 
     var summary=document.createElement('div');
     summary.className='thought-summary';
 
     var phase=document.createElement('span');
     phase.className=isThinking?'thought-phase--thinking':'thought-phase';
-    phase.textContent=isThinking?'reasoning':safeText(ev.phase||'step');
+    phase.textContent=isThinking?'reasoning':phaseLabel(ev.phase);
     summary.appendChild(phase);
 
     if(ev.tool){

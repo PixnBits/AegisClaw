@@ -3,64 +3,57 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"AegisClaw/internal/dashboard"
+	"AegisClaw/internal/portalbridge"
 	"AegisClaw/internal/transport/hubclient"
 
 	"github.com/mdlayher/vsock"
 )
 
 // hubBridgeClient implements dashboard.APIClient by speaking the project's
-// standard signed Message protocol to the AegisHub (and through it to the
-// Host Daemon and other components).
-//
-// This is the mechanism that enforces the "thin / presentation-only" rule
-// for the Web Portal.
+// standard signed Message protocol to the AegisHub (and through it to backends),
+// or via the Host Daemon portal bridge (vsock 1030) when running inside a
+// Firecracker guest without a shared hub unix socket.
 type hubBridgeClient struct {
 	conn    net.Conn
 	encoder *json.Encoder
 	decoder *json.Decoder
 	priv    ed25519.PrivateKey
 	mu      sync.Mutex
+	viaHost bool // true when connected to daemon portal bridge (not direct hub)
 }
 
 func newHubBridgeClient() (dashboard.APIClient, error) {
-	socket := expandPath(getHubSocket())
-	conn, err := net.Dial("unix", socket)
-	if err != nil {
-		// VM path (Firecracker): no unix socket filesystem sharing. Fall back to the
-		// standard vsock control plane that AegisHub already listens on (port 9999).
-		// This is the missing piece that lets the web-portal binary inside a real
-		// microVM reach the Hub/daemon for rich dashboard actions (chat, approvals,
-		// Canvas SSE, etc.). The unix path is kept for host-child dev and fixture runs.
-		// See web-portal-vm.md §Communication and hubclient.DialVsock.
-		if vconn, verr := vsock.Dial(vsock.Host, hubclient.HubVsockPort, nil); verr == nil {
-			conn = vconn
-			err = nil
-		} else {
-			return nil, fmt.Errorf("web-portal: failed to connect to Hub (unix and vsock both failed): %w (vsock err: %v)", err, verr)
-		}
-	}
+	pub, priv := portalBridgeKey()
 
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	pubStr := base64.StdEncoding.EncodeToString(pub)
+	conn, viaHost, err := dialHubOrPortalBridge()
+	if err != nil {
+		return nil, err
+	}
 
 	c := &hubBridgeClient{
 		conn:    conn,
 		encoder: json.NewEncoder(conn),
 		decoder: json.NewDecoder(conn),
 		priv:    priv,
+		viaHost: viaHost,
 	}
 
-	// Register using the exact same pattern as builder, store, agent, etc.
+	if viaHost {
+		// Portal bridge does not require hub registration.
+		return c, nil
+	}
+
+	pubStr := base64.StdEncoding.EncodeToString(pub)
 	reg := Message{
 		Source:      "web-portal",
 		Destination: "hub",
@@ -70,7 +63,7 @@ func newHubBridgeClient() (dashboard.APIClient, error) {
 			"version":    getBuildVersion(),
 		},
 		Timestamp: time.Now().Format(time.RFC3339),
-		Signature: "dummy", // Allowed under AEGIS_DEV_MODE during development
+		Signature:   "dummy",
 	}
 	signMessage(&reg, priv)
 
@@ -92,15 +85,79 @@ func newHubBridgeClient() (dashboard.APIClient, error) {
 	return c, nil
 }
 
+// dialHubOrPortalBridge tries unix hub, then guest→host hub vsock, then host portal bridge.
+func dialHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
+	socket := expandPath(getHubSocket())
+	if st, statErr := os.Stat(socket); statErr == nil && !st.IsDir() {
+		if c, dialErr := net.Dial("unix", socket); dialErr == nil {
+			return c, false, nil
+		}
+	}
+
+	if runningInFirecrackerGuest() {
+		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.HubVsockPort, 16, 250*time.Millisecond); dialErr == nil {
+			return c, false, nil
+		}
+		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.PortalBridgeVsockPort, 24, 500*time.Millisecond); dialErr == nil {
+			return c, true, nil
+		}
+		return nil, false, fmt.Errorf("web-portal guest: failed to reach Hub (vsock :%d) or host portal bridge (vsock :%d)",
+			hubclient.HubVsockPort, hubclient.PortalBridgeVsockPort)
+	}
+
+	if c, dialErr := net.Dial("unix", socket); dialErr == nil {
+		return c, false, nil
+	}
+	if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.HubVsockPort, 4, 200*time.Millisecond); dialErr == nil {
+		return c, false, nil
+	}
+	return nil, false, fmt.Errorf("web-portal: failed to connect to Hub (unix %s and vsock :%d)",
+		socket, hubclient.HubVsockPort)
+}
+
+func runningInFirecrackerGuest() bool {
+	if os.Getenv("AEGIS_WEB_PORTAL_LISTEN_ADDR") != "" {
+		return true
+	}
+	if data, err := os.ReadFile("/proc/cmdline"); err == nil {
+		return strings.Contains(string(data), "aegis.web_portal_listen_addr=")
+	}
+	return false
+}
+
+func dialVsockWithRetry(cid uint32, port uint32, attempts int, delay time.Duration) (net.Conn, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		conn, err := vsock.Dial(cid, port, nil)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		time.Sleep(delay)
+	}
+	return nil, lastErr
+}
+
 func (c *hubBridgeClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	dest := portalbridge.Destination(action)
+	if c.viaHost {
+		// Host portal bridge performs final routing (store/agent/daemon).
+		dest = "daemon"
+	}
+
+	var rawPayload interface{}
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &rawPayload)
+	}
+
 	msg := Message{
 		Source:      "web-portal",
-		Destination: "daemon", // The Host Daemon's portal bridge handles most dashboard actions
+		Destination: dest,
 		Command:     action,
-		Payload:     payload,
+		Payload:     rawPayload,
 		Timestamp:   time.Now().Format(time.RFC3339),
 		Signature:   "",
 	}
@@ -127,8 +184,6 @@ func (c *hubBridgeClient) Call(ctx context.Context, action string, payload json.
 	}
 	return apiResp, nil
 }
-
-// --- local helpers (duplicated for now; can be shared later) ---
 
 type Message struct {
 	Source      string      `json:"source"`

@@ -6,6 +6,9 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -74,7 +77,6 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	logPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".log")
 	consoleLogPath := filepath.Join(fb.stateDir, "fc-"+config.ID+"-console.log")
 	vsockUdsPath := FirecrackerVsockUDSPath(fb.stateDir, config.ID)
-	keyPath := filepath.Join(fb.stateDir, config.ID+".vmkey") // ephemeral private key from orchestrator
 
 	// Clean up any stale artifacts from previous crashed/killed attempts.
 	// This is required for reliable restarts: Firecracker refuses to bind if the
@@ -84,9 +86,13 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	_ = os.Remove(logPath)
 	_ = os.Remove(consoleLogPath)
 	_ = os.Remove(vsockUdsPath)
-	_ = os.Remove(keyPath)
+	// Do NOT remove config.PrivateKeyPath / *.vmkey here — orchestrator just wrote it and
+	// we need it for cmdline hex + rootfs inject below. Stop() cleans up the key file.
 
-	// Build Firecracker configuration
+	rootfsPath := config.RootfsPath
+	if config.PrivateKeyPath != "" {
+		rootfsPath = prepareVMRootfs(fb.stateDir, config.ID, config.RootfsPath, config.PrivateKeyPath)
+	}
 
 	// Build Firecracker configuration
 	fcConfig := map[string]interface{}{
@@ -97,7 +103,7 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 		"drives": []map[string]interface{}{
 			{
 				"drive_id":       "rootfs",
-				"path_on_host":   config.RootfsPath,
+				"path_on_host":   rootfsPath,
 				"is_root_device": true,
 				"is_read_only":   false,
 			},
@@ -161,7 +167,7 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	}
 
 	logrus.Infof("Starting Firecracker VM %s with kernel %s, rootfs %s",
-		config.ID, config.KernelPath, config.RootfsPath)
+		config.ID, config.KernelPath, rootfsPath)
 	if os.Getenv("AEGIS_DEBUG") != "" {
 		logrus.Debugf("Firecracker command: firecracker --api-sock %s --config-file %s --log-path %s --level Debug",
 			sockPath, configPath, logPath)
@@ -277,6 +283,7 @@ func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
 	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".log"))
 	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+"-console.log"))
 	_ = os.Remove(FirecrackerVsockUDSPath(stateDir, vmID))
+	_ = os.Remove(filepath.Join(stateDir, vmID+".rootfs.img"))
 
 	// 7.5.4: Best-effort cleanup of the ephemeral VM private key file
 	// (defense in depth — the guest should have already shredded it).
@@ -393,12 +400,14 @@ func buildBootArgs(config VMConfig) string {
 		base += egress
 	}
 
-	// 7.5.4: Pass the ephemeral private key path to the guest (daemon-side
-	// secure distribution channel). The guest init is expected to read the
-	// file once, load the key, and then shred + unlink it.
-	// See VMConfig.PrivateKeyPath and host-daemon.md key distribution rules.
+	// 7.5.4: Pass VM key on cmdline (hex, cmdline-safe) and optional /etc/aegis/vmkey in rootfs.
 	if config.PrivateKeyPath != "" {
-		base += fmt.Sprintf(" aegis.vm_private_key_path=%s", config.PrivateKeyPath)
+		if data, err := os.ReadFile(config.PrivateKeyPath); err == nil {
+			if privBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data))); err == nil && len(privBytes) == ed25519.PrivateKeySize {
+				base += " aegis.vm_private_key_hex=" + hex.EncodeToString(privBytes)
+			}
+		}
+		base += " aegis.vm_private_key_path=/etc/aegis/vmkey"
 	}
 
 	// Group 3 (Court): Support persona identity injection for the 7 court-persona VMs

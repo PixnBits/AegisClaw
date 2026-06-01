@@ -15,7 +15,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -23,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/memory"
 	"AegisClaw/internal/transport/hubclient"
 	"github.com/spf13/cobra"
@@ -62,9 +62,16 @@ func getBuildVersion() string {
 
 func runMemory(cmd *cobra.Command, args []string) {
 	// === Paranoid key loading (same contract as Agent Runtime) ===
-	priv, pub, err := loadDistributedOrEphemeralKey()
+	priv, pub, err := bootargs.LoadDistributedVMKey("memory")
 	if err != nil {
-		log.Fatal("memory: failed to obtain key (fail-closed):", err)
+		if bootargs.UseHubVsock() {
+			log.Fatal("memory: ", err, " (rebuild memory.img with make build-microvms)")
+		}
+		log.Printf("memory: %v — generating ephemeral key (dev only)", err)
+		pub, priv, err = ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			log.Fatal("memory: failed to obtain key (fail-closed):", err)
+		}
 	}
 
 	// === Transport selection (unix dev / vsock for real guests) ===
@@ -75,7 +82,8 @@ func runMemory(cmd *cobra.Command, args []string) {
 	defer client.Close()
 
 	// === Register ===
-	regResp, err := client.Register(context.Background(), "memory", pub, getBuildVersion())
+	componentID := bootargs.ComponentID("memory")
+	regResp, err := client.Register(context.Background(), componentID, pub, getBuildVersion())
 	if err != nil {
 		log.Fatal("memory: register failed:", err)
 	}
@@ -84,7 +92,11 @@ func runMemory(cmd *cobra.Command, args []string) {
 	// === Real Memory VM (Phase 1.3 integration) ===
 	memVM := memory.NewVM(7 * 24 * time.Hour) // 7-day TTL
 	memVM.SetHubClient(client)
-	memVM.BindAgent(regResp.AssignedID) // 1:1 with its agent
+	agentPeer := bootargs.PairedAgentID()
+	if agentPeer == "" && strings.HasPrefix(regResp.AssignedID, "memory-") {
+		agentPeer = strings.Replace(regResp.AssignedID, "memory-", "agent-", 1)
+	}
+	memVM.BindAgent(agentPeer) // paired agent (not this VM's own id)
 
 	fmt.Println("memory: real receive-driven loop active, dispatching to VM with ACL enforcement + zeroization")
 
@@ -109,7 +121,7 @@ func runMemory(cmd *cobra.Command, args []string) {
 				Payload:     handleErr.Error(),
 				Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			}
-			_, _ = client.Send(context.Background(), resp)
+			_ = client.Reply(context.Background(), resp)
 			continue
 		}
 
@@ -120,45 +132,23 @@ func runMemory(cmd *cobra.Command, args []string) {
 			Payload:     payload,
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		}
-		_, _ = client.Send(context.Background(), resp)
+		_ = client.Reply(context.Background(), resp)
 	}
-}
-
-// loadDistributedOrEphemeralKey and dialHubTransport are identical to the
-// Agent Runtime implementation (DRY in future; duplicated for skeleton phase).
-func loadDistributedOrEphemeralKey() (ed25519.PrivateKey, ed25519.PublicKey, error) {
-	keyPath := os.Getenv("AEGIS_VM_PRIVATE_KEY_PATH")
-	if keyPath == "" {
-		keyPath = "/run/aegis/vmkey"
-	}
-	if data, err := os.ReadFile(keyPath); err == nil {
-		privBytes, _ := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
-		if len(privBytes) == ed25519.PrivateKeySize {
-			_ = os.WriteFile(keyPath, []byte("shredded"), 0600)
-			_ = os.Remove(keyPath)
-			priv := ed25519.PrivateKey(privBytes)
-			pub := priv.Public().(ed25519.PublicKey)
-			hubclient.ZeroPrivateKey(ed25519.PrivateKey(privBytes))
-			return priv, pub, nil
-		}
-	}
-	log.Println("memory: no distributed key — generating ephemeral (dev only)")
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	return priv, pub, nil
 }
 
 func dialHubTransport(pub ed25519.PublicKey, priv ed25519.PrivateKey) (hubclient.Client, error) {
-	if portStr := os.Getenv("AEGIS_HUB_VSOCK_PORT"); portStr != "" {
-		return hubclient.DialVsock(hubclient.HostCID, uint32(hubclient.HubVsockPort), priv)
+	if bootargs.UseHubVsock() {
+		fmt.Printf("memory: waiting for host hub bridge on vsock :%d (Firecracker inverted path)\n", hubclient.GuestHubBridgePort)
+		return hubclient.AcceptVsockHubBridge(hubclient.GuestHubBridgePort, priv)
 	}
 	socket := expandPath(hubSocket)
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
 		socket = expandPath(env)
 	}
-	return hubclient.DialUnix(socket, priv)
+	if _, err := os.Stat(socket); err == nil {
+		return hubclient.DialUnix(socket, priv)
+	}
+	return hubclient.DialVsock(hubclient.HostCID, hubclient.HubVsockPort, priv)
 }
 
 func main() {

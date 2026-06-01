@@ -15,7 +15,9 @@ import (
 
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
+	"AegisClaw/internal/agent/progress"
 	agentSkills "AegisClaw/internal/agent/skills"
+	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
 	"github.com/spf13/cobra"
@@ -115,29 +117,54 @@ func runAgent(cmd *cobra.Command, args []string) {
 	// === Key loading (paranoid — consume the key the orchestrator distributed) ===
 	// Preferred: AEGIS_VM_PRIVATE_KEY_PATH (written by orchestrator before VM start,
 	// 0600, guest shreds after load). Fallback to generate only for dev / unit tests.
-	priv, pub, err := loadDistributedOrEphemeralKey()
+	priv, pub, err := bootargs.LoadDistributedVMKey("agent")
 	if err != nil {
-		log.Fatal("agent: failed to obtain Ed25519 key (fail-closed):", err)
+		if bootargs.UseHubVsock() {
+			log.Printf("agent: FATAL: %v", err)
+			time.Sleep(24 * time.Hour) // keep guest up for console logs (init also holds on exit)
+		}
+		log.Printf("agent: %v — generating ephemeral key (dev/test only)", err)
+		pub, priv, err = ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			log.Fatal("agent: failed to obtain Ed25519 key (fail-closed):", err)
+		}
 	}
-	_ = pub // pub is available for future use (register, logging, etc.)
+	_ = pub
 
-	// === Transport selection (unix for dev, vsock for real microVM guests) ===
-	// When running inside a Firecracker Agent Runtime VM, the environment or
-	// kernel cmdline will cause us to pick vsock (hubclient.DialVsock).
-	client, err := dialHubTransport(pub, priv)
-	if err != nil {
-		log.Fatal("agent: failed to connect to AegisHub:", err)
+	for {
+		client, err := dialHubTransport(pub, priv)
+		if err != nil {
+			if bootargs.UseHubVsock() {
+				log.Printf("agent: hub bridge connect failed: %v (retrying)", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			log.Fatal("agent: failed to connect to AegisHub:", err)
+		}
+
+		if runAgentSession(client, pub, priv) {
+			client.Close()
+			return
+		}
+		client.Close()
+
+		if !bootargs.UseHubVsock() {
+			log.Fatal("agent: hub connection lost")
+		}
+		log.Println("agent: hub bridge dropped; waiting for host to reconnect…")
+		time.Sleep(500 * time.Millisecond)
 	}
-	defer client.Close()
+}
 
-	// === Register (mandatory first step per aegishub.md) ===
-	regResp, err := client.Register(context.Background(), "agent", pub, getBuildVersion())
+func runAgentSession(client hubclient.Client, pub ed25519.PublicKey, priv ed25519.PrivateKey) bool {
+	componentID := bootargs.ComponentID("agent")
+	regResp, err := client.Register(context.Background(), componentID, pub, getBuildVersion())
 	if err != nil {
-		log.Fatal("agent: register failed (fail-closed):", err)
+		log.Printf("agent: register failed: %v", err)
+		return false
 	}
 	fmt.Println("Agent registered with hub, assigned ID:", regResp.AssignedID)
 
-	// 7.4 workspace customizations (still loaded exactly as before)
 	wsCtx, wsErr := workspace.Load("")
 	if wsErr != nil {
 		log.Printf("7.4 WARNING: %v (using defaults)", wsErr)
@@ -146,147 +173,236 @@ func runAgent(cmd *cobra.Command, args []string) {
 	}
 	loadedWorkspace = wsCtx
 
-	// 7.3 local index (now from the moved package)
 	skillIndex := NewAgentSkillIndex()
-
-	// Real LLM caller for the 6-step loop (no mocks, no fallbacks in this path)
 	realLLM := loop.NewRealLLMCaller(client, os.Getenv("AEGIS_DEFAULT_MODEL"))
 
-	// === Real bidirectional message loop (Phase 1.3 integration) ===
-	// All communication now goes through hubclient (Send + Receive).
-	// Special commands are handled with the local skill index.
-	// Normal turns and background work use the *real* 6-step loop with
-	// real memory.get_context calls and real LLM via network-boundary.
 	fmt.Println("agent: real message-driven loop active (hubclient Receive + real loop.RunTurn)")
 
 	for {
 		msg, err := client.Receive(context.Background())
 		if err != nil {
-			log.Println("agent receive error:", err)
-			time.Sleep(300 * time.Millisecond)
-			continue
+			log.Println("agent: hub disconnected:", err)
+			return false
 		}
-
-		// High-volume per-message logging removed from hot path (surface noise).
-		// Real audit will go through Store + Court Scribe later.
-		_ = msg.Command // keep for future structured handling
-
-		// Fast-path special handlers (preserved for 7.3/7.6 compatibility)
-		if msg.Command == "tool.list" || msg.Command == "tool.search" {
-			result := agentSkills.HandleToolCommand(msg.Command, msg.Payload, skillIndex)
-			resp := hubclient.Message{
-				Source:      client.AssignedID(),
-				Destination: msg.Source,
-				Command:     msg.Command + ".response",
-				Payload:     result,
-				Timestamp:   time.Now().UTC().Format(time.RFC3339),
-			}
-			_, _ = client.Send(context.Background(), resp)
-			continue
+		if !handleAgentMessage(client, msg, skillIndex, realLLM) {
+			return true
 		}
-
-		if msg.Command == "background.work" || msg.Command == "proactive.task" {
-			log.Printf("7.6: background work → running FULL real 6-step loop (no mini/demo)")
-			go func(payload interface{}) {
-				tc := &agent.TurnContext{
-					Input:              payload,
-					Hub:                client,
-					SkillIndex:         skillIndex,
-					CustomInstructions: customInstructionsPrefix(),
-				}
-				_, _ = loop.RunTurn(context.Background(), tc, realLLM)
-			}(msg.Payload)
-			continue
-		}
-
-		// Phase 3: Handle real Court decisions pushed via Hub (agent-runtime.md §Event subscription for court feedback).
-		// This is the critical path for "Agent Runtime respects Court decisions immediately".
-		// We update the in-memory revoked scopes and can short-circuit or annotate future turns.
-		if msg.Command == "court.decision" || msg.Command == "governance.revoke" || msg.Command == "court.revoke_scope" {
-			log.Printf("Court decision received: %v (enforcing immediately - fail-closed)", msg.Payload)
-			// In a fuller impl we would maintain per-session revoked state.
-			// For Group 4 we at least log + could inject into next TurnContext.
-			// A real termination command would be handled here by exiting or signaling.
-			if payload, ok := msg.Payload.(map[string]interface{}); ok {
-				if action, _ := payload["action"].(string); action == "terminate" {
-					log.Printf("Court ordered termination for this agent runtime - shutting down loop (fail-closed)")
-					// In production the orchestrator would StopVM us; here we exit the receive loop.
-					return
-				}
-			}
-			// TODO (next slice): merge revoked scopes into TurnContext.RevokedScopes for execute/act checks.
-			continue
-		}
-
-		// All other messages (user turns, etc.) go through the real loop
-		tc := &agent.TurnContext{
-			Input:              msg.Payload,
-			Hub:                client,
-			SkillIndex:         skillIndex,
-			CustomInstructions: customInstructionsPrefix(),
-		}
-		finalResult, _ := loop.RunTurn(context.Background(), tc, realLLM)
-
-		// Return real output from the 6-step reasoning (Phase 1.3 wiring)
-		responseText := "processed via real 6-step loop"
-		if finalResult != nil && finalResult.Content != "" {
-			responseText = finalResult.Content
-		}
-
-		resp := hubclient.Message{
-			Source:      client.AssignedID(),
-			Destination: msg.Source,
-			Command:     "response",
-			Payload:     responseText,
-			Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		}
-		_, _ = client.Send(context.Background(), resp)
 	}
 }
 
-// loadDistributedOrEphemeralKey implements the consumer side of the secure key
-// distribution performed by the Host Daemon (orchestrator.go:89-164 + security/manager).
-// It prefers the ephemeral file written for the guest and shreds it after load.
-func loadDistributedOrEphemeralKey() (ed25519.PrivateKey, ed25519.PublicKey, error) {
-	keyPath := os.Getenv("AEGIS_VM_PRIVATE_KEY_PATH")
-	if keyPath == "" {
-		keyPath = "/run/aegis/vmkey" // conventional path used by orchestrator
-	}
-	if data, err := os.ReadFile(keyPath); err == nil {
-		privBytes, _ := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
-		if len(privBytes) == ed25519.PrivateKeySize {
-			// Best-effort shred of the on-disk material (guest responsibility)
-			_ = os.WriteFile(keyPath, []byte("shredded"), 0600)
-			_ = os.Remove(keyPath)
-			priv := ed25519.PrivateKey(privBytes)
-			pub := priv.Public().(ed25519.PublicKey)
-			hubclient.ZeroPrivateKey(ed25519.PrivateKey(privBytes)) // defense in depth on the decoded copy
-			return priv, pub, nil
+func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillIndex *agentSkills.AgentSkillIndex, realLLM agent.LLMCallFunc) bool {
+	switch msg.Command {
+	case "chat.thought_events":
+		sessionID := chatPayloadString(msg.Payload, "session_id")
+		limit := chatPayloadInt(msg.Payload, "limit", 80)
+		events := progress.ListThoughtEvents(sessionID, limit)
+		out := make([]interface{}, len(events))
+		for i, ev := range events {
+			out[i] = ev
 		}
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source:      client.AssignedID(),
+			Destination: msg.Source,
+			Command:     "response",
+			Payload:     out,
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
+		return true
+	case "chat.tool_events":
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source:      client.AssignedID(),
+			Destination: msg.Source,
+			Command:     "response",
+			Payload:     []interface{}{},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
+		return true
+	case "chat.stream_progress":
+		streamID := chatPayloadString(msg.Payload, "stream_id")
+		st := progress.StreamProgress(streamID)
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source:      client.AssignedID(),
+			Destination: msg.Source,
+			Command:     "response",
+			Payload: map[string]interface{}{
+				"stream_id":  st.StreamID,
+				"request_id": st.RequestID,
+				"thinking":   st.Thinking,
+				"content":    st.Content,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		return true
 	}
 
-	// Dev / test fallback only — never the production path inside a real microVM.
-	log.Println("agent: no distributed VM key found — generating ephemeral key (dev/test only)")
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, err
+	if msg.Command == "tool.list" || msg.Command == "tool.search" {
+		result := agentSkills.HandleToolCommand(msg.Command, msg.Payload, skillIndex)
+		resp := hubclient.Message{
+			Source:      client.AssignedID(),
+			Destination: msg.Source,
+			Command:     msg.Command + ".response",
+			Payload:     result,
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		}
+		_ = client.Reply(context.Background(), resp)
+		return true
 	}
-	return priv, pub, nil
+
+	if msg.Command == "background.work" || msg.Command == "proactive.task" {
+		log.Printf("7.6: background work → running FULL real 6-step loop (no mini/demo)")
+		go func(payload interface{}) {
+			tc := &agent.TurnContext{
+				Input:              payload,
+				Hub:                client,
+				SkillIndex:         skillIndex,
+				CustomInstructions: customInstructionsPrefix(),
+			}
+			_, _ = loop.RunTurn(context.Background(), tc, realLLM)
+		}(msg.Payload)
+		return true
+	}
+
+	if msg.Command == "court.decision" || msg.Command == "governance.revoke" || msg.Command == "court.revoke_scope" {
+		log.Printf("Court decision received: %v (enforcing immediately - fail-closed)", msg.Payload)
+		if payload, ok := msg.Payload.(map[string]interface{}); ok {
+			if action, _ := payload["action"].(string); action == "terminate" {
+				log.Printf("Court ordered termination for this agent runtime - shutting down loop (fail-closed)")
+				return false
+			}
+		}
+		return true
+	}
+
+	tc := &agent.TurnContext{
+		Input:              msg.Payload,
+		Hub:                client,
+		SkillIndex:         skillIndex,
+		CustomInstructions: customInstructionsPrefix(),
+		SessionID:          chatPayloadString(msg.Payload, "session_id"),
+		StreamID:           chatPayloadString(msg.Payload, "stream_id"),
+	}
+	if msg.Command == "chat.message" || msg.Command == "user.turn" {
+		tc.DrainPolls = func() { drainChatPolls(client, skillIndex) }
+	}
+	finalResult, _ := loop.RunTurn(context.Background(), tc, realLLM)
+	replyChatTurn(client, msg, tc.SessionID, finalResult)
+	return true
+}
+
+func drainChatPolls(client hubclient.Client, skillIndex *agentSkills.AgentSkillIndex) {
+	ctx := context.Background()
+	for {
+		poll, ok, err := client.TryReceive(ctx, 75*time.Millisecond)
+		if err != nil || !ok {
+			return
+		}
+		switch poll.Command {
+		case "chat.thought_events", "chat.stream_progress", "chat.tool_events":
+			handleAgentPoll(client, poll, skillIndex)
+		default:
+			log.Printf("agent: deferred inbound command during turn: %s", poll.Command)
+		}
+	}
+}
+
+func handleAgentPoll(client hubclient.Client, msg hubclient.Message, skillIndex *agentSkills.AgentSkillIndex) {
+	switch msg.Command {
+	case "chat.thought_events":
+		sessionID := chatPayloadString(msg.Payload, "session_id")
+		limit := chatPayloadInt(msg.Payload, "limit", 80)
+		events := progress.ListThoughtEvents(sessionID, limit)
+		out := make([]interface{}, len(events))
+		for i, ev := range events {
+			out[i] = ev
+		}
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source: client.AssignedID(), Destination: msg.Source, Command: "response",
+			Payload: out, Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+	case "chat.stream_progress":
+		streamID := chatPayloadString(msg.Payload, "stream_id")
+		st := progress.StreamProgress(streamID)
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source: client.AssignedID(), Destination: msg.Source, Command: "response",
+			Payload: map[string]interface{}{
+				"stream_id": st.StreamID, "request_id": st.RequestID,
+				"thinking": st.Thinking, "content": st.Content,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+	case "chat.tool_events":
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source: client.AssignedID(), Destination: msg.Source, Command: "response",
+			Payload: []interface{}{}, Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+	_ = skillIndex
+}
+
+func replyChatTurn(client hubclient.Client, msg hubclient.Message, sessionID string, finalResult *agent.StepResult) {
+	responseText := "processed via real 6-step loop"
+	if finalResult != nil && finalResult.Content != "" {
+		responseText = finalResult.Content
+	}
+	trace := progress.TraceForSession(sessionID)
+	thinking := make([]interface{}, len(trace))
+	for i, ev := range trace {
+		thinking[i] = ev
+	}
+	_ = client.Reply(context.Background(), hubclient.Message{
+		Source:      client.AssignedID(),
+		Destination: msg.Source,
+		Command:     "response",
+		Payload: map[string]interface{}{
+			"content":        responseText,
+			"thinking_trace": thinking,
+			"tool_calls":     []interface{}{},
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func chatPayloadString(payload interface{}, key string) string {
+	m, ok := payload.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	s, _ := m[key].(string)
+	return s
+}
+
+func chatPayloadInt(payload interface{}, key string, def int) int {
+	m, ok := payload.(map[string]interface{})
+	if !ok {
+		return def
+	}
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	default:
+		return def
+	}
 }
 
 // dialHubTransport chooses unix (dev) or vsock (real Firecracker guest) based on env.
 func dialHubTransport(pub ed25519.PublicKey, priv ed25519.PrivateKey) (hubclient.Client, error) {
-	if portStr := os.Getenv("AEGIS_HUB_VSOCK_PORT"); portStr != "" {
-		// Real guest path
-		port := hubclient.HubVsockPort
-		// (parse portStr if we want to support override; 9999 is the documented default)
-		return hubclient.DialVsock(hubclient.HostCID, uint32(port), priv)
+	if bootargs.UseHubVsock() {
+		fmt.Printf("agent: waiting for host hub bridge on vsock :%d (Firecracker inverted path)\n", hubclient.GuestHubBridgePort)
+		return hubclient.AcceptVsockHubBridge(hubclient.GuestHubBridgePort, priv)
 	}
 	socket := expandPath(hubSocket)
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
 		socket = expandPath(env)
 	}
-	return hubclient.DialUnix(socket, priv)
+	if _, err := os.Stat(socket); err == nil {
+		return hubclient.DialUnix(socket, priv)
+	}
+	// Firecracker guest: host hub is on vsock :9999 (same fallback as store VM).
+	return hubclient.DialVsock(hubclient.HostCID, hubclient.HubVsockPort, priv)
 }
 
 func main() {

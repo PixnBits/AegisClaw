@@ -150,12 +150,19 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	// For Firecracker on Linux, set kernel and rootfs paths
 	if o.config.SandboxType == config.Firecracker {
 		vmConfig.KernelPath = o.config.KernelPath
-		// Prefer the explicit image name when provided; fall back to vmType convention.
 		imgName := image
 		if imgName == "" || !strings.HasSuffix(imgName, ".img") {
 			imgName = vmType + ".img"
 		}
-		vmConfig.RootfsPath = filepath.Join(o.config.RootfsDir, imgName)
+		component := strings.TrimSuffix(imgName, ".img")
+		rootfsPath, err := sandbox.EnsureBootableRootfsImage(o.config.RootfsDir, component)
+		if err != nil {
+			for i := range vmKP.PrivateKey {
+				vmKP.PrivateKey[i] = 0
+			}
+			return fmt.Errorf("rootfs for %s: %w", component, err)
+		}
+		vmConfig.RootfsPath = rootfsPath
 	}
 
 	// Web Portal special wiring (reverse proxy + guest listen injection).
@@ -166,6 +173,19 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	//   and uses the vsock path instead).
 	// See web-portal-vm.md §Networking/Startup, cmd/aegis/main.go proxy, and
 	// the vsock listener in cmd/web-portal/main.go.
+	if strings.HasPrefix(id, "agent-") {
+		session := strings.TrimPrefix(id, "agent-")
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+			fmt.Sprintf(" aegis.component_id=%s aegis.paired_memory_id=memory-%s aegis.hub_vsock=1", id, session))
+	}
+	if strings.HasPrefix(id, "memory-") {
+		session := strings.TrimPrefix(id, "memory-")
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+			fmt.Sprintf(" aegis.component_id=%s aegis.paired_agent_id=agent-%s aegis.hub_vsock=1", id, session))
+	}
+	if vmType == "store" || id == "store" || vmType == "network-boundary" || id == "network-boundary" {
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.hub_vsock=1")
+	}
 	if vmType == "web-portal" || id == "web-portal" {
 		vmConfig.ExtraBootArgs = "aegis.web_portal_listen_addr=127.0.0.1:18080"
 		if vmConfig.NetworkConfig == nil {
@@ -531,12 +551,17 @@ var initShippingComponents = map[string]bool{
 	"web-portal":       true,
 	"store":            true,
 	"network-boundary": true,
+	"agent":            true,
+	"memory":           true,
 }
 
 // componentShipsInit reports whether the given VM (by type or id) is built from
 // an image that contains a bootable /init wrapper.
 func componentShipsInit(vmType, id string) bool {
-	return initShippingComponents[vmType] || initShippingComponents[id]
+	if initShippingComponents[vmType] || initShippingComponents[id] {
+		return true
+	}
+	return strings.HasPrefix(id, "agent-") || strings.HasPrefix(id, "memory-")
 }
 
 // criticalTypes defines the component types that the watchdog considers

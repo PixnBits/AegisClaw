@@ -65,28 +65,16 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	guestLogger.Info("web-portal guest binary starting", "build_id", debugBuildID)
 	fmt.Fprintf(os.Stdout, "!!! WEB-PORTAL GUEST [EARLY]: guest structured logger initialized\n")
 
-	client, err := newHubBridgeClient()
+	var client dashboard.APIClient
 	useFixtures := false
-	if err != nil {
-		// Do not hard-fail in test / contract / isolated E2E scenarios.
-		// The public REST endpoints we expose (/api/proposals*, /api/status, etc.)
-		// and the static UI shell can still be useful for Playwright contract tests
-		// and development even when the Hub is not reachable.
-		log.Printf("WARNING: Failed to create thin bridge client for Web Portal: %v", err)
-		log.Println("No live Hub/daemon connection — continuing with UI shell + public REST only (full functionality requires `make start` per AGENTS.md).")
-		log.Println("For full functionality start the daemon first (see AGENTS.md).")
-
-		// Try E2E fixture-backed client first (when playwright sets the env vars).
-		// This makes isolated E2E tests see realistic data for skills/proposals lists etc.
-		if fixtureClient := tryNewE2EFixtureClient(); fixtureClient != nil {
-			client = fixtureClient
-			useFixtures = true
-			log.Println("E2E fixture data loaded — contract tests will see seeded skills/proposals.")
-		} else {
-			// Provide a no-op client so the rich dashboard server can still start
-			// and serve the UI shell + our documented public REST endpoints.
-			client = &noopAPIClient{}
-		}
+	if fixtureClient := tryNewE2EFixtureClient(); fixtureClient != nil {
+		client = fixtureClient
+		useFixtures = true
+		log.Println("E2E fixture data loaded — contract tests will see seeded skills/proposals.")
+	} else {
+		// Connect to Hub/portal-bridge in the background so vsock :18080 and /health
+		// are available immediately (guest entropy pool can block crypto/rand for 60s+).
+		client = newLazyBridgeClient()
 	}
 
 	// Support being managed by the Host Daemon (reverse proxy mode per web-portal-vm.md)
@@ -121,10 +109,8 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	log.Printf("Web Portal (thin) starting on %s", listenAddr)
 	if useFixtures {
 		log.Println("  (E2E fixture mode — seeded data for contract/UI tests)")
-	} else if _, ok := client.(*noopAPIClient); ok {
-		log.Println("  (no-Hub fallback mode — UI shell + public REST available; full actions require live daemon per AGENTS.md)")
 	} else {
-		log.Println("  (full mode — all actions routed through Hub/Host Daemon)")
+		log.Println("  (hub/portal bridge connects in background — /health and vsock :18080 available immediately)")
 	}
 
 	// Additionally serve the exact same handler over vsock port 18080 when possible.
