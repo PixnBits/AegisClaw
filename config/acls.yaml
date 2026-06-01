@@ -33,12 +33,21 @@ rules:
   destination: "*"
   commands:
     - "*"
+- source: aegis-daemon-temp-*
+  destination: "*"
+  commands:
+    - "*"
 - source: daemon-temp-*
   destination: "*"
   commands:
     - "*"
 - source: "agent*"
   destination: aegis-daemon-temp
+  commands:
+    - response
+    - "*"
+- source: "agent*"
+  destination: aegis-daemon-temp-*
   commands:
     - response
     - "*"

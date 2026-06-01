@@ -34,7 +34,9 @@ var pendingRPC = struct {
 }{ch: make(map[string]chan Message)}
 
 func isEphemeralHubClient(id string) bool {
-	return id == "aegis-daemon-temp" || strings.HasPrefix(id, "daemon-temp-")
+	return id == "aegis-daemon-temp" ||
+		strings.HasPrefix(id, "aegis-daemon-temp-") ||
+		strings.HasPrefix(id, "daemon-temp-")
 }
 
 func registerPendingRPC(requesterID string) chan Message {
@@ -493,9 +495,27 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				encoder.Encode(response)
 			}
 		} else {
-			forwardReplyToRequester(msg)
+			// One-way replies (agent poll/chat responses) vs synchronous RPC (memory.get_context, llm.call).
+			if isOneWayHubReply(msg.Command) {
+				forwardReplyToRequester(msg)
+				continue
+			}
+			reply := forwardHubRPC(componentID, msg)
+			encoders.Mutex.Lock()
+			_ = encoders.Encoder.Encode(reply)
+			encoders.Mutex.Unlock()
 		}
 	}
+}
+
+// isOneWayHubReply reports commands that are fire-and-forget replies on the wire (hubclient.Reply),
+// not request/response RPC pairs (hubclient.Send).
+func isOneWayHubReply(command string) bool {
+	if command == "response" || command == "ack" {
+		return true
+	}
+	// Destination component replies like memory.response are inbound to the caller, not outbound from it.
+	return false
 }
 
 // ephemeralHubRPCLoop serves one-shot daemon hub clients (sendToComponentViaHub).

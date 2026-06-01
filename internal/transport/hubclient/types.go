@@ -419,28 +419,35 @@ func (c *client) Send(ctx context.Context, msg Message) (Message, error) {
 	// Ensure the message is signed with our captured private key
 	signMessage(&msg, c.priv)
 
-	var resp Message
 	if err := c.sendRaw(ctx, msg); err != nil {
 		return Message{}, err
 	}
-	if err := c.decodeWithCtx(ctx, &resp); err != nil {
-		return Message{}, err
-	}
 
-	// If the hub replied with an error payload, surface it as a typed error
-	if resp.Command == "error" {
-		if p, ok := resp.Payload.(map[string]interface{}); ok {
-			if es, ok := p["error"].(string); ok {
+	for {
+		var resp Message
+		if err := c.decodeWithCtx(ctx, &resp); err != nil {
+			return Message{}, err
+		}
+
+		// Hub ack after a one-way Reply was delivered; not the RPC response we are waiting for.
+		if resp.Command == "ack" {
+			continue
+		}
+
+		if resp.Command == "error" {
+			if p, ok := resp.Payload.(map[string]interface{}); ok {
+				if es, ok := p["error"].(string); ok {
+					return resp, mapHubError(es)
+				}
+			}
+			if es, ok := resp.Payload.(string); ok {
 				return resp, mapHubError(es)
 			}
+			return resp, ErrUnknown
 		}
-		if es, ok := resp.Payload.(string); ok {
-			return resp, mapHubError(es)
-		}
-		return resp, ErrUnknown
-	}
 
-	return resp, nil
+		return resp, nil
+	}
 }
 
 // Reply implements Client.Reply — fire-and-forget outbound message (no decode).

@@ -76,7 +76,8 @@ func sendToComponentViaHubContext(ctx context.Context, target string, cmd string
 	}
 	defer client.Close()
 
-	_, err = client.Register(ctx, "aegis-daemon-temp", pub, "phase1")
+	requesterID := fmt.Sprintf("aegis-daemon-temp-%d", time.Now().UnixNano())
+	_, err = client.Register(ctx, requesterID, pub, "phase1")
 	if err != nil {
 		return nil, err
 	}
