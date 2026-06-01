@@ -1,73 +1,87 @@
-# AGENTS.md — Guidance for AI Agents & Developers
+# Agents
 
-This file helps AI coding agents (and human developers) work effectively with the AegisClaw codebase and its documentation.
+This file contains the canonical instructions for common operational tasks (especially daemon lifecycle) when working in this tree.
 
-## Core Philosophy
+## Start and Stop Controls (Follow Exactly)
 
-AegisClaw is a **paranoid-by-design**, security-first agent platform that runs skills in isolated Firecracker microVMs with Governance Court review for every change.
+The Host Daemon **must** run as root on Linux (for Firecracker microVMs and privileged operations).
 
-**Golden Rule**: No feature is considered done until its corresponding user journey has automated tests.
+**Recommended (preferred):**
+- `make start` — starts the daemon (internally uses `sudo ./bin/aegis start`)
+- `make stop` — stops the daemon (no sudo required)
 
-## When Given a Task, Follow This Order
+**Manual equivalents:**
+- Start (with logging): `sudo ./bin/aegis start &> aegis.log`   (or `sudo ./bin/aegis start --foreground` for debugging)
+- Stop: `./bin/aegis stop`
 
-1. **Read the Roadmap**  
-   `docs/roadmap.md` — Understand the current phase and which user journeys matter most right now.
+**Important notes on sudo / passwords:**
+- The `sudo` commands above will prompt for a password on most machines.
+- On the original development environment, passwordless sudo (NOPASSWD) was configured for these exact commands, which is why previous notes said "no password needed".
+- **Do not assume passwordless sudo** when working on other machines, in CI, or when onboarding new contributors. Update your sudoers if you want passwordless operation for development:
+  ```
+  yourusername ALL=(ALL) NOPASSWD: /path/to/bin/aegis, /path/to/scripts/build-microvms-docker.sh
+  ```
+  (Adjust paths and be extremely careful with NOPASSWD rules.)
 
-2. **Check Testing Standards**  
-   `docs/testing-standards.md` — Know the minimum coverage and test requirements before starting.
+**Environment variables under sudo:**
+- The daemon no longer requires you to manually export `AEGIS_ROOTFS_DIR` and `AEGIS_KERNEL_PATH` through sudo in most cases.
+- When started via `sudo`, it automatically detects the original user via `SUDO_USER` and prefers that user's `~/.aegis/firecracker/` directory for kernels and images.
+- A wrapper script is now *optional* (only needed if you want to force specific paths or enable debug logging). Simple `sudo ./bin/aegis start` or `sudo make start` should "just work" after you run `make build-microvms` as your normal user.
 
-3. **Understand the Relevant Area**
-   - New feature or capability → Start with the appropriate file in `docs/specs/`
-   - Product direction or requirements → `docs/prd/`
-   - Implementation steps → `docs/implementation-plan/`
-   - User onboarding or tutorials → `docs/guides/first-skill-tutorial.md`
+**MicroVM / rootfs builds:**
+- `make build-microvms` (or direct `bash scripts/build-microvms-docker.sh`)
+- The script internally uses `sudo` when it needs to create or chown directories under `/opt/aegis` (common on Linux). It will prompt unless you have configured NOPASSWD for the specific operations or run the whole build as root (not recommended).
+- On non-Linux or when using Docker sandboxes, microVM builds are often skipped.
 
-4. **Review Related Docs**
-   - Architecture overview: `docs/architecture.md`
-   - Memory system details: `docs/specs/memory-store.md` and `docs/specs/memory-vm.md`
-   - Governance & security: `docs/prd/security-model.md`, `docs/prd/governance-court.md`, `docs/specs/governance-court.md`
+## Accessing the Web UI for Review (SSH / Remote Machines)
 
-5. **Propose Changes the AegisClaw Way**
-   - Use the proper skill/proposal flow when modifying behavior
-   - All significant changes should go through the Governance Court (even for internal tools)
-   - Update `CHANGELOG.md` for any new phases or major features
+The Web Portal is only reachable through the Host Daemon's hardened reverse proxy (see `web-portal-vm.md`).
 
-## Key Files Every Agent Should Know
+**Default (localhost only):**
+- UI available at `http://localhost:8080` on the machine running the daemon.
 
-| File                              | Purpose                                      | Read When |
-|-----------------------------------|----------------------------------------------|---------|
-| `docs/roadmap.md`                 | Phased plan + user journey testing rule      | Always at the start of a task |
-| `docs/testing-standards.md`       | Test coverage, CI, and quality rules         | Before writing or modifying code |
-| `docs/prd/index.md`               | Product vision and high-level requirements   | New features or major changes |
-| `docs/specs/`                     | Detailed technical specifications            | Implementing or modifying components |
-| `docs/implementation-plan/`       | Numbered step-by-step tasks                  | Planning implementation work |
-| `docs/guides/first-skill-tutorial.md` | Practical skill creation walkthrough     | Working on skill-related features |
-| `CHANGELOG.md`                    | Recent phase history                         | Understanding current state of the project |
+**From another computer (SSH session):**
 
-## Important Rules for Agents
-
-- **Never bypass security gates** in the builder pipeline, even during development.
-- **Always think in terms of user journeys** (see `roadmap.md` for the current list).
-- **Prefer modular updates** — update only the relevant file in `prd/`, `specs/`, or `implementation-plan/` rather than writing large monolithic changes.
-- **Document as you go** — if you add or change behavior, update the corresponding spec or PRD section.
-- **Use the existing patterns** — look at how similar features were implemented in previous phases.
-
-## Quick Commands for Context
-
+**Recommended safe method — SSH local port forwarding (no changes to binding):**
 ```bash
-# See current status and active proposals
-./aegisclaw status
-
-# View recent audit log
-./aegisclaw audit log --limit 20
-
-# Run evaluation harness (very useful for testing)
-./aegisclaw eval run
+# On your local machine
+ssh -L 8080:localhost:8080 user@remote-server
+# Then open http://localhost:8080 in your local browser
 ```
 
----
+**Alternative (bind to all interfaces — use only on trusted networks):**
+```bash
+AEGIS_WEB_PORTAL_PROXY_ADDR=0.0.0.0:8080 sudo ./bin/aegis start
+# (or with make: AEGIS_WEB_PORTAL_PROXY_ADDR=0.0.0.0:8080 sudo make start)
+```
+- You will see a warning in the logs when binding non-localhost.
+- Then access `http://<server-ip>:8080` from your other computer.
+- **Security note**: This exposes the rich UI (and any unauthenticated actions) to the network. Only use for short review/debug sessions.
 
-**Goal**: Make every agent (human or AI) faster and safer by pointing them to the right documentation at the right time.
+The internal portal address can also be overridden with `AEGIS_WEB_PORTAL_INTERNAL_ADDR` if needed.
 
-If you're an AI agent reading this, start with the **Roadmap** and **Testing Standards** before writing any code.
+After review, stop the daemon normally (`./bin/aegis stop` or Ctrl+C in foreground mode) and restart with default localhost binding for normal use.
 
+## Running Tests (After Starting the Daemon Where Required)
+
+- Unit tests (safe, no daemon needed): `make test` or `go test ./...`
+- Integration tests that exercise the running daemon: `make test-integration`
+- E2E / Playwright tests (web portal): `make test-e2e` or `npm test`
+
+Many E2E and integration tests require the full daemon + Hub + components to be running first (use `make start` per the rules above). The thin web-portal binary can be exercised in isolation via its own test fixtures for contract-level checks.
+
+## Other Common Commands
+
+- `make build` / `make build-binaries`
+- `make doctor`
+- `make status`
+- `make sbom` (7.8 SBOM + cosign hooks; additive, see Makefile)
+- `make clean`
+
+See the Makefile for the full list of targets and the current implementation of start/stop.
+
+## Golden Rules
+
+- Never start or stop the daemon except via the exact mechanisms documented here.
+- When in doubt while working on this branch, re-read this file before issuing any privileged or lifecycle command.
+- Full user journeys (especially those involving Court, Builder, and real microVMs) can only be meaningfully tested with the daemon actually running.

@@ -1,0 +1,13 @@
+{
+  "name": "aegisclaw-e2e",
+  "version": "1.0.0",
+  "description": "E2E tests for AegisClaw Web Portal",
+  "scripts": {
+    "test": "playwright test e2e/chat.spec.js --project=chromium",
+    "test:headed": "playwright test e2e/chat.spec.js --project=chromium --headed",
+    "test:contract": "AEGIS_E2E_FIXTURE=1 playwright test e2e/journeys.spec.js --project=chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.0-alpha-2026-05-30"
+  }
+}

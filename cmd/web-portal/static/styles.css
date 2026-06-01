@@ -1,0 +1,306 @@
+:root {
+  color-scheme: dark;
+  --bg: #0a0a0a;
+  --surface: #1f1f1f;
+  --surface-elevated: #2a2a2a;
+  --accent: #00d4ff;
+  --success: #22ff88;
+  --warning: #ffcc00;
+  --danger: #ff3333;
+  --text: #e0e0e0;
+  --text-secondary: #aaaaaa;
+  --border: #333333;
+  --shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --breakpoint-tablet: 1180px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+body { line-height: 1.5; }
+button, textarea { font: inherit; }
+button { cursor: pointer; }
+
+.app-shell {
+  min-height: 100vh;
+  padding: 1rem;
+  background:
+    radial-gradient(circle at top right, rgba(0, 212, 255, 0.10), transparent 28%),
+    linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0) 18%),
+    var(--bg);
+}
+
+.topbar,
+.panel,
+.subpanel,
+.stat-card,
+.list-card,
+.chat-status,
+.message-bubble,
+.tool-event,
+.safe-mode-bar {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.topbar {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1.2fr 2fr 1fr;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.brand-block,
+.status-blocks,
+.topbar-meta,
+.panel-heading,
+.subpanel-header,
+.safe-mode-bar,
+.composer-actions,
+.message-meta,
+.tool-event__header {
+  display: flex;
+  align-items: center;
+}
+
+.brand-block { gap: 0.85rem; }
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: rgba(0, 212, 255, 0.12);
+  border: 1px solid rgba(0, 212, 255, 0.4);
+}
+
+.eyebrow {
+  margin: 0 0 0.15rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.status-blocks,
+.topbar-meta { justify-content: space-between; gap: 1rem; }
+.primary-nav { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+
+.status-chip,
+.nav-button,
+.avatar-button,
+.primary-button,
+.secondary-button,
+.danger-button {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  color: var(--text);
+  padding: 0.6rem 0.95rem;
+}
+
+.nav-button.is-active,
+.primary-button {
+  background: rgba(0, 212, 255, 0.16);
+  border-color: rgba(0, 212, 255, 0.55);
+}
+
+.primary-button:hover,
+.nav-button:hover,
+.secondary-button:hover,
+.avatar-button:hover {
+  border-color: var(--accent);
+}
+
+.danger-button {
+  background: rgba(255, 51, 51, 0.12);
+  border-color: rgba(255, 51, 51, 0.4);
+}
+
+.status-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 0.5rem;
+}
+.status-dot--success { background: var(--success); }
+.status-divider { opacity: 0.45; margin: 0 0.45rem; }
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr) minmax(250px, 300px);
+  gap: 1rem;
+}
+
+.main-column {
+  display: grid;
+  gap: 1rem;
+}
+
+.panel,
+.subpanel {
+  padding: 1rem;
+}
+
+.content-panel { display: grid; gap: 1rem; }
+.panel-heading,
+.subpanel-header,
+.composer-actions,
+.safe-mode-bar,
+.tool-event__header,
+.message-meta { justify-content: space-between; gap: 0.75rem; }
+.panel-heading h1,
+.panel-heading h2,
+.subpanel-header h3 { margin: 0; }
+.subtle { color: var(--text-secondary); font-size: 0.9rem; }
+
+.stats-grid,
+.two-column-grid,
+.card-grid { display: grid; gap: 0.85rem; }
+.stats-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.two-column-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.card-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+
+.stat-card,
+.list-card,
+.tool-event,
+.message-bubble { padding: 0.85rem 1rem; }
+.stat-card span,
+.list-card small { color: var(--text-secondary); }
+.stat-card strong { font-size: 1.7rem; display: block; margin-top: 0.2rem; }
+
+.list-stack {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.list-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+}
+
+.list-card.active {
+  border-color: rgba(0, 212, 255, 0.4);
+  box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.08) inset;
+}
+
+.button-stack { display: grid; gap: 0.65rem; }
+.chat-status {
+  padding: 0.8rem 1rem;
+  color: var(--text-secondary);
+  background: rgba(0, 212, 255, 0.05);
+}
+
+.chat-stream {
+  display: grid;
+  gap: 0.75rem;
+  min-height: 18rem;
+}
+
+.message-bubble { display: grid; gap: 0.5rem; }
+.message-bubble.user {
+  background: rgba(0, 212, 255, 0.08);
+  justify-self: end;
+  max-width: 85%;
+}
+.message-bubble.agent,
+.tool-event { max-width: 100%; }
+.tool-event { background: rgba(255, 204, 0, 0.08); }
+.message-markdown {
+  display: grid;
+  gap: 0.55rem;
+}
+.message-markdown p,
+.message-markdown ul,
+.message-markdown h1,
+.message-markdown h2,
+.message-markdown h3 { margin: 0; }
+.message-markdown ul { padding-left: 1.2rem; }
+.message-meta {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.chat-composer { display: grid; gap: 0.75rem; }
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: #111;
+  color: var(--text);
+  padding: 0.9rem 1rem;
+}
+textarea:focus,
+button:focus-visible { outline: 2px solid rgba(0, 212, 255, 0.5); outline-offset: 2px; }
+
+.safe-mode-bar {
+  padding: 0.9rem 1rem;
+  background: rgba(255, 51, 51, 0.06);
+}
+
+.meta-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+}
+.meta-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.meta-list dt { color: var(--text-secondary); }
+.meta-list dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+
+.log-box {
+  margin: 0;
+  min-height: 12rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  color: var(--text-secondary);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 1180px) {
+  .workspace-grid,
+  .topbar,
+  .stats-grid,
+  .two-column-grid {
+    grid-template-columns: 1fr;
+  }
+  .status-blocks,
+  .topbar-meta,
+  .composer-actions,
+  .safe-mode-bar,
+  .panel-heading,
+  .subpanel-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

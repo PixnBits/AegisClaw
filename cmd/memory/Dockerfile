@@ -1,0 +1,74 @@
+# cmd/memory/Dockerfile
+# Minimal container image for the Phase 1 Memory VM (paired 1:1 with an Agent Runtime).
+#
+# Exported by scripts/build-microvms-docker.sh into memory.img.tar.gz for Firecracker guests.
+#
+# SPEC REFERENCES:
+#   - docs/specs/memory-vm.md (ShortTermContext 32k hard limit + zeroization, LongTermMemory
+#     with TTL + semantic search + zeroization on purge, strict per-agent ACLs fail-closed)
+#   - docs/specs/agent-runtime.md (1:1 pairing contract; agent calls memory.* exclusively via Hub)
+#   - docs/prd/security-model.md (no cross-agent memory access; ACL enforcement before every op)
+#   - no-stubs-plan/phase-1.md (real thin memory binary must be packageable for guests)
+
+# === Build stage ===
+FROM golang:1.24-alpine AS builder
+
+ENV GOTOOLCHAIN=auto
+WORKDIR /app
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/memory ./cmd/memory
+COPY internal ./internal
+
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /memory ./cmd/memory
+
+# === Runtime stage ===
+FROM alpine:3.18
+
+RUN apk add --no-cache ca-certificates tzdata
+
+RUN addgroup -S aegis && adduser -S -G aegis aegis
+
+WORKDIR /app
+
+COPY --from=builder /memory /usr/local/bin/memory
+
+COPY <<'EOF' /init
+#!/bin/sh
+export PATH=/usr/local/bin:/usr/bin:/bin
+export HOME=/root
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sys /sys 2>/dev/null || true
+mount -t devtmpfs dev /dev 2>/dev/null || true
+
+if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
+  echo 1024 > /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || true
+fi
+i=0
+while [ "$i" -lt 60 ]; do
+  if dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 0.05
+done
+
+mkdir -p /etc/aegis 2>/dev/null || true
+
+exec >/dev/console 2>&1
+exec /usr/local/bin/memory
+EOF
+
+RUN chmod +x /init
+
+ENTRYPOINT ["/init"]
+
+# Notes:
+# - Implements hard-bounded short-term context + TTL long-term + explicit zeroization.
+# - Enforces per-agent ACLs (one agent can never read another agent's memories).
+# - Paired launch in orchestrator guarantees the 1:1 relationship required by the spec.

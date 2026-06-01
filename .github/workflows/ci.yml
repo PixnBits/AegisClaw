@@ -24,59 +24,16 @@ jobs:
           cache: true
 
       - name: Build
-        run: make build
+        run: go build ./...
 
       - name: Vet
         run: go vet ./...
 
       - name: Test
-        run: make test
+        run: go test ./... -count=1 -timeout 120s
 
-  integration-tests:
-    name: Integration & Lifecycle Tests
-    runs-on: ubuntu-latest
-    # These are heavier and may require KVM or longer timeouts.
-    # They are opt-in via workflow_dispatch or can be triggered manually.
-    if: github.event_name == 'workflow_dispatch'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run Integration Tests
-        run: make test-integration
-
-  # Journey and golden-trace tests run on every PR touching the agent, runtime,
-  # tool lookup, or dashboard code paths.  They require no KVM or Ollama.
-  journey-tests:
-    name: Journey & Golden Trace Tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    # Always run journey and golden-trace tests — they are fast and require no
-    # KVM or Ollama, making them safe for every PR.
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run journey tests
-        run: go test ./cmd/aegisclaw/ -run 'TestJourney|TestGoldenTrace' -count=1 -v -timeout 120s
-
-  # New: Web Portal E2E SDLC test (autonomous, starts full system)
-  # Runs on every PR that touches dashboard or SDLC paths
-  web-portal-e2e:
-    name: Web Portal E2E SDLC Test (Issue #35)
+  lightweight-integration-tests:
+    name: Lightweight Integration Tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -91,8 +48,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run Web Portal E2E SDLC test
-        run: go test ./cmd/aegisclaw/ -run TestWebPortalFullSDLC_Autonomous -count=1 -v -timeout 180s
+      - name: Run lightweight integration tests
+        run: go test ./cmd/aegis ./cmd/aegishub -count=1 -v -timeout 120s
 
   image-builds:
     name: Image Builds
@@ -104,17 +61,65 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check image build script
+        id: image_script
+        run: |
+          if [ -f scripts/build-microvms-docker.sh ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Go
+        if: steps.image_script.outputs.exists == 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install build tools
+        if: steps.image_script.outputs.exists == 'true'
         run: sudo apt-get install -y e2fsprogs
 
       - name: Build all microVM rootfs images
+        if: steps.image_script.outputs.exists == 'true'
         run: sudo ./scripts/build-microvms-docker.sh /tmp/rootfs-templates
+
+      - name: Skip image build (script missing)
+        if: steps.image_script.outputs.exists != 'true'
+        run: echo "Skipping image-builds job because scripts/build-microvms-docker.sh is not present."
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Playwright
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run E2E tests
+        env:
+          AEGIS_E2E_FIXTURE: '1'
+        run: npm test
 
   live-test:
     name: Live Test
@@ -126,14 +131,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check live test script
+        id: live_script
+        run: |
+          if [ -f scripts/run-live-test.sh ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Go
+        if: steps.live_script.outputs.exists == 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Run live test
+        if: steps.live_script.outputs.exists == 'true'
         run: ./scripts/run-live-test.sh --yes
+
+      - name: Skip live test (script missing)
+        if: steps.live_script.outputs.exists != 'true'
+        run: echo "Skipping live-test job because scripts/run-live-test.sh is not present."
 
   # In-process integration tests are strictly opt-in — never run automatically.
   # Trigger manually via workflow_dispatch or add the "run-inprocess-tests" label

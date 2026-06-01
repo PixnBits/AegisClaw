@@ -44,6 +44,15 @@ In addition to basic `tool.list`, agents must be able to perform **semantic sear
 - `../store-vm.md` (owns the canonical registry)
 - `../builder-vm.md`
 
+## Implementation Status (as of Phase 7.3)
+- **Current**: Pure stdlib implementation in `cmd/agent` (`AgentSkillIndex`).
+  - Keyword + Jaccard overlap + substring + cheap Levenshtein + light TF scoring.
+  - Fully integrated into the 6-step reasoning loop (agents are now tool-aware).
+  - Dynamic refresh via `skill.register` / `skill.deployed` messages (EventBus-ready).
+  - Fast local `tool.list` / `tool.search` + `tools.snapshot` for portal/CLI.
+  - No external dependencies (as agreed for this phase).
+- **Future**: Can evolve to real embeddings (chromem-go etc.) when a lightweight model is available inside Agent VMs, with EventBus invalidation on skill deployment.
+
 ## Traceability
 **Driven by:**
 - Old `internal/lookup` package

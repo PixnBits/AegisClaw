@@ -37,7 +37,7 @@ While this architecture is sound, **visibility into the continuous development p
 - ✅ Artifact signing
 - ⚠️ **Limited**: Build status visible only through CLI/status commands, no live dashboard
 
-#### 3. **Web Dashboard** (`internal/dashboard/server.go`, `docs/web-dashboard.md`)
+#### 3. **Web Dashboard** (`internal/dashboard/server.go`, `docs/specs/web-portal.md`)
 **Implemented:**
 - Overview page (system health, recent activity)
 - Skills & Proposals listing
@@ -625,7 +625,7 @@ Implement a comprehensive source code browser with:
 
 - `docs/architecture.md` — North-star architecture, component boundaries
 - `docs/PRD.md` — Original SDLC vision (§11)
-- `docs/web-dashboard.md` — Dashboard spec (partial implementation)
+- `docs/specs/web-portal.md` — Current web portal spec (features, look & feel, API, implementation status)
 - `docs/implementation-plan.md` — Phased delivery roadmap
 - `docs/prd-deviations.md` — Alignment tracking
 

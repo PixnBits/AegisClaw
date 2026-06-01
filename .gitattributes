@@ -1,0 +1,7 @@
+# E2E browser visual regression snapshots (Playwright toHaveScreenshot etc.)
+# These MUST be stored with Git LFS. See TESTING.md for setup instructions.
+e2e/snapshots/**/*.png filter=lfs diff=lfs merge=lfs -text
+e2e/snapshots/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+e2e/snapshots/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+
+# Add other large binary asset directories here as the project grows (never use bare *.png at repo root).

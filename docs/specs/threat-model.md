@@ -25,7 +25,7 @@ AegisClaw assumes **hostile agents, compromised components, and malicious users*
 
 ### 2. Malicious Skill (Supply Chain)
 - **Threat**: Backdoored or vulnerable skill approved by Court
-- **Mitigations**: Builder Security Gates (SAST, SCA, secrets scanning, policy-as-code), Court review by 7 personas, SBOM generation, rollback capability
+- **Mitigations**: Builder Security Gates (SAST, SCA, secrets scanning, policy-as-code), Court review by 7 personas, SBOM generation (make sbom + Builder hooks, 7.8), image signing (cosign placeholders), rollback capability. See grok-build-execution-plan.md:7.8 and threat-model.md:3 implementation notes.
 
 ### 3. Compromised Network Boundary VM
 - **Threat**: Secrets leak, unrestricted outbound

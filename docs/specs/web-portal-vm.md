@@ -36,6 +36,7 @@ The Web Portal VM is a dedicated, isolated sandbox that hosts the rich collabora
 ## Startup & Readiness
 - Host Daemon starts the Web Portal VM during system bootstrap
 - Exposes health endpoint (`/health`) for Host Daemon monitoring
+- The Host Daemon performs an explicit HTTP /health probe (over vsock for Firecracker or TCP for Docker Sandbox) *before* starting the public reverse proxy on :8080 and emitting `WEB_PORTAL_READY`. This eliminates the post-VM-start race that previously produced 502s for early requests.
 - Ready signal sent to AegisHub when the web server is listening internally
 
 ## Integration Points
@@ -57,7 +58,8 @@ The Web Portal VM is a dedicated, isolated sandbox that hosts the rich collabora
 - Must gracefully handle AegisHub or backend unavailability
 
 ## Related Documents
-- [../web-portal.md](../web-portal.md) — User-facing application specification
+- [./web-portal.md](./web-portal.md) — User-facing application specification (features, look & feel, API surface)
+- [./web-portal-screens.md](./web-portal-screens.md) — Screen designs and wireframes (legacy + current)
 - [../host-daemon.md](../host-daemon.md) — Reverse proxy and lifecycle management
 - [../aegishub.md](../aegishub.md) — All communication mediation
 - [../../architecture.md](../../architecture.md) — Overall sandbox model

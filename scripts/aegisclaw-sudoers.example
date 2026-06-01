@@ -1,0 +1,16 @@
+# Example sudoers fragment for passwordless agent debugging on a dev machine.
+# sudoers.d does NOT allow wildcards — list exact command paths only.
+#
+# Install (edit YOURUSER and paths first):
+#   sudo cp scripts/aegisclaw-sudoers.example /etc/sudoers.d/aegisclaw
+#   sudo chmod 440 /etc/sudoers.d/aegisclaw
+#   sudo visudo -c
+#
+# For reading Firecracker console logs, use sudo directly (no wildcard rules), e.g.:
+#   sudo tail -100 /root/.aegis/state/fc-web-portal-console.log
+
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/bin/aegis
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/build-microvms-docker.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/clean-firecracker-rootfs.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/create-firecracker-rootfs.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/ensure-aegis-dir.sh

@@ -1,304 +1,637 @@
-// This version routes all proposal operations through a remote Store VM client.
-// AegisHub acts as a strict mediator. It holds no persistent proposal state.
-// The remote ProposalStore is wired at startup via the Store VM vsock connection.
-// All vsock connections are authenticated via mutual handshake.
-// Input is strictly validated; errors are sanitized to prevent information leakage.
-// Connection timeouts prevent slow-client DoS.
-// Trust Boundary: AegisHub trusts the Store VM only after successful handshake.
-// All external messages are considered hostile until proven otherwise.
-
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
+	"log"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/PixnBits/AegisClaw/internal/ipc"
-	"github.com/PixnBits/AegisClaw/internal/store/remote"
-	"go.uber.org/zap"
-	"golang.org/x/sys/unix"
+	"AegisClaw/internal/transport/hubclient" // for HubVsockPort constant (Phase 1.1c vsock support)
+	"github.com/mdlayher/vsock"
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
-const defaultAegisHubVSOCKPort = 9998
-const requestTimeout = 30 * time.Second
+var hubSocketPath = "~/.aegis/hub.sock"
 
-type HubRequest struct {
-	ID      string          `json:"id"`
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+var registered = make(map[string]*RegisteredComponent)
+var aclRules []ACLRule
+var registeredMutex sync.RWMutex
+var tempConnCounter int = 0
+var tempConnMutex sync.Mutex
+
+// pendingRPC correlates synchronous hub RPC replies (daemon ephemeral → agent/store).
+var pendingRPC = struct {
+	sync.Mutex
+	ch map[string]chan Message
+}{ch: make(map[string]chan Message)}
+
+func isEphemeralHubClient(id string) bool {
+	return id == "aegis-daemon-temp" ||
+		strings.HasPrefix(id, "aegis-daemon-temp-") ||
+		strings.HasPrefix(id, "daemon-temp-")
 }
 
-type HubResponse struct {
-	ID      string          `json:"id"`
-	Success bool            `json:"success"`
-	Error   string          `json:"error,omitempty"`
-	Data    json.RawMessage `json:"data,omitempty"`
+func registerPendingRPC(requesterID string) chan Message {
+	ch := make(chan Message, 1)
+	pendingRPC.Lock()
+	pendingRPC.ch[requesterID] = ch
+	pendingRPC.Unlock()
+	return ch
 }
 
-type RegisterVMPayload struct {
-	VMID string `json:"vm_id"`
-	Role string `json:"role"`
+func clearPendingRPC(requesterID string) {
+	pendingRPC.Lock()
+	delete(pendingRPC.ch, requesterID)
+	pendingRPC.Unlock()
 }
 
-type handshakeRequest struct {
-	Type   string `json:"type"`
-	Secret string `json:"secret"`
-	VMID   string `json:"vm_id"`
-	Role   string `json:"role"`
+func deliverPendingRPC(destID string, msg Message) bool {
+	pendingRPC.Lock()
+	ch, ok := pendingRPC.ch[destID]
+	pendingRPC.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- msg:
+		return true
+	default:
+		return false
+	}
 }
 
-type authenticatedVM struct {
-	ID   string
-	Role ipc.VMRole
+type ComponentEncoders struct {
+	Encoder *json.Encoder
+	Decoder *json.Decoder
+	Mutex   sync.Mutex
 }
 
-type server struct {
-	logger *zap.Logger
-	hub    *ipc.MessageHub
+type Message struct {
+	Source      string      `json:"source"`
+	Destination string      `json:"destination"`
+	Command     string      `json:"command"`
+	Payload     interface{} `json:"payload"`
+	Timestamp   string      `json:"timestamp"`
+	Signature   string      `json:"signature"`
 }
 
-func main() {
-	logger, _ := zap.NewProduction()
-	defer logger.Sync()
+type RegisteredComponent struct {
+	ID        string
+	PublicKey ed25519.PublicKey
+	Encoders  *ComponentEncoders
+	Version   string
+}
 
-	srv := &server{
-		logger: logger,
-		hub:    ipc.NewMessageHubNoKernel(logger),
+type ACLRule struct {
+	Source      string   `yaml:"source"`
+	Destination string   `yaml:"destination"`
+	Commands    []string `yaml:"commands"`
+}
+
+type ACLConfig struct {
+	Rules []ACLRule `yaml:"rules"`
+}
+
+func expandPath(path string) string {
+	if path[:2] == "~/" {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+var aclFilePath string
+var lastACLModTime time.Time
+
+func findACLFile() string {
+	if p := os.Getenv("AEGIS_ACL_FILE"); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
 	}
 
-	if err := srv.hub.Start(); err != nil {
-		logger.Fatal("message hub failed to start", zap.Error(err))
+	candidates := []string{
+		"config/acls.yaml",
+		"./config/acls.yaml",
+		filepath.Join(filepath.Dir(os.Args[0]), "config/acls.yaml"),
 	}
 
-	// Wire the remote ProposalStore via Store VM vsock connection.
-	remoteVsockAddr := os.Getenv("STORE_VM_VSOCK_ADDR")
-	if remoteVsockAddr == "" {
-		remoteVsockAddr = "vsock://3:9999"
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, "config/acls.yaml"))
 	}
 
-	remoteClient, err := remote.NewRemoteClient(remoteVsockAddr)
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func loadACL() {
+	path := findACLFile()
+	if path == "" {
+		log.Printf("No ACL file found, using default deny-all")
+		aclRules = nil
+		aclFilePath = ""
+		return
+	}
+	aclFilePath = path
+
+	file, err := os.Open(path)
 	if err != nil {
-		logger.Fatal("failed to create remote store client", zap.Error(err))
+		log.Printf("Failed to open ACL %s: %v", path, err)
+		return
 	}
-	defer func() {
-		if err := remoteClient.Close(); err != nil {
-			logger.Warn("failed to close remote store client", zap.Error(err))
+	defer file.Close()
+
+	decoder := yaml.NewDecoder(file)
+	var config ACLConfig
+	if err := decoder.Decode(&config); err != nil {
+		log.Printf("Failed to decode ACL: %v", err)
+		return
+	}
+	aclRules = config.Rules
+	if fi, err := os.Stat(path); err == nil {
+		lastACLModTime = fi.ModTime()
+	}
+	log.Printf("Loaded %d ACL rules from %s", len(aclRules), path)
+}
+
+func reloadACLIfChanged() {
+	if aclFilePath == "" {
+		return
+	}
+	fi, err := os.Stat(aclFilePath)
+	if err != nil {
+		return
+	}
+	if fi.ModTime().After(lastACLModTime) {
+		log.Printf("ACL file changed, reloading...")
+		loadACL() // re-use the loader (it will update modtime)
+	}
+}
+
+func checkACL(source, dest, cmd string) bool {
+	for _, rule := range aclRules {
+		if !aclMatch(rule.Source, source) {
+			continue
+		}
+		if !aclMatch(rule.Destination, dest) {
+			continue
+		}
+		for _, c := range rule.Commands {
+			if aclMatch(c, cmd) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// aclMatch supports exact match, "*" wildcard, and suffix "*" prefix-match (e.g. "memory.*" matches "memory.get_context"; "court-persona-*" matches "court-persona-ciso").
+// For commands without trailing *, exact match only (stricter than prior loose HasPrefix).
+func aclMatch(pattern, value string) bool {
+	if pattern == "*" || pattern == value {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		prefix := strings.TrimSuffix(pattern, "*")
+		return strings.HasPrefix(value, prefix)
+	}
+	return false
+}
+
+func verifySignature(msg Message, pubKey ed25519.PublicKey) bool {
+	// Create a copy without signature
+	msgCopy := msg
+	msgCopy.Signature = ""
+	data, err := json.Marshal(msgCopy)
+	if err != nil {
+		return false
+	}
+	sigBytes, err := base64.StdEncoding.DecodeString(msg.Signature)
+	if err != nil {
+		return false
+	}
+	return ed25519.Verify(pubKey, data, sigBytes)
+}
+
+func startHub(cmd *cobra.Command, args []string) {
+	loadACL()
+
+	// Hot-reload support per aegishub.md
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			reloadACLIfChanged()
 		}
 	}()
 
-	logger.Info("remote store client connected", zap.String("addr", remoteVsockAddr))
+	socket := expandPath(hubSocketPath)
+	dir := filepath.Dir(socket)
+	os.MkdirAll(dir, 0700)
+	os.Remove(socket)
 
-	// Register proposalBackend as the "store-vm" skill so preferredBackendForAction
-	// routes proposal actions through the real remote Store VM.
-	proposalBackend := ipc.NewProposalBackend(remoteClient.Proposals(), logger)
-	if err := srv.hub.RegisterSkill("store-vm", proposalBackend.Handle); err != nil {
-		logger.Fatal("failed to register store-vm skill", zap.Error(err))
-	}
-	if err := srv.hub.RegisterSkill("chat-router", ipc.NewChatRouterHandler(logger)); err != nil {
-		logger.Fatal("failed to register chat-router skill", zap.Error(err))
-	}
-
-	logger.Info("store-vm and chat-router skills registered with message-hub")
-
-	port := uint32(defaultAegisHubVSOCKPort)
-	if portEnv := os.Getenv("AEGISHUB_VSOCK_PORT"); portEnv != "" {
-		parsed, err := strconv.ParseUint(portEnv, 10, 32)
-		if err != nil {
-			logger.Fatal("invalid AEGISHUB_VSOCK_PORT", zap.String("value", portEnv), zap.Error(err))
-		}
-		port = uint32(parsed)
-	}
-
-	listener, err := listenAFVsock(port)
+	listener, err := net.Listen("unix", socket)
 	if err != nil {
-		logger.Fatal("aegishub listen failed", zap.Error(err))
+		fmt.Printf("Failed to start AegisHub: %v\n", err)
+		os.Exit(1)
 	}
-	defer func() {
-		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			logger.Warn("failed to close listener", zap.Error(err))
-		}
-	}()
+	defer listener.Close()
 
-	logger.Info("aegishub listening", zap.Uint32("vsock_port", port))
-	go srv.acceptLoop(listener)
+	fmt.Println("AegisHub started. Listening on", socket)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, unix.SIGINT, unix.SIGTERM)
-	<-sigCh
+	conns := &sync.Map{}
 
-	srv.hub.Stop()
-}
+	// Phase 1.1c: Start vsock listener for real Firecracker guest microVMs (Agent Runtime, Memory VM, etc.).
+	// Guests connect via vsock using the well-known port (matches hubclient.HubVsockPort = 9999 and Host CID convention).
+	// handleConnection is reused exactly (vsock.Conn implements net.Conn).
+	// This satisfies aegishub.md §Handshake Sequence: "MicroVM connects to AegisHub via vsock".
+	go startVsockListener(conns)
 
-func (s *server) acceptLoop(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) || errors.Is(err, unix.EBADF) {
-				return
-			}
-			s.logger.Warn("aegishub: accept failed", zap.Error(err))
-			return
+			log.Printf("Accept error: %v", err)
+			continue
 		}
-		go s.handleConn(conn)
+		go handleConnection(conn, conns)
 	}
 }
 
-func (s *server) handleConn(conn net.Conn) {
-	defer conn.Close()
-
-	// Task 5: Connection Hardening - Enforce read/write deadlines to mitigate slow-client DoS.
-	conn.SetReadDeadline(time.Now().Add(requestTimeout))
-	conn.SetWriteDeadline(time.Now().Add(requestTimeout))
-
-	authn, err := s.authenticateConn(conn)
+// startVsockListener starts a parallel listener for guest microVMs over vsock.
+// Port 9999 is the documented control-plane port for AegisHub (distinct from per-VM egress ports 9xxx).
+// On non-Linux or environments without vsock support it logs and returns gracefully (no hard failure).
+// References: agent-runtime.md §Communication, security-model.md §Isolation Strategy.
+func startVsockListener(conns *sync.Map) {
+	port := uint32(hubclient.HubVsockPort) // 9999 — matches hubclient and guest dialing convention
+	l, err := vsock.Listen(port, nil)
 	if err != nil {
-		s.logger.Warn("aegishub: handshake failed", zap.Error(err))
+		log.Printf("AegisHub: vsock listen on port %d failed (expected on non-Linux or without /dev/vsock): %v — real Firecracker guests (agent/memory VMs) will fall back to unix socket in dev", port, err)
+		return
+	}
+	defer l.Close()
+
+	fmt.Printf("AegisHub: listening on vsock port %d for guest microVMs (Agent Runtime + Memory VM per Phase 1)\n", port)
+
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			log.Printf("vsock accept error: %v", err)
+			continue
+		}
+		go handleConnection(conn, conns)
+	}
+}
+
+func handleConnection(conn net.Conn, conns *sync.Map) {
+	defer conn.Close()
+	decoder := json.NewDecoder(conn)
+	encoder := json.NewEncoder(conn)
+
+	// First message must be register
+	var regMsg Message
+	if err := decoder.Decode(&regMsg); err != nil {
+		log.Printf("Failed to decode register message: %v", err)
+		return
+	}
+	if regMsg.Destination != "hub" || regMsg.Command != "register" {
+		log.Printf("First message not register: %+v", regMsg)
+		encoder.Encode(map[string]string{"error": "ERR_INVALID_HANDSHAKE"})
 		return
 	}
 
-	// Reset deadlines after the handshake succeeds.
-	conn.SetReadDeadline(time.Time{})
-	conn.SetWriteDeadline(time.Time{})
+	// Parse payload for public key
+	payloadMap, ok := regMsg.Payload.(map[string]interface{})
+	if !ok {
+		encoder.Encode(map[string]string{"error": "ERR_INVALID_PAYLOAD"})
+		return
+	}
+	pubKeyStr, ok := payloadMap["public_key"].(string)
+	if !ok {
+		encoder.Encode(map[string]string{"error": "ERR_MISSING_PUBLIC_KEY"})
+		return
+	}
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKeyStr)
+	if err != nil {
+		encoder.Encode(map[string]string{"error": "ERR_INVALID_PUBLIC_KEY"})
+		return
+	}
+	if len(pubKeyBytes) != ed25519.PublicKeySize {
+		encoder.Encode(map[string]string{"error": "ERR_INVALID_PUBLIC_KEY"})
+		return
+	}
+	pubKey := ed25519.PublicKey(pubKeyBytes)
 
-	dec := json.NewDecoder(conn)
-	enc := json.NewEncoder(conn)
+	// Extract version from payload if available
+	version := "unknown"
+	if versionStr, ok := payloadMap["version"].(string); ok {
+		version = versionStr
+		log.Printf("Hub: Registered component %s with version %s", regMsg.Source, version)
+	} else {
+		log.Printf("Hub: Registered component %s with no version (payload: %+v)", regMsg.Source, payloadMap)
+	}
 
+	// Check if already registered
+	registeredMutex.Lock()
+	componentID := regMsg.Source
+
+	// For daemon connections: if already registered, use a temporary ID
+	if regMsg.Source == "daemon" {
+		if _, exists := registered[regMsg.Source]; exists {
+			// This is a fresh daemon connection (not the persistent one)
+			// Give it a temporary ID
+			tempConnMutex.Lock()
+			tempConnCounter++
+			componentID = fmt.Sprintf("daemon-temp-%d", tempConnCounter)
+			tempConnMutex.Unlock()
+			log.Printf("Hub: Fresh daemon connection registered as %s (original daemon still at %s)", componentID, regMsg.Source)
+		}
+	} else {
+		// Allow re-registration when a guest hub bridge reconnects or a VM restarts.
+		if _, exists := registered[regMsg.Source]; exists {
+			log.Printf("Hub: component %s re-registering — replacing previous connection", regMsg.Source)
+		}
+	}
+
+	encoders := &ComponentEncoders{
+		Encoder: encoder,
+		Decoder: decoder,
+		Mutex:   sync.Mutex{},
+	}
+	registered[componentID] = &RegisteredComponent{ID: componentID, PublicKey: pubKey, Encoders: encoders, Version: version}
+	registeredMutex.Unlock()
+	debugLog("hub", fmt.Sprintf("Registered component %s (hub id %s) version %s", regMsg.Source, componentID, version))
+
+	conns.Store(componentID, conn)
+
+	// Cleanup when connection closes
+	defer func(id string) {
+		registeredMutex.Lock()
+		delete(registered, id)
+		registeredMutex.Unlock()
+		conns.Delete(id)
+		debugLog("hub", fmt.Sprintf("Cleaned up registration for %s", id))
+	}(componentID)
+
+	// Send ACL rules for this component, including the assigned ID
+	response := map[string]interface{}{
+		"status":      "registered",
+		"assigned_id": componentID, // Send the assigned ID back to the client
+		"acls":        aclRules,    // TODO: filter for this component
+	}
+	encoders.Mutex.Lock()
+	encoders.Encoder.Encode(response)
+	encoders.Mutex.Unlock()
+
+	if isEphemeralHubClient(componentID) {
+		ephemeralHubRPCLoop(componentID, encoders)
+		return
+	}
+
+	// Now handle normal messages
 	for {
-		var req HubRequest
-		if err := dec.Decode(&req); err != nil {
-			if err != io.EOF {
-				s.logger.Debug("aegishub: client disconnect or decode error", zap.Error(err))
+		var msg Message
+		if err := decoder.Decode(&msg); err != nil {
+			debugLog("hub", fmt.Sprintf("Decode error: %v", err))
+			return
+		}
+
+		debugLog("hub", fmt.Sprintf("Received message from %s to %s, command: %s", msg.Source, msg.Destination, msg.Command))
+
+		// Verify signature
+		registeredMutex.RLock()
+		regComp, exists := registered[msg.Source]
+		registeredMutex.RUnlock()
+		if !exists {
+			debugLog("hub", fmt.Sprintf("Unauthorized source %s", msg.Source))
+			encoder.Encode(map[string]string{"error": "ERR_UNAUTHORIZED"})
+			log.Printf("Audit: unauthorized source %s", msg.Source)
+			continue
+		}
+		// Signature is now strictly required for all real traffic (per aegishub.md + security model).
+		// "dummy" is only for early dev; it is logged and treated as failure in non-dev mode.
+		if msg.Signature == "" || msg.Signature == "dummy" {
+			if os.Getenv("AEGIS_DEV_MODE") != "1" {
+				encoder.Encode(map[string]string{"error": "ERR_SIGNATURE_REQUIRED"})
+				log.Printf("Audit: missing or dummy signature from %s (set AEGIS_DEV_MODE=1 to allow during development)", msg.Source)
+				continue
 			}
-			return
+			log.Printf("DEV MODE: allowing dummy signature from %s", msg.Source)
+		} else if !verifySignature(msg, regComp.PublicKey) {
+			encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
+			log.Printf("Audit: invalid signature from %s", msg.Source)
+			continue
 		}
 
-		resp := s.dispatch(authn, req)
-		if err := enc.Encode(resp); err != nil {
-			s.logger.Debug("aegishub: failed to encode response", zap.Error(err))
-			return
+		// Check ACL (skip for version commands for debugging)
+		if msg.Command != "get-version" && !checkACL(msg.Source, msg.Destination, msg.Command) {
+			encoder.Encode(map[string]string{"error": "ERR_ACL_VIOLATION"})
+			log.Printf("Audit: ACL violation %s -> %s : %s", msg.Source, msg.Destination, msg.Command)
+			continue
 		}
-		// Reset deadline after successful round-trip to allow normal operation.
-		conn.SetReadDeadline(time.Now().Add(requestTimeout))
-		conn.SetWriteDeadline(time.Now().Add(requestTimeout))
+
+		if msg.Destination == "hub" {
+			if msg.Command == "component.list" {
+				debugLog("hub", fmt.Sprintf("Received component.list query from %s", msg.Source))
+				// Return list of all registered components with versions
+				var components []map[string]string
+				registeredMutex.RLock()
+				for id, comp := range registered {
+					if id != "daemon" { // Don't list the daemon itself
+						debugLog("hub", fmt.Sprintf("  Including component %s version %s", id, comp.Version))
+						components = append(components, map[string]string{
+							"id":      id,
+							"version": comp.Version,
+						})
+					}
+				}
+				registeredMutex.RUnlock()
+				response := map[string]interface{}{
+					"components": components,
+				}
+				debugLog("hub", fmt.Sprintf("Sending component.list response with %d components", len(components)))
+				encoder.Encode(response)
+			} else if msg.Command == "tool.list" {
+				// Forward to store
+				storeMsg := msg
+				storeMsg.Destination = "store"
+				registeredMutex.RLock()
+				storeComp, ok := registered["store"]
+				registeredMutex.RUnlock()
+				if ok && storeComp.Encoders != nil {
+					storeComp.Encoders.Mutex.Lock()
+					storeComp.Encoders.Encoder.Encode(storeMsg)
+					storeComp.Encoders.Mutex.Unlock()
+					// Wait for response from store
+					var storeResp Message
+					err := decoder.Decode(&storeResp)
+					if err != nil {
+						errorMsg := map[string]string{"error": "failed to get from store"}
+						encoder.Encode(errorMsg)
+					} else {
+						encoder.Encode(storeResp.Payload)
+					}
+				} else {
+					errorMsg := map[string]string{"error": "store not available"}
+					encoder.Encode(errorMsg)
+				}
+			} else {
+				// Handle other hub commands
+				response := map[string]interface{}{
+					"status": "ok",
+					"echo":   msg.Payload,
+				}
+				encoder.Encode(response)
+			}
+		} else {
+			// One-way replies (agent poll/chat responses) vs synchronous RPC (memory.get_context, llm.call).
+			if isOneWayHubReply(msg.Command) {
+				forwardReplyToRequester(msg)
+				continue
+			}
+			reply := forwardHubRPC(componentID, msg)
+			encoders.Mutex.Lock()
+			_ = encoders.Encoder.Encode(reply)
+			encoders.Mutex.Unlock()
+		}
 	}
 }
 
-func (s *server) authenticateConn(conn net.Conn) (authenticatedVM, error) {
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	defer conn.SetReadDeadline(time.Time{})
-
-	var req handshakeRequest
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
-		return authenticatedVM{}, fmt.Errorf("decode handshake: %w", err)
+// isOneWayHubReply reports commands that are fire-and-forget replies on the wire (hubclient.Reply),
+// not request/response RPC pairs (hubclient.Send).
+func isOneWayHubReply(command string) bool {
+	if command == "response" || command == "ack" {
+		return true
 	}
-	if req.Type != "handshake" {
-		return authenticatedVM{}, fmt.Errorf("invalid handshake type")
-	}
-	if req.VMID == "" {
-		return authenticatedVM{}, fmt.Errorf("vm_id is required")
-	}
-
-	role, err := parseRole(req.Role)
-	if err != nil {
-		return authenticatedVM{}, err
-	}
-
-	secret, err := loadSharedSecret("AEGISHUB_SHARED_SECRET")
-	if err != nil {
-		return authenticatedVM{}, err
-	}
-	if req.Secret != secret {
-		return authenticatedVM{}, fmt.Errorf("invalid shared secret")
-	}
-
-	if err := s.hub.RegisterVM(req.VMID, role); err != nil {
-		return authenticatedVM{}, fmt.Errorf("register vm: %w", err)
-	}
-
-	if err := json.NewEncoder(conn).Encode(map[string]string{
-		"type":   "handshake_ack",
-		"status": "ok",
-	}); err != nil {
-		return authenticatedVM{}, fmt.Errorf("encode handshake ack: %w", err)
-	}
-
-	return authenticatedVM{ID: req.VMID, Role: role}, nil
+	// Destination component replies like memory.response are inbound to the caller, not outbound from it.
+	return false
 }
 
-// dispatch routes the request to the appropriate handler based on its type.
-func (s *server) dispatch(sender authenticatedVM, req HubRequest) HubResponse {
-	switch req.Type {
-	case "register_vm":
-		var payload RegisterVMPayload
-		if err := json.Unmarshal(req.Payload, &payload); err != nil {
-			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("invalid register_vm payload"))}
-		}
-		if payload.VMID != sender.ID || ipc.VMRole(payload.Role) != sender.Role {
-			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("register_vm payload does not match authenticated identity"))}
-		}
-		if err := s.hub.RegisterVM(payload.VMID, sender.Role); err != nil {
-			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
-		}
-		return HubResponse{ID: req.ID, Success: true}
-
-	case "route":
-		var msg ipc.Message
-		if err := json.Unmarshal(req.Payload, &msg); err != nil {
-			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("invalid route payload"))}
-		}
-		if msg.From == "" {
-			msg.From = sender.ID
-		}
-		if msg.Timestamp.IsZero() {
-			msg.Timestamp = time.Now().UTC()
-		}
-
-		result, err := s.hub.RouteMessage(sender.ID, &msg)
+// ephemeralHubRPCLoop serves one-shot daemon hub clients (sendToComponentViaHub).
+// It is the only reader on the connection, avoiding races with hubclient.Send.
+func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders) {
+	for {
+		var msg Message
+		encoders.Mutex.Lock()
+		err := encoders.Decoder.Decode(&msg)
+		encoders.Mutex.Unlock()
 		if err != nil {
-			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(err)}
+			debugLog("hub", fmt.Sprintf("ephemeral RPC %s decode end: %v", requesterID, err))
+			return
 		}
-
-		data, marshalErr := json.Marshal(result)
-		if marshalErr != nil {
-			return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(marshalErr)}
+		if msg.Command != "get-version" && !checkACL(msg.Source, msg.Destination, msg.Command) {
+			reply := Message{Command: "error", Payload: "ERR_ACL_VIOLATION"}
+			encoders.Mutex.Lock()
+			_ = encoders.Encoder.Encode(reply)
+			encoders.Mutex.Unlock()
+			continue
 		}
-		return HubResponse{ID: req.ID, Success: true, Data: json.RawMessage(data)}
-
-	default:
-		return HubResponse{ID: req.ID, Success: false, Error: remote.SanitizeError(fmt.Errorf("unknown request type: %s", req.Type))}
+		reply := forwardHubRPC(requesterID, msg)
+		encoders.Mutex.Lock()
+		_ = encoders.Encoder.Encode(reply)
+		encoders.Mutex.Unlock()
 	}
 }
 
-func parseRole(role string) (ipc.VMRole, error) {
-	switch ipc.VMRole(role) {
-	case ipc.RoleAgent, ipc.RoleCLI, ipc.RoleCourt, ipc.RoleBuilder, ipc.RoleSkill, ipc.RoleHub, ipc.RoleDaemon:
-		return ipc.VMRole(role), nil
-	default:
-		return "", fmt.Errorf("invalid role %q", role)
+func forwardHubRPC(requesterID string, msg Message) Message {
+	registeredMutex.RLock()
+	destComponent, exists := registered[msg.Destination]
+	registeredMutex.RUnlock()
+	if !exists || destComponent.Encoders == nil {
+		debugLog("hub", fmt.Sprintf("RPC %s -> %s: ERR_DESTINATION_NOT_FOUND (registered=%d)", msg.Source, msg.Destination, len(registered)))
+		return Message{Command: "error", Payload: "ERR_DESTINATION_NOT_FOUND"}
+	}
+
+	debugLog("hub", fmt.Sprintf("RPC %s -> %s command %s (awaiting reply)", msg.Source, msg.Destination, msg.Command))
+	waitCh := registerPendingRPC(requesterID)
+	defer clearPendingRPC(requesterID)
+
+	destComponent.Encoders.Mutex.Lock()
+	if err := destComponent.Encoders.Encoder.Encode(msg); err != nil {
+		destComponent.Encoders.Mutex.Unlock()
+		return Message{Command: "error", Payload: err.Error()}
+	}
+	destComponent.Encoders.Mutex.Unlock()
+
+	rpcTimeout := 120 * time.Second
+	switch msg.Command {
+	case "chat.message", "user.turn":
+		rpcTimeout = 300 * time.Second
+	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
+		rpcTimeout = 8 * time.Second
+	}
+
+	select {
+	case reply := <-waitCh:
+		return reply
+	case <-time.After(rpcTimeout):
+		return Message{Command: "error", Payload: "ERR_RPC_TIMEOUT"}
 	}
 }
 
-func loadSharedSecret(envVar string) (string, error) {
-	if secret := strings.TrimSpace(os.Getenv(envVar)); secret != "" {
-		return secret, nil
+func forwardReplyToRequester(msg Message) {
+	registeredMutex.RLock()
+	destComponent, exists := registered[msg.Destination]
+	registeredMutex.RUnlock()
+	if !exists || destComponent.Encoders == nil {
+		return
+	}
+	if deliverPendingRPC(msg.Destination, msg) {
+		// Ephemeral daemon RPC consumed the reply; ack the sender so hubclient.Send
+		// decode does not block and steal the next inbound RPC (e.g. chat.message).
+		registeredMutex.RLock()
+		srcComponent, srcOK := registered[msg.Source]
+		registeredMutex.RUnlock()
+		if srcOK && srcComponent.Encoders != nil {
+			ack := Message{
+				Source:      "hub",
+				Destination: msg.Source,
+				Command:     "ack",
+				Payload:     map[string]string{"status": "delivered"},
+				Timestamp:   time.Now().Format(time.RFC3339),
+			}
+			srcComponent.Encoders.Mutex.Lock()
+			_ = srcComponent.Encoders.Encoder.Encode(ack)
+			srcComponent.Encoders.Mutex.Unlock()
+		}
+		return
+	}
+	destComponent.Encoders.Mutex.Lock()
+	_ = destComponent.Encoders.Encoder.Encode(msg)
+	destComponent.Encoders.Mutex.Unlock()
+}
+
+func debugLog(component, msg string) {
+	f, _ := os.OpenFile("/tmp/hub-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if f != nil {
+		defer f.Close()
+		fmt.Fprintf(f, "[%s][%s] %s\n", component, time.Now().Format("15:04:05.000"), msg)
+	}
+}
+
+func main() {
+	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+		hubSocketPath = env
+	}
+	var rootCmd = &cobra.Command{Use: "aegishub"}
+
+	var startCmd = &cobra.Command{
+		Use:   "start",
+		Short: "Start the AegisHub",
+		Run:   startHub,
 	}
 
-	data, err := os.ReadFile(filepath.Join("/data", ".shared_secret"))
-	if err != nil {
-		return "", fmt.Errorf("shared secret not configured")
-	}
-	secret := strings.TrimSpace(string(data))
-	if secret == "" {
-		return "", fmt.Errorf("shared secret not configured")
-	}
-	return secret, nil
+	rootCmd.AddCommand(startCmd)
+	rootCmd.Execute()
 }

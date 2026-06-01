@@ -1,0 +1,285 @@
+# AegisClaw ACL Configuration
+# Loaded by AegisHub with hot-reload. Default-deny: only listed (source,dest,cmd) patterns allowed.
+# Wildcards: "*" for any; "prefix*" for prefix match (e.g. "memory.*", "court-persona-*").
+# All inter-VM traffic after registration is signed+ACL-checked (AEGIS_DEV_MODE=1 allows dummy sigs for tests/dev).
+# Register handshake and some hub control msgs have special handling before full ACL.
+
+rules:
+# --- Test harness (client1 <-> client2 via hub) ---
+- source: client1
+  destination: client2
+  commands:
+    - test
+- source: client2
+  destination: client1
+  commands:
+    - test
+
+# --- Legacy/compat (kept for transition; prefer explicit below) ---
+- source: agent1
+  destination: memory
+  commands:
+    - memory.*
+
+# --- Daemon <-> everything (Phase 1 TCB bootstrap, versions, control) ---
+- source: daemon
+  destination: "*"
+  commands:
+    - version
+    - get-version
+    - "*"
+# Ephemeral hub RPC connections from sendToComponentViaHub (host chat/sessions proxy)
+- source: aegis-daemon-temp
+  destination: "*"
+  commands:
+    - "*"
+- source: aegis-daemon-temp-*
+  destination: "*"
+  commands:
+    - "*"
+- source: daemon-temp-*
+  destination: "*"
+  commands:
+    - "*"
+- source: "agent*"
+  destination: aegis-daemon-temp
+  commands:
+    - response
+    - "*"
+- source: "agent*"
+  destination: aegis-daemon-temp-*
+  commands:
+    - response
+    - "*"
+- source: "agent*"
+  destination: daemon-temp-*
+  commands:
+    - response
+    - "*"
+- source: "*"
+  destination: daemon
+  commands:
+    - version
+    - get-version
+
+# --- All components <-> Hub for versions, discovery (hub special-cases some) ---
+- source: "*"
+  destination: hub
+  commands:
+    - version
+    - get-version
+    - component.list
+    - tool.list
+
+# --- Phase 3: Agent Runtime 6-step loop + Memory + Court flows ---
+# Agent <-> Memory (context, store/search per memory-vm.md)
+- source: agent
+  destination: memory
+  commands:
+    - memory.*
+- source: memory
+  destination: agent
+  commands:
+    - memory.*
+
+# Phase 1.1c: Support multiple concurrent agent/memory instances (real per-session Firecracker microVMs).
+# Use wildcards so "agent-*" and "memory-*" (assigned at registration) are allowed.
+# This is additive and does not change behavior for the legacy "agent"/"memory" singleton names.
+# See aegishub.md §ACL Management + agent-runtime.md §Communication.
+- source: "agent*"
+  destination: "memory*"
+  commands:
+    - memory.*
+- source: "memory*"
+  destination: "agent*"
+  commands:
+    - memory.*
+
+# Agent <-> Store (proposals, and responses)
+- source: agent
+  destination: store
+  commands:
+    - proposal.*
+- source: store
+  destination: agent
+  commands:
+    - proposal.*
+- source: "agent*"
+  destination: store
+  commands:
+    - proposal.*
+- source: store
+  destination: "agent*"
+  commands:
+    - proposal.*
+
+# Agent <-> Network Boundary (LLM calls via signed, for callLLMWithFallback and tool use)
+- source: agent
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: agent
+  commands:
+    - llm.*
+# Per-session agent VMs (agent-<session>) use the same LLM path as the singleton name.
+- source: "agent*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "agent*"
+  commands:
+    - llm.*
+
+# Agent <-> Court Scribe (notify on proposal creation per governance)
+- source: agent
+  destination: court-scribe
+  commands:
+    - scribe.*
+- source: "agent*"
+  destination: court-scribe
+  commands:
+    - scribe.*
+
+# Store <-> Court Scribe (notify on create, review_complete updates; per court-scribe.md + store)
+- source: store
+  destination: court-scribe
+  commands:
+    - scribe.notify_review
+- source: court-scribe
+  destination: store
+  commands:
+    - court.review_complete
+    - court.*
+
+# Court Personas (distinct sources: court-persona-ciso, court-persona-security-architect, etc.)
+# Each pulls proposal content ONLY from Store (never via Scribe), submits votes to Scribe.
+- source: court-persona-*
+  destination: store
+  commands:
+    - proposal.get
+    - proposal.data
+- source: court-persona-*
+  destination: court-scribe
+  commands:
+    - scribe.submit_vote
+    - scribe.*
+
+# Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
+- source: store
+  destination: network-boundary
+  commands:
+    - secrets.push
+    - secrets.update
+- source: network-boundary
+  destination: store
+  commands:
+    - secrets.response
+    - secrets.*
+
+# Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
+- source: court-scribe
+  destination: court-persona-*
+  commands:
+    - scribe.notify_review
+    - scribe.*
+
+# Teams (lightweight collaboration - Phase 5 slice)
+# Web Portal and CLI can create/list teams and send messages
+- source: web-portal
+  destination: store
+  commands:
+    - team.create
+    - team.list
+    - team.get
+    - team.message
+    - team.*
+    - sessions.list
+    - sessions.create
+    - sessions.history
+    - sessions.get
+    - sessions.save
+    - sessions.*
+- source: aegis
+  destination: store
+  commands:
+    - team.*
+
+# Memory <-> Store (long-term persistence per memory-vm.md)
+- source: memory
+  destination: store
+  commands:
+    - memory.*
+- source: store
+  destination: memory
+  commands:
+    - memory.*
+
+# --- Builder (Phase 4) ---
+- source: builder
+  destination: store
+  commands:
+    - git.clone
+    - git.push
+    - pr.create
+    - pr.update
+    - skill.register
+    - audit.append
+    - proposal.*
+    - build.complete
+    - build.failed
+    - builder.build_proposal
+- source: store
+  destination: builder
+  commands:
+    - git.cloned
+    - git.pushed
+    - pr.created
+    - pr.updated
+    - skill.registered
+    - proposal.*
+    - builder.build_proposal
+    - build.complete
+    - build.failed
+
+# --- Web Portal / Dashboard (Phase 5, via internal/dashboard + thin proxy) ---
+- source: web-portal
+  destination: hub
+  commands:
+    - "*"
+- source: hub
+  destination: web-portal
+  commands:
+    - "*"
+# web-portal talks to the Host Daemon (via hub) for the bulk of dashboard actions
+# (chat.*, approvals.*, system.stats, etc.). The daemon then fans out as needed.
+- source: web-portal
+  destination: daemon
+  commands:
+    - "*"
+# Chat turns go to the agent chat system (agent-runtime.md); portal bridge also routes chat.* here.
+- source: web-portal
+  destination: agent
+  commands:
+    - chat.*
+    - chat.message
+    - user.turn
+- source: web-portal
+  destination: "agent*"
+  commands:
+    - chat.*
+    - chat.message
+    - user.turn
+
+# --- Catch common response patterns (signed replies often mirror cmd names or use response/*) ---
+# Broad but explicit for known components during Phase 3 iteration
+- source: "*"
+  destination: "*"
+  commands:
+    - response
+    - error
+    - ping
+    - pong
+    - version
+    - get-version

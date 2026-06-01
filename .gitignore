@@ -1,14 +1,30 @@
 /aegisclaw
+/aegis
 /aegishub
+/agent
+/memory
+/store
+/court-scribe
+/court-persona
+/builder
+/network-boundary
+/web-portal
+bin/
 /shared/ollama/models/*
 /REPO_SUMMARY.md
 /shared/ollama/id_ed25519*
 /guest-agent
-/builder-agent
 *.log
 /logs
+proposals.json
+skills.json
+audit.json
 
-# git archives
-*.tar.gz
-*.tgz
-aegisclaw.test
+# Node.js and npm
+node_modules
+
+# E2E / browser test artifacts (Playwright)
+test-results/
+playwright-report/
+playwright/.cache/
+

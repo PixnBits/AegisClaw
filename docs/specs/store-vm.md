@@ -1,7 +1,7 @@
 # Store VM Specification
 
 **Status:** Draft  
-**Last Updated:** May 2026
+**Last Updated:** May 2026 (Phase 2 timer/grant responsibilities added)
 
 ## Purpose
 
@@ -16,6 +16,8 @@ The Store VM serves as both the **persistent data store** and the **trusted git 
 - Long-term memory backups
 - All skill git repositories (acts as the remote)
 - Pull Request state and review records
+- Persistent timers, autonomy grants, and background work expiration (Phase 2)
+- Scheduled task state and reconciliation
 
 **Store VM does NOT own:**
 - Short-term conversation context
@@ -58,6 +60,26 @@ The Store VM acts as the central, trusted authority for both structured data and
 ### Audit Log
 - `audit.append`
 - `audit.get_root`
+
+### Timer & Grant Management (Phase 2)
+The Store VM is the single source of truth for persistent timers, autonomy grants, and background work expiration.
+
+### Chat Session Registry (Web Portal)
+The Store VM owns durable web-portal chat session records (id, title, timestamps, message thread snapshots). The Web Portal forwards `sessions.*` bridge actions here; live chat turns flow through the agent chat system (`chat.message`), not the Host Daemon.
+
+- `sessions.list` — Session summaries for the chat sidebar
+- `sessions.create` — Create a new session
+- `sessions.history` / `sessions.get` — Load a session including messages
+- `sessions.save` — Persist title and/or messages after a turn
+
+- `autonomy.grant` — Record a new autonomy grant (durable in grants.json)
+- `grant.list` — List all current grants
+- `grant.get` — Retrieve grant for a specific session
+- `timer.schedule` — Schedule a durable timer
+- `timer.cancel` — Cancel a scheduled timer
+- `timer.list` — List active timers (rich metadata)
+- `reconcile.expired_grants` — Authoritative expiration reconciliation (autonomy + background + general timers)
+- The Store autonomously publishes `autonomy.expired`, `background.expired`, and `timer.fired` events via the Hub (see event-system.md)
 
 ## Architecture
 

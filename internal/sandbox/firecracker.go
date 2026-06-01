@@ -1,928 +1,519 @@
+//go:build linux
+// +build linux
+
 package sandbox
 
 import (
-	"bufio"
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
-	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
-	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
-	log "github.com/sirupsen/logrus"
-
-	"github.com/PixnBits/AegisClaw/internal/kernel"
-	"go.uber.org/zap"
+	"github.com/sirupsen/logrus"
 )
 
-const (
-	minVsockCID      = 3
-	tapDevicePrefix  = "fc-"
-	subnetMask       = "/30"
-	seccompLevel     = 2 // advanced seccomp filtering
-	defaultWorkspace = 512
-)
-
-// FirecrackerRuntime manages Firecracker microVM sandboxes.
-// It implements SandboxManager, routing every operation through the kernel
-// for signing and audit logging.
-type FirecrackerRuntime struct {
-	cfg       RuntimeConfig
-	kern      *kernel.Kernel
-	logger    *zap.Logger
-	sandboxes map[string]*managedSandbox
-	mu        sync.RWMutex
-	nextCID   uint32
+// FirecrackerBackend implements Backend for Linux using Firecracker microVMs.
+type FirecrackerBackend struct {
+	stateDir string
+	mu       sync.RWMutex
+	vms      map[string]*firecrackerVM
 }
 
-type managedSandbox struct {
-	info    SandboxInfo
-	machine *firecracker.Machine
-	cancel  context.CancelFunc
+type firecrackerVM struct {
+	config         VMConfig
+	cmd            *exec.Cmd
+	startTime      time.Time
+	sockPath       string
+	consoleLogPath string   // Phase 0: path to captured guest serial console
+	consoleFile    *os.File // open handle that Firecracker writes guest console to (closed on Stop)
 }
 
-// NewFirecrackerRuntime creates a new runtime. It loads persisted state from
-// the state directory so that sandboxes survive process restarts.
-func NewFirecrackerRuntime(cfg RuntimeConfig, kern *kernel.Kernel, logger *zap.Logger) (*FirecrackerRuntime, error) {
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid runtime config: %w", err)
-	}
-
-	if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
-		return nil, fmt.Errorf("failed to create state directory %s: %w", cfg.StateDir, err)
-	}
-	if err := os.MkdirAll(cfg.ChrootBaseDir, 0700); err != nil {
-		return nil, fmt.Errorf("failed to create chroot base %s: %w", cfg.ChrootBaseDir, err)
-	}
-
-	rt := &FirecrackerRuntime{
-		cfg:       cfg,
-		kern:      kern,
-		logger:    logger,
-		sandboxes: make(map[string]*managedSandbox),
-		nextCID:   minVsockCID,
-	}
-
-	if err := rt.loadState(); err != nil {
-		logger.Warn("failed to load persisted sandbox state, starting fresh", zap.Error(err))
-	}
-
-	return rt, nil
+// FirecrackerVsockUDSPath returns the host-side Unix domain socket path that
+// Firecracker creates for a VM's vsock device (the `uds_path` in the machine
+// config). This is the single source of truth for the naming convention so the
+// Host Daemon's reverse proxy and the backend's cleanup logic never drift.
+//
+// IMPORTANT: Firecracker does NOT expose the guest over the host kernel's
+// AF_VSOCK. Host -> guest connections must go through this UDS using the
+// Firecracker "hybrid vsock" handshake (connect to the UDS, then write
+// "CONNECT <guest_port>\n"). A raw vsock.Dial(cid, port) from the host fails
+// with ENODEV ("no such device"). See cmd/aegis/main.go dialFirecrackerVsock.
+func FirecrackerVsockUDSPath(stateDir, vmID string) string {
+	return filepath.Join(stateDir, "fc-"+vmID+"-vsock.sock")
 }
 
-// Create provisions a new sandbox from the spec without starting it.
-func (r *FirecrackerRuntime) Create(ctx context.Context, spec SandboxSpec) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Assign vsock CID before validation if not set
-	if spec.VsockCID < minVsockCID {
-		spec.VsockCID = r.allocateCID()
+// NewFirecrackerBackend creates a new Firecracker backend.
+func NewFirecrackerBackend(stateDir string) *FirecrackerBackend {
+	return &FirecrackerBackend{
+		stateDir: stateDir,
+		vms:      make(map[string]*firecrackerVM),
 	}
-
-	if err := spec.Validate(); err != nil {
-		return fmt.Errorf("invalid sandbox spec: %w", err)
-	}
-
-	if _, exists := r.sandboxes[spec.ID]; exists {
-		return fmt.Errorf("sandbox %s already exists", spec.ID)
-	}
-
-	// Verify rootfs template exists
-	if _, err := os.Stat(spec.RootfsPath); err != nil {
-		return fmt.Errorf("rootfs not accessible at %s: %w", spec.RootfsPath, err)
-	}
-
-	// Prepare sandbox directories
-	sandboxDir := filepath.Join(r.cfg.StateDir, spec.ID)
-	if err := os.MkdirAll(sandboxDir, 0700); err != nil {
-		return fmt.Errorf("failed to create sandbox dir %s: %w", sandboxDir, err)
-	}
-
-	// Copy rootfs template for this sandbox (each VM needs its own copy)
-	sandboxRootfs := filepath.Join(sandboxDir, "rootfs.ext4")
-	if err := copyFile(spec.RootfsPath, sandboxRootfs); err != nil {
-		return fmt.Errorf("failed to copy rootfs for sandbox %s: %w", spec.ID, err)
-	}
-
-	// Create workspace overlay image
-	workspaceMB := spec.WorkspaceMB
-	if workspaceMB <= 0 {
-		workspaceMB = defaultWorkspace
-	}
-	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
-	if err := createExt4Image(workspacePath, workspaceMB); err != nil {
-		return fmt.Errorf("failed to create workspace image: %w", err)
-	}
-
-	// Determine socket path for Firecracker API
-	socketPath := filepath.Join(sandboxDir, "firecracker.sock")
-
-	info := SandboxInfo{
-		Spec:       spec,
-		State:      StateCreated,
-		SocketPath: socketPath,
-	}
-
-	r.sandboxes[spec.ID] = &managedSandbox{info: info}
-
-	// Sign and log creation through kernel
-	payload, _ := json.Marshal(spec)
-	action := kernel.NewAction(kernel.ActionSandboxCreate, "kernel", payload)
-	if _, err := r.kern.SignAndLog(action); err != nil {
-		return fmt.Errorf("failed to log sandbox creation: %w", err)
-	}
-
-	if err := r.saveState(); err != nil {
-		r.logger.Error("failed to persist state after create", zap.Error(err))
-	}
-
-	r.logger.Info("sandbox created",
-		zap.String("id", spec.ID),
-		zap.String("name", spec.Name),
-		zap.Uint32("vsock_cid", spec.VsockCID),
-	)
-	return nil
 }
 
-// Start boots the Firecracker microVM for a created or stopped sandbox.
-func (r *FirecrackerRuntime) Start(ctx context.Context, id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// Start creates and starts a Firecracker microVM.
+func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
 
-	if os.Getuid() != 0 {
-		return fmt.Errorf("sandbox operations require root privileges; re-run with sudo")
+	if _, exists := fb.vms[config.ID]; exists {
+		return fmt.Errorf("VM %s already running", config.ID)
 	}
 
-	ms, exists := r.sandboxes[id]
-	if !exists {
-		return fmt.Errorf("sandbox %s not found", id)
-	}
-	if ms.info.State == StateRunning {
-		return fmt.Errorf("sandbox %s is already running", id)
-	}
-	if ms.info.State != StateCreated && ms.info.State != StateStopped {
-		return fmt.Errorf("sandbox %s is in state %s, cannot start", id, ms.info.State)
-	}
+	sockPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".sock")
+	configPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".json")
+	logPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".log")
+	consoleLogPath := filepath.Join(fb.stateDir, "fc-"+config.ID+"-console.log")
+	vsockUdsPath := FirecrackerVsockUDSPath(fb.stateDir, config.ID)
 
-	spec := ms.info.Spec
-	sandboxDir := filepath.Join(r.cfg.StateDir, spec.ID)
+	// Clean up any stale artifacts from previous crashed/killed attempts.
+	// This is required for reliable restarts: Firecracker refuses to bind if the
+	// .sock already exists ("FailedToBindSocket ... Check that it is not already used").
+	_ = os.Remove(sockPath)
+	_ = os.Remove(configPath)
+	_ = os.Remove(logPath)
+	_ = os.Remove(consoleLogPath)
+	_ = os.Remove(vsockUdsPath)
+	// Do NOT remove config.PrivateKeyPath / *.vmkey here — orchestrator just wrote it and
+	// we need it for cmdline hex + rootfs inject below. Stop() cleans up the key file.
 
-	// Set up network (tap device + nftables) — skipped for NoNetwork sandboxes.
-	// NoNetwork sandboxes boot with no TAP device and no IP stack; they reach
-	// host services exclusively via the vsock kernel channel (e.g. the LLM proxy).
-	var tapName, hostIP, guestIP string
-	if !spec.NetworkPolicy.NoNetwork {
-		var netErr error
-		tapName, hostIP, guestIP, netErr = r.setupNetwork(spec)
-		if netErr != nil {
-			ms.info.State = StateError
-			ms.info.Error = fmt.Sprintf("network setup failed: %v", netErr)
-			return fmt.Errorf("failed to set up network for sandbox %s: %w", id, netErr)
-		}
-		ms.info.TapDevice = tapName
-		ms.info.HostIP = hostIP
-		ms.info.GuestIP = guestIP
-
-		// Apply nftables rules based on network policy.
-		if err := r.applyNetworkPolicy(spec.ID, tapName, guestIP, &spec.NetworkPolicy); err != nil {
-			r.teardownNetwork(tapName, spec.ID)
-			ms.info.State = StateError
-			ms.info.Error = fmt.Sprintf("network policy failed: %v", err)
-			return fmt.Errorf("failed to apply network policy for sandbox %s: %w", id, err)
-		}
+	rootfsPath := config.RootfsPath
+	if config.PrivateKeyPath != "" {
+		rootfsPath = prepareVMRootfs(fb.stateDir, config.ID, config.RootfsPath, config.PrivateKeyPath)
 	}
 
 	// Build Firecracker configuration
-	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
-	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
-	socketPath := ms.info.SocketPath
-
-	// Remove stale socket
-	os.Remove(socketPath)
-
-	// When using the jailer, the socket path must be a short relative path
-	// because the jailer creates a chroot and absolute paths become deeply
-	// nested. The SDK resolves it as <ChrootBase>/firecracker/<id>/root/<path>.
-	effectiveSocketPath := socketPath
-	useJailer := false
-	if _, err := os.Stat(r.cfg.JailerBin); err == nil {
-		effectiveSocketPath = "api.sock"
-		useJailer = true
-
-		// The jailer drops privileges to a sandbox-specific UID/GID.
-		// Drive files must be pre-chowned so Firecracker can access them
-		// after the privilege drop.
-		uid := int(10000 + spec.VsockCID)
-		gid := uid
-		for _, p := range []string{rootfsPath, workspacePath} {
-			if err := os.Chown(p, uid, gid); err != nil {
-				r.teardownNetwork(tapName, spec.ID)
-				ms.info.State = StateError
-				ms.info.Error = fmt.Sprintf("chown failed: %v", err)
-				return fmt.Errorf("failed to chown %s for sandbox %s: %w", p, id, err)
-			}
-		}
-	}
-
-	fcCfg := r.buildFirecrackerConfig(spec, effectiveSocketPath, rootfsPath, workspacePath, tapName, guestIP, hostIP)
-
-	// Configure jailer for UID/GID isolation
-	jailerCfg := r.buildJailerConfig(spec)
-
-	// Create VM with jailer
-	vmCtx, vmCancel := context.WithCancel(context.Background())
-
-	logEntry := log.NewEntry(log.New())
-	logEntry.Logger.SetLevel(log.WarnLevel)
-
-	machineOpts := []firecracker.Opt{
-		firecracker.WithLogger(logEntry.WithField("sandbox_id", spec.ID)),
-	}
-
-	// Use jailer if binary exists and is executable
-	if useJailer {
-		fcCfg.JailerCfg = &jailerCfg
-	}
-
-	machine, err := firecracker.NewMachine(vmCtx, fcCfg, machineOpts...)
-	if err != nil {
-		vmCancel()
-		r.teardownNetwork(tapName, spec.ID)
-		ms.info.State = StateError
-		ms.info.Error = fmt.Sprintf("failed to create VM: %v", err)
-		return fmt.Errorf("failed to create Firecracker VM for sandbox %s: %w", id, err)
-	}
-
-	if err := machine.Start(vmCtx); err != nil {
-		vmCancel()
-		r.teardownNetwork(tapName, spec.ID)
-		ms.info.State = StateError
-		ms.info.Error = fmt.Sprintf("failed to start VM: %v", err)
-		return fmt.Errorf("failed to start Firecracker VM for sandbox %s: %w", id, err)
-	}
-
-	now := time.Now().UTC()
-	ms.machine = machine
-	ms.cancel = vmCancel
-	ms.info.State = StateRunning
-	ms.info.StartedAt = &now
-	ms.info.StoppedAt = nil
-	ms.info.Error = ""
-	pid, pidErr := machine.PID()
-	if pidErr != nil {
-		r.logger.Warn("could not get VM PID", zap.String("id", id), zap.Error(pidErr))
-	}
-	ms.info.PID = pid
-
-	// Sign and log start through kernel
-	payload, _ := json.Marshal(map[string]interface{}{
-		"id":         id,
-		"pid":        ms.info.PID,
-		"vsock_cid":  spec.VsockCID,
-		"tap_device": tapName,
-		"guest_ip":   guestIP,
-	})
-	action := kernel.NewAction(kernel.ActionSandboxStart, "kernel", payload)
-	if _, signErr := r.kern.SignAndLog(action); signErr != nil {
-		r.logger.Error("failed to log sandbox start", zap.Error(signErr))
-	}
-
-	if err := r.saveState(); err != nil {
-		r.logger.Error("failed to persist state after start", zap.Error(err))
-	}
-
-	r.logger.Info("sandbox started",
-		zap.String("id", id),
-		zap.Int("pid", ms.info.PID),
-		zap.String("tap", tapName),
-		zap.String("guest_ip", guestIP),
-	)
-	return nil
-}
-
-// Stop gracefully shuts down a running sandbox.
-func (r *FirecrackerRuntime) Stop(ctx context.Context, id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	ms, exists := r.sandboxes[id]
-	if !exists {
-		return fmt.Errorf("sandbox %s not found", id)
-	}
-	if ms.info.State != StateRunning {
-		return fmt.Errorf("sandbox %s is not running (state: %s)", id, ms.info.State)
-	}
-
-	// Graceful shutdown via Firecracker API
-	if ms.machine != nil {
-		if err := ms.machine.Shutdown(ctx); err != nil {
-			r.logger.Warn("graceful shutdown failed, forcing stop",
-				zap.String("id", id),
-				zap.Error(err),
-			)
-			if err := ms.machine.StopVMM(); err != nil {
-				r.logger.Error("forced stop also failed",
-					zap.String("id", id),
-					zap.Error(err),
-				)
-			}
-		}
-	}
-
-	if ms.cancel != nil {
-		ms.cancel()
-	}
-
-	// Tear down network
-	if ms.info.TapDevice != "" {
-		r.teardownNetwork(ms.info.TapDevice, id)
-	}
-
-	now := time.Now().UTC()
-	ms.info.State = StateStopped
-	ms.info.StoppedAt = &now
-	ms.info.PID = 0
-	ms.machine = nil
-	ms.cancel = nil
-
-	payload, _ := json.Marshal(map[string]string{"id": id})
-	action := kernel.NewAction(kernel.ActionSandboxStop, "kernel", payload)
-	if _, signErr := r.kern.SignAndLog(action); signErr != nil {
-		r.logger.Error("failed to log sandbox stop", zap.Error(signErr))
-	}
-
-	if err := r.saveState(); err != nil {
-		r.logger.Error("failed to persist state after stop", zap.Error(err))
-	}
-
-	r.logger.Info("sandbox stopped", zap.String("id", id))
-	return nil
-}
-
-// Delete removes a stopped sandbox and cleans up all resources.
-func (r *FirecrackerRuntime) Delete(ctx context.Context, id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	ms, exists := r.sandboxes[id]
-	if !exists {
-		return fmt.Errorf("sandbox %s not found", id)
-	}
-	if ms.info.State == StateRunning {
-		return fmt.Errorf("sandbox %s is still running, stop it first", id)
-	}
-
-	// Clean up sandbox directory
-	sandboxDir := filepath.Join(r.cfg.StateDir, ms.info.Spec.ID)
-	if err := os.RemoveAll(sandboxDir); err != nil {
-		r.logger.Warn("failed to remove sandbox directory",
-			zap.String("id", id),
-			zap.String("dir", sandboxDir),
-			zap.Error(err),
-		)
-	}
-
-	// Clean up chroot jail
-	chrootDir := filepath.Join(r.cfg.ChrootBaseDir, "firecracker", id)
-	if err := os.RemoveAll(chrootDir); err != nil {
-		r.logger.Warn("failed to remove chroot directory",
-			zap.String("id", id),
-			zap.String("dir", chrootDir),
-			zap.Error(err),
-		)
-	}
-
-	delete(r.sandboxes, id)
-
-	payload, _ := json.Marshal(map[string]string{"id": id})
-	action := kernel.NewAction(kernel.ActionSandboxDelete, "kernel", payload)
-	if _, signErr := r.kern.SignAndLog(action); signErr != nil {
-		r.logger.Error("failed to log sandbox delete", zap.Error(signErr))
-	}
-
-	if err := r.saveState(); err != nil {
-		r.logger.Error("failed to persist state after delete", zap.Error(err))
-	}
-
-	r.logger.Info("sandbox deleted", zap.String("id", id))
-	return nil
-}
-
-// List returns info for all tracked sandboxes.
-func (r *FirecrackerRuntime) List(ctx context.Context) ([]SandboxInfo, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make([]SandboxInfo, 0, len(r.sandboxes))
-	for _, ms := range r.sandboxes {
-		result = append(result, ms.info)
-	}
-	return result, nil
-}
-
-// Status returns the info for a single sandbox.
-func (r *FirecrackerRuntime) Status(ctx context.Context, id string) (*SandboxInfo, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	ms, exists := r.sandboxes[id]
-	if !exists {
-		return nil, fmt.Errorf("sandbox %s not found", id)
-	}
-	info := ms.info
-	return &info, nil
-}
-
-// buildFirecrackerConfig constructs the full Firecracker VM configuration.
-func (r *FirecrackerRuntime) buildFirecrackerConfig(
-	spec SandboxSpec,
-	socketPath, rootfsPath, workspacePath, tapName, guestIP, hostIP string,
-) firecracker.Config {
-	kernelImage := spec.KernelPath
-	if kernelImage == "" {
-		kernelImage = r.cfg.KernelImage
-	}
-
-	drives := firecracker.NewDrivesBuilder(rootfsPath).
-		WithRootDrive(rootfsPath, firecracker.WithReadOnly(true)).
-		AddDrive(workspacePath, false).
-		Build()
-
-		// Pass guest IP to the guest-agent via kernel command line so it can
-		// configure eth0 when vsock transport is not available.
-	// For NoNetwork sandboxes, omit the IP configuration entirely so the
-	// guest kernel does not attempt to bring up a non-existent interface.
-	initPath := spec.InitPath
-	if initPath == "" {
-		initPath = "/sbin/guest-agent"
-	}
-	kernelArgs := "console=ttyS0 reboot=k panic=1 pci=off init=" + initPath
-	if !spec.NetworkPolicy.NoNetwork {
-		kernelArgs += fmt.Sprintf(" ip=%s::%s:255.255.255.252::eth0:off", guestIP, hostIP)
-	}
-
-	cfg := firecracker.Config{
-		SocketPath:      socketPath,
-		KernelImagePath: kernelImage,
-		KernelArgs:      kernelArgs,
-		Drives:          drives,
-		MachineCfg: models.MachineConfiguration{
-			VcpuCount:  firecracker.Int64(spec.Resources.VCPUs),
-			MemSizeMib: firecracker.Int64(spec.Resources.MemoryMB),
+	fcConfig := map[string]interface{}{
+		"boot-source": map[string]interface{}{
+			"kernel_image_path": config.KernelPath,
+			"boot_args":         buildBootArgs(config),
 		},
-		VsockDevices: []firecracker.VsockDevice{
+		"drives": []map[string]interface{}{
 			{
-				ID:   "vsock0",
-				Path: filepath.Join(filepath.Dir(socketPath), "vsock.sock"),
-				CID:  spec.VsockCID,
+				"drive_id":       "rootfs",
+				"path_on_host":   rootfsPath,
+				"is_root_device": true,
+				"is_read_only":   false,
 			},
 		},
-		Seccomp: firecracker.SeccompConfig{
-			Enabled: true,
+		"machine-config": map[string]interface{}{
+			"vcpu_count":   config.VCpus,
+			"mem_size_mib": config.Memory,
+			"smt":          false,
 		},
+		"iommu": false,
+		// NOTE: Firecracker has no "console" object in its machine config schema.
+		// The guest serial console (ttyS0, see buildBootArgs "console=ttyS0") is
+		// emitted on the Firecracker *process* stdout/stderr, which we redirect to
+		// consoleLogPath below. A "console" config key here is silently ignored at
+		// best and rejected at worst, so we deliberately do not set one.
 	}
 
-	// Only attach a network interface when the sandbox has a TAP device.
-	if !spec.NetworkPolicy.NoNetwork {
-		cfg.NetworkInterfaces = []firecracker.NetworkInterface{
-			{
-				StaticConfiguration: &firecracker.StaticNetworkConfiguration{
-					MacAddress:  generateMAC(spec.VsockCID),
-					HostDevName: tapName,
-				},
-			},
+	// Add vsock device if allocated.
+	// Modern Firecracker (v1.8+, including main builds) --config-file schema requires:
+	//   - "vsock_id": string (device identifier)
+	//   - "guest_cid": integer (the CID the guest will use; small values like 3-10)
+	// The previous code put a large integer directly into "vsock_id", which produces
+	// "invalid type: integer `9000`, expected a string".
+	if config.NetworkConfig != nil && config.NetworkConfig.VsockPort > 0 {
+		// Firecracker v1.16+ (main) --config-file requires `uds_path` for vsock devices.
+		// This tells Firecracker where to create the host-side Unix domain socket for
+		// the vsock device. We generate a per-VM path alongside the other fc-* artifacts.
+		// (The actual vsock communication model in AegisClaw uses guest-initiated
+		// connections to CID 2 or to the Network Boundary's listener; the UDS is
+		// required for the VMM config to be accepted.)
+		fcConfig["vsock"] = map[string]interface{}{
+			"vsock_id":  fmt.Sprintf("vsock-%s", config.ID),
+			"guest_cid": config.NetworkConfig.VsockPort,
+			"uds_path":  vsockUdsPath,
 		}
 	}
 
-	return cfg
-	// buildJailerConfig creates the jailer configuration for UID/GID isolation.
-}
-func (r *FirecrackerRuntime) buildJailerConfig(spec SandboxSpec) firecracker.JailerConfig {
-	// Each sandbox gets a unique UID/GID based on its CID offset.
-	// Starting from 10000 to avoid conflicts with system users.
-	uid := int(10000 + spec.VsockCID)
-	gid := uid
-
-	kernelPath := spec.KernelPath
-	if kernelPath == "" {
-		kernelPath = r.cfg.KernelImage
+	// 7.1 Network Boundary integration (in progress)
+	// When EgressViaBoundary is true, this VM must have **no** direct outbound
+	// network interfaces. All egress must go through the Network Boundary
+	// over vsock (the boundary listens on a vsock port and performs allowlist
+	// enforcement, secret injection, and audit).
+	//
+	// The guest is expected to:
+	//   - Have no tap/network interfaces for outbound.
+	//   - Use the vsock address passed on the kernel cmdline (aegis.egress_boundary)
+	//     to connect to the boundary's vsock listener and send egress traffic.
+	if config.NetworkConfig != nil && config.NetworkConfig.EgressViaBoundary {
+		logrus.Infof("VM %s configured with EgressViaBoundary=true (skill=%s, boundary=%s) — no direct network interfaces; guest must use vsock egress to boundary",
+			config.ID,
+			config.NetworkConfig.BoundarySkillID,
+			config.NetworkConfig.BoundaryEgressAddr)
+	} else {
+		// For VMs that are allowed direct egress (e.g. the Boundary itself),
+		// we would configure a tap interface here. Currently left to defaults.
 	}
 
-	return firecracker.JailerConfig{
-		GID:            &gid,
-		UID:            &uid,
-		ID:             spec.ID,
-		NumaNode:       firecracker.Int(0),
-		ExecFile:       r.cfg.FirecrackerBin,
-		JailerBinary:   r.cfg.JailerBin,
-		ChrootBaseDir:  r.cfg.ChrootBaseDir,
-		ChrootStrategy: firecracker.NewNaiveChrootStrategy(kernelPath),
-		CgroupVersion:  detectCgroupVersion(),
-	}
-}
-
-// setupNetwork creates a tap device and assigns point-to-point IPs.
-// Each VM gets its own /30 subnet for L2 isolation.
-func (r *FirecrackerRuntime) setupNetwork(spec SandboxSpec) (tapName, hostIP, guestIP string, err error) {
-	index := int(spec.VsockCID - minVsockCID)
-	subnetOffset := index * 4
-
-	// Each VM gets a /30 subnet from the 10.0.0.0/16 space.
-	// Compute full two-octet offset so CIDs above ~66 don't overflow a single octet.
-	hostOff := subnetOffset + 1
-	guestOff := subnetOffset + 2
-	if hostOff > 65534 {
-		return "", "", "", fmt.Errorf("CID %d exceeds available 10.0.0.0/16 address space", spec.VsockCID)
+	configBytes, _ := json.MarshalIndent(fcConfig, "", "  ")
+	if err := os.WriteFile(configPath, configBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write Firecracker config: %w", err)
 	}
 
-	tapName = fmt.Sprintf("%s%s", tapDevicePrefix, spec.ID[:minInt(8, len(spec.ID))])
-	hostIP = fmt.Sprintf("10.0.%d.%d", hostOff/256, hostOff%256)
-	guestIP = fmt.Sprintf("10.0.%d.%d", guestOff/256, guestOff%256)
-
-	// Create tap device
-	if err := runCmd("ip", "tuntap", "add", "dev", tapName, "mode", "tap"); err != nil {
-		return "", "", "", fmt.Errorf("failed to create tap device %s: %w", tapName, err)
+	logrus.Infof("Starting Firecracker VM %s with kernel %s, rootfs %s",
+		config.ID, config.KernelPath, rootfsPath)
+	if os.Getenv("AEGIS_DEBUG") != "" {
+		logrus.Debugf("Firecracker command: firecracker --api-sock %s --config-file %s --log-path %s --level Debug",
+			sockPath, configPath, logPath)
+		logrus.Debugf("Firecracker config for %s:\n%s", config.ID, string(configBytes))
 	}
 
-	// Assign host IP
-	if err := runCmd("ip", "addr", "add", hostIP+subnetMask, "dev", tapName); err != nil {
-		runCmd("ip", "link", "delete", tapName)
-		return "", "", "", fmt.Errorf("failed to assign IP to %s: %w", tapName, err)
+	cmd := exec.CommandContext(ctx, "firecracker",
+		"--api-sock", sockPath,
+		"--config-file", configPath,
+		"--log-path", logPath,
+		"--level", "Debug")
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Pdeathsig: syscall.SIGTERM,
 	}
 
-	// Bring interface up
-	if err := runCmd("ip", "link", "set", tapName, "up"); err != nil {
-		runCmd("ip", "link", "delete", tapName)
-		return "", "", "", fmt.Errorf("failed to bring up %s: %w", tapName, err)
+	// Capture the guest serial console (ttyS0) + Firecracker's own process output.
+	// Firecracker streams the guest console to its stdout/stderr for the entire VM
+	// lifetime, so we redirect both to a real file (consoleLogPath). This is the
+	// only reliable window into guest boot + application startup (e.g. the
+	// web-portal binary's vsock listener messages) and is invaluable when a VM
+	// boots but never becomes ready. The file is closed when the VM is stopped.
+	consoleFile, consoleErr := os.OpenFile(consoleLogPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if consoleErr != nil {
+		logrus.Warnf("could not open console log %s for VM %s (continuing without persisted guest console): %v", consoleLogPath, config.ID, consoleErr)
+		// Fall back to an in-memory buffer purely so the cmd.Start error path below
+		// still has something to report; this should be rare.
+		var buf bytes.Buffer
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+	} else {
+		cmd.Stdout = consoleFile
+		cmd.Stderr = consoleFile
 	}
 
-	r.logger.Info("network configured",
-		zap.String("tap", tapName),
-		zap.String("host_ip", hostIP),
-		zap.String("guest_ip", guestIP),
-	)
-	return tapName, hostIP, guestIP, nil
-}
-
-// applyNetworkPolicy enforces nftables rules based on the sandbox's NetworkPolicy.
-// Uses the PolicyEngine to generate proper per-sandbox rulesets with default DROP,
-// selective allow rules, DNS passthrough, and audit logging for dropped packets.
-func (r *FirecrackerRuntime) applyNetworkPolicy(sandboxID, tapName, guestIP string, policy *NetworkPolicy) error {
-	pe := NewPolicyEngine()
-	ruleset, err := pe.GenerateRuleset(policy, sandboxID, tapName)
-	if err != nil {
-		return fmt.Errorf("failed to generate nftables ruleset: %w", err)
-	}
-
-	for _, cmd := range ruleset.ToNftCommands() {
-		if runErr := runCmd("nft", cmd); runErr != nil {
-			r.logger.Warn("nft command may have partially failed",
-				zap.String("cmd", cmd),
-				zap.Error(runErr),
-			)
+	if err := cmd.Start(); err != nil {
+		dumpConsoleLog(consoleLogPath, config.ID)
+		dumpFirecrackerLog(logPath, config.ID)
+		if consoleFile != nil {
+			_ = consoleFile.Close()
 		}
+		cleanupVMArtifacts(sockPath, configPath, logPath, consoleLogPath, vsockUdsPath, config.PrivateKeyPath)
+		return fmt.Errorf("failed to start Firecracker: %w", err)
 	}
 
-	// Audit log the policy enforcement
-	payload, _ := json.Marshal(map[string]interface{}{
-		"sandbox_id":        sandboxID,
-		"tap_device":        tapName,
-		"guest_ip":          guestIP,
-		"table":             ruleset.TableName,
-		"chain":             ruleset.ChainName,
-		"rules_count":       len(ruleset.Rules),
-		"allowed_hosts":     policy.AllowedHosts,
-		"allowed_ports":     policy.AllowedPorts,
-		"allowed_protocols": policy.AllowedProtocols,
-	})
-	action := kernel.NewAction(kernel.ActionSandboxStart, "kernel.netpolicy", payload)
-	if _, signErr := r.kern.SignAndLog(action); signErr != nil {
-		r.logger.Error("failed to audit log network policy", zap.Error(signErr))
-	}
+	logrus.Infof("Firecracker process started for VM %s, PID %d", config.ID, cmd.Process.Pid)
 
-	r.logger.Info("network policy applied via PolicyEngine",
-		zap.String("sandbox_id", sandboxID),
-		zap.String("table", ruleset.TableName),
-		zap.Int("rules", len(ruleset.Rules)),
-		zap.Int("allowed_hosts", len(policy.AllowedHosts)),
-		zap.Int("allowed_ports", len(policy.AllowedPorts)),
-	)
-	return nil
-}
-
-// teardownNetwork removes the tap device and nftables rules for a sandbox.
-func (r *FirecrackerRuntime) teardownNetwork(tapName, sandboxID string) {
-	// Use PolicyEngine to get consistent table name for teardown
-	tableName := fmt.Sprintf("aegis_%s", sanitizeID(sandboxID))
-	if err := runCmd("nft", "delete", "table", "inet", tableName); err != nil {
-		r.logger.Warn("failed to delete nftables table",
-			zap.String("table", tableName),
-			zap.Error(err),
-		)
-	}
-
-	if err := runCmd("ip", "link", "delete", tapName); err != nil {
-		r.logger.Warn("failed to delete tap device",
-			zap.String("tap", tapName),
-			zap.Error(err),
-		)
-	}
-
-	r.logger.Info("network torn down",
-		zap.String("tap", tapName),
-		zap.String("table", tableName),
-	)
-}
-
-// allocateCID returns the next available vsock CID.
-func (r *FirecrackerRuntime) allocateCID() uint32 {
-	cid := r.nextCID
-	r.nextCID++
-
-	// Scan for conflicts with existing sandboxes
-	for {
-		conflict := false
-		for _, ms := range r.sandboxes {
-			if ms.info.Spec.VsockCID == cid {
-				conflict = true
-				break
-			}
+	// Wait for socket to be created (confirms the Firecracker API is responsive).
+	// With a complete --config-file the microVM is started automatically by
+	// Firecracker during process startup. We must NOT send an extra "InstanceStart"
+	// action afterwards (it produces HTTP 400 "not supported after starting the microVM").
+	if err := waitForSocket(sockPath, 10*time.Second); err != nil {
+		cmd.Process.Kill()
+		dumpFirecrackerLog(logPath, config.ID)
+		dumpConsoleLog(consoleLogPath, config.ID)
+		if consoleFile != nil {
+			_ = consoleFile.Close()
 		}
-		if !conflict {
-			break
-		}
-		cid++
-		r.nextCID = cid + 1
-	}
-	return cid
-}
-
-// State persistence
-
-type persistedState struct {
-	Sandboxes map[string]SandboxInfo `json:"sandboxes"`
-	NextCID   uint32                 `json:"next_cid"`
-}
-
-func (r *FirecrackerRuntime) statePath() string {
-	return filepath.Join(r.cfg.StateDir, "sandboxes.json")
-}
-
-func (r *FirecrackerRuntime) saveState() error {
-	state := persistedState{
-		Sandboxes: make(map[string]SandboxInfo, len(r.sandboxes)),
-		NextCID:   r.nextCID,
-	}
-	for id, ms := range r.sandboxes {
-		state.Sandboxes[id] = ms.info
+		cleanupVMArtifacts(sockPath, configPath, logPath, consoleLogPath, vsockUdsPath, config.PrivateKeyPath)
+		return fmt.Errorf("failed to wait for Firecracker socket: %w", err)
 	}
 
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
+	// NOTE: We deliberately do NOT call configureVM / send InstanceStart here.
+	// When using --config-file with a full boot-source + drives + machine-config,
+	// Firecracker starts the microVM automatically (see successful "build microvm
+	// from one single json" + "Successfully started microvm" in the VMM log).
+	// Sending InstanceStart afterwards is rejected with HTTP 400.
+
+	fb.vms[config.ID] = &firecrackerVM{
+		config:         config,
+		cmd:            cmd,
+		startTime:      time.Now(),
+		sockPath:       sockPath,
+		consoleLogPath: consoleLogPath, // Phase 0 observability
+		consoleFile:    consoleFile,    // kept open for the VM lifetime; closed on Stop
 	}
 
-	tmpPath := r.statePath() + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write state file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, r.statePath()); err != nil {
-		return fmt.Errorf("failed to rename state file: %w", err)
-	}
-
+	logrus.Infof("VM %s started successfully", config.ID)
 	return nil
 }
 
-func (r *FirecrackerRuntime) loadState() error {
-	data, err := os.ReadFile(r.statePath())
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("failed to read state file: %w", err)
-	}
-
-	var state persistedState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("failed to unmarshal state: %w", err)
-	}
-
-	r.nextCID = state.NextCID
-	if r.nextCID < minVsockCID {
-		r.nextCID = minVsockCID
-	}
-
-	for id, info := range state.Sandboxes {
-		// Running VMs from previous process are now stopped
-		if info.State == StateRunning {
-			now := time.Now().UTC()
-			info.State = StateStopped
-			info.StoppedAt = &now
-			info.PID = 0
-		}
-		r.sandboxes[id] = &managedSandbox{info: info}
-	}
-
-	r.logger.Info("loaded persisted sandbox state",
-		zap.Int("count", len(r.sandboxes)),
-		zap.Uint32("next_cid", r.nextCID),
-	)
-	return nil
-}
-
-// Helpers
-
-func generateMAC(cid uint32) string {
-	return fmt.Sprintf("02:FC:00:00:%02X:%02X", (cid>>8)&0xFF, cid&0xFF)
-}
-
-func runCmd(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s %v: %w (output: %s)", name, args, err, string(output))
-	}
-	return nil
-}
-
-func copyFile(src, dst string) error {
-	// Use cp --reflink=auto for CoW on supported filesystems
-	return runCmd("cp", "--reflink=auto", src, dst)
-}
-
-func createExt4Image(path string, sizeMB int) error {
-	// Create a sparse file and format as ext4
-	if err := runCmd("dd", "if=/dev/zero", "of="+path,
-		"bs=1M", "count=0", "seek="+strconv.Itoa(sizeMB)); err != nil {
-		return fmt.Errorf("failed to create sparse image: %w", err)
-	}
-	if err := runCmd("mkfs.ext4", "-F", "-q", path); err != nil {
-		return fmt.Errorf("failed to format ext4: %w", err)
-	}
-	return nil
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// VsockPath returns the host-side Firecracker vsock UDS path for a sandbox.
-// For jailed VMs this is under the jailer chroot.
-func (r *FirecrackerRuntime) VsockPath(id string) (string, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	ms, exists := r.sandboxes[id]
+// Stop terminates a running Firecracker VM.
+func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
+	fb.mu.Lock()
+	vm, exists := fb.vms[vmID]
 	if !exists {
-		return "", fmt.Errorf("sandbox %s not found", id)
+		fb.mu.Unlock()
+		return fmt.Errorf("VM %s not found", vmID)
 	}
-	if ms.info.State != StateRunning {
-		return "", fmt.Errorf("sandbox %s is not running (state: %s)", id, ms.info.State)
+	delete(fb.vms, vmID)
+	fb.mu.Unlock()
+
+	logrus.Infof("Stopping VM %s", vmID)
+
+	// Try graceful shutdown via API first
+	fb.sendVMAction(vm.sockPath, "InstanceHalt")
+	time.Sleep(2 * time.Second)
+
+	// Force kill if still running
+	if vm.cmd.Process != nil {
+		vm.cmd.Process.Kill()
 	}
 
-	// The vsock UDS is in the same directory as the API socket.
-	// For jailed VMs the jailer places it at <chroot>/root/vsock.sock.
-	if _, err := os.Stat(r.cfg.JailerBin); err == nil {
-		return filepath.Join(r.cfg.ChrootBaseDir, "firecracker", id, "root", "vsock.sock"), nil
+	// Close the guest console capture file (Firecracker has now exited / been killed).
+	if vm.consoleFile != nil {
+		_ = vm.consoleFile.Close()
 	}
-	return filepath.Join(r.cfg.StateDir, id, "vsock.sock"), nil
+
+	// Clean up all per-VM artifacts (including the vsock UDS that Firecracker creates)
+	stateDir := filepath.Dir(vm.sockPath)
+	_ = os.Remove(vm.sockPath)
+	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".json"))
+	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".log"))
+	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+"-console.log"))
+	_ = os.Remove(FirecrackerVsockUDSPath(stateDir, vmID))
+	_ = os.Remove(filepath.Join(stateDir, vmID+".rootfs.img"))
+
+	// 7.5.4: Best-effort cleanup of the ephemeral VM private key file
+	// (defense in depth — the guest should have already shredded it).
+	if vm.config.PrivateKeyPath != "" {
+		_ = os.Remove(vm.config.PrivateKeyPath)
+	}
+
+	logrus.Infof("VM %s stopped", vmID)
+	return nil
 }
 
-// VsockCallbackPath returns the host-side socket path where Firecracker delivers
-// guest-initiated vsock connections to the host on the given port.
-//
-// When a guest connects to VMADDR_CID_HOST:<port>, Firecracker connects to
-// <vsock_base_path>_<port> on the host.  The host LLM proxy listens on this
-// path so the VM can reach Ollama without a network interface.
-func (r *FirecrackerRuntime) VsockCallbackPath(id string, port uint) (string, error) {
-	base, err := r.VsockPath(id)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s_%d", base, port), nil
-}
+// Status returns the current status of a VM.
+func (fb *FirecrackerBackend) Status(ctx context.Context, vmID string) (Status, error) {
+	fb.mu.RLock()
+	vm, exists := fb.vms[vmID]
+	fb.mu.RUnlock()
 
-// SendToVM connects to a running VM's guest-agent and sends a JSON request,
-// returning the JSON response.  It tries the Firecracker vsock proxy first,
-// retrying for up to 30 seconds to give the guest time to boot and start its
-// vsock listener.  Falls back to a direct TCP connection to the guest IP only
-// when vsock is unavailable.
-func (r *FirecrackerRuntime) SendToVM(ctx context.Context, id string, req interface{}) (json.RawMessage, error) {
-	r.mu.RLock()
-	ms, exists := r.sandboxes[id]
 	if !exists {
-		r.mu.RUnlock()
-		return nil, fmt.Errorf("sandbox %s not found", id)
-	}
-	state := ms.info.State
-	guestIP := ms.info.GuestIP
-	r.mu.RUnlock()
-
-	if state != StateRunning {
-		return nil, fmt.Errorf("sandbox %s is not running (state: %s)", id, state)
+		return StatusStopped, nil
 	}
 
-	const guestPort = 1024
-	dialer := net.Dialer{Timeout: 2 * time.Second}
+	if vm.cmd.Process == nil {
+		return StatusError, nil
+	}
 
-	// Try vsock with retries — the guest needs time to boot and start its
-	// vsock listener (AF_VSOCK port 1024).  Firecracker returns "OK <port>\n"
-	// once the guest has an active listener; until then it returns an error
-	// code (e.g. ECONNREFUSED) and we retry.
-	vsockPath, vsockErr := r.VsockPath(id)
-	if vsockErr == nil {
-		const (
-			vsockAttempts = 90 // up to ~30 s at 333 ms/attempt
-			vsockDelay    = 333 * time.Millisecond
-		)
-		for attempt := 0; attempt < vsockAttempts; attempt++ {
-			conn, err := dialer.DialContext(ctx, "unix", vsockPath)
-			if err == nil {
-				// Firecracker vsock proxy protocol: CONNECT <port>\n → OK <port>\n.
-				conn.SetDeadline(time.Now().Add(2 * time.Second))
-				_, writeErr := fmt.Fprintf(conn, "CONNECT %d\n", guestPort)
-				if writeErr == nil {
-					reader, readErr := readVsockConnectHandshake(conn)
-					if readErr == nil {
-						conn.SetDeadline(time.Time{}) // clear deadline for data exchange
-						return r.exchangeJSONWithReader(conn, reader, id, req)
-					}
-				}
+	if err := vm.cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		return StatusError, nil
+	}
+
+	return StatusRunning, nil
+}
+
+// List returns information about all running VMs.
+func (fb *FirecrackerBackend) List(ctx context.Context) ([]VMInfo, error) {
+	fb.mu.RLock()
+	defer fb.mu.RUnlock()
+
+	var vms []VMInfo
+	now := time.Now()
+
+	for vmID, vm := range fb.vms {
+		uptime := int64(now.Sub(vm.startTime).Seconds())
+		vms = append(vms, VMInfo{
+			ID:             vmID,
+			Status:         StatusRunning,
+			Uptime:         uptime,
+			Memory:         vm.config.Memory,
+			CreatedAt:      vm.startTime.Unix(),
+			ConsoleLogPath: vm.consoleLogPath, // Phase 0: make console logs discoverable
+		})
+	}
+
+	return vms, nil
+}
+
+// Cleanup stops all running VMs (called on daemon shutdown).
+func (fb *FirecrackerBackend) Cleanup(ctx context.Context) error {
+	fb.mu.Lock()
+	vmIDs := make([]string, 0, len(fb.vms))
+	for id := range fb.vms {
+		vmIDs = append(vmIDs, id)
+	}
+	fb.mu.Unlock()
+
+	for _, vmID := range vmIDs {
+		_ = fb.Stop(ctx, vmID)
+	}
+
+	return nil
+}
+
+// Helper functions
+
+func waitForSocket(sockPath string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Real readiness: the socket file must exist *and* be connectable.
+		// Stat-only checks are racy because Firecracker creates the file before
+		// the listener is fully accepting (or before the guest is far enough
+		// for the VMM API to be responsive).
+		if _, err := os.Stat(sockPath); err == nil {
+			conn, dialErr := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+			if dialErr == nil {
 				conn.Close()
+				return nil
 			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("socket not accepting connections within timeout")
+}
 
-			// Check if the context was cancelled before sleeping.
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Errorf("sandbox %s: context cancelled waiting for vsock: %w", id, ctx.Err())
-			case <-time.After(vsockDelay):
+// buildBootArgs constructs the kernel command line, injecting 7.1 egress information
+// when the VM is configured to route all outbound through the Network Boundary.
+func buildBootArgs(config VMConfig) string {
+	base := "console=ttyS0 reboot=k panic=1 pci=off nomodules"
+
+	// Tell the kernel which init to run. Our component rootfs images are produced
+	// via `docker export`, which keeps the filesystem but DROPS the image
+	// ENTRYPOINT, so the kernel would otherwise fall back to the base image's
+	// /sbin/init (Alpine -> openrc, which isn't installed) and never launch the
+	// component binary. Images that ship a custom /init wrapper set InitProcess.
+	if config.InitProcess != "" {
+		base += " init=" + config.InitProcess
+	}
+
+	if config.NetworkConfig != nil && config.NetworkConfig.EgressViaBoundary {
+		// Pass boundary details to the guest via cmdline.
+		// The guest (or future init system) is expected to use this for its
+		// outbound proxy instead of a direct default route.
+		egress := fmt.Sprintf(" aegis.egress_boundary=%s aegis.skill_id=%s",
+			config.NetworkConfig.BoundaryEgressAddr,
+			config.NetworkConfig.BoundarySkillID)
+		base += egress
+	}
+
+	// 7.5.4: Pass VM key on cmdline (hex, cmdline-safe) and optional /etc/aegis/vmkey in rootfs.
+	if config.PrivateKeyPath != "" {
+		if data, err := os.ReadFile(config.PrivateKeyPath); err == nil {
+			if privBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data))); err == nil && len(privBytes) == ed25519.PrivateKeySize {
+				base += " aegis.vm_private_key_hex=" + hex.EncodeToString(privBytes)
 			}
+		}
+		base += " aegis.vm_private_key_path=/etc/aegis/vmkey"
+	}
+
+	// Group 3 (Court): Support persona identity injection for the 7 court-persona VMs
+	// via kernel cmdline. The thin court-persona binary already parses aegis.persona=
+	// (and AEGIS_COURT_PERSONA env) so a single court-persona.img works for all personas.
+	if config.ExtraBootArgs != "" {
+		base += " " + strings.TrimSpace(config.ExtraBootArgs)
+	}
+
+	// Group 3 Court support (governance-court.md §Architecture):
+	// If this is a court-persona-* VM, auto-inject the persona identity via kernel cmdline.
+	// The thin court-persona binary (cmd/court-persona/main.go) parses aegis.persona=
+	// from /proc/cmdline at startup. This lets us use a single court-persona.img for all 7 personas.
+	if strings.HasPrefix(config.ID, "court-persona-") {
+		persona := strings.TrimPrefix(config.ID, "court-persona-")
+		if persona != "" {
+			base += fmt.Sprintf(" aegis.persona=%s", persona)
 		}
 	}
 
-	// Fall back to TCP via guest IP (used when guest kernel lacks virtio_vsock).
-	if guestIP == "" {
-		return nil, fmt.Errorf("sandbox %s: vsock unavailable and no guest IP", id)
+	return base
+}
+
+func (fb *FirecrackerBackend) configureVM(sockPath string) error {
+	// Send InstanceStart action via the proper Firecracker HTTP-over-unix-socket API.
+	// The previous raw JSON write was not a valid HTTP request and commonly resulted
+	// in "connection refused" or immediate close even when the socket file existed.
+	return fb.sendVMAction(sockPath, "InstanceStart")
+}
+
+// sendVMAction sends a Firecracker action (InstanceStart, InstanceHalt, etc.)
+// using a proper HTTP PUT to /actions over the unix socket. This matches the
+// documented Firecracker API (used by the official SDK and all recent versions).
+func (fb *FirecrackerBackend) sendVMAction(sockPath string, actionType string) error {
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return net.Dial("unix", sockPath)
+		},
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   8 * time.Second,
 	}
 
-	addr := fmt.Sprintf("%s:%d", guestIP, guestPort)
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	body := bytes.NewBufferString(`{"action_type": "` + actionType + `"}`)
+	req, err := http.NewRequest("PUT", "http://localhost/actions", body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to VM %s at %s: %w", id, addr, err)
+		return fmt.Errorf("failed to create action request: %w", err)
 	}
-	defer conn.Close()
-	return r.exchangeJSON(conn, id, req)
-}
+	req.Header.Set("Content-Type", "application/json")
 
-// exchangeJSON writes a JSON request and reads a JSON response on conn.
-func (r *FirecrackerRuntime) exchangeJSON(conn net.Conn, id string, req interface{}) (json.RawMessage, error) {
-	return r.exchangeJSONWithReader(conn, conn, id, req)
-}
-
-func (r *FirecrackerRuntime) exchangeJSONWithReader(conn net.Conn, reader io.Reader, id string, req interface{}) (json.RawMessage, error) {
-	encoder := json.NewEncoder(conn)
-	decoder := json.NewDecoder(reader)
-
-	if err := encoder.Encode(req); err != nil {
-		return nil, fmt.Errorf("failed to send request to VM %s: %w", id, err)
-	}
-
-	var raw json.RawMessage
-	if err := decoder.Decode(&raw); err != nil {
-		return nil, fmt.Errorf("failed to read response from VM %s: %w", id, err)
-	}
-	return raw, nil
-}
-
-func readVsockConnectHandshake(conn net.Conn) (*bufio.Reader, error) {
-	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("vsock connect handshake read: %w", err)
+		return err
 	}
-	if !strings.HasPrefix(line, "OK") {
-		return nil, fmt.Errorf("vsock connect rejected: %s", strings.TrimSpace(line))
+	defer resp.Body.Close()
+
+	// Accept 200/204 (success) or 400 with specific messages in some versions.
+	// Any non-2xx is treated as error for now (caller will log + kill).
+	if resp.StatusCode >= 300 {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("firecracker action %s failed: HTTP %d: %s", actionType, resp.StatusCode, strings.TrimSpace(string(respBytes)))
 	}
-	return reader, nil
+	return nil
 }
 
-// detectCgroupVersion returns "2" for cgroups v2 and "1" for v1.
-func detectCgroupVersion() string {
-	if fi, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil && !fi.IsDir() {
-		return "2"
+// dumpFirecrackerLog reads and logs the tail of the VMM log file (the one passed to
+// --log-path). This is the most useful artifact when a VM reaches "process started"
+// but then fails the readiness or action steps (guest boot failure, kernel panic,
+// bad rootfs, missing /init, etc.).
+func dumpFirecrackerLog(logPath, vmID string) {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		logrus.Debugf("no Firecracker VMM log yet for %s at %s: %v", vmID, logPath, err)
+		return
 	}
-	return "1"
+	lines := strings.Split(string(data), "\n")
+	start := len(lines) - 60
+	if start < 0 {
+		start = 0
+	}
+	tail := strings.Join(lines[start:], "\n")
+	logrus.Errorf("Firecracker VMM log tail for %s (from %s):\n%s", vmID, logPath, tail)
+}
+
+// dumpConsoleLog does the same for the guest serial console log we configured in the
+// Firecracker JSON. This shows the actual kernel boot messages + whatever /init prints.
+func dumpConsoleLog(consolePath, vmID string) {
+	data, err := os.ReadFile(consolePath)
+	if err != nil {
+		logrus.Debugf("no guest console log yet for %s at %s: %v", vmID, consolePath, err)
+		return
+	}
+	logrus.Errorf("Guest console output for %s (from %s):\n%s", vmID, consolePath, string(data))
+}
+
+// cleanupVMArtifacts removes the on-disk files for a VM launch attempt.
+// Called on failure paths so that the next start of the same VM ID does not
+// see stale sockets/configs (Firecracker refuses to bind if the .sock exists).
+func cleanupVMArtifacts(sockPath, configPath, logPath, consolePath, vsockUdsPath, keyPath string) {
+	_ = os.Remove(sockPath)
+	_ = os.Remove(configPath)
+	_ = os.Remove(logPath)
+	_ = os.Remove(consolePath)
+	_ = os.Remove(vsockUdsPath)
+	if keyPath != "" {
+		_ = os.Remove(keyPath)
+	}
 }

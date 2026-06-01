@@ -1,0 +1,20 @@
+{
+  "prop_1": {
+    "id": "prop_1",
+    "description": "discord_monitor v1.2",
+    "state": "approved",
+    "reviews": {
+      "ciso": "approve",
+      "architect": "approve"
+    }
+  },
+  "prop_2": {
+    "id": "prop_2",
+    "description": "web_search v2",
+    "state": "pending",
+    "reviews": {
+      "ciso": "approve",
+      "tester": "abstain"
+    }
+  }
+}

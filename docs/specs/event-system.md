@@ -52,6 +52,12 @@ AegisClaw uses a **lightweight, AegisHub-mediated Event System** instead of a fu
 - `../safe-mode.md`
 - `../builder-security-gates.md`
 
+## Implementation Status (Phase 7.2)
+- In-process Bus with timers, approval queues, PublishPrivileged + security.Manager signing hook.
+- Concrete publishers: orchestrator (vm.started/stopped), Court personas (court.decision.made).
+- Consumers: agent reacts to approval.decision; dynamic skill index refresh.
+- All privileged events have Merkle-style signing path available.
+
 ## Traceability
 **Driven by:**
 - Need for coordinated signals without high complexity

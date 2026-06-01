@@ -1,0 +1,20 @@
+{
+  "discord_monitor": {
+    "id": "discord_monitor",
+    "name": "Discord Monitor",
+    "version": "1.2",
+    "status": "Deployed",
+    "description": "Monitors Discord for alerts",
+    "required_scopes": ["network:discord.com", "background"],
+    "secrets": ["DISCORD_BOT_TOKEN"]
+  },
+  "web_search": {
+    "id": "web_search",
+    "name": "Web Search",
+    "version": "2.1",
+    "status": "Deployed",
+    "description": "Search skill",
+    "required_scopes": ["network:approved-search"],
+    "secrets": []
+  }
+}
