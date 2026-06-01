@@ -35,8 +35,10 @@ func startGuestHubBridge(vmID string) {
 	if _, loaded := guestHubBridgeStarted.LoadOrStore(vmID, struct{}{}); loaded {
 		return
 	}
-	hubSocket := hubSocketPath()
-	go runGuestHubBridge(cfg.StateDir, hubSocket, vmID)
+	go func() {
+		defer guestHubBridgeStarted.Delete(vmID)
+		runGuestHubBridge(cfg.StateDir, hubSocketPath(), vmID)
+	}()
 }
 
 func reconcileGuestHubBridges() {
