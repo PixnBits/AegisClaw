@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"AegisClaw/internal/transport/hubclient" // for HubVsockPort constant (Phase 1.1c vsock support)
@@ -24,6 +25,7 @@ var hubSocketPath = "~/.aegis/hub.sock"
 var registered = make(map[string]*RegisteredComponent)
 var aclRules []ACLRule
 var registeredMutex sync.RWMutex
+var hubConnEpoch uint64
 var tempConnCounter int = 0
 var tempConnMutex sync.Mutex
 
@@ -88,6 +90,7 @@ type RegisteredComponent struct {
 	PublicKey ed25519.PublicKey
 	Encoders  *ComponentEncoders
 	Version   string
+	ConnEpoch uint64 // set per handleConnection; stale disconnects must not unregister replacements
 }
 
 type ACLRule struct {
@@ -208,6 +211,14 @@ func aclMatch(pattern, value string) bool {
 		return strings.HasPrefix(value, prefix)
 	}
 	return false
+}
+
+func unregisterHubConnection(id string, epoch uint64) {
+	registeredMutex.Lock()
+	if cur, ok := registered[id]; ok && cur.ConnEpoch == epoch {
+		delete(registered, id)
+	}
+	registeredMutex.Unlock()
 }
 
 func verifySignature(msg Message, pubKey ed25519.PublicKey) bool {
@@ -369,20 +380,21 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		Decoder: decoder,
 		Mutex:   sync.Mutex{},
 	}
-	registered[componentID] = &RegisteredComponent{ID: componentID, PublicKey: pubKey, Encoders: encoders, Version: version}
+	connEpoch := atomic.AddUint64(&hubConnEpoch, 1)
+	registered[componentID] = &RegisteredComponent{
+		ID: componentID, PublicKey: pubKey, Encoders: encoders, Version: version, ConnEpoch: connEpoch,
+	}
 	registeredMutex.Unlock()
 	debugLog("hub", fmt.Sprintf("Registered component %s (hub id %s) version %s", regMsg.Source, componentID, version))
 
 	conns.Store(componentID, conn)
 
-	// Cleanup when connection closes
-	defer func(id string) {
-		registeredMutex.Lock()
-		delete(registered, id)
-		registeredMutex.Unlock()
+	// Cleanup when connection closes — only if this connection still owns the registration.
+	defer func(id string, epoch uint64) {
+		unregisterHubConnection(id, epoch)
 		conns.Delete(id)
-		debugLog("hub", fmt.Sprintf("Cleaned up registration for %s", id))
-	}(componentID)
+		debugLog("hub", fmt.Sprintf("Cleaned up registration for %s (epoch %d)", id, epoch))
+	}(componentID, connEpoch)
 
 	// Send ACL rules for this component, including the assigned ID
 	response := map[string]interface{}{
@@ -462,6 +474,18 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				}
 				debugLog("hub", fmt.Sprintf("Sending component.list response with %d components", len(components)))
 				encoder.Encode(response)
+			} else if msg.Command == "event.publish" {
+				// Store timer / expiration events (event-system.md); ack without RPC fan-out.
+				ack := Message{
+					Source:      "hub",
+					Destination: msg.Source,
+					Command:     "ack",
+					Payload:     map[string]string{"status": "event_received"},
+					Timestamp:   time.Now().Format(time.RFC3339),
+				}
+				encoders.Mutex.Lock()
+				_ = encoders.Encoder.Encode(ack)
+				encoders.Mutex.Unlock()
 			} else if msg.Command == "tool.list" {
 				// Forward to store
 				storeMsg := msg
@@ -495,6 +519,10 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				encoder.Encode(response)
 			}
 		} else {
+			if strings.TrimSpace(msg.Destination) == "" {
+				debugLog("hub", fmt.Sprintf("drop message from %s: empty destination (cmd=%s)", msg.Source, msg.Command))
+				continue
+			}
 			// One-way replies (agent poll/chat responses) vs synchronous RPC (memory.get_context, llm.call).
 			if isOneWayHubReply(msg.Command) {
 				forwardReplyToRequester(msg)
@@ -511,7 +539,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 // isOneWayHubReply reports commands that are fire-and-forget replies on the wire (hubclient.Reply),
 // not request/response RPC pairs (hubclient.Send).
 func isOneWayHubReply(command string) bool {
-	if command == "response" || command == "ack" {
+	if command == "response" || command == "ack" || command == "error" {
 		return true
 	}
 	// Destination component replies like memory.response are inbound to the caller, not outbound from it.
@@ -545,6 +573,9 @@ func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders) {
 }
 
 func forwardHubRPC(requesterID string, msg Message) Message {
+	if strings.TrimSpace(msg.Destination) == "" {
+		return Message{Command: "error", Payload: "ERR_EMPTY_DESTINATION"}
+	}
 	registeredMutex.RLock()
 	destComponent, exists := registered[msg.Destination]
 	registeredMutex.RUnlock()

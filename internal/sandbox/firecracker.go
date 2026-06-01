@@ -6,9 +6,6 @@ package sandbox
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -400,13 +397,10 @@ func buildBootArgs(config VMConfig) string {
 		base += egress
 	}
 
-	// 7.5.4: Pass VM key on cmdline (hex, cmdline-safe) and optional /etc/aegis/vmkey in rootfs.
+	// 7.5.4: Point guests at the injected /etc/aegis/vmkey (see guest_key_inject.go).
+	// Do not pass the raw key on the kernel cmdline — length limits and parsing can
+	// desync register (pub) vs sign (priv) and break hub signatures after reconnect.
 	if config.PrivateKeyPath != "" {
-		if data, err := os.ReadFile(config.PrivateKeyPath); err == nil {
-			if privBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data))); err == nil && len(privBytes) == ed25519.PrivateKeySize {
-				base += " aegis.vm_private_key_hex=" + hex.EncodeToString(privBytes)
-			}
-		}
 		base += " aegis.vm_private_key_path=/etc/aegis/vmkey"
 	}
 

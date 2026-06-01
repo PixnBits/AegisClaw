@@ -90,6 +90,10 @@ const (
 	// in via the Firecracker hybrid-vsock UDS (CONNECT handshake) and bridges bytes to
 	// the AegisHub unix socket. Same pattern as web-portal :18080 but inverted direction.
 	GuestHubBridgePort = 9101
+
+	// GuestPortalBridgePort is the web-portal guest listener for the inverted portal bridge.
+	// The host dials in via fc-*-vsock.sock (hybrid CONNECT) when guest→host vsock :1030 fails.
+	GuestPortalBridgePort = 9102
 )
 
 // Sentinel errors for AegisHub protocol responses (exact strings from aegishub/main.go).

@@ -72,6 +72,8 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 		useFixtures = true
 		log.Println("E2E fixture data loaded — contract tests will see seeded skills/proposals.")
 	} else {
+		// Inverted portal bridge (host dials guest :9102) — start before lazy bridge retries.
+		startGuestPortalBridgeListener()
 		// Connect to Hub/portal-bridge in the background so vsock :18080 and /health
 		// are available immediately (guest entropy pool can block crypto/rand for 60s+).
 		client = newLazyBridgeClient()

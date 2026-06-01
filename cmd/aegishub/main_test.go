@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -231,5 +232,47 @@ func TestCheckACL(t *testing.T) {
 		if got := checkACL(c.src, c.dst, c.cmd); got != c.want {
 			t.Errorf("checkACL(%q,%q,%q)=%v want %v", c.src, c.dst, c.cmd, got, c.want)
 		}
+	}
+}
+
+func TestIsOneWayHubReplyIncludesError(t *testing.T) {
+	if !isOneWayHubReply("error") {
+		t.Fatal("hub error replies must be one-way to avoid store RPC loops")
+	}
+	if isOneWayHubReply("sessions.list") {
+		t.Fatal("RPC commands must not be one-way")
+	}
+}
+
+func TestForwardHubRPCEmptyDestination(t *testing.T) {
+	reply := forwardHubRPC("store", Message{Source: "store", Destination: "", Command: "ping"})
+	if reply.Command != "error" || reply.Payload != "ERR_EMPTY_DESTINATION" {
+		t.Fatalf("expected ERR_EMPTY_DESTINATION, got %+v", reply)
+	}
+}
+
+func TestUnregisterHubConnectionOnlyDropsOwningEpoch(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	enc := &ComponentEncoders{Mutex: sync.Mutex{}}
+	registeredMutex.Lock()
+	registered["agent-test"] = &RegisteredComponent{
+		ID: "agent-test", PublicKey: pub, Encoders: enc, ConnEpoch: 2,
+	}
+	registeredMutex.Unlock()
+
+	unregisterHubConnection("agent-test", 1)
+	registeredMutex.RLock()
+	_, still := registered["agent-test"]
+	registeredMutex.RUnlock()
+	if !still {
+		t.Fatal("stale epoch 1 disconnect must not unregister epoch 2 connection")
+	}
+
+	unregisterHubConnection("agent-test", 2)
+	registeredMutex.RLock()
+	_, gone := registered["agent-test"]
+	registeredMutex.RUnlock()
+	if gone {
+		t.Fatal("epoch 2 owner disconnect should unregister")
 	}
 }

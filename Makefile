@@ -43,7 +43,8 @@ build-microvms:
 		echo "MicroVM building not needed on $(shell uname -s) (uses Docker Sandboxes)"; \
 	fi
 
-# Start the daemon (absolute path for NOPASSWD sudoers rules)
+# Start the daemon (absolute path for NOPASSWD sudoers rules).
+# AEGIS_DEV_MODE is set inside the daemon for the managed hub (sudoers often disallow SETENV).
 start:
 	sudo -n $(AEGIS_BIN) start
 
@@ -146,9 +147,20 @@ test:
 test-integration:
 	go test -v -tags=integration ./cmd/aegis -run "TestDaemon|TestCLI|TestVersion|TestProcessCleaning|TestVMList|TestSocket" -count=1 -timeout 90s
 
+# Fast cURL regression for chat sessions (daemon on localhost:8080)
+test-chat-curl:
+	bash scripts/test-chat-sessions-curl.sh
+
+# Tail VM logs for errors (store, web-portal, hub path VMs)
+vm-logs-errors:
+	@for id in store web-portal aegishub network-boundary; do \
+	  echo "=== $$id ==="; \
+	  ./bin/aegis vm logs "$$id" --tail 80 2>/dev/null | grep -iE 'error|fail|warn|panic|Store received' || true; \
+	done
+
 # Run E2E tests in a real browser against the live daemon + microVMs (make start first)
 test-e2e:
-	bash scripts/run-playwright-e2e.sh e2e/chat.spec.js --project=chromium
+	AEGIS_E2E_LIVE=1 bash scripts/run-playwright-e2e.sh e2e/chat.spec.js --project=chromium
 
 # Contract-only E2E against the thin web-portal fixture (no daemon). For CI without Firecracker.
 test-e2e-contract:

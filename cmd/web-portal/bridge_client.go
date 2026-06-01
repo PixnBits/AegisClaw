@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -18,6 +19,37 @@ import (
 
 	"github.com/mdlayher/vsock"
 )
+
+var (
+	guestPortalBridgeMu   sync.Mutex
+	guestPortalBridgeConn net.Conn
+)
+
+// startGuestPortalBridgeListener waits for the host daemon to dial the inverted
+// portal bridge (guest listens on :9102; host uses fcvsock CONNECT). Chat/session
+// host-edge paths on :8080 still work when this is down.
+func startGuestPortalBridgeListener() {
+	if !runningInFirecrackerGuest() {
+		return
+	}
+	go func() {
+		conn, err := hubclient.AcceptVsockHubBridgeConn(hubclient.GuestPortalBridgePort)
+		if err != nil {
+			log.Printf("web-portal: inverted portal bridge listen failed: %v", err)
+			return
+		}
+		guestPortalBridgeMu.Lock()
+		guestPortalBridgeConn = conn
+		guestPortalBridgeMu.Unlock()
+		log.Printf("web-portal: inverted portal bridge ready (host connected on vsock :%d)", hubclient.GuestPortalBridgePort)
+	}()
+}
+
+func takeGuestPortalBridgeConn() net.Conn {
+	guestPortalBridgeMu.Lock()
+	defer guestPortalBridgeMu.Unlock()
+	return guestPortalBridgeConn
+}
 
 // hubBridgeClient implements dashboard.APIClient by speaking the project's
 // standard signed Message protocol to the AegisHub (and through it to backends),
@@ -95,14 +127,17 @@ func dialHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
 	}
 
 	if runningInFirecrackerGuest() {
+		if c := takeGuestPortalBridgeConn(); c != nil {
+			return c, true, nil
+		}
 		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.HubVsockPort, 16, 250*time.Millisecond); dialErr == nil {
 			return c, false, nil
 		}
 		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.PortalBridgeVsockPort, 24, 500*time.Millisecond); dialErr == nil {
 			return c, true, nil
 		}
-		return nil, false, fmt.Errorf("web-portal guest: failed to reach Hub (vsock :%d) or host portal bridge (vsock :%d)",
-			hubclient.HubVsockPort, hubclient.PortalBridgeVsockPort)
+		return nil, false, fmt.Errorf("web-portal guest: failed inverted portal bridge (:%d), Hub (:%d), or host portal bridge (:%d)",
+			hubclient.GuestPortalBridgePort, hubclient.HubVsockPort, hubclient.PortalBridgeVsockPort)
 	}
 
 	if c, dialErr := net.Dial("unix", socket); dialErr == nil {

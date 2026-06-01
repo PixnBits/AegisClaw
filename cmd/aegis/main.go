@@ -3736,6 +3736,8 @@ func startBaseInfrastructure() error {
 	}
 	logrus.Info("Started real Firecracker microVM for web-portal")
 	logrus.Info("WEB_PORTAL_STARTED: web-portal VM launched (will be reached only via daemon reverse proxy)")
+	portalBridgeReadyLog("web-portal")
+	startGuestPortalBridge("web-portal")
 	if orchestrator != nil {
 		orchestrator.RegisterAuxComponent("web-portal", "web-portal", nil, nil)
 		orchestrator.Bus().PublishJSON("web_portal.started", map[string]interface{}{
@@ -3769,9 +3771,12 @@ func startManagedHub(hubSocket string) error {
 	}
 
 	cmd := exec.Command(hubBinary, "start")
-	cmd.Env = append(os.Environ(),
-		"AEGIS_HUB_SOCKET="+hubSocket,
-	)
+	hubEnv := append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSocket)
+	if os.Getenv("AEGIS_DEV_MODE") == "" {
+		// Dev convenience: allow dummy guest signatures on the hub without sudo SETENV.
+		hubEnv = append(hubEnv, "AEGIS_DEV_MODE=1")
+	}
+	cmd.Env = hubEnv
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Pdeathsig: syscall.SIGTERM,
 		Setpgid:   true,

@@ -126,12 +126,21 @@ func handlePortalChatAction(command string, payload interface{}) (interface{}, e
 	}
 
 	ensurePairedAgentForSession(sessionID)
+	if sessionID != "" {
+		// Allow guest hub bridge + agent registration to settle after launch.
+		time.Sleep(2 * time.Second)
+	}
 
 	targets := portalChatAgentTargets(sessionID)
 
 	commands := []string{command}
 	if command == "chat.message" {
 		commands = append(commands, "user.turn")
+	}
+
+	maxWait := 90 * time.Second
+	if command == "chat.message" || command == "user.turn" {
+		maxWait = 120 * time.Second
 	}
 
 	var lastErr error
@@ -141,7 +150,7 @@ func handlePortalChatAction(command string, payload interface{}) (interface{}, e
 			hubPayload = chatPayloadForUserTurn(payload)
 		}
 		for _, target := range targets {
-			resp, err := sendToComponentViaHubRetry(target, cmd, hubPayload, 90*time.Second)
+			resp, err := sendToComponentViaHubRetry(target, cmd, hubPayload, maxWait)
 			if err == nil && resp != nil {
 				return normalizeChatHubResponse(resp), nil
 			}
@@ -217,6 +226,8 @@ func ensurePairedAgentForSession(sessionID string) {
 		return
 	}
 	startGuestHubBridgesForSession(sessionID)
+	// Brief pause so agent/memory guests accept hub bridges before chat RPC.
+	time.Sleep(1500 * time.Millisecond)
 }
 
 func chatPayloadForUserTurn(payload interface{}) interface{} {

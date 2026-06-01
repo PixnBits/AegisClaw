@@ -42,7 +42,7 @@ func (l *lazyBridgeClient) connectLoop() {
 			delay += 250 * time.Millisecond
 		}
 	}
-	log.Println("WARNING: web-portal hub bridge gave up after 120 attempts; chat/actions need host /api/chat/* or portal-bridge vsock :1030")
+	log.Println("WARNING: web-portal hub bridge gave up after 120 attempts; chat/sessions use host /api/chat/* and /chat/send on :8080; dashboard actions inside the guest need portal bridge :1030 or inverted :9102")
 }
 
 func (l *lazyBridgeClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {

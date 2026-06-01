@@ -1,0 +1,7 @@
+# Passwordless sudo for AegisClaw development (install: scripts/install-aegisclaw-sudoers.sh)
+# Replace pixnbits and paths if your checkout or username differs.
+# Note: do not pass env vars on the sudo line (SETENV is off by default); the daemon sets AEGIS_DEV_MODE for the hub.
+Defaults:pixnbits !requiretty
+
+pixnbits ALL=(ALL) NOPASSWD: /home/pixnbits/projects/AegisClaw/main/bin/aegis
+pixnbits ALL=(ALL) NOPASSWD: /home/pixnbits/projects/AegisClaw/main/scripts/build-microvms-docker.sh

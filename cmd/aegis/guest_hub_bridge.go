@@ -73,8 +73,8 @@ func runGuestHubBridge(stateDir, hubSocket, vmID string) {
 	port := uint32(hubclient.GuestHubBridgePort)
 
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		guestConn, err := dialFirecrackerVsockWithRetry(ctx, udsPath, port, 120, 500*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		guestConn, err := dialFirecrackerVsockWithRetry(ctx, udsPath, port, 160, 500*time.Millisecond)
 		cancel()
 		if err != nil {
 			logrus.Debugf("guest hub bridge %s: guest listener not ready yet: %v", vmID, err)
@@ -105,7 +105,7 @@ func runGuestHubBridge(stateDir, hubSocket, vmID string) {
 		_ = guestConn.Close()
 		_ = hubConn.Close()
 		logrus.Warnf("guest hub bridge %s disconnected; reconnecting", vmID)
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 	}
 }
 

@@ -505,12 +505,29 @@ func runStore(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		fmt.Println("Store received:", msg.Command)
+		// Hub RPC replies (error, ack) must not be handled as new inbound commands — that
+		// caused a tight feedback loop when Destination was empty on malformed frames.
+		if msg.Command == "error" || msg.Command == "ack" {
+			log.Printf("Store: ignoring hub %s frame (from=%q to=%q payload=%v)",
+				msg.Command, msg.Source, msg.Destination, msg.Payload)
+			continue
+		}
+		if strings.TrimSpace(msg.Destination) != "" && msg.Destination != "store" {
+			log.Printf("Store: ignoring mis-addressed message (from=%q to=%q cmd=%s)",
+				msg.Source, msg.Destination, msg.Command)
+			continue
+		}
+		if strings.TrimSpace(msg.Source) == "" {
+			log.Printf("Store: ignoring message with empty source (cmd=%s)", msg.Command)
+			continue
+		}
+
+		fmt.Printf("Store received: %s from %s\n", msg.Command, msg.Source)
 
 		response := Message{
 			Source:      "store",
 			Destination: msg.Source,
-			Timestamp:   "2026-05-09T19:40:01Z",
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			Signature:   "",
 		}
 
@@ -627,8 +644,7 @@ func runStore(cmd *cobra.Command, args []string) {
 				Timestamp:   response.Timestamp,
 				Signature:   "",
 			}
-			signMessage(&scribeMsg, priv)
-			encoder.Encode(scribeMsg)
+			storeSendProactive(encoder, priv, scribeMsg)
 			response.Command = "proposal.created"
 			response.Payload = "ok"
 		case "proposal.get":
@@ -690,8 +706,7 @@ func runStore(cmd *cobra.Command, args []string) {
 						Timestamp:   response.Timestamp,
 						Signature:   "",
 					}
-					signMessage(&builderMsg, priv)
-					encoder.Encode(builderMsg)
+					storeSendProactive(encoder, priv, builderMsg)
 				} else {
 					p["state"] = "rejected"
 				}
@@ -836,9 +851,8 @@ func runStore(cmd *cobra.Command, args []string) {
 				Timestamp:   time.Now().UTC().Format(time.RFC3339),
 				Signature:   "",
 			}
-			signMessage(&updateMsg, priv)
 			// Send to Boundary (no extra mutex needed here — follows the same pattern as court-scribe notifications)
-			encoder.Encode(updateMsg)
+			storeSendProactive(encoder, priv, updateMsg)
 
 			response.Command = "secrets.pushed"
 			response.Payload = map[string]interface{}{"status": "encrypted blob sent", "skills": len(secrets)}
@@ -1125,10 +1139,32 @@ func runStore(cmd *cobra.Command, args []string) {
 			saveAuditToFile("audit.json", auditLog)
 		}
 
+		if strings.TrimSpace(response.Destination) == "" {
+			log.Printf("Store: not sending response for %s — empty Destination", msg.Command)
+			continue
+		}
 		err = encoder.Encode(response)
 		if err != nil {
 			log.Println("Failed to send response:", err)
 		}
+	}
+}
+
+// storeSendProactive signs and sends a fire-and-forget hub message; skips when Destination is empty.
+func storeSendProactive(encoder *json.Encoder, priv ed25519.PrivateKey, msg Message) {
+	if strings.TrimSpace(msg.Destination) == "" {
+		log.Printf("Store: skip proactive send — empty Destination (cmd=%s)", msg.Command)
+		return
+	}
+	if msg.Source == "" {
+		msg.Source = "store"
+	}
+	if msg.Timestamp == "" {
+		msg.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	signMessage(&msg, priv)
+	if err := encoder.Encode(msg); err != nil {
+		log.Printf("Store: proactive send %s failed: %v", msg.Command, err)
 	}
 }
 

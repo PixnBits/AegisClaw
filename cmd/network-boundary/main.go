@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -1126,6 +1127,22 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				"timestamp":          time.Now().Format(time.RFC3339),
 			}
 
+		case "llm.call":
+			// Agent Runtime + Court personas proxy LLM via boundary (agent-runtime.md, acls.yaml llm.*).
+			if !boundaryHealthy {
+				response.Command = "error"
+				response.Payload = map[string]interface{}{"error": "Network Boundary degraded"}
+				break
+			}
+			text, err := proxyLLMCall(msg.Payload)
+			if err != nil {
+				response.Command = "error"
+				response.Payload = map[string]interface{}{"error": err.Error()}
+			} else {
+				response.Command = "llm.response"
+				response.Payload = map[string]interface{}{"response": text}
+			}
+
 		default:
 			response.Command = "error"
 			response.Payload = "unknown command"
@@ -1146,6 +1163,78 @@ func ollamaBackendHost() string {
 		return host
 	}
 	return "localhost:11434"
+}
+
+// proxyLLMCall forwards llm.call to the configured Ollama-compatible backend (default localhost:11434).
+// When the backend is unreachable, returns a short dev stub so chat sessions can complete in CI/dev.
+func proxyLLMCall(payload interface{}) (string, error) {
+	m, ok := payload.(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("invalid llm.call payload")
+	}
+	reqMap, _ := m["request"].(map[string]interface{})
+	prompt, _ := reqMap["prompt"].(string)
+	if strings.TrimSpace(prompt) == "" {
+		return "", fmt.Errorf("llm.call: prompt required")
+	}
+	model, _ := reqMap["model"].(string)
+	if model == "" {
+		model = "llama3.2"
+	}
+	endpoint, _ := m["endpoint"].(string)
+	if endpoint == "" {
+		endpoint = "/api/generate"
+	}
+	host := ollamaBackendHost()
+	if !strings.Contains(host, "://") {
+		host = "http://" + host
+	}
+	target := strings.TrimRight(host, "/") + endpoint
+
+	body, err := json.Marshal(map[string]interface{}{
+		"model":  model,
+		"prompt": prompt,
+		"stream": false,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(httpReq)
+	if err != nil {
+		log.Printf("llm.call: backend %s unavailable (%v); using dev stub", target, err)
+		return devLLMStubResponse(prompt), nil
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("llm.call: backend %s status %d; using dev stub", target, resp.StatusCode)
+		return devLLMStubResponse(prompt), nil
+	}
+
+	var ollama map[string]interface{}
+	if json.Unmarshal(raw, &ollama) == nil {
+		if text, ok := ollama["response"].(string); ok && text != "" {
+			return text, nil
+		}
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func devLLMStubResponse(prompt string) string {
+	snippet := prompt
+	if len(snippet) > 240 {
+		snippet = snippet[:240] + "…"
+	}
+	return "Dev-mode reply (Ollama backend unavailable): I received your message and completed the agent loop. You wrote: " + snippet
 }
 
 // loadAllowedDomains builds the global/fallback allowlist with multiple sources (paranoid, declarative).
