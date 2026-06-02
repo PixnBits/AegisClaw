@@ -221,12 +221,6 @@ var (
 	// early daemon + microVM bring-up.
 	debugMode bool
 
-	// webPortalCmd tracks the managed web-portal child process for explicit
-	// termination during clean shutdown and panic recovery. Combined with
-	// Pdeathsig set on the cmd, this gives strong crash containment for
-	// auxiliary children (host-daemon.md:Test Requirements / Lifecycle Containment).
-	webPortalCmd *exec.Cmd
-
 	// webPortalProxyServer holds the *http.Server for the hardened reverse proxy
 	// so we can call Shutdown on it during graceful daemon stop (signal or socket "stop").
 	// Started in startWebPortalProxy; only the foreground daemon goroutine sets it.
@@ -236,8 +230,8 @@ var (
 	// These fulfill the documented requirement that the Host Daemon acts as bootstrap/lifecycle
 	// manager for the base set (host-daemon.md, web-portal-vm.md §Startup, user-journeys/01).
 	// All use Pdeathsig + explicit tracking for containment.
-	hubCmd           *exec.Cmd
-	storeCmd         *exec.Cmd
+	hubCmd             *exec.Cmd
+	storeCmd           *exec.Cmd
 	networkBoundaryCmd *exec.Cmd
 )
 
@@ -1110,7 +1104,7 @@ func trySocketOp(op string) (string, error) {
 // Falls back gracefully if portal/daemon unavailable.
 func queryPortal(method, path string, body []byte) ([]byte, error) {
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout:   5 * time.Second,
 		Transport: &http.Transport{
 			// No proxy, strict dial
 		},
@@ -1152,14 +1146,14 @@ func queryPortal(method, path string, body []byte) ([]byte, error) {
 // Stored at ~/.aegis/sessions.json (0700). Not a replacement for Memory VM (future phase).
 
 type CLISession struct {
-	ID               string    `json:"id"`
-	Status           string    `json:"status"` // running, ended
-	Goal             string    `json:"goal"`
-	Started          time.Time `json:"started"`
-	VMID             string    `json:"vm_id,omitempty"`
-	AutonomyPreset   string    `json:"autonomy_preset,omitempty"`
-	GrantedScopes    []string  `json:"granted_scopes,omitempty"`
-	AutonomyExpires  *time.Time `json:"autonomy_expires,omitempty"`
+	ID              string     `json:"id"`
+	Status          string     `json:"status"` // running, ended
+	Goal            string     `json:"goal"`
+	Started         time.Time  `json:"started"`
+	VMID            string     `json:"vm_id,omitempty"`
+	AutonomyPreset  string     `json:"autonomy_preset,omitempty"`
+	GrantedScopes   []string   `json:"granted_scopes,omitempty"`
+	AutonomyExpires *time.Time `json:"autonomy_expires,omitempty"`
 
 	// 7.2: Simple surface tracking for background/long-running work expirations.
 	// This lets a second EventBus consumer (reconcileExpiredBackgroundWork) make
@@ -1237,13 +1231,13 @@ func listActiveSessions() []CLISession {
 // (localhost-only hardened path). Disclaimers in all output.
 
 type CLITeam struct {
-	ID        string    `json:"id"`
-	Goal      string    `json:"goal"`
-	Roles     []string  `json:"roles"`
-	Created   time.Time `json:"created"`
-	Status    string    `json:"status"` // active, archived
-	MsgCount  int       `json:"msg_count,omitempty"`
-	LastMsg   string    `json:"last_msg,omitempty"`
+	ID       string    `json:"id"`
+	Goal     string    `json:"goal"`
+	Roles    []string  `json:"roles"`
+	Created  time.Time `json:"created"`
+	Status   string    `json:"status"` // active, archived
+	MsgCount int       `json:"msg_count,omitempty"`
+	LastMsg  string    `json:"last_msg,omitempty"`
 }
 
 func getTeamsFile() string {
@@ -1419,11 +1413,11 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		allowedOps := map[string]bool{
 			"vm.list": true, "vm list": true,
 			"vm.logs": true,
-			"stop": true,
+			"stop":    true,
 			"restart": true,
-			"status": true,
-			"doctor": true,
-			"ping": true,
+			"status":  true,
+			"doctor":  true,
+			"ping":    true,
 		}
 		if !allowedOps[req.Op] {
 			logrus.Warnf("unauthorized socket op: %s", req.Op)
@@ -1488,11 +1482,11 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 				}
 
 				resp.Data = map[string]interface{}{
-					"id":            vmID,
-					"timestamp":     time.Now().UTC().Format(time.RFC3339),
-					"vm":            vmInfo,
-					"logs":          logs,
-					"note":          "Phase 0/1 diagnostic bundle. Check 'logs' section for VMM, console, and guest structured output.",
+					"id":        vmID,
+					"timestamp": time.Now().UTC().Format(time.RFC3339),
+					"vm":        vmInfo,
+					"logs":      logs,
+					"note":      "Phase 0/1 diagnostic bundle. Check 'logs' section for VMM, console, and guest structured output.",
 				}
 			}
 		case "stop":
@@ -1699,9 +1693,9 @@ func listVMs(cmd *cobra.Command, args []string) {
 	// Add simulated agent VMs from sessions
 	for _, s := range activeSessions {
 		vms = append(vms, map[string]interface{}{
-			"id":     s.VMID,
-			"type":   "agent",
-			"status": s.Status,
+			"id":      s.VMID,
+			"type":    "agent",
+			"status":  s.Status,
 			"session": s.ID,
 		})
 	}
@@ -2473,8 +2467,6 @@ func runTasksCancel(cmd *cobra.Command, args []string) {
 	fmt.Printf("Task %s: cancellation requested (surface only for now).\n", id)
 }
 
-
-
 // initEventBusReactivity centralizes visible reactivity for Store-published expiration events
 // (autonomy.expired, background.expired, timer.fired.* via the Hub per event-system.md).
 // Subscribing once at startup avoids duplicate handlers.
@@ -2946,9 +2938,9 @@ func runTeamNew(cmd *cobra.Command, args []string) {
 
 	// Also attempt real portal create (thin handlers already exist and are stub-tolerant)
 	payload := map[string]interface{}{
-		"id":   team.ID,
-		"name": team.Goal, // use goal as name for compatibility
-		"goal": team.Goal,
+		"id":    team.ID,
+		"name":  team.Goal, // use goal as name for compatibility
+		"goal":  team.Goal,
 		"roles": team.Roles,
 	}
 	body, _ := json.Marshal(payload)
@@ -3091,10 +3083,10 @@ func runTeamMessage(cmd *cobra.Command, args []string) {
 
 	if jsonOutput {
 		resp := map[string]interface{}{
-			"status": "sent",
+			"status":  "sent",
 			"team_id": id,
-			"to": rest,
-			"note": "Surface message recorded. Full inter-agent delivery + audit via AegisHub in runtime.",
+			"to":      rest,
+			"note":    "Surface message recorded. Full inter-agent delivery + audit via AegisHub in runtime.",
 		}
 		if err != nil {
 			resp["portal_note"] = "portal unreachable (daemon not running?) — local state updated"
@@ -3576,70 +3568,14 @@ func execSecrets(extraArgs []string) {
 	}
 }
 
-// startManagedWebPortal starts the web-portal binary as a managed child process
-// on the given internal address. This is part of the Host Daemon's responsibility
-// to mediate all access to the Web Portal (per web-portal-vm.md).
-func startManagedWebPortal(internalAddr string) error {
-	webPortalBinary := "./bin/web-portal"
-	if _, err := os.Stat(webPortalBinary); os.IsNotExist(err) {
-		// Fall back to looking in PATH or same dir as daemon (useful in dev)
-		webPortalBinary = "web-portal"
-	}
-
-	cmd := exec.Command(webPortalBinary)
-	cmd.Env = append(os.Environ(),
-		"AEGIS_WEB_PORTAL_LISTEN_ADDR="+internalAddr,
-		// In real deployment this would also pass vsock or hub socket info
-	)
-
-	// Paranoid crash containment (host-daemon.md:Test Requirements / Lifecycle Containment):
-	// Set Pdeathsig so that if the daemon process dies (crash, kill -9, panic, etc.),
-	// the kernel delivers SIGTERM to this child. This is the same treatment given
-	// to firecracker children in the sandbox backend.
-	// We also set Setpgid so the web-portal is in its own group for explicit killpg
-	// during clean shutdown or recovery.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGTERM,
-		Setpgid:   true,
-	}
-
-	// Inherit logging from the daemon for now (goes to ~/.aegis/daemon.log)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	logrus.Info("starting managed web-portal on internal address 127.0.0.1:18080")
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start web-portal: %w", err)
-	}
-
-	// Track the web-portal cmd so we can explicitly kill it during clean shutdown
-	// or panic recovery (defense in depth with the Pdeathsig above).
-	// This gives both kernel-level death signal on daemon crash *and* explicit
-	// termination on clean stop/restart paths.
-	// Future: move this tracking into the orchestrator for unified VM + auxiliary child lifecycle
-	// (jailer/cgroups integration noted in 00-v2-phased-implementation-plan.md Phase 1).
-	webPortalCmd = cmd
-
-	// In a more complete implementation we would track this in the orchestrator
-	// and restart on crash. For Phase 5 minimal proxy this is sufficient.
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			logrus.Warnf("managed web-portal exited: %v", err)
-		}
-	}()
-
-	return nil
-}
-
 // killManagedChildren performs best-effort termination of auxiliary children
-// (web-portal + the rest of the base set: hub, store, network-boundary).
+// (hub, store, network-boundary).
 // This is defense-in-depth with Pdeathsig (host-daemon.md: Lifecycle Containment).
 func killManagedChildren() {
 	for name, cmd := range map[string]**exec.Cmd{
-		"hub":             &hubCmd,
-		"store":           &storeCmd,
+		"hub":              &hubCmd,
+		"store":            &storeCmd,
 		"network-boundary": &networkBoundaryCmd,
-		"web-portal":      &webPortalCmd,
 	} {
 		if *cmd != nil && (*cmd).Process != nil {
 			logrus.Infof("terminating managed %s child (explicit kill for clean shutdown)", name)
