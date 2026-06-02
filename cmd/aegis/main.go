@@ -221,18 +221,13 @@ var (
 	// early daemon + microVM bring-up.
 	debugMode bool
 
-	// webPortalCmd tracks the managed web-portal child process for explicit
-	// termination during clean shutdown and panic recovery. Combined with
-	// Pdeathsig set on the cmd, this gives strong crash containment for
-	// auxiliary children (host-daemon.md:Test Requirements / Lifecycle Containment).
-	webPortalCmd *exec.Cmd
-
 	// webPortalProxyServer holds the *http.Server for the hardened reverse proxy
 	// so we can call Shutdown on it during graceful daemon stop (signal or socket "stop").
 	// Started in startWebPortalProxy; only the foreground daemon goroutine sets it.
 	webPortalProxyServer *http.Server
 
-	// Base infrastructure managed children (AegisHub first, then Network Boundary, Store, Web Portal).
+	// Base infrastructure managed host children (AegisHub + auxiliary bridges only).
+	// network-boundary, store, and web-portal are started as real microVMs via the orchestrator.
 	// These fulfill the documented requirement that the Host Daemon acts as bootstrap/lifecycle
 	// manager for the base set (host-daemon.md, web-portal-vm.md §Startup, user-journeys/01).
 	// All use Pdeathsig + explicit tracking for containment.
@@ -3576,70 +3571,14 @@ func execSecrets(extraArgs []string) {
 	}
 }
 
-// startManagedWebPortal starts the web-portal binary as a managed child process
-// on the given internal address. This is part of the Host Daemon's responsibility
-// to mediate all access to the Web Portal (per web-portal-vm.md).
-func startManagedWebPortal(internalAddr string) error {
-	webPortalBinary := "./bin/web-portal"
-	if _, err := os.Stat(webPortalBinary); os.IsNotExist(err) {
-		// Fall back to looking in PATH or same dir as daemon (useful in dev)
-		webPortalBinary = "web-portal"
-	}
-
-	cmd := exec.Command(webPortalBinary)
-	cmd.Env = append(os.Environ(),
-		"AEGIS_WEB_PORTAL_LISTEN_ADDR="+internalAddr,
-		// In real deployment this would also pass vsock or hub socket info
-	)
-
-	// Paranoid crash containment (host-daemon.md:Test Requirements / Lifecycle Containment):
-	// Set Pdeathsig so that if the daemon process dies (crash, kill -9, panic, etc.),
-	// the kernel delivers SIGTERM to this child. This is the same treatment given
-	// to firecracker children in the sandbox backend.
-	// We also set Setpgid so the web-portal is in its own group for explicit killpg
-	// during clean shutdown or recovery.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGTERM,
-		Setpgid:   true,
-	}
-
-	// Inherit logging from the daemon for now (goes to ~/.aegis/daemon.log)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	logrus.Info("starting managed web-portal on internal address 127.0.0.1:18080")
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start web-portal: %w", err)
-	}
-
-	// Track the web-portal cmd so we can explicitly kill it during clean shutdown
-	// or panic recovery (defense in depth with the Pdeathsig above).
-	// This gives both kernel-level death signal on daemon crash *and* explicit
-	// termination on clean stop/restart paths.
-	// Future: move this tracking into the orchestrator for unified VM + auxiliary child lifecycle
-	// (jailer/cgroups integration noted in 00-v2-phased-implementation-plan.md Phase 1).
-	webPortalCmd = cmd
-
-	// In a more complete implementation we would track this in the orchestrator
-	// and restart on crash. For Phase 5 minimal proxy this is sufficient.
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			logrus.Warnf("managed web-portal exited: %v", err)
-		}
-	}()
-
-	return nil
-}
-
 // killManagedChildren performs best-effort termination of auxiliary children
-// (web-portal + the rest of the base set: hub, store, network-boundary).
+// (the host-managed base set: hub, store, network-boundary).
 // This is defense-in-depth with Pdeathsig (host-daemon.md: Lifecycle Containment).
 func killManagedChildren() {
 	for name, cmd := range map[string]**exec.Cmd{
 		"hub":             &hubCmd,
 		"store":           &storeCmd,
 		"network-boundary": &networkBoundaryCmd,
-		"web-portal":      &webPortalCmd,
 	} {
 		if *cmd != nil && (*cmd).Process != nil {
 			logrus.Infof("terminating managed %s child (explicit kill for clean shutdown)", name)
