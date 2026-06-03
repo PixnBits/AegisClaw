@@ -56,6 +56,13 @@ mount -t devtmpfs dev /dev 2>/dev/null || true
 if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
   echo 1024 > /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || true
 fi
+# Entropy wait (defense-in-depth). With the virtio-rng device added to every
+# Firecracker microVM (see internal/sandbox/firecracker.go + GitHub #62) and
+# a guest kernel that includes the virtio_rng driver (vmlinux-5.10+ from
+# scripts/download-firecracker-kernel.sh), the host VMM now supplies continuous
+# entropy. CRNG initializes quickly ("random: crng init done" appears within
+# seconds of boot, not 140s+), so this loop exits immediately. The dd + threshold
+# logic is kept for non-FC paths and older kernels.
 i=0
 while [ "$i" -lt 60 ]; do
   if dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null; then
@@ -79,7 +86,7 @@ ts=$(date +%s 2>/dev/null || echo 0)000000000
 echo "BOOT_TIMING: phase=/init_start ts=${ts} duration_ms=0"
 
 exec >/dev/console 2>&1
-echo "=== agent guest /init: key path=${AEGIS_VM_PRIVATE_KEY_PATH:-/etc/aegis/vmkey} hex_len=$(tr ' ' '\n' </proc/cmdline | grep -c vm_private_key_hex || true) ==="
+echo "=== agent guest /init: entropy ready (via virtio-rng), key path=${AEGIS_VM_PRIVATE_KEY_PATH:-/etc/aegis/vmkey} hex_len=$(tr ' ' '\n' </proc/cmdline | grep -c vm_private_key_hex || true) ==="
 ts=$(date +%s 2>/dev/null || echo 0)000000000
 echo "BOOT_TIMING: phase=/init_exec_binary ts=${ts} duration_ms=0"
 /usr/local/bin/agent || {

@@ -119,6 +119,30 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 			"smt":          false,
 		},
 		"iommu": false,
+		// Provide a continuous virtio-rng (exposed as Firecracker "entropy" device)
+		// to every microVM. This (plus the matching driver in the guest kernel) is the
+		// fix for GitHub #62: the minimal guest kernel (with "nomodules") would starve
+		// for entropy with only two virtio-mmio devices (rootfs block + vsock) + pci=off.
+		// Without the rng device + driver, CRNG stays uninitialized for 140-162s+,
+		// blocking crypto/rand + dd /dev/urandom right after main_entry (key_generated_dev,
+		// hub_dialed, register_complete, etc.) in store/network-boundary/court-*/agent-*/memory-*.
+		// The web-portal "cheated" by starting listeners early. The download script now
+		// fetches a 5.10+ kernel that has CONFIG_HW_RANDOM_VIRTIO built-in so the device
+		// is actually claimed by the guest and feeds the pool early.
+		//
+		// Security: read-only from guest; fully emulated inside the already-trusted
+		// Firecracker VMM (consistent with per-VM Ed25519 key injection). Continuous
+		// device preferred over one-shot seeding. Improves crypto reliability from
+		// first instruction in minimal guests.
+		//
+		// Firecracker will allocate the next MMIO address/IRQ (pattern: 0xc0001000:5,
+		// 0xc0002000:6 → 0xc0003000:7) and append the third virtio_mmio.device= entry
+		// to the kernel cmdline it passes (see its builder + add_virtio_device_to_cmdline).
+		// No change required in buildBootArgs (it only supplies the base; FC appends
+		// for every configured MMIO virtio device: block, vsock, now entropy).
+		// The guest kernel must have the virtio-rng driver for it to bind to .2 and
+		// actually credit the random pool (see download script + kernel choice).
+		"entropy": map[string]interface{}{},
 		// NOTE: Firecracker has no "console" object in its machine config schema.
 		// The guest serial console (ttyS0, see buildBootArgs "console=ttyS0") is
 		// emitted on the Firecracker *process* stdout/stderr, which we redirect to
@@ -397,6 +421,12 @@ func waitForSocket(sockPath string, timeout time.Duration) error {
 
 // buildBootArgs constructs the kernel command line, injecting 7.1 egress information
 // when the VM is configured to route all outbound through the Network Boundary.
+//
+// Note: virtio_mmio.device= entries for block/vsock (and now the entropy/rng device
+// for #62) are *not* added here. They are appended by Firecracker itself when it
+// builds the final cmdline from the devices present in the --config-file (drives,
+// vsock, entropy top-level key in fcConfig). This keeps the base args portable and
+// the device list authoritative in one place.
 func buildBootArgs(config VMConfig) string {
 	base := "console=ttyS0 reboot=k panic=1 pci=off nomodules"
 
