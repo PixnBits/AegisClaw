@@ -702,6 +702,8 @@ var initShippingComponents = map[string]bool{
 	"network-boundary": true,
 	"agent":            true,
 	"memory":           true,
+	"court-scribe":     true,
+	"court-persona":    true,
 }
 
 // componentShipsInit reports whether the given VM (by type or id) is built from
