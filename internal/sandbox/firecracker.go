@@ -428,7 +428,16 @@ func waitForSocket(sockPath string, timeout time.Duration) error {
 // vsock, entropy top-level key in fcConfig). This keeps the base args portable and
 // the device list authoritative in one place.
 func buildBootArgs(config VMConfig) string {
-	base := "console=ttyS0 reboot=k panic=1 pci=off nomodules"
+	base := "console=ttyS0 reboot=k panic=1 pci=off nomodules i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd"
+
+	// i8042.* options suppress probing of the (non-emulated) PS/2 keyboard/mouse
+	// controller. Without them the guest kernel (even with nomodules) still pokes
+	// the 8042 at 0x60/0x64 (and apparently 0x87 during AUX probe), producing
+	// noisy "vcpu: IO read @ 0x87:0x1 failed: bus_error: MissingAddressRange" and
+	// "Failed to trigger i8042 kbd interrupt" lines in the VMM log for every VM.
+	// The dmesg also warns "If AUX port is really absent please use the 'i8042.noaux'
+	// option". These are harmless but pollute `aegis vm logs` and dump scripts when
+	// grepping for real errors. The params are safe for all our minimal guests.
 
 	// Tell the kernel which init to run. Our component rootfs images are produced
 	// via `docker export`, which keeps the filesystem but DROPS the image

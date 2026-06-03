@@ -15,7 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/timing"
+	"AegisClaw/internal/transport/hubclient"
 	"github.com/spf13/cobra"
 )
 
@@ -167,7 +169,14 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 	pubStr := base64.StdEncoding.EncodeToString(pub)
 
 	socket := expandPath(hubSocket)
-	conn, err := net.Dial("unix", socket)
+	var conn net.Conn
+	var err error
+	if bootargs.UseHubVsock() {
+		fmt.Printf("court-scribe: waiting for host hub bridge on vsock :%d (Firecracker inverted path)\n", hubclient.GuestHubBridgePort)
+		conn, err = hubclient.AcceptVsockHubBridgeConn(hubclient.GuestHubBridgePort)
+	} else {
+		conn, err = net.Dial("unix", socket)
+	}
 	if err != nil {
 		log.Fatal("Failed to connect to AegisHub:", err)
 	}

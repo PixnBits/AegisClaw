@@ -201,6 +201,9 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	if vmType == "store" || id == "store" || vmType == "network-boundary" || id == "network-boundary" {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.hub_vsock=1")
 	}
+	if vmType == "court-scribe" || id == "court-scribe" || vmType == "court-persona" || strings.HasPrefix(id, "court-persona-") {
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.hub_vsock=1")
+	}
 	if vmType == "web-portal" || id == "web-portal" {
 		vmConfig.ExtraBootArgs = "aegis.web_portal_listen_addr=127.0.0.1:18080"
 		if vmConfig.NetworkConfig == nil {
@@ -702,6 +705,8 @@ var initShippingComponents = map[string]bool{
 	"network-boundary": true,
 	"agent":            true,
 	"memory":           true,
+	"court-scribe":     true,
+	"court-persona":    true,
 }
 
 // componentShipsInit reports whether the given VM (by type or id) is built from

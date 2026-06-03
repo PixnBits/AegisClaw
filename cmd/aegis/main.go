@@ -233,6 +233,10 @@ var (
 	hubCmd             *exec.Cmd
 	storeCmd           *exec.Cmd
 	networkBoundaryCmd *exec.Cmd
+
+	// hubLogFile holds the open handle to aegishub.log so we can close it cleanly
+	// on hub restart or daemon shutdown (best-effort).
+	hubLogFile *os.File
 )
 
 // SocketRequest / SocketResponse: enriched JSON protocol for Task 6.1.2+ (structured, validated, future-proof).
@@ -420,6 +424,11 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		fmt.Println("daemon must be started with root privileges (use: sudo aegis start)")
 		os.Exit(1)
 	}
+
+	// 7.2 foundation demo: only for the real daemon process (not client subcommands
+	// such as `aegis vm logs` or `aegis status`, which previously polluted their output).
+	startExampleRecurringConsumer()
+	logrus.Info("7.2: Example recurring background consumer started (heartbeat every 30s via ScheduleRecurring).")
 
 	// === RICH DEBUG BANNER (only when AEGIS_DEBUG is set) ===
 	// This is the single most valuable thing for "am I even running the binary I just built?"
@@ -1682,6 +1691,15 @@ func gatherVMLogs(stateDir, vmID string, tailLines int) map[string]string {
 		result["guest"] = content
 	}
 
+	// Aux / managed host components surfaced in `vm list` (e.g. "aegishub" which
+	// is registered via RegisterAuxComponent and shown as type=hub) do not have
+	// fc-*.log files. Their process stdout/stderr is captured to <id>.log by the
+	// managed starter (startManagedHub) so `aegis vm logs <id>` works uniformly.
+	auxLogPath := filepath.Join(stateDir, vmID+".log")
+	if content := getRecentFileContent(auxLogPath, tailLines); content != "" {
+		result["log"] = content
+	}
+
 	return result
 }
 
@@ -1789,6 +1807,17 @@ func runVMLogs(cmd *cobra.Command, args []string) {
 				fmt.Printf("--- Guest Structured Logs (%s.guest.log) [Phase 1] ---\n", vmID)
 				fmt.Print(guest)
 				if !strings.HasSuffix(guest, "\n") {
+					fmt.Println()
+				}
+				fmt.Println()
+			}
+
+			// For aux components (hub/aegishub) and other host-managed children
+			// that are exposed in `vm list` but are not Firecracker VMs.
+			if l, ok := logs["log"].(string); ok && l != "" {
+				fmt.Printf("--- Log for %s ---\n", vmID)
+				fmt.Print(l)
+				if !strings.HasSuffix(l, "\n") {
 					fmt.Println()
 				}
 				fmt.Println()
@@ -1939,12 +1968,6 @@ func main() {
 
 	// Phase 2.8 final cleanup: Local periodic reconciliation fully removed.
 	// All expiration logic now lives exclusively in the Store VM.
-
-	// 7.2 foundation demo: A small recurring background consumer using the new
-	// ScheduleRecurring primitive. In a real system this would be more sophisticated
-	// (e.g., stale session sweeper, health pings, etc.).
-	startExampleRecurringConsumer()
-	fmt.Println("7.2: Example recurring background consumer started (heartbeat every 30s via ScheduleRecurring).")
 
 	startCmd := &cobra.Command{
 		Use:   "start",
@@ -3792,8 +3815,31 @@ func startManagedHub(hubSocket string) error {
 		Pdeathsig: syscall.SIGTERM,
 		Setpgid:   true,
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
+	// Capture aegishub's stdout/stderr to a file in stateDir so that
+	// `aegis vm logs aegishub` (and the unified vm list view) can surface its
+	// logs. We use MultiWriter so that `make start` (foreground) or direct
+	// `sudo ./bin/aegis start` still shows live hub output on the console.
+	// The file is aegishub.log (not fc-*) because hub is an AuxComponent / host
+	// child process, not a Firecracker microVM.
+	logPath := filepath.Join(cfg.StateDir, "aegishub.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		logrus.Warnf("aegishub log dir ensure failed: %v", err)
+	}
+	// Close previous handle if restarting the hub child.
+	if hubLogFile != nil {
+		_ = hubLogFile.Close()
+		hubLogFile = nil
+	}
+	var logW io.Writer = os.Stdout
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		hubLogFile = f
+		logW = io.MultiWriter(os.Stdout, f)
+	} else {
+		logrus.Warnf("failed to open %s for aegishub logs (will only appear on daemon stdout/stderr): %v", logPath, err)
+	}
+	cmd.Stdout = logW
+	cmd.Stderr = logW
 
 	logrus.Infof("starting managed aegishub (router) on socket %s", hubSocket)
 	if err := cmd.Start(); err != nil {
