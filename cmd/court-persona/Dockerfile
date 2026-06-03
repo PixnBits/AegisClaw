@@ -81,6 +81,23 @@ if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
 fi
 dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null || true
 
+# Court persona identity injected by orchestrator on kernel cmdline (aegis.persona=xxx)
+# so a single court-persona.img works for all 7 personas. We forward it both as env
+# (for resolvePersona) and as explicit --persona flag (to satisfy cobra MarkFlagRequired
+# during direct exec from /init with no argv). See resolvePersona, firecracker.go, and
+# governance-court.md.
+PERSONA=""
+if [ -r /proc/cmdline ]; then
+  for kv in $(cat /proc/cmdline 2>/dev/null || true); do
+    case "$kv" in
+      aegis.persona=*)
+        PERSONA="${kv#aegis.persona=}"
+        export AEGIS_COURT_PERSONA="$PERSONA"
+        ;;
+    esac
+  done
+fi
+
 # Force all stdout + stderr to the serial console.
 # This is the most reliable way to get application output visible
 # in Firecracker's captured console log for minimal guests.
@@ -95,11 +112,19 @@ fi
 
 ts=$(date +%s 2>/dev/null || echo 0)000000000
 echo "BOOT_TIMING: phase=/init_start ts=${ts} duration_ms=0"
-echo "=== COURT-PERSONA GUEST /init STARTING ==="
+if [ -n "$PERSONA" ]; then
+  echo "=== COURT-PERSONA GUEST /init STARTING (persona=$PERSONA) ==="
+else
+  echo "=== COURT-PERSONA GUEST /init STARTING ==="
+fi
 ts=$(date +%s 2>/dev/null || echo 0)000000000
 echo "BOOT_TIMING: phase=/init_exec_binary ts=${ts} duration_ms=0"
 
-exec /usr/local/bin/court-persona
+if [ -n "$PERSONA" ]; then
+  exec /usr/local/bin/court-persona --persona="$PERSONA"
+else
+  exec /usr/local/bin/court-persona
+fi
 EOF
 
 USER root

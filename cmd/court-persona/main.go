@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/eventbus"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
@@ -369,11 +370,15 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 	}()
 	_ = pub // pub is used by the hubclient.Register call below (key hygiene contract)
 
-	// Use the real hubclient (unix for dev, vsock for real Firecracker Court VMs).
+	// Use the real hubclient (unix for dev, direct vsock or host-inverted bridge for real
+	// Firecracker Court VMs using aegis.hub_vsock=1 + GuestHubBridgePort).
 	// This eliminates the raw net.Dial + manual encoder stub.
 	socket := expandPath(hubSocket)
 	var hcl hubclient.Client
-	if portStr := os.Getenv("AEGIS_HUB_VSOCK_PORT"); portStr != "" {
+	if bootargs.UseHubVsock() {
+		fmt.Printf("court-persona-%s: waiting for host hub bridge on vsock :%d (Firecracker inverted path)\n", persona, hubclient.GuestHubBridgePort)
+		hcl, err = hubclient.AcceptVsockHubBridge(hubclient.GuestHubBridgePort, priv)
+	} else if portStr := os.Getenv("AEGIS_HUB_VSOCK_PORT"); portStr != "" {
 		hcl, err = hubclient.DialVsock(hubclient.HostCID, hubclient.HubVsockPort, priv)
 	} else {
 		hcl, err = hubclient.DialUnix(socket, priv)
