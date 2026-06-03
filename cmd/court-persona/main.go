@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/eventbus"
+	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
 	"github.com/spf13/cobra"
@@ -352,11 +353,14 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 	}
 	loadedWorkspace = wsCtx
 
+	timing.RecordPhase("main_entry")
+
 	// Paranoid key loading (distributed VM key preferred; see loadDistributedKey).
 	priv, pub, err := loadDistributedKey()
 	if err != nil {
 		log.Fatal("Failed to load or generate signing key (fail-closed):", err)
 	}
+	timing.RecordPhase("key_loaded")
 	defer func() {
 		// Best-effort zeroization of our copy (caller of Dial will also zero its copy).
 		for i := range priv {
@@ -378,6 +382,7 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 		log.Fatal("Failed to connect to AegisHub via hubclient:", err)
 	}
 	defer hcl.Close()
+	timing.RecordPhase("hub_dialed")
 
 	// Register using the standard hubclient handshake (aegishub.md §Handshake Sequence).
 	// Unique source per persona enables the 7 distinct ACL wildcard routes.
@@ -387,9 +392,12 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 		log.Fatal("Court persona registration failed (fail-closed):", err)
 	}
 	fmt.Println("Court Persona", persona, "registered as", uniqueSource, "assignedID=", regResp.AssignedID)
+	timing.RecordPhase("register_complete")
+	timing.WriteComponentReadySentinel()
 
 	// Production message loop using hubclient.Receive + Send (bidirectional, signed).
 	// SPEC: court-scribe.md §Communication Flow + governance-court.md §Architecture.
+	timing.RecordPhase("message_loop_ready")
 	for {
 		msg, err := hcl.Receive(context.Background())
 		if err != nil {

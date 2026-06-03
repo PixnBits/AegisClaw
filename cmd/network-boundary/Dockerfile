@@ -58,6 +58,13 @@ mount -t devtmpfs dev /dev 2>/dev/null || true
 if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
   echo 1024 > /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || true
 fi
+# Entropy wait (defense-in-depth). With the virtio-rng device added to every
+# Firecracker microVM (see internal/sandbox/firecracker.go + GitHub #62) and
+# a guest kernel that includes the virtio_rng driver (vmlinux-5.10+ from
+# scripts/download-firecracker-kernel.sh), the host VMM now supplies continuous
+# entropy. CRNG initializes quickly ("random: crng init done" appears within
+# seconds of boot, not 140s+), so this loop exits immediately. The dd + threshold
+# logic is kept for non-FC paths and older kernels.
 i=0
 while [ "$i" -lt 60 ]; do
   if dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null; then
@@ -67,8 +74,19 @@ while [ "$i" -lt 60 ]; do
   sleep 0.05
 done
 
+# Boot timing (opt-in).
+if grep -q 'aegis.boot_timing=1' /proc/cmdline 2>/dev/null || [ "${AEGIS_BOOT_TIMING:-0}" = "1" ]; then
+  export AEGIS_BOOT_TIMING=1
+  ts=$(date +%s 2>/dev/null || echo 0)000000000
+  echo "BOOT_TIMING: phase=/init_boot_timing_enabled ts=${ts} duration_ms=0"
+fi
+
 exec >/dev/console 2>&1
-echo "=== network-boundary guest /init: entropy ready, starting boundary ==="
+ts=$(date +%s 2>/dev/null || echo 0)000000000
+echo "BOOT_TIMING: phase=/init_start ts=${ts} duration_ms=0"
+echo "=== network-boundary guest /init: entropy ready (via virtio-rng), starting boundary ==="
+ts=$(date +%s 2>/dev/null || echo 0)000000000
+echo "BOOT_TIMING: phase=/init_exec_binary ts=${ts} duration_ms=0"
 exec /usr/local/bin/network-boundary
 EOF
 

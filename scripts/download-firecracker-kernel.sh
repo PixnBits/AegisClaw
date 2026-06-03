@@ -7,6 +7,10 @@
 # Usage:
 #   ./scripts/download-firecracker-kernel.sh
 #   AEGIS_KERNEL_PATH=~/.aegis/firecracker/vmlinux ./bin/aegis start
+#
+# Re-run after code changes that affect the required kernel features (e.g. adding
+# virtio-rng device support for guest entropy / #62). The downloaded kernel must
+# have the virtio-rng driver built-in for the device to unblock CRNG quickly.
 
 set -e
 
@@ -31,11 +35,14 @@ fi
 KERNEL_DIR=$(dirname "$KERNEL_PATH")
 mkdir -p "$KERNEL_DIR"
 
-# Use a known-good minimal kernel from the Firecracker quickstart guide.
-# This is a small, stripped vmlinux that boots reliably with Firecracker.
-KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin"
+# Use a known-good minimal kernel from the Firecracker CI artifacts (v1.7 series).
+# This is a small vmlinux-5.10 build that includes CONFIG_HW_RANDOM_VIRTIO=y
+# (and other virtio drivers) built-in. Required for the virtio-rng device
+# (added for GitHub #62) to actually feed the guest entropy pool and init CRNG
+# quickly. The old quickstart vmlinux.bin (4.14) lacked the rng driver.
+KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.209"
 
-log "Downloading minimal Firecracker kernel to $KERNEL_PATH ..."
+log "Downloading minimal Firecracker kernel (with virtio-rng driver) to $KERNEL_PATH ..."
 
 if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$KERNEL_URL" -o "$KERNEL_PATH"
@@ -54,7 +61,8 @@ log "Size: $(du -h "$KERNEL_PATH" | cut -f1)"
 warn "You should now set:"
 echo "  export AEGIS_KERNEL_PATH=$KERNEL_PATH"
 echo ""
-warn "Then start the daemon with your wrapper or directly:"
-echo "  sudo /usr/local/sbin/aegis-start start"
+warn "Then start the daemon (re-run this script + restart after any kernel change):"
+echo "  sudo -E make start"
 echo ""
-log "For production use, consider building your own minimal kernel from the Firecracker kernel configs for better security and size."
+log "This kernel enables the virtio-rng device (see internal/sandbox/firecracker.go)"
+log "so that guest CRNG init happens in seconds instead of minutes."

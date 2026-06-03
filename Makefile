@@ -5,7 +5,7 @@ CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.
 ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
 AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-tcb test-chaos sbom smoke help doctor setup
+.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-tcb test-chaos sbom smoke help doctor setup boot-metrics
 
 # Default target
 all: build
@@ -107,6 +107,23 @@ smoke:
 	@curl -sf --max-time 8 http://localhost:8080/teams 2>/dev/null | grep -q 'Team Messages / Activity' && echo "   ✓ messages/activity section header" || echo "   ⚠ messages section"
 	@echo ""
 	@echo "=== Smoke test passed! System is up and the proxy/portal + team UI features are reachable. ==="
+
+# boot-metrics: table of host + guest high-res boot phases (orchestrator, fc backend, guest
+# main/key/register/loop). Requires daemon started with AEGIS_BOOT_TIMING=1 and the VM
+# launched after. Falls back to scripts/ parser if socket not available.
+boot-metrics:
+	@VM_ID="$(VM)"; \
+	if [ -z "$$VM_ID" ]; then \
+		echo "Usage: make boot-metrics VM=agent-<session>   (or memory-..., web-portal, court-scribe, ...)"; \
+		echo "       (start daemon with: AEGIS_BOOT_TIMING=1 sudo -E make start)"; \
+		exit 1; \
+	fi; \
+	if [ -x "./bin/aegis" ]; then \
+		./bin/aegis vm boot-metrics "$$VM_ID" || bash scripts/boot-metrics.sh "$$VM_ID"; \
+	else \
+		echo "bin/aegis not found; run 'make build-binaries' first"; \
+		bash scripts/boot-metrics.sh "$$VM_ID"; \
+	fi
 
 # Clean build artifacts (binaries + common generated files).
 # This is safe and fast. Use `make clean-microvms` for the heavy rootfs images.

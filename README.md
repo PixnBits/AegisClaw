@@ -269,12 +269,13 @@ Use the helper script instead:
 
 This installs a minimal kernel to `~/.aegis/firecracker/vmlinux` (the new recommended default location).
 
-You can also download one manually:
+You can also download one manually (use a recent Firecracker CI kernel that includes
+the virtio-rng driver for guest entropy support; see GitHub #62 and the download script):
 
 ```bash
 mkdir -p ~/.aegis/firecracker
 curl -fsSL -o ~/.aegis/firecracker/vmlinux \
-  https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
+  https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.209
 chmod 644 ~/.aegis/firecracker/vmlinux
 ```
 
@@ -283,6 +284,9 @@ Then update your wrapper (or export the variable):
 ```bash
 export AEGIS_KERNEL_PATH=~/.aegis/firecracker/vmlinux
 ```
+
+Re-run `./scripts/download-firecracker-kernel.sh` (or the manual curl) + restart the daemon
+after changes that require kernel driver features (e.g. virtio-rng).
 
 A full wrapper is no longer required in most cases (see the "Pro tip" below). You only need one if you want to force specific paths or always enable debug logging.
 
@@ -326,9 +330,11 @@ The daemon often runs as root (required for Firecracker on Linux).
 - On non-abstract platforms the socket uses relaxed permissions for cross-user access. Abstract sockets on Linux do not require this.
 - **Note:** Because the socket is world-writable, any local user can currently send basic commands (including stop). For production use you may want to tighten this (e.g. 0660 + a dedicated group) or add simple UID checks in the handler.
 
-If you see "unable to query live state" or "Daemon not running or socket error" even after the daemon has printed "daemon started", wait 10–15 seconds (real microVMs take time to boot) and try again. The "daemon started" message is now tied to both the PID file *and* the control socket being ready.
+If you see "unable to query live state" or "Daemon not running or socket error" even after the daemon has printed "daemon started", the "daemon started" message is tied to both the PID file *and* the control socket being ready. With the virtio-rng device now present on every microVM (see below), real component boot (including CRNG init + hub registration) is fast once the images exist; long waits are no longer expected for entropy reasons.
 
-**Note on real microVMs for base infrastructure:** The Dockerfiles for `store`, `network-boundary`, and `web-portal` now include a minimal `/init` script. After running `make build-microvms` (or the download kernel script + rebuild), the generated `.img` files should be more suitable for booting as real Firecracker guests.
+**Entropy for microVM guests:** Every Firecracker microVM now includes a `virtio-rng` device (Firecracker "entropy" config in `internal/sandbox/firecracker.go`) **and** the guest kernel (vmlinux-5.10+ from Firecracker CI, downloaded via `scripts/download-firecracker-kernel.sh`) includes the matching `virtio_rng` driver built-in. This eliminates the 140–162s+ CRNG initialization starvation that previously blocked `store`, `network-boundary`, court personas, and on-demand `agent-*`/`memory-*` pairs. `random: crng init done` (and driver attach for virtio-mmio.2) now appears within seconds of boot (visible in `fc-*-console.log`). The change is always-on, read-only from the guest, and emulated inside the trusted VMM (consistent with per-VM Ed25519 key injection). Web-portal startup time is unchanged (still <100 ms to listeners). See GitHub #62.
+
+**Note on real microVMs for base infrastructure:** The Dockerfiles for `store`, `network-boundary`, `web-portal`, `agent`, and `memory` include a minimal `/init` script (with entropy wait as defense-in-depth; now exits immediately thanks to virtio-rng). After running `make build-microvms` (or the download kernel script + rebuild), the generated `.img` files are suitable for booting as real Firecracker guests. After any Dockerfile or build script change, re-run `make build-microvms`.
 
 ### Firecracker boot diagnostics (2026-05+ improvements)
 

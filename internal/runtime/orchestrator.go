@@ -20,6 +20,7 @@ import (
 	"AegisClaw/internal/eventbus"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/security"
+	"AegisClaw/internal/timing"
 )
 
 // Orchestrator manages the lifecycle of all sandboxes.
@@ -49,6 +50,13 @@ type VMLifecycle struct {
 	// output for this VM when using the Firecracker backend. This is the primary
 	// mechanism for seeing early guest boot and application startup messages.
 	ConsoleLogPath string
+
+	// StartedAt and BootHostPhases provide high-resolution (ns) boot instrumentation
+	// when AEGIS_BOOT_TIMING=1 (see GetVMBootMetrics). BootHostPhases maps phase
+	// name -> UnixNano timestamp. Durations are computed relative to startvm_entry.
+	// The map is only populated for the launch that created this lifecycle entry.
+	StartedAt      time.Time
+	BootHostPhases map[string]int64
 }
 
 // New creates a new Orchestrator.
@@ -94,11 +102,17 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 
 	logrus.Infof("Starting %s VM %s with image %s", vmType, id, image)
 
+	t0 := time.Now()
+	phases := map[string]int64{
+		"startvm_entry": t0.UnixNano(),
+	}
+
 	// Per-VM key generation + distribution (Host Daemon TCB duty)
 	vmKP, err := o.secMgr.GenerateVMKeyPair()
 	if err != nil {
 		return fmt.Errorf("failed to generate per-VM keypair: %w", err)
 	}
+	phases["key_generated"] = time.Now().UnixNano()
 
 	// 7.5.4: Secure daemon-side key distribution channel (host-daemon.md:Responsibilities
 	// "Generating and distributing Ed25519 keypairs" + Test Requirements / Keypair Isolation).
@@ -117,6 +131,7 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	}
 	// Ensure restrictive permissions (in case umask interfered)
 	_ = os.Chmod(keyPath, 0600)
+	phases["key_file_written"] = time.Now().UnixNano()
 
 	// Create VM config — note we no longer put the raw PrivateKey in the struct
 	// for the new path-based channel (raw material is zeroed below).
@@ -203,21 +218,32 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		vmConfig.InitProcess = "/init"
 	}
 
+	// Inject boot timing flag (when host env is set) so /init + guests enable
+	// RecordPhase + BOOT_TIMING lines. Works for agent-*/memory-* + base components.
+	if os.Getenv("AEGIS_BOOT_TIMING") == "1" {
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.boot_timing=1")
+	}
+
+	phases["backend_start_entry"] = time.Now().UnixNano()
 	if err := o.backend.Start(ctx, vmConfig); err != nil {
 		logrus.Errorf("Failed to start VM %s: %v", id, err)
 		// Clean up the ephemeral key file on failure (best effort)
 		_ = os.Remove(vmConfig.PrivateKeyPath)
 		return err
 	}
+	phases["backend_start_return"] = time.Now().UnixNano()
+	phases["startvm_return"] = time.Now().UnixNano()
 
 	// Store the lifecycle record. The raw private key was never placed in vmConfig
 	// for the new path-based channel; only the path is present. This satisfies
 	// host-daemon.md:Test Requirements / Keypair Isolation.
 	o.vms[id] = &VMLifecycle{
-		ID:     id,
-		Type:   vmType,
-		Status: sandbox.StatusRunning,
-		Config: vmConfig,
+		ID:             id,
+		Type:           vmType,
+		Status:         sandbox.StatusRunning,
+		Config:         vmConfig,
+		StartedAt:      t0,
+		BootHostPhases: phases,
 	}
 
 	// Register the VM's public key with the security manager so AegisHub etc. can verify its signatures.
@@ -231,6 +257,12 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		"image":     image,
 		"timestamp": time.Now().Unix(),
 	}, eventbus.WithSource("orchestrator"))
+	phases["vm_started_event_published"] = time.Now().UnixNano()
+
+	// Write per-VM JSON metrics file (when enabled) for post-stop / external analysis.
+	if os.Getenv("AEGIS_BOOT_TIMING") == "1" {
+		writeJSONMetrics(o.config.StateDir, id, phases)
+	}
 
 	logrus.Infof("VM %s started successfully (per-VM key distributed + registered)", id)
 	return nil
@@ -274,6 +306,123 @@ func (o *Orchestrator) GetVMConsoleLog(ctx context.Context, vmID string, tailLin
 		lines = lines[len(lines)-tailLines:]
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+// GetVMBootMetrics returns a map of phase name -> duration for the given VM
+// when AEGIS_BOOT_TIMING instrumentation was active during its launch.
+// Keys are namespaced: "host/...", "fc/...", "guest/...".
+// Returns nil, nil if no data (normal when env var not set).
+// Works for running and recently-stopped VMs (falls back to on-disk JSON +
+// console log parsing).
+func (o *Orchestrator) GetVMBootMetrics(ctx context.Context, id string) (map[string]time.Duration, error) {
+	if id == "" {
+		return nil, fmt.Errorf("id required")
+	}
+	res := make(map[string]time.Duration)
+
+	o.mu.RLock()
+	lc, ok := o.vms[id]
+	o.mu.RUnlock()
+
+	var hostPhases map[string]int64
+	var consolePath string
+	if ok && lc != nil {
+		if lc.BootHostPhases != nil {
+			hostPhases = lc.BootHostPhases
+		}
+		if lc.ConsoleLogPath != "" {
+			consolePath = lc.ConsoleLogPath
+		}
+	}
+	if consolePath == "" && o.config != nil && o.config.SandboxType == config.Firecracker {
+		consolePath = filepath.Join(o.config.StateDir, "fc-"+id+"-console.log")
+	}
+
+	// 1. Orchestrator-level host phases
+	if len(hostPhases) > 0 {
+		if t0, has := hostPhases["startvm_entry"]; has {
+			for p, ts := range hostPhases {
+				res["host/"+p] = time.Duration(ts - t0)
+			}
+		}
+	}
+
+	// 2. Firecracker (or other backend) sub-phases
+	if o.backend != nil {
+		if bp := o.backend.BootPhases(ctx, id); len(bp) > 0 {
+			// best-effort base from host t0 or first fc
+			base := int64(0)
+			if t0, has := hostPhases["startvm_entry"]; has {
+				base = t0
+			} else if t0, has := hostPhases["backend_start_entry"]; has {
+				base = t0
+			}
+			for p, ts := range bp {
+				if base != 0 {
+					res["fc/"+p] = time.Duration(ts - base)
+				} else {
+					res["fc/"+p] = time.Duration(ts)
+				}
+			}
+		}
+	}
+
+	// 3. Guest phases from console (the important "ready for chat" signal)
+	if consolePath != "" {
+		if data, err := os.ReadFile(consolePath); err == nil {
+			guest := timing.ParseBootTimings(string(data))
+			for k, d := range guest {
+				res[k] = d
+			}
+		}
+	}
+
+	// 4. Fallback: on-disk JSON written at launch time (useful after StopVM)
+	if len(res) == 0 && o.config != nil {
+		p := filepath.Join(o.config.StateDir, "boot-metrics-"+id+".json")
+		if b, err := os.ReadFile(p); err == nil {
+			var raw map[string]interface{}
+			if json.Unmarshal(b, &raw) == nil {
+				if ph, ok := raw["phases_ns"].(map[string]interface{}); ok {
+					// best effort conversion; durations already enriched in file too
+					for k, v := range ph {
+						if ns, ok := v.(float64); ok { // json numbers
+							res["disk/"+k] = time.Duration(int64(ns))
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if len(res) == 0 {
+		return nil, nil // not an error; just no data (env was off)
+	}
+	return res, nil
+}
+
+// writeJSONMetrics writes a per-VM JSON file with the collected phases (when
+// AEGIS_BOOT_TIMING=1). Called at end of successful StartVM. Enables queries
+// after the VM has been StopVM'd.
+func writeJSONMetrics(stateDir, id string, phases map[string]int64) {
+	if stateDir == "" || id == "" || len(phases) == 0 {
+		return
+	}
+	path := filepath.Join(stateDir, "boot-metrics-"+id+".json")
+	out := map[string]interface{}{
+		"id":      id,
+		"phases_ns": phases,
+		"written": time.Now().UnixNano(),
+	}
+	if t0, ok := phases["startvm_entry"]; ok {
+		durs := map[string]int64{}
+		for p, ts := range phases {
+			durs[p] = ts - t0
+		}
+		out["durations_ns_from_t0"] = durs
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	_ = os.WriteFile(path, b, 0644)
 }
 
 // StopVM stops a running sandbox VM.

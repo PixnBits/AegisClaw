@@ -49,7 +49,14 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 
-# Seed entropy early so crypto/rand does not block guest startup for ~60s (502 on host proxy).
+# Seed entropy early (historically to avoid crypto/rand blocking guest startup for ~60s).
+# With the virtio-rng device now added to *every* Firecracker microVM
+# (internal/sandbox/firecracker.go + GitHub #62) and a guest kernel with the
+# virtio_rng driver (vmlinux-5.10+ from download script), the host supplies
+# continuous entropy. CRNG inits in seconds ("crng init done" + virtio_rng attach
+# early in dmesg) instead of 140s+. The early dd || true + threshold is kept as
+# defense-in-depth (and for the web-portal's historical "start listeners before
+# needing good rand" pattern, which is now unnecessary but harmless).
 if [ -r /proc/sys/kernel/random/write_wakeup_threshold ]; then
   echo 1024 > /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || true
 fi
@@ -60,7 +67,18 @@ dd if=/dev/urandom of=/dev/null bs=32 count=1 2>/dev/null || true
 # in Firecracker's captured console log for minimal guests.
 exec >/dev/console 2>&1
 
-echo "=== WEB-PORTAL GUEST /init STARTING ==="
+# Boot timing instrumentation (gated by host AEGIS_BOOT_TIMING + cmdline).
+if grep -q 'aegis.boot_timing=1' /proc/cmdline 2>/dev/null || [ "${AEGIS_BOOT_TIMING:-0}" = "1" ]; then
+  export AEGIS_BOOT_TIMING=1
+  ts=$(date +%s 2>/dev/null || echo 0)000000000
+  echo "BOOT_TIMING: phase=/init_boot_timing_enabled ts=${ts} duration_ms=0"
+fi
+
+ts=$(date +%s 2>/dev/null || echo 0)000000000
+echo "BOOT_TIMING: phase=/init_start ts=${ts} duration_ms=0"
+echo "=== WEB-PORTAL GUEST /init STARTING (entropy via virtio-rng) ==="
+ts=$(date +%s 2>/dev/null || echo 0)000000000
+echo "BOOT_TIMING: phase=/init_exec_binary ts=${ts} duration_ms=0"
 
 exec /usr/local/bin/web-portal
 EOF

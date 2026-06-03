@@ -18,6 +18,7 @@ import (
 	"AegisClaw/internal/agent/progress"
 	agentSkills "AegisClaw/internal/agent/skills"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
 	"github.com/spf13/cobra"
@@ -114,6 +115,8 @@ func getBuildVersion() string {
 // SPEC: agent-runtime.md §Communication + §Security (real vsock path when running
 // inside Firecracker, distributed per-VM key only, no more GenerateKey in prod path).
 func runAgent(cmd *cobra.Command, args []string) {
+	timing.RecordPhase("main_entry")
+
 	// === Key loading (paranoid — consume the key the orchestrator distributed) ===
 	// Preferred: AEGIS_VM_PRIVATE_KEY_PATH (written by orchestrator before VM start,
 	// 0600, guest shreds after load). Fallback to generate only for dev / unit tests.
@@ -130,6 +133,7 @@ func runAgent(cmd *cobra.Command, args []string) {
 		}
 	}
 	_ = pub
+	timing.RecordPhase("key_loaded")
 
 	for {
 		client, err := dialHubTransport(pub, priv)
@@ -141,6 +145,7 @@ func runAgent(cmd *cobra.Command, args []string) {
 			}
 			log.Fatal("agent: failed to connect to AegisHub:", err)
 		}
+		timing.RecordPhase("hub_dialed")
 
 		if runAgentSession(client, pub, priv) {
 			client.Close()
@@ -164,6 +169,8 @@ func runAgentSession(client hubclient.Client, pub ed25519.PublicKey, priv ed2551
 		return false
 	}
 	fmt.Println("Agent registered with hub, assigned ID:", regResp.AssignedID)
+	timing.RecordPhase("register_complete")
+	timing.WriteComponentReadySentinel()
 
 	wsCtx, wsErr := workspace.Load("")
 	if wsErr != nil {
@@ -177,6 +184,7 @@ func runAgentSession(client hubclient.Client, pub ed25519.PublicKey, priv ed2551
 	realLLM := loop.NewRealLLMCaller(client, os.Getenv("AEGIS_DEFAULT_MODEL"))
 
 	fmt.Println("agent: real message-driven loop active (hubclient Receive + real loop.RunTurn)")
+	timing.RecordPhase("message_loop_ready")
 
 	for {
 		msg, err := client.Receive(context.Background())

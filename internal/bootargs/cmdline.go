@@ -90,3 +90,30 @@ func VMPrivateKeyPath() string {
 	}
 	return "/etc/aegis/vmkey"
 }
+
+// BootTimingEnabled returns whether detailed boot-time instrumentation should
+// be collected and emitted. It is activated by either:
+//   - AEGIS_BOOT_TIMING=1 in the environment (host daemon or exported by /init
+//     into the guest binary), or
+//   - aegis.boot_timing=1 present on the kernel command line (orchestrator
+//     injects this for every VM when it sees the env var at StartVM time).
+//
+// This lets a single env on the host enable everything end-to-end without
+// requiring code changes or rebuilds for the toggle itself (guests still need
+// image rebuild to pick up the RecordPhase calls, of course).
+func BootTimingEnabled() bool {
+	if os.Getenv("AEGIS_BOOT_TIMING") == "1" {
+		return true
+	}
+	if parseCmdlineKV("aegis.boot_timing=") == "1" {
+		return true
+	}
+	return false
+}
+
+// ParseCmdlineKV is the exported form of the internal parser for use by
+// timing and other packages that need to read aegis.* flags from /proc/cmdline
+// inside guests (where env may not have been explicitly exported by /init).
+func ParseCmdlineKV(prefix string) string {
+	return parseCmdlineKV(prefix)
+}
