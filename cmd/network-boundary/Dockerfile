@@ -67,8 +67,19 @@ while [ "$i" -lt 60 ]; do
   sleep 0.05
 done
 
+# Boot timing (opt-in).
+if grep -q 'aegis.boot_timing=1' /proc/cmdline 2>/dev/null || [ "${AEGIS_BOOT_TIMING:-0}" = "1" ]; then
+  export AEGIS_BOOT_TIMING=1
+  ts=$(date +%s 2>/dev/null || echo 0)000000000
+  echo "BOOT_TIMING: phase=/init_boot_timing_enabled ts=${ts} duration_ms=0"
+fi
+
 exec >/dev/console 2>&1
+ts=$(date +%s 2>/dev/null || echo 0)000000000
+echo "BOOT_TIMING: phase=/init_start ts=${ts} duration_ms=0"
 echo "=== network-boundary guest /init: entropy ready, starting boundary ==="
+ts=$(date +%s 2>/dev/null || echo 0)000000000
+echo "BOOT_TIMING: phase=/init_exec_binary ts=${ts} duration_ms=0"
 exec /usr/local/bin/network-boundary
 EOF
 

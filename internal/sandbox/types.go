@@ -98,6 +98,12 @@ type Backend interface {
 	List(ctx context.Context) ([]VMInfo, error)
 	// Cleanup performs any necessary cleanup (e.g., on daemon shutdown)
 	Cleanup(ctx context.Context) error
+
+	// BootPhases returns host-side boot timing phase timestamps (Unix nano)
+	// for the given VM. Only populated when AEGIS_BOOT_TIMING=1 at launch.
+	// Used by orchestrator.GetVMBootMetrics and `aegis vm boot-metrics`.
+	// Implementations may return nil when unavailable (Docker backend, etc.).
+	BootPhases(ctx context.Context, vmID string) map[string]int64
 }
 
 // Status represents the state of a VM.

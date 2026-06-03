@@ -39,6 +39,7 @@ type firecrackerVM struct {
 	sockPath       string
 	consoleLogPath string   // Phase 0: path to captured guest serial console
 	consoleFile    *os.File // open handle that Firecracker writes guest console to (closed on Stop)
+	bootPhases     map[string]int64 // populated only when AEGIS_BOOT_TIMING=1 (host sub-phases inside Start)
 }
 
 // FirecrackerVsockUDSPath returns the host-side Unix domain socket path that
@@ -70,6 +71,10 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 
 	if _, exists := fb.vms[config.ID]; exists {
 		return fmt.Errorf("VM %s already running", config.ID)
+	}
+
+	phases := map[string]int64{
+		"fc_start_entry": time.Now().UnixNano(),
 	}
 
 	sockPath := filepath.Join(fb.stateDir, "fc-"+config.ID+".sock")
@@ -168,6 +173,7 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 
 	logrus.Infof("Starting Firecracker VM %s with kernel %s, rootfs %s",
 		config.ID, config.KernelPath, rootfsPath)
+	phases["fc_config_written"] = time.Now().UnixNano()
 	if os.Getenv("AEGIS_DEBUG") != "" {
 		logrus.Debugf("Firecracker command: firecracker --api-sock %s --config-file %s --log-path %s --level Debug",
 			sockPath, configPath, logPath)
@@ -214,6 +220,13 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	}
 
 	logrus.Infof("Firecracker process started for VM %s, PID %d", config.ID, cmd.Process.Pid)
+	phases["fc_spawn"] = time.Now().UnixNano()
+	if cmd.Process != nil {
+		phases["fc_pid"] = int64(cmd.Process.Pid)
+	}
+	if os.Getenv("AEGIS_BOOT_TIMING") == "1" {
+		logrus.Infof("BOOT host phase=fc_spawn vm=%s pid=%d", config.ID, cmd.Process.Pid)
+	}
 
 	// Wait for socket to be created (confirms the Firecracker API is responsive).
 	// With a complete --config-file the microVM is started automatically by
@@ -236,6 +249,11 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	// from one single json" + "Successfully started microvm" in the VMM log).
 	// Sending InstanceStart afterwards is rejected with HTTP 400.
 
+	phases["api_socket_ready"] = time.Now().UnixNano()
+	if os.Getenv("AEGIS_BOOT_TIMING") == "1" {
+		logrus.Infof("BOOT host phase=api_socket_ready vm=%s", config.ID)
+	}
+
 	fb.vms[config.ID] = &firecrackerVM{
 		config:         config,
 		cmd:            cmd,
@@ -243,6 +261,7 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 		sockPath:       sockPath,
 		consoleLogPath: consoleLogPath, // Phase 0 observability
 		consoleFile:    consoleFile,    // kept open for the VM lifetime; closed on Stop
+		bootPhases:     phases,
 	}
 
 	logrus.Infof("VM %s started successfully", config.ID)
@@ -516,4 +535,20 @@ func cleanupVMArtifacts(sockPath, configPath, logPath, consolePath, vsockUdsPath
 	if keyPath != "" {
 		_ = os.Remove(keyPath)
 	}
+}
+
+// BootPhases implements the Backend method. Returns a copy of the host-side
+// Firecracker-specific boot phases collected during Start (when AEGIS_BOOT_TIMING=1).
+func (fb *FirecrackerBackend) BootPhases(ctx context.Context, vmID string) map[string]int64 {
+	fb.mu.RLock()
+	vm, ok := fb.vms[vmID]
+	fb.mu.RUnlock()
+	if !ok || vm == nil || len(vm.bootPhases) == 0 {
+		return nil
+	}
+	cp := make(map[string]int64, len(vm.bootPhases))
+	for k, v := range vm.bootPhases {
+		cp[k] = v
+	}
+	return cp
 }

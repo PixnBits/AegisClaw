@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"AegisClaw/internal/timing"
 	"github.com/spf13/cobra"
 )
 
@@ -159,6 +160,8 @@ func buildSignedDecision(proposalID string, votes map[string]string, approved bo
 }
 
 func runCourtScribe(cmd *cobra.Command, args []string) {
+	timing.RecordPhase("main_entry")
+
 	// Generate keys for signing (required for strict Hub ACL + sig verify)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	pubStr := base64.StdEncoding.EncodeToString(pub)
@@ -169,6 +172,7 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 		log.Fatal("Failed to connect to AegisHub:", err)
 	}
 	defer conn.Close()
+	timing.RecordPhase("hub_dialed")
 
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
@@ -206,11 +210,15 @@ func runCourtScribe(cmd *cobra.Command, args []string) {
 		log.Fatal("Registration failed:", error)
 	}
 	fmt.Println("Court Scribe registered (with pubkey + signing)")
+	timing.RecordPhase("register_complete")
+	timing.WriteComponentReadySentinel()
 
 	// Review states
 	reviews := make(map[string]map[string]string) // proposal_id -> persona -> vote
 	decisions := make(map[string]map[string]interface{}) // proposal_id -> full signed decision record (Phase 3 tamper-evident)
 	var mu sync.Mutex
+
+	timing.RecordPhase("message_loop_ready")
 
 	// Scribe loop
 	for {

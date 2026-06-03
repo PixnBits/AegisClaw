@@ -16,11 +16,14 @@ import (
 
 	"AegisClaw/internal/dashboard"
 	guestlog "AegisClaw/internal/guest/log"
+	"AegisClaw/internal/timing"
 
 	"github.com/spf13/cobra"
 )
 
 func runWebPortal(cmd *cobra.Command, args []string) {
+	timing.RecordPhase("main_entry")
+
 	// === HOLISTIC DEBUG BUILD FOR WEB-PORTAL GUEST ===
 	// Build ID / timestamp printed as early as possible.
 	debugBuildID := time.Now().UTC().Format("2006-01-02T15:04:05Z") + " (debug-build)"
@@ -126,6 +129,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 			fmt.Fprintf(os.Stdout, "!!! WEB-PORTAL GUEST [VSOCK]: SUCCESS - listening on vsock:18080\n")
 			log.Printf("!!! DEBUG: SUCCESS - Web Portal also serving over vsock:18080 for host daemon proxy")
 			guestLogger.Info("vsock listener ready", "port", 18080, "status", "success")
+			timing.RecordPhase("vsock_18080_ready")
 			// Separate server so the main tcp ListenAndServe below can still be fatal.
 			s2 := &http.Server{Handler: srv}
 			if serveErr := s2.Serve(l); serveErr != nil && serveErr != http.ErrServerClosed {
@@ -166,6 +170,8 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	}()
 
 	log.Println("!!! DEBUG: Starting main TCP ListenAndServe on", listenAddr)
+	timing.RecordPhase("http_listeners_ready")
+	timing.WriteComponentReadySentinel()
 	log.Fatal(http.ListenAndServe(listenAddr, srv))
 }
 

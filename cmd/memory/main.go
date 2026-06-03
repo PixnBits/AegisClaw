@@ -24,6 +24,7 @@ import (
 
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/memory"
+	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"github.com/spf13/cobra"
 )
@@ -61,6 +62,8 @@ func getBuildVersion() string {
 }
 
 func runMemory(cmd *cobra.Command, args []string) {
+	timing.RecordPhase("main_entry")
+
 	// === Paranoid key loading (same contract as Agent Runtime) ===
 	priv, pub, err := bootargs.LoadDistributedVMKey("memory")
 	if err != nil {
@@ -73,6 +76,7 @@ func runMemory(cmd *cobra.Command, args []string) {
 			log.Fatal("memory: failed to obtain key (fail-closed):", err)
 		}
 	}
+	timing.RecordPhase("key_loaded")
 
 	// === Transport selection (unix dev / vsock for real guests) ===
 	client, err := dialHubTransport(pub, priv)
@@ -80,6 +84,7 @@ func runMemory(cmd *cobra.Command, args []string) {
 		log.Fatal("memory: failed to connect to AegisHub:", err)
 	}
 	defer client.Close()
+	timing.RecordPhase("hub_dialed")
 
 	// === Register ===
 	componentID := bootargs.ComponentID("memory")
@@ -88,6 +93,8 @@ func runMemory(cmd *cobra.Command, args []string) {
 		log.Fatal("memory: register failed:", err)
 	}
 	fmt.Println("Memory VM registered, assigned ID:", regResp.AssignedID)
+	timing.RecordPhase("register_complete")
+	timing.WriteComponentReadySentinel()
 
 	// === Real Memory VM (Phase 1.3 integration) ===
 	memVM := memory.NewVM(7 * 24 * time.Hour) // 7-day TTL
@@ -99,6 +106,7 @@ func runMemory(cmd *cobra.Command, args []string) {
 	memVM.BindAgent(agentPeer) // paired agent (not this VM's own id)
 
 	fmt.Println("memory: real receive-driven loop active, dispatching to VM with ACL enforcement + zeroization")
+	timing.RecordPhase("message_loop_ready")
 
 	// Proper message loop (symmetric to agent)
 	for {

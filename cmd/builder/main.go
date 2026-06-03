@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"AegisClaw/internal/timing"
 	"AegisClaw/internal/workspace"
 )
 
@@ -226,6 +227,8 @@ func main() {
 }
 
 func runBuilder(cmd *cobra.Command, args []string) {
+	timing.RecordPhase("main_entry")
+
 	// Generate keys
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	pubStr := base64.StdEncoding.EncodeToString(pub)
@@ -249,6 +252,7 @@ func runBuilder(cmd *cobra.Command, args []string) {
 		log.Fatal("Failed to connect to AegisHub:", err)
 	}
 	defer conn.Close()
+	timing.RecordPhase("hub_dialed")
 
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
@@ -285,6 +289,9 @@ func runBuilder(cmd *cobra.Command, args []string) {
 		log.Fatal("Registration failed:", error)
 	}
 	fmt.Println("Builder VM registered")
+	timing.RecordPhase("register_complete")
+	timing.WriteComponentReadySentinel()
+	timing.RecordPhase("message_loop_ready")
 
 	// Builder loop
 	for {

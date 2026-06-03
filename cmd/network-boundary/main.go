@@ -22,6 +22,7 @@ import (
 
 	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 
 
@@ -418,6 +419,8 @@ func parseAllowedURL(rawURL string, allowed map[string]bool) (*url.URL, error) {
 }
 
 func runNetworkBoundary(cmd *cobra.Command, args []string) {
+	timing.RecordPhase("main_entry")
+
 	// Generate keys
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	pubStr := base64.StdEncoding.EncodeToString(pub)
@@ -445,6 +448,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		log.Fatal("Failed to connect to AegisHub:", err)
 	}
 	defer conn.Close()
+	timing.RecordPhase("hub_dialed")
 
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
@@ -481,6 +485,8 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	if error, ok := resp["error"]; ok {
 		log.Fatal("Registration failed:", error)
 	}
+	timing.RecordPhase("register_complete")
+	timing.WriteComponentReadySentinel()
 
 	// 7.1: Capture the Store signer public key from the Hub if provided.
 	// This ties the cryptographic material for secrets.update messages

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -299,10 +300,17 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 
-	// First message must be register
+	// First message must be register.
+	// Note: the readiness probe in startManagedHub does a Dial + immediate Close()
+	// (no data) to test if the socket is accepting. That produces a clean EOF here
+	// on the first Decode and is expected / harmless (not a real client register
+	// failure). We log at debug or only for non-EOF errors to keep startup logs clean.
 	var regMsg Message
 	if err := decoder.Decode(&regMsg); err != nil {
-		log.Printf("Failed to decode register message: %v", err)
+		es := err.Error()
+		if es != "EOF" && es != "unexpected EOF" && err != io.EOF && err != io.ErrUnexpectedEOF {
+			log.Printf("Failed to decode register message: %v (remote=%v local=%v)", err, conn.RemoteAddr(), conn.LocalAddr())
+		}
 		return
 	}
 	if regMsg.Destination != "hub" || regMsg.Command != "register" {

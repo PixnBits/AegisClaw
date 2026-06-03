@@ -20,6 +20,7 @@ import (
 	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/chatstore"
+	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 
 	"github.com/mdlayher/vsock"
@@ -364,9 +365,12 @@ func publishExpirationEvent(encoder *json.Encoder, priv ed25519.PrivateKey, time
 }
 
 func runStore(cmd *cobra.Command, args []string) {
+	timing.RecordPhase("main_entry")
+
 	// Generate keys
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	pubStr := base64.StdEncoding.EncodeToString(pub)
+	timing.RecordPhase("key_generated_dev") // store currently always gens; Load path not used yet
 
 	socket := expandPath(hubSocket)
 	conn, err := net.Dial("unix", socket)
@@ -385,6 +389,7 @@ func runStore(cmd *cobra.Command, args []string) {
 		log.Fatal("Failed to connect to AegisHub:", err)
 	}
 	defer conn.Close()
+	timing.RecordPhase("hub_dialed")
 
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
@@ -416,6 +421,8 @@ func runStore(cmd *cobra.Command, args []string) {
 		log.Fatal("Registration failed:", error)
 	}
 	fmt.Println("Store VM registered")
+	timing.RecordPhase("register_complete")
+	timing.WriteComponentReadySentinel()
 
 	// Simple storage with persistence
 	proposals := loadFromFile("proposals.json")

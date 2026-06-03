@@ -1419,6 +1419,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		allowedOps := map[string]bool{
 			"vm.list": true, "vm list": true,
 			"vm.logs": true,
+			"vm.boot_metrics": true,
 			"stop": true,
 			"restart": true,
 			"status": true,
@@ -1456,6 +1457,25 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 				resp.Data = map[string]interface{}{
 					"id":   vmID,
 					"logs": logs,
+				}
+			}
+
+		case "vm.boot_metrics":
+			// High-res boot instrumentation (host + guest phases via console parse).
+			// Only produces data when daemon was started with AEGIS_BOOT_TIMING=1.
+			vmID := req.Args["id"]
+			if vmID == "" {
+				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else if orchestrator != nil {
+				m, err := orchestrator.GetVMBootMetrics(context.Background(), vmID)
+				if err != nil {
+					resp = SocketResponse{OK: false, Error: err.Error()}
+				} else {
+					resp.Data = map[string]interface{}{
+						"id":      vmID,
+						"metrics": m, // map[string]time.Duration
+						"note":    "use 'aegis vm boot-metrics <id>' for human table; empty when AEGIS_BOOT_TIMING=0",
+					}
 				}
 			}
 
@@ -1789,6 +1809,57 @@ func runVMLogs(cmd *cobra.Command, args []string) {
 	fmt.Printf("No logs available yet for VM %s\n", vmID)
 }
 
+// runVMBootMetrics implements `aegis vm boot-metrics <id>` (detailed instrumentation).
+// Only useful when the daemon was started with AEGIS_BOOT_TIMING=1 and the VM
+// was launched afterwards. Combines orchestrator phases, backend fc phases,
+// and parsed guest BOOT_TIMING lines from the console log.
+func runVMBootMetrics(cmd *cobra.Command, args []string) {
+	vmID := args[0]
+	resp, err := sendSocketRequest("vm.boot_metrics", map[string]string{"id": vmID}, jsonOutput)
+	if err != nil || !resp.OK {
+		fmt.Printf("Failed to get boot metrics for %s: %v %s\n", vmID, err, resp.Error)
+		return
+	}
+	if jsonOutput {
+		b, _ := json.MarshalIndent(resp, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+
+	// Pretty table
+	fmt.Printf("Boot metrics for %s (AEGIS_BOOT_TIMING=1 phases):\n\n", vmID)
+	metricsIface := resp.Data
+	if m, ok := metricsIface.(map[string]interface{}); ok {
+		if metrics, ok := m["metrics"].(map[string]interface{}); ok {
+			// collect and sort keys for stable output
+			keys := make([]string, 0, len(metrics))
+			for k := range metrics {
+				keys = append(keys, k)
+			}
+			// simple alpha sort (host first, then fc, guest)
+			for _, k := range keys {
+				v := metrics[k]
+				var dur time.Duration
+				switch vv := v.(type) {
+				case float64:
+					dur = time.Duration(int64(vv))
+				case int64:
+					dur = time.Duration(vv)
+				}
+				ms := float64(dur) / float64(time.Millisecond)
+				fmt.Printf("  %-35s %8.1f ms\n", k, ms)
+			}
+			fmt.Println()
+			fmt.Println("Note: guest/* durations are from the component's main_entry inside the VM.")
+			fmt.Println("      Use the register_complete line as the 'ready for chat' milestone.")
+			fmt.Println("      Sentinel file /tmp/aegis-component-ready written on register success (inside guest).")
+			return
+		}
+	}
+	// Fallback raw
+	fmt.Printf("%+v\n", resp.Data)
+}
+
 // runVMDiagnose implements `aegis vm diagnose <id>` - a bundled diagnostic snapshot.
 func runVMDiagnose(cmd *cobra.Command, args []string) {
 	vmID := args[0]
@@ -2077,6 +2148,15 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	diagnoseCmd.Flags().Int("tail", 300, "Number of lines from each log source")
 	diagnoseCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	vmCmd.AddCommand(diagnoseCmd)
+
+	bootMetricsCmd := &cobra.Command{
+		Use:   "boot-metrics <id>",
+		Short: "Show high-resolution boot phase timings for a VM (requires AEGIS_BOOT_TIMING=1 at daemon start)",
+		Args:  cobra.ExactArgs(1),
+		Run:   runVMBootMetrics,
+	}
+	bootMetricsCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	vmCmd.AddCommand(bootMetricsCmd)
 
 	// Wire full tree (per cli.md + gaps)
 	rootCmd.AddCommand(
@@ -3796,7 +3876,7 @@ func startManagedHub(hubSocket string) error {
 	// instead of pure os.Stat. This is more reliable on Linux, especially with
 	// abstract sockets, timing races after the child creates the socket, or when
 	// running under sudo where filesystem visibility / permissions can be subtle.
-	const maxWait = 80 // 8s (a bit more generous than before)
+	const maxWait = 150 // 15s -- increased for robustness under sudo / loaded systems / races with the child listener coming up (the previous 8s was often marginal, leading to apparent "startup errors" even when the hub child printed Listening).
 	for i := 0; i < maxWait; i++ {
 		// First check existence (cheap)
 		if _, err := os.Stat(hubSocket); err == nil {

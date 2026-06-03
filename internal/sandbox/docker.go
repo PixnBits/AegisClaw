@@ -260,3 +260,10 @@ func (db *DockerBackend) removeNetwork(ctx context.Context, networkName string) 
 	cmd := exec.CommandContext(ctx, "docker", "network", "rm", networkName)
 	return cmd.Run()
 }
+
+// BootPhases implements Backend (no-op for Docker sandbox; focus is Firecracker
+// microVM observability per the instrumentation task). Orchestrator-level host
+// phases are still captured for all backends.
+func (db *DockerBackend) BootPhases(ctx context.Context, vmID string) map[string]int64 {
+	return nil
+}

@@ -67,8 +67,21 @@ done
 
 mkdir -p /etc/aegis 2>/dev/null || true
 
+# Boot timing (opt-in): if host set AEGIS_BOOT_TIMING=1 then orchestrator injected
+# aegis.boot_timing=1 on cmdline. Export so the Go binary's timing.IsEnabled sees env too.
+if grep -q 'aegis.boot_timing=1' /proc/cmdline 2>/dev/null || [ "${AEGIS_BOOT_TIMING:-0}" = "1" ]; then
+  export AEGIS_BOOT_TIMING=1
+  ts=$(date +%s 2>/dev/null || echo 0)000000000
+  echo "BOOT_TIMING: phase=/init_boot_timing_enabled ts=${ts} duration_ms=0"
+fi
+
+ts=$(date +%s 2>/dev/null || echo 0)000000000
+echo "BOOT_TIMING: phase=/init_start ts=${ts} duration_ms=0"
+
 exec >/dev/console 2>&1
 echo "=== agent guest /init: key path=${AEGIS_VM_PRIVATE_KEY_PATH:-/etc/aegis/vmkey} hex_len=$(tr ' ' '\n' </proc/cmdline | grep -c vm_private_key_hex || true) ==="
+ts=$(date +%s 2>/dev/null || echo 0)000000000
+echo "BOOT_TIMING: phase=/init_exec_binary ts=${ts} duration_ms=0"
 /usr/local/bin/agent || {
   echo "=== agent exited $?, holding guest open for logs ==="
   sleep 86400
