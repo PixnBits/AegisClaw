@@ -22,10 +22,10 @@ The daemon is responsible for **only**:
 All other functionality runs in isolated sandboxes:
 
 - **AegisHub** — The only privileged router. Enforces strict ACLs between all sandboxes.
-- **Store VM** — Owns all persistent storage (proposals, audit logs, composition history, *and channel state*)
+- **Store VM** — Owns all persistent storage (proposals, audit logs, composition history, and channel state)
 - **Tool Handler VMs** — Each major tool or skill category runs in its own sandbox
 - **LLM Proxy VM** — Handles secret injection and prompt sanitization
-- **Court Scribe VM** — Observes conversations and produces structured summaries *(may evolve to per-channel or multi-agent support)*
+- **Court Scribe VM** — Observes conversations and produces structured summaries
 - **Court Member VMs** — Each of the seven Governance Court personas runs in its own sandbox as specialised Agent instances
 - **Agent Runtime VMs** — Individual agent instances, including role-specialised ones (Court personas, SDLC roles, Project Manager)
 
@@ -56,7 +56,7 @@ See `collaboration-model.md` for full details on channels, roles, and orchestrat
 
 This architecture ensures that a compromise in any single component cannot spread. The trusted computing base is kept to an absolute minimum.
 
-Every major function has its own security boundary. The addition of dynamic role-based agents and channels does not weaken isolation — Court Members remain unable to see each other's state, and all changes still require formal Court approval.
+Every major function has its own security boundary. Court Members remain unable to see each other's state, and all changes still require formal Court approval.
 
 ## Related Documents
 
