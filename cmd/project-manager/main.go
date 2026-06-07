@@ -150,6 +150,13 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 			payloadStr := fmt.Sprintf("%v", msg.Payload)
 			// Real demonstration of collaboration model: plan, post to channel, decide roles to ensure.
 			chID := "plan-demo"
+			if p, ok := msg.Payload.(map[string]interface{}); ok {
+				if c, ok := p["channel"].(string); ok && c != "" {
+					chID = c
+				} else if c, ok := p["channel_id"].(string); ok && c != "" {
+					chID = c
+				}
+			}
 			plan := fmt.Sprintf("PM Plan for input: %s\n1. Create/use channel '%s'\n2. Ensure roles: @Coder, @Tester, Court for any changes\n3. Delegate tasks via @mentions\n4. Monitor + synthesize\n5. Escalate formal proposal to Court if needed", payloadStr, chID)
 			// Demonstrate channel post (real send to Store)
 			postPayload := map[string]interface{}{

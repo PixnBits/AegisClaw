@@ -894,8 +894,13 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 					id := getMapString(m, "id", "ID")
 					typ := getMapString(m, "type", "Type")
 					st := getMapString(m, "status", "Status")
+					ch := getMapString(m, "channel", "Channel")
 					if id != "" {
-						fmt.Printf("    - %s (type=%s, status=%s)\n", id, typ, st)
+						if ch != "" {
+							fmt.Printf("    - %s (type=%s, status=%s, channel=%s)\n", id, typ, st, ch)
+						} else {
+							fmt.Printf("    - %s (type=%s, status=%s)\n", id, typ, st)
+						}
 					}
 				}
 			}
@@ -1796,7 +1801,12 @@ func listVMs(cmd *cobra.Command, args []string) {
 		id := getMapString(v, "id", "ID")
 		typ := getMapString(v, "type", "Type")
 		status := getMapString(v, "status", "Status")
-		fmt.Printf("  %s  type=%s  status=%s\n", id, typ, status)
+		ch := getMapString(v, "channel", "Channel")
+		if ch != "" {
+			fmt.Printf("  %s  type=%s  status=%s  channel=%s\n", id, typ, status, ch)
+		} else {
+			fmt.Printf("  %s  type=%s  status=%s\n", id, typ, status)
+		}
 	}
 }
 
@@ -2002,6 +2012,31 @@ func runChannelGet(cmd *cobra.Command, args []string) {
 		return
 	}
 	fmt.Printf("Channel %s:\n%+v\n", id, data)
+}
+
+func runChannelPost(cmd *cobra.Command, args []string) {
+	if len(args) < 2 {
+		fmt.Println("usage: aegis channel post <channel-id> <content...>")
+		return
+	}
+	chID := args[0]
+	content := strings.Join(args[1:], " ")
+	payload := map[string]interface{}{
+		"channel_id": chID,
+		"from":       "cli",
+		"content":    content,
+	}
+	data, err := sendToComponentViaHub("store", "channel.post", payload)
+	if err != nil {
+		fmt.Printf("channel post error: %v\n", err)
+		return
+	}
+	if jsonOutput {
+		b, _ := json.Marshal(data)
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("Posted to channel %s: %+v\n", chID, data)
 }
 
 // runVMDiagnose implements `aegis vm diagnose <id>` - a bundled diagnostic snapshot.
@@ -2218,7 +2253,13 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 		Args:  cobra.ExactArgs(1),
 		Run:   runChannelGet,
 	}
-	channelCmd.AddCommand(channelListCmd, channelGetCmd)
+	channelPostCmd := &cobra.Command{
+		Use:   "post <channel-id> <content...>",
+		Short: "Post a message to a channel (e.g. from user or to simulate PM/role activity)",
+		Args:  cobra.MinimumNArgs(2),
+		Run:   runChannelPost,
+	}
+	channelCmd.AddCommand(channelListCmd, channelGetCmd, channelPostCmd)
 
 	// Skills & Governance
 	skillsCmd := &cobra.Command{Use: "skills", Short: "Skill lifecycle and proposals"}
