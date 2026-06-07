@@ -1968,6 +1968,42 @@ func runVMPools(cmd *cobra.Command, args []string) {
 	}
 }
 
+func runChannelList(cmd *cobra.Command, args []string) {
+	data, err := sendToComponentViaHub("store", "channel.list", nil)
+	if err != nil {
+		fmt.Printf("channel list error: %v\n", err)
+		return
+	}
+	if jsonOutput {
+		b, _ := json.Marshal(data)
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Println("Channels:")
+	if arr, ok := data.([]interface{}); ok {
+		for _, it := range arr {
+			fmt.Printf("  %v\n", it)
+		}
+	} else {
+		fmt.Printf("%+v\n", data)
+	}
+}
+
+func runChannelGet(cmd *cobra.Command, args []string) {
+	id := args[0]
+	data, err := sendToComponentViaHub("store", "channel.get", map[string]string{"channel_id": id})
+	if err != nil {
+		fmt.Printf("channel get error: %v\n", err)
+		return
+	}
+	if jsonOutput {
+		b, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("Channel %s:\n%+v\n", id, data)
+}
+
 // runVMDiagnose implements `aegis vm diagnose <id>` - a bundled diagnostic snapshot.
 func runVMDiagnose(cmd *cobra.Command, args []string) {
 	vmID := args[0]
@@ -2166,6 +2202,24 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	teamMessageCmd := &cobra.Command{Use: "message <team-id> @role \"text\"", Short: "Send message to team/role", Run: runTeamMessage}
 	teamCmd.AddCommand(teamNewCmd, teamListCmd, teamStatusCmd, teamMessageCmd)
 
+	// Channels (collaboration model primitive)
+	channelCmd := &cobra.Command{
+		Use:   "channel",
+		Short: "Channel (topic) management for multi-agent collaboration (plan Phase 3/5)",
+	}
+	channelListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List channels",
+		Run:   runChannelList,
+	}
+	channelGetCmd := &cobra.Command{
+		Use:   "get <channel-id>",
+		Short: "Get channel details + recent messages (e.g. PM plans, role posts)",
+		Args:  cobra.ExactArgs(1),
+		Run:   runChannelGet,
+	}
+	channelCmd.AddCommand(channelListCmd, channelGetCmd)
+
 	// Skills & Governance
 	skillsCmd := &cobra.Command{Use: "skills", Short: "Skill lifecycle and proposals"}
 	skillsProposeCmd := &cobra.Command{Use: "propose", Short: "Propose a new skill (opens Court flow)", Run: runSkillsPropose}
@@ -2275,6 +2329,7 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 		tasksCmd,
 		autonomyCmd,
 		teamCmd,
+		channelCmd,
 		skillsCmd, courtCmd,
 		auditCmd, secretsCmd,
 		builderCmd,
