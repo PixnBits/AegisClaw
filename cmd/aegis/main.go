@@ -594,24 +594,35 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// and publishes signed privileged events on degradation. Very lightweight.
 	orchestrator.StartCriticalWatchdog(context.Background())
 
-	// Core bootstrap of the required base set (AegisHub + real Firecracker microVMs for
-	// Network Boundary, Store, and Web Portal). No thin host child fallback is permitted
-	// for the sandboxed components (paranoid security model).
-	// AegisHub runs as a privileged host process (by design, as the central router).
-	// Failure to start any required real microVM is fatal.
-	if err := startBaseInfrastructure(); err != nil {
-		logrus.Fatalf("CRITICAL: base infrastructure startup failed (no thin fallback allowed per security model): %v", err)
+	// Harden client readiness + early pre-warm (plan continuation after sleep diagnosis + re-measure).
+	// Previously the control socket + PID write (what makes ./bin/aegis status / vm * work and
+	// the wrapper print "daemon started") and the pre-warm goroutine were *after* startBaseInfrastructure,
+	// which serially launches several real Firecracker VMs + does a 60s web-portal readiness probe.
+	// Result: even with reflink fast copies, clients saw "daemon is not running" and no pooled files
+	// for 30-60s+ (matching the 15s wrapper timeouts and need for external long sleeps in measurement).
+	// Fix: start the control socket + write PID + launch pre-warm *immediately* after orchestrator.
+	// Clients now see a running daemon (and can query partial VM list) within seconds.
+	// Pre-warm (reflink + chown) begins concurrent with the (still necessary) base boots, so pooled
+	// copies become claimable/visible much sooner without long external waits.
+	// The long web probe and Court start continue in parallel; they no longer gate the control plane.
+
+	// Start the control socket *early* (before the long base) so that "daemon started"
+	// (for the parent wrapper) and user client commands (status, vm list, boot-metrics) succeed
+	// quickly. The orchestrator is already live; as base components and Court register they become
+	// visible to clients without waiting the full serial boot + 60s probe.
+	if err := startSocketServer(socketPath, orchestrator); err != nil {
+		logrus.Fatalf("failed to start socket server: %v", err)
 	}
 
-	// Explicit early pre-warm for agent/memory pools (after base ensures known image layout).
-	// This guarantees claimable pooled copies exist before first on-demand paired/role spawn,
-	// so StartPaired/Ensure hit the fast rename+inject path (no 512M copy in hot path).
-	// Now uses reflink fast path + chown-to-SUDO_USER so pools become usable/visible quickly
-	// (seconds, not minutes) without external long sleeps in measurement commands.
-	// Run in goroutine so it does not block the readiness signal (PID + socket) that the
-	// parent wrapper waits for (15s budget); pools will be ready shortly after "daemon started".
-	// Use the same EnsureBootableRootfsImage as StartVM to get the canonical template (handles
-	// the layout, conversion if only tar). Eff home via SUDO_USER for root daemon case.
+	// Write PID file early (world-readable so non-root clients can check it).
+	if err := writePIDFile(); err != nil {
+		logrus.Fatalf("failed to write PID file: %v", err)
+	}
+	defer removePIDFile()
+
+	// Explicit pre-warm moved *before* startBase so copies (now reflink-fast) run in parallel
+	// with the serial VM launches and web probe. This is the key to pooled visibility in short
+	// bounded waits after `make start`.
 	go func() {
 		if cfg.RootfsDir != "" {
 			for _, comp := range []string{"agent", "memory"} {
@@ -621,9 +632,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 					}
 				}
 			}
-			// Final visibility: count what actually exists now. This (plus the per-prefix
-			// logs from Prewarm) lets operators confirm pooled claim is possible shortly
-			// after "daemon started" without multi-minute external sleeps in test commands.
 			if matches, _ := filepath.Glob(filepath.Join(cfg.StateDir, "*-pooled-*.rootfs.img")); len(matches) > 0 {
 				logrus.Infof("Background pre-warm complete: %d pooled rootfs files available for fast agent/memory claim", len(matches))
 			}
@@ -632,6 +640,12 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	go startOrchestratorCommandReceiver()
 	go reconcileGuestHubBridges()
+
+	// Now do the (potentially lengthy) base infrastructure. Clients can already talk to the
+	// daemon and see progress via vm list etc.
+	if err := startBaseInfrastructure(); err != nil {
+		logrus.Fatalf("CRITICAL: base infrastructure startup failed (no thin fallback allowed per security model): %v", err)
+	}
 
 	// Phase 3 (Full Court): Launch the real 7-persona Court + Scribe as Firecracker microVMs.
 	// This is the key wiring for "real Court microVMs" (governance-court.md §Architecture).
@@ -642,18 +656,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 			logrus.Warnf("Court system start (best effort per Phase 3): %v", err)
 		}
 	}()
-
-	// Start the control socket *before* writing the PID file so that "daemon started"
-	// (signaled to the parent wrapper) means `./bin/aegis status` / `vm list` will work.
-	if err := startSocketServer(socketPath, orchestrator); err != nil {
-		logrus.Fatalf("failed to start socket server: %v", err)
-	}
-
-	// Write PID file
-	if err := writePIDFile(); err != nil {
-		logrus.Fatalf("failed to write PID file: %v", err)
-	}
-	defer removePIDFile()
 
 	// Phase 5: Minimal hardened reverse proxy for Web Portal (per web-portal-vm.md + host-daemon.md)
 	// The Web Portal must receive traffic ONLY through the Host Daemon.

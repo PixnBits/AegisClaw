@@ -92,20 +92,29 @@ Tactics implemented / in flight:
 - Solo-user sensible default (auto "main" channel with PM + Court always warm?).
 - Exact reflink support on all dev/CI FS (we have fallback; measurement will show).
 
-## This Portion (prewarm-readiness on current feature branch)
+## This Portion (prewarm-readiness + client readiness hoist on current feature branch)
 
 Direct response to "what's the goal of the sleep for 2400s... even 300s that something is wrong?":
 
 The external long sleeps were a measurement procedure hack to give the background `io.Copy(512M)` pre-warm goroutines + serial base infrastructure VMs + 15s wrapper + socket readiness time to produce claimable pooled files and make `./bin/aegis vm ...` client commands succeed. They are **not** in the code or scripts.
 
-Root causes addressed here:
-- Pre-warm now uses near-instant reflink copy when possible + always reports pooled counts.
-- Ownership (chown to SUDO_USER) so non-root `ls` and client tools see the files.
-- Shorter reconcile sleep + better logs in fallback/claim/pre-warm-complete paths.
-- Updated comments and timeout messages to set correct expectations (no encouragement of long manual waits).
-- Carried sentinel readiness work (portal poll + agent handler) is part of the same "tight, observable readiness without fixed long waits" theme.
+Re-measure run (post-reflink, short 30-60s bounded waits only, autonomous sudo -n launch per sudoers.example + AGENTS):
+- Hub came up quickly (log: "AegisHub started").
+- But after bounded waits: "daemon is not running" from user client, no PID file visible, no pooled files.
+- Log only showed early hub/ACL lines; pre-warm never reached in the captured window.
+- ps confirmed multiple root "aegis start --foreground" (and one current launch) were alive; hub.sock present.
+- Root cause (confirmed live): pre-warm go + startSocketServer + writePIDFile were *after* startBaseInfrastructure (serial Firecracker for network-boundary/store/web-portal + up to 60s waitForWebPortalReady probe + Court go). Even instant reflink copies couldn't help because the goroutine didn't run until late, and clients had no socket/PID to talk to.
 
-Result goal: after a normal `make start` (per AGENTS.md), a short bounded wait (or none) + quick `ls $STATE/*-pooled-*` or `./bin/aegis vm list` / boot-metrics should show the fast path artifacts and low ms numbers. Re-measurement will use only short waits.
+Fix implemented in this portion:
+- Hoisted control socket + PID write + pre-warm goroutine (reflink) to immediately after orchestrator.New + watchdog, *before* startBase.
+- Clients now get a working control plane (status, vm list, boot-metrics) within seconds of the child starting; "daemon started" from wrapper will succeed early.
+- Pre-warm (copies + logs + chown for user visibility) now runs concurrent with the base boots/probe/Court. Pooled should become visible/claimable on short waits.
+- Base infrastructure, web probe, Court etc. continue (they must), but no longer gate the observability and fast-path prep that the collaboration model depends on.
+- Updated comments, plan doc, and the re-measure section.
+
+This directly enables the "short bounded wait only, no 300s+ external sleeps" verification goal.
+
+Next re-measure (after this commit) will use the fixed binary + same short-wait autonomous procedure and report whether status succeeds early + pooled appear with "Pooled copies now available" / "Background pre-warm complete" much sooner.
 
 ## Verification (do not introduce long sleeps)
 
