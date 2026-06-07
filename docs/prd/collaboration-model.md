@@ -138,16 +138,7 @@ This maintains (and arguably strengthens) the paranoid security model while addi
 
 Solo users get sensible defaults (e.g. a single "main" or "personal" channel pre-provisioned with core Court + PM always fast-available).
 
-## 9. Migration from Previous Model
-
-- Existing conversations can be mapped to a default "general" or "inbox" channel.
-- Old single-agent sessions become lightweight entries in the new model.
-- Court review history and audit logs are preserved.
-- Users can continue using simple direct chat (PM acts as default entrypoint and hides complexity).
-
-A future migration tool or one-time import can be considered in implementation phase.
-
-## 10. Open Questions & Future Work
+## 9. Open Questions & Future Work
 
 - How much "free chat" vs strict proposal-based interaction between Court agents in channels? (Rich feedback desired by personas vs strict isolation.)
 - Court state: long-lived persona instances vs fresh per review?
@@ -157,7 +148,7 @@ A future migration tool or one-time import can be considered in implementation p
 
 These will be resolved in the Specs and Implementation phases.
 
-## 11. Related Documents
+## 10. Related Documents
 
 - `personas.md` / `user-personas.md` — User needs this model serves.
 - `governance-court.md` — Detailed Court process.
