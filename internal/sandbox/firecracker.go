@@ -245,9 +245,10 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 
 	logrus.Infof("Firecracker process started for VM %s, PID %d", config.ID, cmd.Process.Pid)
 	phases["fc_spawn"] = time.Now().UnixNano()
-	if cmd.Process != nil {
-		phases["fc_pid"] = int64(cmd.Process.Pid)
-	}
+	// Do NOT store the raw PID as a "phase timestamp" — it pollutes boot metrics
+	// (GetVMBootMetrics computes durations from these values and produces huge
+	// negative numbers like the "fc/fc_pid" garbage seen in real runs).
+	// We log the PID for humans; the timing map only contains real nanosecond times.
 	if os.Getenv("AEGIS_BOOT_TIMING") == "1" {
 		logrus.Infof("BOOT host phase=fc_spawn vm=%s pid=%d", config.ID, cmd.Process.Pid)
 	}

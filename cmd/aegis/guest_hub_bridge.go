@@ -80,7 +80,9 @@ func runGuestHubBridge(stateDir, hubSocket, vmID string) {
 		cancel()
 		if err != nil {
 			logrus.Debugf("guest hub bridge %s: guest listener not ready yet: %v", vmID, err)
-			time.Sleep(1500 * time.Millisecond)
+			// Reduced sleep for faster readiness (was 1500ms); helps <1s agent guest hub_dialed
+			// (the main remaining pole after other opts). Overlaps with guest boot via early start.
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
@@ -88,7 +90,7 @@ func runGuestHubBridge(stateDir, hubSocket, vmID string) {
 		if err != nil {
 			logrus.Warnf("guest hub bridge %s: hub dial failed: %v", vmID, err)
 			_ = guestConn.Close()
-			time.Sleep(2 * time.Second)
+			time.Sleep(200 * time.Millisecond)
 			continue
 		}
 

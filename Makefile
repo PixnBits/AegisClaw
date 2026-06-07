@@ -30,6 +30,7 @@ build-binaries:
 	go build -o bin/secrets ./cmd/secrets
 	go build -o bin/store ./cmd/store
 	go build -o bin/web-portal ./cmd/web-portal
+	go build -o bin/project-manager ./cmd/project-manager
 
 # Build microVM filesystems (Linux/Firecracker only)
 build-microvms:

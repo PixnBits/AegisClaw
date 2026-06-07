@@ -140,7 +140,8 @@ func runAgent(cmd *cobra.Command, args []string) {
 		if err != nil {
 			if bootargs.UseHubVsock() {
 				log.Printf("agent: hub bridge connect failed: %v (retrying)", err)
-				time.Sleep(time.Second)
+				// Reduced for <1s (was 1s); overlaps with early host bridge start.
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 			log.Fatal("agent: failed to connect to AegisHub:", err)

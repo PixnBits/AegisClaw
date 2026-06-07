@@ -212,11 +212,15 @@ func ensurePairedAgentForSession(sessionID string) {
 		startGuestHubBridgesForSession(sessionID)
 		return
 	}
+	// Start host->guest hub bridges *before* or concurrent with StartPaired so the
+	// bridge retry loop overlaps guest boot time (reduces effective hub_dialed latency
+	// for the agent guest, which was the ~1.3-1.8s pole in early measurements).
+	// The bridge has its own retry until vsock ready.
+	go startGuestHubBridgesForSession(sessionID)
 	if _, _, err := orchestrator.StartPairedAgentAndMemory(ctx, sessionID); err != nil {
 		logrus.Debugf("portal bridge: paired agent launch for %s: %v", sessionID, err)
 		return
 	}
-	startGuestHubBridgesForSession(sessionID)
 }
 
 func chatPayloadForUserTurn(payload interface{}) interface{} {
