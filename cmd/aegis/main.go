@@ -4653,6 +4653,10 @@ func startOrchestratorCommandReceiver() {
 			if !hasMain {
 				_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": "main"})
 			}
+			// E2E: ensure Court personas are participants in main (with PM)
+			for _, p := range []string{"ciso", "security-architect", "architect", "senior-coder", "tester", "efficiency", "user-advocate"} {
+				_, _ = sendToComponentViaHub("store", "channel.add_member", map[string]interface{}{"channel_id": "main", "role": "court-persona-" + p})
+			}
 		}()
 
 		for {
