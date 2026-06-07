@@ -92,6 +92,10 @@
               <span>Pending Proposals</span>
               <strong id="statPendingProposals">0</strong>
             </article>
+            <article class="stat-card">
+              <span>Channels</span>
+              <strong id="statChannels">0</strong>
+            </article>
           </div>
 
           <div class="two-column-grid">
@@ -152,6 +156,17 @@
               <form id="addMemberForm" class="inline-form" novalidate>
                 <input id="newMemberRole" type="text" placeholder="project-manager or coder or user:alice" required />
                 <button type="submit" class="secondary-button">Add Participant</button>
+              </form>
+
+              <h4>Channel History / Messages</h4>
+              <div id="channelMessages" class="chat-stream" data-testid="channel-messages" aria-live="polite"></div>
+
+              <form id="channelPostForm" class="chat-composer" novalidate>
+                <input id="postFrom" type="text" value="operator" placeholder="from" />
+                <textarea id="postContent" rows="2" maxlength="2000" placeholder="Post to channel..."></textarea>
+                <div class="composer-actions">
+                  <button type="submit" class="primary-button">Post</button>
+                </div>
               </form>
             </article>
           </div>

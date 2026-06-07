@@ -110,6 +110,13 @@ function selectChannel(ch) {
   if (elements.selectedChannelId) elements.selectedChannelId.textContent = ch.id;
   if (elements.channelDetail) elements.channelDetail.style.display = 'block';
   renderMembers(ch.members || []);
+  // fetch full for messages
+  fetchJSON(`/api/channels/${ch.id}`).then(full => {
+    currentChannel = full;
+    renderChannelMessages(full.messages || []);
+  }).catch(() => {
+    renderChannelMessages(ch.messages || []);
+  });
 }
 
 function renderMembers(members) {
@@ -141,6 +148,42 @@ function renderMembers(members) {
     li.appendChild(btn);
     ul.appendChild(li);
   });
+}
+
+function renderChannelMessages(messages) {
+  const div = document.getElementById('channelMessages');
+  if (!div) return;
+  div.innerHTML = '';
+  messages.forEach((m) => {
+    const entry = document.createElement('div');
+    entry.className = 'message';
+    const ts = m.ts ? new Date(m.ts / 1000000).toLocaleTimeString() : '';
+    entry.innerHTML = `<strong>${m.from || 'unknown'}</strong> <small>${ts}</small><br>${m.content || ''}`;
+    div.appendChild(entry);
+  });
+  div.scrollTop = div.scrollHeight;
+}
+
+async function postToChannel(ev) {
+  ev.preventDefault();
+  if (!currentChannel) return;
+  const from = (document.getElementById('postFrom') && document.getElementById('postFrom').value || 'operator').trim();
+  const content = (document.getElementById('postContent') && document.getElementById('postContent').value || '').trim();
+  if (!content) return;
+  try {
+    await fetch(`/api/channels/${currentChannel.id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, content }),
+    });
+    if (document.getElementById('postContent')) document.getElementById('postContent').value = '';
+    // refresh messages
+    const fresh = await fetchJSON(`/api/channels/${currentChannel.id}`);
+    currentChannel = fresh;
+    renderChannelMessages(fresh.messages || []);
+  } catch (e) {
+    alert('Post failed: ' + e);
+  }
 }
 
 async function addMember(ev) {
@@ -197,6 +240,8 @@ function renderDashboard(data) {
   document.getElementById('statBackgroundTasks').textContent = String(data.quick_stats.background_tasks);
   document.getElementById('statSkillsInstalled').textContent = String(data.quick_stats.skills_installed);
   document.getElementById('statPendingProposals').textContent = String(data.quick_stats.pending_proposals);
+  const chCount = data.channel_count || (data.quick_stats && data.quick_stats.channel_count) || 0;
+  document.getElementById('statChannels').textContent = String(chCount);
 
   renderList(elements.activeAgentsList, data.agents, (agent) => {
     const card = buildListCard(agent.name, `${titleCase(agent.status)} • ${agent.task} (${agent.progress})`);
@@ -633,6 +678,10 @@ async function boot() {
   }
   if (elements.archiveChannelBtn) {
     elements.archiveChannelBtn.addEventListener('click', archiveChannel);
+  }
+  const channelPostForm = document.getElementById('channelPostForm');
+  if (channelPostForm) {
+    channelPostForm.addEventListener('submit', postToChannel);
   }
   navigate(activePage());
   try {
