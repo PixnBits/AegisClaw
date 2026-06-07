@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/agent/loop"
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
@@ -151,6 +152,8 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 	timing.RecordPhase("register_complete")
 	timing.WriteComponentReadySentinel()
 
+	realLLM := loop.NewRealLLMCaller(hcl, os.Getenv("AEGIS_DEFAULT_MODEL"))
+
 	timing.RecordPhase("message_loop_ready")
 
 	for {
@@ -174,8 +177,17 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					chID = c
 				}
 			}
-			// Richer PM: use generatePlan (incorporates getPMPrompt + dynamic analysis of input for "LLM-like" plans).
-			plan := generatePlan(payloadStr, chID)
+			var plan string
+			// Build out PM to connect with LLM (per plan): call real LLM with prompt + goal for actual plan generation.
+			// Falls back to generatePlan on error (for envs without model configured).
+			planPrompt := getPMPrompt() + "\n\nUser goal: " + payloadStr + "\n\nChannel: " + chID + "\n\nAs Project Manager, output a clear structured plan with tasks, roles to ensure (Coder, Tester, Court etc.), delegation steps, and monitoring. Be actionable."
+			llmPlan, err := realLLM(context.Background(), planPrompt)
+			if err != nil {
+				log.Printf("PM: LLM plan gen failed (%v), using fallback generatePlan", err)
+				plan = generatePlan(payloadStr, chID)
+			} else {
+				plan = llmPlan
+			}
 			// Demonstrate channel post (real send to Store)
 			postPayload := map[string]interface{}{
 				"channel_id": chID,
