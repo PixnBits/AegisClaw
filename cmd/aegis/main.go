@@ -647,15 +647,14 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		logrus.Fatalf("CRITICAL: base infrastructure startup failed (no thin fallback allowed per security model): %v", err)
 	}
 
-	// Phase 3 (Full Court): Launch the real 7-persona Court + Scribe as Firecracker microVMs.
-	// This is the key wiring for "real Court microVMs" (governance-court.md §Architecture).
-	// Best-effort and non-fatal so the daemon can still start even before `make build-microvms`
-	// has produced court-*.img files. The watchdog will still track them when present.
-	go func() {
-		if err := orchestrator.StartCourtSystem(context.Background()); err != nil {
-			logrus.Warnf("Court system start (best effort per Phase 3): %v", err)
-		}
-	}()
+	// Court system is launched early inside startBaseInfrastructure (right after hub is up)
+	// so that the 7 personas + scribe boot in parallel with other base components.
+	// Combined with the early control socket (hoist) and the unconditional
+	// "aegis.boot_timing=1" force for court-* in StartVM, this makes guest
+	// BOOT_TIMING / register_complete phases for base Court reliably emitted
+	// in their fc-court-persona-*-console.log and queryable via client
+	// `aegis vm boot-metrics` shortly after "daemon started" (no long waits).
+	// The late launch was here previously; removed to prevent double-start.
 
 	// Phase 5: Minimal hardened reverse proxy for Web Portal (per web-portal-vm.md + host-daemon.md)
 	// The Web Portal must receive traffic ONLY through the Host Daemon.
@@ -3769,6 +3768,18 @@ func startBaseInfrastructure() error {
 
 	logrus.Info("host AegisHub is up; now launching real Firecracker microVMs for base infrastructure (network-boundary, store, web-portal). If the process appears to hang here, check that ensureRealRootfsImage can find your images and that loop mounts / mkfs succeed as root.")
 	dlog("hub registration complete, moving to first real VM (network-boundary)")
+
+	// Start Court early (right after hub) so the 7 personas + scribe boot in parallel with
+	// the other base VMs. This makes their guest BOOT_TIMING / register_complete phases
+	// emitted and capturable sooner after "daemon started" (for reliable base Court metrics
+	// in short windows, per collaboration plan). The control socket is already up from hoist,
+	// so `aegis vm boot-metrics court-persona-ciso` etc. will work as soon as the personas
+	// have registered.
+	go func() {
+		if err := orchestrator.StartCourtSystem(context.Background()); err != nil {
+			logrus.Warnf("Court system start (best effort, started early after hub): %v", err)
+		}
+	}()
 
 	// Web Portal microVM bridge (vsock 1030): forwards chat/sessions/dashboard actions to Hub.
 	startPortalBridge()
