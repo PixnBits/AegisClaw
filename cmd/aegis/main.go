@@ -1664,7 +1664,11 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			response = "No running VMs\n"
 		} else {
 			for _, vm := range vms {
-				response += fmt.Sprintf("%s: %s (%s)\n", vm.ID, vm.Type, vm.Status)
+				if vm.Channel != "" {
+					response += fmt.Sprintf("%s: %s (%s) channel=%s\n", vm.ID, vm.Type, vm.Status, vm.Channel)
+				} else {
+					response += fmt.Sprintf("%s: %s (%s)\n", vm.ID, vm.Type, vm.Status)
+				}
 			}
 		}
 	case "stop":
