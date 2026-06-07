@@ -199,6 +199,25 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					fmt.Printf("PM: sent ensure.role for %s in channel %s\n", r, chID)
 				}
 			}
+			// More PM smarts: monitoring post after delegation (per plan)
+			monitorContent := fmt.Sprintf("PM monitoring: roles ensured [%v] in channel %s. Awaiting role updates/synthesis.", []string{"coder", "tester"}, chID)
+			monitorPayload := map[string]interface{}{
+				"channel_id": chID,
+				"from":       uniqueSource,
+				"content":    monitorContent,
+			}
+			monitorMsg := hubclient.Message{
+				Source:      uniqueSource,
+				Destination: "store",
+				Command:     "channel.post",
+				Payload:     monitorPayload,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}
+			if _, err := hcl.Send(context.Background(), monitorMsg); err != nil {
+				log.Printf("pm: monitoring post failed: %v", err)
+			} else {
+				fmt.Printf("PM: posted monitoring update to channel %s\n", chID)
+			}
 			respPayload := map[string]interface{}{
 				"role":    "project-manager",
 				"plan":    plan,
