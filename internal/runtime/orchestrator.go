@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -127,37 +126,17 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	// We try cfg.RootfsDir first, then common locations under firecracker/ (where build-microvms often places *.img directly).
 	if cfg.SandboxType == config.Firecracker {
 		go func() {
-			// Always attempt the most common user layouts observed (build puts .img under firecracker/rootfs or firecracker/).
+			// Use the same EnsureBootableRootfsImage as StartVM to get the canonical template path
+			// (handles rootfs/ or direct, tar->img conversion if needed). Then pre-warm from it.
 			// This ensures pre-warm creates claimable pooled copies early, so the first paired/role StartVM
 			// hits the fast rename+inject path instead of full 512M copy (key <1s win for on-demand agents).
-			// Use eff home (SUDO_USER) so it works when daemon runs as root.
-			effHome := os.Getenv("HOME")
-			if su := os.Getenv("SUDO_USER"); su != "" {
-				if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
-					effHome = u.HomeDir
-				}
-			}
-			goodPaths := []struct{ agent, mem string }{
-				{filepath.Join(effHome, ".aegis", "firecracker", "rootfs", "agent.img"), filepath.Join(effHome, ".aegis", "firecracker", "rootfs", "memory.img")},
-				{filepath.Join(effHome, ".aegis", "firecracker", "agent.img"), filepath.Join(effHome, ".aegis", "firecracker", "memory.img")},
-			}
-			for _, p := range goodPaths {
-				if _, err := os.Stat(p.agent); err == nil {
-					logrus.Infof("Pre-warm: attempting pooled copies for agent from %s", p.agent)
-					_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, p.agent, 2, "agent")
-				}
-				if _, err := os.Stat(p.mem); err == nil {
-					logrus.Infof("Pre-warm: attempting pooled copies for memory from %s", p.mem)
-					_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, p.mem, 2, "memory")
-				}
-			}
-			// Also respect cfg if set (for other layouts)
 			if cfg.RootfsDir != "" {
 				for _, comp := range []string{"agent", "memory"} {
-					p := filepath.Join(cfg.RootfsDir, comp+".img")
-					if _, err := os.Stat(p); err == nil {
-						logrus.Infof("Pre-warm: attempting from cfg.RootfsDir %s", p)
-						_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, p, 2, comp)
+					if template, err := sandbox.EnsureBootableRootfsImage(cfg.RootfsDir, comp); err == nil {
+						if _, err := os.Stat(template); err == nil {
+							logrus.Infof("Pre-warm: attempting pooled copies for %s from canonical %s", comp, template)
+							_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, template, 2, comp)
+						}
 					}
 				}
 			}

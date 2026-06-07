@@ -603,20 +603,16 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// so StartPaired/Ensure hit the fast rename+inject path (no 512M io.Copy in hot path).
 	// Run in goroutine so it does not block the readiness signal (PID + socket) that the
 	// parent wrapper waits for (15s budget); pools will be ready shortly after "daemon started".
-	// Use SUDO_USER eff home (like debug banner) so it resolves the original user's ~/.aegis
-	// even when the daemon binary runs as root.
+	// Use the same EnsureBootableRootfsImage as StartVM to get the canonical template (handles
+	// the layout, conversion if only tar). Eff home via SUDO_USER for root daemon case.
 	go func() {
-		effHome := os.Getenv("HOME")
-		if su := os.Getenv("SUDO_USER"); su != "" {
-			if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
-				effHome = u.HomeDir
-			}
-		}
-		goodRootfs := filepath.Join(effHome, ".aegis", "firecracker", "rootfs")
-		for _, comp := range []string{"agent", "memory"} {
-			p := filepath.Join(goodRootfs, comp+".img")
-			if _, err := os.Stat(p); err == nil {
-				_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, p, 2, comp)
+		if cfg.RootfsDir != "" {
+			for _, comp := range []string{"agent", "memory"} {
+				if template, err := sandbox.EnsureBootableRootfsImage(cfg.RootfsDir, comp); err == nil {
+					if _, err := os.Stat(template); err == nil {
+						_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, template, 2, comp)
+					}
+				}
 			}
 		}
 	}()
