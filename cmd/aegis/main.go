@@ -304,6 +304,13 @@ func daemonChildEnv() []string {
 	if su := os.Getenv("SUDO_USER"); su != "" {
 		env = setEnvPair(env, "SUDO_USER", su)
 	}
+	// Explicitly carry AEGIS_BOOT_TIMING through the re-exec to the foreground
+	// child. This is required for reliable guest boot metrics on all VMs
+	// (including the early Court system) when measuring the <1s target for the
+	// collaboration model. Some sudo policies strip unknown AEGIS_* vars.
+	if v := os.Getenv("AEGIS_BOOT_TIMING"); v != "" {
+		env = setEnvPair(env, "AEGIS_BOOT_TIMING", v)
+	}
 	return env
 }
 
@@ -590,6 +597,31 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if err := startBaseInfrastructure(); err != nil {
 		logrus.Fatalf("CRITICAL: base infrastructure startup failed (no thin fallback allowed per security model): %v", err)
 	}
+
+	// Explicit early pre-warm for agent/memory pools (after base ensures known image layout).
+	// This guarantees claimable pooled copies exist before first on-demand paired/role spawn,
+	// so StartPaired/Ensure hit the fast rename+inject path (no 512M io.Copy in hot path).
+	// Run in goroutine so it does not block the readiness signal (PID + socket) that the
+	// parent wrapper waits for (15s budget); pools will be ready shortly after "daemon started".
+	// Use SUDO_USER eff home (like debug banner) so it resolves the original user's ~/.aegis
+	// even when the daemon binary runs as root.
+	go func() {
+		effHome := os.Getenv("HOME")
+		if su := os.Getenv("SUDO_USER"); su != "" {
+			if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
+				effHome = u.HomeDir
+			}
+		}
+		goodRootfs := filepath.Join(effHome, ".aegis", "firecracker", "rootfs")
+		for _, comp := range []string{"agent", "memory"} {
+			p := filepath.Join(goodRootfs, comp+".img")
+			if _, err := os.Stat(p); err == nil {
+				_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, p, 2, comp)
+			}
+		}
+	}()
+
+	go startOrchestratorCommandReceiver()
 	go reconcileGuestHubBridges()
 
 	// Phase 3 (Full Court): Launch the real 7-persona Court + Scribe as Firecracker microVMs.
@@ -4252,4 +4284,66 @@ func waitForWebPortalReady(target string, timeout time.Duration) error {
 
 	dlog("waitForWebPortalReady: TIMEOUT after %v (%d attempts). Last error: %v", timeout, attempt, lastErr)
 	return fmt.Errorf("web-portal not reachable after %v (target %s, %d attempts, last error: %w)", timeout, target, attempt, lastErr)
+}
+
+// startOrchestratorCommandReceiver starts a persistent hub client as "daemon-orchestrator"
+// to receive "ensure.role" (and future "orchestrator.*") commands from the Project Manager
+// (and other privileged roles). It calls the orchestrator.EnsureRoleAgent(role, channel)
+// which records the Channel on the VMLifecycle for roster/attachment and starts the role VM
+// on-demand (with pre-warm claim if available).
+// This wires the PM's planning/delegation decisions to actual runtime role ensures in channels.
+// ACLs control who can send (project-manager* to daemon-orchestrator for ensure.role).
+func startOrchestratorCommandReceiver() {
+	if orchestrator == nil {
+		return
+	}
+	hubPath := expandPath("~/.aegis/hub.sock")
+	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+		hubPath = expandPath(env)
+	}
+	for {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		client, err := hubclient.DialUnix(hubPath, priv)
+		if err != nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		requesterID := "daemon-orchestrator"
+		_, err = client.Register(context.Background(), requesterID, pub, "phase1")
+		if err != nil {
+			client.Close()
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		logrus.Info("daemon-orchestrator receiver registered for ensure.role from PM etc.")
+		for {
+			msg, err := client.Receive(context.Background())
+			if err != nil {
+				break
+			}
+			if msg.Command == "ensure.role" || msg.Command == "orchestrator.ensure_role" {
+				payload, _ := msg.Payload.(map[string]interface{})
+				role, _ := payload["role"].(string)
+				channel, _ := payload["channel"].(string)
+				id, err := orchestrator.EnsureRoleAgent(context.Background(), role, channel)
+				resp := map[string]interface{}{"id": id}
+				if err != nil {
+					resp = map[string]interface{}{"error": err.Error()}
+				}
+				_ = client.Reply(context.Background(), hubclient.Message{
+					Source:      requesterID,
+					Destination: msg.Source,
+					Command:     "response",
+					Payload:     resp,
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				})
+			}
+		}
+		client.Close()
+		time.Sleep(1 * time.Second)
+	}
 }

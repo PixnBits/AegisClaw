@@ -1,0 +1,228 @@
+package main
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"runtime/debug"
+	"time"
+
+	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/timing"
+	"AegisClaw/internal/transport/hubclient"
+	"AegisClaw/internal/workspace"
+	"github.com/spf13/cobra"
+)
+
+type Message struct {
+	Source      string      `json:"source"`
+	Destination string      `json:"destination"`
+	Command     string      `json:"command"`
+	Payload     interface{} `json:"payload"`
+	Timestamp   string      `json:"timestamp"`
+	Signature   string      `json:"signature"`
+}
+
+var hubSocket = "~/.aegis/hub.sock"
+
+var loadedWorkspace *workspace.Context
+
+func init() {
+	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+		hubSocket = env
+	}
+}
+
+func expandPath(path string) string {
+	if path[:2] == "~/" {
+		home, _ := os.UserHomeDir()
+		return home + path[1:]
+	}
+	return path
+}
+
+func signMessage(msg *Message, priv ed25519.PrivateKey) {
+	msgCopy := *msg
+	msgCopy.Signature = ""
+	data, _ := json.Marshal(msgCopy)
+	signature := ed25519.Sign(priv, data)
+	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+}
+
+func getBuildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version := info.Main.Version
+		if version == "" || version == "(devel)" {
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+					return setting.Value[:7]
+				}
+			}
+			return "dev"
+		}
+		return version
+	}
+	return "unknown"
+}
+
+func getPMPrompt() string {
+	custom := ""
+	if loadedWorkspace != nil {
+		if loadedWorkspace.SOUL != "" {
+			custom += "Core values and soul for this system: " + loadedWorkspace.SOUL + ". "
+		}
+		if loadedWorkspace.AGENTS != "" {
+			custom += "Custom agent/PM instructions: " + loadedWorkspace.AGENTS + ". "
+		}
+	}
+	base := "You are the Project Manager Agent. You receive user goals or channel activity. " +
+		"Break them into plans (tasks, required roles like Coder/Tester/Court, suggested channels). " +
+		"Decide which agents/roles to spin up or invite to which channels using EnsureRoleAgent. " +
+		"Delegate via channel posts or @mentions. Monitor, synthesize, and escalate to Court via formal proposals when changes are needed. " +
+		"Stay in character as the intelligent orchestrator. Respond with structured plans or actions."
+	return custom + base
+}
+
+func runProjectManager(cmd *cobra.Command, args []string) {
+	timing.RecordPhase("main_entry")
+
+	priv, pub, err := bootargs.LoadDistributedVMKey("project-manager")
+	if err != nil {
+		log.Printf("pm: %v — generating ephemeral key (dev only)", err)
+		pub, priv, err = ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			log.Fatal("pm: failed to obtain key:", err)
+		}
+	}
+	_ = pub
+
+	wsCtx, wsErr := workspace.Load("")
+	if wsErr != nil {
+		log.Printf("pm: WARNING: %v (using defaults)", wsErr)
+	} else if wsCtx.SOUL != "" || wsCtx.AGENTS != "" {
+		log.Printf("pm: Loaded workspace customizations")
+	}
+	loadedWorkspace = wsCtx
+
+	timing.RecordPhase("key_loaded")
+
+	socket := expandPath(hubSocket)
+	var hcl hubclient.Client
+	if bootargs.UseHubVsock() {
+		fmt.Println("project-manager: waiting for host hub bridge on vsock")
+		hcl, err = hubclient.AcceptVsockHubBridge(hubclient.GuestHubBridgePort, priv)
+	} else {
+		hcl, err = hubclient.DialUnix(socket, priv)
+	}
+	if err != nil {
+		log.Fatal("Failed to connect to AegisHub:", err)
+	}
+	defer hcl.Close()
+	timing.RecordPhase("hub_dialed")
+
+	uniqueSource := "project-manager"
+	regResp, err := hcl.Register(context.Background(), uniqueSource, pub, getBuildVersion())
+	if err != nil {
+		log.Fatal("PM registration failed:", err)
+	}
+	fmt.Println("Project Manager registered as", uniqueSource, "assignedID=", regResp.AssignedID)
+	timing.RecordPhase("register_complete")
+	timing.WriteComponentReadySentinel()
+
+	timing.RecordPhase("message_loop_ready")
+
+	for {
+		msg, err := hcl.Receive(context.Background())
+		if err != nil {
+			log.Println("pm: hub Receive error (continuing):", err)
+			continue
+		}
+
+		fmt.Println("PM received:", msg.Command)
+
+		switch msg.Command {
+		case "user.goal", "channel.post", "chat.message":
+			payloadStr := fmt.Sprintf("%v", msg.Payload)
+			// Real demonstration of collaboration model: plan, post to channel, decide roles to ensure.
+			chID := "plan-demo"
+			plan := fmt.Sprintf("PM Plan for input: %s\n1. Create/use channel '%s'\n2. Ensure roles: @Coder, @Tester, Court for any changes\n3. Delegate tasks via @mentions\n4. Monitor + synthesize\n5. Escalate formal proposal to Court if needed", payloadStr, chID)
+			// Demonstrate channel post (real send to Store)
+			postPayload := map[string]interface{}{
+				"channel_id": chID,
+				"from":       uniqueSource,
+				"content":    plan,
+			}
+			postMsg := hubclient.Message{
+				Source:      uniqueSource,
+				Destination: "store",
+				Command:     "channel.post",
+				Payload:     postPayload,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}
+			if _, err := hcl.Send(context.Background(), postMsg); err != nil {
+				log.Printf("pm: channel.post to store failed (ACL?): %v", err)
+			} else {
+				fmt.Printf("PM: posted plan to channel %s\n", chID)
+			}
+			// Actually send ensure.role to the wired receiver (daemon-orchestrator).
+			// The receiver calls orchestrator.EnsureRoleAgent which starts the role VM
+			// (with pre-warm claim) and records the Channel for roster.
+			for _, r := range []string{"coder", "tester"} {
+				ensurePayload := map[string]interface{}{
+					"role":    r,
+					"channel": chID,
+				}
+				ensureMsg := hubclient.Message{
+					Source:      uniqueSource,
+					Destination: "daemon-orchestrator",
+					Command:     "ensure.role",
+					Payload:     ensurePayload,
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				}
+				if _, err := hcl.Send(context.Background(), ensureMsg); err != nil {
+					log.Printf("pm: ensure.role for %s failed (ACL or receiver?): %v", r, err)
+				} else {
+					fmt.Printf("PM: sent ensure.role for %s in channel %s\n", r, chID)
+				}
+			}
+			respPayload := map[string]interface{}{
+				"role":    "project-manager",
+				"plan":    plan,
+				"channel": chID,
+				"ensured_roles": []string{"coder", "tester"},
+				"note":    "Real channel.post + ensure.role sent (wired to orchestrator.EnsureRoleAgent with Channel)",
+			}
+			_ = hcl.Reply(context.Background(), hubclient.Message{
+				Source:      uniqueSource,
+				Destination: msg.Source,
+				Command:     "response",
+				Payload:     respPayload,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			})
+
+		case "version", "get-version":
+			respPayload, _ := json.Marshal(map[string]string{"version": getBuildVersion()})
+			_, _ = hcl.Send(context.Background(), hubclient.Message{
+				Source:      uniqueSource,
+				Destination: msg.Source,
+				Command:     "version",
+				Payload:     json.RawMessage(respPayload),
+				Timestamp:   time.Now().Format(time.RFC3339),
+			})
+		}
+	}
+}
+
+func main() {
+	var rootCmd = &cobra.Command{
+		Use:   "project-manager",
+		Short: "Project Manager Agent (orchestrator for channels + roles)",
+		Run:   runProjectManager,
+	}
+	rootCmd.Execute()
+}

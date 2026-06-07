@@ -206,6 +206,36 @@ rules:
   commands:
     - team.*
 
+# Channels (collaboration model - channels + roles + PM)
+# Minimal: create/list/get/join/post for membership + history (Store owns durable state)
+- source: web-portal
+  destination: store
+  commands:
+    - channel.create
+    - channel.list
+    - channel.get
+    - channel.join
+    - channel.post
+    - channel.*
+- source: aegis
+  destination: store
+  commands:
+    - channel.*
+# Future: PM, SDLC roles, and agents will post to channels too
+- source: "agent*"
+  destination: store
+  commands:
+    - channel.*
+- source: "project-manager*"
+  destination: store
+  commands:
+    - channel.*
+- source: "project-manager*"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+
 # Memory <-> Store (long-term persistence per memory-vm.md)
 - source: memory
   destination: store
