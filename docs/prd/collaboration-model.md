@@ -2,8 +2,6 @@
 
 **How users, the Project Manager, Court personas, and SDLC specialists work together in channels with on-demand agents.**
 
-> This document supersedes the previous `conversation-model.md`. The old file has been removed in this branch after content migration.
-
 ## 1. Motivation & Problem with Current Model
 
 The existing approach of spinning a new general agent for each conversation (with Court members invoked on-demand for proposals) has become resource-heavy on local hardware. It provides limited support for:
@@ -162,9 +160,9 @@ These will be resolved in the Specs and Implementation phases.
 ## 11. Related Documents
 
 - `personas.md` / `user-personas.md` — User needs this model serves.
-- `governance-court.md` — Detailed Court process (updated in parallel).
-- `sdlc-governance.md` — How SDLC changes are still gated (updated).
-- `runtime-architecture.md` — Dynamic lifecycle details (updated).
+- `governance-court.md` — Detailed Court process.
+- `sdlc-governance.md` — How SDLC changes are still gated.
+- `runtime-architecture.md` — Dynamic lifecycle details.
 - `glossary.md` — New terms added.
 - `../specs/` — Future detailed technical specs (agent-runtime, host-daemon, aegishub, chat-ui, etc.).
 
