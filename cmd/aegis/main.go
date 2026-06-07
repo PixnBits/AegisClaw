@@ -2078,6 +2078,20 @@ func handleHostChannelsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(data)
+	case len(parts) == 1 && r.Method == "POST":
+		id := parts[0]
+		var postReq struct {
+			From    string `json:"from"`
+			Content string `json:"content"`
+		}
+		json.NewDecoder(r.Body).Decode(&postReq)
+		payload := map[string]interface{}{
+			"channel_id": id,
+			"from":      postReq.From,
+			"content":   postReq.Content,
+		}
+		_, _ = sendToComponentViaHub("store", "channel.post", payload)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 	case len(parts) == 2 && parts[1] == "archive" && r.Method == "POST":
 		id := parts[0]
 		_, _ = sendToComponentViaHub("store", "channel.archive", map[string]interface{}{"channel_id": id})
@@ -4654,6 +4668,10 @@ func startOrchestratorCommandReceiver() {
 				resp := map[string]interface{}{"id": id}
 				if err != nil {
 					resp = map[string]interface{}{"error": err.Error()}
+				}
+				// Auto-add the ensured role as participant in the channel (E2E visibility, per plan)
+				if channel != "" {
+					_, _ = sendToComponentViaHub("store", "channel.add_member", map[string]interface{}{"channel_id": channel, "role": role})
 				}
 				_ = client.Reply(context.Background(), hubclient.Message{
 					Source:      requesterID,
