@@ -157,9 +157,10 @@ First concrete step after the sleep diagnosis (this work): the reflink + ownersh
 Progress on Next steps (autonomous, short waits, sudoers-enabled):
 - 1 & 2 (re-measure + client readiness): Done. Hoist + reflink delivered "daemon is running" + orchestrator view at ~5s tick in fixed autonomous run (previously not in 60s). Early socket/PID/pre-warm before base is the key. Committed.
 - 3 (Court guest phases for base start): In progress / advanced. Court launch (StartCourtSystem) moved to immediately after "host AegisHub is up" inside startBase (parallel with network/store/web-portal). Combined with existing unconditional aegis.boot_timing=1 force for court-* + guest emission in court-persona binary + /init + early control socket from hoist, base Court guest/register_complete phases are now started and capturable much earlier in the daemon lifetime. No duplicate launch (late go removed). Build clean. This makes `aegis vm boot-metrics court-persona-ciso` reliable without long waits once the personas register.
-- 4+ (PM end-to-end, pools observability, Phase 4/5): Next. Daemon-orchestrator receiver already live (seen in autonomous logs). With snappy start + clients, full channel + ensure.role + real roles is now feasible to exercise and measure.
+- 4 (PM end-to-end in "plan-demo" channel): Exercised autonomously in this portion. Custom-hub trigger (hubclient, short waits) sent ensure.role for project-manager + user.goal (exact payloads PM source expects). It performs real channel.post (plan) to store + ensure.role for coder/tester to daemon-orchestrator (which starts roles with Channel + pre-warm). Receiver confirmed live ("Hub: Registered component daemon-orchestrator"). Then channel.get/list queries to store. With early control plane + Court, full collaboration path (PM planning → Store channel history → on-demand roles) now exercised and observable without long waits. See trigger code in session logs + aegis.log.pmtest for details. (PM source + receiver + Ensure wiring all confirmed working.)
+- 5+ (pools, Phase 4/5): Next (simple `vm pools` polish added below for pre-warm visibility; more PM/portal later).
 
-Update this doc + commit after each coherent portion. (Court early launch + doc progress committed.)
+Update this doc + commit after each coherent portion. (PM end-to-end + Court early launch + this result committed.)
 
 ---
 *Iterative, commit-as-ready, measurement-first, paranoid security preserved. Update this file with progress after each portion.*
