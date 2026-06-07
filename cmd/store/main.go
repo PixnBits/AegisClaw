@@ -432,6 +432,7 @@ func runStore(cmd *cobra.Command, args []string) {
 	prs := loadFromFile("prs.json")
 	teams := loadFromFile("teams.json")
 	chatSessions := chatstore.New("chat-sessions.json")
+	channels := loadFromFile("channels.json")
 
 	// Phase 2.1a + 2.3 recovery (store-vm.md + event-system.md):
 	// Explicitly load ALL durable timer/ grant state at startup.
@@ -892,6 +893,81 @@ func runStore(cmd *cobra.Command, args []string) {
 				saveToFile("teams.json", teams)
 			}
 			response.Command = "team.message.sent"
+			response.Payload = "ok"
+
+		// === Channels (collaboration model) ===
+		// Minimal primitives for the Slack-inspired model: named persistent spaces
+		// with role/agent membership and message history. Store is the source of truth
+		// (per store-vm.md + collaboration-model.md). History/artifacts/proposals can
+		// be annotated by channel. Later: PM will use these for delegation; UI for roster.
+		// Messages here are the channel log (separate from per-agent chat turns).
+		case "channel.create":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["id"].(string)
+			if _, ok := payload["created_at"]; !ok {
+				payload["created_at"] = response.Timestamp
+			}
+			if _, ok := payload["members"]; !ok {
+				payload["members"] = []interface{}{} // e.g. [{"role":"project-manager","agent_id":"..."}, {"role":"ciso"}]
+			}
+			if _, ok := payload["messages"]; !ok {
+				payload["messages"] = []interface{}{}
+			}
+			channels[id] = payload
+			saveToFile("channels.json", channels)
+			response.Command = "channel.created"
+			response.Payload = map[string]interface{}{"id": id}
+		case "channel.list":
+			list := []interface{}{}
+			for _, c := range channels {
+				list = append(list, c)
+			}
+			response.Command = "channel.list"
+			response.Payload = list
+		case "channel.get":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["id"].(string)
+			response.Command = "channel.data"
+			response.Payload = channels[id]
+		case "channel.join":
+			payload := msg.Payload.(map[string]interface{})
+			chID := payload["channel_id"].(string)
+			member := map[string]interface{}{
+				"role":     payload["role"],
+				"agent_id": payload["agent_id"], // optional for role-based
+				"joined_at": response.Timestamp,
+			}
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				members := []interface{}{}
+				if m, ok := ch["members"].([]interface{}); ok {
+					members = m
+				}
+				members = append(members, member)
+				ch["members"] = members
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.joined"
+			response.Payload = map[string]interface{}{"channel_id": chID}
+		case "channel.post":
+			payload := msg.Payload.(map[string]interface{})
+			chID := payload["channel_id"].(string)
+			entry := map[string]interface{}{
+				"ts":      response.Timestamp,
+				"from":    payload["from"], // user, pm, @role, agent-id etc.
+				"content": payload["content"],
+			}
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				msgs := []interface{}{}
+				if m, ok := ch["messages"].([]interface{}); ok {
+					msgs = m
+				}
+				msgs = append(msgs, entry)
+				ch["messages"] = msgs
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.posted"
 			response.Payload = "ok"
 
 		// Web-portal chat session registry (store-vm.md: Store owns durable structured data).

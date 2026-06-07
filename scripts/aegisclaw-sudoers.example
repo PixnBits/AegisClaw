@@ -14,3 +14,6 @@ YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/build-microvms-docker.sh
 YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/clean-firecracker-rootfs.sh
 YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/create-firecracker-rootfs.sh
 YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/ensure-aegis-dir.sh
+
+Defaults! /home/pixnbits/projects/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING"
+
