@@ -157,7 +157,9 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					chID = c
 				}
 			}
-			plan := fmt.Sprintf("PM Plan for input: %s\n1. Create/use channel '%s'\n2. Ensure roles: @Coder, @Tester, Court for any changes\n3. Delegate tasks via @mentions\n4. Monitor + synthesize\n5. Escalate formal proposal to Court if needed", payloadStr, chID)
+			// Richer PM: use getPMPrompt (which includes workspace SOUL/AGENTS custom instructions) for more dynamic, context-aware plan generation.
+			basePrompt := getPMPrompt()
+			plan := fmt.Sprintf("%s\n\nFor input: %s\n\nStructured Plan for channel '%s':\n1. Create/use channel '%s'\n2. Ensure roles: @Coder, @Tester, Court for any changes\n3. Delegate tasks via @mentions\n4. Monitor + synthesize\n5. Escalate formal proposal to Court if needed", basePrompt, payloadStr, chID, chID)
 			// Demonstrate channel post (real send to Store)
 			postPayload := map[string]interface{}{
 				"channel_id": chID,
