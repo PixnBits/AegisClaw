@@ -8,7 +8,7 @@ const state = {
 
 const PAGE_TITLES = {
   dashboard: 'Dashboard',
-  chat: 'Conversations',
+  channels: 'Channels',
   teams: 'Team Workspace',
   agents: 'Agents',
   skills: 'Skills Registry',
@@ -31,10 +31,16 @@ const elements = {
   currentAgentName: document.getElementById('currentAgentName'),
   currentTraceId: document.getElementById('currentTraceId'),
   recentToolsList: document.getElementById('recentToolsList'),
-  chatStatus: document.getElementById('chatStatus'),
-  messages: document.getElementById('messages'),
-  chatForm: document.getElementById('chatForm'),
-  messageInput: document.getElementById('messageInput'),
+  // channels UI (replaced chat)
+  channelsList: document.getElementById('channelsList'),
+  newChannelForm: document.getElementById('newChannelForm'),
+  newChannelId: document.getElementById('newChannelId'),
+  channelDetail: document.getElementById('channelDetail'),
+  selectedChannelId: document.getElementById('selectedChannelId'),
+  membersList: document.getElementById('membersList'),
+  addMemberForm: document.getElementById('addMemberForm'),
+  newMemberRole: document.getElementById('newMemberRole'),
+  archiveChannelBtn: document.getElementById('archiveChannelBtn'),
 };
 
 async function loadPortalData() {
@@ -49,6 +55,125 @@ async function loadPortalData() {
   renderSkills(skills);
   renderProposals(proposals);
   renderMonitoring(monitoring);
+
+  // load channels for the new channels page (replaces chat)
+  loadChannelsForUI().catch(() => {});
+}
+
+let currentChannel = null;
+
+async function loadChannelsForUI() {
+  try {
+    const data = await fetchJSON('/api/channels');
+    const chs = data.channels || [];
+    renderChannelsList(chs);
+  } catch (e) {
+    console.warn('channels load failed', e);
+  }
+}
+
+function renderChannelsList(chs) {
+  const ul = elements.channelsList;
+  if (!ul) return;
+  ul.innerHTML = '';
+  chs.forEach((ch) => {
+    if (ch.archived) return;
+    const li = document.createElement('li');
+    li.className = 'list-card';
+    const memCount = (ch.members || []).length;
+    li.innerHTML = `<span>${ch.id}</span><small>${memCount} members</small>`;
+    li.onclick = () => selectChannel(ch);
+    ul.appendChild(li);
+  });
+}
+
+async function createChannel(ev) {
+  ev.preventDefault();
+  const idEl = elements.newChannelId;
+  const id = (idEl && idEl.value || '').trim();
+  if (!id) return;
+  try {
+    await fetch('/api/channels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (idEl) idEl.value = '';
+    await loadChannelsForUI();
+  } catch (e) {
+    alert('Create channel failed: ' + e);
+  }
+}
+
+function selectChannel(ch) {
+  currentChannel = ch;
+  if (elements.selectedChannelId) elements.selectedChannelId.textContent = ch.id;
+  if (elements.channelDetail) elements.channelDetail.style.display = 'block';
+  renderMembers(ch.members || []);
+}
+
+function renderMembers(members) {
+  const ul = elements.membersList;
+  if (!ul) return;
+  ul.innerHTML = '';
+  members.forEach((m) => {
+    const li = document.createElement('li');
+    const role = m.role || m.agent_id || 'member';
+    li.textContent = role;
+    const btn = document.createElement('button');
+    btn.textContent = 'Remove';
+    btn.className = 'tiny-danger';
+    btn.onclick = async () => {
+      if (!currentChannel) return;
+      try {
+        await fetch(`/api/channels/${currentChannel.id}/members/remove`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role }),
+        });
+        const fresh = await fetchJSON(`/api/channels/${currentChannel.id}`);
+        currentChannel = fresh;
+        renderMembers(currentChannel.members || []);
+      } catch (e) {
+        alert('Remove failed: ' + e);
+      }
+    };
+    li.appendChild(btn);
+    ul.appendChild(li);
+  });
+}
+
+async function addMember(ev) {
+  ev.preventDefault();
+  if (!currentChannel) return;
+  const role = (elements.newMemberRole && elements.newMemberRole.value || '').trim();
+  if (!role) return;
+  try {
+    await fetch(`/api/channels/${currentChannel.id}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    });
+    if (elements.newMemberRole) elements.newMemberRole.value = '';
+    const fresh = await fetchJSON(`/api/channels/${currentChannel.id}`);
+    currentChannel = fresh;
+    renderMembers(currentChannel.members || []);
+  } catch (e) {
+    alert('Add participant failed: ' + e);
+  }
+}
+
+async function archiveChannel() {
+  if (!currentChannel) return;
+  if (!confirm('Archive this channel?')) return;
+  try {
+    await fetch(`/api/channels/${currentChannel.id}/archive`, { method: 'POST' });
+    if (elements.channelDetail) elements.channelDetail.style.display = 'none';
+    currentChannel = null;
+    await loadChannelsForUI();
+  } catch (e) {
+    alert('Archive failed: ' + e);
+  }
 }
 
 async function fetchJSON(url) {
@@ -499,12 +624,22 @@ function wireRouter() {
 
 async function boot() {
   wireRouter();
-  elements.chatForm.addEventListener('submit', sendMessage);
+  // channels wiring (chat page removed/replaced)
+  if (elements.newChannelForm) {
+    elements.newChannelForm.addEventListener('submit', createChannel);
+  }
+  if (elements.addMemberForm) {
+    elements.addMemberForm.addEventListener('submit', addMember);
+  }
+  if (elements.archiveChannelBtn) {
+    elements.archiveChannelBtn.addEventListener('click', archiveChannel);
+  }
   navigate(activePage());
   try {
     await loadPortalData();
   } catch (error) {
-    elements.chatStatus.textContent = 'Portal data is temporarily unavailable.';
+    // no chatStatus anymore; could log
+    console.warn('Portal data unavailable');
   }
 }
 

@@ -907,8 +907,11 @@ func runStore(cmd *cobra.Command, args []string) {
 			if _, ok := payload["created_at"]; !ok {
 				payload["created_at"] = response.Timestamp
 			}
-			if _, ok := payload["members"]; !ok {
-				payload["members"] = []interface{}{} // e.g. [{"role":"project-manager","agent_id":"..."}, {"role":"ciso"}]
+			if _, ok := payload["members"]; !ok || len(payload["members"].([]interface{})) == 0 {
+				// default to including the project manager
+				payload["members"] = []interface{}{
+					map[string]interface{}{"role": "project-manager", "added_at": response.Timestamp},
+				}
 			}
 			if _, ok := payload["messages"]; !ok {
 				payload["messages"] = []interface{}{}
@@ -926,7 +929,11 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = list
 		case "channel.get":
 			payload := msg.Payload.(map[string]interface{})
-			id := payload["id"].(string)
+			id := ""
+			if v, ok := payload["id"].(string); ok { id = v }
+			if id == "" {
+				if v, ok := payload["channel_id"].(string); ok { id = v }
+			}
 			response.Command = "channel.data"
 			response.Payload = channels[id]
 		case "channel.join":
@@ -970,6 +977,73 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Command = "channel.posted"
 			response.Payload = "ok"
 
+		case "channel.archive":
+			payload := msg.Payload.(map[string]interface{})
+			chID := ""
+			if v, ok := payload["id"].(string); ok { chID = v }
+			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				ch["archived"] = true
+				ch["archived_at"] = response.Timestamp
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.archived"
+			response.Payload = map[string]interface{}{"channel_id": chID}
+
+		case "channel.add_member":
+			payload := msg.Payload.(map[string]interface{})
+			chID := ""
+			if v, ok := payload["id"].(string); ok { chID = v }
+			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			member := map[string]interface{}{
+				"role":     payload["role"],
+				"agent_id": payload["agent_id"],
+				"added_at": response.Timestamp,
+			}
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				members := []interface{}{}
+				if m, ok := ch["members"].([]interface{}); ok {
+					members = m
+				}
+				members = append(members, member)
+				ch["members"] = members
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.member_added"
+			response.Payload = map[string]interface{}{"channel_id": chID}
+
+		case "channel.remove_member":
+			payload := msg.Payload.(map[string]interface{})
+			chID := ""
+			if v, ok := payload["id"].(string); ok { chID = v }
+			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			roleToRemove := ""
+			if v, ok := payload["role"].(string); ok { roleToRemove = v }
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				members := []interface{}{}
+				if m, ok := ch["members"].([]interface{}); ok {
+					members = m
+				}
+				newMembers := []interface{}{}
+				for _, m := range members {
+					if mm, ok := m.(map[string]interface{}); ok {
+						if r, ok := mm["role"].(string); ok && r == roleToRemove {
+							continue
+						}
+					}
+					newMembers = append(newMembers, m)
+				}
+				ch["members"] = newMembers
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.member_removed"
+			response.Payload = map[string]interface{}{"channel_id": chID}
+
+		// default PM in create if missing
+		// (handled in create above by caller, but ensure here too for robustness)
 		// Web-portal chat session registry (store-vm.md: Store owns durable structured data).
 		// Message turns are handled by the agent chat system; the portal persists the
 		// session thread here after each exchange via sessions.save / sessions.history.

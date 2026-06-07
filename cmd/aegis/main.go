@@ -2043,6 +2043,62 @@ func runChannelPost(cmd *cobra.Command, args []string) {
 	fmt.Printf("Posted to channel %s: %+v\n", chID, data)
 }
 
+func handleHostChannelsAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	path := strings.TrimPrefix(r.URL.Path, "/api/channels")
+	path = strings.Trim(path, "/")
+	parts := []string{}
+	if path != "" {
+		parts = strings.Split(path, "/")
+	}
+	switch {
+	case len(parts) == 0 && r.Method == "GET":
+		data, err := sendToComponentViaHub("store", "channel.list", nil)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"channels": data})
+	case len(parts) == 0 && r.Method == "POST":
+		var req struct{ ID string `json:"id"` }
+		json.NewDecoder(r.Body).Decode(&req)
+		payload := map[string]interface{}{"id": req.ID}
+		_, err := sendToComponentViaHub("store", "channel.create", payload)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{"id": req.ID})
+	case len(parts) == 1 && r.Method == "GET":
+		id := parts[0]
+		data, err := sendToComponentViaHub("store", "channel.get", map[string]string{"id": id})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		json.NewEncoder(w).Encode(data)
+	case len(parts) == 2 && parts[1] == "archive" && r.Method == "POST":
+		id := parts[0]
+		_, _ = sendToComponentViaHub("store", "channel.archive", map[string]interface{}{"channel_id": id})
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	case len(parts) == 2 && parts[1] == "members" && r.Method == "POST":
+		id := parts[0]
+		var m struct{ Role string `json:"role"` }
+		json.NewDecoder(r.Body).Decode(&m)
+		_, _ = sendToComponentViaHub("store", "channel.add_member", map[string]interface{}{"channel_id": id, "role": m.Role})
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	case len(parts) == 3 && parts[1] == "members" && parts[2] == "remove" && r.Method == "POST":
+		id := parts[0]
+		var m struct{ Role string `json:"role"` }
+		json.NewDecoder(r.Body).Decode(&m)
+		_, _ = sendToComponentViaHub("store", "channel.remove_member", map[string]interface{}{"channel_id": id, "role": m.Role})
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	default:
+		http.Error(w, "not found", 404)
+	}
+}
+
 func runPMGoal(cmd *cobra.Command, args []string) {
 	if len(args) < 1 {
 		fmt.Println("usage: aegis pm goal <text...> [--channel <id>]")
@@ -4359,6 +4415,10 @@ func startWebPortalProxy(listenAddr, target string) error {
 		// microVM bridge is often unavailable over vsock during boot.
 		if strings.HasPrefix(r.URL.Path, "/api/chat/") {
 			handleHostChatSessionsAPI(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/channels") {
+			handleHostChannelsAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/host/dashboard-stats" {

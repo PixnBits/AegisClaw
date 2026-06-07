@@ -27,7 +27,7 @@
 
         <nav class="primary-nav" aria-label="Primary">
           <button type="button" class="nav-button is-active" data-nav-page="dashboard" data-testid="nav-dashboard">Dashboard</button>
-          <button type="button" class="nav-button" data-nav-page="chat" data-testid="nav-chat">Conversations</button>
+          <button type="button" class="nav-button" data-nav-page="channels" data-testid="nav-channels">Channels</button>
           <button type="button" class="nav-button" data-nav-page="teams" data-testid="nav-teams">Teams</button>
           <button type="button" class="nav-button" data-nav-page="agents" data-testid="nav-agents">Agents</button>
           <button type="button" class="nav-button" data-nav-page="skills" data-testid="nav-skills">Skills</button>
@@ -118,23 +118,43 @@
           </div>
         </section>
 
-        <section id="chatPanel" class="panel content-panel" data-testid="chat-panel" data-page="chat" hidden>
+        <section id="channelsPanel" class="panel content-panel" data-testid="channels-panel" data-page="channels" hidden>
           <div class="panel-heading">
-            <p class="eyebrow">Conversations</p>
-            <h2>Chat with AegisClaw</h2>
+            <p class="eyebrow">Collaboration</p>
+            <h2>Channels</h2>
           </div>
 
-          <div class="chat-status" id="chatStatus" data-testid="chat-status">Ready for a new request.</div>
-          <div id="messages" class="chat-stream" data-testid="messages" aria-live="polite"></div>
+          <div class="channels-toolbar">
+            <form id="newChannelForm" class="inline-form" novalidate>
+              <input id="newChannelId" type="text" placeholder="new-channel-id" required />
+              <button type="submit" class="primary-button" data-testid="create-channel-button">Add Channel</button>
+            </form>
+            <span class="subtle">Defaults to including project-manager</span>
+          </div>
 
-          <form id="chatForm" class="chat-composer" novalidate>
-            <label class="sr-only" for="messageInput">Message</label>
-            <textarea id="messageInput" data-testid="message-input" rows="3" maxlength="2000" placeholder="Describe what you want the agent to do..."></textarea>
-            <div class="composer-actions">
-              <p class="subtle">All browser content stays local to this portal. No external scripts, fonts, or CDNs are used.</p>
-              <button type="submit" class="primary-button" data-testid="send-button">Send</button>
-            </div>
-          </form>
+          <div class="two-column-grid">
+            <article class="subpanel">
+              <div class="subpanel-header">
+                <h3>Channels</h3>
+              </div>
+              <ul id="channelsList" class="list-stack" data-testid="channels-list"></ul>
+            </article>
+
+            <article id="channelDetail" class="subpanel" style="display:none" data-testid="channel-detail">
+              <div class="subpanel-header">
+                <h3 id="selectedChannelId"></h3>
+                <button type="button" class="danger-button" id="archiveChannelBtn" data-testid="archive-channel-button">Archive</button>
+              </div>
+
+              <h4>Members / Participants</h4>
+              <ul id="membersList" class="list-stack" data-testid="members-list"></ul>
+
+              <form id="addMemberForm" class="inline-form" novalidate>
+                <input id="newMemberRole" type="text" placeholder="project-manager or coder or user:alice" required />
+                <button type="submit" class="secondary-button">Add Participant</button>
+              </form>
+            </article>
+          </div>
         </section>
 
         <section id="skillsPanel" class="panel content-panel" data-testid="skills-panel" data-page="skills" hidden>
