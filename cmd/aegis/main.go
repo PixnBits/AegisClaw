@@ -1925,6 +1925,49 @@ func runVMBootMetrics(cmd *cobra.Command, args []string) {
 	fmt.Printf("%+v\n", resp.Data)
 }
 
+// runVMPools lists pre-warmed pooled rootfs copies (the key artifact for the <1s
+// collaboration on-demand path). Works even without a running daemon (direct
+// FS scan of common state dirs). Ties directly to the original question about
+// long sleeps for pre-warm visibility: with reflink + early hoist + chown, these
+// should appear quickly and be claimable (rename, not copy) for agent-/memory-
+// (and future role) VMs.
+func runVMPools(cmd *cobra.Command, args []string) {
+	dirs := []string{
+		"/tmp/aegis",
+		os.ExpandEnv("$HOME/.aegis/state"),
+	}
+	found := 0
+	for _, d := range dirs {
+		pattern := filepath.Join(d, "*-pooled-*.rootfs.img")
+		matches, _ := filepath.Glob(pattern)
+		if len(matches) == 0 {
+			continue
+		}
+		found += len(matches)
+		if jsonOutput {
+			// simple for now
+			continue
+		}
+		fmt.Printf("Pooled copies in %s (%d):\n", d, len(matches))
+		for _, m := range matches {
+			if fi, err := os.Stat(m); err == nil {
+				fmt.Printf("  %s  (%d bytes, mod %s)\n", m, fi.Size(), fi.ModTime().Format("2006-01-02 15:04"))
+			} else {
+				fmt.Printf("  %s\n", m)
+			}
+		}
+	}
+	if found == 0 {
+		fmt.Println("No *-pooled-*.rootfs.img found in common state dirs.")
+		fmt.Println("They are created by the early pre-warm goroutine (reflink fast path + chown for user visibility) on `make start`.")
+		fmt.Println("Claim happens in prepareVMRootfs for agent-/memory- IDs (atomic rename → no 512M copy in hot path).")
+	}
+	if jsonOutput {
+		// minimal
+		fmt.Printf("{\"pooled_count\":%d}\n", found)
+	}
+}
+
 // runVMDiagnose implements `aegis vm diagnose <id>` - a bundled diagnostic snapshot.
 func runVMDiagnose(cmd *cobra.Command, args []string) {
 	vmID := args[0]
@@ -2216,6 +2259,14 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	}
 	bootMetricsCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	vmCmd.AddCommand(bootMetricsCmd)
+
+	poolsCmd := &cobra.Command{
+		Use:   "pools",
+		Short: "List pre-warmed pooled rootfs copies (fast claim for agent/memory <1s path; visible thanks to reflink + early hoist + chown)",
+		Run:   runVMPools,
+	}
+	poolsCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	vmCmd.AddCommand(poolsCmd)
 
 	// Wire full tree (per cli.md + gaps)
 	rootCmd.AddCommand(
