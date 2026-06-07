@@ -4619,6 +4619,28 @@ func startOrchestratorCommandReceiver() {
 			continue
 		}
 		logrus.Info("daemon-orchestrator receiver registered for ensure.role from PM etc.")
+
+		// E2E default per plan (solo-user sensible default "main" channel with PM + Court)
+		// best-effort, idempotent check, created with default PM member in store
+		go func() {
+			time.Sleep(2 * time.Second)
+			listData, _ := sendToComponentViaHub("store", "channel.list", nil)
+			hasMain := false
+			if arr, ok := listData.([]interface{}); ok {
+				for _, c := range arr {
+					if m, ok := c.(map[string]interface{}); ok {
+						if id, ok := m["id"].(string); ok && id == "main" {
+							hasMain = true
+							break
+						}
+					}
+				}
+			}
+			if !hasMain {
+				_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": "main"})
+			}
+		}()
+
 		for {
 			msg, err := client.Receive(context.Background())
 			if err != nil {
