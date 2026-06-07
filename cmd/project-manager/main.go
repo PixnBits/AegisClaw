@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"AegisClaw/internal/bootargs"
@@ -88,6 +89,22 @@ func getPMPrompt() string {
 	return custom + base
 }
 
+func generatePlan(input, chID string) string {
+	base := getPMPrompt() + "\n\nInput: " + input + "\n\nChannel: " + chID + "\n\nStructured Plan:\n"
+	plan := base + "1. Analyze the goal and break into tasks.\n2. Identify required roles (e.g. Coder, Tester, Court for changes).\n3. Create/use channel and ensure roles (default PM included).\n4. Delegate via @mentions and channel posts.\n5. Monitor progress and synthesize results.\n6. Escalate formal proposal to Court if needed.\n"
+	lower := strings.ToLower(input)
+	if strings.Contains(lower, "feature") || strings.Contains(lower, "code") || strings.Contains(lower, "implement") {
+		plan += "- Specific: Coder implements core logic; Tester adds tests and validates.\n"
+	}
+	if strings.Contains(lower, "test") || strings.Contains(lower, "validate") {
+		plan += "- Emphasis on Tester role for coverage and edge cases.\n"
+	}
+	if strings.Contains(lower, "security") || strings.Contains(lower, "risk") {
+		plan += "- Include Court (CISO, Security Architect) for review gate.\n"
+	}
+	return plan
+}
+
 func runProjectManager(cmd *cobra.Command, args []string) {
 	timing.RecordPhase("main_entry")
 
@@ -157,9 +174,8 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					chID = c
 				}
 			}
-			// Richer PM: use getPMPrompt (which includes workspace SOUL/AGENTS custom instructions) for more dynamic, context-aware plan generation.
-			basePrompt := getPMPrompt()
-			plan := fmt.Sprintf("%s\n\nFor input: %s\n\nStructured Plan for channel '%s':\n1. Create/use channel '%s'\n2. Ensure roles: @Coder, @Tester, Court for any changes\n3. Delegate tasks via @mentions\n4. Monitor + synthesize\n5. Escalate formal proposal to Court if needed", basePrompt, payloadStr, chID, chID)
+			// Richer PM: use generatePlan (incorporates getPMPrompt + dynamic analysis of input for "LLM-like" plans).
+			plan := generatePlan(payloadStr, chID)
 			// Demonstrate channel post (real send to Store)
 			postPayload := map[string]interface{}{
 				"channel_id": chID,
