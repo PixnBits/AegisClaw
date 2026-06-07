@@ -10,9 +10,9 @@ AegisClaw is a local-first AI agent platform that runs entirely on your hardware
 
 - ** (vision-and-goals.md)** — Why this project exists and what success looks like
 - ** (user-personas.md)** — Who this platform is built for
-- ** (conversation-model.md)** — How users and agents communicate
+- ** (collaboration-model.md)** — How users, Project Manager, Court personas, and SDLC specialists collaborate in channels with on-demand agents
 - ** (agent-autonomy.md)** — How agents earn increasing levels of trust
-- ** (governance-court.md)** — The five-persona review system
+- ** (governance-court.md)** — The seven-persona review system
 - ** (sdlc-governance.md)** — How the Court controls every code change
 - ** (runtime-architecture.md)** — The minimal daemon and microVM architecture
 - ** (security-model.md)** — The overall security philosophy and guarantees
@@ -30,3 +30,4 @@ This PRD has been restructured and updated based on lessons learned from the fir
 - **[runtime-architecture.md](./runtime-architecture.md)** — Detailed runtime requirements (this index links to all PRD docs)
 - **[../specs/](../specs/)** — Component-level specifications
 - **[glossary.md](./glossary.md)** — All key term definitions
+- **[collaboration-restructure-plan.md](./collaboration-restructure-plan.md)** — Implementation plan and rationale for the multi-agent channels model
