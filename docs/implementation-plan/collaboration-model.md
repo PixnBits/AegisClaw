@@ -116,6 +116,20 @@ This directly enables the "short bounded wait only, no 300s+ external sleeps" ve
 
 Next re-measure (after this commit) will use the fixed binary + same short-wait autonomous procedure and report whether status succeeds early + pooled appear with "Pooled copies now available" / "Background pre-warm complete" much sooner.
 
+**Live result from hoist (fixed binary, autonomous sudo -n + short ~5s ticks only):**
+- Tick 1 (~5s): `./bin/aegis status` (as normal user) succeeded with:
+  "daemon is running"
+    Court personas online: 7
+    Sandbox backends: ready (firecracker)
+    Web portal: active via hardened reverse proxy (localhost:8080) - started by daemon
+    Base infrastructure: launch attempted...
+    Live VM/component view (from orchestrator): ...
+- Monitor captured "Hub: Registered component daemon-orchestrator with version phase1" (the ensure.role receiver from plan Phase 2/3 is live).
+- This is the validation: post-hoist, client control plane was available in ~5s (previously "not running" even after full 60s bounded waits pre-hoist). The early socket/PID + concurrent pre-warm directly solves the symptom that necessitated the 2400s/300s sleeps.
+- (Pooled ls in the first ticks may still lag the absolute first 5s depending on image Ensure + copy time, but the main "daemon visible to clients without long waits" goal for this portion is achieved. Full pooled + metrics on next clean run.)
+
+Update this doc + commit after each coherent portion. (Hoist + this result committed.)
+
 ## Verification (do not introduce long sleeps)
 
 Follow AGENTS.md exactly:
