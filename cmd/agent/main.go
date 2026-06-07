@@ -282,6 +282,17 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		return true
 	}
 
+	if msg.Command == "component.ready" || msg.Command == "sentinel.ready" {
+		_, err := os.Stat("/tmp/aegis-component-ready")
+		ready := err == nil
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source: client.AssignedID(), Destination: msg.Source, Command: "response",
+			Payload: map[string]interface{}{"ready": ready},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		return true
+	}
+
 	tc := &agent.TurnContext{
 		Input:              msg.Payload,
 		Hub:                client,

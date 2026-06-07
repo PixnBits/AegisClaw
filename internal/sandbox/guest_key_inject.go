@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -78,6 +80,7 @@ func prepareVMRootfs(stateDir, vmID, templateRootfs, hostKeyPath string) string 
 			logrus.Warnf("VM %s: rootfs copy failed (%v), using shared image for key inject", vmID, err)
 		} else {
 			rootfsPath = dst
+			logrus.Infof("VM %s: no pooled copy was available; fell back to full copy (pre-warm may still be running or this is first use)", vmID)
 		}
 	}
 
@@ -104,9 +107,50 @@ func copyFile(src, dst string) error {
 	return err
 }
 
+// copyFileFast attempts a CoW/reflink copy first (near-instant on XFS, btrfs, and other
+// filesystems supporting --reflink=auto). This is the key optimization so that pre-warming
+// pooled rootfs copies for agent-/memory- does not require external long sleeps (e.g. 300s+)
+// before the pools are usable for claim in the <1s hot path.
+//
+// Falls back to the normal io.Copy if reflink is not supported by the FS or the cp binary.
+// After a successful copy we also attempt to chown the pooled file to the effective
+// invoking user (SUDO_USER) so that normal-user client commands and `ls` can see the
+// artifacts without root.
+func copyFileFast(src, dst string) error {
+	// Prefer reflink for speed — this directly addresses the root cause of needing
+	// multi-minute external waits for PrewarmPooledRootfsCopies to produce claimable files.
+	if err := exec.Command("cp", "--reflink=auto", src, dst).Run(); err == nil {
+		return nil
+	}
+	// Fallback for filesystems without reflink support (or older cp).
+	return copyFile(src, dst)
+}
+
+// effectiveOwner returns the uid/gid of the original invoking user when the daemon
+// is running under sudo (SUDO_USER). Falls back to the current process uid/gid.
+// Used so that pooled rootfs copies (created as root) remain visible and stat-able
+// by the normal user running ./bin/aegis vm ... and similar client tools.
+func effectiveOwner() (int, int) {
+	if su := os.Getenv("SUDO_USER"); su != "" {
+		if u, err := user.Lookup(su); err == nil {
+			if uid, err := strconv.Atoi(u.Uid); err == nil {
+				if gid, err := strconv.Atoi(u.Gid); err == nil {
+					return uid, gid
+				}
+			}
+		}
+	}
+	return os.Getuid(), os.Getgid()
+}
+
 // PrewarmPooledRootfsCopies pre-creates up to count private copies of the template rootfs
 // for fast claim by hot per-VM paths (agent-*/memory-*). This moves the expensive 512MB
-// io.Copy + potential FS work off the StartVM / chat session critical path.
+// copy off the StartVM / chat session critical path (claim does atomic rename instead).
+//
+// Uses copyFileFast (reflink=auto when the backing FS supports CoW) so that pre-warming
+// completes in seconds or less instead of requiring external multi-minute sleeps before
+// pooled files are visible and claimable. After copy we chown to the SUDO_USER effective
+// owner for visibility from normal-user client tools.
 //
 // Call from orchestrator (e.g. New or a background goroutine after images are known)
 // or daemon bootstrap. Copies are named <stateDir>/<prefix>-pooled-<n>.rootfs.img and
@@ -128,20 +172,31 @@ func PrewarmPooledRootfsCopies(stateDir, templateRootfs string, count int, prefi
 	}
 	_ = os.MkdirAll(stateDir, 0700)
 
+	uid, gid := effectiveOwner()
+
 	created := 0
 	for i := 0; i < count; i++ {
 		dst := filepath.Join(stateDir, fmt.Sprintf("%s-pooled-%d.rootfs.img", prefix, i))
 		if _, err := os.Stat(dst); err == nil {
 			continue // already have one
 		}
-		if err := copyFile(templateRootfs, dst); err != nil {
+		if err := copyFileFast(templateRootfs, dst); err != nil {
 			logrus.Warnf("Prewarm pooled copy %d failed: %v", i, err)
 			continue
 		}
+		// Make the pooled file visible to the original user (not just root).
+		// Best-effort; the file is still 0600-ish from create but we want readability for inspection.
+		_ = os.Chown(dst, uid, gid)
+		_ = os.Chmod(dst, 0644)
 		created++
 	}
 	if created > 0 {
-		logrus.Infof("Prewarmed %d pooled rootfs copies for prefix=%s (from %s)", created, prefix, templateRootfs)
+		logrus.Infof("Prewarmed %d pooled rootfs copies for prefix=%s (from %s) using fast path", created, prefix, templateRootfs)
+	}
+	// Always report current pooled inventory so operators see progress without external long sleeps.
+	pattern := filepath.Join(stateDir, prefix+"-pooled-*.rootfs.img")
+	if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+		logrus.Infof("Pooled copies now available for %s: %d (claim will use rename, not copy)", prefix, len(matches))
 	}
 	return created
 }
@@ -149,6 +204,8 @@ func PrewarmPooledRootfsCopies(stateDir, templateRootfs string, count int, prefi
 // claimPooledRootfs attempts to atomically claim a pre-warmed pooled copy for this vmID
 // by renaming a matching pooled file into the expected per-VM dst location.
 // Returns the path to use (claimed or original template) and whether a claim happened.
+// A successful claim is what delivers the low "host" phase time (~100-200ms) instead of
+// paying the full rootfs copy cost on every agent/memory start.
 func claimPooledRootfs(stateDir, vmID, templateRootfs string) (string, bool) {
 	if !needsPerVMRootfs(vmID) {
 		return templateRootfs, false

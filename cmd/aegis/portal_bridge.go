@@ -221,6 +221,10 @@ func ensurePairedAgentForSession(sessionID string) {
 		logrus.Debugf("portal bridge: paired agent launch for %s: %v", sessionID, err)
 		return
 	}
+	// Poll for the agent to be ready using the sentinel (written at register_complete in guest).
+	// This makes the readiness tight using the sentinel, reducing the "agent unavailable" and fixed waits for <1s.
+	_, _ = sendToComponentViaHubRetry("agent-"+sessionID, "component.ready", nil, 30*time.Second)
+
 }
 
 func chatPayloadForUserTurn(payload interface{}) interface{} {

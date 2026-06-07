@@ -45,7 +45,11 @@ func reconcileGuestHubBridges() {
 	if cfg == nil || orchestrator == nil || cfg.SandboxType != config.Firecracker {
 		return
 	}
-	time.Sleep(5 * time.Second)
+	// Short initial delay only (was 5s). Individual bridge dial loops already use
+	// 100ms/200ms retries with long timeouts, and session bridges are started early
+	// via startGuestHubBridgesForSession. This keeps reconcile from adding unnecessary
+	// wall time before "ready for use" feel after make start.
+	time.Sleep(200 * time.Millisecond)
 	vms, err := orchestrator.ListVMs(context.Background())
 	if err != nil {
 		return

@@ -510,6 +510,10 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		// Wait for PID file + control socket to be ready.
 		// On Linux we use an abstract socket (no filesystem entry), so we
 		// detect readiness by attempting a dial instead of os.Stat.
+		// Note: pre-warm (reflink copies + Court base VMs) continues in background
+		// goroutines after this signal; the 15s budget is for the control plane.
+		// With fast pre-warm, useful pooled copies are typically available within
+		// a short time after "daemon started" (no 300s+ external sleeps required).
 		const maxWait = 150 // 15 seconds
 		for i := 0; i < maxWait; i++ {
 			pidReady := false
@@ -541,8 +545,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 		fmt.Println("timeout waiting for daemon to start")
 		fmt.Println("The daemon may still be initializing in the background.")
+		fmt.Println("Pre-warm of agent/memory pooled rootfs copies is running asynchronously (fast reflink path).")
 		fmt.Println("Check status with: ./bin/aegis status")
-		fmt.Println("Or view logs: sudo tail -n 50 /root/.aegis/daemon.log")
+		fmt.Println("Or view logs: sudo tail -n 50 /root/.aegis/daemon.log (or aegis.log in cwd for foreground)")
 		// Do not hard-fail the parent; the child may still be healthy.
 		// os.Exit(1) would be misleading when the daemon actually started.
 		return
@@ -600,7 +605,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	// Explicit early pre-warm for agent/memory pools (after base ensures known image layout).
 	// This guarantees claimable pooled copies exist before first on-demand paired/role spawn,
-	// so StartPaired/Ensure hit the fast rename+inject path (no 512M io.Copy in hot path).
+	// so StartPaired/Ensure hit the fast rename+inject path (no 512M copy in hot path).
+	// Now uses reflink fast path + chown-to-SUDO_USER so pools become usable/visible quickly
+	// (seconds, not minutes) without external long sleeps in measurement commands.
 	// Run in goroutine so it does not block the readiness signal (PID + socket) that the
 	// parent wrapper waits for (15s budget); pools will be ready shortly after "daemon started".
 	// Use the same EnsureBootableRootfsImage as StartVM to get the canonical template (handles
@@ -613,6 +620,12 @@ func startDaemon(cmd *cobra.Command, args []string) {
 						_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, template, 2, comp)
 					}
 				}
+			}
+			// Final visibility: count what actually exists now. This (plus the per-prefix
+			// logs from Prewarm) lets operators confirm pooled claim is possible shortly
+			// after "daemon started" without multi-minute external sleeps in test commands.
+			if matches, _ := filepath.Glob(filepath.Join(cfg.StateDir, "*-pooled-*.rootfs.img")); len(matches) > 0 {
+				logrus.Infof("Background pre-warm complete: %d pooled rootfs files available for fast agent/memory claim", len(matches))
 			}
 		}
 	}()
