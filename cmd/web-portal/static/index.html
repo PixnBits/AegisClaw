@@ -48,20 +48,16 @@
     </header>
 
     <main class="workspace-grid">
-      <aside class="panel sidebar-panel" data-testid="conversations-panel">
+      <aside class="panel sidebar-panel" data-testid="channels-sidebar">
         <div class="panel-heading">
-          <p class="eyebrow">Conversations</p>
-          <h2>All Chats</h2>
+          <p class="eyebrow">Collaboration</p>
+          <h2>Channels</h2>
         </div>
-        <ul id="conversationList" class="list-stack compact-list">
-          <li class="list-card active"><span>researcher</span><small>Working on Zig analysis</small></li>
-          <li class="list-card"><span>analyst</span><small>Idle</small></li>
-          <li class="list-card"><span>general</span><small>Monitoring emails</small></li>
-        </ul>
+        <ul id="sidebarChannelsList" class="list-stack compact-list" data-testid="sidebar-channels-list"></ul>
         <div class="panel-subsection">
           <p class="eyebrow">Quick Actions</p>
           <div class="button-stack">
-            <button type="button" class="primary-button" data-testid="new-chat-button">New Chat</button>
+            <button type="button" class="primary-button" data-testid="new-channel-button">New Channel</button>
             <button type="button" class="secondary-button">New Team</button>
             <button type="button" class="secondary-button" data-testid="propose-skill-button">Propose Skill</button>
           </div>

@@ -58,6 +58,7 @@ async function loadPortalData() {
 
   // load channels for the new channels page (replaces chat)
   loadChannelsForUI().catch(() => {});
+  loadSidebarChannels().catch(() => {});
 }
 
 let currentChannel = null;
@@ -85,6 +86,26 @@ function renderChannelsList(chs) {
     li.onclick = () => selectChannel(ch);
     ul.appendChild(li);
   });
+}
+
+function loadSidebarChannels() {
+  fetchJSON('/api/channels').then(data => {
+    const ul = document.getElementById('sidebarChannelsList');
+    if (!ul) return;
+    ul.innerHTML = '';
+    (data.channels || []).forEach((ch) => {
+      if (ch.archived) return;
+      const li = document.createElement('li');
+      li.className = 'list-card';
+      const memCount = (ch.members || []).length;
+      li.innerHTML = `<span>${ch.id}</span><small>${memCount} members</small>`;
+      li.onclick = () => {
+        location.hash = 'channels';
+        // simple: after nav, the page load will handle; for demo, user can click in main list
+      };
+      ul.appendChild(li);
+    });
+  }).catch(() => {});
 }
 
 async function createChannel(ev) {
@@ -682,6 +703,12 @@ async function boot() {
   const channelPostForm = document.getElementById('channelPostForm');
   if (channelPostForm) {
     channelPostForm.addEventListener('submit', postToChannel);
+  }
+  const newChBtn = document.querySelector('[data-testid="new-channel-button"]');
+  if (newChBtn) {
+    newChBtn.addEventListener('click', () => {
+      location.hash = 'channels';
+    });
   }
   navigate(activePage());
   try {
