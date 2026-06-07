@@ -2043,6 +2043,56 @@ func runChannelPost(cmd *cobra.Command, args []string) {
 	fmt.Printf("Posted to channel %s: %+v\n", chID, data)
 }
 
+func runPMGoal(cmd *cobra.Command, args []string) {
+	if len(args) < 1 {
+		fmt.Println("usage: aegis pm goal <text...> [--channel <id>]")
+		return
+	}
+	goalText := strings.Join(args, " ")
+	chID, _ := cmd.Flags().GetString("channel")
+	if chID == "" {
+		chID = "plan-demo"
+	}
+	// 1. Ensure the project-manager role (starts the PM VM with channel attachment)
+	ensurePayload := map[string]interface{}{
+		"role":    "project-manager",
+		"channel": chID,
+	}
+	_, err := sendToComponentViaHub("daemon-orchestrator", "ensure.role", ensurePayload)
+	if err != nil {
+		fmt.Printf("pm ensure error: %v\n", err)
+		return
+	}
+	fmt.Printf("Ensured project-manager for channel %s\n", chID)
+	// Give PM time to boot and register (short wait, per plan)
+	time.Sleep(20 * time.Second)
+	// 2. Send the goal (PM will build plan using getPMPrompt, post to channel, ensure roles)
+	goalPayload := map[string]interface{}{
+		"goal":    goalText,
+		"channel": chID,
+	}
+	_, err = sendToComponentViaHub("project-manager", "user.goal", goalPayload)
+	if err != nil {
+		fmt.Printf("pm goal error: %v\n", err)
+		return
+	}
+	fmt.Printf("Sent goal to project-manager for channel %s\n", chID)
+	// Give PM time to process, post plan, ensure roles (short wait)
+	time.Sleep(15 * time.Second)
+	// 3. Inspect the channel to see the plan post (and any role activity)
+	data, err := sendToComponentViaHub("store", "channel.get", map[string]string{"channel_id": chID})
+	if err != nil {
+		fmt.Printf("channel get error: %v\n", err)
+		return
+	}
+	if jsonOutput {
+		b, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("Channel %s after PM goal:\n%+v\n", chID, data)
+}
+
 // runVMDiagnose implements `aegis vm diagnose <id>` - a bundled diagnostic snapshot.
 func runVMDiagnose(cmd *cobra.Command, args []string) {
 	vmID := args[0]
@@ -2265,6 +2315,21 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	}
 	channelCmd.AddCommand(channelListCmd, channelGetCmd, channelPostCmd)
 
+	// PM (Project Manager) commands for direct E2E triggering (plan Phase 3/5)
+	pmCmd := &cobra.Command{
+		Use:   "pm",
+		Short: "Project Manager commands (trigger plans, visible in channels)",
+	}
+	pmGoalCmd := &cobra.Command{
+		Use:   "goal <text...>",
+		Short: "Send a goal to the Project Manager (triggers plan using custom prompt, channel.post, ensure roles)",
+		Args:  cobra.MinimumNArgs(1),
+		Run:   runPMGoal,
+	}
+	pmGoalCmd.Flags().String("channel", "", "Target channel (default: plan-demo)")
+	pmGoalCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	pmCmd.AddCommand(pmGoalCmd)
+
 	// Skills & Governance
 	skillsCmd := &cobra.Command{Use: "skills", Short: "Skill lifecycle and proposals"}
 	skillsProposeCmd := &cobra.Command{Use: "propose", Short: "Propose a new skill (opens Court flow)", Run: runSkillsPropose}
@@ -2375,6 +2440,7 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 		autonomyCmd,
 		teamCmd,
 		channelCmd,
+		pmCmd,
 		skillsCmd, courtCmd,
 		auditCmd, secretsCmd,
 		builderCmd,
