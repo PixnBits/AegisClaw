@@ -37,7 +37,7 @@ When performing tasks that require privileged operations (daemon lifecycle, micr
   - The **complete error/rejection output** (stdout + stderr) — e.g. "sudo: a password is required", "interactive authentication required", "Sorry, user ... may not run sudo ...", permission denied on the binary, etc.
 
 - **On sudo authentication or permission failure (password required, etc.):**
-  - Do **not** immediately give up or skip the operation (especially E2E/daemon-dependent tests).
+  - **Do not** immediately give up or skip the operation (especially E2E/daemon-dependent tests).
   - Proactively update `scripts/aegisclaw-sudoers.example` to add the exact failing command (following the existing pattern for `bin/aegis` and scripts like `build-microvms-docker.sh`, `create-firecracker-rootfs.sh`, etc.).
   - Provide the user with clear, copy-paste instructions to install the updated rules:
     ```
@@ -94,14 +94,31 @@ After review, stop the daemon normally (`./bin/aegis stop` or Ctrl+C in foregrou
 
 ## Running Tests (After Starting the Daemon Where Required)
 
+See `docs/testing-standards.md` for the authoritative testing strategy, recommended layers, and LLM-specific guidance.
+
+Quick reference:
 - Unit tests (safe, no daemon needed): `make test` or `go test ./...`
 - Integration tests that exercise the running daemon: `make test-integration`
 - E2E / Playwright tests (web portal): `make test-e2e` or `npm test`
-- Collaboration / LLM E2E (real unmocked, requires daemon + Ollama): `make test-e2e-llm` or `bash scripts/verify-pm-llm-e2e.sh` (see the script for details on model and existing-daemon vs isolated modes).
+- Collaboration / LLM E2E (real unmocked, requires daemon + Ollama): `make test-e2e-llm` or `bash scripts/verify-pm-llm-e2e.sh`
+- Smoke test after start: `make smoke`
 
-**Critical:** Many E2E and integration tests (including `test-e2e`, `test-e2e-llm`, smoke, and collaboration features) **require the full daemon + Hub + microVMs + Court + base infrastructure to be running**. Use `make start` (or the foreground variant for debugging) per the Start/Stop Controls and the "Agent Behavior for Sudo..." section above. 
+**Critical for LLM Agents:**
+Many E2E and integration tests (including `test-e2e`, `test-e2e-llm`, smoke, and collaboration features) **require the full daemon + Hub + microVMs + Court + base infrastructure to be running**. Use `make start` (or the foreground variant for debugging) per the Start/Stop Controls. 
 
-**Do not skip E2E tests** simply because they involve sudo or starting the daemon. The purpose of `test-e2e-llm`, the verify script, smoke after start, etc. is to validate the real user experience (including channels, Project Manager driving real LLM plans into channels, role ensures, boot metrics, etc.). Follow the sudo setup process described earlier to get `sudo -n` working for the required commands rather than falling back to contract-only fixtures or unit tests. Run `make start` explicitly when E2E is in scope.
+**Do not skip E2E tests** simply because they involve sudo or starting the daemon. The purpose of `test-e2e-llm`, the verify script, smoke after start, etc. is to validate the real user experience (including channels, Project Manager driving real LLM plans into channels, role ensures, boot metrics, etc.). Follow the sudo setup process described earlier to get `sudo -n` working for the required commands rather than falling back to contract-only fixtures or unit tests.
+
+## LLM Agent Guidance When Working on This Project
+
+This is a microVM + Firecracker project. Most LLMs have limited training data on vsock, custom rootfs images, pre-warm pools, component registration via AegisHub, and the specific startup sequencing used here. Therefore:
+
+- Treat `docs/testing-standards.md` as required reading before making changes that affect daemon startup, pre-warm logic, channels, or the Project Manager.
+- Always run `make smoke` and inspect `aegis status` + `aegis vm pools` early when working on startup, lifecycle, or collaboration features.
+- Prefer `make test-e2e-contract` for rapid iteration on portal/API surfaces.
+- Use `make test-e2e-llm` as the primary verification for collaboration model work. It should demonstrate real LLM output appearing in channels.
+- Explicitly assert on startup health invariants in tests you create or modify (see `docs/testing-standards.md` for the list).
+- When you discover or fix a bug related to startup, pre-warm, or component registration, add or improve an automated test that would have caught it.
+- Update `docs/testing-standards.md` and this file when the definition of "healthy system" changes.
 
 ## Other Common Commands
 
@@ -116,6 +133,6 @@ See the Makefile for the full list of targets and the current implementation of 
 ## Golden Rules
 
 - Never start or stop the daemon except via the exact mechanisms documented here.
-- When in doubt while working on this branch, re-read this file before issuing any privileged or lifecycle command.
-- Full user journeys (especially those involving Court, Builder, and real microVMs) can only be meaningfully tested with the daemon actually running.
+- When in doubt while working on this branch, re-read this file and `docs/testing-standards.md` before issuing any privileged or lifecycle command.
+- Full user journeys (especially those involving Court, Builder, channels, and real microVMs) can only be meaningfully tested with the daemon actually running.
 - For any privileged operation (especially `make start` / `aegis start` to unblock E2E tests), follow the "Agent Behavior for Sudo and Privileged Commands" section: attempt with `sudo -n`, report exact command + full rejection output, proactively extend `scripts/aegisclaw-sudoers.example` and give the user installation instructions, then re-try. Do not skip E2E or daemon-dependent work due to sudo friction.
