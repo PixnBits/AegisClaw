@@ -23,6 +23,36 @@ The Host Daemon **must** run as root on Linux (for Firecracker microVMs and priv
   ```
   (Adjust paths and be extremely careful with NOPASSWD rules.)
 
+## Agent Behavior for Sudo and Privileged Commands
+
+When performing tasks that require privileged operations (daemon lifecycle, microVM builds, rootfs preparation, E2E tests that depend on a running daemon, etc.):
+
+- **Always attempt the sudo commands first.** The environment *may* already have the exact commands allowed via passwordless (NOPASSWD) rules matching `scripts/aegisclaw-sudoers.example`. Use the documented mechanisms:
+  - Prefer `make start`, `make start-foreground`, `make build-microvms`, `make test-e2e*`, etc.
+  - For direct control use `sudo -n ./bin/aegis start ...` (the `-n` is important for non-interactive attempts).
+  - The Makefile and scripts already use `sudo -n` where appropriate for start and certain build/clean steps.
+
+- **Report every attempt precisely.** If a sudo command fails or is rejected, immediately surface:
+  - The **exact full command** that was executed (including all flags, paths, and environment variables).
+  - The **complete error/rejection output** (stdout + stderr) — e.g. "sudo: a password is required", "interactive authentication required", "Sorry, user ... may not run sudo ...", permission denied on the binary, etc.
+
+- **On sudo authentication or permission failure (password required, etc.):**
+  - Do **not** immediately give up or skip the operation (especially E2E/daemon-dependent tests).
+  - Proactively update `scripts/aegisclaw-sudoers.example` to add the exact failing command (following the existing pattern for `bin/aegis` and scripts like `build-microvms-docker.sh`, `create-firecracker-rootfs.sh`, etc.).
+  - Provide the user with clear, copy-paste instructions to install the updated rules:
+    ```
+    # Edit YOURUSER and full absolute paths in scripts/aegisclaw-sudoers.example first
+    sudo cp scripts/aegisclaw-sudoers.example /etc/sudoers.d/aegisclaw
+    sudo chmod 440 /etc/sudoers.d/aegisclaw
+    sudo visudo -c   # validate; must succeed with no errors
+    ```
+  - Also consider adding `Defaults` lines for env_keep (e.g. `AEGIS_BOOT_TIMING`, `AEGIS_DEFAULT_MODEL`, `AEGIS_HUB_SOCKET`, etc.) if the command needs them under sudo.
+  - After the user applies the rules (or if you can apply them in the current context), re-attempt the exact command.
+
+- **Prioritize running the daemon for E2E tests.** Explicitly run the aegis start command (via `make start` / `sudo -n ./bin/aegis start --foreground` etc.) when E2E, smoke, integration, or collaboration-model tests are needed. Do **not** skip `make test-e2e`, `make test-e2e-llm`, `make smoke`, `scripts/verify-pm-llm-e2e.sh`, or similar just because sudo is involved. Full user journeys (especially channels, Project Manager + real LLM, Court, on-demand roles, boot metrics) require the actual daemon + microVMs + Hub to be running. Persist through sudo setup if necessary to enable these tests. Use the E2E scripts' built-in support for existing daemons or isolated runs where possible, but get a real daemon up.
+
+- When in doubt, re-read this section and the Start/Stop Controls before deciding to skip privileged steps. The goal is to exercise the real system.
+
 **Environment variables under sudo:**
 - The daemon no longer requires you to manually export `AEGIS_ROOTFS_DIR` and `AEGIS_KERNEL_PATH` through sudo in most cases.
 - When started via `sudo`, it automatically detects the original user via `SUDO_USER` and prefers that user's `~/.aegis/firecracker/` directory for kernels and images.
@@ -67,8 +97,11 @@ After review, stop the daemon normally (`./bin/aegis stop` or Ctrl+C in foregrou
 - Unit tests (safe, no daemon needed): `make test` or `go test ./...`
 - Integration tests that exercise the running daemon: `make test-integration`
 - E2E / Playwright tests (web portal): `make test-e2e` or `npm test`
+- Collaboration / LLM E2E (real unmocked, requires daemon + Ollama): `make test-e2e-llm` or `bash scripts/verify-pm-llm-e2e.sh` (see the script for details on model and existing-daemon vs isolated modes).
 
-Many E2E and integration tests require the full daemon + Hub + components to be running first (use `make start` per the rules above). The thin web-portal binary can be exercised in isolation via its own test fixtures for contract-level checks.
+**Critical:** Many E2E and integration tests (including `test-e2e`, `test-e2e-llm`, smoke, and collaboration features) **require the full daemon + Hub + microVMs + Court + base infrastructure to be running**. Use `make start` (or the foreground variant for debugging) per the Start/Stop Controls and the "Agent Behavior for Sudo..." section above. 
+
+**Do not skip E2E tests** simply because they involve sudo or starting the daemon. The purpose of `test-e2e-llm`, the verify script, smoke after start, etc. is to validate the real user experience (including channels, Project Manager driving real LLM plans into channels, role ensures, boot metrics, etc.). Follow the sudo setup process described earlier to get `sudo -n` working for the required commands rather than falling back to contract-only fixtures or unit tests. Run `make start` explicitly when E2E is in scope.
 
 ## Other Common Commands
 
@@ -85,3 +118,4 @@ See the Makefile for the full list of targets and the current implementation of 
 - Never start or stop the daemon except via the exact mechanisms documented here.
 - When in doubt while working on this branch, re-read this file before issuing any privileged or lifecycle command.
 - Full user journeys (especially those involving Court, Builder, and real microVMs) can only be meaningfully tested with the daemon actually running.
+- For any privileged operation (especially `make start` / `aegis start` to unblock E2E tests), follow the "Agent Behavior for Sudo and Privileged Commands" section: attempt with `sudo -n`, report exact command + full rejection output, proactively extend `scripts/aegisclaw-sudoers.example` and give the user installation instructions, then re-try. Do not skip E2E or daemon-dependent work due to sudo friction.
