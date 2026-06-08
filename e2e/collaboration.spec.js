@@ -3,7 +3,9 @@ import { test, expect } from '@playwright/test';
 // Real daemon E2E for collaboration model (channels + PM + LLM posts).
 // Run as part of make test-e2e-llm (after CLI pm goal has posted to channel).
 // Skips in fixture mode; use real daemon + portal at :8080.
+// Also skipped unless AEGIS_E2E_COLLAB_BROWSER=1 (set by verify script after CLI trigger).
 test.skip(!!process.env.AEGIS_E2E_FIXTURE, 'Collaboration browser checks require real daemon (use make test-e2e-llm after start)');
+test.skip(!process.env.AEGIS_E2E_COLLAB_BROWSER, 'Invoked only from verify-pm-llm-e2e.sh after CLI pm goal (sets the env)');
 
 test.describe('Collaboration E2E (browser verification of channels/PM posts)', () => {
   test('Channels UI shows PM plan post (after CLI pm goal with E2E-LLM-VERIFY)', async ({ page }) => {

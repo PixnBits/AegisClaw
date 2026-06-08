@@ -203,7 +203,7 @@ echo "=== Check default 'main' channel (E2E auto-create + Court) ==="
 if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
   echo
   echo "=== Browser E2E verification of channels UI (PM plan post visible in portal) ==="
-  npx @playwright/test test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors)"
+  AEGIS_E2E_COLLAB_BROWSER=1 npx @playwright/test test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors)"
 else
   echo
   echo "=== Skipping browser E2E (forced isolated mode uses custom hub; browser assumes standard daemon/portal after 'make start')"
