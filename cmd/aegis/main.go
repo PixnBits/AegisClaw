@@ -26,6 +26,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,7 +77,13 @@ func sendToComponentViaHubContext(ctx context.Context, target string, cmd string
 	}
 	defer client.Close()
 
-	requesterID := fmt.Sprintf("aegis-daemon-temp-%d", time.Now().UnixNano())
+	// Use sequential "daemon-internal-N" instead of per-nano "aegis-daemon-temp-N".
+	// This prevents log spam / "flood of unique temps" when many internal sends happen
+	// (CLI polling status during slow base boot, retry loops in sendTo...Retry, the
+	// receiver's E2E auto-main channel setup, channel_count in status, etc.).
+	// Registrations now look like "daemon-internal-1", "daemon-internal-2" — expected
+	// and easy to filter in hub logs.
+	requesterID := fmt.Sprintf("daemon-internal-%d", atomic.AddUint64(&daemonInternalSeq, 1))
 	_, err = client.Register(ctx, requesterID, pub, "phase1")
 	if err != nil {
 		return nil, err
@@ -237,6 +244,15 @@ var (
 	// hubLogFile holds the open handle to aegishub.log so we can close it cleanly
 	// on hub restart or daemon shutdown (best-effort).
 	hubLogFile *os.File
+
+	// daemonInternalSeq provides stable sequential IDs for internal daemon-to-component
+	// hub messages (via sendToComponentViaHub). This replaces the previous per-call
+	// time.Now().UnixNano() "aegis-daemon-temp-N" scheme, which produced a flood of
+	// unique-looking temporary registrations in hub logs (especially when users poll
+	// `aegis status` or other CLI during slow startup, or during retry loops).
+	// Now shows as "daemon-internal-1", "daemon-internal-2", ... which is much less alarming
+	// and easier to correlate in logs.
+	daemonInternalSeq uint64
 )
 
 // SocketRequest / SocketResponse: enriched JSON protocol for Task 6.1.2+ (structured, validated, future-proof).
@@ -855,7 +871,7 @@ func stopDaemon(cmd *cobra.Command, args []string) {
 func statusDaemon(cmd *cobra.Command, args []string) {
 	base := map[string]interface{}{
 		"daemon":                "running",
-		"court_personas_online": 7, // 7 personas per governance spec (simulated/fixture until full Court bootstrap)
+		"court_personas_online": 0,
 		"sandbox_backends":      "ready (" + string(cfg.SandboxType) + ")",
 		"web_portal":            "active via hardened reverse proxy (localhost:8080) - started by daemon",
 		"base_infrastructure":   "launch attempted (AegisHub + real Firecracker microVMs for Network Boundary / Store / Web Portal)",
@@ -870,6 +886,36 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 		}
 		fmt.Println("daemon is not running")
 		return
+	}
+
+	// Compute real Court count from live orchestrator view (no more hardcoded 7 placeholder).
+	// This makes "Court personas online" accurate even during/after early parallel Court launch.
+	courtCount := 0
+	if vmsResp, err := sendSocketRequest("vm.list", nil, false); err == nil && vmsResp.OK && vmsResp.Data != nil {
+		if arr, ok := vmsResp.Data.([]interface{}); ok {
+			for _, item := range arr {
+				if m, ok := item.(map[string]interface{}); ok {
+					id := getMapString(m, "id", "ID")
+					if strings.HasPrefix(id, "court-persona-") {
+						courtCount++
+					}
+				}
+			}
+		}
+	}
+	base["court_personas_online"] = courtCount
+
+	// Make base_infrastructure status reflect whether store (the collaboration backbone)
+	// is actually responding. Prevents the previous "launch attempted" lie when guests
+	// launched but didn't register/bridge in time.
+	storeReady := false
+	if _, err := sendToComponentViaHub("store", "channel.list", nil); err == nil {
+		storeReady = true
+	}
+	if storeReady {
+		base["base_infrastructure"] = "ready (AegisHub + Network Boundary + Store + Web Portal)"
+	} else {
+		base["base_infrastructure"] = "launch attempted (store not yet responding — see logs for guest boot/bridge)"
 	}
 
 	if jsonOutput {
@@ -4105,6 +4151,17 @@ func startBaseInfrastructure() error {
 		orchestrator.RegisterAuxComponent("store", "store", nil, nil)
 	}
 
+	// Wait for store to be responsive before continuing with web-portal and declaring
+	// "base infrastructure launch sequence complete". This is critical for collaboration
+	// (channels, PM ensures, auto-main, etc. all go through store). The retry will
+	// tolerate the guest boot + bridge connect + store binary register time.
+	// If this times out, start will fail with a clear error (instead of "launch attempted"
+	// but store unreachable, which made the system appear hung/not usable).
+	if _, err := sendToComponentViaHubRetry("store", "channel.list", nil, 45*time.Second); err != nil {
+		return fmt.Errorf("store VM did not become ready (check fc-store-*-console.log, guest hub bridge reconnects, and that the store binary registered on hub): %w", err)
+	}
+	logrus.Info("Store is up and responsive to hub requests")
+
 	// 5. Web Portal (presentation only; must be daemon-mediated per spec).
 	// MUST run as real Firecracker microVM per paranoid security model.
 	// No thin host child fallback is allowed.
@@ -4635,10 +4692,12 @@ func startOrchestratorCommandReceiver() {
 		logrus.Info("daemon-orchestrator receiver registered for ensure.role from PM etc.")
 
 		// E2E default per plan (solo-user sensible default "main" channel with PM + Court)
-		// best-effort, idempotent check, created with default PM member in store
+		// Use retry so this waits for store to actually be up and registered (base infra
+		// may still be booting when the receiver starts). Prevents silent failure of the
+		// "main" auto-create if timing is unlucky. Uses the improved daemon-internal seq IDs.
 		go func() {
 			time.Sleep(2 * time.Second)
-			listData, _ := sendToComponentViaHub("store", "channel.list", nil)
+			listData, _ := sendToComponentViaHubRetry("store", "channel.list", nil, 30*time.Second)
 			hasMain := false
 			if arr, ok := listData.([]interface{}); ok {
 				for _, c := range arr {
@@ -4651,11 +4710,11 @@ func startOrchestratorCommandReceiver() {
 				}
 			}
 			if !hasMain {
-				_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": "main"})
+				_, _ = sendToComponentViaHubRetry("store", "channel.create", map[string]interface{}{"id": "main"}, 10*time.Second)
 			}
 			// E2E: ensure Court personas are participants in main (with PM)
 			for _, p := range []string{"ciso", "security-architect", "architect", "senior-coder", "tester", "efficiency", "user-advocate"} {
-				_, _ = sendToComponentViaHub("store", "channel.add_member", map[string]interface{}{"channel_id": "main", "role": "court-persona-" + p})
+				_, _ = sendToComponentViaHubRetry("store", "channel.add_member", map[string]interface{}{"channel_id": "main", "role": "court-persona-" + p}, 5*time.Second)
 			}
 		}()
 
