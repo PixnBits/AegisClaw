@@ -90,6 +90,52 @@ func getPMPrompt() string {
 	return custom + base
 }
 
+// extractChannelFromPayload centralizes the channel hint logic used by PM.
+func extractChannelFromPayload(payload interface{}, def string) string {
+	ch := def
+	if p, ok := payload.(map[string]interface{}); ok {
+		if c, ok := p["channel"].(string); ok && c != "" {
+			ch = c
+		} else if c, ok := p["channel_id"].(string); ok && c != "" {
+			ch = c
+		}
+	}
+	return ch
+}
+
+// extractRolesFromText makes role delegation richer (used after LLM or fallback plan).
+// Always includes baseline coder/tester; scans text for common Court/SDLC keywords
+// so the PM can dynamically involve the right personas based on the generated plan content.
+func extractRolesFromText(text string) []string {
+	roles := []string{"coder", "tester"}
+	lower := strings.ToLower(text)
+	candidates := map[string]string{
+		"ciso":               "ciso",
+		"security":           "ciso",
+		"security-architect": "security-architect",
+		"architect":          "architect",
+		"senior-coder":       "senior-coder",
+		"efficiency":         "efficiency",
+		"user-advocate":      "user-advocate",
+		"court":              "ciso", // broad -> at least security
+	}
+	for key, role := range candidates {
+		if strings.Contains(lower, key) {
+			found := false
+			for _, r := range roles {
+				if r == role {
+					found = true
+					break
+				}
+			}
+			if !found {
+				roles = append(roles, role)
+			}
+		}
+	}
+	return roles
+}
+
 func generatePlan(input, chID string) string {
 	base := getPMPrompt() + "\n\nInput: " + input + "\n\nChannel: " + chID + "\n\nStructured Plan:\n"
 	plan := base + "1. Analyze the goal and break into tasks.\n2. Identify required roles (e.g. Coder, Tester, Court for changes).\n3. Create/use channel and ensure roles (default PM included).\n4. Delegate via @mentions and channel posts.\n5. Monitor progress and synthesize results.\n6. Escalate formal proposal to Court if needed.\n"
@@ -166,17 +212,31 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 		fmt.Println("PM received:", msg.Command)
 
 		switch msg.Command {
-		case "user.goal", "channel.post", "chat.message":
+		case "user.goal", "channel.post", "chat.message": // chat.message kept for legacy compat during transition; primary is user.goal via CLI `aegis pm goal` or future channel-triggered goals
+
 			payloadStr := fmt.Sprintf("%v", msg.Payload)
-			// Real demonstration of collaboration model: plan, post to channel, decide roles to ensure.
-			chID := "plan-demo"
-			if p, ok := msg.Payload.(map[string]interface{}); ok {
-				if c, ok := p["channel"].(string); ok && c != "" {
-					chID = c
-				} else if c, ok := p["channel_id"].(string); ok && c != "" {
-					chID = c
+
+			// Richer PM behavior: avoid re-triggering full planning on our own posts (self-echo from channel.post).
+			// Light ack for activity from others; full planning only for explicit user.goal (or first channel activity).
+			if strings.Contains(payloadStr, uniqueSource) && msg.Command != "user.goal" {
+				// Self-generated activity; light monitoring ack only (keeps loop "alive" without spam).
+				ack := hubclient.Message{
+					Source:      uniqueSource,
+					Destination: "store",
+					Command:     "channel.post",
+					Payload: map[string]interface{}{
+						"channel_id": extractChannelFromPayload(msg.Payload, "main"),
+						"from":       uniqueSource,
+						"content":    "PM: noted own update; continuing to monitor channel activity.",
+					},
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
 				}
+				_, _ = hcl.Send(context.Background(), ack)
+				break
 			}
+
+			chID := extractChannelFromPayload(msg.Payload, "plan-demo")
+
 			var plan string
 			// Build out PM to connect with LLM (per plan): call real LLM with prompt + goal for actual plan generation.
 			// Falls back to generatePlan on error (for envs without model configured).
@@ -206,10 +266,10 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 			} else {
 				fmt.Printf("PM: posted plan to channel %s\n", chID)
 			}
-			// Actually send ensure.role to the wired receiver (daemon-orchestrator).
-			// The receiver calls orchestrator.EnsureRoleAgent which starts the role VM
-			// (with pre-warm claim) and records the Channel for roster.
-			for _, r := range []string{"coder", "tester"} {
+
+			// Richer role delegation: start with common + dynamically extract additional roles mentioned in the (LLM or generated) plan.
+			rolesToEnsure := extractRolesFromText(plan)
+			for _, r := range rolesToEnsure {
 				ensurePayload := map[string]interface{}{
 					"role":    r,
 					"channel": chID,
@@ -227,8 +287,9 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					fmt.Printf("PM: sent ensure.role for %s in channel %s\n", r, chID)
 				}
 			}
-			// More PM smarts: monitoring post after delegation (per plan)
-			monitorContent := fmt.Sprintf("PM monitoring: roles ensured [%v] in channel %s. Awaiting role updates/synthesis.", []string{"coder", "tester"}, chID)
+
+			// Richer monitoring: always post a distinct follow-up status after planning/delegation (per plan Phase 4/6).
+			monitorContent := fmt.Sprintf("PM monitoring: roles ensured %v in channel %s. Awaiting updates from roles; will synthesize and escalate to Court when needed.", rolesToEnsure, chID)
 			monitorPayload := map[string]interface{}{
 				"channel_id": chID,
 				"from":       uniqueSource,
