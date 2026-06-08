@@ -189,8 +189,50 @@ else
 fi
 
 # Explicit startup status check after the start (per request), before running other tests (pm goal, channel inspect, browser).
-echo "=== Post-start startup status check ==="
+# Per docs/testing-standards.md and AGENTS.md LLM guidance, we now assert the full
+# startup health invariants *before* any LLM trigger or browser journeys. This makes
+# the script fail loud+actionable on the exact class of base/registration/pre-warm
+# problems that previously slipped through (e.g. store not responding, wrong court
+# count, missing pools, stray temp components). These asserts would have caught the
+# recent issues early.
+echo "=== Post-start startup status check + health invariants (per testing-standards.md) ==="
 ./bin/aegis status 2>&1 | cat || true
+
+# Strict invariant asserts (fail before any pm goal / LLM / browser if broken).
+# Why these matter (self-documenting for future LLMs + humans; see standards + host-daemon.md):
+# - Court ==7: the 7-persona Court must be online for governance (paranoid model).
+# - Base "ready": Network Boundary/Store/Web Portal must have registered (collaboration backbone; store is source of truth for channels).
+# - Pools claimable: pre-warm (reflink+early) must have produced agent/memory pools for <1s on-demand (core of this branch).
+# - No stray temp: old "aegis-daemon-temp-*" flood indicated registration races (now avoided via daemon-internal-N + ACLs); unexpected ones signal bugs.
+COURT_N=$(./bin/aegis status 2>/dev/null | sed -n 's/.*Court personas online: \([0-9]*\).*/\1/p' | head -1 || echo 0)
+if [ "$COURT_N" != "7" ]; then
+  echo "✗ FAIL: Court personas online: $COURT_N (expected exactly 7 per standards + paranoid Court model)"
+  ./bin/aegis status
+  exit 5
+fi
+echo "✓ Court personas online: 7"
+
+if ./bin/aegis status 2>/dev/null | grep -q 'base infrastructure: ready'; then
+  echo "✓ Base infrastructure ready (Network Boundary + Store + Web Portal registered)"
+else
+  echo "✗ FAIL: Base infrastructure not 'ready' (see status; recent registration issues would have been caught here)"
+  ./bin/aegis status
+  exit 5
+fi
+
+if ./bin/aegis vm pools 2>/dev/null | grep -qE 'agent-pooled|memory-pooled'; then
+  echo "✓ Pre-warm pools present and claimable (aegis vm pools; enables <1s claim path)"
+else
+  echo "✗ FAIL: No pre-warm pools visible/claimable (pre-warm goroutine or claim logic issue)"
+  ./bin/aegis vm pools
+  exit 5
+fi
+
+if (./bin/aegis status 2>/dev/null; ./bin/aegis vm list 2>/dev/null || true) | grep -qE 'aegis-daemon-temp|daemon-temp-'; then
+  echo "✗ FAIL: Unexpected aegis-daemon-temp-* or daemon-temp components linger (registration race or ACL bypass; see status + logs)"
+  exit 5
+fi
+echo "✓ No unexpected aegis-daemon-temp-* components"
 
 # Browser usage (Playwright) for the E2E tests (not just CLI): after start + status check, verify the portal UI for user journeys (as user would: clicking nav, viewing pages in browser).
 # This covers detailed E2E for the user journeys in docs/specs/user-journeys/ that are not already covered by the CLI pm goal (J03) or legacy chat.

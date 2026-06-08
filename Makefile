@@ -65,16 +65,27 @@ doctor:
 	./bin/aegis doctor
 
 # Quick smoke test - run this after `make start` to verify the system came up cleanly.
-# Catches regressions in startup, socket, reverse proxy, and basic portal reachability.
+# Per docs/testing-standards.md, this now explicitly asserts the core startup health
+# invariants (base infra registration, Court count, pre-warm pools, no stray temp
+# components, clean status) before deeper portal/teams checks. Failures are loud
+# and point to logs/status for diagnosis. This would have caught recent base
+# registration / component issues.
+# Run: make smoke (after make start). LLM agents: run this early on startup changes.
 smoke:
 	@echo "=== AegisClaw Smoke Test ==="
+	@echo "(Asserts startup health invariants from docs/testing-standards.md first.)"
 	@echo ""
 	@echo "0. CLI surface (Task 6.1 complete --help + version)..."
 	@./bin/aegis --help | grep -q "autonomy" && echo "   ✓ Full command tree present (autonomy + skills + court + secrets + restart etc.)" || (echo "   ✗ CLI tree incomplete"; exit 1)
 	@./bin/aegis --version | grep -q "phase6-cli" && echo "   ✓ Version present" || echo "   ⚠ version (non-fatal)"
 	@echo ""
-	@echo "1. CLI: status..."
+	@echo "1. CLI: status + startup health invariants (per testing-standards.md)..."
 	@./bin/aegis status | grep -q "running" && echo "   ✓ Daemon reports as running" || (echo "   ✗ Daemon not running"; exit 1)
+	@COURT_N=$$(./bin/aegis status 2>/dev/null | sed -n 's/.*Court personas online: \([0-9]*\).*/\1/p' | head -1 || echo 0); \
+	  if [ "$$COURT_N" = "7" ]; then echo "   ✓ Court personas online: 7"; else echo "   ✗ Court personas online: $$COURT_N (expected 7 per standards)"; ./bin/aegis status; exit 1; fi
+	@./bin/aegis status 2>/dev/null | grep -q 'base infrastructure: ready' && echo "   ✓ Base infrastructure ready (Network Boundary + Store + Web Portal registered)" || (echo "   ✗ Base infrastructure not 'ready' (see status for attempted/registration issues)"; ./bin/aegis status; exit 1)
+	@./bin/aegis vm pools 2>/dev/null | grep -qE 'agent-pooled|memory-pooled' && echo "   ✓ Pre-warm pools present and claimable (aegis vm pools)" || (echo "   ✗ No pre-warm pools visible/claimable"; ./bin/aegis vm pools; exit 1)
+	@ (./bin/aegis status 2>/dev/null; ./bin/aegis vm list 2>/dev/null || true) | grep -qE 'aegis-daemon-temp|daemon-temp-' && (echo "   ✗ Unexpected aegis-daemon-temp-* or daemon-temp components linger (see status/vm.list and logs)"; exit 1) || echo "   ✓ No unexpected aegis-daemon-temp-* components"
 	@echo ""
 	@echo "2. CLI: doctor..."
 	@./bin/aegis doctor > /dev/null 2>&1 && echo "   ✓ doctor succeeded" || (echo "   ✗ doctor failed"; exit 1)
