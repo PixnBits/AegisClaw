@@ -1,0 +1,5 @@
+time="2026-06-08T01:19:06-07:00" level=info msg="7.2: Example recurring background consumer started (heartbeat every 30s via ScheduleRecurring)."
+2026/06/08 01:19:06 Loaded 53 ACL rules from config/acls.yaml
+AegisHub started. Listening on /tmp/aegis/hub-pmllm-e2e.sock
+2026/06/08 01:19:06 AegisHub: vsock listen on port 9999 failed (expected on non-Linux or without /dev/vsock): listen vsock local(1):9999: bind: address already in use — real Firecracker guests (agent/memory VMs) will fall back to unix socket in dev
+2026/06/08 01:19:07 Hub: Registered component daemon-orchestrator with version phase1

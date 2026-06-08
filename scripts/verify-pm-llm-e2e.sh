@@ -134,7 +134,7 @@ else
   for i in $(seq 1 18); do
     sleep 5
     echo "--- tick $i ---"
-    STATUS_OUT=$(./bin/aegis status 2>&1 | head -15 || true)
+    STATUS_OUT=$(timeout 10s ./bin/aegis status 2>&1 | head -15 || echo "status timeout or error (partial startup?)")
     echo "$STATUS_OUT"
     # Tail recent log for visibility into startup
     if [ -f "$LOG_FILE" ]; then
@@ -143,7 +143,7 @@ else
     fi
     if echo "$STATUS_OUT" | grep -q 'daemon is running'; then
       if echo "$STATUS_OUT" | grep -qi 'base infrastructure.*ready'; then
-        if ./bin/aegis channel list >/dev/null 2>&1; then
+        if timeout 10s ./bin/aegis channel list >/dev/null 2>&1; then
           # Additional check: look for critical component registrations in log
           if [ -f "$LOG_FILE" ] && grep -E 'Registered component (store|network-boundary|web-portal)' "$LOG_FILE" | tail -3 | grep -q . ; then
             echo "✓ daemon running, base infrastructure ready, store responsive, key components registered (collaboration backbone ready)"
@@ -173,6 +173,16 @@ else
       echo "=== Key startup indicators from log ==="
       grep -E 'AegisHub|Registered component|base infrastructure|WEB_PORTAL|Store is up|CRITICAL|ERROR|failed|hang|temp-|daemon-internal' "$LOG_FILE" | tail -20 | cat || true
     fi
+    # Run browser for journeys even if not ready for llm (portal may be up).
+    if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
+      echo
+      echo "=== Browser E2E verification of channels UI and user journeys (even on partial base) ==="
+      if [ ! -d "node_modules/@playwright/test" ]; then
+        npm install
+      fi
+      ./node_modules/.bin/playwright install chromium 2>/dev/null || true
+      AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors and journeys coverage)"
+    fi
     ./bin/aegis stop 2>/dev/null || true
     exit 4
   fi
@@ -181,6 +191,22 @@ fi
 # Explicit startup status check after the start (per request), before running other tests (pm goal, channel inspect, browser).
 echo "=== Post-start startup status check ==="
 ./bin/aegis status 2>&1 | cat || true
+
+# Browser usage (Playwright) for the E2E tests (not just CLI): after start + status check, verify the portal UI for user journeys (as user would: clicking nav, viewing pages in browser).
+# This covers detailed E2E for the user journeys in docs/specs/user-journeys/ that are not already covered by the CLI pm goal (J03) or legacy chat.
+# Always run after launch (portal may be up even if store not for full llm).
+if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
+  echo
+  echo "=== Browser E2E verification of channels UI and user journeys (PM plan post + other journeys in portal) ==="
+  if [ ! -d "node_modules/@playwright/test" ]; then
+    npm install
+  fi
+  ./node_modules/.bin/playwright install chromium 2>/dev/null || true
+  AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors and journeys coverage)"
+else
+  echo
+  echo "=== Skipping browser E2E (forced isolated mode uses custom hub; browser assumes standard portal at :8080 after 'make start')"
+fi
 
 # Trigger (the real user action)
 echo
@@ -195,18 +221,17 @@ echo
 echo "=== Check default 'main' channel (E2E auto-create + Court) ==="
 ./bin/aegis channel get main 2>&1 | cat || true
 
-# Browser usage to the E2E tests (not just CLI): after CLI pm goal + channel inspect,
-# use Playwright to verify the portal UI (#channels page) shows the PM plan post.
-# This exercises the full user experience: CLI trigger -> real LLM -> store -> visible in browser.
-# Only for existing daemon / non-forced-isolated (portal expects standard :8080 + hub).
-# For Ubuntu 26.04 support, package.json uses pre-release @playwright/test (update via npm if newer alpha available).
+# Re-run browser *after* the pm goal + channel posts so the specific "PM plan post visible in UI" test
+# (and the detailed user post-via-browser-form interaction) can observe the real LLM-driven content.
+# This ensures the E2E matches "user would use it: pm goal (CLI), then view/ interact in browser".
 if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
   echo
-  echo "=== Browser E2E verification of channels UI (PM plan post visible in portal) ==="
-  AEGIS_E2E_COLLAB_BROWSER=1 npx @playwright/test test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors)"
-else
-  echo
-  echo "=== Skipping browser E2E (forced isolated mode uses custom hub; browser assumes standard daemon/portal after 'make start')"
+  echo "=== Browser E2E (post-pm-goal) verification of channels UI showing the LLM plan post + user typing ==="
+  if [ ! -d "node_modules/@playwright/test" ]; then
+    npm install
+  fi
+  ./node_modules/.bin/playwright install chromium 2>/dev/null || true
+  AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: post-trigger browser check did not fully pass"
 fi
 
 echo
