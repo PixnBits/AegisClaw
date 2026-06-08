@@ -216,6 +216,8 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 
 			payloadStr := fmt.Sprintf("%v", msg.Payload)
 
+			chID := extractChannelFromPayload(msg.Payload, "plan-demo")
+
 			// Richer PM behavior: avoid re-triggering full planning on our own posts (self-echo from channel.post).
 			// Light ack for activity from others; full planning only for explicit user.goal (or first channel activity).
 			if strings.Contains(payloadStr, uniqueSource) && msg.Command != "user.goal" {
@@ -225,7 +227,7 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					Destination: "store",
 					Command:     "channel.post",
 					Payload: map[string]interface{}{
-						"channel_id": extractChannelFromPayload(msg.Payload, "main"),
+						"channel_id": chID,
 						"from":       uniqueSource,
 						"content":    "PM: noted own update; continuing to monitor channel activity.",
 					},
@@ -235,7 +237,34 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 				break
 			}
 
-			chID := extractChannelFromPayload(msg.Payload, "plan-demo")
+			// Richer ongoing monitoring (advances lightweight background loop):
+			// On channel activity from others (roles, users, portal posts), post a light
+			// status/synthesis note instead of full re-planning. This makes PM reactive
+			// to real collaboration without spamming on every post.
+			if msg.Command == "channel.post" {
+				from := "unknown"
+				if p, ok := msg.Payload.(map[string]interface{}); ok {
+					if f, ok := p["from"].(string); ok && f != "" {
+						from = f
+					}
+				}
+				if from != uniqueSource {
+					note := fmt.Sprintf("PM: noted activity from %s in channel %s. Monitoring for progress or escalation needs.", from, chID)
+					_, _ = hcl.Send(context.Background(), hubclient.Message{
+						Source:      uniqueSource,
+						Destination: "store",
+						Command:     "channel.post",
+						Payload: map[string]interface{}{
+							"channel_id": chID,
+							"from":       uniqueSource,
+							"content":    note,
+						},
+						Timestamp: time.Now().UTC().Format(time.RFC3339),
+					})
+					fmt.Printf("PM: posted monitoring note for activity from %s\n", from)
+					break
+				}
+			}
 
 			var plan string
 			// Build out PM to connect with LLM (per plan): call real LLM with prompt + goal for actual plan generation.

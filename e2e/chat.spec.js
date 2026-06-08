@@ -1,6 +1,26 @@
 import { test, expect } from '@playwright/test';
 import { execSync } from 'child_process';
 
+/**
+ * NOTE (collaboration model): The dedicated global "chat" streaming UI/panel
+ * (and its SSE /api/chat/* flows in the old SPA) was replaced by the channels
+ * system as the primary collaboration surface (per docs/implementation-plan/collaboration-model.md
+ * Phase 4/5 and PRD).
+ *
+ * - Real unmocked E2E for PM + LLM + channels (user path: `aegis pm goal`, channel posts,
+ *   ensures, visible in CLI + portal #channels) lives in:
+ *     make test-e2e-llm   (or scripts/verify-pm-llm-e2e.sh)
+ *   This exercises the exact "as a user would use the system" flow with real Ollama
+ *   (no fixtures, no mocks in the hot path).
+ *
+ * - The tests below exercise the legacy per-session agent chat (ReAct streaming
+ *   against paired agent VMs). They may require updates or be superseded as
+ *   the channels model matures.
+ *
+ * See also: e2e/journeys.spec.js, Makefile test-e2e* targets, and the channels
+ * handling in cmd/web-portal/static/* + cmd/aegis (handleHostChannelsAPI).
+ */
+
 const LOOP_STEP_RE = /Starting|Observe|Think|Plan|Act|Execute|Judge/i;
 const AGENT_STEP_PHASES = ['Starting', 'Observe', 'Think', 'Plan', 'Act', 'Execute', 'Judge'];
 

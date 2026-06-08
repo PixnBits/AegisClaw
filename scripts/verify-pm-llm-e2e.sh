@@ -21,10 +21,22 @@
 # - Recommended for speed: run `make start` (or sudo -n make start-foreground) first with your model env, then `make test-e2e-llm`.
 #   The script prefers an already-running daemon (fast path, no custom socket).
 #
-# Usage:
+# Usage (recommended for review / daily):
+#   # 1. Start daemon the normal way (per AGENTS.md)
+#   AEGIS_DEFAULT_MODEL=llama3.2:3b make start
+#   # 2. Run the E2E (will auto-detect running daemon and be fast)
 #   AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm
-#   # or direct: AEGIS_DEFAULT_MODEL=llama3.2:3b bash scripts/verify-pm-llm-e2e.sh
-#   FORCE_ISOLATED=1 ... to force the clean custom-socket start even if a daemon is up.
+#
+#   # Direct script:
+#   AEGIS_DEFAULT_MODEL=llama3.2:3b bash scripts/verify-pm-llm-e2e.sh
+#
+#   # Force fully isolated clean run (custom socket, starts/stops its own daemon):
+#   FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL=llama3.2:3b bash scripts/verify-pm-llm-e2e.sh
+#
+# To also exercise boot metrics for ensured roles (collab path <1s validation):
+#   AEGIS_BOOT_TIMING=1 AEGIS_DEFAULT_MODEL=llama3.2:3b make start
+#   AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm
+#   # Then after: ./bin/aegis vm boot-metrics project-manager-... or similar for coder/tester roles.
 #
 # Success criteria for "hitting real Ollama as user would":
 # - "daemon is running" (existing or freshly started).

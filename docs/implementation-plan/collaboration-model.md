@@ -254,4 +254,42 @@ Update this doc + commit after each coherent portion. Polish + E2E test work com
 
 Ready for more (e.g. full clean E2E evidence on a machine with the sudoers, more PM reactivity on channel activity, migration thoughts, or portal roster work). Continuing autonomously through the list as before.
 
+## Branch Status for Review (as of this commit)
+
+**Core collaboration model delivered on this feature branch:**
+- Channels as first-class primitive (Store persistence + membership + history + post, host API/CLI, portal full CRUD + history + post form + sidebar + dashboard stat, routing + ACLs).
+- Project Manager as real LLM-driven orchestrator (registers, receives user.goal via CLI `aegis pm goal`, calls real NewRealLLMCaller through network-boundary to Ollama when AEGIS_DEFAULT_MODEL set, posts plans + monitoring, dynamically ensures roles with channel attachment, auto add_member on receiver side).
+- E2E defaults + visibility (auto "main" + Court on daemon-orchestrator receiver; channel= shown in vm list/status; roles auto-join channels).
+- Fast on-demand lifecycle foundations (pre-warm reflink, hoist for early socket/PID, pre-gen keys, parallel, sentinel, early bridges, timing) preserved and exercised.
+- Paranoid model intact (signed hub, explicit ACLs including new PM<->network-boundary llm.*, per-VM keys, Store authority, Court as gate).
+- Real unmocked E2E test: `make test-e2e-llm` (script supports existing daemon after `make start` for speed, or isolated; assertions for posts, LLM evidence, channel content).
+- Richer PM start: dynamic roles from actual plan text, ongoing monitoring notes on channel activity, self-guard to keep loop clean, explicit escalation language to Court.
+- Portal: channels completely replace old chat collab view (JS cleaned of dead remnants).
+- Plan doc tracked throughout with evidence, open items, and recommended order.
+
+**Commits on this branch for this portion (coherent, reviewable):**
+- feat(test): E2E script + make target + ACLs for real LLM path.
+- feat(pm): richer dynamic roles + monitoring + guards.
+- chore(portal,docs): JS cleanup + this plan update.
+- (Plus prior commits for channels/PM/portal defaults from earlier in the thread.)
+
+**What remains (explicit follow-ups, not blockers for initial review of the model):**
+- Capture + attach a clean short `make test-e2e-llm` run log (with real "LLM plan gen" + natural plan text in `channel get`) on a machine with working `sudo -n make start`.
+- Deeper richer PM (proactive monitoring loop, auto-proposal creation to Court on thresholds, more use of agent/loop).
+- Migration/compat for legacy sessions/teams/global chat.
+- Portal expansions (rosters in Agents/Court views, @mention wiring that surfaces to PM/Court components, "Ask PM" button in channels UI).
+- Collab-specific <1s + boot-metrics in the E2E script + assertions for ensured PM/coder/tester roles.
+- Browser E2E for channels+PM (the old chat.spec.js is documented as legacy; a collaboration.spec.js exercising portal #channels + CLI trigger would be ideal).
+- Polish on Court/guest metrics consistency and any remaining variance.
+
+**How to verify the delivered parts (as a user would):**
+1. `make build`
+2. `AEGIS_DEFAULT_MODEL=llama3.2:3b make start` (or foreground for logs)
+3. `AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm`  (or manually: `aegis pm goal "..." --channel demo`; `aegis channel get demo`; visit http://localhost:8080/#channels)
+4. `aegis status`, `aegis vm list`, `aegis vm pools`, `aegis channel list/get`
+5. Check logs for receiver, PM: LLM plan gen / posted, ensures.
+6. (Optional with timing) `AEGIS_BOOT_TIMING=1 ...` + `aegis vm boot-metrics ...` for roles.
+
+The branch is now in a state where the collaboration model (channels + PM + real LLM + fast roles + visibility + tests) can be reviewed as a coherent whole. Remaining items are tracked in this doc as follow-on work.
+
 *Iterative, commit-as-ready, measurement-first, paranoid security preserved. Update this file with progress after each portion.*
