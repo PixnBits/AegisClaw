@@ -920,14 +920,22 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	// Make base_infrastructure status reflect whether store (the collaboration backbone)
 	// is actually responding. Prevents the previous "launch attempted" lie when guests
 	// launched but didn't register/bridge in time.
+	//
+	// FIX (status hang): use short context timeout (2-3s) for the Store probe (and
+	// note other component probes via vm.list socket are local/fast). Without this,
+	// sendToComponentViaHub (which dials hub + registers ephemeral internal + Send)
+	// could block the entire `aegis status` CLI indefinitely when store is slow to
+	// come up during base boot or under I/O contention. We fall back gracefully.
 	storeReady := false
-	if _, err := sendToComponentViaHub("store", "channel.list", nil); err == nil {
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	if _, err := sendToComponentViaHubContext(probeCtx, "store", "channel.list", nil); err == nil {
 		storeReady = true
 	}
+	probeCancel()
 	if storeReady {
 		base["base_infrastructure"] = "ready (AegisHub + Network Boundary + Store + Web Portal)"
 	} else {
-		base["base_infrastructure"] = "launch attempted (store not yet responding — see logs for guest boot/bridge)"
+		base["base_infrastructure"] = "launch attempted (Store still starting...)"
 	}
 
 	if jsonOutput {
@@ -4174,6 +4182,15 @@ func startBaseInfrastructure() error {
 	}
 	logrus.Info("Store is up and responsive to hub requests")
 
+	// Decoupled auto-defaults: now *after* the Store readiness gate (not inside the
+	// early receiver goroutine). This ensures "main" channel + Court members exist
+	// only when store can serve them, uses backoff/retry helper (no one-shot fail),
+	// and keeps collaboration defaults from impacting base boot time or causing
+	// early status/receiver probe contention. Uses sendTo*Retry (few dials at gate time).
+	// Persistent daemon-orchestrator client (in receiver) is preferred for ongoing PM
+	// ensure.role traffic.
+	go setupDefaultMainChannelAndMembers()
+
 	// 5. Web Portal (presentation only; must be daemon-mediated per spec).
 	// MUST run as real Firecracker microVM per paranoid security model.
 	// No thin host child fallback is allowed.
@@ -4710,56 +4727,13 @@ func startOrchestratorCommandReceiver() {
 		}
 		logrus.Info("daemon-orchestrator receiver registered for ensure.role from PM etc.")
 
-		// E2E default per plan (solo-user sensible default "main" channel with PM + Court)
-		// Use the *persistent* receiver client (source="daemon-orchestrator") for these sends
-		// instead of sendToComponentViaHub (which creates new daemon-internal-* clients every time).
-		// This avoids the flood of temp/internal registrations + ACL violations during early startup.
-		// The ACL now grants daemon-orchestrator -> store channel.* .
-		// We still use a small sleep + best-effort (no full retry here to keep it simple and non-blocking).
-		go func() {
-			time.Sleep(2 * time.Second)
-			// Use direct sends via the receiver's authenticated client (source will be daemon-orchestrator)
-			listMsg := hubclient.Message{
-				Source:      client.AssignedID(),
-				Destination: "store",
-				Command:     "channel.list",
-				Payload:     nil,
-				Timestamp:   time.Now().UTC().Format(time.RFC3339),
-			}
-			listResp, _ := client.Send(context.Background(), listMsg)
-			hasMain := false
-			if arr, ok := listResp.Payload.([]interface{}); ok {
-				for _, c := range arr {
-					if m, ok := c.(map[string]interface{}); ok {
-						if id, ok := m["id"].(string); ok && id == "main" {
-							hasMain = true
-							break
-						}
-					}
-				}
-			}
-			if !hasMain {
-				createMsg := hubclient.Message{
-					Source:      client.AssignedID(),
-					Destination: "store",
-					Command:     "channel.create",
-					Payload:     map[string]interface{}{"id": "main"},
-					Timestamp:   time.Now().UTC().Format(time.RFC3339),
-				}
-				_, _ = client.Send(context.Background(), createMsg)
-			}
-			// E2E: ensure Court personas are participants in main (with PM)
-			for _, p := range []string{"ciso", "security-architect", "architect", "senior-coder", "tester", "efficiency", "user-advocate"} {
-				addMsg := hubclient.Message{
-					Source:      client.AssignedID(),
-					Destination: "store",
-					Command:     "channel.add_member",
-					Payload:     map[string]interface{}{"channel_id": "main", "role": "court-persona-" + p},
-					Timestamp:   time.Now().UTC().Format(time.RFC3339),
-				}
-				_, _ = client.Send(context.Background(), addMsg)
-			}
-		}()
+		// Auto "main" + Court/PM membership moved out of here (see startBaseInfrastructure
+		// after the store readiness gate + setupDefaultMainChannelAndMembers). This decouples
+		// the receiver (early for ensure.role from PM) from Store boot. Auto now happens
+		// only after store is responsive (with retries), avoiding early silent fails or
+		// coupling that contributed to long time-to-"base ready" + usable channels.
+		// The persistent client here is still preferred for the ensure.role receive path.
+		// (Previously the 2s one-shot + direct sends on this client could race store.)
 
 		for {
 			msg, err := client.Receive(context.Background())
@@ -4776,8 +4750,10 @@ func startOrchestratorCommandReceiver() {
 					resp = map[string]interface{}{"error": err.Error()}
 				}
 				// Auto-add the ensured role as participant in the channel (E2E visibility, per plan)
+				// Use Retry (short) to tolerate any transient post-ensure window and avoid
+				// blocking the reply path with a fresh dial; keeps on-demand role ensure fast.
 				if channel != "" {
-					_, _ = sendToComponentViaHub("store", "channel.add_member", map[string]interface{}{"channel_id": channel, "role": role})
+					_, _ = sendToComponentViaHubRetry("store", "channel.add_member", map[string]interface{}{"channel_id": channel, "role": role}, 5*time.Second)
 				}
 				_ = client.Reply(context.Background(), hubclient.Message{
 					Source:      requesterID,
@@ -4791,4 +4767,54 @@ func startOrchestratorCommandReceiver() {
 		client.Close()
 		time.Sleep(1 * time.Second)
 	}
+}
+
+// setupDefaultMainChannelAndMembers performs the solo-user sensible default
+// (create "main" if missing, add the core Court personas + PM as participants).
+// Called *after* the store readiness gate in startBaseInfrastructure (see
+// receiver for why we decoupled it from early daemon-orchestrator registration).
+// Uses sendTo*Retry so it is robust (backoff on dest-not-found during any
+// last-moment bridge), but since post-gate the first attempt succeeds fast.
+// This keeps auto-defaults from contributing to startup latency or probe hangs
+// during base boot. Persistent client in receiver is still used for ensure.role
+// (PM on-demand roles).
+func setupDefaultMainChannelAndMembers() {
+	// Small delay not needed post-gate, but a brief yield is fine.
+	time.Sleep(100 * time.Millisecond)
+
+	// List to check for main (use retry for belt+suspenders; post-gate should be instant).
+	listResp, err := sendToComponentViaHubRetry("store", "channel.list", nil, 10*time.Second)
+	if err != nil {
+		logrus.Warnf("setupDefaultMainChannelAndMembers: channel.list failed (post-store-ready): %v", err)
+		return
+	}
+	hasMain := false
+	if arr, ok := listResp.([]interface{}); ok {
+		for _, c := range arr {
+			if m, ok := c.(map[string]interface{}); ok {
+				if id, ok := m["id"].(string); ok && id == "main" {
+					hasMain = true
+					break
+				}
+			}
+		}
+	}
+	if !hasMain {
+		_, err := sendToComponentViaHubRetry("store", "channel.create", map[string]interface{}{"id": "main"}, 5*time.Second)
+		if err != nil {
+			logrus.Warnf("setupDefaultMainChannelAndMembers: channel.create main failed: %v", err)
+		} else {
+			logrus.Info("setupDefaultMainChannelAndMembers: created default 'main' channel")
+		}
+	}
+
+	// Ensure Court + PM are in main (idempotent on store side).
+	for _, role := range []string{
+		"project-manager",
+		"court-persona-ciso", "court-persona-security-architect", "court-persona-architect",
+		"court-persona-senior-coder", "court-persona-tester", "court-persona-efficiency", "court-persona-user-advocate",
+	} {
+		_, _ = sendToComponentViaHubRetry("store", "channel.add_member", map[string]interface{}{"channel_id": "main", "role": role}, 3*time.Second)
+	}
+	logrus.Info("setupDefaultMainChannelAndMembers: ensured PM + Court members in 'main' (after store ready)")
 }
