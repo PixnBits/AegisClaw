@@ -108,24 +108,31 @@ else
   DAEMON_PID=$!
   echo "Daemon launch pid: $DAEMON_PID (will stop at end)"
 
-  # Improved bounded wait (up to ~75s, shorter sleeps, explicit success check)
-  echo "=== Waiting for daemon (expect 'daemon is running' quickly thanks to hoist/pre-warm) ==="
+  # Improved bounded wait (up to ~90s). Explicitly waits for store to be responsive
+  # (using channel.list). This exercises the post-fix behavior where startBase now
+  # waits for store, and surfaces startup problems early with clear ERROR instead of
+  # proceeding to pm goal that would then fail mysteriously.
+  echo "=== Waiting for daemon + store (base infrastructure ready) ==="
   export AEGIS_HUB_SOCKET="$HUB_SOCK"
   export AEGIS_STATE_DIR="$STATE_DIR"
   READY=false
-  for i in $(seq 1 15); do
+  for i in $(seq 1 18); do
     sleep 5
     echo "--- tick $i ---"
-    STATUS_OUT=$(./bin/aegis status 2>&1 | head -10 || true)
+    STATUS_OUT=$(./bin/aegis status 2>&1 | head -12 || true)
     echo "$STATUS_OUT"
     if echo "$STATUS_OUT" | grep -q 'daemon is running'; then
-      echo "✓ daemon visible to client"
-      READY=true
-      break
+      if ./bin/aegis channel list >/dev/null 2>&1; then
+        echo "✓ daemon running and store responsive (collaboration backbone ready)"
+        READY=true
+        break
+      fi
     fi
   done
   if [ "$READY" != true ]; then
-    echo "WARNING: daemon did not report 'running' within bounds. Continuing with trigger anyway (may see 'not running')."
+    echo "ERROR: daemon or store (channel backend) not ready within bounds. See $LOG_FILE and fc-*-console.log for guest boot/bridge issues. This E2E now catches the class of base-infra startup bugs."
+    ./bin/aegis stop 2>/dev/null || true
+    exit 4
   fi
 fi
 
