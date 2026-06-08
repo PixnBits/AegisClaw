@@ -66,10 +66,16 @@ doctor:
 
 # Quick smoke test - run this after `make start` to verify the system came up cleanly.
 # Per docs/testing-standards.md, this now explicitly asserts the core startup health
-# invariants (base infra registration, Court count, pre-warm pools, no stray temp
+# invariants (base infra registration, Court count==7, pre-warm pools, no stray temp
 # components, clean status) before deeper portal/teams checks. Failures are loud
 # and point to logs/status for diagnosis. This would have caught recent base
 # registration / component issues.
+#
+# IMPORTANT: `make start` returns quickly once the host daemon detaches.
+# On real Firecracker hardware the base (Store + Web Portal + Network Boundary)
+# + Court (7 personas) + pre-warm pools boot in the background and can take
+# 30s–a few minutes. Poll `make smoke` (or just run `make test-e2e-llm`, which
+# has its own readiness wait) until it goes green.
 # Run: make smoke (after make start). LLM agents: run this early on startup changes.
 smoke:
 	@echo "=== AegisClaw Smoke Test ==="
@@ -80,7 +86,7 @@ smoke:
 	@./bin/aegis --version | grep -q "phase6-cli" && echo "   ✓ Version present" || echo "   ⚠ version (non-fatal)"
 	@echo ""
 	@echo "1. CLI: status + startup health invariants (per testing-standards.md)..."
-	@./bin/aegis status | grep -q "running" && echo "   ✓ Daemon reports as running" || (echo "   ✗ Daemon not running"; exit 1)
+	@./bin/aegis status 2>/dev/null | grep -Fx 'daemon is running' && echo "   ✓ Daemon reports as running" || (echo "   ✗ Daemon not running"; ./bin/aegis status; exit 1)
 	@COURT_N=$$(./bin/aegis status 2>/dev/null | sed -n 's/.*Court personas online: \([0-9]*\).*/\1/p' | head -1 || echo 0); \
 	  if [ "$$COURT_N" = "7" ]; then echo "   ✓ Court personas online: 7"; else echo "   ✗ Court personas online: $$COURT_N (expected 7 per standards)"; ./bin/aegis status; exit 1; fi
 	@./bin/aegis status 2>/dev/null | grep -q 'base infrastructure: ready' && echo "   ✓ Base infrastructure ready (Network Boundary + Store + Web Portal registered)" || (echo "   ✗ Base infrastructure not 'ready' (see status for attempted/registration issues)"; ./bin/aegis status; exit 1)
@@ -166,6 +172,27 @@ clean-microvms:
 	@sudo -n "$(CLEAN_FIRECRACKER_ROOTFS_SCRIPT)" 2>/dev/null || true
 	@echo "✓ MicroVM build artifacts removed."
 	@echo "   Next step: make build-microvms"
+
+# E2E-specific cleanup for reliable repeated runs of make test-e2e-llm / verify script
+# (sockets, custom state dirs, test procs). Use after partial failures or to reset.
+# Safe to run; uses sudo -n for root-owned artifacts from previous starts.
+e2e-clean:
+	@echo "=== E2E cleanup for reliable repeated runs (per testing-standards.md priority 1 + AGENTS.md) ==="
+	-@sudo -n ./bin/aegis stop >/dev/null 2>&1 || true
+	-@sudo -n pkill -f 'aegis start --foreground' >/dev/null 2>&1 || true
+	-@sudo -n pkill -f 'aegishub start' >/dev/null 2>&1 || true
+	-@sudo -n pkill -f 'aegis-daemon' >/dev/null 2>&1 || true
+	-@sudo -n rm -f /tmp/aegis/hub-*.sock /tmp/aegis/hub-pmllm-e2e.sock ~/.aegis/hub.sock /tmp/aegis/daemon.pid >/dev/null 2>&1 || true
+	-@rm -rf /tmp/aegis /tmp/aegis-pmllm-e2e /tmp/aegis-*verify /tmp/aegis-pm* /tmp/aegis-* 2>/dev/null || true
+	-@sudo -n rm -rf /tmp/aegis /tmp/aegis-pmllm-e2e /tmp/aegis-*verify /tmp/aegis-pm* /tmp/aegis-* ~/.aegis/hub.sock /tmp/aegis/daemon.pid 2>/dev/null || true
+	@ls -ld /tmp/aegis* ~/.aegis/hub.sock 2>/dev/null | cat || echo '  (no /tmp/aegis* or main hub.sock remaining)'
+	@echo "✓ E2E custom state, sockets, test procs, and temp dirs cleaned."
+	@echo "  Safe to re-run 'make test-e2e-llm' or the script (even after SIGINT/partial fail on real hw)."
+	@echo "  Suggested next: AEGIS_DEFAULT_MODEL=llama3.2:3b make start"
+	@echo "    # Then poll until healthy (real Firecracker boots take time):"
+	@echo "    #   while ! make smoke >/dev/null 2>&1; do sleep 5; done; make smoke"
+	@echo "    # Or just: make test-e2e-llm   (the script waits internally for Court==7 + base ready)"
+	@echo "  (For full microVM/rootfs clean: make clean-microvms -- DANGER, only if needed for fresh images)"
 
 # Run unit tests
 test:

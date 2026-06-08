@@ -89,8 +89,17 @@ if [ "$EXISTING_DAEMON" != true ]; then
     echo "ERROR: sudo -n ./bin/aegis not permitted for isolated start (see AGENTS.md). Stop any dev daemon and retry, or use FORCE_ISOLATED=0 after a normal 'make start'." >&2
     exit 3
   fi
-  rm -f "$HUB_SOCK" 2>/dev/null || true
-  rm -rf "$STATE_DIR"/* 2>/dev/null || true
+  # Harden pre-clean for repeated runs after partial failures/interrupts on real Firecracker/sudo hw (priority 1).
+  # This ensures clean state for sockets, state dir, and any old test procs for this custom env.
+  # Uses sudo -n pkill for robustness (proactive extend sudoers if needed per AGENTS).
+  echo "=== Pre-clean for reliable repeated E2E runs (sockets, state, procs; per testing-standards.md priority 1) ==="
+  sudo -n ./bin/aegis stop 2>/dev/null || true
+  sudo -n pkill -f 'aegis start --foreground' 2>/dev/null || true
+  sudo -n pkill -f 'aegishub start' 2>/dev/null || true
+  sudo -n rm -f "$HUB_SOCK" 2>/dev/null || true
+  rm -rf "$STATE_DIR" 2>/dev/null || true
+  # clean other common test temp dirs that can accumulate from previous partial E2E
+  sudo -n rm -rf /tmp/aegis-pmllm-e2e /tmp/aegis-*verify /tmp/aegis-pm* 2>/dev/null || true
   rm -f "$LOG_FILE" 2>/dev/null || true
 fi
 
@@ -99,6 +108,21 @@ if [ "$EXISTING_DAEMON" = true ]; then
   echo "=== Using existing daemon (no start/stop in this run) ==="
   # Ensure we talk to the right hub (user's normal one); do not force custom exports
   unset AEGIS_HUB_SOCKET AEGIS_STATE_DIR || true
+  # Bounded wait for full invariants even in fast/existing path (makes `make start && make test-e2e-llm` reliable
+  # without race on base registration / Court / pre-warm pools). Per testing-standards + AGENTS: assert health early.
+  # Short (vs isolated's 18-tick) because user just did make start; still catches not-ready states loudly.
+  echo "=== Quick readiness poll for existing daemon (base ready + Court + pools; per standards) ==="
+  for i in $(seq 1 12); do
+    if ./bin/aegis status 2>/dev/null | grep -q 'base infrastructure: ready' && \
+       ./bin/aegis status 2>/dev/null | grep -q 'Court personas online: 7' && \
+       ./bin/aegis vm pools 2>/dev/null | grep -qE 'agent-pooled|memory-pooled'; then
+      echo "✓ Existing daemon base/Court/pools ready (tick $i)"
+      break
+    fi
+    sleep 3
+    echo "  poll $i/12 for existing-daemon readiness (status + invariants)..."
+    ./bin/aegis status 2>/dev/null | grep -E 'daemon is running|Court personas|base infrastructure' | cat || true
+  done
 else
   echo "=== Launching isolated daemon (custom socket for clean test; AEGIS_BOOT_TIMING=1) ==="
   env -u AEGIS_HUB_SOCKET -u AEGIS_STATE_DIR \
@@ -234,6 +258,26 @@ if (./bin/aegis status 2>/dev/null; ./bin/aegis vm list 2>/dev/null || true) | g
 fi
 echo "✓ No unexpected aegis-daemon-temp-* components"
 
+# Boot-metrics (when AEGIS_BOOT_TIMING=1) for key components: base infra, Court, and ensured PM (per testing-standards.md observability and self-documenting for LLM agents on Firecracker patterns).
+# Asserts that metrics are available (host phases low for pre-warm ready system); full numbers in logs for diagnosis.
+if [ -n "${AEGIS_BOOT_TIMING:-}" ]; then
+  echo "=== Boot-metrics (AEGIS_BOOT_TIMING=1; host phases should be low ~100-200ms for pre-warm base; see scripts/boot-metrics.sh and internal/timing) ==="
+  for comp in court-persona-0 web-portal-0 store-0 network-boundary-0; do
+    echo "Boot metrics for $comp:"
+    BOOT=$(./bin/aegis vm boot-metrics "$comp" 2>/dev/null || bash scripts/boot-metrics.sh "$comp" 2>/dev/null || echo "no metrics")
+    echo "$BOOT" | head -6
+    if echo "$BOOT" | grep -q 'host phase'; then
+      echo "  ✓ boot metrics available for $comp (pre-warm/registration path exercised)"
+    fi
+  done
+  # After pm goal, the ensured project-manager will have metrics (dynamic role)
+  echo "Post-pm goal, boot metrics for ensured project-manager (if id known from vm list):"
+  PM_ID=$(./bin/aegis vm list 2>/dev/null | grep project-manager | head -1 | awk '{print $1}' || echo '')
+  if [ -n "$PM_ID" ]; then
+    ./bin/aegis vm boot-metrics "$PM_ID" 2>/dev/null | head -5 || true
+  fi
+fi
+
 # Browser usage (Playwright) for the E2E tests (not just CLI): after start + status check, verify the portal UI for user journeys (as user would: clicking nav, viewing pages in browser).
 # This covers detailed E2E for the user journeys in docs/specs/user-journeys/ that are not already covered by the CLI pm goal (J03) or legacy chat.
 # Always run after launch (portal may be up even if store not for full llm).
@@ -292,10 +336,17 @@ echo "=== Quick view (pools / status) ==="
 # Stop only what we started
 if [ "$EXISTING_DAEMON" != true ] && [ -n "$DAEMON_PID" ]; then
   echo
-  echo "=== Stopping isolated daemon ==="
+  echo "=== Stopping isolated daemon and robust cleanup for repeated runs ==="
   ./bin/aegis stop 2>&1 | cat || true
   pkill -P "$DAEMON_PID" 2>/dev/null || true
   sleep 1
+  # Additional robust cleanup for the custom env (sockets owned by root after sudo start, state, any lingering for this test)
+  sudo -n ./bin/aegis stop 2>/dev/null || true
+  sudo -n pkill -f 'aegis start --foreground' 2>/dev/null || true
+  sudo -n pkill -f 'aegishub start' 2>/dev/null || true
+  sudo -n rm -f "$HUB_SOCK" 2>/dev/null || true
+  rm -rf "$STATE_DIR" 2>/dev/null || true
+  sudo -n rm -rf /tmp/aegis-pmllm-e2e /tmp/aegis-*verify /tmp/aegis-pm* 2>/dev/null || true
 fi
 
 # Assertions (stabilize the test: produce clear pass/fail signals for the collab LLM flow)
@@ -312,11 +363,16 @@ else
   ASSERT_RC=1
 fi
 
-if echo "$CH_CONTENT" | grep -q 'E2E-LLM-VERIFY' || echo "$CH_CONTENT" | grep -qiE 'plan|step|coder|tester|hello'; then
-  echo "✓ PASS: channel content references the goal / plan elements"
+if echo "$CH_CONTENT" | grep -qi 'project-manager' && ( echo "$CH_CONTENT" | grep -qiE 'E2E-LLM-VERIFY|plan|step|coder|tester|hello|monitoring' ); then
+  echo "✓ PASS: channel content shows project-manager + plan/goal/monitoring markers (real collab flow)"
 else
-  echo "✗ WARN: channel content did not obviously contain plan/goal markers (may still be valid)"
+  echo "✗ WARN: channel content did not obviously contain project-manager + plan/goal markers (may still be valid; inspect get output above)"
 fi
+
+# Dynamic ensured roles evidence (PM from goal + coder/tester from LLM plan extract + ensure.role)
+echo "=== Dynamic roles (PM + ensured from plan) + current status snapshot ==="
+./bin/aegis vm list 2>/dev/null | grep -E 'project-manager|coder|tester' | cat || true
+./bin/aegis status 2>/dev/null | grep -E 'Court personas online|base infrastructure' | cat || true
 
 # LLM-specific evidence (when a model was requested)
 if [ -f "$LOG_FILE" ] && grep -q 'LLM plan gen' "$LOG_FILE"; then
@@ -326,6 +382,45 @@ elif [ "$EXISTING_DAEMON" = true ] && [ -n "$MODEL" ]; then
 else
   echo "ℹ INFO: no 'LLM plan gen' observed in this run log (fallback may have been used, or check full daemon log)."
 fi
+
+if [ $ASSERT_RC -eq 0 ]; then
+  echo "=== E2E SUMMARY: PASS (core PM->LLM/channel/ensure flow verified as user would use it) ==="
+else
+  echo "=== E2E SUMMARY: issues above (wiring may still be present; re-run after 'make start' or inspect logs) ==="
+  echo ""
+  echo "=== ACTIONABLE RECOVERY (for repeated clean runs / not-ready states) ==="
+  echo "  make e2e-clean"
+  echo "  sudo -n ./bin/aegis stop || true"
+  echo "  AEGIS_DEFAULT_MODEL=llama3.2:3b make start"
+  echo "  make smoke     # must show all ✓ (Court 7, base ready, pools, no temp) per testing-standards.md"
+  echo "  AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm"
+  echo ""
+  echo "  Inspect commands:"
+  echo "    ./bin/aegis status"
+  echo "    ./bin/aegis channel get $CHANNEL"
+  echo "    ./bin/aegis vm list | grep -E 'project-manager|coder|tester|court'"
+  echo "    tail -100 aegis.log* 2>/dev/null || tail -100 $LOG_FILE 2>/dev/null || true"
+  echo "    ./bin/aegis vm boot-metrics court-persona-0 2>/dev/null | head -8 || true"
+  echo "  (Update sudoers from scripts/aegisclaw-sudoers.example if sudo -n or env vars like BOOT_TIMING are rejected; see AGENTS.md)"
+fi
+
+# Isolation/scoping property test (invariant: channel posts are scoped; post to one channel does not appear in another.
+# This is a basic property check for the Store/ channel authority in the paranoid model.
+echo
+echo "=== Isolation/scoping invariant test (posts do not leak across channels) ==="
+TEMP_CH="e2e-isolation-$$"
+./bin/aegis channel create "$TEMP_CH" 2>/dev/null || true
+./bin/aegis pm goal "isolation test post UNIQUE-$$-SHOULD-NOT-LEAK" --channel "$TEMP_CH" 2>/dev/null || true
+sleep 3
+MAIN_CONTENT=$(./bin/aegis channel get plan-demo-e2e-llm 2>/dev/null || true)
+if echo "$MAIN_CONTENT" | grep -q 'UNIQUE-$$-SHOULD-NOT-LEAK'; then
+  echo "✗ FAIL: channel isolation broken (temp post leaked to main e2e channel)"
+  ASSERT_RC=1
+else
+  echo "✓ PASS: channel scoping (post to temp channel not visible in main e2e channel)"
+fi
+# cleanup
+./bin/aegis channel archive "$TEMP_CH" 2>/dev/null || true
 
 if [ $ASSERT_RC -eq 0 ]; then
   echo "=== E2E SUMMARY: PASS (core PM->LLM/channel/ensure flow verified as user would use it) ==="

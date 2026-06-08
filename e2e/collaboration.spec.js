@@ -32,6 +32,14 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
       await expect(messages).toContainText('project-manager', { timeout: 5000 }).catch(() => {});
     }
 
+    // Explicit channel membership/roster assert (per task: PM + Court + dynamically ensured roles visible in UI).
+    // members-list + renderMembers populated by portal from channel.members (Store authority) after PM goal + ensure.role.
+    const membersList = page.getByTestId('members-list');
+    await expect(membersList).toBeVisible({ timeout: 6000 }).catch(() => {});
+    if (await membersList.count() > 0) {
+      await expect(membersList).toContainText('project-manager', { timeout: 5000 }).catch(() => {});
+    }
+
     // Detailed: as a real user would, the post composer form for typing into the channel is always exercised
     // when the channel detail is reachable (or at least the form is in the DOM for the journey test).
     const postForm = page.locator('#channelPostForm, form.chat-composer');

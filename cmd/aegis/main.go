@@ -393,6 +393,17 @@ func ensureUserWorkspaceDir() error {
 }
 
 func isDaemonRunning() bool {
+	// Primary signal that the daemon is serving clients: successful dial to the control socket.
+	// On Linux this is an abstract socket (no fs entry/ownership issues for root daemon + user client).
+	// This makes "daemon is running" (and thus smoke's first gate + status) reliable as soon
+	// as the early-hoisted socket server is up (even in the PID-write race window or if the
+	// PID file is momentarily unreadable). Matches the readiness the make start wrapper waits for.
+	if isControlSocketReady(socketPath) {
+		return true
+	}
+
+	// Fallback to classic PID file + live /proc check (used by stop fallback, and when socket
+	// probe is not yet possible). Preserves existing behavior for stale PID cleanup.
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		return false
@@ -844,7 +855,8 @@ func stopDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	if err := process.Signal(syscall.SIGTERM); err != nil {
-		if strings.Contains(err.Error(), "no such process") {
+		errStr := err.Error()
+		if strings.Contains(errStr, "no such process") || strings.Contains(errStr, "process already finished") {
 			fmt.Println("daemon not running (PID file stale, cleaned up)")
 			removePIDFile()
 			return
