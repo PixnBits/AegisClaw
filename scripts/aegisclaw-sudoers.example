@@ -19,8 +19,8 @@ YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/ensure-aegis-dir.sh
 # /home/pixnbits/projects/AegisClaw/main/bin/aegis is the key one for `sudo -n ./bin/aegis start` and `make start*` (which invoke it under sudo -n internally).
 # Use direct bin for start to avoid broad sudo on make: sudo -n /home/pixnbits/projects/AegisClaw/main/bin/aegis start --foreground
 
-Defaults! /home/pixnbits/projects/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING"
-Defaults! /home/pixnbits/projects/AegisClaw/main/bin/aegis env_keep += "AEGIS_DEFAULT_MODEL"
-Defaults! /home/pixnbits/projects/AegisClaw/main/bin/aegis env_keep += "AEGIS_HUB_SOCKET"
-Defaults! /home/pixnbits/projects/AegisClaw/main/bin/aegis env_keep += "AEGIS_STATE_DIR"
+Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING"
+Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_DEFAULT_MODEL"
+Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_HUB_SOCKET"
+Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_STATE_DIR"
 
