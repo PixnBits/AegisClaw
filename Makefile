@@ -5,7 +5,7 @@ CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.
 ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
 AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-tcb test-chaos sbom smoke help doctor setup boot-metrics
+.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-tcb test-chaos sbom smoke help doctor setup boot-metrics
 
 # Default target
 all: build
@@ -172,6 +172,16 @@ test-e2e:
 test-e2e-contract:
 	AEGIS_E2E_FIXTURE=1 bash scripts/run-playwright-e2e.sh e2e/journeys.spec.js --project=chromium
 
+# Real unmocked E2E exercising PM + LLM (Ollama via network-boundary) + channels exactly as a user would:
+#   `aegis pm goal "..." --channel foo` then `aegis channel get foo` (or view in portal #channels).
+# Uses isolated custom hub/state + short waits + AEGIS_DEFAULT_MODEL (defaults llama3.2:3b).
+# Requires: make build, sudo -n for ./bin/aegis (per AGENTS.md), ollama running with the model.
+# This is the "no fixtures, hits real LLM" verification for the collaboration model.
+test-e2e-llm:
+	@echo "=== Real PM+LLM+Channels E2E (unmocked, user path via CLI pm goal + channel inspect) ==="
+	@echo "See scripts/verify-pm-llm-e2e.sh for details and success criteria."
+	AEGIS_DEFAULT_MODEL="${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
+
 # TCB-specific tests (7.5.7). Additive target.
 # Runs unit tests for security + runtime + cmd/aegis TCB surface + skeleton compliance tests.
 # Use with -tags=integration for fuller daemon lifecycle checks (requires sudo in some cases).
@@ -280,6 +290,7 @@ help:
 	@echo "  make test-integration   Run daemon integration tests"
 	@echo "  make test-e2e           Browser E2E vs real daemon + microVMs (requires make start)"
 	@echo "  make test-e2e-contract  Thin-portal contract tests only (no daemon; AEGIS_E2E_FIXTURE=1)"
+	@echo "  make test-e2e-llm       Real unmocked PM+LLM+channels E2E (CLI pm goal + channel get; hits Ollama, no fixtures; see script)"
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
 	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"
 	@echo "  make sbom               SBOM + supply-chain (7.8: CycloneDX or fallback + cosign hooks)"

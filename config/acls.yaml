@@ -236,6 +236,16 @@ rules:
     - ensure.role
     - orchestrator.*
 
+# Project Manager <-> Network Boundary for real LLM plan generation (same contract as agents; enables unmocked Ollama E2E via NewRealLLMCaller)
+- source: "project-manager*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "project-manager*"
+  commands:
+    - llm.*
+
 # Memory <-> Store (long-term persistence per memory-vm.md)
 - source: memory
   destination: store
