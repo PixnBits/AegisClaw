@@ -292,4 +292,41 @@ Ready for more (e.g. full clean E2E evidence on a machine with the sudoers, more
 
 The branch is now in a state where the collaboration model (channels + PM + real LLM + fast roles + visibility + tests) can be reviewed as a coherent whole. Remaining items are tracked in this doc as follow-on work.
 
+## Startup Bug Diagnosis + Fix (High-Priority Work This Session)
+
+**Problem reported:** After `make build-microvms` + `sudo ./bin/aegis start --foreground`:
+- Hub up.
+- Flood of `aegis-daemon-temp-*` (and later `daemon-internal-*`) registrations.
+- Then "stops".
+- `aegis status`: "daemon is running", "Court 7", "Base infrastructure: launch attempted", but base (network-boundary/store/web-portal) and agents not actually usable. Collaboration features (channels, PM goal) would fail.
+
+**Root cause analysis (iterative debug via code + logs + E2E harness):**
+- `sendToComponentViaHub` (used for *all* internal daemon→component + many CLI paths like `aegis status` channel_count, `aegis channel *`, receiver auto-main, pm goal helper, etc.) creates a brand-new ephemeral hub client + Register *every call*: `aegis-daemon-temp-<nano>`. Under sudo start (slow first base boots, conversion if only .tar.gz, guest boot+bridge time), if user (or background) polls `status` or if the receiver's E2E auto (started *before* base in code) or other goroutines fire, you get a visible "flood" of unique temp registrations in hub logs. Looks like leak/bug.
+- Base launch in `startBaseInfrastructure` is fire-and-forget sequential `ensureRealRootfsImage` + `orchestrator.StartVM` for network-boundary/store/web-portal (plus parallel Court go). StartVM does *another* Ensure inside (double for base). Returns after VMM socket ready (not full guest + register + guest-hub-bridge up). Then later 60s web probe + proxy.
+- No wait for critical "store" (the channel/PM/collaboration source of truth) to be responsive before "launch sequence complete" or returning from startBase. Result: status shows optimistic "attempted", receiver auto may silently fail its channel.create (direct send, no retry, ignored err), system "not usable".
+- Guest boots for base are async (bridge dial loops in runGuestHubBridge with 100ms/200ms, guest must have listener + binary running + register via bridged hub). If image from build-microvms is tar-only (on-the-fly convert in ensure is slow I/O under start, or fails on loop/mkfs/tar for 1G images), or guest /init doesn't launch the component binary, or vsock bridge timing, the registrations for "store"/"web-portal" never appear. Only daemon temps + perhaps Court.
+- Status hardcodes "Court 7" and "launch attempted" (no live count from ListVMs, no probe of store responsiveness). Hides the real state.
+- reconcile + early receiver + portal bridge + user `status` loops during the "hang" window amplify the temp noise.
+- Not a total crash (PID/socket up from hoist, so "daemon running"), but base infra never becomes the "usable" state the collaboration model depends on.
+- Matches the plan's emphasis on observability for base + short bounded waits + E2E as guard.
+
+**Fixes (small, targeted, preserve security model — still real FC no thin fallback, signed hub, etc.):**
+- ID scheme: "daemon-internal-N" (atomic seq) instead of unique nano temps. Reduces log spam dramatically; now sequential and clearly "internal".
+- Robustness: receiver auto-main now uses sendToComponentViaHubRetry (tolerates store not instant).
+- Readiness in startBase: after store StartVM + startGuestHubBridge + RegisterAux, do explicit `sendTo...Retry("store", "channel.list", ..., 45s)`. If fails, return error → fatalf with clear message ("store VM did not become ready... check fc-store-console + bridge logs"). Start now either succeeds with store usable or fails loudly. The wait overlaps with guest boot time.
+- Truthful status: dynamic Court count from live `vm.list`; base_infrastructure line now says "ready" only if store channel.list succeeds, else "launch attempted (store not yet responding)".
+- E2E script: isolated wait now loops until `channel list` succeeds (not just status "running"). On fail: clear ERROR + exit 4 + advice to inspect guest logs. Catches this class of bug early. Also documents metrics capture for collab roles.
+- Observability: more comments, the status now helps, E2E guard improved, logs during startBase will show the new "Store is up and responsive" on success path.
+- No behavior change for happy path; just makes slow/partial paths visible and fail fast.
+
+These were committed as "fix(daemon): ..." and "test(e2e): ...".
+
+Tested via: code inspection of startBase/StartVM/ensure/bridge/receiver/sendTo paths, build, E2E script invocation (exercised new wait + early store check paths), unit tests.
+
+With proper `sudo -n` env + images from `make build-microvms`, `sudo ./bin/aegis start --foreground` should now complete with store responsive (thanks to internal wait), status truthful, no mysterious "attempted but not usable", and `make test-e2e-llm` can proceed to real LLM exercise.
+
+**Updated plan items addressed:** startup bug (high prio #1), E2E robustness (#2), observability for <1s collab + base (part of #5).
+
+Remaining (as before): full clean LLM evidence capture on a working-sudoers machine (now the script will reliably reach the pm goal step), deeper richer PM loop, migration, portal expansions, browser E2E, etc.
+
 *Iterative, commit-as-ready, measurement-first, paranoid security preserved. Update this file with progress after each portion.*
