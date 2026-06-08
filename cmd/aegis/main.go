@@ -934,8 +934,10 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	probeCancel()
 	if storeReady {
 		base["base_infrastructure"] = "ready (AegisHub + Network Boundary + Store + Web Portal)"
+		base["collab"] = "ready (channels + PM + roles available via Store)"
 	} else {
 		base["base_infrastructure"] = "launch attempted (Store still starting...)"
+		base["collab"] = "launching (see base_infrastructure; channels/PM after store)"
 	}
 
 	if jsonOutput {
@@ -950,6 +952,9 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	fmt.Printf("  Sandbox backends: %s\n", base["sandbox_backends"])
 	fmt.Printf("  Web portal: %s\n", base["web_portal"])
 	fmt.Printf("  Base infrastructure: %s\n", base["base_infrastructure"])
+	if c, ok := base["collab"].(string); ok && c != "" {
+		fmt.Printf("  Collab/PM/channels: %s\n", c)
+	}
 
 	// Show whatever the orchestrator actually knows about (regular VMs + aux-registered base components)
 	fmt.Println("  Live VM/component view (from orchestrator):")
@@ -4122,18 +4127,6 @@ func startBaseInfrastructure() error {
 	logrus.Info("host AegisHub is up; now launching real Firecracker microVMs for base infrastructure (network-boundary, store, web-portal). If the process appears to hang here, check that ensureRealRootfsImage can find your images and that loop mounts / mkfs succeed as root.")
 	dlog("hub registration complete, moving to first real VM (network-boundary)")
 
-	// Start Court early (right after hub) so the 7 personas + scribe boot in parallel with
-	// the other base VMs. This makes their guest BOOT_TIMING / register_complete phases
-	// emitted and capturable sooner after "daemon started" (for reliable base Court metrics
-	// in short windows, per collaboration plan). The control socket is already up from hoist,
-	// so `aegis vm boot-metrics court-persona-ciso` etc. will work as soon as the personas
-	// have registered.
-	go func() {
-		if err := orchestrator.StartCourtSystem(context.Background()); err != nil {
-			logrus.Warnf("Court system start (best effort, started early after hub): %v", err)
-		}
-	}()
-
 	// Web Portal microVM bridge (vsock 1030): forwards chat/sessions/dashboard actions to Hub.
 	startPortalBridge()
 
@@ -4190,6 +4183,18 @@ func startBaseInfrastructure() error {
 	// Persistent daemon-orchestrator client (in receiver) is preferred for ongoing PM
 	// ensure.role traffic.
 	go setupDefaultMainChannelAndMembers()
+
+	// Court personas warm lazily after basic Store + channels ready (per phasing
+	// improvements + task). This reduces I/O/CPU contention during the critical
+	// store boot + pre-warm window (lighter net-boundary/web proceed; heavy 7x
+	// Court after the collab backbone). Still early enough for base metrics +
+	// smoke invariants (Court==7) once full base settles. Control plane + status
+	// already up from hoist.
+	go func() {
+		if err := orchestrator.StartCourtSystem(context.Background()); err != nil {
+			logrus.Warnf("Court system start (lazy after store+channels ready): %v", err)
+		}
+	}()
 
 	// 5. Web Portal (presentation only; must be daemon-mediated per spec).
 	// MUST run as real Firecracker microVM per paranoid security model.
