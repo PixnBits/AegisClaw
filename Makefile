@@ -176,9 +176,11 @@ test-e2e-contract:
 #   `aegis pm goal "..." --channel foo` then `aegis channel get foo` (or view in portal #channels).
 # Uses isolated custom hub/state + short waits + AEGIS_DEFAULT_MODEL (defaults llama3.2:3b).
 # Requires: make build, sudo -n for ./bin/aegis (per AGENTS.md), ollama running with the model.
+# Includes explicit `./bin/aegis status` after start (before other tests), plus browser (Playwright)
+# verification of the channels UI showing the PM post (not just CLI).
 # This is the "no fixtures, hits real LLM" verification for the collaboration model.
 test-e2e-llm:
-	@echo "=== Real PM+LLM+Channels E2E (unmocked, user path via CLI pm goal + channel inspect) ==="
+	@echo "=== Real PM+LLM+Channels E2E (unmocked, user path via CLI pm goal + channel inspect + browser) ==="
 	@echo "See scripts/verify-pm-llm-e2e.sh for details and success criteria."
 	AEGIS_DEFAULT_MODEL="${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
 
@@ -290,7 +292,7 @@ help:
 	@echo "  make test-integration   Run daemon integration tests"
 	@echo "  make test-e2e           Browser E2E vs real daemon + microVMs (requires make start)"
 	@echo "  make test-e2e-contract  Thin-portal contract tests only (no daemon; AEGIS_E2E_FIXTURE=1)"
-	@echo "  make test-e2e-llm       Real unmocked PM+LLM+channels E2E (CLI pm goal + channel get; hits Ollama, no fixtures; see script)"
+	@echo "  make test-e2e-llm       Real unmocked PM+LLM+channels E2E (CLI pm goal + channel get + browser UI + status check; hits Ollama, no fixtures; see script)"
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
 	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"
 	@echo "  make sbom               SBOM + supply-chain (7.8: CycloneDX or fallback + cosign hooks)"

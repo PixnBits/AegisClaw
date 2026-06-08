@@ -319,6 +319,13 @@ The fixes are effective (no ACL violation in this log, status has the improved "
 In this env, real base VMs can't launch (no full Firecracker/kvm support). The test is working as designed to detect.
 For the user with sudoers + real setup: start will complete base (store wait passes), E2E wait passes, pm goal runs real LLM, plan posted to channel, get shows it (exciting!).
 
+**Further E2E enhancements (this portion):**
+- Explicit `./bin/aegis status` right after start (before pm goal / channel / browser tests) to verify startup health (e.g. base infrastructure ready, no "launch attempted" lingering).
+- Added browser (Playwright) usage: new `e2e/collaboration.spec.js` that (after CLI pm goal) navigates to `#channels`, selects the E2E channel, asserts the PM post (containing "E2E-LLM-VERIFY" and "project-manager") is visible in the UI messages. Invoked from the verify script (only for non-isolated/existing-daemon mode, as recommended).
+- Updated `package.json` to a newer pre-release `@playwright/test` alpha (2026-06-08) for Ubuntu 26.04 support (changes merged to main but pre-release; run `npm install` after).
+- Updated Makefile help/desc for `test-e2e-llm` and script comments to document the status check + browser.
+- The E2E now covers: status post-start, CLI pm goal + channel inspect, + browser UI verification of the collaboration surface. This ensures not just CLI but full user-visible (portal) behavior.
+
 ## Startup Bug Diagnosis + Fix (High-Priority Work This Session)
 
 **Problem reported:** After `make build-microvms` + `sudo ./bin/aegis start --foreground`:

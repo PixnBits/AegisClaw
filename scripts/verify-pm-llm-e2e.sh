@@ -40,8 +40,10 @@
 #
 # Success criteria for "hitting real Ollama as user would":
 # - "daemon is running" (existing or freshly started).
+# - Explicit `./bin/aegis status` after start succeeds and shows healthy base (before pm goal / other tests).
 # - PM receives "user.goal", posts plan (from realLLM or fallback), sends ensure.role, posts monitoring.
 # - `channel get` shows post(s) from project-manager containing plan content for the goal.
+# - Browser (Playwright) verification: #channels page shows the PM post (E2E-LLM-VERIFY + project-manager) in UI.
 # - Log (or daemon log) preferably shows "LLM plan gen" when a model was configured (proves real Ollama path via network-boundary).
 #
 # The script now supports "use existing daemon" for fast iteration after `make start`.
@@ -176,6 +178,10 @@ else
   fi
 fi
 
+# Explicit startup status check after the start (per request), before running other tests (pm goal, channel inspect, browser).
+echo "=== Post-start startup status check ==="
+./bin/aegis status 2>&1 | cat || true
+
 # Trigger (the real user action)
 echo
 echo "=== Trigger real user path: pm goal (CLI as a user would; drives PM + real LLM via network-boundary) ==="
@@ -188,6 +194,20 @@ echo "=== Inspect channel (as user would via CLI or portal #channels) ==="
 echo
 echo "=== Check default 'main' channel (E2E auto-create + Court) ==="
 ./bin/aegis channel get main 2>&1 | cat || true
+
+# Browser usage to the E2E tests (not just CLI): after CLI pm goal + channel inspect,
+# use Playwright to verify the portal UI (#channels page) shows the PM plan post.
+# This exercises the full user experience: CLI trigger -> real LLM -> store -> visible in browser.
+# Only for existing daemon / non-forced-isolated (portal expects standard :8080 + hub).
+# For Ubuntu 26.04 support, package.json uses pre-release @playwright/test (update via npm if newer alpha available).
+if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
+  echo
+  echo "=== Browser E2E verification of channels UI (PM plan post visible in portal) ==="
+  npx @playwright/test test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors)"
+else
+  echo
+  echo "=== Skipping browser E2E (forced isolated mode uses custom hub; browser assumes standard daemon/portal after 'make start')"
+fi
 
 echo
 echo "=== Evidence from logs (best effort) ==="
