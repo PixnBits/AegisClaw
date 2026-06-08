@@ -4263,6 +4263,13 @@ func startManagedHub(hubSocket string) error {
 			// Then prove it's actually accepting connections (the important part)
 			if conn, dialErr := net.DialTimeout("unix", hubSocket, 200*time.Millisecond); dialErr == nil {
 				conn.Close()
+				// Make the socket world-accessible (0666) so that after sudo start (root listener),
+				// normal users (and E2E scripts with custom /tmp state dirs) can connect without
+				// permission denied on the unix socket. For the main ~/.aegis/hub.sock this is
+				// usually not an issue (user-owned dir), but for isolated tests and custom paths
+				// it prevents the "connect: permission denied" that was blocking E2E waits and
+				// channel operations even when the daemon was up.
+				_ = os.Chmod(hubSocket, 0666)
 				logrus.Infof("aegishub ready (socket accepting connections: %s)", hubSocket)
 				return nil
 			}

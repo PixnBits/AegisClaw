@@ -108,6 +108,16 @@ else
   DAEMON_PID=$!
   echo "Daemon launch pid: $DAEMON_PID (will stop at end)"
 
+  # Fix permissions on the custom hub socket (created by root via sudo -n start).
+  # The E2E script runs client commands (status, channel list) as the normal user with
+  # exported AEGIS_HUB_SOCKET. Without chmod/chown, we get "connect: permission denied"
+  # even if the daemon is up (this was surfacing in the wait loop and causing false
+  # "not ready" failures). Per AGENTS.md sudo instructions, we use sudo -n for the
+  # privileged start, then make the sock usable for the test client.
+  sleep 2
+  sudo -n chmod 666 "$HUB_SOCK" 2>/dev/null || true
+  sudo -n chown $(id -u):$(id -g) "$HUB_SOCK" 2>/dev/null || true
+
   # Improved bounded wait (up to ~90s). Explicitly waits for store to be responsive
   # (using channel.list) and for base infrastructure to report "ready" (not "attempted").
   # Also inspects the daemon log each tick for key success strings (store ready, web portal ready,
