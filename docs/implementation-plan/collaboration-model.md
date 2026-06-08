@@ -594,3 +594,38 @@ Update this doc + commit the small changes after review. (Polish + robustness + 
 Update this doc + commit after portion. (Fresh session step 1-2 complete per query; evidence + exact local cmds + plan status captured. Continuing iteratively on the branch.)
 
 **Branch status (this commit):** Collaboration model foundations + test reliability (startup invariants as first-class, loud pre-LLM guards, self-doc, recovery, browser + CLI coverage for channels/PM/roles) exercised and confirmed on real hw launch attempt. Full end-to-end success (real LLM plan visible in channel + roster + dynamic roles) expected on local desktop with time + the sudoers for E2E. Paranoid model preserved. Small, reviewable doc update + this evidence.
+
+---
+
+## This Portion: Fix Status Hang + Decouple Receiver/Auto-Defaults (priority 1+2 per query)
+
+**Context / regression observed (clean state + baseline first, per instructions + AGENTS + testing-standards):**
+- Started clean (git clean on feat/..., `make build-binaries`, `make stop`, sudo -n verified working for bin per AGENTS "always attempt sudo -n first").
+- Baseline measurement (AEGIS_BOOT_TIMING=1 sudo -n ./bin/aegis start; poll status + channel list): 
+  - "daemon started" (control-plane via early hoist + socket/PID) returns very fast (~100-200ms wall in wrapper).
+  - Immediate post-start `aegis status`: "daemon is running", Court=0, "Base infrastructure: launch attempted (store not yet responding...)" (or equivalent), live view empty. Status *did* return (no hang in first probe), but measurement poll loops would stick on subsequent status/channel calls (pre-fix sendTo with Background ctx + no deadline could block on hub/store during VM boot window + I/O).
+  - Full "base infrastructure: ready" + usable channels (channel list sees "main", PM path live) did not appear in short bounded windows; took long (VM serial boots + guest /init + bridge + register for store+boundary+web+7x court + pre-warm copies under load). This is the reported perf regression vs main/early branch (overall target <3s to base+usable channels/PM; <1s primarily for on-demand roles via pooled claim).
+  - `make smoke` would fail invariants until base/Court/pools green (as designed).
+  - On-demand sample (pm goal) not reached in window due to base not ready.
+- Root contributors identified (matching query): status Store probe (and component sends) could hang CLI; receiver auto-main (E2E "main"+Court members) kicked with only 2s sleep *before* store gate (using even the persistent path), causing coupling, potential contention, silent no-op creates, and early fresh-dial noise (daemon-internal-*).
+
+**Changes (small, targeted, priority order):**
+1. **Status hang fix (immediate UX):** In `statusDaemon` (cmd/aegis/main.go:924), the Store probe `sendToComponentViaHub("store", "channel.list", nil)` (and comment for other probes) now uses `sendToComponentViaHubContext( WithTimeout(2.5s), ... )`. On timeout/err: graceful "launch attempted (Store still starting...)" (updated fallback msg). `aegis status` (and thus smoke/E2E waits) can no longer block the command. Socket vm.list for Court count remains local/fast. Verified live: post-fix status always returns <3s even when store not ready, shows the new graceful text.
+2. **Decouple receiver/auto from Store boot:** Removed the one-shot auto-defaults goroutine (2s sleep + direct client.Send for channel.create/list/add_member Court) from inside `startOrchestratorCommandReceiver` (early, post-hoist, pre-base; the registration for ensure.role stays early so PM can wire as soon as it starts). Added `setupDefaultMainChannelAndMembers()` (uses `sendToComponentViaHubRetry` for robustness/backoff) invoked as `go ...()` *immediately after* the store readiness gate + `sendTo...Retry("store", "channel.list"...)` success + "Store is up..." log in `startBaseInfrastructure`. 
+   - Auto now happens *after* store responsive (decoupled).
+   - Uses retry helper (tolerates any tail latency).
+   - Receiver's persistent "daemon-orchestrator" client preferred/used for the ensure.role + reply path (and the add_member on ensure now also uses short Retry).
+   - Early coupling / one-shot races / potential extra dial contention during the critical store boot window eliminated.
+   - "main" + members still created reliably once (post-gate), preserving E2E defaults + solo-user sensible channel.
+3. Units: `make test` green (no regression).
+4. Rebuild + spot verification: status now emits the graceful "Store still starting..." msg; no-hang behavior confirmed (status responds while base is launching).
+5. Doc + commit: this update + small "fix(daemon): ..." commit. (Further phasing/parallel/stagger/pre-warm/build fixes per 3/4, full smoke + test-e2e-llm + <3s numbers on warm re-runs per 5, in follow-up portions.)
+
+**Observed numbers (this hardware, cold-ish boots, AEGIS_BOOT_TIMING=1, Framework desktop + Firecracker + sudo + images present as raw .img):**
+- Pre-fix baseline: control-plane "daemon started" ~0.1-0.2s; status immediate post: court=0 + attempted (could hang in loops); full base+channels/PM: long (tens of s to minutes in measurement windows; regression vs target).
+- Post these fixes (explicit re-runs): control-plane still ~0.1s ("daemon started"); `status` always <~2.5s (capped probe), shows "Base infrastructure: launch attempted (Store still starting...)" + court count (0 early, grows as Court go registers); auto-main now fires after gate (no early noise). Full base ready still gated by serial real FC VM boots + guest phases (see next items for stagger/parallel/light-base/Court-lazy + boot timing milestones + pre-warm discipline to drive toward <3s overall to usable channels/PM). On-demand role (post base): <<1-2s expected once pools claim (reflink) + StartVM (to be re-measured in validation).
+- The status no-hang + post-gate auto directly address the "hanging" UX and "decouple" that were amplifying the perceived regression and blocking clean measurement.
+
+**Next (per query priorities + plan):** 3 (pre-warm/build: ensure .img always, no hot tar convert, stagger pre-warm vs base I/O), 4 (phasing: parallel net-boundary/web where safe, lazy Court after store+channels, more AEGIS_BOOT_TIMING milestones for "base ready"/"channels ready"/"full healthy", status distinguish control-plane vs full-collab-ready), 5 (smoke + full test-e2e-llm real Ollama; confirm <3s avg to usable; on-demand <<1-2s; update doc with final numbers). Always `make smoke` + invariants early. Small commits. Update this doc after each.
+
+Update this doc + commit after portion. (Status hang + receiver decoupling complete + baseline started per query; units green; graceful non-hanging status + decoupled auto verified; plan + commit.)
