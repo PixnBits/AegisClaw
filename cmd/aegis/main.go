@@ -4692,14 +4692,24 @@ func startOrchestratorCommandReceiver() {
 		logrus.Info("daemon-orchestrator receiver registered for ensure.role from PM etc.")
 
 		// E2E default per plan (solo-user sensible default "main" channel with PM + Court)
-		// Use retry so this waits for store to actually be up and registered (base infra
-		// may still be booting when the receiver starts). Prevents silent failure of the
-		// "main" auto-create if timing is unlucky. Uses the improved daemon-internal seq IDs.
+		// Use the *persistent* receiver client (source="daemon-orchestrator") for these sends
+		// instead of sendToComponentViaHub (which creates new daemon-internal-* clients every time).
+		// This avoids the flood of temp/internal registrations + ACL violations during early startup.
+		// The ACL now grants daemon-orchestrator -> store channel.* .
+		// We still use a small sleep + best-effort (no full retry here to keep it simple and non-blocking).
 		go func() {
 			time.Sleep(2 * time.Second)
-			listData, _ := sendToComponentViaHubRetry("store", "channel.list", nil, 30*time.Second)
+			// Use direct sends via the receiver's authenticated client (source will be daemon-orchestrator)
+			listMsg := hubclient.Message{
+				Source:      client.AssignedID(),
+				Destination: "store",
+				Command:     "channel.list",
+				Payload:     nil,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}
+			listResp, _ := client.Send(context.Background(), listMsg)
 			hasMain := false
-			if arr, ok := listData.([]interface{}); ok {
+			if arr, ok := listResp.Payload.([]interface{}); ok {
 				for _, c := range arr {
 					if m, ok := c.(map[string]interface{}); ok {
 						if id, ok := m["id"].(string); ok && id == "main" {
@@ -4710,11 +4720,25 @@ func startOrchestratorCommandReceiver() {
 				}
 			}
 			if !hasMain {
-				_, _ = sendToComponentViaHubRetry("store", "channel.create", map[string]interface{}{"id": "main"}, 10*time.Second)
+				createMsg := hubclient.Message{
+					Source:      client.AssignedID(),
+					Destination: "store",
+					Command:     "channel.create",
+					Payload:     map[string]interface{}{"id": "main"},
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				}
+				_, _ = client.Send(context.Background(), createMsg)
 			}
 			// E2E: ensure Court personas are participants in main (with PM)
 			for _, p := range []string{"ciso", "security-architect", "architect", "senior-coder", "tester", "efficiency", "user-advocate"} {
-				_, _ = sendToComponentViaHubRetry("store", "channel.add_member", map[string]interface{}{"channel_id": "main", "role": "court-persona-" + p}, 5*time.Second)
+				addMsg := hubclient.Message{
+					Source:      client.AssignedID(),
+					Destination: "store",
+					Command:     "channel.add_member",
+					Payload:     map[string]interface{}{"channel_id": "main", "role": "court-persona-" + p},
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				}
+				_, _ = client.Send(context.Background(), addMsg)
 			}
 		}()
 

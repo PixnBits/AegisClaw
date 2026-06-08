@@ -109,28 +109,58 @@ else
   echo "Daemon launch pid: $DAEMON_PID (will stop at end)"
 
   # Improved bounded wait (up to ~90s). Explicitly waits for store to be responsive
-  # (using channel.list). This exercises the post-fix behavior where startBase now
-  # waits for store, and surfaces startup problems early with clear ERROR instead of
-  # proceeding to pm goal that would then fail mysteriously.
-  echo "=== Waiting for daemon + store (base infrastructure ready) ==="
+  # (using channel.list) and for base infrastructure to report "ready" (not "attempted").
+  # Also inspects the daemon log each tick for key success strings (store ready, web portal ready,
+  # base complete, component registrations) and errors (CRITICAL, failed, hang, etc.).
+  # This makes the E2E robust enough to detect startup bugs like the one the user is seeing
+  # (temp registration flood, base VMs not fully coming up, store not serving, etc.).
+  # On failure, dumps diagnostic info from log.
+  echo "=== Waiting for daemon + base infrastructure (store + key components ready) ==="
   export AEGIS_HUB_SOCKET="$HUB_SOCK"
   export AEGIS_STATE_DIR="$STATE_DIR"
   READY=false
   for i in $(seq 1 18); do
     sleep 5
     echo "--- tick $i ---"
-    STATUS_OUT=$(./bin/aegis status 2>&1 | head -12 || true)
+    STATUS_OUT=$(./bin/aegis status 2>&1 | head -15 || true)
     echo "$STATUS_OUT"
+    # Tail recent log for visibility into startup
+    if [ -f "$LOG_FILE" ]; then
+      echo "Recent log (last 8 lines):"
+      tail -8 "$LOG_FILE" | cat
+    fi
     if echo "$STATUS_OUT" | grep -q 'daemon is running'; then
-      if ./bin/aegis channel list >/dev/null 2>&1; then
-        echo "✓ daemon running and store responsive (collaboration backbone ready)"
-        READY=true
-        break
+      if echo "$STATUS_OUT" | grep -qi 'base infrastructure.*ready'; then
+        if ./bin/aegis channel list >/dev/null 2>&1; then
+          # Additional check: look for critical component registrations in log
+          if [ -f "$LOG_FILE" ] && grep -E 'Registered component (store|network-boundary|web-portal)' "$LOG_FILE" | tail -3 | grep -q . ; then
+            echo "✓ daemon running, base infrastructure ready, store responsive, key components registered (collaboration backbone ready)"
+            READY=true
+            break
+          else
+            echo "  (channel list ok but waiting for store/network-boundary/web-portal registrations in log...)"
+          fi
+        fi
+      else
+        echo "  (daemon running but base infrastructure not yet 'ready' in status - may indicate partial startup)"
+      fi
+    fi
+    # Check log for obvious startup errors
+    if [ -f "$LOG_FILE" ]; then
+      if grep -E 'CRITICAL|ERROR.*start|failed to start|hang|base infrastructure.*failed' "$LOG_FILE" | tail -1 | grep -q . ; then
+        echo "  Detected error pattern in log during wait."
       fi
     fi
   done
   if [ "$READY" != true ]; then
-    echo "ERROR: daemon or store (channel backend) not ready within bounds. See $LOG_FILE and fc-*-console.log for guest boot/bridge issues. This E2E now catches the class of base-infra startup bugs."
+    echo "ERROR: daemon or base infrastructure (store/channel backend + components) not ready within bounds."
+    echo "This E2E is designed to catch the class of base-infra startup bugs (e.g. temp flood, VMs launched but not registered/serving, store not responsive)."
+    if [ -f "$LOG_FILE" ]; then
+      echo "=== Last 50 lines of $LOG_FILE (for diagnosis) ==="
+      tail -50 "$LOG_FILE" | cat
+      echo "=== Key startup indicators from log ==="
+      grep -E 'AegisHub|Registered component|base infrastructure|WEB_PORTAL|Store is up|CRITICAL|ERROR|failed|hang|temp-|daemon-internal' "$LOG_FILE" | tail -20 | cat || true
+    fi
     ./bin/aegis stop 2>/dev/null || true
     exit 4
   fi

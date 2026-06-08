@@ -236,6 +236,16 @@ rules:
     - ensure.role
     - orchestrator.*
 
+# daemon-orchestrator (the receiver started early in daemon) needs to do channel.* to store
+# for the E2E auto-default "main" channel + Court members setup (best-effort, idempotent).
+# This prevents ACL violations and "temp" spam from the auto go func during startup.
+# Source is the persistent "daemon-orchestrator" client (we updated the auto code to use it
+# instead of always creating new daemon-internal-* clients via sendToComponentViaHub).
+- source: "daemon-orchestrator"
+  destination: store
+  commands:
+    - channel.*
+
 # Project Manager <-> Network Boundary for real LLM plan generation (same contract as agents; enables unmocked Ollama E2E via NewRealLLMCaller)
 - source: "project-manager*"
   destination: network-boundary
