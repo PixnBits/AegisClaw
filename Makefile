@@ -44,26 +44,6 @@ build-microvms:
 		echo "MicroVM building not needed on $(shell uname -s) (uses Docker Sandboxes)"; \
 	fi
 
-# Start the daemon (absolute path for NOPASSWD sudoers rules)
-start:
-	sudo -n $(AEGIS_BIN) start
-
-# Start daemon in foreground for debugging
-start-foreground:
-	sudo -n $(AEGIS_BIN) start --foreground
-
-# Stop the daemon
-stop:
-	./bin/aegis stop
-
-# Check daemon status
-status:
-	./bin/aegis status
-
-# Run health checks
-doctor:
-	./bin/aegis doctor
-
 # Quick smoke test - run this after `make start` to verify the system came up cleanly.
 # Per docs/testing-standards.md, this now explicitly asserts the core startup health
 # invariants (base infra registration, Court count==7, pre-warm pools, no stray temp
