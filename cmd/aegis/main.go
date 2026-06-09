@@ -670,17 +670,29 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// stealing I/O from the critical minimal base VMs during their boot window.
 	// Pre-warm continues in background; claimable pools appear for fast StartPaired/Ensure
 	// without blocking the <3s/<5s client-visible targets.
+	//
+	// Use the *effective user's* state dir (under their $HOME via SUDO_USER) for the
+	// pooled copies so that normal-user `aegis vm pools`, ls, and claim (in non-root
+	// prepare paths) can see them without permission issues on /root dirs. The Prewarm
+	// func also chowns the dir + files.
 	go func() {
+		poolStateDir := cfg.StateDir
+		if su := os.Getenv("SUDO_USER"); su != "" {
+			if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
+				poolStateDir = filepath.Join(u.HomeDir, ".aegis", "state")
+			}
+		}
 		if cfg.RootfsDir != "" {
 			for _, comp := range []string{"agent", "memory"} {
 				if template, err := sandbox.EnsureBootableRootfsImage(cfg.RootfsDir, comp); err == nil {
 					if _, err := os.Stat(template); err == nil {
-						_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, template, 2, comp)
+						_ = os.MkdirAll(poolStateDir, 0755)
+						_ = sandbox.PrewarmPooledRootfsCopies(poolStateDir, template, 2, comp)
 					}
 				}
 			}
-			if matches, _ := filepath.Glob(filepath.Join(cfg.StateDir, "*-pooled-*.rootfs.img")); len(matches) > 0 {
-				logrus.Infof("Background pre-warm complete: %d pooled rootfs files available for fast agent/memory claim", len(matches))
+			if matches, _ := filepath.Glob(filepath.Join(poolStateDir, "*-pooled-*.rootfs.img")); len(matches) > 0 {
+				logrus.Infof("Background pre-warm complete: %d pooled rootfs files available for fast agent/memory claim (in %s)", len(matches), poolStateDir)
 			}
 		}
 	}()

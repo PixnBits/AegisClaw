@@ -174,6 +174,13 @@ func PrewarmPooledRootfsCopies(stateDir, templateRootfs string, count int, prefi
 
 	uid, gid := effectiveOwner()
 
+	// Make the pools directory itself traversable/visible to the effective user.
+	// (MkdirAll as root creates it 0700 root; without this, even chowned files inside
+	// a dir under /root or inaccessible path won't be globbable by the normal user
+	// running `aegis vm pools` or ls.)
+	_ = os.Chown(stateDir, uid, gid)
+	_ = os.Chmod(stateDir, 0755)
+
 	created := 0
 	for i := 0; i < count; i++ {
 		dst := filepath.Join(stateDir, fmt.Sprintf("%s-pooled-%d.rootfs.img", prefix, i))

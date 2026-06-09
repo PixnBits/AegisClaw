@@ -246,6 +246,24 @@ rules:
   commands:
     - channel.*
 
+# daemon-internal-N (and daemon-internal-1 etc.): used by all host-side internal hub traffic
+# from the CLI (./bin/aegis status, channel list/get/post, etc.) and from daemon bg code
+# (the readiness probe in startBase, setupDefaultMainChannelAndMembers for auto "main",
+# status store probe, portal bridge internal sends, etc.). Each CLI invocation starts its
+# local counter, so you often see "daemon-internal-1".
+# They must be allowed channel.* to store (list for readiness/status, create/add_member
+# for auto-main + user channel ops). Without this, probes get ACL violations (as seen in
+# the run), the bg store-ready gate never succeeds, lazy Court never starts, base stays
+# "launch attempted", and logs spam violations on every status poll during startup.
+- source: "daemon-internal*"
+  destination: store
+  commands:
+    - channel.*
+- source: "daemon-internal-*"
+  destination: store
+  commands:
+    - channel.*
+
 # Project Manager <-> Network Boundary for real LLM plan generation (same contract as agents; enables unmocked Ollama E2E via NewRealLLMCaller)
 - source: "project-manager*"
   destination: network-boundary
