@@ -647,9 +647,29 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 	defer removePIDFile()
 
-	// Explicit pre-warm moved *before* startBase so copies (now reflink-fast) run in parallel
-	// with the serial VM launches and web probe. This is the key to pooled visibility in short
-	// bounded waits after `make start`.
+	// Early receiver for PM ensure.role (daemon-orchestrator) and guest bridge reconciliation.
+	// These are lightweight and do not contend heavily with base boots; they enable on-demand
+	// roles as soon as the PM registers (after its own base boot + hub dial).
+	go startOrchestratorCommandReceiver()
+	go reconcileGuestHubBridges()
+
+	// Now do the base infrastructure (minimal set launches are fast to fire; long store
+	// readiness + auto-main + lazy Court are fully backgrounded inside startBase now).
+	// Clients can already talk to the daemon (early socket/PID from hoist) and see
+	// progress via vm list etc. startBase returns once NB+Store+WebPortal are launched
+	// as real VMs ("base infrastructure ready" for control-plane purposes).
+	if err := startBaseInfrastructure(); err != nil {
+		logrus.Fatalf("CRITICAL: base infrastructure startup failed (no thin fallback allowed per security model): %v", err)
+	}
+
+	// Full pre-warm goroutine moved *after* the base infrastructure gate (per task).
+	// This reduces contention between early receiver, Store boot (and its 1G image),
+	// web-portal, and the agent/memory pooled copies (reflink + Ensure under the hood).
+	// The orchestrator.New() pre-warm (for claim benefit on first on-demand) remains early;
+	// this explicit one ensures visibility of pools shortly after "base ready" without
+	// stealing I/O from the critical minimal base VMs during their boot window.
+	// Pre-warm continues in background; claimable pools appear for fast StartPaired/Ensure
+	// without blocking the <3s/<5s client-visible targets.
 	go func() {
 		if cfg.RootfsDir != "" {
 			for _, comp := range []string{"agent", "memory"} {
@@ -664,24 +684,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 			}
 		}
 	}()
-
-	go startOrchestratorCommandReceiver()
-	go reconcileGuestHubBridges()
-
-	// Now do the (potentially lengthy) base infrastructure. Clients can already talk to the
-	// daemon and see progress via vm list etc.
-	if err := startBaseInfrastructure(); err != nil {
-		logrus.Fatalf("CRITICAL: base infrastructure startup failed (no thin fallback allowed per security model): %v", err)
-	}
-
-	// Court system is launched early inside startBaseInfrastructure (right after hub is up)
-	// so that the 7 personas + scribe boot in parallel with other base components.
-	// Combined with the early control socket (hoist) and the unconditional
-	// "aegis.boot_timing=1" force for court-* in StartVM, this makes guest
-	// BOOT_TIMING / register_complete phases for base Court reliably emitted
-	// in their fc-court-persona-*-console.log and queryable via client
-	// `aegis vm boot-metrics` shortly after "daemon started" (no long waits).
-	// The late launch was here previously; removed to prevent double-start.
 
 	// Phase 5: Minimal hardened reverse proxy for Web Portal (per web-portal-vm.md + host-daemon.md)
 	// The Web Portal must receive traffic ONLY through the Host Daemon.
@@ -4164,41 +4166,13 @@ func startBaseInfrastructure() error {
 		orchestrator.RegisterAuxComponent("store", "store", nil, nil)
 	}
 
-	// Wait for store to be responsive before continuing with web-portal and declaring
-	// "base infrastructure launch sequence complete". This is critical for collaboration
-	// (channels, PM ensures, auto-main, etc. all go through store). The retry will
-	// tolerate the guest boot + bridge connect + store binary register time.
-	// If this times out, start will fail with a clear error (instead of "launch attempted"
-	// but store unreachable, which made the system appear hung/not usable).
-	if _, err := sendToComponentViaHubRetry("store", "channel.list", nil, 45*time.Second); err != nil {
-		return fmt.Errorf("store VM did not become ready (check fc-store-*-console.log, guest hub bridge reconnects, and that the store binary registered on hub): %w", err)
-	}
-	logrus.Info("Store is up and responsive to hub requests")
-
-	// Decoupled auto-defaults: now *after* the Store readiness gate (not inside the
-	// early receiver goroutine). This ensures "main" channel + Court members exist
-	// only when store can serve them, uses backoff/retry helper (no one-shot fail),
-	// and keeps collaboration defaults from impacting base boot time or causing
-	// early status/receiver probe contention. Uses sendTo*Retry (few dials at gate time).
-	// Persistent daemon-orchestrator client (in receiver) is preferred for ongoing PM
-	// ensure.role traffic.
-	go setupDefaultMainChannelAndMembers()
-
-	// Court personas warm lazily after basic Store + channels ready (per phasing
-	// improvements + task). This reduces I/O/CPU contention during the critical
-	// store boot + pre-warm window (lighter net-boundary/web proceed; heavy 7x
-	// Court after the collab backbone). Still early enough for base metrics +
-	// smoke invariants (Court==7) once full base settles. Control plane + status
-	// already up from hoist.
-	go func() {
-		if err := orchestrator.StartCourtSystem(context.Background()); err != nil {
-			logrus.Warnf("Court system start (lazy after store+channels ready): %v", err)
-		}
-	}()
-
 	// 5. Web Portal (presentation only; must be daemon-mediated per spec).
 	// MUST run as real Firecracker microVM per paranoid security model.
 	// No thin host child fallback is allowed.
+	// Launch *before* any store readiness wait so its boot overlaps with Store's
+	// (and net-boundary). This is part of making startBase return "ready" for the
+	// minimal set (NB + Store + Web Portal) quickly; the long collab gate moves
+	// to background so it does not delay control plane / proxy activation.
 	if _, err := ensureRealRootfsImage("web-portal"); err != nil {
 		return fmt.Errorf("web-portal: %w (real microVM image required)", err)
 	}
@@ -4214,7 +4188,46 @@ func startBaseInfrastructure() error {
 		}, eventbus.WithSource("host-daemon"))
 	}
 
-	logrus.Info("base infrastructure (hub + boundary + store + web-portal) launch sequence complete — all critical components running as real Firecracker microVMs")
+	// Decoupled readiness + collab defaults (Phase/obs improvement for fast startup).
+	// The blocking wait for Store to serve channel.list (up to 45s under cold boot)
+	// no longer gates startBaseInfrastructure return. This allows "base infrastructure:
+	// ready" (minimal set launched and functional for launch purposes) to be declared
+	// promptly once NB + Store + Web Portal VMs are started as real Firecracker.
+	// Usable channels / PM / auto-main / Court happen after the store actually
+	// responds (in bg goroutine with retries), reducing contention and serial cost
+	// during the critical early window. Control plane (early socket from hoist) is
+	// already available; status distinguishes control-plane vs full collab ready.
+	// Receiver (daemon-orchestrator) is started early (before base) so PM can drive
+	// on-demand roles as soon as it registers; auto "main" + membership is here in
+	// the post-store bg to avoid early-receiver contention.
+	go func() {
+		// Wait (with tolerance for guest boot + bridge + register) before declaring
+		// store responsive for collab paths. On timeout we warn (not fatal the daemon)
+		// because the control plane and launched base VMs are already up; channels/PM
+		// will naturally retry via sendToComponentViaHubRetry in their paths.
+		if _, err := sendToComponentViaHubRetry("store", "channel.list", nil, 45*time.Second); err != nil {
+			logrus.Warnf("Store VM did not become responsive within budget after launch (collab features/channels will retry; check fc-store-*-console.log and guest hub bridge): %v", err)
+			return
+		}
+		logrus.Info("Store is up and responsive to hub requests")
+
+		// Decoupled auto-defaults: after the Store readiness gate (not inside the
+		// early receiver goroutine). Ensures "main" channel + Court/PM members exist
+		// only when store can serve them; keeps defaults from impacting base boot time.
+		go setupDefaultMainChannelAndMembers()
+
+		// Court personas warm lazily after basic Store + channels ready (per task).
+		// Heavy 7x Court (plus scribe) after the collab backbone is up; reduces
+		// I/O/CPU contention vs launching them serially with the base minimal set.
+		// Still early enough for smoke invariants (Court==7) once settled.
+		go func() {
+			if err := orchestrator.StartCourtSystem(context.Background()); err != nil {
+				logrus.Warnf("Court system start (lazy after store+channels ready): %v", err)
+			}
+		}()
+	}()
+
+	logrus.Info("base infrastructure (hub + boundary + store + web-portal) launch sequence initiated — all critical components running as real Firecracker microVMs (readiness for channels/collab + lazy Court in background; control plane available immediately)")
 
 	return nil
 }

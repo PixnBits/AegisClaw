@@ -231,7 +231,16 @@ for component in $COMPONENTS; do
         store|network-boundary|web-portal) raw_size="1G" ;;
         *) raw_size="512M" ;;
     esac
-    create_raw_rootfs_image "${rootfs_file}.tar.gz" "$rootfs_file" "$raw_size" || true
+    # Guarantee ready raw .img files (prevents on-the-fly tar->img conversion on hot
+    # daemon StartVM / Ensure paths, which is a multi-second hit for cold collab startup).
+    # The create function tries direct loop mount then the sudo-approved create script.
+    # Removing the blanket || true means if raw .img production fails for a component,
+    # the build fails for that component (strong signal to configure sudoers or run
+    # under appropriate privs per AGENTS.md). Tarball is always produced as fallback,
+    # but .img is required for fast Firecracker boots and the <1s/<5s targets.
+    if ! create_raw_rootfs_image "${rootfs_file}.tar.gz" "$rootfs_file" "$raw_size"; then
+        error "Failed to produce ready raw .img for $component at $rootfs_file (on-the-fly conversion would be required on first start, violating pre-warm readiness goals). Configure NOPASSWD sudoers for create-firecracker-rootfs.sh or ensure writable loop-capable dir."
+    fi
     
     # Optional: clean up per-component dir to save space (keep tarball + raw img)
     rm -rf "$component_rootfs_dir"
