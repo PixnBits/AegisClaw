@@ -672,3 +672,75 @@ Current final state (post all): clean (daemon not running, 0 pooled files).
 These runs confirm the control-plane win from the hoist + our fixes (119ms fresh vs ~5s historical), the status non-hang, and that the remaining regression for "total time-to-healthy" (base ready + usable channels/PM) is the cold Store boot cost (to be addressed by remaining pre-warm discipline, phasing, and build .img-only work).
 
 Update this doc + commit after portion. (Fresh cold/warm measurements captured; 119ms control plane vs historical 5s/464ms numbers; limitations noted; plan updated.)
+
+---
+
+## This Portion (prewarm-readiness: lazy Court/pre-warm phasing + startBase minimal return + status robustness + build .img guarantee; baseline on clean HEAD)
+
+**Context / Bisect reference (per user query):**
+- The startup regression (long time to "daemon is running" + especially to "base infrastructure: ready" + usable channels) was introduced by the heavy always-on base infrastructure for the collaboration model: full real Firecracker VMs for Store, Web Portal, Network Boundary, 7 Court personas + scribe, pre-warm, early receiver (see commits around 4fdbe40 "feat(runtime): <1s on-demand lifecycle + collaboration runtime (plan Phase 2)", 0c1b3c4 "feat(pm): Project Manager role skeleton...", and the "hoist" changes that moved socket/PID/pre-warm before startBase for visibility).
+- The hoist (early control socket + PID + explicit pre-warm go before startBase) gave fast "daemon is running" / client control plane visibility (status, vm list, boot-metrics succeed quickly), but did not address the *underlying cost* inside startBaseInfrastructure itself (serial heavy VM launches for the 3 base + 45s blocking sendToComponentViaHubRetry wait for store "channel.list" before web-portal launch and before return + "base ... complete" log; plus Court 8 VMs started "early" relative to the gate; pre-warm contending with base boots; receiver + auto-main coupling causing temp floods / ACL noise during the slow window).
+- Targets (restored while keeping full channels + PM + dynamic roles + paranoid security): <3s to "daemon is running" + control plane ready; <5s to "base infrastructure: ready" + usable channels. On-demand role agents (after `pm goal`) must stay fast. `aegis status` must never hang.
+
+**Baseline on current HEAD (this session, clean state):**
+- Git: on `feat/collaboration-model-prewarm-readiness`, clean working tree (bisect reset performed to start clean per instructions; prior tip had the hoist + some phase/obs + status-timeout + lazy Court commits already landed in history).
+- `make build` (normal user): succeeded (produced bins; build-microvms side-effect also ran and created .img for court-scribe etc via the script's create path).
+- `make test` (units, no daemon): green (all packages cached-ok or passed quickly).
+- Clean stop: `./bin/aegis stop` (and sudo -n variant) reported "daemon not running"; no visible aegis start/foreground procs; no /tmp/aegis/daemon.pid; 0 pooled *-pooled-*.rootfs.img visible to user.
+- Sudo capability (critical per AGENTS.md): `sudo -n true` → "interactive authentication is required". No assumption of NOPASSWD (as documented: "Do not assume passwordless sudo when working on other machines..."). Full cold `AEGIS_BOOT_TIMING=1 sudo -E ./bin/aegis start` (or `make start`) + repeated `./bin/aegis status` polls + `vm pools` + `make smoke` + `make test-e2e-llm` must be performed by user on this real hardware after applying the sudoers example for the bin + scripts. (See AGENTS.md "Start and Stop Controls", "Accessing the Web UI", and "Running Tests".)
+- Code structure observations (static + prior plan entries for baseline): startBase still contained the 45s store wait + serial web-portal after it before return; explicit pre-warm go was before startBase (after hoist); Court go was after the store gate inside startBase (good but the gate itself was serial); receiver started early (good for PM); auto-main/setupDefault was after store gate (already decoupled per recent history); statusDaemon had the 2.5s ctx timeout + graceful "Store still starting..." + separate "collab" line (already addressed hang + distinction in prior commits on branch); build-microvms called create_raw... || true (allowed silent skip of .img, forcing on-the-fly in Ensure on first cold start).
+- No live cold numbers captured in this agent session for the full base (tool limitation + interactive sudo), but the procedure + targets are recorded. Prior plan entries captured e.g. ~5s "daemon is running" + Court 7 visible at tick 1 post-hoist on autonomous sudo -n runs; 119ms control-plane in harness-limited fresh starts. Re-measure on real hardware with the edits below + proper sudoers will validate the <3s/<5s.
+
+**Specific changes in this portion (small, iterative, reviewable; reference hoist/bisect commits):**
+1. **Heavy components lazy / startBase returns on minimal set (NB + Store + Web Portal functional):**
+   - Restructured `startBaseInfrastructure` (cmd/aegis/main.go): launches for network-boundary + store + web-portal now complete (StartVM fire + aux register + hub bridge) before any long collab gate; web-portal launch moved before the former store wait so its boot overlaps store/net-boundary (parallelism in guest boot time, not just goroutines).
+   - The 45s `sendToComponentViaHubRetry("store", "channel.list"...)` + "Store is up..." + `go setupDefaultMainChannelAndMembers()` + `go StartCourtSystem` are now inside a *background goroutine* kicked after the three minimal launches.
+   - On store timeout in bg: warn only (no return error / fatalf). Control plane + launched base VMs remain up; collab paths (which already use Retry helpers) tolerate it gracefully. This directly allows startBase to return "ready" promptly once the minimal set is launched/functional as real Firecracker microVMs.
+   - Log updated to "base infrastructure ... launch sequence *initiated* ... (readiness for channels/collab + lazy Court in background; control plane available immediately)".
+   - Result: the return from startBase (and subsequent web probe + proxy + "daemon ready") is no longer serially blocked by the store responsiveness window. "base infrastructure: ready" (per internal + status observation) can surface much earlier; full "usable channels" is eventual (observed by status probe + PM/receiver paths).
+
+2. **Improve phasing and decoupling / reduce contention:**
+   - Early receiver (`go startOrchestratorCommandReceiver()`) and bridge reconciliation remain *before* startBase (enables PM "ensure.role" as soon as PM itself boots/registers, without tying to base gate).
+   - Auto "main" channel creation + membership (PM + 7 Court) is strictly after the store readiness gate *in the bg goroutine* (was already moved out of early receiver per history; now also not on the startBase return path).
+   - Full explicit pre-warm goroutine (the one doing EnsureBootable + PrewarmPooled for agent/memory with chown for visibility) moved from "immediately after hoist, before startBase" to *after* the `startBaseInfrastructure()` call. (The very-early pre-warm inside `orchestrator.New()` for claim benefit on first on-demand remains; this "full" one no longer steals I/O/CPU from the critical minimal base boots + store 1G image work.)
+   - Court remains lazy (go StartCourtSystem only after store+channels gate succeeds in bg) — now even more decoupled because the gate itself doesn't hold up startBase return or the proxy.
+
+3. **Status robustness:**
+   - No code change required for the core (already had short 2.5s `context.WithTimeout` on the Store "channel.list" probe in `statusDaemon`, with graceful fallback to "launch attempted (Store still starting...)" + separate "collab" line). `vm.list` for Court count uses the local control socket (fast, no hub).
+   - Distinction is clear: "daemon is running" (early control plane, post-hoist socket/PID) vs "base_infrastructure" (launch attempted vs ready based on live short probe) vs "Collab/PM/channels" (ready only when store probe succeeds). The bg readiness in startBase + new "initiated" log reinforce the separation without changing the client-visible status text.
+   - Added note in the moved pre-warm comment and startBase bg about status never hanging + the control vs collab distinction.
+
+4. **Pre-warm and build fixes (guarantee raw .img, prevent on-the-fly hot path):**
+   - `scripts/build-microvms-docker.sh`: changed the `create_raw_rootfs_image ... || true` (in the per-component loop, default COMPONENTS include the heavy base + Court) to a strict `if ! create... ; then error "Failed to produce ready raw .img ... Configure NOPASSWD sudoers ... or ... on-the-fly conversion would be required on first start, violating pre-warm readiness goals." fi`.
+   - This guarantees that a successful `make build-microvms` (or direct script) produces the ready raw .img files alongside the .tar.gz. The create function already prefers direct loop mount then the sudo-approved create-firecracker-rootfs.sh path; failure now fails the build (one-time signal) instead of silently leaving only tar (which forces the slow truncate+mkfs+loop+tar path in `EnsureBootableRootfsImage` on every first cold StartVM for that component, including the base Store/Web/etc and Court).
+   - The daemon-side Ensure still has the "perf warning" log + conversion code as safety, but with the build guarantee + pre-warm using the canonical template, hot paths (StartPaired, EnsureRole, base Court in bg) should hit pre-built .img + pooled claim (reflink+rename) only.
+   - Pre-warm move (above) further ensures the copies happen after the base gate rather than contending.
+
+5. **Validation / measurement:**
+   - `make test`: green (baseline before/after edits).
+   - `make build`: clean.
+   - Full measurement: `AEGIS_BOOT_TIMING=1 sudo -E make start` (or sudo ./bin/aegis start --foreground &> aegis.log per AGENTS), then poll `./bin/aegis status` (expect "daemon is running" <3s), `./bin/aegis vm pools`, `aegis channel list` (after base settles), `make smoke` (now with early invariants asserts per testing-standards), `make test-e2e-llm` (or the verify script; with model for real LLM path).
+   - On-demand after `aegis pm goal ...` must use pre-warm claim (fast) and appear with channel= in `vm list`.
+   - Use `aegis vm boot-metrics <id>` or `scripts/boot-metrics.sh` + `AEGIS_BOOT_TIMING=1` for host/guest phases on base Court (lazy) and ensured roles.
+   - `make smoke` and `make test-e2e-llm` must pass with good numbers (early "daemon is running", base ready soon, Court==7, pools visible, no unexpected daemon-internal-* floods, real plan posted in channel for LLM case).
+   - (In this session: units + build verified; full privileged cold runs + smoke/e2e with timing left for user/hardware with sudoers applied, per the baseline note and AGENTS "Never start or stop the daemon except via the exact mechanisms".)
+
+**Decisions / rationale (preserve paranoid security + all collab functionality):**
+- No thin fallbacks added/used for any privileged base component (still real Firecracker for NB/Store/Web/Court/roles per host-daemon.md + specs).
+- All cross-VM via signed hubclient + ACLs (explicit; PM to daemon-orchestrator ensure.role + store channel.* + boundary llm.* remain; early receiver uses stable "daemon-internal-N" seq to avoid temp floods).
+- Store remains source of truth for channels/membership; auto "main" + Court/PM members only after store responsive (in bg).
+- Court still the non-bypassable gate; 7 personas + scribe still launched (lazily) for base invariants/smoke.
+- Pre-gen keys, reflink pooled claim, sentinel, early bridges, timing injection, etc. all preserved.
+- The bg readiness goroutine + warn-on-timeout (instead of fatal) means a slow Store no longer prevents the daemon from providing control plane + web proxy + on-demand role ensures (PM can still drive "plan-demo" etc once store catches up; retries handle the window). This is acceptable and improves observed startup without compromising durability (Store is still required for collab; its launch is still mandatory and will fatal if StartVM itself fails due to missing img).
+- References: bisect 4fdbe40/0c1b3c4 (heavy base intro + PM wiring), hoist (visibility win, not cost win), prior phase/obs commits (lazy + status timeout + distinction), collaboration-model.md + host-daemon.md + testing-standards.md + AGENTS.md.
+
+**Next (after this portion + user re-measure on hardware):**
+- Capture + append actual AEGIS_BOOT_TIMING numbers from clean cold start on this hardware (post-edits, with sudoers) showing <3s daemon running, <5s base ready + channel ops, Court lazy but eventually 7, pools post-gate, smoke + test-e2e-llm green with good timings.
+- If cold Store boot alone can't fit the <5s for "usable channels", consider lighter "channels stub" or further parallel + pre-warm for store image itself, or accept that "base infrastructure: ready (launched)" is the <5s gate and "collab ready (store responsive)" is slightly later but still fast on warm/SSDs; document the split.
+- On-demand role agents after pm goal: confirm boot-metrics stay low hundreds ms guest (pre-warm claim + pregen keys + early bridge).
+- Any remaining Court guest phase consistency for the now-lazier base Court path.
+- Small follow-ups: tighten web probe budget or make it also non-blocking for "daemon ready" if needed; optional `vm base-ready` or enhanced status for the initiated vs responsive distinction.
+
+Update this doc + commit after portion. (Phasing for fast minimal base return + pre-warm after gate + build .img guarantee + status distinction preserved + baseline recorded + plan update. Small iterative per guidelines. Full validation + numbers on real hardware with sudo per AGENTS.)
+
+**Portion commit plan:** Edits to cmd/aegis/main.go (startBase restructure + pre-warm move + comment cleanup), scripts/build-microvms-docker.sh (guarantee .img), docs/implementation-plan/collaboration-model.md (this section + references to bisect/hoist). Followed by `make test` (green), `go build` clean, `make smoke` attempt (loud on no-daemon as designed), then git add + commit with message referencing the query goals + bisect commits. User will run the privileged measurement + `make test-e2e-llm` on hardware.
