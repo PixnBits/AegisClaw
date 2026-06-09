@@ -1349,7 +1349,7 @@ const agentsTmpl = `
     <tbody>
     {{range .Workers}}
     <tr>
-      <td><code>{{truncate (index . "worker_id") 8}}</code></td>
+      <td><code>{{with $w := (index . "worker_id")}}{{if $w}}{{truncate (printf "%v" $w) 8}}{{else}}—{{end}}{{else}}—{{end}}</code></td>
       <td>{{index . "role"}}</td>
       <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
       <td>{{index . "step_count"}}</td>
@@ -1686,7 +1686,7 @@ const overviewTmpl = `
     <tbody>
     {{range .Workers}}
     <tr>
-      <td><code>{{truncate (index . "worker_id") 8}}</code></td>
+      <td><code>{{with $w := (index . "worker_id")}}{{if $w}}{{truncate (printf "%v" $w) 8}}{{else}}—{{end}}{{else}}—{{end}}</code></td>
       <td>{{index . "role"}}</td>
       <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
       <td>{{truncate (index . "task_description") 80}}</td>

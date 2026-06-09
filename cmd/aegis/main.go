@@ -1177,6 +1177,13 @@ func sendSocketRequest(op string, args map[string]string, useJSON bool) (SocketR
 	}
 	defer conn.Close()
 
+	// Hard deadline on the socket so that status / vm list / other CLI commands
+	// never hang indefinitely even if a handler is slow (e.g. during heavy
+	// base VM prep before the lock refactor, or under I/O load). 5s is generous
+	// for local unix socket + small responses; status already has its own 2.5s
+	// store probe. This satisfies "aegis status never hangs".
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
 	req := SocketRequest{
 		Op:   op,
 		Args: args,
@@ -4139,17 +4146,20 @@ func startBaseInfrastructure() error {
 	// 3. Network Boundary (only component allowed secrets + outbound).
 	// MUST run as real Firecracker microVM per paranoid security model.
 	// No thin host child fallback is allowed.
+	// Register aux *before* StartVM so it appears promptly in "live VM view" / status
+	// (ListVMs will surface aux until the real entry is inserted after launch).
+	// This improves observability during the (now shorter-lock) base boot window.
 	if _, err := ensureRealRootfsImage("network-boundary"); err != nil {
 		return fmt.Errorf("network-boundary: %w (real microVM image required)", err)
+	}
+	if orchestrator != nil {
+		orchestrator.RegisterAuxComponent("network-boundary", "network-boundary", nil, nil)
 	}
 	if err := orchestrator.StartVM(context.Background(), "network-boundary", "network-boundary", "network-boundary.img"); err != nil {
 		return fmt.Errorf("failed to start real Firecracker microVM for network-boundary: %w (thin fallback is forbidden)", err)
 	}
 	logrus.Info("Started real Firecracker microVM for network-boundary")
 	startGuestHubBridge("network-boundary")
-	if orchestrator != nil {
-		orchestrator.RegisterAuxComponent("network-boundary", "network-boundary", nil, nil)
-	}
 
 	// 4. Store VM (persistent state, timers, git remote, audit).
 	// MUST run as real Firecracker microVM per paranoid security model.
@@ -4157,14 +4167,14 @@ func startBaseInfrastructure() error {
 	if _, err := ensureRealRootfsImage("store"); err != nil {
 		return fmt.Errorf("store: %w (real microVM image required)", err)
 	}
+	if orchestrator != nil {
+		orchestrator.RegisterAuxComponent("store", "store", nil, nil)
+	}
 	if err := orchestrator.StartVM(context.Background(), "store", "store", "store.img"); err != nil {
 		return fmt.Errorf("failed to start real Firecracker microVM for store: %w (thin fallback is forbidden)", err)
 	}
 	logrus.Info("Started real Firecracker microVM for store")
 	startGuestHubBridge("store")
-	if orchestrator != nil {
-		orchestrator.RegisterAuxComponent("store", "store", nil, nil)
-	}
 
 	// 5. Web Portal (presentation only; must be daemon-mediated per spec).
 	// MUST run as real Firecracker microVM per paranoid security model.
@@ -4176,13 +4186,15 @@ func startBaseInfrastructure() error {
 	if _, err := ensureRealRootfsImage("web-portal"); err != nil {
 		return fmt.Errorf("web-portal: %w (real microVM image required)", err)
 	}
+	if orchestrator != nil {
+		orchestrator.RegisterAuxComponent("web-portal", "web-portal", nil, nil)
+	}
 	if err := orchestrator.StartVM(context.Background(), "web-portal", "web-portal", "web-portal.img"); err != nil {
 		return fmt.Errorf("failed to start real Firecracker microVM for web-portal: %w (thin fallback is forbidden)", err)
 	}
 	logrus.Info("Started real Firecracker microVM for web-portal")
 	logrus.Info("WEB_PORTAL_STARTED: web-portal VM launched (will be reached only via daemon reverse proxy)")
 	if orchestrator != nil {
-		orchestrator.RegisterAuxComponent("web-portal", "web-portal", nil, nil)
 		orchestrator.Bus().PublishJSON("web_portal.started", map[string]interface{}{
 			"id": "web-portal",
 		}, eventbus.WithSource("host-daemon"))

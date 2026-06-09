@@ -151,14 +151,13 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 }
 
 // StartVM starts a new sandbox VM.
+// Heavy preparation (keys, rootfs ensure which may do I/O, backend spawn) is done
+// *outside* the main lock so that concurrent "vm.list" / status queries (which take
+// RLock) do not block for the duration of base infrastructure cold boots or on-demand
+// launches. Only a brief critical section is used for duplicate check + insert.
+// This is required for "aegis status never hangs" during the collab model startup
+// (multiple real VMs launched at base + lazy Court).
 func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, image string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if _, exists := o.vms[id]; exists {
-		return fmt.Errorf("VM %s already running", id)
-	}
-
 	logrus.Infof("Starting %s VM %s with image %s", vmType, id, image)
 
 	t0 := time.Now()
@@ -167,7 +166,8 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	}
 
 	// Per-VM key: pop from pregen ring if available (saves Generate in hot path for <1s on-demand).
-	// Falls back to generate. The pregen was done at New() with the TCB secMgr.
+	// Done under a short lock (not the whole StartVM) to avoid nested lock with the later
+	// insert lock and to keep the existence/insert critical section tiny.
 	var vmKP struct {
 		PublicKey  ed25519.PublicKey
 		PrivateKey ed25519.PrivateKey
@@ -217,10 +217,8 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		PublicKey:      vmKP.PublicKey,
 		PrivateKeyPath: keyPath, // new secure distribution path (guest consumes once)
 		NetworkConfig: &sandbox.NetworkConfig{
-			// Allocate small sequential guest CIDs (3+). CID 2 is conventionally the host side
-			// in Firecracker vsock setups. The old 9000+ allocator produced values that modern
-			// Firecracker rejects in the JSON config (vsock_id must be string, guest_cid small int).
-			VsockPort:          uint32(3 + len(o.vms)),
+			// VsockPort / CID is allocated just before backend.Start (short RLock snapshot
+			// of len) and then assigned, to keep allocation out of long-held lock sections.
 			// 7.1: Most VMs must egress exclusively through the Network Boundary.
 			// The Boundary itself (and certain privileged components) may have direct access.
 			EgressViaBoundary:  vmType != "network-boundary",
@@ -236,7 +234,10 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		},
 	}
 
-	// For Firecracker on Linux, set kernel and rootfs paths
+	// For Firecracker on Linux, set kernel and rootfs paths.
+	// NOTE: EnsureBootableRootfsImage may perform I/O or (if build-microvms did not
+	// produce a ready .img) on-the-fly conversion. This is now outside the main
+	// orchestrator lock so status / vm.list callers are not blocked.
 	if o.config.SandboxType == config.Firecracker {
 		vmConfig.KernelPath = o.config.KernelPath
 		imgName := image
@@ -290,6 +291,18 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		vmConfig.NetworkConfig.ExposedPorts = []string{"18080:18080"}
 	}
 
+	// Allocate a small CID outside the long-held lock (was previously under the big lock
+	// via len(o.vms) while building config). A short RLock gives a consistent-enough
+	// value for the base set + burst of on-demand roles; exact uniqueness is enforced
+	// by the final insert check + Firecracker rejecting bad CIDs.
+	nextVsock := uint32(3)
+	o.mu.RLock()
+	nextVsock = uint32(3 + len(o.vms))
+	o.mu.RUnlock()
+	if vmConfig.NetworkConfig != nil {
+		vmConfig.NetworkConfig.VsockPort = nextVsock
+	}
+
 	// Boot via the image's custom /init wrapper for components whose Dockerfile
 	// ships one. Required because docker export drops the ENTRYPOINT, so without
 	// init=/init the kernel would run the Alpine base init (-> /sbin/openrc, which
@@ -318,9 +331,17 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	phases["backend_start_return"] = time.Now().UnixNano()
 	phases["startvm_return"] = time.Now().UnixNano()
 
-	// Store the lifecycle record. The raw private key was never placed in vmConfig
-	// for the new path-based channel; only the path is present. This satisfies
-	// host-daemon.md:Test Requirements / Keypair Isolation.
+	// Brief critical section: duplicate check + insert only.
+	// All expensive work (Ensure, key files, backend spawn) happened outside the lock
+	// so that status / "vm.list" (RLock) and other concurrent operations are not
+	// blocked for seconds during base or on-demand VM launches. This is the key fix
+	// for "aegis status never hangs".
+	o.mu.Lock()
+	if _, exists := o.vms[id]; exists {
+		o.mu.Unlock()
+		_ = os.Remove(vmConfig.PrivateKeyPath)
+		return fmt.Errorf("VM %s already running", id)
+	}
 	o.vms[id] = &VMLifecycle{
 		ID:             id,
 		Type:           vmType,
@@ -329,6 +350,7 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		StartedAt:      t0,
 		BootHostPhases: phases,
 	}
+	o.mu.Unlock()
 
 	// Register the VM's public key with the security manager so AegisHub etc. can verify its signatures.
 	// The private key material lives only in the ephemeral 0600 file (to be consumed by the guest).
