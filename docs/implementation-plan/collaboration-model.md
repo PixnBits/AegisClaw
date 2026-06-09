@@ -743,4 +743,25 @@ Update this doc + commit after portion. (Fresh cold/warm measurements captured; 
 
 Update this doc + commit after portion. (Phasing for fast minimal base return + pre-warm after gate + build .img guarantee + status distinction preserved + baseline recorded + plan update. Small iterative per guidelines. Full validation + numbers on real hardware with sudo per AGENTS.)
 
+**Real hardware run feedback (sudo AEGIS_BOOT_TIMING=1 ... start --foreground, ~10s status attempt, portal access, post-Ctrl+C status):**
+- Positive: AegisHub up fast, "daemon-orchestrator" registered early (receiver live immediately, good for PM path).
+- Issues seen:
+  - `./bin/aegis status` ~10s after launch hung (had to Ctrl+C the foreground daemon to recover).
+  - After, status showed "daemon is running" but Court=0, base="launch attempted (Store still starting...)", collab="launching", "Live VM/component view: (unable to query live state)".
+  - http://localhost:8080/ reachable (proxy up, so startBase had returned + web probe either passed or timed out and started anyway) but rendered with `template exec error: template: page:97:36: executing "page" at <"worker_id">: invalid value; expected string`.
+- Full "Started real Firecracker..." and "base infrastructure ... initiated" lines were not in the initial log snippet (user to re-inspect full aegis-foreground.log on next run); no evidence Court or the 3 base VMs had completed registration in the orchestrator view by the time of the kill.
+- This matches the remaining symptoms of the original regression (hoist made control socket early, but long lock hold in StartVM during the 3 heavy base launches + web probe made status block; aux registered only post-StartVM so not visible; early portal render with incomplete worker data from dashboard/stats blew up the template; lazy Court/bg store readiness hadn't fired yet or was killed before "Store is up").
+
+**Fixes landed for the above (this commit):**
+- StartVM: all heavy prep (pregen pop under its own short lock, key material+file, EnsureBootable which may still convert in edge cases, vmConfig, backend.Start/fc launch) moved outside o.mu.Lock. Only a tiny Lock window for the final "exists?" check + vms insert (after the VM is actually running). This eliminates the multi-second window where status "vm.list" (Court count + live view) would block on RLock. Also removes the nested mu.Lock (which would have deadlocked StartVM itself on pregen pop).
+- Base components (NB, store, web-portal) now RegisterAux *before* their StartVM in startBase. They appear in "Live VM/component view" and status as soon as the launch is initiated (the real VMLifecycle entry inserted later will cause the listing dedup to prefer the real one). Greatly improves early observability of the "minimal set" without waiting for full guest boot + hub register.
+- sendSocketRequest now sets a 5s deadline on the conn after dial (ReadAll cannot hang forever). status already had the 2.5s store probe; this makes the socket roundtrips themselves bounded.
+- Hardened the two `worker_id` accesses in the embedded agents/workers templates (internal/dashboard/server.go) with safe `{{with $w := (index . "worker_id")}}{{if $w}}{{truncate (printf "%v" $w) 8}}{{else}}—{{end}}{{else}}—{{end}}`. Early/partial renders (no roles yet, store not responsive, Court lazy not fired, dashboard stats returning incomplete maps) now show "—" in the ID cell instead of crashing template execution for the whole page.
+
+These + the prior startBase "return on minimal + bg for store/Court/auto-main + pre-warm after gate" should make repeated `status` during the first 10-30s always succeed (showing progressing Court count and live aux/VMs), portal / render without error even before full collab, and the bg "Store is up and responsive" + lazy Court launch to happen without blocking the control plane or proxy.
+
+Re-run on hardware (after `make build`), capture full log + repeated status output + `vm list` + portal screenshots, and append the numbers/timings + "Court eventually reached 7", "status stayed responsive", "no template error", "on-demand roles after pm goal fast" evidence.
+
+Small iterative commit. Preserves all security and functionality.
+
 **Portion commit plan:** Edits to cmd/aegis/main.go (startBase restructure + pre-warm move + comment cleanup), scripts/build-microvms-docker.sh (guarantee .img), docs/implementation-plan/collaboration-model.md (this section + references to bisect/hoist). Followed by `make test` (green), `go build` clean, `make smoke` attempt (loud on no-daemon as designed), then git add + commit with message referencing the query goals + bisect commits. User will run the privileged measurement + `make test-e2e-llm` on hardware.
