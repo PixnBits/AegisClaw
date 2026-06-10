@@ -175,6 +175,21 @@ log "Platform: $PLATFORM"
 log "Output directory: $ROOTFS_DIR"
 echo ""
 
+# Ensure the post-PR#63 Firecracker kernel (vmlinux-5.10+ with CONFIG_HW_RANDOM_VIRTIO / virtio_rng driver)
+# is present. This is required for the "entropy" device (added in internal/sandbox/firecracker.go)
+# to actually unblock guest CRNG quickly. Without it, store/network-boundary/etc. see the
+# 130-153s "crypto/rand: blocked..." + late "crng init done" we measured when the regression
+# was present. The download script is now idempotent (skips if good driver symbol present).
+# This provides the kernel-side of the ".img guarantee" work on this branch for pre-warm readiness.
+if [ "$(uname -s)" = "Linux" ]; then
+    log "Ensuring Firecracker kernel with virtio-rng driver (CRNG/entropy fix from #63)..."
+    if bash "$SCRIPT_DIR/download-firecracker-kernel.sh"; then
+        :
+    else
+        warn "Kernel download/ensure reported issues; microVMs may exhibit slow CRNG init (re-run the download script manually)"
+    fi
+fi
+
 # Ensure output directory exists and is writable
 ensure_writable_dir "$ROOTFS_DIR"
 

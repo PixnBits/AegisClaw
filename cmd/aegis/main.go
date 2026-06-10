@@ -1039,6 +1039,32 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 		fmt.Printf("✓ State directory: %s\n", cfg.StateDir)
 	}
 
+	// Kernel (required for the virtio-rng "entropy" device + fast guest CRNG init).
+	// The #63 fix (commit b83fb0d) added the device in firecracker.go, the 5.10.209
+	// kernel download (with CONFIG_HW_RANDOM_VIRTIO), the /init dd loop + threshold
+	// in all component Dockerfiles, and cmdline injection. The pre-warm/collaboration
+	// work on this branch added ".img guarantee" + early pre-warm for pooled rootfs
+	// (17512a8 etc.) but did not wire kernel download into build-microvms or doctor,
+	// allowing a stale May-27-era vmlinux (no virtio_rng driver) to persist. Result:
+	// exactly the 130-153s "crypto/rand: blocked for 60 seconds" + late "crng init done"
+	// + "entropy ready" only after the block that we observed with AEGIS_BOOT_TIMING.
+	// This check + the call from build-microvms-docker.sh restores the guarantee.
+	kp := config.ResolveKernelPath()
+	if st, err := os.Stat(kp); err != nil {
+		fmt.Printf("✗ Firecracker kernel missing at %s (run: bash scripts/download-firecracker-kernel.sh then re-start with AEGIS_BOOT_TIMING=1)\n", kp)
+		healthy = false
+	} else {
+		szMB := float64(st.Size()) / (1024 * 1024)
+		if out, err := exec.Command("bash", "-c", "strings '"+kp+"' 2>/dev/null | grep -q 'virtio_rng' && echo has_virtio_rng || echo no_virtio_rng").CombinedOutput(); err == nil && strings.Contains(string(out), "has_virtio_rng") {
+			fmt.Printf("✓ Firecracker kernel (with virtio-rng driver for fast CRNG boot): %s (%.1f MB)\n", kp, szMB)
+		} else if szMB > 20 {
+			fmt.Printf("⚠ Firecracker kernel present (%s, %.1f MB) but may lack virtio_rng driver; re-run download-firecracker-kernel.sh if guest boots show long entropy blocks\n", kp, szMB)
+		} else {
+			fmt.Printf("✗ Firecracker kernel at %s too small (%.1f MB) or missing virtio_rng (run: bash scripts/download-firecracker-kernel.sh)\n", kp, szMB)
+			healthy = false
+		}
+	}
+
 	// 7.4: User workspace directory (for custom AGENTS.md, SOUL.md, TOOLS.md, etc.)
 	// This is a safe, minimal-TCB bootstrap step. The daemon only ensures
 	// the directory tree exists with correct permissions — it never loads,
