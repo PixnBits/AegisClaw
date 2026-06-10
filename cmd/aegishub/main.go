@@ -577,7 +577,13 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 	case "chat.message", "user.turn":
 		rpcTimeout = 300 * time.Second
 	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
-		rpcTimeout = 8 * time.Second
+		// Increased from 8s to give slow LLM steps (in observe/think/etc) time to
+		// complete so the agent can hit a drain window and answer the poll RPC
+		// before the hub times it out with ERR_RPC_TIMEOUT (which turns into empty
+		// fallback on host, starving the UI of thought_event frames). The streamer
+		// tolerates occasional delayed/empty polls; 30s is a pragmatic balance for
+		// real agent loops while still keeping the /chat/send stream responsive.
+		rpcTimeout = 30 * time.Second
 	}
 
 	select {

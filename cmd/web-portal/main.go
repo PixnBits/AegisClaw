@@ -507,6 +507,64 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
+	// Group 3/5 E2E enablement for chat journeys (incl. J10 Greeting per docs/specs/user-journeys/10-greeting-an-agent-and-responding.md).
+	// These make the rich /chat surface (and its progress-log + Thinking trace review) usable in pure fixture mode
+	// (AEGIS_E2E_FIXTURE=1) without a real daemon/Hub/agent. Shapes match what handleChat* + chatTmpl JS + stream emission expect.
+	// The fixture thought/tool polls (already present above) + these turn + session ops let the contract test drive RAIL
+	// visible steps + final greeting + post-response review trace without LLM.
+	// Citations: 10-greeting-....md (send greeting, first thinking, >=3 steps in review, final, review-trace), chat-ui-data-flow.md (RAIL, event shapes), web-portal.md §Testability.
+
+	case "sessions.list":
+		data, _ := json.Marshal([]interface{}{})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "sessions.create":
+		id := "greet-" + randomSuffix()
+		title := "Greeting session"
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		if t := req["title"]; t != "" {
+			title = t
+		}
+		data, _ := json.Marshal(map[string]interface{}{"id": id, "title": title, "created_at": time.Now().Format(time.RFC3339)})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "sessions.history":
+		// Empty history for new greeting sessions; initial greeting turn is either synthetic (on chat load) or triggered by first send.
+		data, _ := json.Marshal(map[string]interface{}{"messages": []interface{}{}})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "sessions.save":
+		// Accept save for contract; echo id.
+		var req map[string]interface{}
+		json.Unmarshal(payload, &req)
+		id, _ := req["id"].(string)
+		if id == "" {
+			id = "greet-saved"
+		}
+		data, _ := json.Marshal(map[string]interface{}{"id": id, "saved": true})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "chat.message":
+		// Deterministic friendly greeting response for J10 contract test (and any fixture chat use).
+		// Includes thinking_trace so the rich chat's final "Thinking trace" review surface (and appendAssistant) populates
+		// with >=3 steps for the "Review full agent trace" assert. Matches shapes from real replyChatTurn + TraceForSession.
+		trace := []interface{}{
+			map[string]interface{}{"phase": "starting", "summary": "Initializing greeting agent context", "details": "Loading system identity and session memory", "timing_ms": 12},
+			map[string]interface{}{"phase": "observe", "summary": "Evaluating greeting intent from user", "details": "User said: Hello, introduce yourself...", "timing_ms": 28},
+			map[string]interface{}{"phase": "think", "summary": "Recalling core mission from SOUL prompt", "details": "I am an observable, sandboxed agent for trustworthy automation.", "timing_ms": 45},
+			map[string]interface{}{"phase": "plan", "summary": "Decide on warm, concise self-introduction + confirmation of visibility", "details": "No tools needed for pure greeting; keep response short and friendly.", "timing_ms": 19},
+			map[string]interface{}{"phase": "final", "summary": "Assemble response with full trace for review", "details": "Emit agent_response + thinking_trace for post-turn audit.", "timing_ms": 7},
+		}
+		resp := map[string]interface{}{
+			"content":        "Hello! I'm the AegisClaw greeting agent — a secure, observable ReAct agent running in an isolated microVM. I can see your message and will always show my reasoning steps (the 6-phase loop) for transparency. How can I help you explore the system today?",
+			"thinking_trace": trace,
+			"session_id":     "greet-demo",
+			"trace_id":       "trace-greet-" + randomSuffix(),
+		}
+		data, _ := json.Marshal(resp)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
 	default:
 		// Unwired actions return neutral empty for contract stability in fixture/E2E mode.
 		// Group 1–3 targeted the Git/Workspace/Memory/Approvals/Canvas/Streaming/Chat surfaces.

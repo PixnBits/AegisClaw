@@ -99,6 +99,13 @@ func handlePortalChatAction(command string, payload interface{}) (interface{}, e
 	}
 
 	// SSE poll commands — forward to agent VM(s), never block chat.message.
+	// IMPORTANT: Do NOT call normalizeChatHubResponse here. It is only for turn
+	// results (chat.message / user.turn). Polls return raw [] (thought/tool events
+	// from progress.ListThoughtEvents) or map (stream_progress). normalize would
+	// wrap arrays as {"content": "<stringified>"} which breaks fetchRaw + toEventMaps
+	// in internal/dashboard/chat_send.go (and thus thought_event SSE + live
+	// chat-progress-log / thought-step in the UI and E2E). Progress map happens to
+	// survive (has "content" key) but we keep the paths symmetric and raw.
 	switch command {
 	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
 		ensurePairedAgentForSession(sessionID)
@@ -107,7 +114,14 @@ func handlePortalChatAction(command string, payload interface{}) (interface{}, e
 		for _, target := range targets {
 			resp, err := sendToComponentViaHubRetry(target, command, payload, 8*time.Second)
 			if err == nil && resp != nil {
-				return normalizeChatHubResponse(resp), nil
+				// High-signal for chat streaming debug: confirms raw poll shape reached
+				// the dashboard path (no normalize corruption). Count for arrays.
+				if arr, ok := resp.([]interface{}); ok {
+					logrus.Debugf("portal bridge: delivered raw %s poll (%d items) for session %s via %s", command, len(arr), sessionID, target)
+				} else {
+					logrus.Debugf("portal bridge: delivered raw %s poll for session %s via %s", command, sessionID, target)
+				}
+				return resp, nil
 			}
 			if err != nil {
 				lastErr = err
