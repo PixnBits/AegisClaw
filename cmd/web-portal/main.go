@@ -186,7 +186,7 @@ func main() {
 
 // noopAPIClient satisfies dashboard.APIClient when the Hub is unreachable.
 // This is the intentional fallback when the web-portal is started without a live
-// AegisHub/daemon connection (see AGENTS.md for proper startup via `make start`).
+// AegisHub/daemon connection (see AGENTS.md for proper startup via `sudo ./bin/aegis start`).
 // It allows the static UI shell and documented public REST endpoints to remain
 // functional for contract testing and development.
 //
@@ -202,7 +202,7 @@ type noopAPIClient struct{}
 func (n *noopAPIClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
 	return &dashboard.APIResponse{
 		Success: false,
-		Error:   "web-portal: no live daemon connection (start via `make start` per AGENTS.md). Action not available: " + action,
+		Error:   "web-portal: no live daemon connection (start via `sudo ./bin/aegis start` per AGENTS.md). Action not available: " + action,
 	}, nil
 }
 

@@ -161,7 +161,7 @@ func effectiveOwner() (int, int) {
 //
 // Part of <1s tactics for the collaboration model (see docs/implementation-plan/collaboration-model.md).
 // Measurement: use AEGIS_BOOT_TIMING=1 + scripts/boot-metrics.sh (or aegis vm ...) around
-// StartPairedAgentAndMemory and role ensures. Run under exact `make start` per AGENTS.md.
+// StartPairedAgentAndMemory and role ensures. Run under exact `sudo ./bin/aegis start` per AGENTS.md.
 func PrewarmPooledRootfsCopies(stateDir, templateRootfs string, count int, prefix string) int {
 	if count <= 0 || templateRootfs == "" || stateDir == "" {
 		return 0

@@ -246,23 +246,55 @@ rules:
   commands:
     - channel.*
 
+# Host CLI path for `aegis pm goal` (and internal ensure sends) talks to the receiver as
+# daemon-internal-N (fresh per `aegis` process). Allow ensure.role / orchestrator.* so the
+# CLI-driven collaboration path (pm goal → ensure for PM + dynamic roles with channel=) works
+# without ACL blocks (parallel to the project-manager* rule below).
+- source: "daemon-internal*"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+- source: "daemon-internal-*"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+
 # daemon-internal-N (and daemon-internal-1 etc.): used by all host-side internal hub traffic
 # from the CLI (./bin/aegis status, channel list/get/post, etc.) and from daemon bg code
 # (the readiness probe in startBase, setupDefaultMainChannelAndMembers for auto "main",
-# status store probe, portal bridge internal sends, etc.). Each CLI invocation starts its
-# local counter, so you often see "daemon-internal-1".
-# They must be allowed channel.* to store (list for readiness/status, create/add_member
-# for auto-main + user channel ops). Without this, probes get ACL violations (as seen in
-# the run), the bg store-ready gate never succeeds, lazy Court never starts, base stays
-# "launch attempted", and logs spam violations on every status poll during startup.
+# status store probe, portal bridge internal sends, dashboard/SSE stats (timer.list + sessions.list + channel.list),
+# chat sessions host, etc.). Each CLI invocation starts its local counter, so you often see "daemon-internal-1".
+# They must be allowed channel.* / timer.* / sessions.* to store for readiness, status, dashboard,
+# auto-main, channel ops, and collab paths. Without this, probes get ACL violations, the bg store-ready
+# gate never succeeds (or times out), lazy Court never starts, base stays "launch attempted (Store still starting...)",
+# and logs spam violations on every poll / 2s SSE tick during startup or steady state.
 - source: "daemon-internal*"
   destination: store
   commands:
     - channel.*
+    - timer.*
+    - sessions.*
 - source: "daemon-internal-*"
   destination: store
   commands:
     - channel.*
+    - timer.*
+    - sessions.*
+# Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
+# clients for the commands above (responses may carry the original command name in audit; observed
+# as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).
+# Grant broad "*" for these internal sources so status, auto-defaults, Court setup, PM ensure add_member,
+# and portal stats all succeed without ACL noise once Store is bridged.
+- source: store
+  destination: "daemon-internal*"
+  commands:
+    - "*"
+- source: store
+  destination: "daemon-internal-*"
+  commands:
+    - "*"
 
 # Project Manager <-> Network Boundary for real LLM plan generation (same contract as agents; enables unmocked Ollama E2E via NewRealLLMCaller)
 - source: "project-manager*"

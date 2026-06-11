@@ -3,7 +3,7 @@
 #
 # Real unmocked, no-fixtures E2E for the collaboration model:
 # - Starts the daemon (via sudo -n ./bin/aegis per AGENTS.md) with isolated custom hub/state
-#   so it does not conflict with a `make start` dev daemon.
+#   so it does not conflict with a dev daemon started via `sudo ./bin/aegis start`.
 # - Uses AEGIS_DEFAULT_MODEL (defaults to llama3.2:3b, the small fast one) + real Ollama.
 # - Exercises EXACTLY the user path: `aegis pm goal "..." --channel <name>`
 #   (which sends ensure.role to daemon-orchestrator + user.goal to project-manager).
@@ -18,12 +18,12 @@
 # - bin/aegis and bin/project-manager etc present (run `make build` first).
 # - For full isolated runs: sudoers configured so `sudo -n ./bin/aegis ...` works (AGENTS.md + aegisclaw-sudoers.example).
 # - Ollama running with the chosen model (default llama3.2:3b): `ollama list`.
-# - Recommended for speed: run `make start` (or sudo -n make start-foreground) first with your model env, then `make test-e2e-llm`.
+# - Recommended for speed: run `sudo ./bin/aegis start --foreground` first with your model env, then `make test-e2e-llm`.
 #   The script prefers an already-running daemon (fast path, no custom socket).
 #
 # Usage (recommended for review / daily):
 #   # 1. Start daemon the normal way (per AGENTS.md)
-#   AEGIS_DEFAULT_MODEL=llama3.2:3b make start
+#   AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start --foreground
 #   # 2. Run the E2E (will auto-detect running daemon and be fast)
 #   AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm
 #
@@ -34,7 +34,7 @@
 #   FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL=llama3.2:3b bash scripts/verify-pm-llm-e2e.sh
 #
 # To also exercise boot metrics for ensured roles (collab path <1s validation):
-#   AEGIS_BOOT_TIMING=1 AEGIS_DEFAULT_MODEL=llama3.2:3b make start
+#   AEGIS_BOOT_TIMING=1 AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start --foreground
 #   AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm
 #   # Then after: ./bin/aegis vm boot-metrics project-manager-... or similar for coder/tester roles.
 #
@@ -46,7 +46,7 @@
 # - Browser (Playwright) verification: #channels page shows the PM post (E2E-LLM-VERIFY + project-manager) in UI.
 # - Log (or daemon log) preferably shows "LLM plan gen" when a model was configured (proves real Ollama path via network-boundary).
 #
-# The script now supports "use existing daemon" for fast iteration after `make start`.
+# The script now supports "use existing daemon" for fast iteration after `sudo ./bin/aegis start`.
 
 set -euo pipefail
 
@@ -72,7 +72,7 @@ if ! curl -sf --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
   echo "WARNING: Ollama not responding on :11434. Real LLM path may fallback. Continuing anyway..."
 fi
 
-# Detect existing daemon (preferred fast path, matches "user does make start then pm goal")
+# Detect existing daemon (preferred fast path, matches "user does sudo ./bin/aegis start then pm goal")
 EXISTING_DAEMON=false
 if ./bin/aegis status 2>&1 | grep -q 'daemon is running'; then
   EXISTING_DAEMON=true
@@ -86,7 +86,7 @@ fi
 # Clean only for isolated mode
 if [ "$EXISTING_DAEMON" != true ]; then
   if ! sudo -n ./bin/aegis --help >/dev/null 2>&1; then
-    echo "ERROR: sudo -n ./bin/aegis not permitted for isolated start (see AGENTS.md). Stop any dev daemon and retry, or use FORCE_ISOLATED=0 after a normal 'make start'." >&2
+    echo "ERROR: sudo -n ./bin/aegis not permitted for isolated start (see AGENTS.md). Stop any dev daemon and retry, or use FORCE_ISOLATED=0 after a normal `sudo ./bin/aegis start`." >&2
     exit 3
   fi
   # Harden pre-clean for repeated runs after partial failures/interrupts on real Firecracker/sudo hw (priority 1).
@@ -108,9 +108,9 @@ if [ "$EXISTING_DAEMON" = true ]; then
   echo "=== Using existing daemon (no start/stop in this run) ==="
   # Ensure we talk to the right hub (user's normal one); do not force custom exports
   unset AEGIS_HUB_SOCKET AEGIS_STATE_DIR || true
-  # Bounded wait for full invariants even in fast/existing path (makes `make start && make test-e2e-llm` reliable
+  # Bounded wait for full invariants even in fast/existing path (makes `sudo ./bin/aegis start && make test-e2e-llm` reliable
   # without race on base registration / Court / pre-warm pools). Per testing-standards + AGENTS: assert health early.
-  # Short (vs isolated's 18-tick) because user just did make start; still catches not-ready states loudly.
+  # Short (vs isolated's 18-tick) because user just did sudo ./bin/aegis start; still catches not-ready states loudly.
   echo "=== Quick readiness poll for existing daemon (base ready + Court + pools; per standards) ==="
   for i in $(seq 1 12); do
     if ./bin/aegis status 2>/dev/null | grep -q 'base infrastructure: ready' && \
@@ -166,19 +166,27 @@ else
       tail -8 "$LOG_FILE" | cat
     fi
     if echo "$STATUS_OUT" | grep -q 'daemon is running'; then
-      if echo "$STATUS_OUT" | grep -qi 'base infrastructure.*ready'; then
+      # Primary readiness signals (now reliable after ACL + status probe/Court-secondary fixes):
+      # - "base infrastructure: ready" in status (live probe or Court==7 secondary)
+      # - Court personas online: 7 visible in the same status output
+      # - At least one successful channel list (direct store responsiveness test, 10s budget)
+      # The previous log-grep for early "Registered component (store|...)" is now advisory only
+      # (registrations happen early; under polling load the RPC can be flaky transiently even after label flip).
+      # Once health observables are good, proceed to the strict post-start asserts (which re-verify
+      # Court==7, base ready string, pools, no temp) before any pm goal / LLM / browser. This prevents
+      # the wait loop from stalling full happy-path execution on real-hw cold boots within the bounded time.
+      base_ready_in_status=$(echo "$STATUS_OUT" | grep -qi 'base infrastructure.*ready' && echo yes || echo no)
+      court_seven_in_status=$(echo "$STATUS_OUT" | grep -q 'Court personas online: 7' && echo yes || echo no)
+      if [ "$base_ready_in_status" = "yes" ] || [ "$court_seven_in_status" = "yes" ]; then
         if timeout 10s ./bin/aegis channel list >/dev/null 2>&1; then
-          # Additional check: look for critical component registrations in log
-          if [ -f "$LOG_FILE" ] && grep -E 'Registered component (store|network-boundary|web-portal)' "$LOG_FILE" | tail -3 | grep -q . ; then
-            echo "✓ daemon running, base infrastructure ready, store responsive, key components registered (collaboration backbone ready)"
-            READY=true
-            break
-          else
-            echo "  (channel list ok but waiting for store/network-boundary/web-portal registrations in log...)"
-          fi
+          echo "✓ daemon running, base/Court health signals present, store channel list responsive (proceeding to strict asserts + pm goal path)"
+          READY=true
+          break
+        else
+          echo "  (health signals present in status but channel list still timing; will retry a few more ticks)"
         fi
       else
-        echo "  (daemon running but base infrastructure not yet 'ready' in status - may indicate partial startup)"
+        echo "  (daemon running but base infrastructure not yet 'ready' and Court !=7 in status)"
       fi
     fi
     # Check log for obvious startup errors
@@ -291,7 +299,12 @@ if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
   AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors and journeys coverage)"
 else
   echo
-  echo "=== Skipping browser E2E (forced isolated mode uses custom hub; browser assumes standard portal at :8080 after 'make start')"
+  echo "=== Browser E2E (forced isolated / custom-hub mode: portal proxy still served at :8080 by this daemon; exercising UI journeys against the isolated instance)"
+  if [ ! -d "node_modules/@playwright/test" ]; then
+    npm install
+  fi
+  ./node_modules/.bin/playwright install chromium 2>/dev/null || true
+  AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check in isolated mode did not fully pass (portal may still be booting or data-dependent asserts soft-failed; see above for CLI evidence)"
 fi
 
 # Trigger (the real user action)
@@ -310,15 +323,15 @@ echo "=== Check default 'main' channel (E2E auto-create + Court) ==="
 # Re-run browser *after* the pm goal + channel posts so the specific "PM plan post visible in UI" test
 # (and the detailed user post-via-browser-form interaction) can observe the real LLM-driven content.
 # This ensures the E2E matches "user would use it: pm goal (CLI), then view/ interact in browser".
-if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
-  echo
-  echo "=== Browser E2E (post-pm-goal) verification of channels UI showing the LLM plan post + user typing ==="
-  if [ ! -d "node_modules/@playwright/test" ]; then
-    npm install
-  fi
-  ./node_modules/.bin/playwright install chromium 2>/dev/null || true
-  AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: post-trigger browser check did not fully pass"
+# Run in all modes (including custom-hub isolated): the host :8080 proxy + dashboard handlers are served by this
+# daemon process regardless of AEGIS_HUB_SOCKET (the sock only affects component registration / hub routing for VMs).
+echo
+echo "=== Browser E2E (post-pm-goal) verification of channels UI showing the LLM plan post + user typing ==="
+if [ ! -d "node_modules/@playwright/test" ]; then
+  npm install
 fi
+./node_modules/.bin/playwright install chromium 2>/dev/null || true
+AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: post-trigger browser check did not fully pass (data may be partial on slow boots; CLI channel get above is the source of truth for PM post + plan content)"
 
 echo
 echo "=== Evidence from logs (best effort) ==="
@@ -329,9 +342,14 @@ else
 fi
 
 echo
-echo "=== Quick view (pools / status) ==="
-./bin/aegis vm pools 2>&1 | head -3 || true
-./bin/aegis status 2>&1 | head -6 || true
+echo "=== Quick view (pools / status / roles with channel attachment) ==="
+./bin/aegis vm pools 2>&1 | head -5 || true
+./bin/aegis status 2>&1 | head -8 || true
+echo "On-demand / ensured roles (project-manager, coder, tester) + channel= attachment (from Ensure + VMLifecycle):"
+./bin/aegis vm list 2>/dev/null | grep -E 'project-manager|coder|tester|court-persona' | cat || true
+# Pre-warm + on-demand property: at least one pooled (agent/memory) should be visible, and after pm goal some roles should show channel=plan-demo-e2e-llm (or main).
+echo "Pre-warm pool files (claimable for <1s on-demand):"
+find /tmp/aegis* ~/.aegis -name '*-pooled-*.rootfs.img' -type f 2>/dev/null | head -5 | cat || true
 
 # Stop only what we started
 if [ "$EXISTING_DAEMON" != true ] && [ -n "$DAEMON_PID" ]; then
@@ -363,10 +381,27 @@ else
   ASSERT_RC=1
 fi
 
-if echo "$CH_CONTENT" | grep -qi 'project-manager' && ( echo "$CH_CONTENT" | grep -qiE 'E2E-LLM-VERIFY|plan|step|coder|tester|hello|monitoring' ); then
-  echo "✓ PASS: channel content shows project-manager + plan/goal/monitoring markers (real collab flow)"
+# Stronger: real LLM (or explicit plan) content + E2E marker must be present for full happy path credit.
+if echo "$CH_CONTENT" | grep -qi 'project-manager' && echo "$CH_CONTENT" | grep -qiE 'E2E-LLM-VERIFY'; then
+  echo "✓ PASS: channel content shows project-manager post containing the E2E-LLM-VERIFY marker (PM drove real/fallback plan into channel)"
 else
-  echo "✗ WARN: channel content did not obviously contain project-manager + plan/goal markers (may still be valid; inspect get output above)"
+  echo "✗ FAIL: channel missing project-manager + E2E-LLM-VERIFY marker (pm goal did not produce the expected post; see channel get above)"
+  ASSERT_RC=1
+fi
+
+if echo "$CH_CONTENT" | grep -qiE 'plan|step|coder|tester|monitoring|hello'; then
+  echo "✓ PASS: channel shows plan / role / monitoring content (LLM or fallback plan executed + monitoring post)"
+else
+  echo "✗ WARN: channel content lacked obvious plan/role/monitoring keywords (inspect get output)"
+fi
+
+# Dynamic roles + channel attachment property (core of collab model + pre-warm branch).
+ROLES_WITH_CH=$(./bin/aegis vm list 2>/dev/null | grep -E 'project-manager|coder|tester' | grep -i 'channel=' || true)
+if [ -n "$ROLES_WITH_CH" ]; then
+  echo "✓ PASS: ensured roles visible with channel= attachment (pre-warm/on-demand + EnsureRoleAgent channelHint)"
+  echo "$ROLES_WITH_CH"
+else
+  echo "✗ WARN: no project-manager/coder/tester roles with explicit channel= in vm list (may be timing on slow cold boot, or ensure used id without channel; inspect vm list)"
 fi
 
 # Dynamic ensured roles evidence (PM from goal + coder/tester from LLM plan extract + ensure.role)
@@ -386,12 +421,12 @@ fi
 if [ $ASSERT_RC -eq 0 ]; then
   echo "=== E2E SUMMARY: PASS (core PM->LLM/channel/ensure flow verified as user would use it) ==="
 else
-  echo "=== E2E SUMMARY: issues above (wiring may still be present; re-run after 'make start' or inspect logs) ==="
+  echo "=== E2E SUMMARY: issues above (wiring may still be present; re-run after 'sudo ./bin/aegis start' or inspect logs) ==="
   echo ""
   echo "=== ACTIONABLE RECOVERY (for repeated clean runs / not-ready states) ==="
   echo "  make e2e-clean"
   echo "  sudo -n ./bin/aegis stop || true"
-  echo "  AEGIS_DEFAULT_MODEL=llama3.2:3b make start"
+  echo "  AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start --foreground"
   echo "  make smoke     # must show all ✓ (Court 7, base ready, pools, no temp) per testing-standards.md"
   echo "  AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm"
   echo ""
@@ -425,7 +460,7 @@ fi
 if [ $ASSERT_RC -eq 0 ]; then
   echo "=== E2E SUMMARY: PASS (core PM->LLM/channel/ensure flow verified as user would use it) ==="
 else
-  echo "=== E2E SUMMARY: issues above (wiring may still be present; re-run after 'make start' or inspect logs) ==="
+  echo "=== E2E SUMMARY: issues above (wiring may still be present; re-run after 'sudo ./bin/aegis start' or inspect logs) ==="
 fi
 
 echo "=== verify-pm-llm-e2e complete (see script for how to iterate) ==="
