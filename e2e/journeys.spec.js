@@ -279,7 +279,7 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   // 7.7: Journey recovery / failure paths + TCB health post-daemon/VM death (priority 2 deepened).
   // Complements the Go chaos seeds (TestDaemonChaosRestart, TestDaemonRestartMidJourney, TestVMDeathWhileDaemonLive_WatchdogRecovery in daemon_integration_test.go).
   // Together with make test-chaos (AEGIS_CHAOS=1): provides full 7.7 coverage for recoverability of **all 9 user journeys** after unclean daemon death or VM failure.
-  // When run with AEGIS_E2E_LIVE=1 (live daemon via `make start`) + prior chaos run or manual restart:
+  // When run with AEGIS_E2E_LIVE=1 (live daemon via `sudo ./bin/aegis start`) + prior chaos run or manual restart:
   //   - Asserts expanded `aegis doctor` (7.5.5) reports healthy + TCB sections (Merkle roundtrips, workspace AGENTS.md/SOUL/TOOLS presence, static binary, memory <20MB, key isolation, watchdog).
   //   - Navigates key surfaces for each journey and asserts they are visible/usable post-recovery (no broken state from crash).
   //   - Confirms ongoing work (proposals, teams, autonomy grants, court decisions, chat sessions) is recoverable.
@@ -620,7 +620,7 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   //
   // All tests:
   // - Use stable data-testid from G1/G2 (nav-*, approvals-*, canvas-*, chat-*, memory-*, proposals-*, etc.)
-  // - Are resilient for fixture mode (default, no daemon) and document live mode (AEGIS_E2E_LIVE + make start)
+  // - Are resilient for fixture mode (default, no daemon) and document live mode (AEGIS_E2E_LIVE + sudo ./bin/aegis start)
   // - Cite exact success criteria from docs/specs/user-journeys/*.md + web-portal.md §Testability & E2E + testing-standards.md
   //
   // This fulfills the Phase 5 Group 3 DoD: "All 9 user journeys have complete, automated E2E tests (including failure + recovery)"

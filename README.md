@@ -64,17 +64,17 @@ make build-microvms           # MicroVM filesystems (Linux only)
 ### 3. Start the Daemon
 
 ```bash
-# Start in background (uses sudo, no password needed)
-make start
+# Start in background (preferred per AGENTS.md)
+sudo ./bin/aegis start
 
 # Or start in foreground (useful for debugging)
-make start-foreground
+sudo ./bin/aegis start --foreground
 
 # Stop the daemon
-make stop
+./bin/aegis stop
 
 # Check status
-make status
+./bin/aegis status
 
 # Run health checks
 make doctor
@@ -141,7 +141,7 @@ The build script automatically:
 **Other requirements:**
 - Requires KVM access (`/dev/kvm` must be readable by the daemon process)
 - Firecracker binary must be in `$PATH` (see "Installing Firecracker on Linux" below)
-- The daemon is normally started with `sudo` (via `make start` or `sudo ./bin/aegis start`). Thanks to `SUDO_USER` detection, it will automatically find kernels and images in your normal user's `~/.aegis/firecracker/` directory.
+- The daemon is normally started with `sudo` (via `sudo ./bin/aegis start`). Thanks to `SUDO_USER` detection, it will automatically find kernels and images in your normal user's `~/.aegis/firecracker/` directory.
 - Firecracker socket files are created under `~/.aegis/state/`
 
 #### macOS/Windows (Docker)
@@ -206,7 +206,6 @@ make build-microvms
 **For daemon operations (starting/stopping VMs):**
 ```bash
 # Always use sudo - daemon needs elevated privileges for Firecracker
-make start        # Uses sudo automatically
 sudo ./bin/aegis start
 ```
 
@@ -222,7 +221,7 @@ yourusername ALL=(ALL) NOPASSWD: /path/to/bin/aegis, /path/to/scripts/build-micr
 ### Supply-Chain & Release (7.8)
 - `make sbom` — produces CycloneDX JSON (via cyclonedx-gomod or syft) or a high-quality fallback manifest with Builder gates + spec cross-refs.
 - Image signing hooks (cosign, keyless or COSIGN_* env) are present as non-fatal placeholders in Makefile and build scripts.
-- All changes are additive and preserve the sacred `make start/stop/test/test-chaos` and doctor behavior (AGENTS.md).
+- All changes are additive and preserve the sacred `sudo ./bin/aegis start/stop`, `make test/test-chaos` and doctor behavior (AGENTS.md).
 - References: threat-model.md:3 (backdoored skill mitigation), additional-requirements-and-gaps.md, builder-security-gates.md, grok-build-execution-plan.md:7.8.
 
 See `make help` and the SBOM target for details.
@@ -316,7 +315,7 @@ make build-microvms
 sudo ./bin/aegis start
 ```
 
-(or `sudo make start`).
+(or the legacy `make start` wrapper, now deprecated in favor of direct `sudo ./bin/aegis start`).
 
 The daemon will automatically discover kernels and images in the *original user's* `~/.aegis/firecracker/` directory thanks to `SUDO_USER` detection. You only need a wrapper if you want to force specific paths, enable debug logging, or put the binary in a non-standard location.
 

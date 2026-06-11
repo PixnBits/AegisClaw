@@ -61,7 +61,7 @@ build: build-binaries
 			echo "   You can still use the freshly built host binaries for:"; \
 			echo "     - 'make test', 'make test-e2e-contract', direct 'bin/web-portal', etc."; \
 			echo ""; \
-			echo "   Full 'make build' + 'make start' will only be correct once microvms succeed."; \
+			echo "   Full 'make build' + 'sudo ./bin/aegis start' will only be correct once microvms succeed."; \
 			echo ""; \
 		fi; \
 	else \
@@ -95,19 +95,19 @@ build-microvms:
 		echo "MicroVM building not needed on $(shell uname -s) (uses Docker Sandboxes)"; \
 	fi
 
-# Quick smoke test - run this after `make start` to verify the system came up cleanly.
+# Quick smoke test - run this after `sudo ./bin/aegis start` to verify the system came up cleanly.
 # Per docs/testing-standards.md, this now explicitly asserts the core startup health
 # invariants (base infra registration, Court count==7, pre-warm pools, no stray temp
 # components, clean status) before deeper portal/teams checks. Failures are loud
 # and point to logs/status for diagnosis. This would have caught recent base
 # registration / component issues.
 #
-# IMPORTANT: `make start` returns quickly once the host daemon detaches.
+# IMPORTANT: `sudo ./bin/aegis start` returns quickly once the host daemon detaches.
 # On real Firecracker hardware the base (Store + Web Portal + Network Boundary)
 # + Court (7 personas) + pre-warm pools boot in the background and can take
 # 30s–a few minutes. Poll `make smoke` (or just run `make test-e2e-llm`, which
 # has its own readiness wait) until it goes green.
-# Run: make smoke (after make start). LLM agents: run this early on startup changes.
+# Run: make smoke (after sudo ./bin/aegis start). LLM agents: run this early on startup changes.
 smoke:
 	@echo "=== AegisClaw Smoke Test ==="
 	@echo "(Asserts startup health invariants from docs/testing-standards.md first.)"
@@ -164,7 +164,7 @@ boot-metrics:
 	@VM_ID="$(VM)"; \
 	if [ -z "$$VM_ID" ]; then \
 		echo "Usage: make boot-metrics VM=agent-<session>   (or memory-..., web-portal, court-scribe, ...)"; \
-		echo "       (start daemon with: AEGIS_BOOT_TIMING=1 sudo -E make start)"; \
+		echo "       (start daemon with: AEGIS_BOOT_TIMING=1 sudo -E ./bin/aegis start --foreground)"; \
 		exit 1; \
 	fi; \
 	if [ -x "./bin/aegis" ]; then \
@@ -219,7 +219,7 @@ e2e-clean:
 	@ls -ld /tmp/aegis* ~/.aegis/hub.sock 2>/dev/null | cat || echo '  (no /tmp/aegis* or main hub.sock remaining)'
 	@echo "✓ E2E custom state, sockets, test procs, and temp dirs cleaned."
 	@echo "  Safe to re-run 'make test-e2e-llm' or the script (even after SIGINT/partial fail on real hw)."
-	@echo "  Suggested next: AEGIS_DEFAULT_MODEL=llama3.2:3b make start"
+	@echo "  Suggested next: AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start --foreground"
 	@echo "    # Then poll until healthy (real Firecracker boots take time):"
 	@echo "    #   while ! make smoke >/dev/null 2>&1; do sleep 5; done; make smoke"
 	@echo "    # Or just: make test-e2e-llm   (the script waits internally for Court==7 + base ready)"
@@ -233,7 +233,7 @@ test:
 test-integration:
 	go test -v -tags=integration ./cmd/aegis -run "TestDaemon|TestCLI|TestVersion|TestProcessCleaning|TestVMList|TestSocket" -count=1 -timeout 90s
 
-# Run E2E tests in a real browser against the live daemon + microVMs (make start first)
+# Run E2E tests in a real browser against the live daemon + microVMs (start daemon first)
 test-e2e:
 	bash scripts/run-playwright-e2e.sh e2e/chat.spec.js --project=chromium
 
@@ -320,7 +320,7 @@ sbom:
 			echo ""; \
 			echo "## Notes for TCB / 9 journeys"; \
 			echo "  SBOM + signing reduces supply-chain risk for skills (see user-journeys/04 and 09)."; \
-			echo "  Hooks are additive and non-fatal (no breakage to make start/stop/test)."; \
+			echo "  Hooks are additive and non-fatal (no breakage to daemon start/stop or make test)."; \
 		} > $$SBOM_TXT; \
 		echo "✓ Fallback SBOM manifest written to $$SBOM_TXT"; \
 	fi
@@ -338,7 +338,7 @@ setup:
 	@./bin/aegis doctor || true
 	@echo ""
 	@echo "Setup complete. Next steps (per AGENTS.md):"
-	@echo "  sudo make start"
+	@echo "  sudo ./bin/aegis start --foreground"
 	@echo "  make smoke"
 	@echo "  ./bin/aegis chat --headless \"Hello\""
 
@@ -347,19 +347,19 @@ help:
 	@echo "AegisClaw Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make build              Build host binaries + microVM guest images (everything needed for 'make start')"
+	@echo "  make build              Build host binaries + microVM guest images (everything needed to start the daemon)"
 	@echo "  make build-binaries     Build Go binaries only"
 	@echo "  make build-microvms     Build microVM filesystems (NOPASSWD: scripts/create-firecracker-rootfs.sh)"
 	@echo "  make setup              Onboarding helper (build + doctor) - Journey 01"
-	@echo "  make start              Start the daemon with sudo"
-	@echo "  make start-foreground   Start daemon in foreground (debugging)"
+	@echo "  sudo ./bin/aegis start  Start the daemon (preferred per AGENTS.md)"
+	@echo "  sudo ./bin/aegis start --foreground   Start daemon in foreground (debugging)"
 	@echo "  make stop               Stop the daemon"
 	@echo "  make status             Check daemon status"
 	@echo "  make doctor             Run health checks"
-	@echo "  make smoke              Quick smoke test after 'make start' (CLI + portal + teams)"
+	@echo "  make smoke              Quick smoke test after start (CLI + portal + teams)"
 	@echo "  make test               Run unit tests"
 	@echo "  make test-integration   Run daemon integration tests"
-	@echo "  make test-e2e           Browser E2E vs real daemon + microVMs (requires make start)"
+	@echo "  make test-e2e           Browser E2E vs real daemon + microVMs (requires running daemon)"
 	@echo "  make test-e2e-contract  Thin-portal contract tests only (no daemon; AEGIS_E2E_FIXTURE=1)"
 	@echo "  make test-e2e-llm       Real unmocked PM+LLM+channels E2E (CLI pm goal + channel get + browser UI + status check; hits Ollama, no fixtures; see script)"
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
@@ -374,7 +374,7 @@ help:
 	@echo "  2. Build everything (binaries + fresh guest VM images): make build"
 	@echo "     (After source changes to web-portal, agents, store, etc. this is the"
 	@echo "      single command that should give you an up-to-date system.)"
-	@echo "  3. Start daemon: make start   (or sudo -n ./bin/aegis start --foreground)"
+	@echo "  3. Start daemon: sudo ./bin/aegis start --foreground"
 	@echo "  4. (Optional but recommended) Verify: make smoke"
 	@echo ""
 	@echo "Documentation:"

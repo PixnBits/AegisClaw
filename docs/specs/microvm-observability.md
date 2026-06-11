@@ -26,7 +26,7 @@ A sustainable observability story is required so that both developers and future
 - Provide reliable, low-friction access to what is happening inside each microVM.
 - Support both early boot (kernel + init) and application-level logging.
 - Work within the existing paranoid security model (all access mediated by the Host Daemon).
-- Be useful during local development (`make start`) and in more production-like environments.
+- Be useful during local development (`sudo ./bin/aegis start`) and in more production-like environments.
 - Be incrementally deliverable (start with what gives the highest leverage quickly).
 
 ## Non-Goals (for initial phases)
@@ -61,7 +61,7 @@ A sustainable observability story is required so that both developers and future
    - The `/init` (or equivalent entrypoint) must redirect stdout/stderr to the serial console (`/dev/console` or equivalent) before running the main binary.
 
 **Success criteria:**
-- After `sudo make start`, a developer can run `aegis vm logs web-portal --tail 100` and see kernel boot messages + whatever the guest `/init` and binary emitted.
+- After `sudo ./bin/aegis start`, a developer can run `aegis vm logs web-portal --tail 100` and see kernel boot messages + whatever the guest `/init` and binary emitted.
 - The same command works for court personas, store, network-boundary, etc.
 
 ### Phase 1: Structured Logging over vsock
@@ -161,7 +161,7 @@ The design prioritizes giving developers and operators a reliable `aegis vm logs
 
 ### Developer Ergonomics Note (Sudo / Autonomy)
 
-To work efficiently on this tree (frequent `make start`, `make build-microvms`, and log inspection under root-owned state directories), the following minimal sudoers entry is recommended (see also AGENTS.md):
+To work efficiently on this tree (frequent `sudo ./bin/aegis start`, `make build-microvms`, and log inspection under root-owned state directories), the following minimal sudoers entry is recommended (see also AGENTS.md):
 
 ```
 pixnbits ALL=(ALL) NOPASSWD: /home/pixnbits/projects/AegisClaw/docs/lessons-learned/bin/aegis

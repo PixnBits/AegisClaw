@@ -19,7 +19,7 @@ This document defines the expected testing approach for AegisClaw. It is designe
 |--------------------------|--------------------------------|--------------------------------------|------------------------------------------------------------------------------|---------------------|
 | **Unit**                 | `make test`                    | Every change                         | Fast and isolated. Good for logic that doesn't touch daemon or VMs.          | No privileges needed |
 | **Integration**          | `make test-integration`        | Daemon lifecycle, CLI, component registration | Use `-tags=integration`. Focus on startup health and component contracts.    | May require sudo in some cases |
-| **Smoke**                | `make smoke`                   | After every `make start`             | Quick sanity that base infrastructure + Court are healthy.                   | Fast, human + LLM friendly |
+| **Smoke**                | `make smoke`                   | After every `sudo ./bin/aegis start` | Quick sanity that base infrastructure + Court are healthy.                   | Fast, human + LLM friendly |
 | **Contract / Fixture**   | `make test-e2e-contract`       | Portal surface, API contracts        | Preferred for CI and rapid iteration. Does not require full daemon.          | Hermetic, fast |
 | **Live E2E (Browser)**   | `make test-e2e`                | Full user journeys with real daemon  | Use when testing real microVM behavior, streaming, or Court flows.           | Requires running daemon |
 | **Collaboration LLM E2E**| `make test-e2e-llm`            | Project Manager + real LLM + channels| Primary vehicle for validating the collaboration model end-to-end.           | Uses real Ollama path; must assert on startup health first |

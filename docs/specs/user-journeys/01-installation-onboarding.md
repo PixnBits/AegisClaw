@@ -35,7 +35,7 @@ As a developer, I want to clone the repository, run setup, verify the system is 
    - `make install` (installs host daemon as a service/systemd unit or background process)
 
 4. **Start Core System**
-   - `aegis start` or `make start`
+   - `sudo ./bin/aegis start` (or the `aegis start` CLI wrapper)
    - Host Daemon launches AegisHub, Court Scribe, and initial Court personas
 
 5. **System Verification**

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run Playwright E2E in a real browser against the live daemon (make start).
+# Run Playwright E2E in a real browser against the live daemon (sudo ./bin/aegis start).
 # Optional AEGIS_E2E_FIXTURE=1 runs contract tests against the thin web-portal instead.
 set -euo pipefail
 
@@ -19,7 +19,7 @@ require_daemon() {
 		return 0
 	fi
 	echo "ERROR: daemon is not running on localhost:8080." >&2
-	echo "Start the real system first: make start" >&2
+	echo "Start the real system first: sudo ./bin/aegis start --foreground" >&2
 	exit 1
 }
 

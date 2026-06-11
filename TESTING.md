@@ -9,7 +9,7 @@ This document describes how to run, write, and maintain tests for AegisClaw. It 
 | Unit              | `make test` or `go test ./...` | No               | Fast, isolated logic                         | Run on every change |
 | Integration       | `make test-integration`        | Sometimes        | Daemon lifecycle, CLI, components            | Uses `-tags=integration` |
 | E2E / Browser     | `make test-e2e` or `npm test`  | No (default)     | Web Portal UI + public REST contract         | Playwright (see below) |
-| Smoke             | `make smoke`                   | Yes (`make start`) | Post-start sanity (CLI + portal reachability) | Quick health check |
+| Smoke             | `make smoke`                   | Yes (`sudo ./bin/aegis start`) | Post-start sanity (CLI + portal reachability) | Quick health check |
 | Full user journeys| (manual + Playwright)          | Yes              | End-to-end with real chat, Court, Builder    | See "Live E2E" section |
 
 ## Running Unit and Integration Tests
@@ -53,7 +53,7 @@ This starts the **thin web-portal binary in isolation** (via the `webServer` con
 
 1. Start the daemon (follow `AGENTS.md` exactly):
    ```bash
-   make start   # or make start-foreground
+   sudo ./bin/aegis start --foreground
    ```
 2. Run Playwright pointed at the live proxy (default baseURL is `http://localhost:8080`, which the daemon reverse-proxies to the portal):
    ```bash
@@ -138,7 +138,7 @@ See the Playwright docs for more filtering, debugging (`--debug`), and UI mode.
 
 ## Smoke Test
 
-After `make start`:
+After `sudo ./bin/aegis start`:
 
 ```bash
 make smoke
@@ -170,7 +170,7 @@ All required jobs must pass before merge.
 ## Related Documentation
 
 - `docs/testing-standards.md` — high-level philosophy and coverage requirements.
-- `AGENTS.md` — **mandatory** rules for starting/stopping the daemon (`make start` / `make stop`).
+- `AGENTS.md` — **mandatory** rules for starting/stopping the daemon (`sudo ./bin/aegis start` / `./bin/aegis stop`).
 - `INTEGRATION_TESTS.md` — details on the daemon integration suite.
 - `README.md` — quick start and high-level test commands.
 - `e2e/` specs — living examples.

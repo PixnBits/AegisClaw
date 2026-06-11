@@ -126,13 +126,13 @@ async function readCapturedSseFrames(page) {
 }
 
 /**
- * Real-system chat E2E — requires the full stack (`make start`).
+ * Real-system chat E2E — requires the full stack (daemon started with `sudo ./bin/aegis start`).
  * Exercises the dashboard /chat page served by the daemon reverse proxy.
  */
 test.describe('Chat (real system)', () => {
   test.describe.configure({ mode: 'serial', timeout: 300_000 });
-  // Real-system tests require a live daemon + agent VMs (make start). Skip in fixture/CI mode.
-  test.skip(!process.env.AEGIS_E2E_LIVE, 'Set AEGIS_E2E_LIVE=1 with a running daemon (make start) to enable real-system chat tests');
+  // Real-system tests require a live daemon + agent VMs (sudo ./bin/aegis start). Skip in fixture/CI mode.
+  test.skip(!process.env.AEGIS_E2E_LIVE, 'Set AEGIS_E2E_LIVE=1 with a running daemon (sudo ./bin/aegis start) to enable real-system chat tests');
 
   test('loads the chat page', async ({ page }) => {
     const sessionsLoaded = page.waitForResponse(

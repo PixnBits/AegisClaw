@@ -82,7 +82,7 @@ Key new/expanded responsibilities (non-TCB business logic stays in sandboxes):
 
 All launches continue to use the established paranoid key distribution (0600 ephemeral + cmdline hex for shared images, immediate zeroing), per-VM registration with AegisHub, and the critical component watchdog.
 
-Changes must preserve the exact start/stop mechanisms documented in AGENTS.md (`make start` / `sudo ./bin/aegis start`, `./bin/aegis stop`).
+Changes must preserve the exact start/stop mechanisms documented in AGENTS.md (`sudo ./bin/aegis start`, `./bin/aegis stop`).
 
 ## Related Updates
 See the implementation plan for phased files (orchestrator.go, guest_key_inject.go, rootfs_linux.go, firecracker.go, aegishub, store, portal, ACLs, specs, tests, E2E). Legacy per-session and eager-Court paths must continue to work during transition.

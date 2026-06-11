@@ -35,7 +35,7 @@ YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/rm /tmp/aegis
 YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis
 
 # Example for this specific workspace (edit paths as needed):
-# /home/pixnbits/projects/AegisClaw/main/bin/aegis is the key one for `sudo -n ./bin/aegis start` and `make start*` (which invoke it under sudo -n internally).
+# /home/pixnbits/projects/AegisClaw/main/bin/aegis is the key one for `sudo -n ./bin/aegis start` (and legacy make start wrappers which invoke it under sudo -n internally).
 # Use direct bin for start to avoid broad sudo on make: sudo -n /home/pixnbits/projects/AegisClaw/main/bin/aegis start --foreground
 
 # Env vars for observability (boot-metrics) + model selection + custom E2E sockets must pass under sudo.
