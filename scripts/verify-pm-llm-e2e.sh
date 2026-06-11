@@ -312,9 +312,41 @@ echo
 echo "=== Trigger real user path: pm goal (CLI as a user would; drives PM + real LLM via network-boundary) ==="
 ./bin/aegis pm goal "$GOAL" --channel "$CHANNEL" 2>&1 | cat || true
 
+# Robust bounded poll for the collab happy path to land.
+# The CLI pm goal returns after the ensure + user.goal sends (runPMGoal has internal 20s+15s sleeps + retries).
+# On-demand PM role boot (pre-warm claim), real LLM via network-boundary, channel.post(s), ensure.role for
+# coder/tester (with channel=), and store add_member still take real (but bounded) time under cold boots.
+# Polling here (instead of single immediate get) makes the E2E reliably wait for and assert on visible
+# channel-based conversations: PM plan post containing the E2E marker + dynamic roles with channel attachment.
+# Rich diagnostics on timeout (vm list with channel=, status, log greps) per testing-standards + AGENTS.
+echo
+echo "=== Wait for PM plan post + dynamic roles (bounded poll; accounts for on-demand + LLM + posts) ==="
+POLL_CONTENT=""
+for i in $(seq 1 18); do
+  sleep 4
+  c=$(timeout 12s ./bin/aegis channel get "$CHANNEL" 2>/dev/null || true)
+  if echo "$c" | grep -qi 'project-manager' && echo "$c" | grep -qiE 'E2E-LLM-VERIFY'; then
+    POLL_CONTENT="$c"
+    echo "✓ PASS: project-manager post with E2E-LLM-VERIFY marker visible in channel (tick $i)"
+    break
+  fi
+  echo "  (waiting for plan content in $CHANNEL; tick $i/18)..."
+done
+if [ -z "$POLL_CONTENT" ]; then
+  POLL_CONTENT=$(timeout 12s ./bin/aegis channel get "$CHANNEL" 2>/dev/null || true)
+  echo "  (poll timeout or no marker yet; using last get for diagnostics)"
+  # Rich diagnostics to help debug cold-boot transients or role image issues
+  echo "=== Post-trigger diagnostics (vm list for channel=, roles, status) ==="
+  ./bin/aegis vm list 2>/dev/null | grep -E 'project-manager|coder|tester|channel=' | cat || true
+  ./bin/aegis status 2>/dev/null | grep -E 'Court personas|base infrastructure' | cat || true
+  if [ -f "$LOG_FILE" ]; then
+    grep -E 'LLM plan gen|posted plan|PM: (sent ensure|posted monitoring)|ensure\.role for' "$LOG_FILE" | tail -10 | cat || true
+  fi
+fi
+
 echo
 echo "=== Inspect channel (as user would via CLI or portal #channels) ==="
-./bin/aegis channel get "$CHANNEL" 2>&1 | cat || true
+echo "$POLL_CONTENT" | cat || true
 
 echo
 echo "=== Check default 'main' channel (E2E auto-create + Court) ==="
@@ -372,8 +404,14 @@ echo
 echo "=== Assertions / summary ==="
 ASSERT_RC=0
 
-# Re-fetch channel for assertion (use whatever socket is active)
-CH_CONTENT=$(./bin/aegis channel get "$CHANNEL" 2>/dev/null || true)
+# Re-fetch / prefer the polled content for assertion (the early poll waited for the marker + PM post).
+# Fall back to a fresh get only if the poll didn't capture usable content. This ensures the
+# core PASS/FAIL decisions (E2E-LLM-VERIFY, project-manager, roles with channel=) see the
+# actual channel state after the full PM->LLM->post->ensure flow.
+CH_CONTENT="${POLL_CONTENT}"
+if [ -z "$CH_CONTENT" ] || ! echo "$CH_CONTENT" | grep -qi 'project-manager'; then
+  CH_CONTENT=$(./bin/aegis channel get "$CHANNEL" 2>/dev/null || true)
+fi
 if echo "$CH_CONTENT" | grep -qi 'project-manager'; then
   echo "✓ PASS: project-manager posted to the channel"
 else

@@ -2496,8 +2496,21 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 	fmt.Printf("Sent goal to project-manager for channel %s\n", chID)
 	// Give PM time to process, post plan, ensure roles (short wait)
 	time.Sleep(15 * time.Second)
-	// 3. Inspect the channel to see the plan post (and any role activity)
-	data, err := sendToComponentViaHub("store", "channel.get", map[string]string{"channel_id": chID})
+	// 3. Inspect the channel to see the plan post (and any role activity).
+	// Small retry tolerates transient hub/store latency right after on-demand role launches
+	// (role registration churn + store add_member). Mirrors the ensure retry above and the
+	// E2E script's post-trigger poll. Makes `aegis pm goal` output the plan more reliably
+	// for manual use (the E2E script is the authoritative long-poll verifier).
+	var data interface{}
+	for attempt := 0; attempt < 3; attempt++ {
+		data, err = sendToComponentViaHub("store", "channel.get", map[string]string{"channel_id": chID})
+		if err == nil {
+			break
+		}
+		if attempt < 2 {
+			time.Sleep(time.Duration(2+attempt) * time.Second)
+		}
+	}
 	if err != nil {
 		fmt.Printf("channel get error: %v\n", err)
 		return

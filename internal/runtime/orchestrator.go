@@ -630,10 +630,19 @@ func (o *Orchestrator) EnsureRoleAgent(ctx context.Context, roleType string, cha
 	}
 	// Use a conventional image name derived from roleType (single image + role/cmdline
 	// specialisation, exactly like court-persona today).
+	// For dynamic roles extracted by the Project Manager (coder, tester + keywords from
+	// extractRolesFromText in cmd/project-manager/main.go), there is typically no dedicated
+	// <role>.img from build-microvms (only agent, project-manager, court-*, base components).
+	// Fall back to the agent runtime image (which benefits from pre-warm/reflink pools for <1s
+	// on-demand) while preserving the desired id (e.g. "coder-plan-demo...") and Channel
+	// attachment for roster, vm list `channel=`, and visibility in channel conversations.
 	img := roleType + ".img"
 	if err := o.StartVM(ctx, roleType, id, img); err != nil {
-		return "", err
-	}
+		logrus.Warnf("EnsureRoleAgent: no dedicated image for role %q (StartVM error: %v); falling back to agent.img (pre-warm pools + real agent runtime) while keeping id=%s and channel attachment for collab visibility", roleType, err, id)
+		if err2 := o.StartVM(ctx, "agent", id, "agent.img"); err2 != nil {
+			return "", fmt.Errorf("role %s start failed (original: %v; agent fallback: %w)", roleType, err, err2)
+		}
+	} 
 	if channelHint != "" {
 		o.mu.Lock()
 		if lc, ok := o.vms[id]; ok {
