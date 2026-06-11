@@ -261,6 +261,24 @@ rules:
     - ensure.role
     - orchestrator.*
 
+# The second half of the CLI pm goal path: after ensuring the project-manager (with channel),
+# the CLI sends the actual "user.goal" (containing the channel hint and goal text) to the
+# project-manager component (registered as "project-manager", or the ensured "project-manager-xxx"
+# ID). This was the ACL violation observed in manual verification runs after the other collab
+# ACLs were added: "daemon-internal-N -> project-manager : user.goal".
+# Without this, the PM never receives the goal, returns empty response, never posts the plan
+# or does the dynamic ensure.role for coder/tester, and channel gets time out or show nothing.
+- source: "daemon-internal*"
+  destination: "project-manager*"
+  commands:
+    - user.goal
+    - chat.message
+- source: "daemon-internal-*"
+  destination: "project-manager*"
+  commands:
+    - user.goal
+    - chat.message
+
 # daemon-internal-N (and daemon-internal-1 etc.): used by all host-side internal hub traffic
 # from the CLI (./bin/aegis status, channel list/get/post, etc.) and from daemon bg code
 # (the readiness probe in startBase, setupDefaultMainChannelAndMembers for auto "main",
