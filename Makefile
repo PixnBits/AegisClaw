@@ -10,12 +10,63 @@ AEGIS_BIN := $(CURDIR)/bin/aegis
 # Default target
 all: build
 
-# Build all binaries and microVMs
-# NOTE: build-microvms is best-effort (Docker + sudo + Go version inside images).
-# Failures here (common without NOPASSWD or on bleeding-edge go.mod) do not
-# block the primary deliverables. See AGENTS.md and scripts/build-microvms-docker.sh.
+# Build host binaries + microVM guest filesystem images (the complete picture).
+#
+# After editing any source that runs inside a guest (web-portal + internal/dashboard,
+# agent + internal/agent, store, memory, court-*, builder, network-boundary, etc.)
+# you MUST have up-to-date microVM images, otherwise `./bin/aegis start` will run
+# stale binaries inside the Firecracker VMs (e.g. the dashboard that answers on :8080).
+#
+# This target tries hard to produce a complete, runnable tree:
+#   - Always builds the host `bin/*` binaries.
+#   - On Linux, also builds the guest rootfs images via build-microvms.
+#
+# build-microvms requires Docker + (usually) sudo for privileged rootfs steps.
+# It is intentionally non-fatal so that `make build` remains useful on macOS,
+# in CI without kvm, or before you have set up the sudoers rules.
+#
+# See:
+#   - AGENTS.md ("MicroVM / rootfs builds", "Agent Behavior for Sudo...")
+#   - scripts/build-microvms-docker.sh
+#   - scripts/aegisclaw-sudoers.example
 build: build-binaries
-	@$(MAKE) build-microvms || echo "⚠ build-microvms had issues (Docker/Go version inside images/permissions). Binaries are ready. MicroVM filesystems are optional on this env per AGENTS.md."
+	@echo "==> Host binaries built."
+	@if [ "$(shell uname -s)" = "Linux" ]; then \
+		echo "==> Building microVM filesystem images (agents, web-portal, store, memory, court, ...)."; \
+		echo "    This can take a few minutes on first build or after 'make clean-microvms'."; \
+		echo "    It may require Docker and sudo (see AGENTS.md)."; \
+		if $(MAKE) --no-print-directory build-microvms; then \
+			echo "==> MicroVM images are up to date."; \
+		else \
+			rc=$$?; \
+			echo ""; \
+			echo "⚠ WARNING: 'make build-microvms' did not complete successfully (exit $$rc)."; \
+			echo ""; \
+			echo "   The following components will be STALE inside the guest VMs after"; \
+			echo "   './bin/aegis start' (the code that actually runs on :8080, in agents, etc.):"; \
+			echo "     - cmd/web-portal/ + internal/dashboard/   (the UI you curl on localhost:8080)"; \
+			echo "     - cmd/agent/ + internal/agent/            (the real agent runtime)"; \
+			echo "     - cmd/store/, cmd/memory/, court-*, builder, network-boundary, ..."; \
+			echo ""; \
+			echo "   To get a fully up-to-date system (recommended after source changes):"; \
+			echo "     make build-microvms"; \
+			echo ""; \
+			echo "   Common reasons this happens and how to fix them:"; \
+			echo "     - Docker not installed or not running"; \
+			echo "     - No permission to /opt/aegis or to create loop devices"; \
+			echo "     - Missing NOPASSWD sudo rules for the build scripts"; \
+			echo "       (copy scripts/aegisclaw-sudoers.example to /etc/sudoers.d/ and edit)"; \
+			echo "     - Running on a system without /dev/kvm (use contract tests instead)"; \
+			echo ""; \
+			echo "   You can still use the freshly built host binaries for:"; \
+			echo "     - 'make test', 'make test-e2e-contract', direct 'bin/web-portal', etc."; \
+			echo ""; \
+			echo "   Full 'make build' + 'make start' will only be correct once microvms succeed."; \
+			echo ""; \
+		fi; \
+	else \
+		echo "==> Skipping microVM image build (not on Linux; Docker sandboxes are used)."; \
+	fi
 
 # Build all command binaries
 build-binaries:
@@ -296,7 +347,7 @@ help:
 	@echo "AegisClaw Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make build              Build binaries and microVMs"
+	@echo "  make build              Build host binaries + microVM guest images (everything needed for 'make start')"
 	@echo "  make build-binaries     Build Go binaries only"
 	@echo "  make build-microvms     Build microVM filesystems (NOPASSWD: scripts/create-firecracker-rootfs.sh)"
 	@echo "  make setup              Onboarding helper (build + doctor) - Journey 01"
@@ -320,9 +371,11 @@ help:
 	@echo ""
 	@echo "Setup:"
 	@echo "  1. Install dependencies: go mod download"
-	@echo "  2. Build binaries: make build"
-	@echo "  3. Start daemon: make start"
-	@echo "  4. (Optional) Verify: make smoke"
+	@echo "  2. Build everything (binaries + fresh guest VM images): make build"
+	@echo "     (After source changes to web-portal, agents, store, etc. this is the"
+	@echo "      single command that should give you an up-to-date system.)"
+	@echo "  3. Start daemon: make start   (or sudo -n ./bin/aegis start --foreground)"
+	@echo "  4. (Optional but recommended) Verify: make smoke"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  See README.md for detailed setup instructions"

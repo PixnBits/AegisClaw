@@ -233,6 +233,19 @@ var (
 	// Started in startWebPortalProxy; only the foreground daemon goroutine sets it.
 	webPortalProxyServer *http.Server
 
+	// webPortalProxyListener is the net.Listener created in startWebPortalProxy.
+	// We keep it so we can close it explicitly on shutdown (in addition to
+	// server.Shutdown which also closes listeners).
+	webPortalProxyListener net.Listener
+
+	// webPortalProxyListenErr is set (and logged) if the proxy fails to bind its
+	// public listen address (e.g. "address already in use" because a previous
+	// `go run ./cmd/web-portal` or test fixture with AEGIS_E2E_FIXTURE is still
+	// holding :8080). This lets `aegis status` and `aegis doctor` surface a
+	// clear diagnostic instead of the daemon claiming "web portal active" while
+	// the port is actually owned by something else.
+	webPortalProxyListenErr error
+
 	// Base infrastructure managed children (AegisHub first, then Network Boundary, Store, Web Portal).
 	// These fulfill the documented requirement that the Host Daemon acts as bootstrap/lifecycle
 	// manager for the base set (host-daemon.md, web-portal-vm.md §Startup, user-journeys/01).
@@ -732,6 +745,32 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		publicProxy = "127.0.0.1:8080"
 	}
 
+	// Early, prominent pre-flight check for the public proxy listen port.
+	// This directly addresses the recurring "stale host web-portal from test/fixture"
+	// problem (the exact cause of the template error on curl + "daemon stopped"
+	// after rebuilds). We use the same findPortOwner helper that doctor/status use,
+	// so the diagnosis is consistent. We log *loudly* here (before the 60s readiness
+	// probe and before the Listen that will cause Fatalf) so it is obvious in
+	// foreground logs and tee'd output even if the daemon exits shortly after.
+	if _, port, err := net.SplitHostPort(publicProxy); err == nil {
+		if owner := findPortOwner(port); owner != "" {
+			logrus.Error("══════════════════════════════════════════════════════════════")
+			logrus.Errorf("PORT CONFLICT on web portal proxy %s", publicProxy)
+			logrus.Errorf("Port %s is already in use by: %s", port, owner)
+			logrus.Error("This usually means a previous ./bin/web-portal (or `go run ./cmd/web-portal`)")
+			logrus.Error("started with AEGIS_E2E_FIXTURE / testdata is still running and holding :8080.")
+			logrus.Error("The daemon will now fail to start the reverse proxy (see the Fatalf below).")
+			logrus.Error("Quick fix:")
+			logrus.Error("  pkill -f 'web-portal.*(fixture|testdata|AEGIS_)' || true")
+			logrus.Error("  # or kill the specific PID shown above")
+			logrus.Error("Then re-run your start command.")
+			logrus.Error("Alternative (use a different port):")
+			logrus.Errorf("  AEGIS_WEB_PORTAL_PROXY_ADDR=127.0.0.1:8081 sudo ... ./bin/aegis start ...")
+			logrus.Error("You can also run `./bin/aegis doctor` (no daemon required) to see port status.")
+			logrus.Error("══════════════════════════════════════════════════════════════")
+		}
+	}
+
 	// Start the public-facing reverse proxy (users hit this at http://localhost:8080)
 	// This is the only inbound path to the Web Portal. startWebPortalProxy now handles
 	// both "http://..." tcp targets and "vsock:cid:port" descriptors transparently.
@@ -763,13 +802,16 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	if err := startWebPortalProxy(publicProxy, targetForProxy); err != nil {
-		logrus.Fatalf("failed to start web portal reverse proxy: %v", err)
-	}
-
-	// Only emit WEB_PORTAL_READY (and the corresponding bus event) when the
-	// probe actually succeeded. This is the observable signal that the UI is
-	// safe to use and matches the documented contract in web-portal-vm.md.
-	if probeErr == nil {
+		logrus.Errorf("CRITICAL: failed to start web portal reverse proxy: %v", err)
+		logrus.Error("The daemon will continue running (control socket, CLI commands, 'aegis status' and 'aegis doctor' will still work).")
+		logrus.Error("This is deliberate so the new port listen failure reporting is visible.")
+		logrus.Error("Look for the PORT CONFLICT banner above (printed by the pre-flight check) and run './bin/aegis doctor' (works even if daemon 'stopped').")
+		// Do NOT fatal. Previously a bind failure (e.g. stale test web-portal holding :8080)
+		// would make the whole daemon exit immediately. Then `status` would only say
+		// "daemon is not running" and the diagnostics we added for "could not open the port"
+		// would never be seen by the user. Now the ListenErr is set, the pre-check
+		// banner was already printed, and status/doctor will clearly report it.
+	} else if probeErr == nil {
 		logrus.Info("WEB_PORTAL_READY: reverse proxy active on " + publicProxy + " (target " + targetForProxy + ")")
 		if orchestrator != nil {
 			orchestrator.Bus().PublishJSON("web_portal.ready", map[string]interface{}{
@@ -789,6 +831,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		<-sigChan
 		logrus.Info("shutting down daemon")
 		// Stop the reverse proxy first (drain in-flight SSE/chat streams gracefully).
+		if webPortalProxyListener != nil {
+			_ = webPortalProxyListener.Close()
+		}
 		if webPortalProxyServer != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = webPortalProxyServer.Shutdown(shutdownCtx)
@@ -903,6 +948,20 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 		"base_infrastructure":   "launch attempted (AegisHub + real Firecracker microVMs for Network Boundary / Store / Web Portal)",
 	}
 
+	// If the proxy failed to bind its port (common when a stale host-side
+	// web-portal from `go run` / playwright fixture / previous test is still
+	// listening), override the optimistic status so `aegis status` tells the
+	// truth instead of claiming the proxy is active.
+	if webPortalProxyListenErr != nil {
+		base["web_portal"] = fmt.Sprintf("FAILED TO LISTEN: %v", webPortalProxyListenErr)
+	} else if isDaemonRunning() {
+		// Live check: even if we think we started the listener, confirm the
+		// port is actually open right now (catches races, late conflicts, etc.).
+		if _, err := net.DialTimeout("tcp", "127.0.0.1:8080", 600*time.Millisecond); err != nil {
+			base["web_portal"] = "not listening on localhost:8080 (bind failure or port conflict; see doctor / logs)"
+		}
+	}
+
 	if !isDaemonRunning() {
 		if jsonOutput {
 			base["daemon"] = "not running"
@@ -1015,6 +1074,45 @@ func isDebug() bool {
 	return debugMode
 }
 
+// findPortOwner returns a short description of what (if anything) is
+// listening on the given TCP port (e.g. "8080"). It is used by `aegis doctor`
+// and the status path to diagnose exactly the class of problem where a stale
+// host-side web-portal (from a previous test run with fixture envs) is still
+// holding the port that the daemon's reverse proxy wants.
+//
+// It prefers `ss` (modern iproute2) and falls back to `lsof`. Output is
+// intentionally one-line and human-readable for the doctor/status messages.
+func findPortOwner(port string) string {
+	// Try ss first (usually installed, gives users:(("cmd",pid=NNN,fd=N)) info)
+	if out, err := exec.Command("ss", "-tlnp", "sport", "="+port).CombinedOutput(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, "LISTEN") {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					// Try to extract the users(...) part which is the most useful.
+					// If no process info (common for non-root viewing root-owned sockets),
+					// return "" so we don't falsely claim "unexpected process" or "no listener".
+					if idx := strings.Index(line, "users:"); idx >= 0 {
+						return strings.TrimSpace(line[idx:])
+					}
+					// No users: info visible; treat as "not detectable" rather than a bad owner.
+					return ""
+				}
+			}
+		}
+	}
+
+	// Fallback: lsof (may require sudo for other users' processes, but still useful)
+	if out, err := exec.Command("lsof", "-i", "tcp:"+port, "-sTCP:LISTEN", "-nP", "-FpT").CombinedOutput(); err == nil {
+		outStr := strings.TrimSpace(string(out))
+		if outStr != "" {
+			return outStr
+		}
+	}
+
+	return ""
+}
+
 func doctorDaemon(cmd *cobra.Command, args []string) {
 	fmt.Println("Running health checks...")
 
@@ -1101,11 +1199,109 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 				fmt.Printf("⚠ Control socket perms may prevent normal-user CLI access (current: %o)\n", mode)
 			}
 		}
-		// Proxy health (the hardened reverse proxy the daemon manages)
-		if _, err := net.DialTimeout("tcp", "127.0.0.1:8080", 1*time.Second); err == nil {
+		// Proxy health (the hardened reverse proxy the daemon manages).
+		// We now explicitly detect bind failures (e.g. port 8080 already held by
+		// a leftover host-side ./bin/web-portal started by a test with
+		// AEGIS_E2E_FIXTURE, or another process). This is the exact scenario
+		// that produced "curl works but you get the old template error".
+		if _, err := net.DialTimeout("tcp", "127.0.0.1:8080", 750*time.Millisecond); err == nil {
 			fmt.Println("✓ Web portal proxy reachable (localhost:8080)")
 		} else if isDaemonRunning() {
-			fmt.Println("⚠ Web portal proxy not responding (daemon may still be initializing)")
+			// Daemon thinks it is running; port is not open → bind failure or conflict.
+			fmt.Println("✗ Web portal proxy port 8080 is not listening")
+			// Best-effort: show who (if anything) is holding the port.
+			if owner := findPortOwner("8080"); owner != "" {
+				fmt.Printf("    (port owned by: %s)\n", owner)
+			}
+			fmt.Println("    (possible cause: another web-portal process from a test/fixture is still running; kill it or use a different AEGIS_WEB_PORTAL_PROXY_ADDR)")
+			healthy = false
+		} else {
+			fmt.Println("⚠ Web portal proxy not responding (daemon not running)")
+		}
+	}
+
+	// Always surface the current state of the web portal proxy port (the main
+	// user-facing port). This makes the "port listen failure" reporting visible
+	// on every doctor run, even for transient or past conflicts, and even when
+	// the daemon is not (yet) running.
+	port8080 := findPortOwner("8080")
+	if port8080 != "" {
+		lower := strings.ToLower(port8080)
+		if strings.Contains(lower, "web-portal") {
+			fmt.Printf("✗ Web portal proxy port 8080 is held by the wrong process (a direct web-portal binary): %s\n", port8080)
+			fmt.Println("    This is not the daemon's hardened reverse proxy. The daemon will be unable to bind")
+			fmt.Println("    the expected port. Kill the conflicting process before starting (or use a different")
+			fmt.Println("    AEGIS_WEB_PORTAL_PROXY_ADDR).")
+			healthy = false
+		} else if strings.Contains(lower, "aegis") {
+			fmt.Printf("✓ Web portal proxy port 8080 is held by an aegis process (expected): %s\n", port8080)
+		} else {
+			fmt.Printf("⚠ Web portal proxy port 8080 is in use by an unexpected process: %s\n", port8080)
+			fmt.Println("    This may prevent the daemon's hardened reverse proxy from starting on the expected port.")
+			healthy = false
+		}
+	} else {
+		// findPortOwner may return empty for root-owned listeners when doctor is
+		// run as non-root (ss/lsof -p info is restricted). We do not claim "no
+		// listener" here; the actual HTTP probe below is authoritative for whether
+		// the hardened proxy is reachable and behaving correctly.
+		if !isDaemonRunning() {
+			fmt.Println("✗ Web portal proxy port 8080 has no listener (daemon not running)")
+		} else {
+			// Silent here; probe will confirm. Only warn on visible bad owners above.
+		}
+	}
+
+	// Verify we are talking to the *expected* process on the web portal port:
+	// the daemon's hardened reverse proxy (not a direct web-portal binary from
+	// a test/fixture, not nothing at all). This is the core requirement per
+	// web-portal-vm.md: traffic must only come through the host daemon's proxy.
+	//
+	// We check two things:
+	// 1. Process ownership via ss/lsof (using the same findPortOwner helper).
+	// 2. Observable behavior: the response must carry the hardened security
+	//    headers that are *only* set by the proxy handler in the aegis daemon
+	//    (X-Frame-Options: DENY etc.). A direct web-portal dashboard server
+	//    will not set exactly the same proxy hardening.
+	if isDaemonRunning() {
+		c := &http.Client{Timeout: 4 * time.Second}
+		resp, err := c.Get("http://127.0.0.1:8080/")
+		if err != nil {
+			fmt.Printf("✗ Could not connect to web portal proxy on 8080: %v\n", err)
+			if owner := findPortOwner("8080"); owner != "" {
+				fmt.Printf("    (Port appears to be in use by: %s)\n", owner)
+			} else {
+				fmt.Println("    (No listener detected via ss/lsof; may be permission-restricted if daemon runs as root)")
+			}
+			if isDaemonRunning() {
+				healthy = false
+			}
+		} else {
+			defer resp.Body.Close()
+			// Check for hardened proxy headers (set unconditionally by the common
+			// handler in startWebPortalProxy before any forwarding or special paths).
+			frameOpt := resp.Header.Get("X-Frame-Options")
+			contentOpt := resp.Header.Get("X-Content-Type-Options")
+			if frameOpt == "DENY" || contentOpt == "nosniff" {
+				fmt.Println("✓ Connected to the expected hardened web portal reverse proxy (daemon process)")
+			} else {
+				fmt.Println("✗ A process is listening on the web portal port, but it is not the daemon's hardened reverse proxy.")
+				fmt.Println("    (Missing the security headers that only the proxy handler sets: X-Frame-Options etc.)")
+				fmt.Println("    You are likely connected to a different process (e.g. a stale direct ./bin/web-portal")
+				fmt.Println("    started by a test with AEGIS_E2E_FIXTURE) or the proxy failed to start properly.")
+				healthy = false
+			}
+			if resp.StatusCode != 200 {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				n := 100
+				if len(body) < n {
+					n = len(body)
+				}
+				fmt.Printf("    (Note: root returned HTTP %d; body preview: %s)\n", resp.StatusCode, strings.TrimSpace(string(body)[:n]))
+				// Do not mark unhealthy for 5xx here: during "launch attempted" the guest
+				// may not yet be serving the full page (even if the proxy listener is up).
+				// The header check above already confirmed we reached the *expected proxy*.
+			}
 		}
 	}
 
@@ -1171,10 +1367,10 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 	// Ollama is dev-only; don't hard-fail
 
 	// Journey 01 Success Criteria: exact phrasing + exit 0 when healthy
-	if isDaemonRunning() && healthy {
+	if healthy {
 		fmt.Println("\nAll systems healthy")
 	} else {
-		fmt.Println("\nHealth checks complete (start the daemon for full health report)")
+		fmt.Println("\nHealth checks complete (issues found — see ⚠ items above)")
 	}
 }
 
@@ -4508,6 +4704,9 @@ func dialFirecrackerVsock(ctx context.Context, udsPath string, port uint32) (net
 // proxy reach the HTTP handler that the web-portal binary additionally serves over
 // vsock inside the guest (see cmd/web-portal/*vsock_listener*.go and main.go).
 func startWebPortalProxy(listenAddr, target string) error {
+	// Clear any previous listen error on (re)start attempts.
+	webPortalProxyListenErr = nil
+
 	var proxy *httputil.ReverseProxy
 
 	if strings.HasPrefix(target, "fcvsock:") {
@@ -4622,6 +4821,18 @@ func startWebPortalProxy(listenAddr, target string) error {
 		MaxHeaderBytes: 1 << 20, // 1 MiB header limit
 	}
 
+	// Bind the listener *synchronously* so that bind failures (port in use by a
+	// stale test fixture web-portal, permission problems, etc.) are reported
+	// immediately instead of only as an async log message after the daemon has
+	// claimed to be "running".
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		webPortalProxyListenErr = fmt.Errorf("failed to listen on web portal proxy %s: %w (another process may already be listening, e.g. a leftover ./bin/web-portal from a test/fixture run)", listenAddr, err)
+		logrus.Error(webPortalProxyListenErr)
+		return webPortalProxyListenErr
+	}
+	webPortalProxyListener = ln
+
 	// Remember for graceful shutdown in signal handler.
 	webPortalProxyServer = server
 
@@ -4631,7 +4842,8 @@ func startWebPortalProxy(listenAddr, target string) error {
 	}
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			webPortalProxyListenErr = err
 			logrus.Errorf("web portal proxy error: %v", err)
 		}
 	}()
