@@ -26,6 +26,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -54,19 +55,41 @@ func sendToComponentViaHub(target string, cmd string, payload interface{}) (inte
 }
 
 func sendToComponentViaHubContext(ctx context.Context, target string, cmd string, payload interface{}) (interface{}, error) {
-	// Minimal implementation: dial the hub socket (same as thin components do)
-	// and perform a signed send. In real use the daemon would have long-lived
-	// hubclient connections per its TCB responsibilities.
+	// Prefer the persistent "daemon-internal" client (one registration at startup).
+	// This (plus the daemon-orchestrator one in the receiver) removes the
+	// per-call ephemeral Dial+Register+Close that produced "daemon-internal-N"
+	// re-registration spam in hub logs for every internal operation (status
+	// probes, channel.list/get serving, grants, etc.).
+	if client := getDaemonInternalHubClient(); client != nil {
+		msg := hubclient.Message{
+			Source:      "daemon-internal",
+			Destination: target,
+			Command:     cmd,
+			Payload:     payload,
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		}
+		resp, err := client.Send(ctx, msg)
+		if err == nil {
+			if resp.Command == "error" {
+				return nil, fmt.Errorf("hub error: %v", resp.Payload)
+			}
+			if resp.Payload == nil && resp.Command == "" {
+				return nil, fmt.Errorf("hub: empty response from %s for %s", target, cmd)
+			}
+			return resp.Payload, nil
+		}
+		// fall through to ephemeral on transient send failure
+	}
+
+	// Fallback / early-boot path: original ephemeral key + register as
+	// sequential daemon-internal-N. With the persistent client inited early,
+	// this path is rarely used after the first few sends.
 	hubPath := expandPath("~/.aegis/hub.sock")
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
 		hubPath = expandPath(env)
 	}
 
-	// For skeleton we generate an ephemeral key (real path will use daemon's
-	// long-lived identity or per-VM keys distributed by orchestrator).
-	// This is acceptable during 1.3 transition; full key hygiene comes with
-	// orchestrator pairing work.
-	pub, priv, err := ed25519.GenerateKey(rand.Reader) // note: in real code we'd use the daemon key
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -77,12 +100,6 @@ func sendToComponentViaHubContext(ctx context.Context, target string, cmd string
 	}
 	defer client.Close()
 
-	// Use sequential "daemon-internal-N" instead of per-nano "aegis-daemon-temp-N".
-	// This prevents log spam / "flood of unique temps" when many internal sends happen
-	// (CLI polling status during slow base boot, retry loops in sendTo...Retry, the
-	// receiver's E2E auto-main channel setup, channel_count in status, etc.).
-	// Registrations now look like "daemon-internal-1", "daemon-internal-2" — expected
-	// and easy to filter in hub logs.
 	requesterID := fmt.Sprintf("daemon-internal-%d", atomic.AddUint64(&daemonInternalSeq, 1))
 	_, err = client.Register(ctx, requesterID, pub, "phase1")
 	if err != nil {
@@ -118,6 +135,36 @@ func isHubDestinationNotFound(err error) bool {
 		return true
 	}
 	return strings.Contains(err.Error(), "ERR_DESTINATION_NOT_FOUND")
+}
+
+// getDaemonInternalHubClient returns (or lazily inits) the single persistent
+// "daemon-internal" hub client for the daemon's own internal operations.
+// Registered once early; reused for Send without per-call re-registration.
+// Mirrors the pattern used for the "daemon-orchestrator" receiver client.
+func getDaemonInternalHubClient() hubclient.Client {
+	daemonInternalHubOnce.Do(func() {
+		hubPath := expandPath("~/.aegis/hub.sock")
+		if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+			hubPath = expandPath(env)
+		}
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return
+		}
+		c, err := hubclient.DialUnix(hubPath, priv)
+		if err != nil {
+			return
+		}
+		requesterID := "daemon-internal"
+		_, err = c.Register(context.Background(), requesterID, pub, "phase1")
+		if err != nil {
+			c.Close()
+			return
+		}
+		daemonInternalHubClient = c
+		// kept open for daemon lifetime; no Close on shutdown for simplicity
+	})
+	return daemonInternalHubClient
 }
 
 // sendToComponentViaHubRetry retries when the target has not registered on AegisHub yet
@@ -258,14 +305,25 @@ var (
 	// on hub restart or daemon shutdown (best-effort).
 	hubLogFile *os.File
 
-	// daemonInternalSeq provides stable sequential IDs for internal daemon-to-component
-	// hub messages (via sendToComponentViaHub). This replaces the previous per-call
-	// time.Now().UnixNano() "aegis-daemon-temp-N" scheme, which produced a flood of
-	// unique-looking temporary registrations in hub logs (especially when users poll
-	// `aegis status` or other CLI during slow startup, or during retry loops).
-	// Now shows as "daemon-internal-1", "daemon-internal-2", ... which is much less alarming
-	// and easier to correlate in logs.
+	// daemonInternalSeq provides stable sequential IDs for the *fallback* ephemeral
+	// path in sendToComponentViaHubContext (used only early in boot before the
+	// persistent daemon-internal client is ready, or on send failure).
+	// The common case now uses the single persistent "daemon-internal" client
+	// (plus "daemon-orchestrator" for the receiver), eliminating the per-send
+	// re-registration spam.
 	daemonInternalSeq uint64
+
+	// daemonInternalHubClient is a persistent hub client registered once as
+	// "daemon-internal" for all general internal daemon-to-component sends
+	// (status probes, channel.list/get in CLI serving, grant reconcile, etc.).
+	// This (together with the daemon-orchestrator persistent client in the
+	// receiver) eliminates the per-send Dial+Register "daemon-internal-N"
+	// churn that produced the re-registration spam in hub logs.
+	// Fallback to the old ephemeral path (with seq N) if the persistent client
+	// is not yet ready or send fails.
+	daemonInternalHubClient hubclient.Client
+
+	daemonInternalHubOnce sync.Once
 )
 
 // SocketRequest / SocketResponse: enriched JSON protocol for Task 6.1.2+ (structured, validated, future-proof).
@@ -664,6 +722,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// These are lightweight and do not contend heavily with base boots; they enable on-demand
 	// roles as soon as the PM registers (after its own base boot + hub dial).
 	go startOrchestratorCommandReceiver()
+	_ = getDaemonInternalHubClient() // eager init of persistent "daemon-internal" client (one registration; stops N spam from internal sends)
 	go reconcileGuestHubBridges()
 
 	// Now do the base infrastructure (minimal set launches are fast to fire; long store
@@ -2501,13 +2560,13 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		return
 	}
 	fmt.Printf("Ensured project-manager for channel %s\n", chID)
-	// Determine the actual role target for the goal send. The ensure returns the specific
-	// role id (e.g. "project-manager-plan-demo-e2e-llm" for channel-specific on-demand roles).
-	// Using the specific id as the hub destination ensures the user.goal is delivered to the
-	// exact component (which may register under the full id rather than the base "project-manager"
-	// name, especially on fallback to agent.img or for channel-attached roles). This fixes
-	// "ERR_DESTINATION_NOT_FOUND" for the channel-specific PM and makes the plan post + dynamic
-	// role ensures (with channel= attachment) reliable. Falls back to "project-manager" for base case.
+	// Send the user.goal to the base "project-manager" name that the guest PM binary actually
+	// registers under (see cmd/project-manager/main.go: uniqueSource := "project-manager").
+	// The channel is passed in the payload so the receiving PM knows which channel/context
+	// to post the plan to and which roles to ensure with channel= attachment.
+	// Using a channel-specific long name as destination previously caused ERR_DESTINATION_NOT_FOUND
+	// even when the host listed the role as running (guest registers under the base name).
+	// This makes pm goal delivery reliable for both generic and channel-specific on-demand PMs.
 	roleTarget := "project-manager"
 	if ensureResp != nil {
 		if m, ok := ensureResp.(map[string]interface{}); ok {
@@ -5115,10 +5174,25 @@ func startOrchestratorCommandReceiver() {
 					resp = map[string]interface{}{"error": err.Error()}
 				}
 				// Auto-add the ensured role as participant in the channel (E2E visibility, per plan)
-				// Use Retry (short) to tolerate any transient post-ensure window and avoid
-				// blocking the reply path with a fresh dial; keeps on-demand role ensure fast.
+				// Use the receiver's *persistent* client (registered as daemon-orchestrator) for the
+				// add_member instead of sendToComponentViaHubRetry (which does fresh Dial+Register as
+				// "daemon-internal-N" on every call/retry). This eliminates re-registration spam of
+				// daemon-internal-* from the early receiver path (on auto "main"+Court members and on
+				// every PM-driven ensure.role for coder/tester etc). Source remains stable "daemon-orchestrator"
+				// which has ACL grant to store channel.* .
 				if channel != "" {
-					_, _ = sendToComponentViaHubRetry("store", "channel.add_member", map[string]interface{}{"channel_id": channel, "role": role}, 5*time.Second)
+					addPayload := map[string]interface{}{"channel_id": channel, "role": role}
+					addMsg := hubclient.Message{
+						Source:      requesterID,
+						Destination: "store",
+						Command:     "channel.add_member",
+						Payload:     addPayload,
+						Timestamp:   time.Now().UTC().Format(time.RFC3339),
+					}
+					if _, err := client.Send(context.Background(), addMsg); err != nil {
+						// Non-fatal; store may still have applied or caller will retry via other paths.
+						_ = err
+					}
 				}
 				_ = client.Reply(context.Background(), hubclient.Message{
 					Source:      requesterID,

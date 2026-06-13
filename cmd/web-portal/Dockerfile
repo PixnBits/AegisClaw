@@ -36,6 +36,10 @@ WORKDIR /app
 
 COPY --from=builder /web-portal /usr/local/bin/web-portal
 
+# Copy the modern channels-first SPA static assets (replaces legacy chat/templates).
+# The web-portal binary serves these at runtime for the rich UI (data-testid for e2e, #channels etc).
+COPY cmd/web-portal/static /static
+
 # Minimal init script for Firecracker boot.
 # We explicitly redirect all output to the serial console so that
 # our debug prints (and any crashes) appear in the host-captured
