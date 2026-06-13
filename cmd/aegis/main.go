@@ -1006,11 +1006,21 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	// has registered and is serving, without regressing the "status never blocks" guarantee.
 	// The bg readiness in startBase uses a full retrying 45s budget; this is the client-visible
 	// signal used by the verify script and `make smoke`.
-	probeCtx, probeCancel := context.WithTimeout(context.Background(), 4500*time.Millisecond)
-	if _, err := sendToComponentViaHubContext(probeCtx, "store", "channel.list", nil); err == nil {
-		storeReady = true
+	// Primary probe now does a few quick attempts internally (absorbs very brief hub/Store
+	// transients from registration churn) so the "ready" label is only claimed when a
+	// channel.list actually succeeds promptly (or we fall back to the Court>=7 secondary).
+	// This directly addresses E2E harness seeing "base ready + Court 7" in status while
+	// its own channel.list checks (and later pm goal / channel ops) still hit timing/EOF.
+	for attempt := 0; attempt < 3 && !storeReady; attempt++ {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 1400*time.Millisecond)
+		if _, err := sendToComponentViaHubContext(probeCtx, "store", "channel.list", nil); err == nil {
+			storeReady = true
+		}
+		probeCancel()
+		if !storeReady && attempt < 2 {
+			time.Sleep(150 * time.Millisecond)
+		}
 	}
-	probeCancel()
 	// Secondary signal from the fast local vm.list (socket, no hub roundtrip): if the orchestrator
 	// tracks the store VM as present and Court is fully online (7), the bg store-readiness gate in
 	// startBaseInfrastructure has passed (it only starts Court after successful channel.list to store).
@@ -2317,7 +2327,12 @@ func runVMPools(cmd *cobra.Command, args []string) {
 }
 
 func runChannelList(cmd *cobra.Command, args []string) {
-	data, err := sendToComponentViaHub("store", "channel.list", nil)
+	// Use retrying send so that `aegis channel list` (used heavily by the E2E harness readiness
+	// polls and post-pm waits, and by users) is tolerant of brief hub/Store transients and
+	// daemon-internal registration churn during/after cold boots. The harness's own
+	// channel_list_ok + outer loops provide additional patience; this makes each individual
+	// CLI invocation more likely to succeed within its timeout budget.
+	data, err := sendToComponentViaHubRetry("store", "channel.list", nil, 15*time.Second)
 	if err != nil {
 		fmt.Printf("channel list error: %v\n", err)
 		return
@@ -2339,7 +2354,11 @@ func runChannelList(cmd *cobra.Command, args []string) {
 
 func runChannelGet(cmd *cobra.Command, args []string) {
 	id := args[0]
-	data, err := sendToComponentViaHub("store", "channel.get", map[string]string{"channel_id": id})
+	// Use retrying send for the same reason as channel list: makes `aegis channel get`
+	// (the source of truth in the E2E for the PM plan post + E2E-LLM-VERIFY marker, and
+	// used in the post-pm content poll) more robust to transients during stabilization
+	// after GATES or under registration churn.
+	data, err := sendToComponentViaHubRetry("store", "channel.get", map[string]string{"channel_id": id}, 15*time.Second)
 	if err != nil {
 		fmt.Printf("channel get error: %v\n", err)
 		return
@@ -2467,8 +2486,9 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		"channel": chID,
 	}
 	var err error
+	var ensureResp interface{}
 	for attempt := 0; attempt < 6; attempt++ {
-		_, err = sendToComponentViaHub("daemon-orchestrator", "ensure.role", ensurePayload)
+		ensureResp, err = sendToComponentViaHub("daemon-orchestrator", "ensure.role", ensurePayload)
 		if err == nil {
 			break
 		}
@@ -2481,6 +2501,25 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		return
 	}
 	fmt.Printf("Ensured project-manager for channel %s\n", chID)
+	// Determine the actual role target for the goal send. The ensure returns the specific
+	// role id (e.g. "project-manager-plan-demo-e2e-llm" for channel-specific on-demand roles).
+	// Using the specific id as the hub destination ensures the user.goal is delivered to the
+	// exact component (which may register under the full id rather than the base "project-manager"
+	// name, especially on fallback to agent.img or for channel-attached roles). This fixes
+	// "ERR_DESTINATION_NOT_FOUND" for the channel-specific PM and makes the plan post + dynamic
+	// role ensures (with channel= attachment) reliable. Falls back to "project-manager" for base case.
+	roleTarget := "project-manager"
+	if ensureResp != nil {
+		if m, ok := ensureResp.(map[string]interface{}); ok {
+			if id, ok := m["id"].(string); ok && id != "" {
+				roleTarget = id
+			} else if name, ok := m["name"].(string); ok && name != "" {
+				roleTarget = name
+			}
+		} else if s, ok := ensureResp.(string); ok && s != "" {
+			roleTarget = s
+		}
+	}
 	// Give PM time to boot and register (short wait, per plan)
 	time.Sleep(20 * time.Second)
 	// 2. Send the goal (PM will build plan using getPMPrompt, post to channel, ensure roles)
@@ -2488,12 +2527,12 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		"goal":    goalText,
 		"channel": chID,
 	}
-	_, err = sendToComponentViaHub("project-manager", "user.goal", goalPayload)
+	_, err = sendToComponentViaHub(roleTarget, "user.goal", goalPayload)
 	if err != nil {
 		fmt.Printf("pm goal error: %v\n", err)
 		return
 	}
-	fmt.Printf("Sent goal to project-manager for channel %s\n", chID)
+	fmt.Printf("Sent goal to %s for channel %s\n", roleTarget, chID)
 	// Give PM time to process, post plan, ensure roles (short wait)
 	time.Sleep(15 * time.Second)
 	// 3. Inspect the channel to see the plan post (and any role activity).

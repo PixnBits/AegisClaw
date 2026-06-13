@@ -131,7 +131,12 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 			// This ensures pre-warm creates claimable pooled copies early, so the first paired/role StartVM
 			// hits the fast rename+inject path instead of full 512M copy (key <1s win for on-demand agents).
 			if cfg.RootfsDir != "" {
-				for _, comp := range []string{"agent", "memory"} {
+				// Pre-warm for agent/memory (general on-demand <1s claim) + project-manager (for the
+				// E2E collab test's on-demand PM role to use the dedicated image with full PM logic
+				// for user.goal -> plan post with E2E-LLM-VERIFY marker + ensure sub-roles, and fast
+				// claim). This supports the patient harness waiting for GATES + on-demand PM to
+				// complete the happy path (plan in channel, roles with channel=).
+				for _, comp := range []string{"agent", "memory", "project-manager"} {
 					if template, err := sandbox.EnsureBootableRootfsImage(cfg.RootfsDir, comp); err == nil {
 						if _, err := os.Stat(template); err == nil {
 							logrus.Infof("Pre-warm: attempting pooled copies for %s from canonical %s", comp, template)
