@@ -79,7 +79,34 @@ if [[ ! -x ./bin/aegis ]]; then
 fi
 if ! curl -sf --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
   echo "WARNING: Ollama not responding on :11434. Real LLM path may fallback. Continuing anyway..."
+  OLLAMA_OK=false
+else
+  if curl -sf --max-time 3 http://localhost:11434/api/tags | grep -qF "$MODEL"; then
+    OLLAMA_OK=true
+    echo "✓ Ollama reachable with model $MODEL (real LLM path required when available)"
+  else
+    OLLAMA_OK=false
+    echo "WARNING: Ollama up but model '$MODEL' not in tags; real LLM path may fallback."
+  fi
 fi
+
+# Return 0 if any known log shows PM real-LLM success (not fallback).
+llm_plan_gen_succeeded_in_logs() {
+  local pat='LLM plan gen succeeded'
+  for f in "$LOG_FILE" ~/.aegis/daemon.log /root/.aegis/daemon.log aegis.log; do
+    if [ -f "$f" ] && grep -q "$pat" "$f" 2>/dev/null; then
+      echo "$f"
+      return 0
+    fi
+  done
+  for f in ~/.aegis/state/fc-project-manager*-console.log /root/.aegis/state/fc-project-manager*-console.log; do
+    if [ -f "$f" ] && grep -q "$pat" "$f" 2>/dev/null; then
+      echo "$f"
+      return 0
+    fi
+  done
+  return 1
+}
 
 # Tolerant channel.list check: absorbs brief hub/Store transients and daemon-internal
 # registration churn during cold boot (many short-lived internal clients for status/receiver
@@ -607,13 +634,19 @@ echo "=== Dynamic roles (PM + ensured from plan) + current status snapshot ==="
 ./bin/aegis vm list 2>/dev/null | grep -E 'project-manager|coder|tester' | cat || true
 ./bin/aegis status 2>/dev/null | grep -E 'Court personas online|base infrastructure' | cat || true
 
-# LLM-specific evidence (when a model was requested)
-if [ -f "$LOG_FILE" ] && grep -q 'LLM plan gen' "$LOG_FILE"; then
-  echo "✓ PASS: real LLM path exercised ('LLM plan gen' in isolated log)"
-elif [ "$EXISTING_DAEMON" = true ] && [ -n "$MODEL" ]; then
-  echo "ℹ INFO: existing-daemon mode. Check your daemon log (after 'PM received: user.goal' or similar) for 'LLM plan gen' or 'PM: LLM' to confirm real Ollama (vs fallback generatePlan)."
+# LLM-specific evidence (when a model was requested and Ollama had the model)
+if [ "${OLLAMA_OK:-false}" = true ]; then
+  LLM_LOG=$(llm_plan_gen_succeeded_in_logs || true)
+  if [ -n "$LLM_LOG" ]; then
+    echo "✓ PASS: real LLM path exercised ('LLM plan gen succeeded' in $LLM_LOG)"
+  else
+    echo "✗ FAIL: Ollama model $MODEL available but no 'LLM plan gen succeeded' in daemon/PM guest logs (fallback or network-boundary path broken)"
+    ASSERT_RC=1
+  fi
+elif [ -f "$LOG_FILE" ] && grep -q 'LLM plan gen succeeded' "$LOG_FILE"; then
+  echo "✓ PASS: real LLM path exercised ('LLM plan gen succeeded' in isolated log)"
 else
-  echo "ℹ INFO: no 'LLM plan gen' observed in this run log (fallback may have been used, or check full daemon log)."
+  echo "ℹ INFO: Ollama/model not confirmed at preflight; generatePlan fallback acceptable this run."
 fi
 
 if [ $ASSERT_RC -eq 0 ]; then

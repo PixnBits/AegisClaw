@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/timing"
@@ -152,6 +153,118 @@ func generatePlan(input, chID string) string {
 	return plan
 }
 
+// pmProcessPlanningMessage runs LLM planning, channel.post, and ensure.role delegation.
+// Must not run synchronously inside the Receive loop for hub RPC-delivered user.goal
+// (see user.goal case: immediate Reply + goroutine).
+func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqueSource string, realLLM agent.LLMCallFunc) {
+	payloadStr := fmt.Sprintf("%v", msg.Payload)
+	chID := extractChannelFromPayload(msg.Payload, "plan-demo")
+
+	if strings.Contains(payloadStr, uniqueSource) && msg.Command != "user.goal" {
+		ack := hubclient.Message{
+			Source:      uniqueSource,
+			Destination: "store",
+			Command:     "channel.post",
+			Payload: map[string]interface{}{
+				"channel_id": chID,
+				"from":       uniqueSource,
+				"content":    "PM: noted own update; continuing to monitor channel activity.",
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}
+		_, _ = hcl.Send(context.Background(), ack)
+		return
+	}
+
+	if msg.Command == "channel.post" {
+		from := "unknown"
+		if p, ok := msg.Payload.(map[string]interface{}); ok {
+			if f, ok := p["from"].(string); ok && f != "" {
+				from = f
+			}
+		}
+		if from != uniqueSource {
+			note := fmt.Sprintf("PM: noted activity from %s in channel %s. Monitoring for progress or escalation needs.", from, chID)
+			_, _ = hcl.Send(context.Background(), hubclient.Message{
+				Source:      uniqueSource,
+				Destination: "store",
+				Command:     "channel.post",
+				Payload: map[string]interface{}{
+					"channel_id": chID,
+					"from":       uniqueSource,
+					"content":    note,
+				},
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			})
+			fmt.Printf("PM: posted monitoring note for activity from %s\n", from)
+			return
+		}
+	}
+
+	var plan string
+	planPrompt := getPMPrompt() + "\n\nUser goal: " + payloadStr + "\n\nChannel: " + chID + "\n\nAs Project Manager, output a clear structured plan with tasks, roles to ensure (Coder, Tester, Court etc.), delegation steps, and monitoring. Be actionable."
+	llmPlan, err := realLLM(context.Background(), planPrompt)
+	if err != nil {
+		log.Printf("PM: LLM plan gen failed (%v), using fallback generatePlan", err)
+		plan = generatePlan(payloadStr, chID)
+	} else {
+		plan = llmPlan
+		log.Printf("PM: LLM plan gen succeeded (model=%s, chars=%d)", os.Getenv("AEGIS_DEFAULT_MODEL"), len(plan))
+	}
+	postMsg := hubclient.Message{
+		Source:      uniqueSource,
+		Destination: "store",
+		Command:     "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"from":       uniqueSource,
+			"content":    plan,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	if _, err := hcl.Send(context.Background(), postMsg); err != nil {
+		log.Printf("pm: channel.post to store failed (ACL?): %v", err)
+	} else {
+		fmt.Printf("PM: posted plan to channel %s\n", chID)
+	}
+
+	rolesToEnsure := extractRolesFromText(plan)
+	for _, r := range rolesToEnsure {
+		ensureMsg := hubclient.Message{
+			Source:      uniqueSource,
+			Destination: "daemon-orchestrator",
+			Command:     "ensure.role",
+			Payload: map[string]interface{}{
+				"role":    r,
+				"channel": chID,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}
+		if _, err := hcl.Send(context.Background(), ensureMsg); err != nil {
+			log.Printf("pm: ensure.role for %s failed (ACL or receiver?): %v", r, err)
+		} else {
+			fmt.Printf("PM: sent ensure.role for %s in channel %s\n", r, chID)
+		}
+	}
+
+	monitorContent := fmt.Sprintf("PM monitoring: roles ensured %v in channel %s. Awaiting updates from roles; will synthesize and escalate to Court when needed.", rolesToEnsure, chID)
+	if _, err := hcl.Send(context.Background(), hubclient.Message{
+		Source:      uniqueSource,
+		Destination: "store",
+		Command:     "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"from":       uniqueSource,
+			"content":    monitorContent,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		log.Printf("pm: monitoring post failed: %v", err)
+	} else {
+		fmt.Printf("PM: posted monitoring update to channel %s\n", chID)
+	}
+}
+
 func runProjectManager(cmd *cobra.Command, args []string) {
 	timing.RecordPhase("main_entry")
 
@@ -213,143 +326,34 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 
 		switch msg.Command {
 		case "user.goal", "channel.post", "chat.message": // chat.message kept for legacy compat during transition; primary is user.goal via CLI `aegis pm goal` or future channel-triggered goals
-
-			payloadStr := fmt.Sprintf("%v", msg.Payload)
-
-			chID := extractChannelFromPayload(msg.Payload, "plan-demo")
-
-			// Richer PM behavior: avoid re-triggering full planning on our own posts (self-echo from channel.post).
-			// Light ack for activity from others; full planning only for explicit user.goal (or first channel activity).
-			if strings.Contains(payloadStr, uniqueSource) && msg.Command != "user.goal" {
-				// Self-generated activity; light monitoring ack only (keeps loop "alive" without spam).
-				ack := hubclient.Message{
+			if msg.Command == "user.goal" {
+				chID := extractChannelFromPayload(msg.Payload, "plan-demo")
+				// Reply immediately: hub forwardHubRPC blocks the PM connection reader until
+				// this RPC completes, but planning uses nested hcl.Send (store, boundary) which
+				// deadlocks if we process synchronously in the Receive loop.
+				_ = hcl.Reply(context.Background(), hubclient.Message{
 					Source:      uniqueSource,
-					Destination: "store",
-					Command:     "channel.post",
+					Destination: msg.Source,
+					Command:     "response",
 					Payload: map[string]interface{}{
-						"channel_id": chID,
-						"from":       uniqueSource,
-						"content":    "PM: noted own update; continuing to monitor channel activity.",
+						"status":  "accepted",
+						"channel": chID,
+						"note":    "planning async (LLM + channel.post + ensure.role)",
 					},
 					Timestamp: time.Now().UTC().Format(time.RFC3339),
-				}
-				_, _ = hcl.Send(context.Background(), ack)
+				})
+				goalMsg := msg
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("pm: panic in goal handler: %v\n%s", r, debug.Stack())
+						}
+					}()
+					pmProcessPlanningMessage(hcl, goalMsg, uniqueSource, realLLM)
+				}()
 				break
 			}
-
-			// Richer ongoing monitoring (advances lightweight background loop):
-			// On channel activity from others (roles, users, portal posts), post a light
-			// status/synthesis note instead of full re-planning. This makes PM reactive
-			// to real collaboration without spamming on every post.
-			if msg.Command == "channel.post" {
-				from := "unknown"
-				if p, ok := msg.Payload.(map[string]interface{}); ok {
-					if f, ok := p["from"].(string); ok && f != "" {
-						from = f
-					}
-				}
-				if from != uniqueSource {
-					note := fmt.Sprintf("PM: noted activity from %s in channel %s. Monitoring for progress or escalation needs.", from, chID)
-					_, _ = hcl.Send(context.Background(), hubclient.Message{
-						Source:      uniqueSource,
-						Destination: "store",
-						Command:     "channel.post",
-						Payload: map[string]interface{}{
-							"channel_id": chID,
-							"from":       uniqueSource,
-							"content":    note,
-						},
-						Timestamp: time.Now().UTC().Format(time.RFC3339),
-					})
-					fmt.Printf("PM: posted monitoring note for activity from %s\n", from)
-					break
-				}
-			}
-
-			var plan string
-			// Build out PM to connect with LLM (per plan): call real LLM with prompt + goal for actual plan generation.
-			// Falls back to generatePlan on error (for envs without model configured).
-			planPrompt := getPMPrompt() + "\n\nUser goal: " + payloadStr + "\n\nChannel: " + chID + "\n\nAs Project Manager, output a clear structured plan with tasks, roles to ensure (Coder, Tester, Court etc.), delegation steps, and monitoring. Be actionable."
-			llmPlan, err := realLLM(context.Background(), planPrompt)
-			if err != nil {
-				log.Printf("PM: LLM plan gen failed (%v), using fallback generatePlan", err)
-				plan = generatePlan(payloadStr, chID)
-			} else {
-				plan = llmPlan
-			}
-			// Demonstrate channel post (real send to Store)
-			postPayload := map[string]interface{}{
-				"channel_id": chID,
-				"from":       uniqueSource,
-				"content":    plan,
-			}
-			postMsg := hubclient.Message{
-				Source:      uniqueSource,
-				Destination: "store",
-				Command:     "channel.post",
-				Payload:     postPayload,
-				Timestamp:   time.Now().UTC().Format(time.RFC3339),
-			}
-			if _, err := hcl.Send(context.Background(), postMsg); err != nil {
-				log.Printf("pm: channel.post to store failed (ACL?): %v", err)
-			} else {
-				fmt.Printf("PM: posted plan to channel %s\n", chID)
-			}
-
-			// Richer role delegation: start with common + dynamically extract additional roles mentioned in the (LLM or generated) plan.
-			rolesToEnsure := extractRolesFromText(plan)
-			for _, r := range rolesToEnsure {
-				ensurePayload := map[string]interface{}{
-					"role":    r,
-					"channel": chID,
-				}
-				ensureMsg := hubclient.Message{
-					Source:      uniqueSource,
-					Destination: "daemon-orchestrator",
-					Command:     "ensure.role",
-					Payload:     ensurePayload,
-					Timestamp:   time.Now().UTC().Format(time.RFC3339),
-				}
-				if _, err := hcl.Send(context.Background(), ensureMsg); err != nil {
-					log.Printf("pm: ensure.role for %s failed (ACL or receiver?): %v", r, err)
-				} else {
-					fmt.Printf("PM: sent ensure.role for %s in channel %s\n", r, chID)
-				}
-			}
-
-			// Richer monitoring: always post a distinct follow-up status after planning/delegation (per plan Phase 4/6).
-			monitorContent := fmt.Sprintf("PM monitoring: roles ensured %v in channel %s. Awaiting updates from roles; will synthesize and escalate to Court when needed.", rolesToEnsure, chID)
-			monitorPayload := map[string]interface{}{
-				"channel_id": chID,
-				"from":       uniqueSource,
-				"content":    monitorContent,
-			}
-			monitorMsg := hubclient.Message{
-				Source:      uniqueSource,
-				Destination: "store",
-				Command:     "channel.post",
-				Payload:     monitorPayload,
-				Timestamp:   time.Now().UTC().Format(time.RFC3339),
-			}
-			if _, err := hcl.Send(context.Background(), monitorMsg); err != nil {
-				log.Printf("pm: monitoring post failed: %v", err)
-			} else {
-				fmt.Printf("PM: posted monitoring update to channel %s\n", chID)
-			}
-			respPayload := map[string]interface{}{
-				"role":    "project-manager",
-				"plan":    plan,
-				"channel": chID,
-				"ensured_roles": []string{"coder", "tester"},
-				"note":    "Real channel.post + ensure.role sent (wired to orchestrator.EnsureRoleAgent with Channel)",
-			}
-			_ = hcl.Reply(context.Background(), hubclient.Message{
-				Source:      uniqueSource,
-				Destination: msg.Source,
-				Command:     "response",
-				Payload:     respPayload,
-				Timestamp:   time.Now().UTC().Format(time.RFC3339),
-			})
+			pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
 
 		case "version", "get-version":
 			respPayload, _ := json.Marshal(map[string]string{"version": getBuildVersion()})
