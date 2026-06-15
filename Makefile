@@ -210,6 +210,13 @@ clean-microvms:
 e2e-clean:
 	@echo "=== E2E cleanup for reliable repeated runs (per testing-standards.md priority 1 + AGENTS.md) ==="
 	-@sudo -n ./bin/aegis stop >/dev/null 2>&1 || true
+	-@./bin/aegis stop >/dev/null 2>&1 || true
+	@echo "  Waiting for daemon to stop (control socket; required before isolated E2E)..."
+	@bash -c 'for i in $$(seq 1 20); do ./bin/aegis status 2>/dev/null | grep -q "daemon is not running" && exit 0; sudo -n ./bin/aegis stop 2>/dev/null || true; sleep 1; done; echo "  (warn: daemon may still be stopping; wait before FORCE_ISOLATED)"; exit 0'
+	@echo "  Waiting for firecracker VMs to exit (graceful stop; do not use pkill -9 firecracker)..."
+	@bash -c 'for i in $$(seq 1 15); do pgrep -x firecracker >/dev/null 2>&1 || exit 0; sleep 1; done; pgrep -x firecracker >/dev/null 2>&1 && echo "  (note: firecracker still running; sudo ./bin/aegis stop and retry e2e-clean)" || true'
+	-@sudo -n pkill -x aegis >/dev/null 2>&1 || true
+	-@sudo -n pkill -x aegishub >/dev/null 2>&1 || true
 	-@sudo -n pkill -f 'aegis start --foreground' >/dev/null 2>&1 || true
 	-@sudo -n pkill -f 'aegishub start' >/dev/null 2>&1 || true
 	-@sudo -n pkill -f 'aegis-daemon' >/dev/null 2>&1 || true

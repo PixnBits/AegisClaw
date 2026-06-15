@@ -60,6 +60,10 @@ When performing tasks that require privileged operations (daemon lifecycle, micr
 - The script internally uses `sudo` when it needs to create or chown directories under `/opt/aegis` (common on Linux). It will prompt unless you have configured NOPASSWD for the specific operations or run the whole build as root (not recommended).
 - On non-Linux or when using Docker sandboxes, microVM builds are often skipped.
 
+**Graceful shutdown for E2E / cold-start measurement:**
+- Always stop via `./bin/aegis stop` or `sudo ./bin/aegis stop` (never `pkill -9 firecracker`). Aggressive kills leave orphaned VM state and can push the next cold-start past the 10s perf budget.
+- Before `FORCE_ISOLATED=1` or `make test-e2e-llm-isolated`, run `make e2e-clean` (waits for daemon + firecracker exit) or ensure `./bin/aegis status` reports "daemon is not running".
+
 ## Accessing the Web UI for Review (SSH / Remote Machines)
 
 The Web Portal is only reachable through the Host Daemon's hardened reverse proxy (see `web-portal-vm.md`).
