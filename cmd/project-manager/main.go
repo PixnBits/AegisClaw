@@ -329,9 +329,11 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 		case "user.goal", "channel.post", "chat.message": // chat.message kept for legacy compat during transition; primary is user.goal via CLI `aegis pm goal` or future channel-triggered goals
 			if msg.Command == "user.goal" {
 				chID := extractChannelFromPayload(msg.Payload, "plan-demo")
-				// Reply immediately: hub forwardHubRPC blocks the PM connection reader until
-				// this RPC completes, but planning uses nested hcl.Send (store, boundary) which
-				// deadlocks if we process synchronously in the Receive loop.
+				// Reply immediately so the CLI/hub RPC for user.goal completes without waiting
+				// for LLM + channel.post. Planning must run on this connection without a
+				// background goroutine: nested hcl.Send (llm.call, channel.post) shares the
+				// hubclient decoder with Receive; if Receive runs concurrently it steals
+				// llm.call.response and planning never posts to the channel (E2E empty messages).
 				_ = hcl.Reply(context.Background(), hubclient.Message{
 					Source:      uniqueSource,
 					Destination: msg.Source,
@@ -343,18 +345,14 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					},
 					Timestamp: time.Now().UTC().Format(time.RFC3339),
 				})
-				goalMsg := msg
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("pm: panic in goal handler: %v\n%s", r, debug.Stack())
-						}
-					}()
-					pmProcessPlanningMessage(hcl, goalMsg, uniqueSource, realLLM)
-				}()
+				pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
 				break
 			}
 			pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
+
+		case "llm.call.response":
+			// Orphaned RPC reply (should have been consumed by nested Send). Ignore.
+			log.Printf("pm: ignoring stray %s (hubclient decoder race guard)", msg.Command)
 
 		case "version", "get-version":
 			_ = hcl.Reply(context.Background(), hubclient.Message{
