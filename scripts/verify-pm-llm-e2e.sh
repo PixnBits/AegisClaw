@@ -438,24 +438,9 @@ if (./bin/aegis status 2>/dev/null; ./bin/aegis vm list 2>/dev/null || true) | g
 fi
 echo "✓ No unexpected aegis-daemon-temp-* components"
 
-# Boot-metrics (when AEGIS_BOOT_TIMING=1) for key components: base infra, Court, and ensured PM (per testing-standards.md observability and self-documenting for LLM agents on Firecracker patterns).
-# Asserts that metrics are available (host phases low for pre-warm ready system); full numbers in logs for diagnosis.
+# Boot-metrics (when AEGIS_BOOT_TIMING=1) for key components: base infra, Court, and ensured PM.
 if [ -n "${AEGIS_BOOT_TIMING:-}" ]; then
-  echo "=== Boot-metrics (AEGIS_BOOT_TIMING=1; host phases should be low ~100-200ms for pre-warm base; see scripts/boot-metrics.sh and internal/timing) ==="
-  for comp in court-persona-0 web-portal-0 store-0 network-boundary-0; do
-    echo "Boot metrics for $comp:"
-    BOOT=$(./bin/aegis vm boot-metrics "$comp" 2>/dev/null || bash scripts/boot-metrics.sh "$comp" 2>/dev/null || echo "no metrics")
-    echo "$BOOT" | head -6
-    if echo "$BOOT" | grep -q 'host phase'; then
-      echo "  ✓ boot metrics available for $comp (pre-warm/registration path exercised)"
-    fi
-  done
-  # After pm goal, the ensured project-manager will have metrics (dynamic role)
-  echo "Post-pm goal, boot metrics for ensured project-manager (if id known from vm list):"
-  PM_ID=$(./bin/aegis vm list 2>/dev/null | grep project-manager | head -1 | awk '{print $1}' || echo '')
-  if [ -n "$PM_ID" ]; then
-    ./bin/aegis vm boot-metrics "$PM_ID" 2>/dev/null | head -5 || true
-  fi
+  bash scripts/boot-metrics-summary.sh || true
 fi
 
 # Trigger (the real user action) — BEFORE browser so PM plan post exists for UI asserts.

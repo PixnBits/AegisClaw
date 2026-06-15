@@ -1015,3 +1015,193 @@ Update this doc + small follow-up commit after the manual run + ACL fix. (All us
 All per query goals, AGENTS, standards, paranoid model. The E2E is now a stable useful gate for perf regressions and collab behaviour.
 
 (Next would be re-measure full cold post all, perhaps tighten budget or add more AEGIS_BOOT milestones if wanted; small commit.)
+
+---
+
+## Fresh Session (Jun 2026, Framework 128GB) — Registration Spam Fix, health.status Gate, Perf Budget, E2E Reorder
+
+**Measured cold-start (clean boot, `AEGIS_BOOT_TIMING=1`, pre-pooled images + /dev/kvm):**
+
+| Signal | Wall time |
+|--------|-----------|
+| `daemon is running` + control socket | ~1s |
+| `Base infrastructure: ready` + `Collab/PM/channels: ready` + Court==7 + pools | **3s** |
+| Hub `daemon-internal` registrations (daemon process) | **1** (was 7+ `daemon-internal-N` before fix) |
+| Hub registrations after 15–20 `aegis status` polls | **0 additional** (status uses `health.status` socket; no per-poll hub dials) |
+
+**Performance budget decision: `READY_BUDGET_SECONDS=10`** (in `scripts/verify-pm-llm-e2e.sh`)
+
+- Measured baseline on this hardware: **3s** to full readiness signals.
+- Budget **10s** = ~3× headroom for first-cold I/O (store.img, Court lazy boots, guest bridges) while catching regressions to 30s+ seen under registration-spam/contention bugs.
+- Isolated cold-start gate **fails hard** if readiness exceeds 10s; existing-daemon path warns but still runs collab asserts.
+
+**Code changes (minimal, targeted):**
+
+1. **Eliminate `daemon-internal-*` re-registration spam** (`cmd/aegis/main.go`, `cmd/aegishub/main.go`, `config/acls.yaml`):
+   - Daemon: one persistent `daemon-internal` client (retry init after hub listens).
+   - CLI: one persistent `aegis-cli-internal` per process (`aegis-cli-internal` ACLs added).
+   - Removed ephemeral `daemon-internal-N` fallback on send failure (root cause of poll-time spam).
+   - `aegis-cli-internal` uses hub `ephemeralHubRPCLoop` for correct request/reply semantics.
+
+2. **Deterministic readiness** (`health.status` socket op + `computeHealthSnapshot`):
+   - Daemon owns readiness (`storeCollabReady` latch set when store `channel.list` gate passes).
+   - CLI `aegis status` reads `health.status` via unix socket (no hub probe per poll).
+   - E2E/smoke polls align to the same strings `aegis status` prints.
+
+3. **E2E script** (`scripts/verify-pm-llm-e2e.sh`):
+   - **pm goal before browser** (pre-pm browser was blocking 10+ min waiting for content that did not exist yet).
+   - 1s isolated poll ticks; hard perf fail; pm goal retries on timeout.
+   - `make smoke` grep fixed (`-qi` for `Base infrastructure` capitalization).
+
+4. **Collab path hardening**:
+   - `orchestrator.ensure_role` socket op (CLI pm ensure avoids hub/orchestrator connection race).
+   - `user.goal` hub RPC timeout extended to **600s** (real LLM + cold PM boot).
+   - Receiver still uses persistent `daemon-orchestrator` client for `channel.add_member`.
+
+**Test runs this session:**
+
+- `make smoke`: **PASS** (after Makefile grep fix).
+- Readiness poll: tick 1, **0s** (existing daemon path).
+- `make test-e2e-llm` / `verify-pm-llm-e2e.sh`: startup gates **PASS**; PM ensure **PASS**; **collab content FAIL** on this machine because ensured PM VM falls back to `agent.img` (no `project-manager.img` in rootfs dir) → guest logs `agent: failed to connect to AegisHub` → `user.goal` → `ERR_RPC_TIMEOUT` / `ERR_DESTINATION_NOT_FOUND`. **Fix:** run `make build-microvms` so `project-manager.img` exists; then re-run E2E.
+
+**Remaining gaps:**
+
+- `project-manager.img` must be present for PM goal → real LLM → channel post (agent fallback cannot serve `user.goal`).
+- Browser spec strict-mode violations on `channels-panel` (soft WARN; CLI `channel get` is source of truth).
+- Repeated daemon kills during dev left stale PIDs; use `sudo -n ./bin/aegis stop` + `make e2e-clean` before measurement runs.
+
+---
+
+## Session Close (Jun 14 2026) — Hub RPC + PM Guest Wiring, E2E PASS
+
+**Measured cold-start (clean boot, `AEGIS_BOOT_TIMING=1`, Framework 128GB, pre-pooled images):**
+
+| Signal | Wall time |
+|--------|-----------|
+| `sudo ./bin/aegis start` → control socket + hub listening | ~1s |
+| `Base infrastructure: ready` + `Collab/PM/channels: ready` + Court==7 + pools | **2–3s** (isolated tick 1); **≤7s** after `e2e-clean` + full stop |
+| Hub `daemon-internal` registrations (daemon process, boot + 15 status polls) | **1** (no `daemon-internal-N` spam) |
+| `READY_BUDGET_SECONDS` perf gate | **10s** (~3× measured baseline; unchanged) |
+
+**Performance budget decision:** keep **`READY_BUDGET_SECONDS=10`** in `scripts/verify-pm-llm-e2e.sh`. Measured baseline 2–3s on this hardware; 10s catches 30s+ regressions while allowing first-cold I/O variance.
+
+**Root causes fixed this session (collab path was failing despite “ready” status):**
+
+1. **PM guest hub connectivity** (`internal/runtime/orchestrator.go`, `cmd/aegis/guest_hub_bridge.go`, `cmd/aegis/main.go`):
+   - `aegis.hub_vsock=1` + `aegis.component_id` on `project-manager` / `project-manager-*` and dynamic `agent` role ids (`coder-*`, `tester-*`).
+   - Guest hub bridges for `project-manager-*`, `coder-*`, `tester-*`; `startGuestHubBridge(id)` after successful `ensure_role`.
+
+2. **`user.goal` delivery** (`cmd/aegis/main.go`):
+   - Always target hub name **`project-manager`** (not orchestrator VM id).
+   - `channel.create` before ensure when channel missing (store `channel.post` is no-op otherwise).
+
+3. **Hub RPC reply correlation** (`cmd/aegishub/main.go`):
+   - `deliverPendingRPC(msg.Destination, msg)` before treating store/PM outbound messages as new RPCs. Fixes `aegis channel list/get` and `pm goal` hangs (`ERR_RPC_TIMEOUT`).
+
+4. **PM async planning** (`cmd/project-manager/main.go`):
+   - `user.goal` → immediate `response` ack + goroutine for LLM/`channel.post`/`ensure.role`. Avoids hub RPC deadlock (blocked PM reader + nested `hcl.Send`).
+
+5. **Readiness honesty** (`cmd/aegis/main.go`):
+   - Removed Court==7 fallback that marked store ready without a store probe.
+
+6. **Isolated E2E pre-clean** (`scripts/verify-pm-llm-e2e.sh`):
+   - Stronger stop (`pkill -x aegis/aegishub`) so `FORCE_ISOLATED=1` does not hit “daemon already running”.
+
+**`project-manager.img`:** rebuilt via `bash scripts/build-microvms-docker.sh project-manager` (guest `/init` + PM binary).
+
+**Test runs (final):**
+
+| Gate | Result |
+|------|--------|
+| `make smoke` | **PASS** |
+| `aegis pm goal` → `Sent goal to project-manager` + channel `E2E-LLM-VERIFY` | **PASS** (~35s incl. 20s PM boot wait) |
+| `make test-e2e-llm` (existing daemon after `sudo ./bin/aegis start`) | **PASS** — all CLI collab asserts; channel marker tick 1 |
+| `FORCE_ISOLATED=1 make test-e2e-llm` | **FAIL** if main daemon not fully stopped before isolated launch (use `make e2e-clean` + stop; pre-clean now stronger) |
+| Playwright `collaboration.spec.js` | Partial (strict-mode / portal timing); **CLI `channel get` is authoritative** per script |
+
+**Remaining gaps:**
+
+- Browser UI asserts still flaky (strict-mode `channels-panel`/`channel-detail`, portal connection refused when isolated daemon stops before browser phase).
+- `FORCE_ISOLATED=1` requires passwordless `sudo -n pkill` in sudoers for reliable clean isolated boots.
+- LLM path may use `generatePlan` fallback when Ollama slow/unavailable; script INFO suggests checking daemon log for `LLM plan gen`.
+- Guest boot-metrics human tables still often need exact VM id from `aegis vm list`.
+
+---
+
+## Fresh Session (Jun 14 2026, Framework 128GB) — E2E Gate Stabilization Verified
+
+**Branch:** `feat/collaboration-model-prewarm-readiness`
+
+**Measured cold-start (clean isolated boot, `AEGIS_BOOT_TIMING=1`, pre-pooled images + `/dev/kvm`, after `make e2e-clean` + full stop):**
+
+| Signal | Wall time |
+|--------|-----------|
+| `sudo ./bin/aegis start` → control socket (`daemon is running`) | ~2–3s |
+| `Base infrastructure: ready` + `Collab/PM/channels: ready` + Court==7 + pools (E2E-aligned poll) | **3s** (isolated tick 1) |
+| Store collab gate (`ready_elapsed_seconds` in `health.status`) | **1.5s** |
+| Hub `daemon-internal` registrations (daemon process, boot + 15 `aegis status` polls) | **1** (no `daemon-internal-N` spam) |
+| Hub `aegis-cli-internal` registrations from status polls | **0** (status uses `health.status` socket op) |
+
+**Performance budget decision:** keep **`READY_BUDGET_SECONDS=10`** in `scripts/verify-pm-llm-e2e.sh`.
+
+- Measured baseline on this hardware: **1.5s** store gate, **3s** full E2E-aligned readiness (base + Court==7 + pools).
+- Budget **10s** ≈ 3× measured baseline; catches regressions to 30s+ seen under `daemon-internal-N` re-registration spam and store-gate contention, while allowing first-cold I/O variance after image builds or aggressive `pkill -9 firecracker` recovery (observed ~39s outlier in that path — not normal `aegis stop`).
+- Isolated cold-start gate **fails hard** on breach; existing-daemon path warns but still runs collab asserts.
+
+**What changed (this session's working tree, minimal targeted fixes):**
+
+1. **Eliminate `daemon-internal-*` re-registration spam** (`cmd/aegis/main.go`, `cmd/aegishub/main.go`, `config/acls.yaml`):
+   - Daemon: one persistent `daemon-internal` client (retry init after hub listens; no ephemeral fallback on send failure).
+   - CLI: one persistent `aegis-cli-internal` per process; hub `ephemeralHubRPCLoop` for request/reply semantics.
+   - Early receiver (`startOrchestratorCommandReceiver`): `channel.add_member` via persistent `daemon-orchestrator` client (not `sendToComponentViaHubRetry`).
+
+2. **Deterministic, observable readiness** (`cmd/aegis/main.go`):
+   - `health.status` socket op + `computeHealthSnapshot` / `storeCollabReady` latch (single source of truth).
+   - CLI `aegis status` reads socket (no per-poll hub dials).
+   - Human status now prints **`Ready elapsed: X.Xs`** when store collab gate has passed (`AEGIS_BOOT_TIMING` for guest phases via `aegis vm boot-metrics`).
+   - E2E/smoke polls use the same strings `aegis status` prints (no extra `channel_list_ok` gate during cold-boot poll).
+
+3. **E2E script** (`scripts/verify-pm-llm-e2e.sh`):
+   - `READY_BUDGET_SECONDS=10` perf gate on isolated path.
+   - pm goal **before** browser (browser was blocking on content that did not exist yet).
+   - Strong collab asserts unchanged: `E2E-LLM-VERIFY` marker + `project-manager` post + `channel=` roles.
+
+4. **Collab path** (prior commits in branch, re-verified): PM guest hub bridge, `user.goal` → hub name `project-manager`, hub `deliverPendingRPC`, PM async planning.
+
+**Test runs this session:**
+
+| Gate | Result |
+|------|--------|
+| Isolated cold-start measurement (E2E-aligned) | **3s** — within 10s budget |
+| `make smoke` (post `sudo ./bin/aegis start`) | **PASS** (startup invariants) |
+| `make test-e2e-llm` (existing daemon, `llama3.2:3b`) | **PASS** — readiness tick 1 (0s); pm goal; `E2E-LLM-VERIFY` in channel tick 1; isolation PASS |
+| Playwright `collaboration.spec.js` | **WARN** (5/6 strict-mode / portal selector flakes; CLI `channel get` authoritative per script) |
+
+---
+
+## Gap Closure (Jun 15 2026) — Browser, Isolated E2E, LLM Assert, Boot Metrics
+
+**Phases completed (5 commits on branch):**
+
+1. **Browser E2E** — `loadPortalData` uses `Promise.allSettled` (channels load when skills/proposals 500); Playwright fixes (nav helpers, no strict-mode `.or()`, API/list fallback); core PM-post test is **hard-fail** in verify script.
+2. **FORCE_ISOLATED** — `wait_for_daemon_stopped` before isolated pre-clean; `make test-e2e-llm-isolated` (= `e2e-clean` + `FORCE_ISOLATED=1`); sudoers `pkill -x aegis/aegishub`.
+3. **Graceful shutdown** — `make e2e-clean` waits for daemon socket + firecracker exit; AGENTS.md documents no `pkill -9 firecracker`.
+4. **Real LLM assert** — PM logs `LLM plan gen succeeded`; verify script **fails** when Ollama has `$MODEL` but guest logs lack success marker.
+5. **Boot metrics** — `scripts/boot-metrics-summary.sh` wired into verify when `AEGIS_BOOT_TIMING=1`.
+
+**Verified this session:**
+
+| Gate | Result |
+|------|--------|
+| Playwright core (`Channels UI shows PM plan post`) | **PASS** (~1s) |
+| `make test-e2e-llm` (prior session) | **PASS** CLI collab |
+
+**Note:** PM `LLM plan gen succeeded` log requires rebuilt `project-manager` guest image (`bash scripts/build-microvms-docker.sh project-manager`) before the new LLM assert passes on hardware with the old image.
+
+**Remaining (minor):**
+
+- Optional journey Playwright tests may still soft-WARN (not part of hard gate).
+- Rebuild `web-portal` + `project-manager` images to pick up `app.js` / PM log fixes in guests (host static fix helps after rebuild).
+
+**Files touched:** `e2e/collaboration.spec.js`, `cmd/web-portal/static/app.js`, `scripts/verify-pm-llm-e2e.sh`, `Makefile`, `AGENTS.md`, `scripts/aegisclaw-sudoers.example`, `cmd/project-manager/main.go`, `scripts/boot-metrics-summary.sh`, `docs/implementation-plan/collaboration-model.md`.
+
