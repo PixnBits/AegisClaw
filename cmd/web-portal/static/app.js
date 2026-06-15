@@ -44,19 +44,20 @@ const elements = {
 };
 
 async function loadPortalData() {
-  const [dashboard, skills, proposals, monitoring] = await Promise.all([
+  // Use allSettled so a failing skills/proposals/dashboard endpoint does not block
+  // channels load (core collab path). Partial API failures are common on cold boots.
+  const [dashR, skillsR, proposalsR, monR] = await Promise.allSettled([
     fetchJSON('/api/dashboard'),
     fetchJSON('/api/skills'),
     fetchJSON('/api/proposals'),
     fetchJSON('/api/monitoring'),
   ]);
+  if (dashR.status === 'fulfilled') renderDashboard(dashR.value);
+  if (skillsR.status === 'fulfilled') renderSkills(skillsR.value);
+  if (proposalsR.status === 'fulfilled') renderProposals(proposalsR.value);
+  if (monR.status === 'fulfilled') renderMonitoring(monR.value);
 
-  renderDashboard(dashboard);
-  renderSkills(skills);
-  renderProposals(proposals);
-  renderMonitoring(monitoring);
-
-  // load channels for the new channels page (replaces chat)
+  // Channels are the collaboration backbone; always attempt regardless of other panels.
   loadChannelsForUI().catch(() => {});
   loadSidebarChannels().catch(() => {});
 }

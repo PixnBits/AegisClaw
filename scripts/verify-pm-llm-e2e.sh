@@ -58,12 +58,11 @@ CHANNEL="plan-demo-e2e-llm"
 
 # Explicit performance budget for base infrastructure readiness (Store + NB + Web Portal + Court + channels
 # usable so status reports "base infrastructure: ready" + "Collab/PM/channels: ready", Court==7, pools claimable).
-# Measured on clean boot (AEGIS_BOOT_TIMING=1) on this Framework 128GB hardware: ~3s wall to full signals
-# in status (with pre-pooled images present; first boots after image build or cold FS may be 2-4x slower due to
-# 1G+ store image I/O + 7 Court lazy boots + guest bridges). 10s budget (in 5-10s range requested) provides
-# ~3x headroom vs measured baseline while catching regressions (prior history saw 30s+ or minutes to ready
-# under registration/spam/contention bugs). Enforced in readiness polls below; test fails the startup gate
-# loudly on breach (but collab PM/LLM/channel assertions remain strong for behaviour even on slow boots).
+# Measured on clean boot (AEGIS_BOOT_TIMING=1) on this Framework 128GB hardware (Jun 2026 session):
+# 3s wall to "base infrastructure: ready" + Court==7 + pools (pre-pooled images + /dev/kvm).
+# 10s budget (5-10s ballpark): ~3x measured baseline; catches regressions to 30s+ under
+# registration spam/contention bugs while allowing first-cold I/O variance after image builds.
+# Isolated cold-start gate fails hard on breach; existing-daemon path warns but still runs collab asserts.
 READY_BUDGET_SECONDS=10
 GOAL="Create a minimal Go hello world that prints 'E2E-LLM-VERIFY' and a 1-line test. As PM output a short actionable plan and ensure coder + tester roles in this channel."
 
@@ -100,6 +99,47 @@ channel_list_ok() {
     sleep 2
   done
   return 1
+}
+
+# Wait until the web portal reverse proxy and channels API are serving (browser phase prerequisite).
+wait_for_portal_ready() {
+  for i in $(seq 1 15); do
+    if curl -sf --max-time 3 http://localhost:8080/health >/dev/null 2>&1 && \
+       curl -sf --max-time 3 http://localhost:8080/api/channels >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Core browser gate (PM post in UI) is hard-fail; optional journey tests are soft WARN.
+run_collab_browser_tests() {
+  local hard_gate="${1:-1}"
+  if [ ! -d "node_modules/@playwright/test" ]; then
+    npm install
+  fi
+  ./node_modules/.bin/playwright install chromium 2>/dev/null || true
+  if ! wait_for_portal_ready; then
+    echo "✗ FAIL: portal not ready on :8080 (/health or /api/channels) before browser phase"
+    return 1
+  fi
+  echo "  portal ready (/health + /api/channels)"
+  local rc=0
+  if ! AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js \
+      --project=chromium \
+      -g 'Channels UI shows PM plan post'; then
+    rc=1
+    if [ "$hard_gate" = "1" ]; then
+      echo "✗ FAIL: core browser collab test (PM plan post visible in channels UI)"
+    fi
+  else
+    echo "✓ PASS: core browser collab test (PM plan post visible in channels UI)"
+  fi
+  AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js \
+    --project=chromium \
+    -g 'User Journey' || echo "  (note: optional journey browser tests did not all pass; core CLI collab gate is authoritative)"
+  return $rc
 }
 
 # Detect existing daemon (preferred fast path, matches "user does sudo ./bin/aegis start then pm goal").
@@ -150,6 +190,9 @@ if [ "$EXISTING_DAEMON" != true ]; then
   # Uses sudo -n pkill for robustness (proactive extend sudoers if needed per AGENTS).
   echo "=== Pre-clean for reliable repeated E2E runs (sockets, state, procs; per testing-standards.md priority 1) ==="
   sudo -n ./bin/aegis stop 2>/dev/null || true
+  ./bin/aegis stop 2>/dev/null || true
+  sudo -n pkill -x aegis 2>/dev/null || true
+  sudo -n pkill -x aegishub 2>/dev/null || true
   sudo -n pkill -f 'aegis start --foreground' 2>/dev/null || true
   sudo -n pkill -f 'aegishub start' 2>/dev/null || true
   sudo -n rm -f "$HUB_SOCK" 2>/dev/null || true
@@ -169,36 +212,26 @@ if [ "$EXISTING_DAEMON" = true ]; then
   # Short (vs isolated's 18-tick) because user just did sudo ./bin/aegis start; still catches not-ready states loudly.
   # Use relaxed signals (matching the top-level detection, READY, and smoke) for boot timing tolerance.
   # Aligned to `aegis status` output (no hard extra channel_list_ok here to avoid churn + inconsistency with status "ready" label).
-  echo "=== Quick readiness poll for existing daemon (base ready + Court + pools; per standards) ==="
+  echo "=== Quick readiness poll for existing daemon (health.status-aligned; per standards) ==="
   EXISTING_POLL_START=$(date +%s)
   for i in $(seq 1 12); do
     STATUS=$(./bin/aegis status 2>/dev/null)
     ELAP=$(( $(date +%s) - EXISTING_POLL_START ))
-    # For the "existing" fast path... (relaxed to pools + signals so trigger prompt; post-pm poll handles data arrival).
-    # Also enforce perf budget (see READY_BUDGET_SECONDS); warns on slow but does not block collab verification.
     if ( echo "$STATUS" | grep -qiE 'base infrastructure.*ready|collab/PM/channels: ready' || \
          echo "$STATUS" | grep -q 'Court personas online: 7' ) && \
        ./bin/aegis vm pools 2>/dev/null | grep -qE 'agent-pooled|memory-pooled'; then
       if [ "$ELAP" -gt "$READY_BUDGET_SECONDS" ]; then
         echo "  (note: existing-daemon readiness reached after ${ELAP}s > ${READY_BUDGET_SECONDS}s perf budget; possible regression vs measured ~3s baseline)"
       fi
-      echo "✓ Existing daemon base/Court/pools ready (tick $i, ${ELAP}s)"
+      echo "✓ Existing daemon base/Court/pools ready (tick $i, ${ELAP}s; aligned to aegis status)"
       break
     fi
-    if [ "$ELAP" -gt "$READY_BUDGET_SECONDS" ] && [ $i -eq 1 ]; then
-      echo "  (perf budget ${READY_BUDGET_SECONDS}s exceeded while waiting for existing signals; continuing for robustness but this would fail cold-start gate)"
-    fi
-    sleep 3
-    echo "  poll $i/12 for existing-daemon readiness (status + invariants)..."
+    sleep 2
+    echo "  poll $i/12 for existing-daemon readiness..."
     echo "$STATUS" | grep -E 'daemon is running|Court personas|base infrastructure' | cat || true
   done
-  # After the readiness poll confirms base/Court/pools + channel list responsive for an existing daemon,
-  # give a short stabilization window before the pm goal trigger. This helps on-demand PM boot, role ensure,
-  # and any residual hub/Store transients settle so the first channel get after the goal has a better chance
-  # of seeing the plan post + E2E marker and roles with channel= (observed in recent runs where GATES + list
-  # ready were reached but immediate post-trigger gets returned EOF or empty, and roles lagged).
-  echo "  (GATES + channel list + pools confirmed for existing path; 10s stabilization before pm goal trigger)"
-  sleep 10
+  echo "  (readiness confirmed; 5s stabilization before pm goal trigger)"
+  sleep 5
 else
   echo "=== Launching isolated daemon (custom socket for clean test; AEGIS_BOOT_TIMING=1) ==="
   env -u AEGIS_HUB_SOCKET -u AEGIS_STATE_DIR \
@@ -232,8 +265,9 @@ else
   export AEGIS_STATE_DIR="$STATE_DIR"
   READY=false
   ISOLATED_POLL_START=$(date +%s)
-  for i in $(seq 1 18); do
-    sleep 5
+  PERF_FAIL=false
+  for i in $(seq 1 24); do
+    sleep 1
     echo "--- tick $i ---"
     STATUS_OUT=$(timeout 10s ./bin/aegis status 2>&1 | head -15 || echo "status timeout or error (partial startup?)")
     ELAP=$(( $(date +%s) - ISOLATED_POLL_START ))
@@ -259,6 +293,7 @@ else
         if ./bin/aegis vm pools 2>/dev/null | grep -qE 'agent-pooled|memory-pooled'; then
           if [ "$ELAP" -gt "$READY_BUDGET_SECONDS" ]; then
             echo "✗ PERF REGRESSION: base/Court/pools signals reached at ${ELAP}s (budget ${READY_BUDGET_SECONDS}s; baseline ~3s on clean measured boot). Cold-start perf regression detected."
+            PERF_FAIL=true
           fi
           echo "✓ daemon running, base/Court health signals present in status (aligned), pools claimable (proceeding to strict asserts + pm goal path; ${ELAP}s)"
           READY=true
@@ -270,8 +305,9 @@ else
         echo "  (daemon running but base infrastructure not yet 'ready' and Court !=7 in status)"
       fi
     fi
-    if [ "$ELAP" -gt $(( READY_BUDGET_SECONDS * 2 )) ]; then
-      echo "  (exceeded 2x perf budget ${READY_BUDGET_SECONDS}s without base ready; will fail readiness gate)"
+    if [ "$ELAP" -gt "$READY_BUDGET_SECONDS" ] && [ "$READY" != true ]; then
+      echo "  (exceeded perf budget ${READY_BUDGET_SECONDS}s without base ready; will fail readiness gate)"
+      break
     fi
     # Check log for obvious startup errors
     if [ -f "$LOG_FILE" ]; then
@@ -280,8 +316,13 @@ else
       fi
     fi
   done
-  if [ "$READY" != true ]; then
-    echo "ERROR: daemon or base infrastructure (store/channel backend + components) not ready within bounds."
+  if [ "$READY" != true ] || [ "$PERF_FAIL" = true ]; then
+    if [ "$PERF_FAIL" = true ]; then
+      echo "ERROR: cold-start performance regression (base ready > ${READY_BUDGET_SECONDS}s budget; measured baseline ~3s on this hw)."
+    fi
+    if [ "$READY" != true ]; then
+      echo "ERROR: daemon or base infrastructure (store/channel backend + components) not ready within bounds."
+    fi
     echo "This E2E is designed to catch the class of base-infra startup bugs (e.g. temp flood, VMs launched but not registered/serving, store not responsive) AND perf regressions (base ready > ${READY_BUDGET_SECONDS}s budget; measured baseline ~3s clean on this hw)."
     if [ -f "$LOG_FILE" ]; then
       echo "=== Last 50 lines of $LOG_FILE (for diagnosis) ==="
@@ -293,11 +334,7 @@ else
     if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
       echo
       echo "=== Browser E2E verification of channels UI and user journeys (even on partial base) ==="
-      if [ ! -d "node_modules/@playwright/test" ]; then
-        npm install
-      fi
-      ./node_modules/.bin/playwright install chromium 2>/dev/null || true
-      AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --timeout 600000 --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors and journeys coverage)"
+      run_collab_browser_tests 0 || echo "WARN: browser check did not fully pass on partial base (see e2e/collaboration.spec.js)"
     fi
     ./bin/aegis stop 2>/dev/null || true
     exit 4
@@ -376,28 +413,7 @@ if [ -n "${AEGIS_BOOT_TIMING:-}" ]; then
   fi
 fi
 
-# Browser usage (Playwright) for the E2E tests (not just CLI): after start + status check, verify the portal UI for user journeys (as user would: clicking nav, viewing pages in browser).
-# This covers detailed E2E for the user journeys in docs/specs/user-journeys/ that are not already covered by the CLI pm goal (J03) or legacy chat.
-# Always run after launch (portal may be up even if store not for full llm).
-if [ "$EXISTING_DAEMON" = true ] || [ "${FORCE_ISOLATED:-0}" != "1" ]; then
-  echo
-  echo "=== Browser E2E verification of channels UI and user journeys (PM plan post + other journeys in portal) ==="
-  if [ ! -d "node_modules/@playwright/test" ]; then
-    npm install
-  fi
-  ./node_modules/.bin/playwright install chromium 2>/dev/null || true
-  AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --timeout 600000 --project=chromium || echo "WARN: browser check did not fully pass (ensure portal running at :8080, or run 'npm install' after package.json update; see e2e/collaboration.spec.js for selectors and journeys coverage)"
-else
-  echo
-  echo "=== Browser E2E (forced isolated / custom-hub mode: portal proxy still served at :8080 by this daemon; exercising UI journeys against the isolated instance)"
-  if [ ! -d "node_modules/@playwright/test" ]; then
-    npm install
-  fi
-  ./node_modules/.bin/playwright install chromium 2>/dev/null || true
-  AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: browser check in isolated mode did not fully pass (portal may still be booting or data-dependent asserts soft-failed; see above for CLI evidence)"
-fi
-
-# Trigger (the real user action)
+# Trigger (the real user action) — BEFORE browser so PM plan post exists for UI asserts.
 echo
 echo "=== Trigger real user path: pm goal (CLI as a user would; drives PM + real LLM via network-boundary) ==="
 # Small retry for the goal delivery: the ensure is fast (on-demand claim), but the subsequent
@@ -405,15 +421,21 @@ echo "=== Trigger real user path: pm goal (CLI as a user would; drives PM + real
 # the guest boots/registers (even with pre-warm). Retry once after a short wait makes the E2E
 # reliable for the core assertions (PM post + E2E marker in channel) without lengthening the
 # 10s stabilization for every run.
-for attempt in 1 2; do
-  if ./bin/aegis pm goal "$GOAL" --channel "$CHANNEL" 2>&1 | cat; then
+PM_GOAL_OK=false
+for attempt in 1 3; do
+  PM_OUT=$(./bin/aegis pm goal "$GOAL" --channel "$CHANNEL" 2>&1 | tee /dev/stderr) || true
+  if echo "$PM_OUT" | grep -q 'Sent goal to'; then
+    PM_GOAL_OK=true
     break
   fi
-  if [ $attempt -eq 1 ]; then
-    echo "  (pm goal attempt 1 had delivery issue; retrying after short wait for on-demand PM to register...)"
-    sleep 6
+  if echo "$PM_OUT" | grep -qE 'ERR_RPC_TIMEOUT|ERR_DESTINATION_NOT_FOUND|pm goal error'; then
+    echo "  (pm goal attempt $attempt: delivery/timeout; retrying after wait for on-demand PM + LLM path...)"
+    sleep 15
   fi
 done
+if [ "$PM_GOAL_OK" != true ]; then
+  echo "✗ FAIL: pm goal did not complete successfully (see output above; core collab gate)"
+fi
 
 # Robust bounded poll for the collab happy path to land.
 # The CLI pm goal returns after the ensure + user.goal sends (runPMGoal has internal 20s+15s sleeps + retries).
@@ -479,11 +501,8 @@ echo "=== Check default 'main' channel (E2E auto-create + Court) ==="
 # daemon process regardless of AEGIS_HUB_SOCKET (the sock only affects component registration / hub routing for VMs).
 echo
 echo "=== Browser E2E (post-pm-goal) verification of channels UI showing the LLM plan post + user typing ==="
-if [ ! -d "node_modules/@playwright/test" ]; then
-  npm install
-fi
-./node_modules/.bin/playwright install chromium 2>/dev/null || true
-AEGIS_E2E_COLLAB_BROWSER=1 ./node_modules/.bin/playwright test e2e/collaboration.spec.js --project=chromium || echo "WARN: post-trigger browser check did not fully pass (data may be partial on slow boots; CLI channel get above is the source of truth for PM post + plan content)"
+BROWSER_RC=0
+run_collab_browser_tests 1 || BROWSER_RC=1
 
 echo
 echo "=== Evidence from logs (best effort) ==="
@@ -523,6 +542,9 @@ fi
 echo
 echo "=== Assertions / summary ==="
 ASSERT_RC=0
+if [ "${BROWSER_RC:-0}" -ne 0 ]; then
+  ASSERT_RC=1
+fi
 
 # Re-fetch / prefer the polled content for assertion (the early poll waited for the marker + PM post).
 # Fall back to a fresh get only if the poll didn't capture usable content. This ensures the
