@@ -5,7 +5,7 @@ CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.
 ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
 AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-tcb test-chaos sbom smoke help doctor setup boot-metrics
+.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-tcb test-chaos sbom smoke help doctor setup boot-metrics
 
 # Default target
 all: build
@@ -120,7 +120,7 @@ smoke:
 	@STATUS=$$(./bin/aegis status 2>/dev/null); echo "$$STATUS" | grep -Fx 'daemon is running' && echo "   ✓ Daemon reports as running" || (echo "   ✗ Daemon not running"; echo "$$STATUS"; exit 1); \
 	  COURT_N=$$(echo "$$STATUS" | sed -n 's/.*Court personas online: \([0-9]*\).*/\1/p' | head -1 || echo 0); \
 	  if [ "$$COURT_N" = "7" ]; then echo "   ✓ Court personas online: 7"; else echo "   ✗ Court personas online: $$COURT_N (expected 7 per standards)"; echo "$$STATUS"; exit 1; fi; \
-	  if echo "$$STATUS" | grep -q 'base infrastructure: ready' || ( echo "$$STATUS" | grep -q 'Court personas online: 7' && ( timeout 3s ./bin/aegis channel list >/dev/null 2>&1 || (sleep 1; timeout 3s ./bin/aegis channel list >/dev/null 2>&1) || (sleep 1; timeout 3s ./bin/aegis channel list >/dev/null 2>&1) ) ); then echo "   ✓ Base infrastructure ready (Network Boundary + Store + Web Portal registered; or Court 7 + channel list as secondary)"; else echo "   ✗ Base infrastructure not 'ready' (see status for attempted/registration issues)"; echo "$$STATUS"; exit 1; fi
+	  if echo "$$STATUS" | grep -qi 'base infrastructure.*ready' || echo "$$STATUS" | grep -qi 'collab/PM/channels: ready' || ( echo "$$STATUS" | grep -q 'Court personas online: 7' && ( timeout 3s ./bin/aegis channel list >/dev/null 2>&1 || (sleep 1; timeout 3s ./bin/aegis channel list >/dev/null 2>&1) || (sleep 1; timeout 3s ./bin/aegis channel list >/dev/null 2>&1) ) ); then echo "   ✓ Base infrastructure ready (Network Boundary + Store + Web Portal registered; or Court 7 + channel list as secondary)"; else echo "   ✗ Base infrastructure not 'ready' (see status for attempted/registration issues)"; echo "$$STATUS"; exit 1; fi
 	@./bin/aegis vm pools 2>/dev/null | grep -qE 'agent-pooled|memory-pooled' && echo "   ✓ Pre-warm pools present and claimable (aegis vm pools)" || (echo "   ✗ No pre-warm pools visible/claimable"; ./bin/aegis vm pools; exit 1)
 	@ (./bin/aegis status 2>/dev/null; ./bin/aegis vm list 2>/dev/null || true) | grep -qE 'aegis-daemon-temp|daemon-temp-' && (echo "   ✗ Unexpected aegis-daemon-temp-* or daemon-temp components linger (see status/vm.list and logs)"; exit 1) || echo "   ✓ No unexpected aegis-daemon-temp-* components"
 	@echo ""
@@ -253,6 +253,11 @@ test-e2e-llm:
 	@echo "See scripts/verify-pm-llm-e2e.sh for details and success criteria."
 	AEGIS_DEFAULT_MODEL="${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
 
+# Fully isolated cold-start E2E (custom hub socket; stops main daemon first).
+test-e2e-llm-isolated: e2e-clean
+	@echo "=== Isolated PM+LLM+Channels E2E (FORCE_ISOLATED=1 after e2e-clean) ==="
+	FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL="${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
+
 # TCB-specific tests (7.5.7). Additive target.
 # Runs unit tests for security + runtime + cmd/aegis TCB surface + skeleton compliance tests.
 # Use with -tags=integration for fuller daemon lifecycle checks (requires sudo in some cases).
@@ -362,6 +367,7 @@ help:
 	@echo "  make test-e2e           Browser E2E vs real daemon + microVMs (requires running daemon)"
 	@echo "  make test-e2e-contract  Thin-portal contract tests only (no daemon; AEGIS_E2E_FIXTURE=1)"
 	@echo "  make test-e2e-llm       Real unmocked PM+LLM+channels E2E (CLI pm goal + channel get + browser UI + status check; hits Ollama, no fixtures; see script)"
+	@echo "  make test-e2e-llm-isolated  Same as test-e2e-llm but FORCE_ISOLATED=1 after e2e-clean (clean cold-start gate)"
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
 	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"
 	@echo "  make sbom               SBOM + supply-chain (7.8: CycloneDX or fallback + cosign hooks)"

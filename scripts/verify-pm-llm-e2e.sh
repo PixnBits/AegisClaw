@@ -101,6 +101,23 @@ channel_list_ok() {
   return 1
 }
 
+# Poll until no daemon is serving the control socket (required before FORCE_ISOLATED launch).
+# Main and isolated daemons share :8080 and the control socket; starting isolated while main
+# is still shutting down causes "daemon already running" or portal conflicts.
+wait_for_daemon_stopped() {
+  local i
+  for i in $(seq 1 30); do
+    if ! ./bin/aegis status 2>/dev/null | grep -q 'daemon is running'; then
+      return 0
+    fi
+    sudo -n ./bin/aegis stop 2>/dev/null || ./bin/aegis stop 2>/dev/null || true
+    sleep 1
+  done
+  echo "ERROR: daemon still running after 30s stop/wait (isolated start would conflict on :8080 + control socket)" >&2
+  ./bin/aegis status 2>&1 | head -8 || true
+  return 1
+}
+
 # Wait until the web portal reverse proxy and channels API are serving (browser phase prerequisite).
 wait_for_portal_ready() {
   for i in $(seq 1 15); do
@@ -189,6 +206,7 @@ if [ "$EXISTING_DAEMON" != true ]; then
   # This ensures clean state for sockets, state dir, and any old test procs for this custom env.
   # Uses sudo -n pkill for robustness (proactive extend sudoers if needed per AGENTS).
   echo "=== Pre-clean for reliable repeated E2E runs (sockets, state, procs; per testing-standards.md priority 1) ==="
+  wait_for_daemon_stopped || exit 3
   sudo -n ./bin/aegis stop 2>/dev/null || true
   ./bin/aegis stop 2>/dev/null || true
   sudo -n pkill -x aegis 2>/dev/null || true

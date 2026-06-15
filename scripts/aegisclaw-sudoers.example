@@ -19,6 +19,8 @@ YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/ensure-aegis-dir.sh
 # Allows sudo -n pkill/rm in scripts/verify-pm-llm-e2e.sh and `make e2e-clean` without password prompts.
 # Only for dev machines; review before installing.
 YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -x aegis
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -x aegishub
 YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -f aegis
 YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -f 'aegis start --foreground'
 YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -f 'aegishub start'
