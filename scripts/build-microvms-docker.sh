@@ -166,7 +166,7 @@ determine_rootfs_dir() {
 }
 
 # Parse command line arguments
-COMPONENTS=${1:-"agent web-portal builder store memory network-boundary court-persona court-scribe"}
+COMPONENTS=${1:-"agent project-manager web-portal builder store memory network-boundary court-persona court-scribe"}
 PLATFORM=${PLATFORM:-linux}
 ROOTFS_DIR=$(determine_rootfs_dir)
 

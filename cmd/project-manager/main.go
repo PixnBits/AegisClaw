@@ -209,7 +209,7 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 		plan = generatePlan(payloadStr, chID)
 	} else {
 		plan = llmPlan
-		log.Printf("PM: LLM plan gen succeeded (model=%s, chars=%d)", os.Getenv("AEGIS_DEFAULT_MODEL"), len(plan))
+		log.Printf("PM: LLM plan gen succeeded (model=%s, chars=%d)", bootargs.DefaultModel(agent.DefaultLLMModel), len(plan))
 	}
 	postMsg := hubclient.Message{
 		Source:      uniqueSource,
@@ -302,7 +302,7 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 	defer hcl.Close()
 	timing.RecordPhase("hub_dialed")
 
-	uniqueSource := "project-manager"
+	uniqueSource := bootargs.ComponentID("project-manager")
 	regResp, err := hcl.Register(context.Background(), uniqueSource, pub, getBuildVersion())
 	if err != nil {
 		log.Fatal("PM registration failed:", err)
@@ -311,7 +311,8 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 	timing.RecordPhase("register_complete")
 	timing.WriteComponentReadySentinel()
 
-	realLLM := loop.NewRealLLMCaller(hcl, os.Getenv("AEGIS_DEFAULT_MODEL"))
+	llmModel := bootargs.DefaultModel(agent.DefaultLLMModel)
+	realLLM := loop.NewRealLLMCaller(hcl, llmModel)
 
 	timing.RecordPhase("message_loop_ready")
 
@@ -356,13 +357,12 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 			pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
 
 		case "version", "get-version":
-			respPayload, _ := json.Marshal(map[string]string{"version": getBuildVersion()})
-			_, _ = hcl.Send(context.Background(), hubclient.Message{
+			_ = hcl.Reply(context.Background(), hubclient.Message{
 				Source:      uniqueSource,
 				Destination: msg.Source,
 				Command:     "version",
-				Payload:     json.RawMessage(respPayload),
-				Timestamp:   time.Now().Format(time.RFC3339),
+				Payload:     map[string]string{"version": getBuildVersion()},
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			})
 		}
 	}

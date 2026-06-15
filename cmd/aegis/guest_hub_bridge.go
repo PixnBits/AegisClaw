@@ -60,6 +60,10 @@ func reconcileGuestHubBridges() {
 			startGuestHubBridge(vm.ID)
 		case strings.HasPrefix(vm.ID, "agent-") || strings.HasPrefix(vm.ID, "memory-"):
 			startGuestHubBridge(vm.ID)
+		case vm.ID == "project-manager" || strings.HasPrefix(vm.ID, "project-manager-"):
+			startGuestHubBridge(vm.ID)
+		case strings.HasPrefix(vm.ID, "coder-") || strings.HasPrefix(vm.ID, "tester-"):
+			startGuestHubBridge(vm.ID)
 		case vm.ID == "court-scribe" || strings.HasPrefix(vm.ID, "court-persona-"):
 			startGuestHubBridge(vm.ID)
 		}

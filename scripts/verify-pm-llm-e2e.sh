@@ -53,6 +53,7 @@ set -euo pipefail
 HUB_SOCK="${AEGIS_HUB_SOCKET:-/tmp/aegis/hub-pmllm-e2e.sock}"
 STATE_DIR="${AEGIS_STATE_DIR:-/tmp/aegis-pmllm-e2e}"
 MODEL="${AEGIS_DEFAULT_MODEL:-llama3.2:3b}"
+[ -n "$MODEL" ] || MODEL="llama3.2:3b"
 LOG_FILE="aegis.log.pmllm-e2e"
 CHANNEL="plan-demo-e2e-llm"
 
@@ -71,6 +72,11 @@ echo "Model: $MODEL  Channel: $CHANNEL  Log: $LOG_FILE"
 echo
 
 mkdir -p "$(dirname "$HUB_SOCK")" "$STATE_DIR"
+
+# Default to main daemon hub unless FORCE_ISOLATED (avoids stale AEGIS_HUB_SOCKET from prior runs).
+if [ "${FORCE_ISOLATED:-0}" != "1" ]; then
+  unset AEGIS_HUB_SOCKET AEGIS_STATE_DIR || true
+fi
 
 # Pre-flight
 if [[ ! -x ./bin/aegis ]]; then
@@ -105,6 +111,13 @@ llm_plan_gen_succeeded_in_logs() {
       return 0
     fi
   done
+  # Daemon runs as root on Linux; guest console logs live under /root/.aegis/state.
+  # aegis vm logs reads them regardless of caller uid.
+  local pm_vm="project-manager-${CHANNEL}"
+  if ./bin/aegis vm logs "$pm_vm" 2>/dev/null | grep -q "$pat"; then
+    echo "aegis vm logs $pm_vm"
+    return 0
+  fi
   return 1
 }
 
@@ -125,6 +138,21 @@ channel_list_ok() {
     fi
     sleep 2
   done
+  return 1
+}
+
+# Verify CLI can reach store via hub (catches stale hub.sock with no listener).
+hub_cli_ready() {
+  local i
+  unset AEGIS_HUB_SOCKET AEGIS_STATE_DIR 2>/dev/null || true
+  for i in $(seq 1 8); do
+    if timeout 15s ./bin/aegis channel list >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: hub CLI not ready (./bin/aegis channel list failed; stale hub.sock or daemon not serving AegisHub?)" >&2
+  echo "  Try: make e2e-clean && sudo ./bin/aegis stop && rm -f ~/.aegis/hub.sock && sudo ./bin/aegis start" >&2
   return 1
 }
 
@@ -395,6 +423,11 @@ fi
 # recent issues early.
 echo "=== Post-start startup status check + health invariants (per testing-standards.md) ==="
 ./bin/aegis status 2>&1 | cat || true
+
+if ! hub_cli_ready; then
+  exit 5
+fi
+echo "✓ Hub CLI ready (channel list via persistent aegis-cli-internal client)"
 
 # Strict invariant asserts (fail before any pm goal / LLM / browser if broken).
 # Why these matter (self-documenting for future LLMs + humans; see standards + host-daemon.md):
@@ -680,3 +713,4 @@ else
 fi
 
 echo "=== verify-pm-llm-e2e complete (see script for how to iterate) ==="
+exit $ASSERT_RC

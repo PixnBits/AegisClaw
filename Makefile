@@ -215,6 +215,7 @@ e2e-clean:
 	@bash -c 'for i in $$(seq 1 20); do ./bin/aegis status 2>/dev/null | grep -q "daemon is not running" && exit 0; sudo -n ./bin/aegis stop 2>/dev/null || true; sleep 1; done; echo "  (warn: daemon may still be stopping; wait before FORCE_ISOLATED)"; exit 0'
 	@echo "  Waiting for firecracker VMs to exit (graceful stop; do not use pkill -9 firecracker)..."
 	@bash -c 'for i in $$(seq 1 15); do pgrep -x firecracker >/dev/null 2>&1 || exit 0; sleep 1; done; pgrep -x firecracker >/dev/null 2>&1 && echo "  (note: firecracker still running; sudo ./bin/aegis stop and retry e2e-clean)" || true'
+	-@sudo -n rm -f $(HOME)/.aegis/hub.sock /tmp/aegis/hub-pmllm-e2e.sock 2>/dev/null || true
 	-@sudo -n pkill -x aegis >/dev/null 2>&1 || true
 	-@sudo -n pkill -x aegishub >/dev/null 2>&1 || true
 	-@sudo -n pkill -f 'aegis start --foreground' >/dev/null 2>&1 || true
@@ -258,12 +259,12 @@ test-e2e-contract:
 test-e2e-llm:
 	@echo "=== Real PM+LLM+Channels E2E (unmocked, user path via CLI pm goal + channel inspect + browser) ==="
 	@echo "See scripts/verify-pm-llm-e2e.sh for details and success criteria."
-	AEGIS_DEFAULT_MODEL="${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
+	AEGIS_DEFAULT_MODEL="$${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
 
 # Fully isolated cold-start E2E (custom hub socket; stops main daemon first).
 test-e2e-llm-isolated: e2e-clean
 	@echo "=== Isolated PM+LLM+Channels E2E (FORCE_ISOLATED=1 after e2e-clean) ==="
-	FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL="${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
+	FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL="$${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
 
 # TCB-specific tests (7.5.7). Additive target.
 # Runs unit tests for security + runtime + cmd/aegis TCB surface + skeleton compliance tests.

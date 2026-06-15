@@ -55,65 +55,21 @@ func sendToComponentViaHub(target string, cmd string, payload interface{}) (inte
 }
 
 func sendToComponentViaHubContext(ctx context.Context, target string, cmd string, payload interface{}) (interface{}, error) {
-	// Prefer the persistent "daemon-internal" client (one registration at startup).
-	// This (plus the daemon-orchestrator one in the receiver) removes the
-	// per-call ephemeral Dial+Register+Close that produced "daemon-internal-N"
-	// re-registration spam in hub logs for every internal operation (status
-	// probes, channel.list/get serving, grants, etc.).
-	if client := getDaemonInternalHubClient(); client != nil {
-		msg := hubclient.Message{
-			Source:      "daemon-internal",
-			Destination: target,
-			Command:     cmd,
-			Payload:     payload,
-			Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		}
-		resp, err := client.Send(ctx, msg)
-		if err == nil {
-			if resp.Command == "error" {
-				return nil, fmt.Errorf("hub error: %v", resp.Payload)
-			}
-			if resp.Payload == nil && resp.Command == "" {
-				return nil, fmt.Errorf("hub: empty response from %s for %s", target, cmd)
-			}
-			return resp.Payload, nil
-		}
-		// fall through to ephemeral on transient send failure
+	// Use one persistent hub client per process (daemon: "daemon-internal"; CLI:
+	// "aegis-cli-internal"). Never fall through to ephemeral Dial+Register on send
+	// failure — that was the source of daemon-internal-N re-registration spam during
+	// status polls, SSE ticks, and cold-boot store probes.
+	client, sourceID := getInternalHubClient()
+	if client == nil {
+		return nil, fmt.Errorf("hub: internal client not ready (dial/register failed)")
 	}
-
-	// Fallback / early-boot path: original ephemeral key + register as
-	// sequential daemon-internal-N. With the persistent client inited early,
-	// this path is rarely used after the first few sends.
-	hubPath := expandPath("~/.aegis/hub.sock")
-	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
-		hubPath = expandPath(env)
-	}
-
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-
-	client, err := hubclient.DialUnix(hubPath, priv)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
-	requesterID := fmt.Sprintf("daemon-internal-%d", atomic.AddUint64(&daemonInternalSeq, 1))
-	_, err = client.Register(ctx, requesterID, pub, "phase1")
-	if err != nil {
-		return nil, err
-	}
-
 	msg := hubclient.Message{
-		Source:      client.AssignedID(),
+		Source:      sourceID,
 		Destination: target,
 		Command:     cmd,
 		Payload:     payload,
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	}
-
 	resp, err := client.Send(ctx, msg)
 	if err != nil {
 		return nil, err
@@ -137,34 +93,77 @@ func isHubDestinationNotFound(err error) bool {
 	return strings.Contains(err.Error(), "ERR_DESTINATION_NOT_FOUND")
 }
 
-// getDaemonInternalHubClient returns (or lazily inits) the single persistent
-// "daemon-internal" hub client for the daemon's own internal operations.
-// Registered once early; reused for Send without per-call re-registration.
-// Mirrors the pattern used for the "daemon-orchestrator" receiver client.
+// getInternalHubClient returns the single persistent hub client for this process.
+// The long-lived daemon registers as "daemon-internal"; short-lived CLI
+// invocations register once as "aegis-cli-internal" (sync.Once per process).
+// Returns (client, sourceID). Eliminates per-send ephemeral daemon-internal-N spam.
+func getInternalHubClient() (hubclient.Client, string) {
+	if orchestrator != nil {
+		return getDaemonInternalHubClient(), "daemon-internal"
+	}
+	return getCLIInternalHubClient(), cliInternalHubSourceID()
+}
+
+func cliInternalHubSourceID() string {
+	if cliInternalSourceID == "" {
+		cliInternalSourceID = fmt.Sprintf("aegis-cli-internal-%d", os.Getpid())
+	}
+	return cliInternalSourceID
+}
+
+// getDaemonInternalHubClient returns (or lazily inits) the daemon's persistent client.
+// Retries dial/register on each call until hub is up (eager init at line ~725 may run
+// before AegisHub starts; without retry the store gate would never succeed).
 func getDaemonInternalHubClient() hubclient.Client {
-	daemonInternalHubOnce.Do(func() {
-		hubPath := expandPath("~/.aegis/hub.sock")
-		if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
-			hubPath = expandPath(env)
-		}
-		pub, priv, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			return
-		}
-		c, err := hubclient.DialUnix(hubPath, priv)
-		if err != nil {
-			return
-		}
-		requesterID := "daemon-internal"
-		_, err = c.Register(context.Background(), requesterID, pub, "phase1")
-		if err != nil {
-			c.Close()
-			return
-		}
-		daemonInternalHubClient = c
-		// kept open for daemon lifetime; no Close on shutdown for simplicity
-	})
-	return daemonInternalHubClient
+	daemonInternalHubMu.Lock()
+	defer daemonInternalHubMu.Unlock()
+	if daemonInternalHubClient != nil {
+		return daemonInternalHubClient
+	}
+	c, err := dialAndRegisterInternalHubClient("daemon-internal")
+	if err != nil {
+		return nil
+	}
+	daemonInternalHubClient = c
+	return c
+}
+
+// getCLIInternalHubClient returns (or lazily inits) the CLI process persistent client.
+// Uses a unique source ID per process (aegis-cli-internal-<pid>) so concurrent CLI
+// invocations during E2E polls do not stomp each other's hub registration.
+func getCLIInternalHubClient() hubclient.Client {
+	cliInternalHubMu.Lock()
+	defer cliInternalHubMu.Unlock()
+	if cliInternalHubClient != nil {
+		return cliInternalHubClient
+	}
+	c, err := dialAndRegisterInternalHubClient(cliInternalHubSourceID())
+	if err != nil {
+		return nil
+	}
+	cliInternalHubClient = c
+	return c
+}
+
+func dialAndRegisterInternalHubClient(requesterID string) (hubclient.Client, error) {
+	hubPath := expandPath("~/.aegis/hub.sock")
+	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+		hubPath = expandPath(env)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	c, err := hubclient.DialUnix(hubPath, priv)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", hubPath, err)
+	}
+	_, err = c.Register(context.Background(), requesterID, pub, "phase1")
+	if err != nil {
+		c.Close()
+		return nil, fmt.Errorf("register %s: %w", requesterID, err)
+	}
+	return c, nil
 }
 
 // sendToComponentViaHubRetry retries when the target has not registered on AegisHub yet
@@ -305,25 +304,21 @@ var (
 	// on hub restart or daemon shutdown (best-effort).
 	hubLogFile *os.File
 
-	// daemonInternalSeq provides stable sequential IDs for the *fallback* ephemeral
-	// path in sendToComponentViaHubContext (used only early in boot before the
-	// persistent daemon-internal client is ready, or on send failure).
-	// The common case now uses the single persistent "daemon-internal" client
-	// (plus "daemon-orchestrator" for the receiver), eliminating the per-send
-	// re-registration spam.
-	daemonInternalSeq uint64
-
-	// daemonInternalHubClient is a persistent hub client registered once as
-	// "daemon-internal" for all general internal daemon-to-component sends
-	// (status probes, channel.list/get in CLI serving, grant reconcile, etc.).
-	// This (together with the daemon-orchestrator persistent client in the
-	// receiver) eliminates the per-send Dial+Register "daemon-internal-N"
-	// churn that produced the re-registration spam in hub logs.
-	// Fallback to the old ephemeral path (with seq N) if the persistent client
-	// is not yet ready or send fails.
+	// daemonInternalHubClient: persistent "daemon-internal" (daemon process only).
 	daemonInternalHubClient hubclient.Client
+	daemonInternalHubMu     sync.Mutex
 
-	daemonInternalHubOnce sync.Once
+	// cliInternalHubClient: persistent per-CLI-process hub client (unique source ID).
+	cliInternalHubClient hubclient.Client
+	cliInternalHubMu     sync.Mutex
+	cliInternalSourceID  string // aegis-cli-internal-<pid>; one registration per CLI process
+
+	// storeCollabReady is set true once the post-launch store channel.list gate passes
+	// in startBaseInfrastructure bg. Used by health.status socket + consistent readiness.
+	storeCollabReady   atomic.Bool
+	storeCollabReadyMu sync.Mutex
+	storeCollabReadyAt time.Time
+	daemonBootStart    time.Time
 )
 
 // SocketRequest / SocketResponse: enriched JSON protocol for Task 6.1.2+ (structured, validated, future-proof).
@@ -664,6 +659,8 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	// Build / debug ID for this daemon run (helps confirm we are not running stale binary)
 	logrus.Infof("Aegis daemon starting — build/debug ID: %s", time.Now().UTC().Format("2006-01-02T15:04:05Z")+" (debug-build)")
+	daemonBootStart = time.Now()
+	storeCollabReady.Store(false)
 
 	// Ensure state directory (runtime, privileged)
 	if err := ensureStateDir(); err != nil {
@@ -998,102 +995,59 @@ func stopDaemon(cmd *cobra.Command, args []string) {
 	removePIDFile()
 }
 
-func statusDaemon(cmd *cobra.Command, args []string) {
+// computeHealthSnapshot builds the authoritative readiness view. When called inside
+// the daemon (orch != nil) it uses the persistent daemon-internal client and the
+// storeCollabReady latch set by startBaseInfrastructure bg. CLI `aegis status`
+// prefers the health.status socket op so polls match this single source of truth.
+func computeHealthSnapshot(orch *runtime.Orchestrator) map[string]interface{} {
 	base := map[string]interface{}{
 		"daemon":                "running",
 		"court_personas_online": 0,
 		"sandbox_backends":      "ready (" + string(cfg.SandboxType) + ")",
 		"web_portal":            "active via hardened reverse proxy (localhost:8080) - started by daemon",
 		"base_infrastructure":   "launch attempted (AegisHub + real Firecracker microVMs for Network Boundary / Store / Web Portal)",
+		"store_collab_ready":    false,
+		"ready_elapsed_seconds": 0.0,
 	}
 
-	// If the proxy failed to bind its port (common when a stale host-side
-	// web-portal from `go run` / playwright fixture / previous test is still
-	// listening), override the optimistic status so `aegis status` tells the
-	// truth instead of claiming the proxy is active.
 	if webPortalProxyListenErr != nil {
 		base["web_portal"] = fmt.Sprintf("FAILED TO LISTEN: %v", webPortalProxyListenErr)
-	} else if isDaemonRunning() {
-		// Live check: even if we think we started the listener, confirm the
-		// port is actually open right now (catches races, late conflicts, etc.).
-		if _, err := net.DialTimeout("tcp", "127.0.0.1:8080", 600*time.Millisecond); err != nil {
-			base["web_portal"] = "not listening on localhost:8080 (bind failure or port conflict; see doctor / logs)"
-		}
+	} else if _, err := net.DialTimeout("tcp", "127.0.0.1:8080", 600*time.Millisecond); err != nil {
+		base["web_portal"] = "not listening on localhost:8080 (bind failure or port conflict; see doctor / logs)"
 	}
 
-	if !isDaemonRunning() {
-		if jsonOutput {
-			base["daemon"] = "not running"
-			b, _ := json.Marshal(base)
-			fmt.Println(string(b))
-			return
-		}
-		fmt.Println("daemon is not running")
-		return
-	}
-
-	// Compute real Court count from live orchestrator view (no more hardcoded 7 placeholder).
-	// This makes "Court personas online" accurate even during/after early parallel Court launch.
 	courtCount := 0
-	if vmsResp, err := sendSocketRequest("vm.list", nil, false); err == nil && vmsResp.OK && vmsResp.Data != nil {
-		if arr, ok := vmsResp.Data.([]interface{}); ok {
-			for _, item := range arr {
-				if m, ok := item.(map[string]interface{}); ok {
-					id := getMapString(m, "id", "ID")
-					if strings.HasPrefix(id, "court-persona-") {
-						courtCount++
-					}
+	if orch != nil {
+		if vms, err := orch.ListVMs(context.Background()); err == nil {
+			for _, v := range vms {
+				if strings.HasPrefix(v.ID, "court-persona-") {
+					courtCount++
 				}
 			}
 		}
 	}
 	base["court_personas_online"] = courtCount
 
-	// Make base_infrastructure status reflect whether store (the collaboration backbone)
-	// is actually responding. Prevents the previous "launch attempted" lie when guests
-	// launched but didn't register/bridge in time.
-	//
-	// FIX (status hang): use short context timeout (2-3s) for the Store probe (and
-	// note other component probes via vm.list socket are local/fast). Without this,
-	// sendToComponentViaHub (which dials hub + registers ephemeral internal + Send)
-	// could block the entire `aegis status` CLI indefinitely when store is slow to
-	// come up during base boot or under I/O contention. We fall back gracefully.
-	storeReady := false
-	// Slightly longer bounded probe (still << any "hang" threshold) for cold-boot real hardware
-	// (Firecracker guest boot + bridge + store handler init for channel.list). This makes the
-	// "base infrastructure: ready" flip (and thus E2E/smoke gates) reliable once the Store VM
-	// has registered and is serving, without regressing the "status never blocks" guarantee.
-	// The bg readiness in startBase uses a full retrying 45s budget; this is the client-visible
-	// signal used by the verify script and `make smoke`.
-	// Primary probe now does a few quick attempts internally (absorbs very brief hub/Store
-	// transients from registration churn) so the "ready" label is only claimed when a
-	// channel.list actually succeeds promptly (or we fall back to the Court>=7 secondary).
-	// This directly addresses E2E harness seeing "base ready + Court 7" in status while
-	// its own channel.list checks (and later pm goal / channel ops) still hit timing/EOF.
-	for attempt := 0; attempt < 3 && !storeReady; attempt++ {
-		probeCtx, probeCancel := context.WithTimeout(context.Background(), 1400*time.Millisecond)
-		if _, err := sendToComponentViaHubContext(probeCtx, "store", "channel.list", nil); err == nil {
-			storeReady = true
+	storeReady := storeCollabReady.Load()
+	if storeReady {
+		storeCollabReadyMu.Lock()
+		if !storeCollabReadyAt.IsZero() && !daemonBootStart.IsZero() {
+			base["ready_elapsed_seconds"] = storeCollabReadyAt.Sub(daemonBootStart).Seconds()
 		}
-		probeCancel()
-		if !storeReady && attempt < 2 {
-			time.Sleep(150 * time.Millisecond)
+		storeCollabReadyMu.Unlock()
+	} else if orch != nil {
+		for attempt := 0; attempt < 3 && !storeReady; attempt++ {
+			probeCtx, probeCancel := context.WithTimeout(context.Background(), 1400*time.Millisecond)
+			if _, err := sendToComponentViaHubContext(probeCtx, "store", "channel.list", nil); err == nil {
+				storeReady = true
+			}
+			probeCancel()
+			if !storeReady && attempt < 2 {
+				time.Sleep(150 * time.Millisecond)
+			}
 		}
 	}
-	// Secondary signal from the fast local vm.list (socket, no hub roundtrip): if the orchestrator
-	// tracks the store VM as present and Court is fully online (7), the bg store-readiness gate in
-	// startBaseInfrastructure has passed (it only starts Court after successful channel.list to store).
-	// This makes the client-visible "base infrastructure: ready" (used by smoke + E2E verify script
-	// gates + testing-standards invariants) flip reliably on real hardware once the minimal base +
-	// store collab path is usable, without extending the live probe budget or risking hangs.
-	// The live probe remains the gold signal when it succeeds quickly; this is belt-and-suspenders
-	// for cold boots where the first external daemon-internal probe may see tail latency.
-	if !storeReady {
-		if courtCount >= 7 {
-			// We already counted court from the vmsResp above; if we got here Court==7 was observed.
-			storeReady = true
-		}
-	}
+	base["store_collab_ready"] = storeReady
 	if storeReady {
 		base["base_infrastructure"] = "ready (AegisHub + Network Boundary + Store + Web Portal)"
 		base["collab"] = "ready (channels + PM + roles available via Store)"
@@ -1101,24 +1055,29 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 		base["base_infrastructure"] = "launch attempted (Store still starting...)"
 		base["collab"] = "launching (see base_infrastructure; channels/PM after store)"
 	}
+	return base
+}
 
+func printStatusFromHealth(base map[string]interface{}, includeVMList bool) {
 	if jsonOutput {
 		b, _ := json.Marshal(base)
 		fmt.Println(string(b))
 		return
 	}
-
-	// Human-readable
 	fmt.Println("daemon is running")
-	fmt.Printf("  Court personas online: %d\n", base["court_personas_online"])
+	fmt.Printf("  Court personas online: %d\n", getMapInt(base, "court_personas_online"))
 	fmt.Printf("  Sandbox backends: %s\n", base["sandbox_backends"])
 	fmt.Printf("  Web portal: %s\n", base["web_portal"])
 	fmt.Printf("  Base infrastructure: %s\n", base["base_infrastructure"])
 	if c, ok := base["collab"].(string); ok && c != "" {
 		fmt.Printf("  Collab/PM/channels: %s\n", c)
 	}
-
-	// Show whatever the orchestrator actually knows about (regular VMs + aux-registered base components)
+	if elapsed, ok := base["ready_elapsed_seconds"].(float64); ok && elapsed > 0 {
+		fmt.Printf("  Ready elapsed: %.1fs (store collab gate; AEGIS_BOOT_TIMING for guest phases)\n", elapsed)
+	}
+	if !includeVMList {
+		return
+	}
 	fmt.Println("  Live VM/component view (from orchestrator):")
 	if vmsResp, err := sendSocketRequest("vm.list", nil, false); err == nil && vmsResp.OK && vmsResp.Data != nil {
 		if arr, ok := vmsResp.Data.([]interface{}); ok && len(arr) > 0 {
@@ -1143,6 +1102,55 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	} else {
 		fmt.Println("    (unable to query live state)")
 	}
+}
+
+func statusDaemon(cmd *cobra.Command, args []string) {
+	if !isDaemonRunning() {
+		base := map[string]interface{}{
+			"daemon":              "not running",
+			"sandbox_backends":    "ready (" + string(cfg.SandboxType) + ")",
+			"web_portal":          "inactive (daemon not running)",
+			"base_infrastructure": "not started",
+		}
+		if jsonOutput {
+			b, _ := json.Marshal(base)
+			fmt.Println(string(b))
+			return
+		}
+		fmt.Println("daemon is not running")
+		return
+	}
+
+	// Prefer daemon-computed health (no per-poll hub registration from CLI).
+	if healthResp, err := sendSocketRequest("health.status", nil, true); err == nil && healthResp.OK && healthResp.Data != nil {
+		if m, ok := healthResp.Data.(map[string]interface{}); ok {
+			printStatusFromHealth(m, true)
+			return
+		}
+	}
+
+	// Fallback when socket unavailable (older daemon or transient dial issue).
+	base := computeHealthSnapshot(nil)
+	courtCount := 0
+	if vmsResp, err := sendSocketRequest("vm.list", nil, false); err == nil && vmsResp.OK && vmsResp.Data != nil {
+		if arr, ok := vmsResp.Data.([]interface{}); ok {
+			for _, item := range arr {
+				if m, ok := item.(map[string]interface{}); ok {
+					id := getMapString(m, "id", "ID")
+					if strings.HasPrefix(id, "court-persona-") {
+						courtCount++
+					}
+				}
+			}
+		}
+	}
+	base["court_personas_online"] = courtCount
+	if courtCount >= 7 {
+		base["base_infrastructure"] = "ready (AegisHub + Network Boundary + Store + Web Portal)"
+		base["collab"] = "ready (channels + PM + roles available via Store)"
+		base["store_collab_ready"] = true
+	}
+	printStatusFromHealth(base, true)
 }
 
 // dlog prints copious debug output both to stderr (so it is visible immediately
@@ -1489,6 +1497,10 @@ func expandPath(path string) string {
 // Used for enriched CLI <-> daemon communication (6.1.2+).
 // Security: small fixed buffers, no user-controlled data in op beyond allowlist in handler, 5s implicit via caller.
 func sendSocketRequest(op string, args map[string]string, useJSON bool) (SocketResponse, error) {
+	return sendSocketRequestWithTimeout(op, args, useJSON, 5*time.Second)
+}
+
+func sendSocketRequestWithTimeout(op string, args map[string]string, useJSON bool, timeout time.Duration) (SocketResponse, error) {
 	addr := socketPath
 	if !isAbstractSocket(addr) {
 		addr = expandPath(addr)
@@ -1500,12 +1512,8 @@ func sendSocketRequest(op string, args map[string]string, useJSON bool) (SocketR
 	}
 	defer conn.Close()
 
-	// Hard deadline on the socket so that status / vm list / other CLI commands
-	// never hang indefinitely even if a handler is slow (e.g. during heavy
-	// base VM prep before the lock refactor, or under I/O load). 5s is generous
-	// for local unix socket + small responses; status already has its own 2.5s
-	// store probe. This satisfies "aegis status never hangs".
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// Hard deadline on the socket so CLI commands never hang indefinitely.
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	req := SocketRequest{
 		Op:   op,
@@ -1873,6 +1881,8 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			"vm.list": true, "vm list": true,
 			"vm.logs": true,
 			"vm.boot_metrics": true,
+			"health.status": true,
+			"orchestrator.ensure_role": true,
 			"stop":    true,
 			"restart": true,
 			"status":  true,
@@ -2006,6 +2016,26 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 				os.Exit(0)
 			}()
 			return
+		case "health.status":
+			resp.Data = computeHealthSnapshot(orch)
+		case "orchestrator.ensure_role":
+			role := req.Args["role"]
+			channel := req.Args["channel"]
+			if role == "" {
+				resp = SocketResponse{OK: false, Error: "missing required arg 'role'"}
+			} else {
+				id, err := orch.EnsureRoleAgent(context.Background(), role, channel)
+				if err != nil {
+					resp = SocketResponse{OK: false, Error: err.Error()}
+				} else {
+					startGuestHubBridge(id)
+					if channel != "" {
+						addPayload := map[string]interface{}{"channel_id": channel, "role": role}
+						_, _ = sendToComponentViaHubContext(context.Background(), "store", "channel.add_member", addPayload)
+					}
+					resp.Data = map[string]interface{}{"id": id, "role": role, "channel": channel}
+				}
+			}
 		case "status":
 			vms, _ := orch.ListVMs(context.Background())
 			resp.Data = map[string]interface{}{
@@ -2108,6 +2138,26 @@ func getMapString(m map[string]interface{}, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func getMapInt(m map[string]interface{}, key string) int {
+	val, ok := m[key]
+	if !ok || val == nil {
+		return 0
+	}
+	switch n := val.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+	}
+	return 0
 }
 
 // --- VM Observability Helpers (Phase 0 + Phase 1) ---
@@ -2535,6 +2585,10 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 	if chID == "" {
 		chID = "plan-demo"
 	}
+	// Ensure the channel exists before ensure/add_member/post (store channel.post is no-op if missing).
+	if chData, err := sendToComponentViaHub("store", "channel.get", map[string]string{"id": chID}); err != nil || chData == nil {
+		_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": chID})
+	}
 	// 1. Ensure the project-manager role (starts the PM VM with channel attachment).
 	// Use retry for robustness against transient hub/receiver reply latency (e.g. right after
 	// base/Court boot when many internal registrations are happening, or first receiver Receive
@@ -2546,49 +2600,59 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 	}
 	var err error
 	var ensureResp interface{}
-	for attempt := 0; attempt < 6; attempt++ {
-		ensureResp, err = sendToComponentViaHub("daemon-orchestrator", "ensure.role", ensurePayload)
-		if err == nil {
-			break
+	// Prefer daemon socket (avoids hub RPC race on daemon-orchestrator shared connection).
+	sockResp, sockErr := sendSocketRequestWithTimeout("orchestrator.ensure_role", map[string]string{
+		"role":    "project-manager",
+		"channel": chID,
+	}, false, 90*time.Second)
+	if sockErr == nil && sockResp.OK && sockResp.Data != nil {
+		ensureResp = sockResp.Data
+	} else {
+		for attempt := 0; attempt < 3; attempt++ {
+			ensureResp, err = sendToComponentViaHub("daemon-orchestrator", "ensure.role", ensurePayload)
+			if err == nil {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(1+attempt) * 2 * time.Second)
+			}
 		}
-		if attempt < 5 {
-			time.Sleep(time.Duration(1+attempt) * 2 * time.Second)
+		if err != nil {
+			if sockErr != nil {
+				err = sockErr
+			} else if sockResp.Error != "" {
+				err = fmt.Errorf("%s", sockResp.Error)
+			}
+			fmt.Printf("pm ensure error: %v\n", err)
+			return
 		}
-	}
-	if err != nil {
-		fmt.Printf("pm ensure error: %v\n", err)
-		return
 	}
 	fmt.Printf("Ensured project-manager for channel %s\n", chID)
-	// Send the user.goal to the base "project-manager" name that the guest PM binary actually
-	// registers under (see cmd/project-manager/main.go: uniqueSource := "project-manager").
-	// The channel is passed in the payload so the receiving PM knows which channel/context
-	// to post the plan to and which roles to ensure with channel= attachment.
-	// Using a channel-specific long name as destination previously caused ERR_DESTINATION_NOT_FOUND
-	// even when the host listed the role as running (guest registers under the base name).
-	// This makes pm goal delivery reliable for both generic and channel-specific on-demand PMs.
+	// Each ensured PM registers on the hub as its VM id (bootargs.ComponentID), e.g.
+	// project-manager-plan-demo-e2e-llm. user.goal must target that id when multiple PMs
+	// are running (isolation E2E, other channels); the legacy alias "project-manager" would
+	// collide and route to whichever PM re-registered last.
 	roleTarget := "project-manager"
 	if ensureResp != nil {
 		if m, ok := ensureResp.(map[string]interface{}); ok {
-			if id, ok := m["id"].(string); ok && id != "" {
+			if id, ok := m["id"].(string); ok && strings.TrimSpace(id) != "" {
 				roleTarget = id
-			} else if name, ok := m["name"].(string); ok && name != "" {
-				roleTarget = name
 			}
-		} else if s, ok := ensureResp.(string); ok && s != "" {
-			roleTarget = s
 		}
 	}
-	// Give PM time to boot and register (short wait, per plan)
-	time.Sleep(20 * time.Second)
+	// Brief wait for on-demand PM boot + guest hub bridge registration (E2E retries if still early).
+	time.Sleep(3 * time.Second)
 	// 2. Send the goal (PM will build plan using getPMPrompt, post to channel, ensure roles)
 	goalPayload := map[string]interface{}{
 		"goal":    goalText,
 		"channel": chID,
 	}
-	_, err = sendToComponentViaHub(roleTarget, "user.goal", goalPayload)
+	goalCtx, goalCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer goalCancel()
+	_, err = sendToComponentViaHubContext(goalCtx, roleTarget, "user.goal", goalPayload)
 	if err != nil {
 		fmt.Printf("pm goal error: %v\n", err)
+		fmt.Printf("(ensure succeeded; channel poll / E2E may still observe async PM post)\n")
 		return
 	}
 	fmt.Printf("Sent goal to %s for channel %s\n", roleTarget, chID)
@@ -4505,6 +4569,7 @@ func startBaseInfrastructure() error {
 	}
 	// Give hub a moment to listen and load ACLs.
 	time.Sleep(250 * time.Millisecond)
+	_ = getDaemonInternalHubClient() // (re)init persistent client now that hub is listening
 
 	// Register with orchestrator for vm list + watchdog (even though aux/child).
 	if orchestrator != nil {
@@ -4538,6 +4603,7 @@ func startBaseInfrastructure() error {
 	}
 	logrus.Info("Started real Firecracker microVM for network-boundary")
 	startGuestHubBridge("network-boundary")
+	startOllamaGuestBridge("network-boundary")
 
 	// 4. Store VM (persistent state, timers, git remote, audit).
 	// MUST run as real Firecracker microVM per paranoid security model.
@@ -4599,6 +4665,10 @@ func startBaseInfrastructure() error {
 			logrus.Warnf("Store VM did not become responsive within budget after launch (collab features/channels will retry; check fc-store-*-console.log and guest hub bridge): %v", err)
 			return
 		}
+		storeCollabReady.Store(true)
+		storeCollabReadyMu.Lock()
+		storeCollabReadyAt = time.Now()
+		storeCollabReadyMu.Unlock()
 		logrus.Info("Store is up and responsive to hub requests")
 
 		// Decoupled auto-defaults: after the Store readiness gate (not inside the
@@ -5172,6 +5242,8 @@ func startOrchestratorCommandReceiver() {
 				resp := map[string]interface{}{"id": id}
 				if err != nil {
 					resp = map[string]interface{}{"error": err.Error()}
+				} else {
+					startGuestHubBridge(id)
 				}
 				// Auto-add the ensured role as participant in the channel (E2E visibility, per plan)
 				// Use the receiver's *persistent* client (registered as daemon-orchestrator) for the

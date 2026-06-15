@@ -450,6 +450,10 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	defer conn.Close()
 	timing.RecordPhase("hub_dialed")
 
+	if bootargs.UseHubVsock() {
+		startOllamaInvertBridge()
+	}
+
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
 	var connMutex sync.Mutex
@@ -870,46 +874,12 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				break
 			}
 
-			host := ollamaBackendHost()
-			target := "http://" + host + endpoint
-			ollamaReq := map[string]interface{}{
-				"model":  model,
-				"prompt": prompt,
-				"stream": false,
-			}
-			bodyBytes, _ := json.Marshal(ollamaReq)
-			httpReq, err := http.NewRequest("POST", target, strings.NewReader(string(bodyBytes)))
-			if err != nil {
-				response.Command = "error"
-				response.Payload = "failed to build ollama request: " + err.Error()
-				break
-			}
-			httpReq.Header.Set("Content-Type", "application/json")
-			client := &http.Client{Timeout: 180 * time.Second}
-			httpResp, err := client.Do(httpReq)
+			text, err := callOllamaGenerate(model, prompt, endpoint)
 			if err != nil {
 				response.Command = "error"
 				response.Payload = "ollama request failed: " + err.Error()
+				log.Printf("llm.call ollama request failed: %v", err)
 				break
-			}
-			defer httpResp.Body.Close()
-			respBytes, _ := io.ReadAll(httpResp.Body)
-			if httpResp.StatusCode != 200 {
-				response.Command = "error"
-				response.Payload = fmt.Sprintf("ollama status %d: %s", httpResp.StatusCode, string(respBytes))
-				break
-			}
-
-			// Return the generated text. Caller (NewRealLLMCaller) expects Payload["response"]
-			// to be either the raw JSON or a string containing the text (it will unmarshal to
-			// pull inner "response" if present, matching the historical ollama shape).
-			// We try to extract the clean text for nicer PM plans; fall back to raw body.
-			text := string(respBytes)
-			var ollamaOut map[string]interface{}
-			if json.Unmarshal(respBytes, &ollamaOut) == nil {
-				if r, ok := ollamaOut["response"].(string); ok && r != "" {
-					text = r
-				}
 			}
 			response.Command = "llm.call.response"
 			response.Payload = map[string]interface{}{"response": text}

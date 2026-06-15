@@ -279,8 +279,53 @@ rules:
     - user.goal
     - chat.message
 
-# daemon-internal-N (and daemon-internal-1 etc.): used by all host-side internal hub traffic
-# from the CLI (./bin/aegis status, channel list/get/post, etc.) and from daemon bg code
+# aegis-cli-internal-*: one persistent hub client per short-lived CLI process (unique per pid).
+# Replaces per-send daemon-internal-N ephemeral registrations during E2E polls.
+- source: "aegis-cli-internal*"
+  destination: store
+  commands:
+    - channel.*
+    - timer.*
+    - sessions.*
+- source: "aegis-cli-internal*"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+- source: "aegis-cli-internal*"
+  destination: "project-manager*"
+  commands:
+    - user.goal
+    - chat.message
+- source: store
+  destination: "aegis-cli-internal*"
+  commands:
+    - "*"
+# Legacy exact id (older binaries):
+- source: "aegis-cli-internal"
+  destination: store
+  commands:
+    - channel.*
+    - timer.*
+    - sessions.*
+- source: "aegis-cli-internal"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+- source: "aegis-cli-internal"
+  destination: "project-manager*"
+  commands:
+    - user.goal
+    - chat.message
+- source: store
+  destination: "aegis-cli-internal"
+  commands:
+    - "*"
+
+# daemon-internal: persistent client for the long-lived daemon process (bg probes, portal
+# bridge, setupDefaultMainChannelAndMembers, SSE/dashboard, etc.). CLI uses aegis-cli-internal.
+# daemon-internal-N (legacy ephemeral fallback; should no longer appear after persistent clients):
 # (the readiness probe in startBase, setupDefaultMainChannelAndMembers for auto "main",
 # status store probe, portal bridge internal sends, dashboard/SSE stats (timer.list + sessions.list + channel.list),
 # chat sessions host, etc.). Each CLI invocation starts its local counter, so you often see "daemon-internal-1".

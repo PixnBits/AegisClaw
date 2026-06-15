@@ -37,7 +37,8 @@ var pendingRPC = struct {
 func isEphemeralHubClient(id string) bool {
 	return id == "aegis-daemon-temp" ||
 		strings.HasPrefix(id, "aegis-daemon-temp-") ||
-		strings.HasPrefix(id, "daemon-temp-")
+		strings.HasPrefix(id, "daemon-temp-") ||
+		strings.HasPrefix(id, "aegis-cli-internal") // CLI hub RPC (one reader loop per process)
 }
 
 func registerPendingRPC(requesterID string) chan Message {
@@ -503,6 +504,12 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				encoder.Encode(response)
 			}
 		} else {
+			// Correlate replies (store channel.*, memory.*, PM response, etc.) with in-flight
+			// hub RPC waiters. Without this, a store reply is mistaken for a new outbound RPC
+			// from store and the original caller (aegis-cli-internal, daemon-internal) hangs.
+			if deliverPendingRPC(msg.Destination, msg) {
+				continue
+			}
 			// One-way replies (agent poll/chat responses) vs synchronous RPC (memory.get_context, llm.call).
 			if isOneWayHubReply(msg.Command) {
 				forwardReplyToRequester(msg)
@@ -574,8 +581,9 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 
 	rpcTimeout := 120 * time.Second
 	switch msg.Command {
-	case "chat.message", "user.turn":
-		rpcTimeout = 300 * time.Second
+	case "chat.message", "user.turn", "user.goal":
+		// user.goal (PM plan generation via real LLM) can exceed 120s on cold on-demand PM boot + Ollama.
+		rpcTimeout = 600 * time.Second
 	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
 		rpcTimeout = 8 * time.Second
 	}

@@ -91,6 +91,18 @@ func VMPrivateKeyPath() string {
 	return "/etc/aegis/vmkey"
 }
 
+// DefaultModel returns the LLM model name for guest components (project-manager, agents).
+// Host daemon injects aegis.default_model= on the kernel cmdline from AEGIS_DEFAULT_MODEL.
+func DefaultModel(fallback string) string {
+	if v := os.Getenv("AEGIS_DEFAULT_MODEL"); v != "" {
+		return v
+	}
+	if v := parseCmdlineKV("aegis.default_model="); v != "" {
+		return v
+	}
+	return fallback
+}
+
 // BootTimingEnabled returns whether detailed boot-time instrumentation should
 // be collected and emitted. It is activated by either:
 //   - AEGIS_BOOT_TIMING=1 in the environment (host daemon or exported by /init

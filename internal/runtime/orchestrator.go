@@ -278,6 +278,19 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
 			fmt.Sprintf(" aegis.component_id=%s aegis.paired_agent_id=agent-%s aegis.hub_vsock=1", id, session))
 	}
+	if vmType == "project-manager" || id == "project-manager" || strings.HasPrefix(id, "project-manager-") {
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+			fmt.Sprintf(" aegis.component_id=%s aegis.hub_vsock=1", id))
+		if model := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); model != "" {
+			vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+				" aegis.default_model=" + model)
+		}
+	}
+	// Dynamic on-demand roles (coder/tester etc.) reuse agent.img but keep a non-agent- id.
+	if vmType == "agent" && !strings.HasPrefix(id, "agent-") {
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+			fmt.Sprintf(" aegis.component_id=%s aegis.hub_vsock=1", id))
+	}
 	if vmType == "store" || id == "store" || vmType == "network-boundary" || id == "network-boundary" {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.hub_vsock=1")
 	}
@@ -948,6 +961,7 @@ var initShippingComponents = map[string]bool{
 	"store":            true,
 	"network-boundary": true,
 	"agent":            true,
+	"project-manager":  true,
 	"memory":           true,
 	"court-scribe":     true,
 	"court-persona":    true,
@@ -959,7 +973,7 @@ func componentShipsInit(vmType, id string) bool {
 	if initShippingComponents[vmType] || initShippingComponents[id] {
 		return true
 	}
-	return strings.HasPrefix(id, "agent-") || strings.HasPrefix(id, "memory-")
+	return strings.HasPrefix(id, "agent-") || strings.HasPrefix(id, "memory-") || strings.HasPrefix(id, "project-manager-")
 }
 
 // criticalTypes defines the component types that the watchdog considers
