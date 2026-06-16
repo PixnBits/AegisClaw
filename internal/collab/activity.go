@@ -29,6 +29,26 @@ func IsSelfPost(memberSourceID, from string) bool {
 	return false
 }
 
+// PayloadContentString extracts channel message text from channel.activity payloads.
+// Store may persist content as a string or nested map after portal/relay paths.
+func PayloadContentString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		if s, ok := m["content"].(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// IsCorruptedMapString reports Go fmt %v map dumps mistakenly posted as channel content.
+func IsCorruptedMapString(s string) bool {
+	trim := strings.TrimSpace(s)
+	return strings.HasPrefix(trim, "map[") && strings.Contains(trim, "channel_id:")
+}
+
 // IsHumanPoster returns true for user-facing post sources (CLI, portal, etc.).
 func IsHumanPoster(from string) bool {
 	switch strings.ToLower(strings.TrimSpace(from)) {

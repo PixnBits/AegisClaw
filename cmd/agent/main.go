@@ -321,7 +321,7 @@ func processAgentChannelActivity(client hubclient.Client, msg hubclient.Message,
 	payload, _ := msg.Payload.(map[string]interface{})
 	chID, _ := payload["channel_id"].(string)
 	from, _ := payload["from"].(string)
-	userContent, _ := payload["content"].(string)
+	userContent := collab.PayloadContentString(payload["content"])
 	if chID == "" {
 		chID = "main"
 	}

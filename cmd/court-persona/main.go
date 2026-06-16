@@ -263,7 +263,7 @@ func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueS
 	payload, _ := msg.Payload.(map[string]interface{})
 	chID, _ := payload["channel_id"].(string)
 	from, _ := payload["from"].(string)
-	userContent, _ := payload["content"].(string)
+	userContent := collab.PayloadContentString(payload["content"])
 	if chID == "" {
 		chID = "main"
 	}
@@ -356,7 +356,7 @@ func callRealLLMViaHub(ctx context.Context, hub hubclient.Client, prompt string)
 			return r, nil
 		}
 	}
-	return fmt.Sprintf("%v", resp.Payload), nil
+	return "", fmt.Errorf("unexpected llm.call response shape: %T", resp.Payload)
 }
 
 // parseStructuredCourtResponse enforces the exact output contract from

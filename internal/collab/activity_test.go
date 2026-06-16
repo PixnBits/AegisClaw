@@ -56,6 +56,22 @@ func TestActivityHints(t *testing.T) {
 	}
 }
 
+func TestPayloadContentString(t *testing.T) {
+	if got := PayloadContentString("hello"); got != "hello" {
+		t.Fatalf("string: %q", got)
+	}
+	nested := map[string]interface{}{"content": "nested text"}
+	if got := PayloadContentString(nested); got != "nested text" {
+		t.Fatalf("nested: %q", got)
+	}
+}
+
+func TestIsCorruptedMapString(t *testing.T) {
+	if !IsCorruptedMapString("map[channel_id:main content:foo]") {
+		t.Fatal("expected corrupted detection")
+	}
+}
+
 func TestShouldPMMonitorHumanPost(t *testing.T) {
 	if !ShouldPMMonitor("user", "status update please") {
 		t.Fatal("PM monitor hint for human posts")

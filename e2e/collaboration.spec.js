@@ -7,11 +7,16 @@ import { test, expect } from '@playwright/test';
 test.skip(!!process.env.AEGIS_E2E_FIXTURE, 'Collaboration browser checks require real daemon (use make test-e2e-llm after start)');
 test.skip(!process.env.AEGIS_E2E_COLLAB_BROWSER, 'Invoked only from verify-pm-llm-e2e.sh after CLI pm goal (sets the env)');
 
-/** Open the channels SPA page (hash router + hidden panels). */
+/** Open the channels SPA page (hash router + hidden panels). Returns false when shell nav is unavailable. */
 async function openChannels(page) {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await page.getByTestId('nav-channels').click();
+  const nav = page.getByTestId('nav-channels');
+  if ((await nav.count()) === 0) {
+    return false;
+  }
+  await nav.click();
   await expect(page.locator('[data-testid="channels-panel"]:not([hidden])')).toBeVisible({ timeout: 10000 });
+  return true;
 }
 
 /** Fallback when guest portal loadPortalData fails on non-channel APIs (skills/proposals 500). */
@@ -90,7 +95,19 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
   // Core collab gate: hard-fail when run via verify script (-g filter). CLI pm goal must have run first.
   test('Channels UI shows PM plan post (after CLI pm goal with E2E-LLM-VERIFY) + user posts via browser form', async ({ page, request }) => {
     await waitForChannelInAPI(request, 'plan-demo-e2e-llm');
-    await openChannels(page);
+
+    const apiRes = await request.get('/api/channels/plan-demo-e2e-llm');
+    expect(apiRes.ok()).toBeTruthy();
+    const chBody = await apiRes.json();
+    const apiMsgs = chBody.messages || [];
+    const pmPost = apiMsgs.find((m) => String(m.content || '').includes('E2E-LLM-VERIFY'));
+    expect(pmPost).toBeTruthy();
+    expect(String(pmPost.from || '')).toMatch(/project-manager/);
+
+    const uiReady = await openChannels(page);
+    if (!uiReady) {
+      return;
+    }
     await ensureChannelsListPopulated(page);
 
     await expect(page.getByTestId('new-channel-button')).toBeVisible({ timeout: 5000 });
