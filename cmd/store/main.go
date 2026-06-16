@@ -525,6 +525,13 @@ func runStore(cmd *cobra.Command, args []string) {
 
 		mu.Lock()
 		switch msg.Command {
+		case "response", "ack", "error":
+			// Hub RPC correlation frames (e.g. after store→daemon relay). Not store commands.
+			mu.Unlock()
+			continue
+		case "":
+			mu.Unlock()
+			continue
 		// Phase 2.1a: Reconciliation is now real and authoritative in Store VM
 		case "reconcile.expired_grants":
 			expiredAutonomy := ReconcileExpiredAutonomy()
@@ -1290,11 +1297,7 @@ func runStore(cmd *cobra.Command, args []string) {
 			// No timer signal this cycle
 		}
 
-		// Phase 2 enhancement: every Store response is signed with its private key
-		// so AegisHub can verify it (consistent with per-VM key model).
-		signMessage(&response, priv)
-
-		// Tamper-evident Merkle audit log: record state changes.
+		// Tamper-evident Merkle audit log: record state changes (before signing).
 		// In a full impl this would be the canonical Store-owned audit trail.
 		if strings.HasPrefix(msg.Command, "proposal.") ||
 			msg.Command == "court.review_complete" ||
@@ -1311,14 +1314,17 @@ func runStore(cmd *cobra.Command, args []string) {
 			// Attach latest root so clients (Court, Web Portal) can see it
 			if m, ok := response.Payload.(map[string]interface{}); ok {
 				m["merkle_root"] = root
-			} else {
+			} else if msg.Command != "proposal.list" && msg.Command != "proposal.get" {
 				response.Payload = map[string]interface{}{
-					"result":       response.Payload,
-					"merkle_root":  root,
+					"result":      response.Payload,
+					"merkle_root": root,
 				}
 			}
 			saveAuditToFile("audit.json", auditLog)
 		}
+
+		// Phase 2 enhancement: sign after all payload mutations so hub verification succeeds.
+		signMessage(&response, priv)
 
 		err = encoder.Encode(response)
 		if err != nil {

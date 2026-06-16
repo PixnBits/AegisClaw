@@ -70,7 +70,15 @@ func sendToComponentViaHubContext(ctx context.Context, target string, cmd string
 		Payload:     payload,
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	}
-	resp, err := client.Send(ctx, msg)
+	var resp hubclient.Message
+	var err error
+	if sourceID == "daemon-internal" {
+		daemonInternalHubMu.Lock()
+		resp, err = client.Send(ctx, msg)
+		daemonInternalHubMu.Unlock()
+	} else {
+		resp, err = client.Send(ctx, msg)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +180,13 @@ func sendToComponentViaHubRetry(target, cmd string, payload interface{}, maxWait
 	deadline := time.Now().Add(maxWait)
 	delay := 300 * time.Millisecond
 	for {
-		resp, err := sendToComponentViaHub(target, cmd, payload)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("hub: timeout waiting for %s %s", target, cmd)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), remaining)
+		resp, err := sendToComponentViaHubContext(ctx, target, cmd, payload)
+		cancel()
 		if err == nil {
 			return resp, nil
 		}
