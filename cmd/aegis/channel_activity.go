@@ -18,17 +18,19 @@ func fanOutChannelActivity(chID, from, content string) {
 	if chID == "" {
 		return
 	}
-	timeout := channelActivityTimeoutFromEnv()
-	if err := fanOutChannelActivitySync(chID, from, content, timeout); err != nil {
-		log.Printf("channel activity fan-out for %s: %v", chID, err)
-	}
+	go func() {
+		timeout := channelActivityTimeoutFromEnv()
+		if err := fanOutChannelActivitySync(chID, from, content, timeout); err != nil {
+			log.Printf("channel activity fan-out for %s: %v", chID, err)
+		}
+	}()
 }
 
 func fanOutChannelActivitySync(chID, from, content string, perMemberTimeout time.Duration) error {
 	channelActivityFanOutMu.Lock()
 	defer channelActivityFanOutMu.Unlock()
 
-	chData, err := sendToComponentViaHubRetry("store", "channel.get", map[string]interface{}{"channel_id": chID}, 10*time.Second)
+	chData, err := sendToComponentViaEphemeralHubRetry("store", "channel.get", map[string]interface{}{"channel_id": chID}, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("channel.get: %w", err)
 	}
@@ -40,7 +42,7 @@ func fanOutChannelActivitySync(chID, from, content string, perMemberTimeout time
 	// PM is on-demand per channel; boot before fan-out so project-manager-main is hub-ready.
 	for _, role := range roles {
 		if role == "project-manager" {
-			_, _ = sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", map[string]interface{}{
+			_, _ = sendToComponentViaEphemeralHubRetry("daemon-orchestrator", "ensure.role", map[string]interface{}{
 				"role":    "project-manager",
 				"channel": chID,
 			}, 30*time.Second)
@@ -54,10 +56,10 @@ func fanOutChannelActivitySync(chID, from, content string, perMemberTimeout time
 		"from":       from,
 		"content":    content,
 	}
-	deliverToRoles := func(pass string) {
+	deliverToRoles := func(pass string, targetRoles []string) {
 		var wg sync.WaitGroup
 		var errMu sync.Mutex
-		for _, role := range roles {
+		for _, role := range targetRoles {
 			if role == "" || shouldSkipMemberFanOut(role, from) {
 				continue
 			}
@@ -77,9 +79,20 @@ func fanOutChannelActivitySync(chID, from, content string, perMemberTimeout time
 		}
 		wg.Wait()
 	}
-	deliverToRoles("pass1")
-	time.Sleep(2 * time.Second)
-	deliverToRoles("pass2")
+	deliverToRoles("pass1", roles)
+	if len(errs) > 0 {
+		retry := make([]string, 0, len(errs))
+		for _, e := range errs {
+			if idx := strings.Index(e, ":"); idx > 0 {
+				retry = append(retry, strings.TrimSpace(e[:idx]))
+			}
+		}
+		if len(retry) > 0 {
+			errs = nil
+			time.Sleep(2 * time.Second)
+			deliverToRoles("pass2", retry)
+		}
+	}
 	if len(errs) > 0 {
 		return fmt.Errorf("delivery failures (%d): %s", len(errs), strings.Join(errs, "; "))
 	}
@@ -94,7 +107,7 @@ func deliverChannelActivity(ctx context.Context, role, chID string, payload map[
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			_, err := sendToComponentViaHubContext(ctx, dest, "channel.activity", payload)
+			_, err := sendToComponentViaEphemeralHubContext(ctx, dest, "channel.activity", payload)
 			if err == nil {
 				return nil
 			}

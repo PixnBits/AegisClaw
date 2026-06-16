@@ -81,6 +81,14 @@ func sendToComponentViaHubContext(ctx context.Context, target string, cmd string
 		resp, err = client.Send(ctx, msg)
 	}
 	if err != nil {
+		if sourceID == "daemon-internal" {
+			daemonInternalHubMu.Lock()
+			if daemonInternalHubClient != nil {
+				daemonInternalHubClient.Close()
+				daemonInternalHubClient = nil
+			}
+			daemonInternalHubMu.Unlock()
+		}
 		return nil, err
 	}
 	if resp.Command == "error" {
@@ -173,6 +181,57 @@ func dialAndRegisterInternalHubClient(requesterID string) (hubclient.Client, err
 		return nil, fmt.Errorf("register %s: %w", requesterID, err)
 	}
 	return c, nil
+}
+
+var fanoutHubClientSeq uint64
+
+// sendToComponentViaEphemeralHubContext uses a one-shot hub client for parallel fan-out RPCs.
+// The persistent daemon-internal client must not be shared across concurrent channel.activity
+// deliveries (decoder races after ~2 fan-out rounds broke roster E2E).
+func sendToComponentViaEphemeralHubContext(ctx context.Context, target, cmd string, payload interface{}) (interface{}, error) {
+	seq := atomic.AddUint64(&fanoutHubClientSeq, 1)
+	requesterID := fmt.Sprintf("daemon-internal-fanout-%d", seq)
+	client, err := dialAndRegisterInternalHubClient(requesterID)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	msg := hubclient.Message{
+		Source:      requesterID,
+		Destination: target,
+		Command:     cmd,
+		Payload:     payload,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+	resp, err := client.Send(ctx, msg)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Command == "error" {
+		return nil, fmt.Errorf("hub error: %v", resp.Payload)
+	}
+	return resp.Payload, nil
+}
+
+func sendToComponentViaEphemeralHubRetry(target, cmd string, payload interface{}, maxWait time.Duration) (interface{}, error) {
+	deadline := time.Now().Add(maxWait)
+	delay := 300 * time.Millisecond
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), maxWait)
+		resp, err := sendToComponentViaEphemeralHubContext(ctx, target, cmd, payload)
+		cancel()
+		if err == nil {
+			return resp, nil
+		}
+		if time.Now().After(deadline) || !isHubDestinationNotFound(err) {
+			return nil, err
+		}
+		time.Sleep(delay)
+		if delay < 2*time.Second {
+			delay *= 2
+		}
+	}
 }
 
 // sendToComponentViaHubRetry retries when the target has not registered on AegisHub yet
@@ -1897,6 +1956,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			"vm.logs": true,
 			"vm.boot_metrics": true,
 			"health.status": true,
+			"channel.fanout": true,
 			"orchestrator.ensure_role": true,
 			"stop":    true,
 			"restart": true,
@@ -2033,6 +2093,21 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			return
 		case "health.status":
 			resp.Data = computeHealthSnapshot(orch)
+		case "channel.fanout":
+			chID := req.Args["channel_id"]
+			from := req.Args["from"]
+			content := req.Args["content"]
+			if chID == "" || content == "" {
+				resp = SocketResponse{OK: false, Error: "missing required arg 'channel_id' or 'content'"}
+			} else if from == "" {
+				from = "user"
+			}
+			if !collab.IsHumanPoster(from) {
+				resp.Data = map[string]string{"status": "skipped", "reason": "not a human poster"}
+			} else {
+				go fanOutChannelActivity(chID, from, content)
+				resp.Data = map[string]string{"status": "fanout_started", "channel_id": chID}
+			}
 		case "orchestrator.ensure_role":
 			role := req.Args["role"]
 			channel := req.Args["channel"]
@@ -2512,7 +2587,11 @@ func runChannelPost(cmd *cobra.Command, args []string) {
 		fmt.Printf("channel post error: %v\n", err)
 		return
 	}
-	// Fan-out is triggered by store → daemon-orchestrator relay for human posters only.
+	_, _ = sendSocketRequest("channel.fanout", map[string]string{
+		"channel_id": chID,
+		"from":       "user",
+		"content":    content,
+	}, true)
 	if jsonOutput {
 		b, _ := json.Marshal(data)
 		fmt.Println(string(b))
@@ -5178,12 +5257,21 @@ func startOrchestratorCommandReceiver() {
 			if err != nil {
 				break
 			}
-			if msg.Command == "channel.relay_activity" {
+			if msg.Command == "channel.relay_activity" || msg.Command == "channel.fanout" {
 				payload, _ := msg.Payload.(map[string]interface{})
 				chID, _ := payload["channel_id"].(string)
 				from, _ := payload["from"].(string)
 				content := collab.PayloadContentString(payload["content"])
 				go fanOutChannelActivity(chID, from, content)
+				if msg.Command == "channel.fanout" {
+					_ = client.Reply(context.Background(), hubclient.Message{
+						Source:      requesterID,
+						Destination: msg.Source,
+						Command:     "response",
+						Payload:     map[string]interface{}{"status": "fanout_started", "channel_id": chID},
+						Timestamp:   time.Now().UTC().Format(time.RFC3339),
+					})
+				}
 				continue
 			}
 			if msg.Command == "channel.updated" {

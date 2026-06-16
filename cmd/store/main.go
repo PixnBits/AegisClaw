@@ -20,7 +20,6 @@ import (
 	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/chatstore"
-	"AegisClaw/internal/collab"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 
@@ -967,6 +966,7 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.post":
 			payload := msg.Payload.(map[string]interface{})
 			chID := payload["channel_id"].(string)
+
 			entry := map[string]interface{}{
 				"ts":      response.Timestamp,
 				"from":    payload["from"], // user, pm, @role, agent-id etc.
@@ -985,25 +985,6 @@ func runStore(cmd *cobra.Command, args []string) {
 				posted = true
 			}
 			if posted {
-				fromStr, _ := payload["from"].(string)
-				// Only fan-out human/user posts. Agent replies (court-persona-*, PM) must not
-				// re-trigger relay or we get an exponential hub/store storm during roster intros.
-				if collab.IsHumanPoster(fromStr) {
-					relayMsg := Message{
-						Source:      "store",
-						Destination: "daemon-orchestrator",
-						Command:     "channel.relay_activity",
-						Payload: map[string]interface{}{
-							"channel_id": chID,
-							"from":       payload["from"],
-							"content":    payload["content"],
-						},
-						Timestamp: response.Timestamp,
-						Signature: "",
-					}
-					signMessage(&relayMsg, priv)
-					_ = encoder.Encode(relayMsg)
-				}
 				updateMsg := Message{
 					Source:      "store",
 					Destination: "daemon-orchestrator",

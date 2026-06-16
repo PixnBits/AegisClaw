@@ -525,6 +525,8 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 					destComponent.Encoders.Mutex.Lock()
 					_ = destComponent.Encoders.Encoder.Encode(msg)
 					destComponent.Encoders.Mutex.Unlock()
+				} else {
+					debugLog("hub", fmt.Sprintf("channel.relay_activity dropped: %s not registered", msg.Destination))
 				}
 				continue
 			}
@@ -537,6 +539,13 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 					_ = destComponent.Encoders.Encoder.Encode(msg)
 					destComponent.Encoders.Mutex.Unlock()
 				}
+				continue
+			}
+			// Store outbound frames (relay, update, posted) must never enter forwardHubRPC on
+			// the store connection reader. Mistaking them for new RPCs blocks this goroutine for
+			// RPC timeouts and stalls subsequent channel.relay_activity fan-out (E2E portal/CLI).
+			if componentID == "store" && msg.Source == "store" {
+				debugLog("hub", fmt.Sprintf("store outbound ignored cmd=%q dest=%s", msg.Command, msg.Destination))
 				continue
 			}
 			reply := forwardHubRPC(componentID, msg)

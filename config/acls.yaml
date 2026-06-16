@@ -200,6 +200,10 @@ rules:
   commands:
     - channel.relay_activity
     - channel.*
+- source: web-portal
+  destination: "daemon-orchestrator"
+  commands:
+    - channel.fanout
 - source: "daemon-orchestrator"
   destination: court-persona-*
   commands:

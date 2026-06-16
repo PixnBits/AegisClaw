@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/portalbridge"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/transport/hubclient"
@@ -87,7 +88,18 @@ func handlePortalBridgeAction(command string, payload interface{}) (interface{},
 	dest := portalbridge.Destination(command)
 	switch dest {
 	case "store":
-		return sendToComponentViaHub("store", command, payload)
+		result, err := sendToComponentViaHub("store", command, payload)
+		if err == nil && command == "channel.post" {
+			if m, ok := payload.(map[string]interface{}); ok {
+				chID, _ := m["channel_id"].(string)
+				from, _ := m["from"].(string)
+				content := collab.PayloadContentString(m["content"])
+				if chID != "" && collab.IsHumanPoster(from) {
+					go fanOutChannelActivity(chID, from, content)
+				}
+			}
+		}
+		return result, err
 	case "agent":
 		return handlePortalChatAction(command, payload)
 	default:

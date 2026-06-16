@@ -125,6 +125,12 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Trigger roster replies (web-portal → hub → store only persists; fan-out via orchestrator).
+		_, _ = s.fetchRaw(ctx, "channel.fanout", map[string]interface{}{
+			"channel_id": parts[0],
+			"from":       from,
+			"content":    postReq.Content,
+		})
 		s.initSTOMP()
 		s.PublishChannelSTOMP(parts[0], from, postReq.Content)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
