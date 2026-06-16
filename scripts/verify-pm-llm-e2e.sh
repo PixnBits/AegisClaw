@@ -691,6 +691,17 @@ fi
 # Isolation/scoping property test (invariant: channel posts are scoped; post to one channel does not appear in another.
 # This is a basic property check for the Store/ channel authority in the paranoid model.
 echo
+if [ "${AEGIS_E2E_ROSTER:-1}" = "1" ]; then
+  echo "=== Channel roster intro E2E (main channel, PM + 7 Court personas) ==="
+  if bash scripts/verify-channel-roster-e2e.sh; then
+    echo "✓ PASS: roster intro E2E (all agents responded on main channel)"
+  else
+    echo "✗ FAIL: roster intro E2E (see verify-channel-roster-e2e.sh output above)"
+    ASSERT_RC=1
+  fi
+  echo
+fi
+
 echo "=== Isolation/scoping invariant test (posts do not leak across channels) ==="
 TEMP_CH="e2e-isolation-$$"
 ./bin/aegis channel create "$TEMP_CH" 2>/dev/null || true

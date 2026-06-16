@@ -5,7 +5,7 @@ CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.
 ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
 AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-tcb test-chaos sbom smoke help doctor setup boot-metrics
+.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-roster test-e2e-portal-channel test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
 
 # Default target
 all: build
@@ -266,6 +266,21 @@ test-e2e-llm-isolated: e2e-clean
 	@echo "=== Isolated PM+LLM+Channels E2E (FORCE_ISOLATED=1 after e2e-clean) ==="
 	FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL="$${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
 
+# Channel roster intro: PM + 7 Court personas reply to intro question on main channel.
+test-e2e-roster:
+	@echo "=== Channel roster intro E2E (PM + Court personas on main channel) ==="
+	bash scripts/verify-channel-roster-e2e.sh
+
+# Portal channel fan-out: post via Web Portal REST (operator/user) and assert agent replies.
+test-e2e-portal-channel:
+	@echo "=== Portal channel fan-out E2E (PM + Court personas via :8080/api/channels) ==="
+	bash scripts/verify-channel-portal-e2e.sh
+
+# Portal SPA API contract + latency (dashboard, monitoring, skills, proposals, channels, STOMP).
+test-e2e-portal-api:
+	@echo "=== Portal SPA API contract + latency E2E ==="
+	bash scripts/verify-portal-api-e2e.sh
+
 # TCB-specific tests (7.5.7). Additive target.
 # Runs unit tests for security + runtime + cmd/aegis TCB surface + skeleton compliance tests.
 # Use with -tags=integration for fuller daemon lifecycle checks (requires sudo in some cases).
@@ -375,7 +390,9 @@ help:
 	@echo "  make test-e2e           Browser E2E vs real daemon + microVMs (requires running daemon)"
 	@echo "  make test-e2e-contract  Thin-portal contract tests only (no daemon; AEGIS_E2E_FIXTURE=1)"
 	@echo "  make test-e2e-llm       Real unmocked PM+LLM+channels E2E (CLI pm goal + channel get + browser UI + status check; hits Ollama, no fixtures; see script)"
-	@echo "  make test-e2e-llm-isolated  Same as test-e2e-llm but FORCE_ISOLATED=1 after e2e-clean (clean cold-start gate)"
+	@echo "  make test-e2e-roster       PM + 7 Court personas intro replies on main channel (automatic fan-out)"
+	@echo "  make test-e2e-portal-channel  Portal POST /api/channels fan-out + agent replies (browser UI check)"
+	@echo "  make test-e2e-portal-api     Portal SPA APIs: contract, latency budget, STOMP path"
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
 	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"
 	@echo "  make sbom               SBOM + supply-chain (7.8: CycloneDX or fallback + cosign hooks)"

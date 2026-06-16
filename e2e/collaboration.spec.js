@@ -125,7 +125,7 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
       await fetch(`/api/channels/${id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: 'operator', content: text }),
+        body: JSON.stringify({ from: 'user', content: text }),
       });
       const fresh = await fetch(`/api/channels/${id}`, { headers: { Accept: 'application/json' } }).then((r) => r.json());
       const msgEl = document.querySelector('[data-testid="channel-messages"]');
