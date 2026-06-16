@@ -160,11 +160,21 @@ rules:
   commands:
     - proposal.get
     - proposal.data
+    - channel.post
+    - channel.*
 - source: court-persona-*
   destination: court-scribe
   commands:
     - scribe.submit_vote
     - scribe.*
+- source: court-persona-*
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: court-persona-*
+  commands:
+    - llm.*
 
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
 - source: store
@@ -184,6 +194,63 @@ rules:
   commands:
     - scribe.notify_review
     - scribe.*
+# Channel activity fan-out (Store relays every channel.post → daemon-orchestrator → members)
+- source: store
+  destination: "daemon-orchestrator"
+  commands:
+    - channel.relay_activity
+    - channel.*
+- source: "daemon-orchestrator"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-orchestrator"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
+# Legacy CLI/daemon direct delivery (if relay bypassed during tests)
+- source: "aegis-cli-internal*"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "aegis-cli-internal"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-internal*"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-internal-*"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "aegis-cli-internal*"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "aegis-cli-internal"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-internal*"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-internal-*"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
 
 # Teams (lightweight collaboration - Phase 5 slice)
 # Web Portal and CLI can create/list teams and send messages
@@ -217,6 +284,12 @@ rules:
     - channel.join
     - channel.post
     - channel.*
+    - skill.*
+    - proposal.*
+- source: store
+  destination: web-portal
+  commands:
+    - "*"
 - source: aegis
   destination: store
   commands:
@@ -339,12 +412,16 @@ rules:
     - channel.*
     - timer.*
     - sessions.*
+    - skill.*
+    - proposal.*
 - source: "daemon-internal-*"
   destination: store
   commands:
     - channel.*
     - timer.*
     - sessions.*
+    - skill.*
+    - proposal.*
 # Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
 # clients for the commands above (responses may carry the original command name in audit; observed
 # as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).

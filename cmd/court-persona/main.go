@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/eventbus"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
@@ -221,6 +222,91 @@ func analyzeProposal(persona, proposalDesc string, hubClient hubclient.Client) (
 	return vote, reasoning
 }
 
+// generateChannelIntro produces a short name + role description for channel roster prompts.
+func generateChannelIntro(persona, userQuestion string, hubClient hubclient.Client) string {
+	display := collab.DisplayName("court-persona-" + persona)
+	// Broadcast/roster prompts: use deterministic fallback so channel posts succeed
+	// even when LLM via network-boundary is unavailable (common in Court microVMs).
+	if collab.IsBroadcast(userQuestion) {
+		return collab.FallbackIntro("court-persona-" + persona)
+	}
+	prompt := getPersonaPrompt(persona) + "\n\nA user asked in a collaboration channel:\n" + userQuestion +
+		"\n\nReply in 2-4 sentences. State your name as \"" + display + "\" and briefly describe what you do on this team. " +
+		"Do NOT use VOTE format or proposal review structure — this is a friendly introduction only."
+
+	text, err := callRealLLMViaHub(context.Background(), hubClient, prompt)
+	if err != nil || strings.TrimSpace(text) == "" {
+		log.Printf("court-persona-%s: channel intro LLM failed (%v), using fallback", persona, err)
+		return collab.FallbackIntro("court-persona-" + persona)
+	}
+	return strings.TrimSpace(text)
+}
+
+func postChannelIntro(hcl hubclient.Client, uniqueSource, chID, content string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, err := hcl.Send(ctx, hubclient.Message{
+		Source:      uniqueSource,
+		Destination: "store",
+		Command:     "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"from":       uniqueSource,
+			"content":    content,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	return err
+}
+
+func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueSource, persona string) {
+	payload, _ := msg.Payload.(map[string]interface{})
+	chID, _ := payload["channel_id"].(string)
+	from, _ := payload["from"].(string)
+	userContent, _ := payload["content"].(string)
+	if chID == "" {
+		chID = "main"
+	}
+
+	shouldRespond, reason := collab.ShouldRespondToActivity(uniqueSource, from, userContent)
+	if !shouldRespond {
+		_ = hcl.Reply(context.Background(), hubclient.Message{
+			Source:      uniqueSource,
+			Destination: msg.Source,
+			Command:     "response",
+			Payload: map[string]interface{}{
+				"status":     "ignored",
+				"reason":     string(reason),
+				"channel_id": chID,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		fmt.Printf("Persona %s ignored channel activity in %s (%s)\n", persona, chID, reason)
+		return
+	}
+
+	_ = hcl.Reply(context.Background(), hubclient.Message{
+		Source:      uniqueSource,
+		Destination: msg.Source,
+		Command:     "response",
+		Payload: map[string]interface{}{
+			"status":     "delivered",
+			"reason":     string(reason),
+			"channel_id": chID,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	go func() {
+		intro := generateChannelIntro(persona, userContent, hcl)
+		if err := postChannelIntro(hcl, uniqueSource, chID, intro); err != nil {
+			log.Printf("court-persona-%s: channel.post failed: %v", persona, err)
+			return
+		}
+		fmt.Printf("Persona %s posted channel reply to %s (%s)\n", persona, chID, reason)
+	}()
+}
+
 // callRealLLMViaHub performs the production LLM call for a Court persona.
 // Sends "llm.call" to network-boundary (exactly as Agent Runtime does) with the
 // persona-specialized prompt. The boundary enforces scopes and proxies to the LLM backend.
@@ -413,6 +499,9 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 		fmt.Println("Persona", persona, "received:", msg.Command)
 
 		switch msg.Command {
+		case "channel.activity", "channel.member_notify":
+			processChannelActivity(hcl, msg, uniqueSource, persona)
+
 		case "scribe.notify_review":
 			payload, _ := msg.Payload.(map[string]interface{})
 			proposalID, _ := payload["proposal_id"].(string)

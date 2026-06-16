@@ -16,6 +16,7 @@ import (
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
@@ -265,6 +266,80 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 	}
 }
 
+// pmProcessChannelActivity handles delivered channel activity; agents decide whether to reply.
+func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueSource string, realLLM agent.LLMCallFunc) {
+	payload, _ := msg.Payload.(map[string]interface{})
+	chID, _ := payload["channel_id"].(string)
+	from, _ := payload["from"].(string)
+	userContent, _ := payload["content"].(string)
+	if chID == "" {
+		chID = "main"
+	}
+
+	shouldDeliver, reason := collab.ShouldRespondToActivity(uniqueSource, from, userContent)
+	if !shouldDeliver {
+		_ = hcl.Reply(context.Background(), hubclient.Message{
+			Source:      uniqueSource,
+			Destination: msg.Source,
+			Command:     "response",
+			Payload: map[string]interface{}{
+				"status":     "ignored",
+				"reason":     string(reason),
+				"channel_id": chID,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	_ = hcl.Reply(context.Background(), hubclient.Message{
+		Source:      uniqueSource,
+		Destination: msg.Source,
+		Command:     "response",
+		Payload: map[string]interface{}{
+			"status":     "delivered",
+			"reason":     string(reason),
+			"channel_id": chID,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	go func() {
+		broadcast, _ := collab.ActivityHints(uniqueSource, userContent)
+		intro := collab.FallbackIntro("project-manager")
+		if !broadcast {
+			prompt := getPMPrompt() + "\n\nA user asked in channel " + chID + ":\n" + userContent +
+				"\n\nReply in 2-4 sentences as the Project Manager. If the message does not need your reply, respond with exactly: NO_REPLY"
+			if llmIntro, err := realLLM(context.Background(), prompt); err == nil {
+				trimmed := strings.TrimSpace(llmIntro)
+				if strings.EqualFold(trimmed, "NO_REPLY") || trimmed == "" {
+					fmt.Printf("PM: chose not to reply in %s\n", chID)
+					return
+				}
+				intro = trimmed
+			}
+		}
+		postCtx, postCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		_, postErr := hcl.Send(postCtx, hubclient.Message{
+			Source:      uniqueSource,
+			Destination: "store",
+			Command:     "channel.post",
+			Payload: map[string]interface{}{
+				"channel_id": chID,
+				"from":       uniqueSource,
+				"content":    strings.TrimSpace(intro),
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		postCancel()
+		if postErr != nil {
+			log.Printf("PM: channel.post failed: %v", postErr)
+			return
+		}
+		fmt.Printf("PM: posted channel reply to %s (%s)\n", chID, reason)
+	}()
+}
+
 func runProjectManager(cmd *cobra.Command, args []string) {
 	timing.RecordPhase("main_entry")
 
@@ -326,6 +401,9 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 		fmt.Println("PM received:", msg.Command)
 
 		switch msg.Command {
+		case "channel.activity", "channel.member_notify":
+			pmProcessChannelActivity(hcl, msg, uniqueSource, realLLM)
+
 		case "user.goal", "channel.post", "chat.message": // chat.message kept for legacy compat during transition; primary is user.goal via CLI `aegis pm goal` or future channel-triggered goals
 			if msg.Command == "user.goal" {
 				chID := extractChannelFromPayload(msg.Payload, "plan-demo")

@@ -515,6 +515,30 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				forwardReplyToRequester(msg)
 				continue
 			}
+			// Store channel relays are fire-and-forget. Do not RPC-correlate on store's
+			// connection or the hub injects response/error frames into the store read loop.
+			if msg.Source == "store" && msg.Command == "channel.relay_activity" {
+				registeredMutex.RLock()
+				destComponent, exists := registered[msg.Destination]
+				registeredMutex.RUnlock()
+				if exists && destComponent.Encoders != nil {
+					destComponent.Encoders.Mutex.Lock()
+					_ = destComponent.Encoders.Encoder.Encode(msg)
+					destComponent.Encoders.Mutex.Unlock()
+				}
+				continue
+			}
+			if msg.Source == "store" && msg.Command == "channel.updated" {
+				registeredMutex.RLock()
+				destComponent, exists := registered[msg.Destination]
+				registeredMutex.RUnlock()
+				if exists && destComponent.Encoders != nil {
+					destComponent.Encoders.Mutex.Lock()
+					_ = destComponent.Encoders.Encoder.Encode(msg)
+					destComponent.Encoders.Mutex.Unlock()
+				}
+				continue
+			}
 			reply := forwardHubRPC(componentID, msg)
 			encoders.Mutex.Lock()
 			_ = encoders.Encoder.Encode(reply)
@@ -586,6 +610,11 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 		rpcTimeout = 600 * time.Second
 	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
 		rpcTimeout = 8 * time.Second
+	case "channel.activity":
+		// Agent may channel.post to store before replying.
+		rpcTimeout = 180 * time.Second
+	case "channel.post":
+		rpcTimeout = 60 * time.Second
 	}
 
 	select {
