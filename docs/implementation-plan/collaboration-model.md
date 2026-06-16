@@ -1205,3 +1205,39 @@ All per query goals, AGENTS, standards, paranoid model. The E2E is now a stable 
 
 **Files touched:** `e2e/collaboration.spec.js`, `cmd/web-portal/static/app.js`, `scripts/verify-pm-llm-e2e.sh`, `Makefile`, `AGENTS.md`, `scripts/aegisclaw-sudoers.example`, `cmd/project-manager/main.go`, `scripts/boot-metrics-summary.sh`, `docs/implementation-plan/collaboration-model.md`.
 
+---
+
+## Session (Jun 16 2026) — Portal Fan-Out, Hub Store Reader, Ephemeral Fan-Out Clients
+
+**Branch:** `feat/collaboration-model-prewarm-readiness`
+
+**Root causes found (hardware E2E):**
+
+1. **Stale store guest image** — `channel.relay_activity` in `cmd/store/main.go` not present until `bash scripts/build-microvms-docker.sh store`; symptom: human posts persist but no agent replies until store rebuild + daemon restart.
+2. **Hub store connection RPC block** — store outbound `channel.relay_activity` / `channel.updated` mistaken for new RPCs on the store reader goroutine blocked subsequent relays after the first fan-out round (`cmd/aegishub/main.go`: fire-and-forget forward + ignore unhandled store outbound).
+3. **Portal SPA path bypasses host portal bridge** — web-portal guest uses inverted hub bridge (`:9101`) directly to AegisHub, not vsock `:1030`; fan-out cannot rely on host `portal_bridge.go` alone.
+4. **Persistent `daemon-internal` hub client decoder races** — ~2 parallel fan-out rounds corrupted the shared client; fixed with per-delivery ephemeral `daemon-internal-fanout-N` clients in `fanOutChannelActivitySync`.
+
+**Fixes (this session):**
+
+- **`channel.fanout` command** — SPA `POST /api/channels/{id}` triggers `channel.fanout` → `daemon-orchestrator` after `channel.post` (`internal/dashboard/spa_api.go`, `internal/portalbridge/routing.go`, `config/acls.yaml`, orchestrator receiver in `cmd/aegis/main.go`).
+- **CLI `channel.fanout` socket op** — `aegis channel post` triggers daemon fan-out via control socket after store persist (`cmd/aegis/main.go`).
+- **Ephemeral hub RPC for fan-out** — `sendToComponentViaEphemeralHubContext` for parallel `channel.activity` delivery (`cmd/aegis/channel_activity.go`).
+- **Hub hardening** — never `forwardHubRPC` on store-originated outbound frames (`cmd/aegishub/main.go`).
+- **Pass2 retry** — only re-deliver roles that failed pass1 (fewer duplicate intros).
+- **Portal bridge backup** — `handlePortalBridgeAction` still fans out on `channel.post` when web-portal uses vsock `:1030` (`cmd/aegis/portal_bridge.go`).
+- **Store** — removed fragile `channel.relay_activity` encode (fan-out now explicit via orchestrator).
+
+**Guest images rebuilt:** `store`, `web-portal`, `aegishub` (`bash scripts/build-microvms-docker.sh store web-portal aegishub`).
+
+**Test runs (Jun 16 2026, real Firecracker + Ollama, existing daemon):**
+
+| Gate | Result | Notes |
+|------|--------|-------|
+| `make smoke` | **PASS** | Court==7, pools, collab ready |
+| `make test-e2e-roster` | **PASS** | 8/8 intros |
+| `make test-e2e-portal-channel` | **PASS** | Portal REST fan-out ~39s; Playwright portal UI 1/1 |
+| `AEGIS_BOOT_TIMING=1 make test-e2e-llm` | **PASS** | PM goal, `E2E-LLM-VERIFY`, channel scoping, boot-metrics |
+
+**Operational note:** After `make build-binaries` or guest-VM source changes affecting store/web-portal/hub, rebuild affected microVM images and `make e2e-clean` + `sudo ./bin/aegis start` before collab E2E. Fan-out can take 30–90s under load when prior fan-outs are serialized on `channelActivityFanOutMu`; E2E scripts poll up to 420s.
+
