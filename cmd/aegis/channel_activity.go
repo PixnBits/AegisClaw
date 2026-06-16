@@ -55,23 +55,30 @@ func fanOutChannelActivitySync(chID, from, content string, perMemberTimeout time
 		"content":    content,
 	}
 	deliverToRoles := func(pass string) {
+		var wg sync.WaitGroup
+		var errMu sync.Mutex
 		for _, role := range roles {
 			if role == "" || shouldSkipMemberFanOut(role, from) {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), perMemberTimeout)
-			err := deliverChannelActivity(ctx, role, chID, payload)
-			cancel()
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", role, err))
-				log.Printf("channel activity delivery to %s failed (%s): %v", role, pass, err)
-			} else {
-				time.Sleep(300 * time.Millisecond)
-			}
+			wg.Add(1)
+			go func(role string) {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), perMemberTimeout)
+				defer cancel()
+				err := deliverChannelActivity(ctx, role, chID, payload)
+				if err != nil {
+					errMu.Lock()
+					errs = append(errs, fmt.Sprintf("%s: %v", role, err))
+					errMu.Unlock()
+					log.Printf("channel activity delivery to %s failed (%s): %v", role, pass, err)
+				}
+			}(role)
 		}
+		wg.Wait()
 	}
 	deliverToRoles("pass1")
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
 	deliverToRoles("pass2")
 	if len(errs) > 0 {
 		return fmt.Errorf("delivery failures (%d): %s", len(errs), strings.Join(errs, "; "))

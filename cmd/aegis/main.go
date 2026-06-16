@@ -34,6 +34,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/config"
 	"AegisClaw/internal/eventbus"
 	"AegisClaw/internal/runtime"
@@ -5181,7 +5182,7 @@ func startOrchestratorCommandReceiver() {
 				payload, _ := msg.Payload.(map[string]interface{})
 				chID, _ := payload["channel_id"].(string)
 				from, _ := payload["from"].(string)
-				content, _ := payload["content"].(string)
+				content := collab.PayloadContentString(payload["content"])
 				go fanOutChannelActivity(chID, from, content)
 				continue
 			}

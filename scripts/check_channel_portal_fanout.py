@@ -16,6 +16,13 @@ KEYWORDS = {
 }
 
 
+def usable_content(content: str) -> str:
+    text = str(content or "")
+    if text.strip().startswith("map[") and "channel_id:" in text:
+        return ""
+    return text
+
+
 def load_channel(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as f:
@@ -46,7 +53,9 @@ def check_new_replies(data: dict, since_index: int, roles: list[str], marker: st
         if not isinstance(m, dict):
             continue
         frm = normalize_from(str(m.get("from") or "").strip())
-        content = str(m.get("content") or "")
+        content = usable_content(m.get("content"))
+        if not content.strip():
+            continue
         if frm:
             by_from[frm] = by_from.get(frm, "") + "\n" + content
 
