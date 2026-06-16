@@ -146,6 +146,39 @@ make smoke
 
 This is a fast, non-Playwright check that the daemon, reverse proxy, and key portal endpoints are reachable.
 
+## Collaboration Model E2E (Real Hardware Only)
+
+The collaboration model (channels, PM + real LLM, fan-out conversations, pre-warm/readiness) **requires a running daemon with Firecracker + `/dev/kvm`**, Ollama for the real LLM path, and passwordless sudo per `AGENTS.md`. These tests are **not run in CI** (GitHub Actions uses fixture Playwright only).
+
+**Primary gate** (run after every collab-model change):
+
+```bash
+make build
+make e2e-clean   # optional but recommended before isolated runs
+AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start
+make smoke
+AEGIS_DEFAULT_MODEL=llama3.2:3b AEGIS_BOOT_TIMING=1 make test-e2e-llm
+```
+
+`make test-e2e-llm` runs `scripts/verify-pm-llm-e2e.sh`, which asserts startup invariants (Court==7, base ready, pools), triggers `aegis pm goal`, waits for `E2E-LLM-VERIFY` in channel content, checks boot-metrics budgets when `AEGIS_BOOT_TIMING=1`, runs the core Playwright PM-post test, and (by default) the channel roster intro step.
+
+**Additional collab targets** (daemon must already be running):
+
+| Command | Script | What it verifies |
+|---------|--------|------------------|
+| `make test-e2e-roster` | `verify-channel-roster-e2e.sh` | PM + 7 Court personas reply on `main` after CLI post |
+| `make test-e2e-portal-channel` | `verify-channel-portal-e2e.sh` | Portal REST post fan-out + agent replies |
+| `make test-e2e-portal-api` | `verify-portal-api-e2e.sh` | SPA API contract, latency budget, STOMP path |
+| `make test-e2e-llm-isolated` | `verify-pm-llm-e2e.sh` with `FORCE_ISOLATED=1` | Cold-start on custom hub socket (run `make e2e-clean` first) |
+
+Rebuild guest images after changing PM, agent, or web-portal guest code:
+
+```bash
+bash scripts/build-microvms-docker.sh project-manager agent web-portal
+```
+
+See `docs/implementation-plan/collaboration-model.md` for measured timings, evidence, and open follow-ons.
+
 ## Continuous Integration
 
 The `.github/workflows/ci.yml` matrix includes:
@@ -153,9 +186,11 @@ The `.github/workflows/ci.yml` matrix includes:
 - Unit + vet + build
 - Lightweight integration
 - Daemon integration tests (requires build)
-- E2E (Node + Playwright browsers + `npm test` — runs in isolated fixture mode)
+- E2E (Node + Playwright browsers + `npm test` — runs in isolated fixture mode with `AEGIS_E2E_FIXTURE=1`)
 - Optional microVM image builds
 - Opt-in heavy in-process tests (never on by default)
+
+**Not in CI:** collaboration model E2E (`make test-e2e-llm`, roster, portal-channel, portal-api). These require Firecracker, KVM, Ollama, and sudo on real hardware. Run them locally before merging collab-model branches (see "Collaboration Model E2E" above).
 
 All required jobs must pass before merge.
 

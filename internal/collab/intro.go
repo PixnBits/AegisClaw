@@ -58,6 +58,34 @@ func DisplayName(sourceID string) string {
 	}
 }
 
+// AgentRoleLabel returns a human-readable SDLC role from an on-demand agent VM id (e.g. coder-plan-demo).
+func AgentRoleLabel(sourceID string) string {
+	lower := strings.ToLower(sourceID)
+	switch {
+	case strings.HasPrefix(lower, "coder"):
+		return "Senior Coder"
+	case strings.HasPrefix(lower, "tester"):
+		return "Tester"
+	case strings.HasPrefix(lower, "architect"):
+		return "Architect"
+	default:
+		return "Agent"
+	}
+}
+
+// AgentFallbackIntro produces a deterministic channel reply for generic on-demand agent VMs.
+func AgentFallbackIntro(sourceID string) string {
+	role := AgentRoleLabel(sourceID)
+	switch role {
+	case "Senior Coder":
+		return "I'm the Senior Coder on this channel. I focus on code quality, implementation standards, and technical feasibility."
+	case "Tester":
+		return "I'm the Tester on this channel. I focus on test strategy, coverage, edge cases, and reliability."
+	default:
+		return "I'm " + role + " on this channel. I contribute my specialized perspective to planning and implementation."
+	}
+}
+
 // FallbackIntro produces a deterministic intro when LLM is unavailable.
 func FallbackIntro(sourceID string) string {
 	sourceID = normalizeCollabSourceID(sourceID)

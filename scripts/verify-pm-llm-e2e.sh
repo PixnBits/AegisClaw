@@ -471,9 +471,16 @@ if (./bin/aegis status 2>/dev/null; ./bin/aegis vm list 2>/dev/null || true) | g
 fi
 echo "✓ No unexpected aegis-daemon-temp-* components"
 
-# Boot-metrics (when AEGIS_BOOT_TIMING=1) for key components: base infra, Court, and ensured PM.
+# Boot-metrics (when AEGIS_BOOT_TIMING=1): assert host/guest phase budgets for base + collab roles.
+BOOT_METRICS_FAIL=0
 if [ -n "${AEGIS_BOOT_TIMING:-}" ]; then
-  bash scripts/boot-metrics-summary.sh || true
+  echo "=== Boot-metrics perf asserts (host <= ${HOST_BUDGET_MS:-2000}ms, guest register_complete <= ${GUEST_BUDGET_MS:-2000}ms) ==="
+  if ! AEGIS_BOOT_METRICS_ASSERT=1 bash scripts/boot-metrics-summary.sh; then
+    echo "✗ FAIL: boot-metrics exceeded perf budget (see summary above)"
+    BOOT_METRICS_FAIL=1
+  else
+    echo "✓ Boot-metrics within budget (or guest phases not yet captured)"
+  fi
 fi
 
 # Trigger (the real user action) — BEFORE browser so PM plan post exists for UI asserts.
@@ -606,6 +613,9 @@ echo
 echo "=== Assertions / summary ==="
 ASSERT_RC=0
 if [ "${BROWSER_RC:-0}" -ne 0 ]; then
+  ASSERT_RC=1
+fi
+if [ "${BOOT_METRICS_FAIL:-0}" -ne 0 ]; then
   ASSERT_RC=1
 fi
 
