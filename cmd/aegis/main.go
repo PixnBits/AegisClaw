@@ -4581,8 +4581,9 @@ func startBaseInfrastructure() error {
 	if err := orchestrator.StartVM(context.Background(), "web-portal", "web-portal", "web-portal.img"); err != nil {
 		return fmt.Errorf("failed to start real Firecracker microVM for web-portal: %w (thin fallback is forbidden)", err)
 	}
-	logrus.Info("Started real Firecracker microVM for web-portal")
-	logrus.Info("WEB_PORTAL_STARTED: web-portal VM launched (will be reached only via daemon reverse proxy)")
+		logrus.Info("Started real Firecracker microVM for web-portal")
+		startGuestHubBridge("web-portal")
+		logrus.Info("WEB_PORTAL_STARTED: web-portal VM launched (will be reached only via daemon reverse proxy)")
 	if orchestrator != nil {
 		orchestrator.Bus().PublishJSON("web_portal.started", map[string]interface{}{
 			"id": "web-portal",
@@ -4629,6 +4630,7 @@ func startBaseInfrastructure() error {
 			if err := orchestrator.StartCourtSystem(context.Background()); err != nil {
 				logrus.Warnf("Court system start (lazy after store+channels ready): %v", err)
 			}
+			startCourtGuestHubBridges()
 		}()
 	}()
 
@@ -4939,7 +4941,7 @@ func startWebPortalProxy(listenAddr, target string) error {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		// Basic CSP suitable for self-contained app (no external resources)
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 
 		// 3. Audit-relevant logging (high signal, no sensitive bodies)
 		logrus.Infof("web-proxy: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)

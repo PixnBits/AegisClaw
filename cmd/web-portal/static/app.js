@@ -63,6 +63,52 @@ async function loadPortalData() {
 }
 
 let currentChannel = null;
+let stompWS = null;
+let stompSubscribedChannel = null;
+
+function stompConnect() {
+  if (stompWS && (stompWS.readyState === WebSocket.OPEN || stompWS.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  stompWS = new WebSocket(`${proto}//${location.host}/stomp`);
+  stompWS.onopen = () => {
+    stompWS.send('CONNECT\naccept-version:1.2\n\n\x00');
+  };
+  stompWS.onmessage = (ev) => {
+    const raw = String(ev.data || '');
+    if (raw.startsWith('CONNECTED')) {
+      if (currentChannel) subscribeChannelSTOMP(currentChannel.id);
+      return;
+    }
+    if (raw.startsWith('MESSAGE')) {
+      refreshCurrentChannelMessages();
+    }
+  };
+  stompWS.onclose = () => {
+    setTimeout(stompConnect, 3000);
+  };
+}
+
+function subscribeChannelSTOMP(channelId) {
+  if (!stompWS || stompWS.readyState !== WebSocket.OPEN || !channelId) return;
+  if (stompSubscribedChannel && stompSubscribedChannel !== channelId) {
+    stompWS.send(`UNSUBSCRIBE\nid:sub-${stompSubscribedChannel}\n\n\x00`);
+  }
+  stompSubscribedChannel = channelId;
+  stompWS.send(`SUBSCRIBE\nid:sub-${channelId}\ndestination:/topic/channels.${channelId}.messages\n\n\x00`);
+}
+
+async function refreshCurrentChannelMessages() {
+  if (!currentChannel) return;
+  try {
+    const fresh = await fetchJSON(`/api/channels/${currentChannel.id}`);
+    currentChannel = fresh;
+    renderChannelMessages(fresh.messages || []);
+  } catch (_) {
+    // keep last rendered messages
+  }
+}
 
 async function loadChannelsForUI() {
   try {
@@ -136,8 +182,10 @@ function selectChannel(ch) {
   fetchJSON(`/api/channels/${ch.id}`).then(full => {
     currentChannel = full;
     renderChannelMessages(full.messages || []);
+    subscribeChannelSTOMP(full.id);
   }).catch(() => {
     renderChannelMessages(ch.messages || []);
+    subscribeChannelSTOMP(ch.id);
   });
 }
 
@@ -189,7 +237,7 @@ function renderChannelMessages(messages) {
 async function postToChannel(ev) {
   ev.preventDefault();
   if (!currentChannel) return;
-  const from = (document.getElementById('postFrom') && document.getElementById('postFrom').value || 'operator').trim();
+  const from = (document.getElementById('postFrom') && document.getElementById('postFrom').value || 'user').trim();
   const content = (document.getElementById('postContent') && document.getElementById('postContent').value || '').trim();
   if (!content) return;
   try {
@@ -420,6 +468,7 @@ async function boot() {
     });
   }
   navigate(activePage());
+  stompConnect();
   try {
     await loadPortalData();
   } catch (error) {

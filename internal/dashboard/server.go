@@ -1,11 +1,7 @@
-// Package dashboard implements the local web dashboard for AegisClaw Phase 4.
-//
-// Architecture: pure Go + html/template, no external frameworks.
-// SSE endpoint (/events) pushes real-time updates for live views.
-// All state is fetched from the daemon via the Unix socket API.
 package dashboard
 
 import (
+	"AegisClaw/internal/portalstomp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +17,7 @@ type Server struct {
 	apiClient APIClient
 	funcMap   template.FuncMap
 	mux       *http.ServeMux
+	stompHub  *portalstomp.Hub
 }
 
 // APIClient abstracts daemon API calls for the dashboard.
@@ -166,6 +163,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/proposals", s.handleAPIProposals)
 	s.mux.HandleFunc("/api/proposals/", s.handleAPIProposalDetail)
 	s.mux.HandleFunc("/api/workspace/read", s.handleAPIWorkspaceRead)
+
+	// Channels-first SPA (web-portal-vm.md: dynamic API routes + STOMP gateway in portal sandbox)
+	s.initSTOMP()
+	s.mux.HandleFunc("/stomp", s.handleSTOMP)
+	s.mux.HandleFunc("/api/dashboard", s.handleAPIDashboard)
+	s.mux.HandleFunc("/api/monitoring", s.handleAPIMonitoring)
+	s.mux.HandleFunc("/api/channels", s.handleAPIChannels)
+	s.mux.HandleFunc("/api/channels/", s.handleAPIChannels)
 
 	// Recommended public REST endpoints per web-portal.md for E2E/SDLC visibility
 	s.mux.HandleFunc("/api/skills", s.handleAPISkills)
@@ -4190,7 +4195,7 @@ func (s *Server) handleAPIProposals(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
 			return
 		}
-		json.NewEncoder(w).Encode(data) //nolint:errcheck
+		json.NewEncoder(w).Encode(spaNormalizeProposals(data)) //nolint:errcheck
 		return
 	}
 
@@ -4286,7 +4291,7 @@ func (s *Server) handleAPISkills(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
 		return
 	}
-	json.NewEncoder(w).Encode(data) //nolint:errcheck
+	json.NewEncoder(w).Encode(spaNormalizeSkills(data)) //nolint:errcheck
 }
 
 func (s *Server) handleAPIApprovals(w http.ResponseWriter, r *http.Request) {

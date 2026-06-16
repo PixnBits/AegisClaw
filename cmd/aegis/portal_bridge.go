@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -29,6 +31,7 @@ type portalBridgeMsg struct {
 // startPortalBridge listens on vsock for the Web Portal microVM when it cannot
 // reach AegisHub directly (web-portal-vm.md: host-mediated bridge on port 1030).
 func startPortalBridge() {
+	startDaemonPortalHubReceiver()
 	go func() {
 		port := uint32(hubclient.PortalBridgeVsockPort)
 		l, err := vsock.Listen(port, nil)
@@ -371,4 +374,56 @@ func portalSandboxList() []interface{} {
 
 func portalSystemStats() map[string]interface{} {
 	return readHostSystemStats()
+}
+
+// startDaemonPortalHubReceiver registers "daemon" on AegisHub so the web-portal guest
+// (inverted hub bridge :9101) can reach presentation aggregation actions (worker.list,
+// sandbox.list, system.stats) without host-intercepted HTTP. See web-portal.md + host-daemon.md.
+func startDaemonPortalHubReceiver() {
+	go func() {
+		hubPath := hubSocketPath()
+		for {
+			pub, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				time.Sleep(time.Second)
+				continue
+			}
+			client, err := hubclient.DialUnix(hubPath, priv)
+			if err != nil {
+				time.Sleep(time.Second)
+				continue
+			}
+			if _, err := client.Register(context.Background(), "daemon", pub, "phase1"); err != nil {
+				client.Close()
+				time.Sleep(time.Second)
+				continue
+			}
+			logrus.Info("daemon portal hub receiver registered for web-portal presentation actions")
+			for {
+				msg, err := client.Receive(context.Background())
+				if err != nil {
+					break
+				}
+				if msg.Destination != "daemon" {
+					continue
+				}
+				payload, actionErr := handlePortalBridgeAction(msg.Command, msg.Payload)
+				resp := hubclient.Message{
+					Source:      "daemon",
+					Destination: msg.Source,
+					Command:     msg.Command,
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				}
+				if actionErr != nil {
+					resp.Command = "error"
+					resp.Payload = actionErr.Error()
+				} else {
+					resp.Payload = payload
+				}
+				_ = client.Reply(context.Background(), resp)
+			}
+			client.Close()
+			time.Sleep(time.Second)
+		}
+	}()
 }
