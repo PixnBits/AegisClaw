@@ -9,26 +9,28 @@ This document defines how the harness (PM-orchestrated narrow tasks, parallel ex
 ## Core Concepts
 
 - **Goal / Plan**: The high-level intent provided by the user (or derived by the PM).
-- **Narrow Task**: A decomposed, scoped unit of work assigned to a specific specialist agent persona (e.g., "Research Zig language features with security model focus").
-- **Pipeline Stage**: One of the defined stages in the structured flow: Plan → Delegate → Execute → Propose → Court Review → Apply.
-- **Agent Instance**: A running microVM agent executing a narrow task.
-- **Progress**: Quantitative or qualitative status of a narrow task or stage.
+- **Narrow Task**: A decomposed, scoped unit of work assigned to a specific specialist agent persona.
+- **Pipeline Stage**: One of: Plan → Delegate → Execute → Propose → Court Review → Apply.
+- **Agent Instance**: A running microVM executing a narrow task.
+- **Progress**: Status of a task or stage.
 
 ## Data Model (Target)
 
 ### Plan / Goal
 ```json
 {
-  "plan_id": "...",
-  "channel_id": "...",
+  "plan_id": "plan_abc123",
+  "channel_id": "chan_main",
   "goal": "Research and compare Zig vs Rust for home lab scripts",
-  "created_at": "...",
+  "created_at": "2026-06-17T...",
   "status": "active",
   "stages": [
-    { "name": "Plan", "status": "completed" },
-    { "name": "Delegate", "status": "completed" },
-    { "name": "Execute", "status": "in_progress" },
-    ...
+    {"name": "Plan", "status": "completed"},
+    {"name": "Delegate", "status": "completed"},
+    {"name": "Execute", "status": "in_progress"},
+    {"name": "Propose", "status": "pending"},
+    {"name": "Court Review", "status": "pending"},
+    {"name": "Apply", "status": "pending"}
   ]
 }
 ```
@@ -36,48 +38,95 @@ This document defines how the harness (PM-orchestrated narrow tasks, parallel ex
 ### Narrow Task
 ```json
 {
-  "task_id": "...",
-  "plan_id": "...",
+  "task_id": "task_xyz789",
+  "plan_id": "plan_abc123",
   "agent_persona": "researcher",
-  "scope": "Research Zig language features with focus on security model and performance",
+  "scope": "Research Zig language features with focus on security model",
   "status": "active",
   "current_stage": "Execute",
   "progress": 65,
-  "last_update": "...",
-  "agent_instance_id": "..."
+  "last_update": "2026-06-17T...",
+  "agent_instance_id": "agent_vm_456"   // Internal only - do not expose to browser
 }
 ```
 
-### Pipeline Stage Status
-Each stage should carry:
-- Status (pending, in_progress, completed, blocked, failed)
-- Optional summary or key output
-- Link to related artifacts or proposals (especially for Court Review stage)
+## Event Types & Payloads (Real-time Updates)
 
-## Update Mechanisms
+The following events are pushed via STOMP (see `real-time-contracts.md`) to keep the UI in sync:
 
-- The PM is the primary source of truth for plan decomposition and task assignment.
-- Progress and stage transitions are pushed via real-time events (STOMP topics defined in `real-time-contracts.md`).
-- The portal observes these events and updates the UI without polling.
-- When a narrow task produces a proposal, the task links to the proposal and the stage advances to Court Review.
+### `harness.plan.created`
+```json
+{
+  "type": "harness.plan.created",
+  "plan_id": "plan_abc123",
+  "channel_id": "chan_main",
+  "goal": "...",
+  "stages": [...]
+}
+```
+
+### `harness.task.assigned`
+```json
+{
+  "type": "harness.task.assigned",
+  "task_id": "task_xyz789",
+  "plan_id": "plan_abc123",
+  "agent_persona": "researcher",
+  "scope": "...",
+  "current_stage": "Execute"
+}
+```
+
+### `harness.task.progress`
+```json
+{
+  "type": "harness.task.progress",
+  "task_id": "task_xyz789",
+  "progress": 65,
+  "current_stage": "Execute",
+  "summary": "Found 12 relevant papers on Zig security model"
+}
+```
+
+### `harness.stage.transition`
+```json
+{
+  "type": "harness.stage.transition",
+  "plan_id": "plan_abc123",
+  "stage": "Propose",
+  "status": "in_progress",
+  "related_task_ids": ["task_xyz789"]
+}
+```
+
+### `harness.proposal.created`
+```json
+{
+  "type": "harness.proposal.created",
+  "plan_id": "plan_abc123",
+  "task_id": "task_xyz789",
+  "proposal_id": "prop_def456",
+  "stage": "Court Review"
+}
+```
+
+**Important**: The portal should treat `agent_instance_id` as internal and never display or log it.
 
 ## Visibility in UI Surfaces
 
-- **Channels**: Harness / Pipeline Overview section shows current plan, active narrow tasks, and stage progress.
-- **Canvas**: Visual representation of tasks in parallel, with stage indicators and dependencies.
-- **Dashboard**: Aggregated view of active tasks across channels, filterable by stage or persona.
-- **Court**: Proposals are linked back to the originating plan and narrow task(s) that triggered them.
+- **Channels**: Shows current plan + active narrow tasks + stage progress strip.
+- **Canvas**: Visual cards for tasks + pipeline stages.
+- **Dashboard**: Aggregated active tasks filterable by stage/persona.
+- **Court**: Proposals linked back to originating plan/task.
 
 ## Security Considerations
 
-- The data model must not expose internal microVM identifiers, raw memory contents, or sensitive planning details to the browser.
-- Only user-relevant scope descriptions and progress are shown.
-- Links between tasks and proposals must respect access control (channel membership).
+- Never expose `agent_instance_id` or raw internal identifiers to the browser.
+- Scope descriptions should be sanitized.
+- Access to plan/task data must respect channel membership.
 
 ## Implementation Notes
 
-- The data model should be defined in shared types (possibly in a common package) so both the Host and Portal can use consistent structures.
-- Real-time updates should carry deltas where possible to reduce payload size.
-- The portal should treat the harness state as read-only; mutations go through the PM via the bridge.
-
-This model makes the narrow-scope + parallel + adversarial review nature of the harness first-class and observable in the UI.
+- Use shared types between Host and Portal where possible.
+- Prefer delta updates over full snapshots for real-time efficiency.
+- The portal must treat harness state as read-only.
