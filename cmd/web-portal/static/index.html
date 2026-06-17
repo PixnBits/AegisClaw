@@ -108,6 +108,18 @@
             <h1>Dashboard</h1>
           </div>
 
+          <div class="filter-bar" data-testid="dashboard-filters">
+            <label>Filter
+              <select id="dashboardFilter" data-testid="dashboard-filter">
+                <option value="all">All</option>
+                <option value="channel">By Channel</option>
+                <option value="background">Background Tasks</option>
+                <option value="proposals">Pending Proposals</option>
+              </select>
+            </label>
+            <button type="button" class="secondary-button" data-nav-page="canvas" data-testid="open-canvas-button">Open Canvas</button>
+          </div>
+
           <div class="stats-grid" data-testid="dashboard-stats">
             <article class="stat-card">
               <span>Active Agents</span>
@@ -130,6 +142,14 @@
               <strong id="statChannels">0</strong>
             </article>
           </div>
+
+          <article class="subpanel" data-testid="active-work-panel">
+            <div class="subpanel-header">
+              <h3>Active Work</h3>
+              <span class="subtle">Harness tasks + governance</span>
+            </div>
+            <div id="activeWorkList" class="card-grid" data-testid="active-work-list"></div>
+          </article>
 
           <div class="two-column-grid">
             <article class="subpanel" data-testid="active-agents-list">
@@ -202,9 +222,9 @@
 
               <form id="channelPostForm" class="chat-composer" novalidate>
                 <input id="postFrom" type="text" value="user" placeholder="from" />
-                <textarea id="postContent" rows="2" maxlength="2000" placeholder="Post to channel..."></textarea>
+                <textarea id="postContent" rows="2" maxlength="2000" placeholder="Post to channel..." data-testid="message-input"></textarea>
                 <div class="composer-actions">
-                  <button type="submit" class="primary-button">Post</button>
+                  <button type="submit" class="primary-button" data-testid="send-button">Post</button>
                 </div>
               </form>
             </article>
@@ -224,7 +244,35 @@
             <p class="eyebrow">Court</p>
             <h2>Court / Governance</h2>
           </div>
-          <div id="proposalsList" class="card-grid" data-testid="proposals-list"></div>
+          <div class="two-column-grid">
+            <div id="proposalsList" class="card-grid" data-testid="proposals-list"></div>
+            <article id="courtDetail" class="subpanel" data-testid="court-detail" hidden></article>
+          </div>
+        </section>
+
+        <section id="canvasPanel" class="panel content-panel" data-testid="canvas-panel" data-page="canvas" hidden>
+          <div class="panel-heading">
+            <p class="eyebrow">Canvas</p>
+            <h2>Inter-Agent Pipeline</h2>
+          </div>
+          <div class="harness-overview" data-canvas-root>
+            <p class="harness-overview__goal" data-canvas-goal></p>
+            <div class="pipeline-strip" data-canvas-pipeline data-testid="canvas-pipeline"></div>
+            <div class="canvas-grid" data-canvas-grid data-testid="canvas-agent-grid"></div>
+          </div>
+        </section>
+
+        <section id="tracePanel" class="panel content-panel" data-testid="trace-panel" data-page="trace" hidden>
+          <div class="panel-heading">
+            <p class="eyebrow">Trace</p>
+            <h2 id="traceAgentTitle">Single-Agent Trace</h2>
+          </div>
+          <div class="trace-actions" data-testid="trace-actions">
+            <button type="button" class="secondary-button" data-trace-action="pause" data-testid="trace-pause">Pause</button>
+            <button type="button" class="secondary-button" data-trace-action="resume" data-testid="trace-resume">Resume</button>
+            <button type="button" class="danger-button" data-trace-action="cancel" data-testid="trace-cancel">Cancel</button>
+          </div>
+          <div id="traceTimeline" class="trace-timeline" data-testid="trace-timeline"></div>
         </section>
 
         <section id="monitoringPanel" class="panel content-panel" data-testid="monitoring-panel" data-page="monitoring" hidden>
@@ -273,6 +321,7 @@
             <h2>Agents</h2>
           </div>
           <ul id="agentsList" class="list-stack" data-testid="agents-list"></ul>
+          <p class="subtle">Select an agent to open its trace view.</p>
         </section>
 
         <section id="auditPanel" class="panel content-panel" data-testid="audit-panel" data-page="audit" hidden>

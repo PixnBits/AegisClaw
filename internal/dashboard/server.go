@@ -179,6 +179,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/court/decisions", s.handleAPICourtDecisions)
 	s.mux.HandleFunc("/api/prs", s.handleAPIPRs)
 	s.mux.HandleFunc("/api/build/status", s.handleAPIBuildStatus)
+	s.registerExtendedPortalRoutes()
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -1485,19 +1486,20 @@ const approvalsTmpl = `
   <div class="section-header">{{if .ShowAll}}All Approvals{{else}}Pending Approvals{{end}}</div>
   {{if .Approvals}}
   {{range .Approvals}}
-  <div style="padding:1rem;border-bottom:1px solid #21262d" data-testid="approval-card-{{index . "approval_id"}}">
+  {{$approval := .}}
+  <div style="padding:1rem;border-bottom:1px solid #21262d" data-testid="approval-card-{{index $approval "approval_id"}}">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.5rem">
       <div>
-        <strong>{{index . "title"}}</strong>
-        <span class="badge badge-{{index . "status"}}" style="margin-left:.5rem" data-testid="approval-status-{{index . "approval_id"}}">{{index . "status"}}</span>
-        <span class="badge badge-pending" style="margin-left:.25rem" data-testid="approval-risk-{{index . "approval_id"}}">risk: {{index . "risk_level"}}</span>
+        <strong>{{index $approval "title"}}</strong>
+        <span class="badge badge-{{index $approval "status"}}" style="margin-left:.5rem" data-testid="approval-status-{{index $approval "approval_id"}}">{{index $approval "status"}}</span>
+        <span class="badge badge-pending" style="margin-left:.25rem" data-testid="approval-risk-{{index $approval "approval_id"}}">risk: {{index $approval "risk_level"}}</span>
       </div>
-      <code style="font-size:.75rem;color:#8b949e" data-testid="approval-id">{{index . "approval_id"}}</code>
+      <code style="font-size:.75rem;color:#8b949e" data-testid="approval-id">{{index $approval "approval_id"}}</code>
     </div>
-    {{with index . "description"}}<p style="color:#8b949e;font-size:.875rem;margin-bottom:.75rem" data-testid="approval-description-{{index . "approval_id"}}">{{truncate . 200}}</p>{{end}}
-    {{if eq (index . "status") "pending"}}
-    <form method="POST" action="/approvals/decide" style="display:flex;gap:.5rem;align-items:center" data-testid="approval-decide-form-{{index . "approval_id"}}">
-      <input type="hidden" name="approval_id" value="{{index . "approval_id"}}">
+    {{with index $approval "description"}}<p style="color:#8b949e;font-size:.875rem;margin-bottom:.75rem" data-testid="approval-description-{{index $approval "approval_id"}}">{{truncate . 200}}</p>{{end}}
+    {{if eq (index $approval "status") "pending"}}
+    <form method="POST" action="/approvals/decide" style="display:flex;gap:.5rem;align-items:center" data-testid="approval-decide-form-{{index $approval "approval_id"}}">
+      <input type="hidden" name="approval_id" value="{{index $approval "approval_id"}}">
       <input type="text" name="reason" placeholder="Reason (optional)" style="width:200px" data-testid="approval-reason-input">
       <button type="submit" name="decision" value="approve" class="approve" data-testid="approval-approve-button">Approve</button>
       <button type="submit" name="decision" value="reject" class="danger" data-testid="approval-reject-button">Reject</button>
@@ -4254,6 +4256,24 @@ func (s *Server) handleAPIProposalDetail(w http.ResponseWriter, r *http.Request)
 		}
 
 		json.NewEncoder(w).Encode(status) //nolint:errcheck
+		return
+	}
+
+	if strings.HasSuffix(path, "/reviews") {
+		s.handleAPIProposalReviews(w, r, proposalID)
+		return
+	}
+
+	if strings.HasSuffix(path, "/approve") {
+		s.handleProposalAction(w, r, proposalID, "approve")
+		return
+	}
+	if strings.HasSuffix(path, "/reject") {
+		s.handleProposalAction(w, r, proposalID, "reject")
+		return
+	}
+	if strings.HasSuffix(path, "/defer") {
+		s.handleProposalAction(w, r, proposalID, "defer")
 		return
 	}
 

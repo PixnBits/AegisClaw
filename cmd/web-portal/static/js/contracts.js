@@ -54,6 +54,9 @@ export function topicsForView(view, ctx = {}) {
       topics.push(TOPIC.canvasEvents);
       if (ctx.planId) topics.push(TOPIC.harnessUpdates(ctx.planId));
       break;
+    case 'trace':
+      if (ctx.sessionId) topics.push(TOPIC.conversationUpdates(ctx.sessionId));
+      break;
     default:
       break;
   }

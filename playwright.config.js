@@ -8,8 +8,8 @@ const useBinWebPortal =
   process.env.AEGIS_E2E_USE_BIN_WEBPORTAL === '1' ||
   (process.env.AEGIS_E2E_USE_BIN_WEBPORTAL !== '0' && fs.existsSync('bin/web-portal'));
 const fixtureWebPortalCmd = useBinWebPortal
-  ? 'AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json ./bin/web-portal'
-  : 'AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json go run ./cmd/web-portal';
+  ? 'AEGIS_E2E_FIXTURE=1 AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json ./bin/web-portal'
+  : 'AEGIS_E2E_FIXTURE=1 AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json go run ./cmd/web-portal';
 
 export default defineConfig({
   testDir: './e2e',
@@ -35,7 +35,7 @@ export default defineConfig({
         webServer: {
           command: fixtureWebPortalCmd,
           url: 'http://localhost:8080/health',
-          reuseExistingServer: !process.env.CI,
+          reuseExistingServer: false,
           timeout: 45 * 1000,
         },
       }

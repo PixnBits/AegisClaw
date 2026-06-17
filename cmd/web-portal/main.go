@@ -374,10 +374,64 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "court.get_reviews":
-		// Phase 3: No simulation in Court path. When running in pure fixture mode (no daemon),
-		// we return a neutral shape that does not fake Court approval or decisions.
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		propID := req["proposal_id"]
+		if propID == "" {
+			propID = "prop-demo-001"
+		}
 		data, _ := json.Marshal(map[string]interface{}{
-			"note": "Court data requires real daemon + Court Scribe + personas (see Phase 3)",
+			"proposal_id": propID,
+			"approved":    false,
+			"reviews": []interface{}{
+				map[string]interface{}{"persona": "ciso-persona", "verdict": "approve", "comments": "No elevated network risk detected.", "timestamp": "2026-06-17T10:00:00Z"},
+				map[string]interface{}{"persona": "architect-persona", "verdict": "approve", "comments": "Design aligns with narrow-scope task pattern.", "timestamp": "2026-06-17T10:01:00Z"},
+				map[string]interface{}{"persona": "user-advocate", "verdict": "defer", "comments": "Request clearer rollback plan.", "timestamp": "2026-06-17T10:02:00Z"},
+			},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "proposal.approve", "proposal.reject", "proposal.defer":
+		data, _ := json.Marshal(map[string]interface{}{"ok": true, "action": action})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "agent.pause", "agent.resume", "agent.cancel":
+		data, _ := json.Marshal(map[string]interface{}{"ok": true, "action": action})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "goal.submit", "harness.get":
+		data, _ := json.Marshal(map[string]interface{}{
+			"plan_id": "plan_main", "channel_id": "main", "goal": "Fixture goal",
+			"plan": map[string]interface{}{
+				"plan_id": "plan_main", "channel_id": "main", "goal": "Fixture harness goal",
+				"stages": []interface{}{
+					map[string]interface{}{"name": "Plan", "status": "completed"},
+					map[string]interface{}{"name": "Execute", "status": "in_progress"},
+				},
+			},
+			"tasks": []interface{}{
+				map[string]interface{}{"task_id": "task_1", "agent_persona": "researcher", "scope": "Fixture narrow task", "status": "active", "current_stage": "Execute", "progress": 40},
+			},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "channel.list":
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{"id": "main", "members": []interface{}{
+				map[string]interface{}{"role": "project-manager"},
+				map[string]interface{}{"role": "user"},
+			}},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "channel.get":
+		data, _ := json.Marshal(map[string]interface{}{
+			"id": "main", "messages": []interface{}{},
+			"members": []interface{}{
+				map[string]interface{}{"role": "project-manager"},
+				map[string]interface{}{"role": "court-persona-user-advocate"},
+				map[string]interface{}{"role": "user"},
+			},
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 

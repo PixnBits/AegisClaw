@@ -1,11 +1,20 @@
 import { EVENT } from './js/contracts.js';
 import { RealtimeClient } from './js/realtime.js';
 import { renderHarnessOverview, applyHarnessEvent } from './js/harness.js';
+import { renderActiveWork, filterActiveWork } from './js/dashboard.js';
+import { renderProposalList, renderProposalDetail, proposalAction } from './js/court.js';
+import { renderCanvas } from './js/canvas.js';
+import { renderTrace } from './js/trace.js';
 
 const state = {
   harnessByChannel: {},
   currentChannel: null,
   planPreview: null,
+  activeWork: [],
+  proposals: [],
+  selectedProposal: null,
+  traceAgentId: null,
+  dashboardFilter: 'all',
 };
 
 const PAGE_TITLES = {
@@ -19,6 +28,8 @@ const PAGE_TITLES = {
   settings: 'Settings',
   monitoring: 'Monitoring',
   teams: 'Team Workspace',
+  canvas: 'Canvas',
+  trace: 'Single-Agent Trace',
 };
 
 const elements = {
@@ -46,6 +57,11 @@ const elements = {
   planPreview: document.getElementById('planPreview'),
   livePulseAgents: document.getElementById('livePulseAgents'),
   livePulseProposals: document.getElementById('livePulseProposals'),
+  activeWorkList: document.getElementById('activeWorkList'),
+  courtDetail: document.getElementById('courtDetail'),
+  canvasRoot: document.querySelector('[data-canvas-root]'),
+  traceTimeline: document.getElementById('traceTimeline'),
+  agentsList: document.getElementById('agentsList'),
 };
 
 const realtime = new RealtimeClient({
@@ -78,7 +94,14 @@ function handleRealtimeMessage(payload) {
     if (elements.livePulseProposals) {
       elements.livePulseProposals.textContent = String(payload.pending_proposals ?? 0);
     }
+    const statAgents = document.getElementById('statActiveAgents');
+    const statProposals = document.getElementById('statPendingProposals');
+    if (statAgents) statAgents.textContent = String(payload.active_agents?.total ?? 0);
+    if (statProposals) statProposals.textContent = String(payload.pending_proposals ?? 0);
     return;
+  }
+  if (payload.type === EVENT.canvasEvent) {
+    loadCanvas().catch(() => {});
   }
   if (String(payload.type).startsWith('harness.')) {
     const chId = payload.channel_id || state.currentChannel?.id;
@@ -101,7 +124,10 @@ async function loadPortalData() {
   ]);
   if (dashR.status === 'fulfilled') renderDashboard(dashR.value);
   if (skillsR.status === 'fulfilled') renderSkills(skillsR.value);
-  if (proposalsR.status === 'fulfilled') renderProposals(proposalsR.value);
+  if (proposalsR.status === 'fulfilled') {
+    state.proposals = proposalsR.value;
+    renderCourtProposals(proposalsR.value);
+  }
   if (monR.status === 'fulfilled') renderMonitoring(monR.value);
   loadChannelsForUI().catch(() => {});
   loadSidebarChannels().catch(() => {});
@@ -359,10 +385,10 @@ async function archiveChannel() {
   await loadChannelsForUI();
 }
 
-async function fetchJSON(url, options) {
+async function fetchJSON(url, options = {}) {
   const response = await fetch(url, {
-    headers: { Accept: 'application/json' },
     credentials: 'same-origin',
+    headers: { Accept: 'application/json', ...(options.headers || {}) },
     ...options,
   });
   if (!response.ok) throw new Error(`Request failed: ${url}`);
@@ -387,6 +413,94 @@ function renderDashboard(data) {
     buildListCard(agent.name, `${titleCase(agent.status)} • ${agent.task} (${agent.progress})`),
   );
   renderList(elements.recentActivityList, data.recent_activity, (entry) => buildListCard(entry, 'Recent audited activity'));
+  state.activeWork = data.active_work || [];
+  refreshActiveWorkPanel();
+}
+
+function refreshActiveWorkPanel() {
+  const filtered = filterActiveWork(state.activeWork, state.dashboardFilter);
+  renderActiveWork(elements.activeWorkList, filtered, {
+    onPause: (item) => agentIntervention(item.id, 'pause'),
+    onTrace: (item) => openTrace(item.id || item.persona),
+    onCanvas: () => { location.hash = 'canvas'; loadCanvas(); },
+    onCourt: (item) => {
+      location.hash = 'court';
+      const p = state.proposals.find((x) => x.id === item.proposal_id);
+      if (p) selectProposal(p);
+    },
+  });
+}
+
+async function loadCanvas() {
+  const data = await fetchJSON('/api/canvas');
+  renderCanvas(elements.canvasRoot, data);
+}
+
+async function loadAgents() {
+  const data = await fetchJSON('/api/agents');
+  renderList(elements.agentsList, data.agents || [], (agent) => {
+    const card = buildListCard(agent.name, `${agent.status} • ${agent.task}`);
+    card.style.cursor = 'pointer';
+    card.onclick = () => openTrace(agent.name);
+    return card;
+  });
+}
+
+function openTrace(agentId) {
+  state.traceAgentId = agentId;
+  location.hash = `trace?agent=${encodeURIComponent(agentId)}`;
+  loadTrace(agentId);
+}
+
+async function loadTrace(agentId) {
+  const id = agentId || state.traceAgentId || 'researcher';
+  document.getElementById('traceAgentTitle').textContent = `Trace: ${id}`;
+  document.getElementById('currentAgentName').textContent = id;
+  document.getElementById('currentTraceId').textContent = id;
+  const data = await fetchJSON(`/api/agents/${encodeURIComponent(id)}/trace`);
+  renderTrace(elements.traceTimeline, data);
+}
+
+async function agentIntervention(agentId, action) {
+  if (!confirm(`Confirm ${action} for ${agentId}?`)) return;
+  await fetch(`/api/agents/${encodeURIComponent(agentId)}/${action}`, {
+    method: 'POST',
+    headers: { 'X-Aegis-Confirmed': '1' },
+  });
+  await loadPortalData();
+}
+
+function renderCourtProposals(proposals) {
+  renderProposalList(elements.proposalsList, proposals, { onSelect: selectProposal });
+}
+
+async function selectProposal(proposal) {
+  state.selectedProposal = proposal;
+  const detail = await fetchJSON(`/api/proposals/${proposal.id}/reviews`);
+  renderProposalDetail(elements.courtDetail, detail);
+  wireCourtActions(proposal.id);
+}
+
+function wireCourtActions(proposalId) {
+  const root = elements.courtDetail;
+  if (!root) return;
+  root.querySelectorAll('[data-action]').forEach((btn) => {
+    btn.onclick = async () => {
+      const action = btn.dataset.action;
+      if (action === 'export') {
+        window.open(`/api/proposals/${proposalId}/audit`, '_blank');
+        return;
+      }
+      try {
+        await proposalAction(proposalId, action);
+        await loadPortalData();
+        const p = state.proposals.find((x) => x.id === proposalId);
+        if (p) await selectProposal(p);
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+  });
 }
 
 function renderSkills(skills) {
@@ -401,14 +515,8 @@ function renderSkills(skills) {
 }
 
 function renderProposals(proposals) {
-  if (!elements.proposalsList) return;
-  elements.proposalsList.replaceChildren(...proposals.map((proposal) => {
-    const article = document.createElement('article');
-    article.className = 'subpanel';
-    article.dataset.testid = `proposal-${proposal.id}`;
-    article.innerHTML = `<div class="subpanel-header"><h3>${proposal.title}</h3><span class="subtle">${proposal.status}</span></div><p>${proposal.summary} Votes: ${proposal.votes}.</p>`;
-    return article;
-  }));
+  state.proposals = proposals;
+  renderCourtProposals(proposals);
 }
 
 function renderMonitoring(monitoring) {
@@ -443,8 +551,14 @@ function titleCase(value) {
 }
 
 function activePage() {
-  const hash = location.hash.slice(1).split('?')[0];
-  return Object.prototype.hasOwnProperty.call(PAGE_TITLES, hash) ? hash : 'home';
+  const raw = location.hash.slice(1);
+  const page = raw.split('?')[0];
+  if (page === 'trace') {
+    const params = new URLSearchParams(raw.split('?')[1] || '');
+    const agent = params.get('agent');
+    if (agent) state.traceAgentId = agent;
+  }
+  return Object.prototype.hasOwnProperty.call(PAGE_TITLES, page) ? page : 'home';
 }
 
 function navigate(page) {
@@ -459,7 +573,11 @@ function navigate(page) {
   realtime.setViewTopics(safePage, {
     channelId: state.currentChannel?.id,
     planId: state.harnessByChannel[state.currentChannel?.id]?.plan?.plan_id,
+    proposalId: state.selectedProposal?.id,
   });
+  if (safePage === 'canvas') loadCanvas().catch(() => {});
+  if (safePage === 'agents') loadAgents().catch(() => {});
+  if (safePage === 'trace' && state.traceAgentId) loadTrace(state.traceAgentId).catch(() => {});
 }
 
 function wireRouter() {
@@ -472,6 +590,7 @@ function wireRouter() {
 }
 
 async function boot() {
+  document.body.dataset.portalReady = '1';
   wireRouter();
   if (elements.newChannelForm) elements.newChannelForm.addEventListener('submit', createChannel);
   if (elements.addMemberForm) elements.addMemberForm.addEventListener('submit', addMember);
@@ -481,6 +600,15 @@ async function boot() {
   document.getElementById('planPreviewOpen')?.addEventListener('click', openPlanPreviewChannel);
   document.querySelector('[data-testid="new-channel-button"]')?.addEventListener('click', () => {
     location.hash = 'channels';
+  });
+  document.getElementById('dashboardFilter')?.addEventListener('change', (ev) => {
+    state.dashboardFilter = ev.target.value;
+    refreshActiveWorkPanel();
+  });
+  document.querySelectorAll('[data-trace-action]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (state.traceAgentId) agentIntervention(state.traceAgentId, btn.dataset.traceAction);
+    });
   });
   if (!location.hash) location.hash = 'home';
   navigate(activePage());

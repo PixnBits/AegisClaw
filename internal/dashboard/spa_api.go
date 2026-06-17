@@ -163,6 +163,7 @@ func (s *Server) collectDashboardSPA(ctx context.Context) map[string]interface{}
 	if skills, err := s.fetchRaw(ctx, "skill.list", nil); err == nil {
 		skillCount = spaCountItems(skills)
 	}
+	activeWork := s.collectActiveWork(ctx)
 	return map[string]interface{}{
 		"system_status": "running",
 		"runtime":       "firecracker",
@@ -177,6 +178,7 @@ func (s *Server) collectDashboardSPA(ctx context.Context) map[string]interface{}
 			"channel_count":     bundle["channel_count"],
 		},
 		"agents":          agents,
+		"active_work":     activeWork["items"],
 		"recent_activity": []interface{}{},
 	}
 }

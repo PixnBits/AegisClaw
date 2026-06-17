@@ -44,6 +44,16 @@ var allowedBridgeActions = map[string]struct{}{
 
 	// Goals / PM entry
 	"goal.submit": {},
+
+	// Court actions (require UI confirmation header)
+	"proposal.approve": {},
+	"proposal.reject":  {},
+	"proposal.defer":   {},
+
+	// Agent intervention (require UI confirmation header)
+	"agent.pause":   {},
+	"agent.resume":  {},
+	"agent.cancel":  {},
 }
 
 // HighImpactActions require explicit user confirmation before bridge call.

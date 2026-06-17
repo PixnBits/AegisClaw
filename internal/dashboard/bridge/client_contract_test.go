@@ -19,7 +19,7 @@ func TestOnlyAllowedBridgeActionsPassGuard(t *testing.T) {
 
 func TestDisallowedBridgeActionsRejected(t *testing.T) {
 	g := bridge.NewGuard()
-	bad := []string{"", "daemon.shutdown", "store.wipe", "agent.exec", "proposal.approve"}
+	bad := []string{"", "daemon.shutdown", "store.wipe", "agent.exec"}
 	for _, action := range bad {
 		if err := g.Validate(action); err == nil {
 			t.Errorf("expected rejection for %q", action)
