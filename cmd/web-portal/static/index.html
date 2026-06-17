@@ -26,21 +26,21 @@
         </div>
 
         <nav class="primary-nav" aria-label="Primary">
-          <button type="button" class="nav-button is-active" data-nav-page="dashboard" data-testid="nav-dashboard">Dashboard</button>
+          <button type="button" class="nav-button is-active" data-nav-page="home" data-testid="nav-home">Home</button>
           <button type="button" class="nav-button" data-nav-page="channels" data-testid="nav-channels">Channels</button>
-          <button type="button" class="nav-button" data-nav-page="teams" data-testid="nav-teams">Teams</button>
+          <button type="button" class="nav-button" data-nav-page="dashboard" data-testid="nav-dashboard">Dashboard</button>
+          <button type="button" class="nav-button" data-nav-page="court" data-testid="nav-court">Court</button>
           <button type="button" class="nav-button" data-nav-page="agents" data-testid="nav-agents">Agents</button>
           <button type="button" class="nav-button" data-nav-page="skills" data-testid="nav-skills">Skills</button>
-          <button type="button" class="nav-button" data-nav-page="court" data-testid="nav-court">Court</button>
-          <button type="button" class="nav-button" data-nav-page="monitoring" data-testid="nav-monitoring">Monitoring</button>
           <button type="button" class="nav-button" data-nav-page="audit" data-testid="nav-audit">Audit</button>
+          <button type="button" class="nav-button" data-nav-page="settings" data-testid="nav-settings">Settings</button>
         </nav>
       </div>
 
       <div class="topbar-meta">
         <div class="status-chip" data-testid="connection-status-chip">
           <span class="status-dot status-dot--success" aria-hidden="true"></span>
-          <span>Conn SSE</span>
+          <span id="connectionStatusLabel">Conn …</span>
         </div>
         <div class="status-chip" data-testid="notification-chip">Notifications <span id="notificationCount">0</span></div>
         <button type="button" class="avatar-button" data-testid="avatar-button">Operator ▾</button>
@@ -65,7 +65,44 @@
       </aside>
 
       <section class="main-column">
-        <section id="dashboardPanel" class="panel content-panel" data-testid="dashboard-panel" data-page="dashboard">
+        <section id="homePanel" class="panel content-panel" data-testid="home-panel" data-page="home">
+          <div class="panel-heading">
+            <p class="eyebrow">Command Center</p>
+            <h1>Home</h1>
+          </div>
+
+          <form id="commandBarForm" class="command-bar" data-testid="command-bar" novalidate>
+            <label for="commandBarInput" class="command-bar__label">What do you want to accomplish?</label>
+            <textarea id="commandBarInput" rows="3" maxlength="4000" placeholder="Describe your goal in natural language…" data-testid="command-bar-input"></textarea>
+            <p class="subtle command-bar__hint">The Project Manager will decompose your goal into narrow tasks for specialists, with Court review on proposals.</p>
+            <button type="submit" class="primary-button" data-testid="command-bar-submit">Start Plan Preview</button>
+          </form>
+
+          <article id="planPreview" class="subpanel plan-preview" data-testid="plan-preview" hidden>
+            <div class="subpanel-header">
+              <h3>Plan Preview</h3>
+              <button type="button" class="primary-button" id="planPreviewOpen" data-testid="plan-preview-open">Open Channel</button>
+            </div>
+            <p><strong>Goal:</strong> <span data-preview-goal></span></p>
+            <p><strong>Channel:</strong> <span data-preview-channel></span></p>
+            <div data-harness-preview class="harness-overview">
+              <p class="harness-overview__goal" data-harness-goal></p>
+              <div class="pipeline-strip" data-harness-pipeline></div>
+              <div class="harness-tasks" data-harness-tasks></div>
+            </div>
+          </article>
+
+          <div class="live-pulse" data-testid="live-pulse">
+            <button type="button" class="live-pulse__item" data-nav-page="dashboard">
+              <span>Active agents</span><strong id="livePulseAgents">0</strong>
+            </button>
+            <button type="button" class="live-pulse__item" data-nav-page="court">
+              <span>Pending proposals</span><strong id="livePulseProposals">0</strong>
+            </button>
+          </div>
+        </section>
+
+        <section id="dashboardPanel" class="panel content-panel" data-testid="dashboard-panel" data-page="dashboard" hidden>
           <div class="panel-heading">
             <p class="eyebrow">Dashboard</p>
             <h1>Dashboard</h1>
@@ -145,6 +182,12 @@
                 <h3 id="selectedChannelId"></h3>
                 <button type="button" class="danger-button" id="archiveChannelBtn" data-testid="archive-channel-button">Archive</button>
               </div>
+
+              <section id="harnessOverview" class="harness-overview" data-testid="harness-overview">
+                <p class="harness-overview__goal" data-harness-goal></p>
+                <div class="pipeline-strip" data-harness-pipeline data-testid="pipeline-strip"></div>
+                <div class="harness-tasks" data-harness-tasks data-testid="harness-tasks"></div>
+              </section>
 
               <h4>Members / Participants</h4>
               <ul id="membersList" class="list-stack" data-testid="members-list"></ul>
@@ -238,6 +281,25 @@
             <h2>Audit Log</h2>
           </div>
           <pre id="auditLog" class="log-box" data-testid="audit-log"></pre>
+        </section>
+
+        <section id="settingsPanel" class="panel content-panel" data-testid="settings-panel" data-page="settings" hidden>
+          <div class="panel-heading">
+            <p class="eyebrow">Settings</p>
+            <h2>Operator Settings</h2>
+          </div>
+          <article class="subpanel">
+            <h3>Safe Mode</h3>
+            <p class="subtle">Restrict high-impact actions until explicitly confirmed.</p>
+            <div class="safe-mode-bar" data-testid="settings-safe-mode">
+              <span>Safe Mode is <strong id="settingsSafeModeLabel">OFF</strong></span>
+            </div>
+          </article>
+          <article class="subpanel">
+            <h3>Monitoring</h3>
+            <p class="subtle">System metrics live on the Dashboard; detailed VM stats below.</p>
+            <button type="button" class="secondary-button" data-nav-page="monitoring">Open Monitoring</button>
+          </article>
         </section>
       </section>
 

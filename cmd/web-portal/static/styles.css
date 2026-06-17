@@ -1,15 +1,28 @@
 :root {
   color-scheme: dark;
-  --bg: #0a0a0a;
-  --surface: #1f1f1f;
-  --surface-elevated: #2a2a2a;
-  --accent: #00d4ff;
-  --success: #22ff88;
-  --warning: #ffcc00;
-  --danger: #ff3333;
-  --text: #e0e0e0;
-  --text-secondary: #aaaaaa;
-  --border: #333333;
+  /* Canonical tokens (design-tokens-and-components.md) */
+  --color-bg: #0a0a0a;
+  --color-surface: #1f1f1f;
+  --color-surface-elevated: #2a2a2a;
+  --color-primary: #00d4ff;
+  --color-success: #22ff88;
+  --color-warning: #ffcc00;
+  --color-danger: #ff3333;
+  --color-text: #e0e0e0;
+  --color-text-muted: #8b949e;
+  --color-border: #333333;
+  --color-border-focus: #00d4ff;
+  /* Legacy aliases */
+  --bg: var(--color-bg);
+  --surface: var(--color-surface);
+  --surface-elevated: var(--color-surface-elevated);
+  --accent: var(--color-primary);
+  --success: var(--color-success);
+  --warning: var(--color-warning);
+  --danger: var(--color-danger);
+  --text: var(--color-text);
+  --text-secondary: var(--color-text-muted);
+  --border: var(--color-border);
   --shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
   --radius: 16px;
   --radius-sm: 10px;
@@ -286,6 +299,108 @@ button:focus-visible { outline: 2px solid rgba(0, 212, 255, 0.5); outline-offset
   white-space: nowrap;
   border: 0;
 }
+
+.command-bar {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-elevated);
+}
+.command-bar textarea {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+.command-bar textarea:focus {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.live-pulse {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.live-pulse__item {
+  flex: 1;
+  display: grid;
+  gap: 0.25rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+
+.harness-overview {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+}
+.harness-overview__goal {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+}
+
+.pipeline-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.pipeline-stage {
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.pipeline-stage--completed { border-color: var(--success); color: var(--success); }
+.pipeline-stage--in_progress { border-color: var(--accent); color: var(--accent); }
+.pipeline-stage--pending { color: var(--text-secondary); }
+
+.harness-task-card {
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.harness-task-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+.harness-task-card__scope { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: 0.9rem; }
+.harness-task-card__progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.harness-task-card__bar {
+  height: 100%;
+  background: var(--success);
+}
+
+.badge {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.member-group { list-style: none; margin-bottom: 0.75rem; }
+.member-group__title { display: block; margin-bottom: 0.35rem; color: var(--text-secondary); font-size: 0.85rem; }
 
 @media (max-width: 1180px) {
   .workspace-grid,
