@@ -19,9 +19,9 @@ type harnessRecord struct {
 }
 
 var (
-	harnessMu      sync.RWMutex
-	harnessByCh    = map[string]*harnessRecord{}
-	defaultStages  = []map[string]string{
+	harnessMu     sync.RWMutex
+	harnessByCh   = map[string]*harnessRecord{}
+	defaultStages = []map[string]string{
 		{"name": "Plan", "status": "in_progress"},
 		{"name": "Delegate", "status": "pending"},
 		{"name": "Execute", "status": "pending"},
@@ -154,7 +154,9 @@ func portalHarnessGet(payload interface{}) (map[string]interface{}, error) {
 
 func enrichHarnessFromChannel(ch map[string]interface{}, goal *string, stages *[]map[string]string, tasks *[]interface{}, planID string) {
 	msgs, _ := ch["messages"].([]interface{})
-	pmPlanFound := false
+	pmPlanContent := latestPMPlanContent(msgs)
+	hasProposal := channelHasProposalSignal(msgs)
+
 	for _, raw := range msgs {
 		msg, ok := raw.(map[string]interface{})
 		if !ok {
@@ -169,31 +171,227 @@ func enrichHarnessFromChannel(ch map[string]interface{}, goal *string, stages *[
 			*goal = content
 		}
 	}
+
+	if pmPlanContent != "" {
+		if extracted := extractGoalFromPMPlan(pmPlanContent); extracted != "" {
+			*goal = extracted
+		} else if *goal == "" {
+			if fallback := firstNonHeaderLine(pmPlanContent); fallback != "" {
+				*goal = fallback
+			}
+		}
+		markStageCompleted(stages, "Plan")
+		markStageInProgress(stages, "Delegate")
+
+		roles := uniqueMemberRoles(ch)
+		if len(roles) == 0 {
+			roles = rolesFromPlanText(pmPlanContent)
+		}
+		if len(roles) == 0 {
+			roles = []string{"researcher"}
+		}
+
+		*tasks = buildHarnessTasks(planID, roles, "Delegate", 15)
+
+		if hasExecutionRoles(roles) {
+			markStageCompleted(stages, "Delegate")
+			markStageInProgress(stages, "Execute")
+			for i := range *tasks {
+				if tm, ok := (*tasks)[i].(map[string]interface{}); ok {
+					tm["current_stage"] = "Execute"
+					tm["progress"] = 35
+				}
+			}
+		}
+
+		if hasProposal {
+			markStageCompleted(stages, "Execute")
+			markStageCompleted(stages, "Propose")
+			markStageInProgress(stages, "Court Review")
+			for i := range *tasks {
+				if tm, ok := (*tasks)[i].(map[string]interface{}); ok {
+					tm["current_stage"] = "Court Review"
+					tm["progress"] = 75
+				}
+			}
+		}
+	}
+}
+
+func latestPMPlanContent(msgs []interface{}) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg, ok := msgs[i].(map[string]interface{})
 		if !ok {
 			continue
 		}
 		from := strings.ToLower(payloadString(msg["from"]))
-		if strings.Contains(from, "project-manager") && payloadString(msg["content"]) != "" {
-			pmPlanFound = true
-			break
+		content := payloadString(msg["content"])
+		if strings.Contains(from, "project-manager") && content != "" {
+			if strings.Contains(content, "Plan") || strings.Contains(content, "Goal") || strings.Contains(content, "Tasks") {
+				return content
+			}
 		}
 	}
-	if pmPlanFound {
-		markStageCompleted(stages, "Plan")
-		markStageInProgress(stages, "Delegate")
-		if len(*tasks) == 0 {
-			*tasks = append(*tasks, map[string]interface{}{
-				"task_id":       planID + "_task_1",
-				"plan_id":       planID,
-				"agent_persona": "researcher",
-				"scope":         "Execute PM plan tasks for channel",
-				"status":        "active",
-				"current_stage": "Delegate",
-				"progress":      10,
-			})
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg, ok := msgs[i].(map[string]interface{})
+		if !ok {
+			continue
 		}
+		from := strings.ToLower(payloadString(msg["from"]))
+		content := payloadString(msg["content"])
+		if strings.Contains(from, "project-manager") && content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+func extractGoalFromPMPlan(content string) string {
+	lines := strings.Split(content, "\n")
+	inGoal := false
+	var goalLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "##") && strings.Contains(lower, "goal") {
+			inGoal = true
+			continue
+		}
+		if inGoal {
+			if strings.HasPrefix(trimmed, "##") {
+				break
+			}
+			if trimmed != "" {
+				goalLines = append(goalLines, trimmed)
+			}
+		}
+	}
+	if len(goalLines) > 0 {
+		goal := strings.Join(goalLines, " ")
+		if len(goal) > 300 {
+			return goal[:300] + "…"
+		}
+		return goal
+	}
+	return ""
+}
+
+func firstNonHeaderLine(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if len(trimmed) > 300 {
+			return trimmed[:300] + "…"
+		}
+		return trimmed
+	}
+	return ""
+}
+
+func uniqueMemberRoles(ch map[string]interface{}) []string {
+	members, _ := ch["members"].([]interface{})
+	seen := map[string]bool{}
+	var roles []string
+	for _, raw := range members {
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role := strings.ToLower(payloadString(m["role"]))
+		if role == "" {
+			continue
+		}
+		if strings.Contains(role, "project-manager") {
+			continue
+		}
+		if role == "user" || strings.HasPrefix(role, "user:") {
+			continue
+		}
+		if seen[role] {
+			continue
+		}
+		seen[role] = true
+		roles = append(roles, role)
+	}
+	return roles
+}
+
+func rolesFromPlanText(text string) []string {
+	roles := []string{}
+	lower := strings.ToLower(text)
+	candidates := []struct{ key, role string }{
+		{"coder", "coder"},
+		{"tester", "tester"},
+		{"ciso", "ciso"},
+		{"security architect", "security-architect"},
+		{"architect", "architect"},
+		{"researcher", "researcher"},
+		{"court", "ciso"},
+	}
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		if strings.Contains(lower, c.key) && !seen[c.role] {
+			seen[c.role] = true
+			roles = append(roles, c.role)
+		}
+	}
+	return roles
+}
+
+func hasExecutionRoles(roles []string) bool {
+	for _, r := range roles {
+		switch r {
+		case "coder", "tester", "researcher", "ciso", "architect", "senior-coder":
+			return true
+		}
+	}
+	return false
+}
+
+func channelHasProposalSignal(msgs []interface{}) bool {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg, ok := msgs[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content := strings.ToLower(payloadString(msg["content"]))
+		if strings.Contains(content, "proposal") || strings.Contains(content, "court review") {
+			return true
+		}
+	}
+	return false
+}
+
+func buildHarnessTasks(planID string, roles []string, stage string, progress int) []interface{} {
+	tasks := make([]interface{}, 0, len(roles))
+	for _, role := range roles {
+		tasks = append(tasks, map[string]interface{}{
+			"task_id":       planID + "_task_" + role,
+			"plan_id":       planID,
+			"agent_persona": role,
+			"scope":         scopeForHarnessRole(role),
+			"status":        "active",
+			"current_stage": stage,
+			"progress":      progress,
+		})
+	}
+	return tasks
+}
+
+func scopeForHarnessRole(role string) string {
+	switch role {
+	case "coder":
+		return "Implement scoped changes per PM plan"
+	case "tester":
+		return "Validate functionality and edge cases"
+	case "ciso":
+		return "Review security posture and risks"
+	case "researcher":
+		return "Research and synthesize findings for the plan"
+	default:
+		return "Execute narrow task for channel plan (" + role + ")"
 	}
 }
 
