@@ -14,3 +14,34 @@ YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/build-microvms-docker.sh
 YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/clean-firecracker-rootfs.sh
 YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/create-firecracker-rootfs.sh
 YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw/scripts/ensure-aegis-dir.sh
+
+# For E2E/test cleanup reliability (priority 1: repeated `make test-e2e-llm` after partials/interrupts on real Firecracker/sudo hw).
+# Allows sudo -n pkill/rm in scripts/verify-pm-llm-e2e.sh and `make e2e-clean` without password prompts.
+# Only for dev machines; review before installing.
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -x aegis
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -x aegishub
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -f aegis
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -f 'aegis start --foreground'
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -f 'aegishub start'
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/pkill -f 'aegis-daemon'
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/rm
+YOURUSER ALL=(ALL) NOPASSWD: /bin/rm
+# Explicit for main daemon artifacts left by sudo starts (hub socket in user's homedir, pid in /tmp).
+# Add your full path for YOURUSER.
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/rm /home/pixnbits/.aegis/hub.sock
+YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /home/pixnbits/.aegis/hub.sock
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/rm /tmp/aegis/daemon.pid
+YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis/daemon.pid
+YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/rm /tmp/aegis
+YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis
+
+# Example for this specific workspace (edit paths as needed):
+# /home/pixnbits/projects/AegisClaw/main/bin/aegis is the key one for `sudo -n ./bin/aegis start` (and legacy make start wrappers which invoke it under sudo -n internally).
+# Use direct bin for start to avoid broad sudo on make: sudo -n /home/pixnbits/projects/AegisClaw/main/bin/aegis start --foreground
+
+# Env vars for observability (boot-metrics) + model selection + custom E2E sockets must pass under sudo.
+# Top-level + per-command forms for compatibility across sudoers versions.
+Defaults env_keep += "AEGIS_BOOT_TIMING AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
+Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
+

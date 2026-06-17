@@ -90,6 +90,12 @@ const (
 	// in via the Firecracker hybrid-vsock UDS (CONNECT handshake) and bridges bytes to
 	// the AegisHub unix socket. Same pattern as web-portal :18080 but inverted direction.
 	GuestHubBridgePort = 9101
+
+	// OllamaBridgeGuestPort is the vsock port on which the network-boundary guest listens
+	// for the host Ollama bridge (inverted path — same pattern as GuestHubBridgePort).
+	// Firecracker guests cannot dial host vsock directly; the host dials in via the
+	// hybrid-vsock UDS when llm.call needs real Ollama on the host.
+	OllamaBridgeGuestPort = 9102
 )
 
 // Sentinel errors for AegisHub protocol responses (exact strings from aegishub/main.go).

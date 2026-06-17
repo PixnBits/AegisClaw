@@ -432,6 +432,7 @@ func runStore(cmd *cobra.Command, args []string) {
 	prs := loadFromFile("prs.json")
 	teams := loadFromFile("teams.json")
 	chatSessions := chatstore.New("chat-sessions.json")
+	channels := loadFromFile("channels.json")
 
 	// Phase 2.1a + 2.3 recovery (store-vm.md + event-system.md):
 	// Explicitly load ALL durable timer/ grant state at startup.
@@ -517,12 +518,19 @@ func runStore(cmd *cobra.Command, args []string) {
 		response := Message{
 			Source:      "store",
 			Destination: msg.Source,
-			Timestamp:   "2026-05-09T19:40:01Z",
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			Signature:   "",
 		}
 
 		mu.Lock()
 		switch msg.Command {
+		case "response", "ack", "error":
+			// Hub RPC correlation frames (e.g. after store→daemon relay). Not store commands.
+			mu.Unlock()
+			continue
+		case "":
+			mu.Unlock()
+			continue
 		// Phase 2.1a: Reconciliation is now real and authoritative in Store VM
 		case "reconcile.expired_grants":
 			expiredAutonomy := ReconcileExpiredAutonomy()
@@ -894,6 +902,174 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Command = "team.message.sent"
 			response.Payload = "ok"
 
+		// === Channels (collaboration model) ===
+		// Minimal primitives for the Slack-inspired model: named persistent spaces
+		// with role/agent membership and message history. Store is the source of truth
+		// (per store-vm.md + collaboration-model.md). History/artifacts/proposals can
+		// be annotated by channel. Later: PM will use these for delegation; UI for roster.
+		// Messages here are the channel log (separate from per-agent chat turns).
+		case "channel.create":
+			payload := msg.Payload.(map[string]interface{})
+			id := payload["id"].(string)
+			if _, ok := payload["created_at"]; !ok {
+				payload["created_at"] = response.Timestamp
+			}
+			if _, ok := payload["members"]; !ok || len(payload["members"].([]interface{})) == 0 {
+				// default to including the project manager
+				payload["members"] = []interface{}{
+					map[string]interface{}{"role": "project-manager", "added_at": response.Timestamp},
+				}
+			}
+			if _, ok := payload["messages"]; !ok {
+				payload["messages"] = []interface{}{}
+			}
+			channels[id] = payload
+			saveToFile("channels.json", channels)
+			response.Command = "channel.created"
+			response.Payload = map[string]interface{}{"id": id}
+		case "channel.list":
+			list := []interface{}{}
+			for _, c := range channels {
+				list = append(list, c)
+			}
+			response.Command = "channel.list"
+			response.Payload = list
+		case "channel.get":
+			payload := msg.Payload.(map[string]interface{})
+			id := ""
+			if v, ok := payload["id"].(string); ok { id = v }
+			if id == "" {
+				if v, ok := payload["channel_id"].(string); ok { id = v }
+			}
+			response.Command = "channel.data"
+			response.Payload = channels[id]
+		case "channel.join":
+			payload := msg.Payload.(map[string]interface{})
+			chID := payload["channel_id"].(string)
+			member := map[string]interface{}{
+				"role":     payload["role"],
+				"agent_id": payload["agent_id"], // optional for role-based
+				"joined_at": response.Timestamp,
+			}
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				members := []interface{}{}
+				if m, ok := ch["members"].([]interface{}); ok {
+					members = m
+				}
+				members = append(members, member)
+				ch["members"] = members
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.joined"
+			response.Payload = map[string]interface{}{"channel_id": chID}
+		case "channel.post":
+			payload := msg.Payload.(map[string]interface{})
+			chID := payload["channel_id"].(string)
+
+			entry := map[string]interface{}{
+				"ts":      response.Timestamp,
+				"from":    payload["from"], // user, pm, @role, agent-id etc.
+				"content": payload["content"],
+			}
+			posted := false
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				msgs := []interface{}{}
+				if m, ok := ch["messages"].([]interface{}); ok {
+					msgs = m
+				}
+				msgs = append(msgs, entry)
+				ch["messages"] = msgs
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+				posted = true
+			}
+			if posted {
+				updateMsg := Message{
+					Source:      "store",
+					Destination: "daemon-orchestrator",
+					Command:     "channel.updated",
+					Payload: map[string]interface{}{
+						"channel_id": chID,
+						"from":       payload["from"],
+						"content":    payload["content"],
+					},
+					Timestamp: response.Timestamp,
+					Signature: "",
+				}
+				signMessage(&updateMsg, priv)
+				_ = encoder.Encode(updateMsg)
+			}
+			response.Command = "channel.posted"
+			response.Payload = "ok"
+
+		case "channel.archive":
+			payload := msg.Payload.(map[string]interface{})
+			chID := ""
+			if v, ok := payload["id"].(string); ok { chID = v }
+			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				ch["archived"] = true
+				ch["archived_at"] = response.Timestamp
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.archived"
+			response.Payload = map[string]interface{}{"channel_id": chID}
+
+		case "channel.add_member":
+			payload := msg.Payload.(map[string]interface{})
+			chID := ""
+			if v, ok := payload["id"].(string); ok { chID = v }
+			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			member := map[string]interface{}{
+				"role":     payload["role"],
+				"agent_id": payload["agent_id"],
+				"added_at": response.Timestamp,
+			}
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				members := []interface{}{}
+				if m, ok := ch["members"].([]interface{}); ok {
+					members = m
+				}
+				members = append(members, member)
+				ch["members"] = members
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.member_added"
+			response.Payload = map[string]interface{}{"channel_id": chID}
+
+		case "channel.remove_member":
+			payload := msg.Payload.(map[string]interface{})
+			chID := ""
+			if v, ok := payload["id"].(string); ok { chID = v }
+			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			roleToRemove := ""
+			if v, ok := payload["role"].(string); ok { roleToRemove = v }
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				members := []interface{}{}
+				if m, ok := ch["members"].([]interface{}); ok {
+					members = m
+				}
+				newMembers := []interface{}{}
+				for _, m := range members {
+					if mm, ok := m.(map[string]interface{}); ok {
+						if r, ok := mm["role"].(string); ok && r == roleToRemove {
+							continue
+						}
+					}
+					newMembers = append(newMembers, m)
+				}
+				ch["members"] = newMembers
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.member_removed"
+			response.Payload = map[string]interface{}{"channel_id": chID}
+
+		// default PM in create if missing
+		// (handled in create above by caller, but ensure here too for robustness)
 		// Web-portal chat session registry (store-vm.md: Store owns durable structured data).
 		// Message turns are handled by the agent chat system; the portal persists the
 		// session thread here after each exchange via sessions.save / sessions.history.
@@ -1102,11 +1278,7 @@ func runStore(cmd *cobra.Command, args []string) {
 			// No timer signal this cycle
 		}
 
-		// Phase 2 enhancement: every Store response is signed with its private key
-		// so AegisHub can verify it (consistent with per-VM key model).
-		signMessage(&response, priv)
-
-		// Tamper-evident Merkle audit log: record state changes.
+		// Tamper-evident Merkle audit log: record state changes (before signing).
 		// In a full impl this would be the canonical Store-owned audit trail.
 		if strings.HasPrefix(msg.Command, "proposal.") ||
 			msg.Command == "court.review_complete" ||
@@ -1123,14 +1295,17 @@ func runStore(cmd *cobra.Command, args []string) {
 			// Attach latest root so clients (Court, Web Portal) can see it
 			if m, ok := response.Payload.(map[string]interface{}); ok {
 				m["merkle_root"] = root
-			} else {
+			} else if msg.Command != "proposal.list" && msg.Command != "proposal.get" {
 				response.Payload = map[string]interface{}{
-					"result":       response.Payload,
-					"merkle_root":  root,
+					"result":      response.Payload,
+					"merkle_root": root,
 				}
 			}
 			saveAuditToFile("audit.json", auditLog)
 		}
+
+		// Phase 2 enhancement: sign after all payload mutations so hub verification succeeds.
+		signMessage(&response, priv)
 
 		err = encoder.Encode(response)
 		if err != nil {

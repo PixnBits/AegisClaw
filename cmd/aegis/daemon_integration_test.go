@@ -689,7 +689,7 @@ func TestVMListCommand(t *testing.T) {
 // - The 9 user journeys (recovery after daemon failure must not break ongoing work)
 //
 // Run with: AEGIS_CHAOS=1 go test -v -tags=integration ./cmd/aegis -run TestDaemonChaosRestart
-// Skipped by default so it never affects normal `make test`, `make start`, or `make stop`.
+// Skipped by default so it never affects normal `make test`, daemon start, or `make stop`.
 func TestDaemonChaosRestart(t *testing.T) {
 	if os.Getenv("AEGIS_CHAOS") == "" {
 		t.Skip("Skipping chaos/restart test (set AEGIS_CHAOS=1 to run). This is for 7.7 chaos coverage.")

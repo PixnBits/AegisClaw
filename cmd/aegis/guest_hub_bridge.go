@@ -45,20 +45,55 @@ func reconcileGuestHubBridges() {
 	if cfg == nil || orchestrator == nil || cfg.SandboxType != config.Firecracker {
 		return
 	}
-	time.Sleep(5 * time.Second)
+	// Short initial delay only (was 5s). Individual bridge dial loops already use
+	// 100ms/200ms retries with long timeouts, and session bridges are started early
+	// via startGuestHubBridgesForSession. This keeps reconcile from adding unnecessary
+	// wall time before "ready for use" feel after sudo ./bin/aegis start.
+	time.Sleep(200 * time.Millisecond)
+	reconcileGuestHubBridgesOnce()
+	// Court VMs start lazily after store readiness (after this one-shot reconcile).
+	// Keep reconciling so late-launched court-persona-* / court-scribe get bridges.
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			reconcileGuestHubBridgesOnce()
+		}
+	}()
+}
+
+func reconcileGuestHubBridgesOnce() {
+	if cfg == nil || orchestrator == nil || cfg.SandboxType != config.Firecracker {
+		return
+	}
 	vms, err := orchestrator.ListVMs(context.Background())
 	if err != nil {
 		return
 	}
 	for _, vm := range vms {
 		switch {
-		case vm.ID == "store" || vm.ID == "network-boundary":
+		case vm.ID == "store" || vm.ID == "network-boundary" || vm.ID == "web-portal":
 			startGuestHubBridge(vm.ID)
 		case strings.HasPrefix(vm.ID, "agent-") || strings.HasPrefix(vm.ID, "memory-"):
+			startGuestHubBridge(vm.ID)
+		case vm.ID == "project-manager" || strings.HasPrefix(vm.ID, "project-manager-"):
+			startGuestHubBridge(vm.ID)
+		case strings.HasPrefix(vm.ID, "coder-") || strings.HasPrefix(vm.ID, "tester-"):
 			startGuestHubBridge(vm.ID)
 		case vm.ID == "court-scribe" || strings.HasPrefix(vm.ID, "court-persona-"):
 			startGuestHubBridge(vm.ID)
 		}
+	}
+}
+
+// startCourtGuestHubBridges starts hub bridges for Court VMs launched after the initial reconcile.
+func startCourtGuestHubBridges() {
+	startGuestHubBridge("court-scribe")
+	for _, p := range []string{
+		"ciso", "security-architect", "architect", "senior-coder",
+		"tester", "efficiency", "user-advocate",
+	} {
+		startGuestHubBridge("court-persona-" + p)
 	}
 }
 
@@ -80,7 +115,9 @@ func runGuestHubBridge(stateDir, hubSocket, vmID string) {
 		cancel()
 		if err != nil {
 			logrus.Debugf("guest hub bridge %s: guest listener not ready yet: %v", vmID, err)
-			time.Sleep(1500 * time.Millisecond)
+			// Reduced sleep for faster readiness (was 1500ms); helps <1s agent guest hub_dialed
+			// (the main remaining pole after other opts). Overlaps with guest boot via early start.
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
@@ -88,7 +125,7 @@ func runGuestHubBridge(stateDir, hubSocket, vmID string) {
 		if err != nil {
 			logrus.Warnf("guest hub bridge %s: hub dial failed: %v", vmID, err)
 			_ = guestConn.Close()
-			time.Sleep(2 * time.Second)
+			time.Sleep(200 * time.Millisecond)
 			continue
 		}
 

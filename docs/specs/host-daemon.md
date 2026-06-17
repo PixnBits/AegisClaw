@@ -63,3 +63,27 @@ The following behaviors must be enforced by automated tests:
 - **Audit Root Signing**: The daemon must correctly sign Merkle tree roots at regular intervals
 - **Unix Socket Hardening**: The Unix socket must enforce strict permissions and input validation
 
+## Dynamic Lifecycle (Collaboration Model)
+
+The daemon (via Orchestrator + Sandbox backend) is responsible for fast on-demand spin-up and clean spin-down of role-specialised Agent VMs (Project Manager, Court personas, SDLC roles, general) and their supporting Memory VMs, with a hard target of **<1s startup** for responsive UX and low idle resource use on laptops.
+
+See:
+- `../prd/collaboration-model.md` and `../prd/runtime-architecture.md` (Dynamic Agent Lifecycle section)
+- `docs/implementation-plan/collaboration-model.md` (detailed <1s tactics: pre-built .img, pre-pooled rootfs claim for agent-/memory-, parallel launches, pre-gen keys, snapshot/resume for Court, tight readiness via existing sentinels, shrinkage)
+- `agent-runtime.md`, `aegishub.md`, `store-vm.md` (channel/role attachment, routing, state)
+- Existing instrumentation: `AEGIS_BOOT_TIMING=1`, `GetVMBootMetrics`, console logs (`fc-*-console.log`), `/tmp/aegis-component-ready`, `scripts/boot-metrics.sh`, `aegis vm` subcommands.
+
+Key new/expanded responsibilities (non-TCB business logic stays in sandboxes):
+- `EnsureRoleAgent` / `EnsureCourtPersona` (and symmetric Release/Stop) with idle detection hooks.
+- Pre-warming of pooled rootfs copies and/or golden snapshots (off hot path).
+- Resource accounting + observability (per-channel or global) exposed to portal/CLI.
+- Parallel launch of independent instances (e.g. paired agent+memory, the 7 Court personas).
+- Strict use of pre-built raw images (conversion from tarball is a perf anti-pattern in the launch path).
+
+All launches continue to use the established paranoid key distribution (0600 ephemeral + cmdline hex for shared images, immediate zeroing), per-VM registration with AegisHub, and the critical component watchdog.
+
+Changes must preserve the exact start/stop mechanisms documented in AGENTS.md (`sudo ./bin/aegis start`, `./bin/aegis stop`).
+
+## Related Updates
+See the implementation plan for phased files (orchestrator.go, guest_key_inject.go, rootfs_linux.go, firecracker.go, aegishub, store, portal, ACLs, specs, tests, E2E). Legacy per-session and eager-Court paths must continue to work during transition.
+

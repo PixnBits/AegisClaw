@@ -1,6 +1,26 @@
 import { test, expect } from '@playwright/test';
 import { execSync } from 'child_process';
 
+/**
+ * NOTE (collaboration model): The dedicated global "chat" streaming UI/panel
+ * (and its SSE /api/chat/* flows in the old SPA) was replaced by the channels
+ * system as the primary collaboration surface (per docs/implementation-plan/collaboration-model.md
+ * Phase 4/5 and PRD).
+ *
+ * - Real unmocked E2E for PM + LLM + channels (user path: `aegis pm goal`, channel posts,
+ *   ensures, visible in CLI + portal #channels) lives in:
+ *     make test-e2e-llm   (or scripts/verify-pm-llm-e2e.sh)
+ *   This exercises the exact "as a user would use the system" flow with real Ollama
+ *   (no fixtures, no mocks in the hot path).
+ *
+ * - The tests below exercise the legacy per-session agent chat (ReAct streaming
+ *   against paired agent VMs). They may require updates or be superseded as
+ *   the channels model matures.
+ *
+ * See also: e2e/journeys.spec.js, Makefile test-e2e* targets, and the channels
+ * handling in cmd/web-portal/static/* + cmd/aegis (handleHostChannelsAPI).
+ */
+
 const LOOP_STEP_RE = /Starting|Observe|Think|Plan|Act|Execute|Judge/i;
 const AGENT_STEP_PHASES = ['Starting', 'Observe', 'Think', 'Plan', 'Act', 'Execute', 'Judge'];
 
@@ -106,13 +126,13 @@ async function readCapturedSseFrames(page) {
 }
 
 /**
- * Real-system chat E2E — requires the full stack (`make start`).
+ * Real-system chat E2E — requires the full stack (daemon started with `sudo ./bin/aegis start`).
  * Exercises the dashboard /chat page served by the daemon reverse proxy.
  */
 test.describe('Chat (real system)', () => {
   test.describe.configure({ mode: 'serial', timeout: 300_000 });
-  // Real-system tests require a live daemon + agent VMs (make start). Skip in fixture/CI mode.
-  test.skip(!process.env.AEGIS_E2E_LIVE, 'Set AEGIS_E2E_LIVE=1 with a running daemon (make start) to enable real-system chat tests');
+  // Real-system tests require a live daemon + agent VMs (sudo ./bin/aegis start). Skip in fixture/CI mode.
+  test.skip(!process.env.AEGIS_E2E_LIVE, 'Set AEGIS_E2E_LIVE=1 with a running daemon (sudo ./bin/aegis start) to enable real-system chat tests');
 
   test('loads the chat page', async ({ page }) => {
     const sessionsLoaded = page.waitForResponse(

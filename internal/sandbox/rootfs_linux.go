@@ -37,7 +37,11 @@ func EnsureBootableRootfsImage(rootfsDir, component string) (string, error) {
 		return "", fmt.Errorf("neither raw %s nor tarball %s exists (run 'make build-microvms')", rawPath, tarPath)
 	}
 
-	logrus.Infof("EnsureBootableRootfsImage: converting %s → %s", tarPath, rawPath)
+	// Collaboration model <1s target: on-demand conversion (truncate + mkfs + loop mount + tar) is a multi-second I/O hit
+	// on the critical StartVM path (see orchestrator.StartVM, firecracker prepareVMRootfs, and implementation-plan/collaboration-model.md).
+	// Prefer/require pre-built raw .img (the build script produces them). This path should only be hit for first-use after clean
+	// or explicit rebuild. Consider failing hard in prod paths or pre-ensuring at daemon bootstrap for known roles (agent, memory, court-*).
+	logrus.Infof("EnsureBootableRootfsImage: converting %s → %s (perf warning: this is slow; pre-build raw .img via make build-microvms)", tarPath, rawPath)
 
 	size := "512M"
 	switch component {

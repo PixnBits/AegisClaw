@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/portalbridge"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/transport/hubclient"
@@ -29,6 +32,7 @@ type portalBridgeMsg struct {
 // startPortalBridge listens on vsock for the Web Portal microVM when it cannot
 // reach AegisHub directly (web-portal-vm.md: host-mediated bridge on port 1030).
 func startPortalBridge() {
+	startDaemonPortalHubReceiver()
 	go func() {
 		port := uint32(hubclient.PortalBridgeVsockPort)
 		l, err := vsock.Listen(port, nil)
@@ -84,7 +88,18 @@ func handlePortalBridgeAction(command string, payload interface{}) (interface{},
 	dest := portalbridge.Destination(command)
 	switch dest {
 	case "store":
-		return sendToComponentViaHub("store", command, payload)
+		result, err := sendToComponentViaHub("store", command, payload)
+		if err == nil && command == "channel.post" {
+			if m, ok := payload.(map[string]interface{}); ok {
+				chID, _ := m["channel_id"].(string)
+				from, _ := m["from"].(string)
+				content := collab.PayloadContentString(m["content"])
+				if chID != "" && collab.IsHumanPoster(from) {
+					go fanOutChannelActivity(chID, from, content)
+				}
+			}
+		}
+		return result, err
 	case "agent":
 		return handlePortalChatAction(command, payload)
 	default:
@@ -212,11 +227,19 @@ func ensurePairedAgentForSession(sessionID string) {
 		startGuestHubBridgesForSession(sessionID)
 		return
 	}
+	// Start host->guest hub bridges *before* or concurrent with StartPaired so the
+	// bridge retry loop overlaps guest boot time (reduces effective hub_dialed latency
+	// for the agent guest, which was the ~1.3-1.8s pole in early measurements).
+	// The bridge has its own retry until vsock ready.
+	go startGuestHubBridgesForSession(sessionID)
 	if _, _, err := orchestrator.StartPairedAgentAndMemory(ctx, sessionID); err != nil {
 		logrus.Debugf("portal bridge: paired agent launch for %s: %v", sessionID, err)
 		return
 	}
-	startGuestHubBridgesForSession(sessionID)
+	// Poll for the agent to be ready using the sentinel (written at register_complete in guest).
+	// This makes the readiness tight using the sentinel, reducing the "agent unavailable" and fixed waits for <1s.
+	_, _ = sendToComponentViaHubRetry("agent-"+sessionID, "component.ready", nil, 30*time.Second)
+
 }
 
 func chatPayloadForUserTurn(payload interface{}) interface{} {
@@ -363,4 +386,56 @@ func portalSandboxList() []interface{} {
 
 func portalSystemStats() map[string]interface{} {
 	return readHostSystemStats()
+}
+
+// startDaemonPortalHubReceiver registers "daemon" on AegisHub so the web-portal guest
+// (inverted hub bridge :9101) can reach presentation aggregation actions (worker.list,
+// sandbox.list, system.stats) without host-intercepted HTTP. See web-portal.md + host-daemon.md.
+func startDaemonPortalHubReceiver() {
+	go func() {
+		hubPath := hubSocketPath()
+		for {
+			pub, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				time.Sleep(time.Second)
+				continue
+			}
+			client, err := hubclient.DialUnix(hubPath, priv)
+			if err != nil {
+				time.Sleep(time.Second)
+				continue
+			}
+			if _, err := client.Register(context.Background(), "daemon", pub, "phase1"); err != nil {
+				client.Close()
+				time.Sleep(time.Second)
+				continue
+			}
+			logrus.Info("daemon portal hub receiver registered for web-portal presentation actions")
+			for {
+				msg, err := client.Receive(context.Background())
+				if err != nil {
+					break
+				}
+				if msg.Destination != "daemon" {
+					continue
+				}
+				payload, actionErr := handlePortalBridgeAction(msg.Command, msg.Payload)
+				resp := hubclient.Message{
+					Source:      "daemon",
+					Destination: msg.Source,
+					Command:     msg.Command,
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				}
+				if actionErr != nil {
+					resp.Command = "error"
+					resp.Payload = actionErr.Error()
+				} else {
+					resp.Payload = payload
+				}
+				_ = client.Reply(context.Background(), resp)
+			}
+			client.Close()
+			time.Sleep(time.Second)
+		}
+	}()
 }

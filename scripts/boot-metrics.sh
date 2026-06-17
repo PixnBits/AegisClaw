@@ -11,8 +11,12 @@ set -euo pipefail
 
 VM="${1:-}"
 if [[ -z "$VM" ]]; then
-  echo "usage: $0 <vm-id e.g. agent-demo or memory-abc123>"
+  echo "usage: $0 <vm-id e.g. agent-abc123 or memory-abc123 or court-persona-ciso>"
   echo "       (or: make boot-metrics VM=agent-foo)"
+  echo ""
+  echo "For collaboration model <1s work: run with AEGIS_BOOT_TIMING=1 (sudo -E ./bin/aegis start --foreground per AGENTS.md),"
+  echo "trigger role agents (chat session for agent-/memory-, or Court on start), then collect for representative IDs."
+  echo "See docs/implementation-plan/collaboration-model.md for tactics (pools, parallel, snapshot for Court, prebuilt .img)."
   exit 1
 fi
 

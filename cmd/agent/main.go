@@ -15,6 +15,7 @@ import (
 
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/agent/progress"
 	agentSkills "AegisClaw/internal/agent/skills"
 	"AegisClaw/internal/bootargs"
@@ -140,7 +141,8 @@ func runAgent(cmd *cobra.Command, args []string) {
 		if err != nil {
 			if bootargs.UseHubVsock() {
 				log.Printf("agent: hub bridge connect failed: %v (retrying)", err)
-				time.Sleep(time.Second)
+				// Reduced for <1s (was 1s); overlaps with early host bridge start.
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 			log.Fatal("agent: failed to connect to AegisHub:", err)
@@ -281,6 +283,22 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		return true
 	}
 
+	if msg.Command == "component.ready" || msg.Command == "sentinel.ready" {
+		_, err := os.Stat("/tmp/aegis-component-ready")
+		ready := err == nil
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source: client.AssignedID(), Destination: msg.Source, Command: "response",
+			Payload: map[string]interface{}{"ready": ready},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		return true
+	}
+
+	if msg.Command == "channel.activity" || msg.Command == "channel.member_notify" {
+		processAgentChannelActivity(client, msg, realLLM)
+		return true
+	}
+
 	tc := &agent.TurnContext{
 		Input:              msg.Payload,
 		Hub:                client,
@@ -295,6 +313,72 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 	finalResult, _ := loop.RunTurn(context.Background(), tc, realLLM)
 	replyChatTurn(client, msg, tc.SessionID, finalResult)
 	return true
+}
+
+// processAgentChannelActivity handles channel.activity for on-demand SDLC role VMs (coder-*, tester-*).
+func processAgentChannelActivity(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
+	sourceID := client.AssignedID()
+	payload, _ := msg.Payload.(map[string]interface{})
+	chID, _ := payload["channel_id"].(string)
+	from, _ := payload["from"].(string)
+	userContent := collab.PayloadContentString(payload["content"])
+	if chID == "" {
+		chID = "main"
+	}
+
+	shouldRespond, reason := collab.ShouldRespondToActivity(sourceID, from, userContent)
+	if !shouldRespond {
+		_ = client.Reply(context.Background(), hubclient.Message{
+			Source: sourceID, Destination: msg.Source, Command: "response",
+			Payload: map[string]interface{}{
+				"status": "ignored", "reason": string(reason), "channel_id": chID,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	_ = client.Reply(context.Background(), hubclient.Message{
+		Source: sourceID, Destination: msg.Source, Command: "response",
+		Payload: map[string]interface{}{
+			"status": "delivered", "reason": string(reason), "channel_id": chID,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	go func() {
+		roleLabel := collab.AgentRoleLabel(sourceID)
+		broadcast, _ := collab.ActivityHints(sourceID, userContent)
+		reply := collab.AgentFallbackIntro(sourceID)
+		if !broadcast {
+			prompt := customInstructionsPrefix() +
+				"\n\nYou are the " + roleLabel + " in channel " + chID + ". A user posted:\n" + userContent +
+				"\n\nReply in 2-4 sentences from your role's perspective. If no reply is needed, respond with exactly: NO_REPLY"
+			if llmReply, err := realLLM(context.Background(), prompt); err == nil {
+				trimmed := strings.TrimSpace(llmReply)
+				if trimmed != "" && !strings.EqualFold(trimmed, "NO_REPLY") {
+					reply = trimmed
+				} else if strings.EqualFold(trimmed, "NO_REPLY") {
+					log.Printf("agent %s: chose not to reply in %s", sourceID, chID)
+					return
+				}
+			}
+		}
+		postCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		_, err := client.Send(postCtx, hubclient.Message{
+			Source: sourceID, Destination: "store", Command: "channel.post",
+			Payload: map[string]interface{}{
+				"channel_id": chID, "from": sourceID, "content": reply,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		if err != nil {
+			log.Printf("agent %s: channel.post failed: %v", sourceID, err)
+			return
+		}
+		log.Printf("agent %s: posted channel reply to %s (%s)", sourceID, chID, reason)
+	}()
 }
 
 func drainChatPolls(client hubclient.Client, skillIndex *agentSkills.AgentSkillIndex) {

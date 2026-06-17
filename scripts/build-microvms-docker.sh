@@ -166,7 +166,7 @@ determine_rootfs_dir() {
 }
 
 # Parse command line arguments
-COMPONENTS=${1:-"agent web-portal builder store memory network-boundary court-persona court-scribe"}
+COMPONENTS=${1:-"agent project-manager web-portal builder store memory network-boundary court-persona court-scribe"}
 PLATFORM=${PLATFORM:-linux}
 ROOTFS_DIR=$(determine_rootfs_dir)
 
@@ -174,6 +174,21 @@ log "Building microVM filesystems for: $COMPONENTS"
 log "Platform: $PLATFORM"
 log "Output directory: $ROOTFS_DIR"
 echo ""
+
+# Ensure the post-PR#63 Firecracker kernel (vmlinux-5.10+ with CONFIG_HW_RANDOM_VIRTIO / virtio_rng driver)
+# is present. This is required for the "entropy" device (added in internal/sandbox/firecracker.go)
+# to actually unblock guest CRNG quickly. Without it, store/network-boundary/etc. see the
+# 130-153s "crypto/rand: blocked..." + late "crng init done" we measured when the regression
+# was present. The download script is now idempotent (skips if good driver symbol present).
+# This provides the kernel-side of the ".img guarantee" work on this branch for pre-warm readiness.
+if [ "$(uname -s)" = "Linux" ]; then
+    log "Ensuring Firecracker kernel with virtio-rng driver (CRNG/entropy fix from #63)..."
+    if bash "$SCRIPT_DIR/download-firecracker-kernel.sh"; then
+        :
+    else
+        warn "Kernel download/ensure reported issues; microVMs may exhibit slow CRNG init (re-run the download script manually)"
+    fi
+fi
 
 # Ensure output directory exists and is writable
 ensure_writable_dir "$ROOTFS_DIR"
@@ -231,7 +246,16 @@ for component in $COMPONENTS; do
         store|network-boundary|web-portal) raw_size="1G" ;;
         *) raw_size="512M" ;;
     esac
-    create_raw_rootfs_image "${rootfs_file}.tar.gz" "$rootfs_file" "$raw_size" || true
+    # Guarantee ready raw .img files (prevents on-the-fly tar->img conversion on hot
+    # daemon StartVM / Ensure paths, which is a multi-second hit for cold collab startup).
+    # The create function tries direct loop mount then the sudo-approved create script.
+    # Removing the blanket || true means if raw .img production fails for a component,
+    # the build fails for that component (strong signal to configure sudoers or run
+    # under appropriate privs per AGENTS.md). Tarball is always produced as fallback,
+    # but .img is required for fast Firecracker boots and the <1s/<5s targets.
+    if ! create_raw_rootfs_image "${rootfs_file}.tar.gz" "$rootfs_file" "$raw_size"; then
+        error "Failed to produce ready raw .img for $component at $rootfs_file (on-the-fly conversion would be required on first start, violating pre-warm readiness goals). Configure NOPASSWD sudoers for create-firecracker-rootfs.sh or ensure writable loop-capable dir."
+    fi
     
     # Optional: clean up per-component dir to save space (keep tarball + raw img)
     rm -rf "$component_rootfs_dir"

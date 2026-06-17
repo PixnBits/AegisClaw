@@ -3,6 +3,7 @@ package runtime
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -25,14 +26,21 @@ import (
 
 // Orchestrator manages the lifecycle of all sandboxes.
 type Orchestrator struct {
-	config    *config.Config
-	backend   sandbox.Backend
-	secMgr    *security.Manager
-	bus       *eventbus.Bus // 7.2: in-process EventBus for lifecycle + background signals
-	mu        sync.RWMutex
-	vms       map[string]*VMLifecycle
-	startTime int64
-	aux       map[string]*AuxComponent // auxiliary host-managed base components (hub, store, net-boundary, web-portal) for unified lifecycle/watchdog
+	config          *config.Config
+	backend         sandbox.Backend
+	secMgr          *security.Manager
+	bus             *eventbus.Bus // 7.2: in-process EventBus for lifecycle + background signals
+	mu              sync.RWMutex
+	vms             map[string]*VMLifecycle
+	startTime       int64
+	aux             map[string]*AuxComponent // auxiliary host-managed base components (hub, store, net-boundary, web-portal) for unified lifecycle/watchdog
+	timingEnabled   bool                     // captured at New() from AEGIS_BOOT_TIMING so all StartVM (early Court + later agents) get consistent cmdline flag for boot metrics
+	pregenKeys      []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
+}
+
+type vmKeyPair struct {
+	PublicKey  ed25519.PublicKey
+	PrivateKey ed25519.PrivateKey
 }
 
 // VMLifecycle tracks the lifecycle of a VM instance.
@@ -57,6 +65,11 @@ type VMLifecycle struct {
 	// The map is only populated for the launch that created this lifecycle entry.
 	StartedAt      time.Time
 	BootHostPhases map[string]int64
+
+	// Channel (collaboration model): the channel this role/agent is attached to, if any.
+	// Populated by EnsureRoleAgent when a channelHint is provided. Used for roster,
+	// presence, and per-channel resource accounting.
+	Channel string
 }
 
 // New creates a new Orchestrator.
@@ -79,10 +92,61 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		vms:     make(map[string]*VMLifecycle),
 	}
 
+	// Capture AEGIS_BOOT_TIMING once at orchestrator creation (when the daemon
+	// process environment is authoritative). Use the captured value for *every*
+	// StartVM instead of repeated os.Getenv. This guarantees that base
+	// components (Court scribe + 7 personas started early in daemon bootstrap)
+	// and on-demand agents all get the `aegis.boot_timing=1` cmdline flag when
+	// the user starts the daemon with AEGIS_BOOT_TIMING=1.
+	//
+	// Critical for reliable <1s measurement of Court + role agents per the
+	// collaboration model implementation plan.
+	o.timingEnabled = os.Getenv("AEGIS_BOOT_TIMING") == "1"
+
+	// Pre-generate a small ring of VM keypairs at New() (collab model <1s tactic).
+	// StartVM will pop from here instead of GenerateVMKeyPair + write each time (saves crypto + disk in hot path for first on-demand agents/roles).
+	// 8 is enough for initial burst of roles/chats; falls back to on-demand generate.
+	for i := 0; i < 8; i++ {
+		kp, err := secMgr.GenerateVMKeyPair()
+		if err != nil {
+			break
+		}
+		o.pregenKeys = append(o.pregenKeys, vmKeyPair{PublicKey: kp.PublicKey, PrivateKey: kp.PrivateKey})
+	}
+
 	// Publish orchestrator ready event (7.2)
 	o.bus.PublishJSON("orchestrator.ready", map[string]interface{}{
 		"state_dir": cfg.StateDir,
 	}, eventbus.WithSource("orchestrator"))
+
+	// Collaboration model: pre-warm pooled rootfs copies for the hottest per-VM paths (agent-/memory-).
+	// This is a key <1s tactic (moves 512MB copy I/O off StartPaired hot path). See
+	// guest_key_inject.go:PrewarmPooledRootfsCopies and docs/implementation-plan/collaboration-model.md.
+	// Best-effort; images may not exist until make build-microvms. Runs under normal user (copies to user state dir).
+	// We try cfg.RootfsDir first, then common locations under firecracker/ (where build-microvms often places *.img directly).
+	if cfg.SandboxType == config.Firecracker {
+		go func() {
+			// Use the same EnsureBootableRootfsImage as StartVM to get the canonical template path
+			// (handles rootfs/ or direct, tar->img conversion if needed). Then pre-warm from it.
+			// This ensures pre-warm creates claimable pooled copies early, so the first paired/role StartVM
+			// hits the fast rename+inject path instead of full 512M copy (key <1s win for on-demand agents).
+			if cfg.RootfsDir != "" {
+				// Pre-warm for agent/memory (general on-demand <1s claim) + project-manager (for the
+				// E2E collab test's on-demand PM role to use the dedicated image with full PM logic
+				// for user.goal -> plan post with E2E-LLM-VERIFY marker + ensure sub-roles, and fast
+				// claim). This supports the patient harness waiting for GATES + on-demand PM to
+				// complete the happy path (plan in channel, roles with channel=).
+				for _, comp := range []string{"agent", "memory", "project-manager"} {
+					if template, err := sandbox.EnsureBootableRootfsImage(cfg.RootfsDir, comp); err == nil {
+						if _, err := os.Stat(template); err == nil {
+							logrus.Infof("Pre-warm: attempting pooled copies for %s from canonical %s", comp, template)
+							_ = sandbox.PrewarmPooledRootfsCopies(cfg.StateDir, template, 2, comp)
+						}
+					}
+				}
+			}
+		}()
+	}
 
 	// EventBus wiring (Task 7.2 complete for orchestrator lifecycle).
 	// Important cross-component events are still routed through AegisHub
@@ -92,14 +156,13 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 }
 
 // StartVM starts a new sandbox VM.
+// Heavy preparation (keys, rootfs ensure which may do I/O, backend spawn) is done
+// *outside* the main lock so that concurrent "vm.list" / status queries (which take
+// RLock) do not block for the duration of base infrastructure cold boots or on-demand
+// launches. Only a brief critical section is used for duplicate check + insert.
+// This is required for "aegis status never hangs" during the collab model startup
+// (multiple real VMs launched at base + lazy Court).
 func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, image string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if _, exists := o.vms[id]; exists {
-		return fmt.Errorf("VM %s already running", id)
-	}
-
 	logrus.Infof("Starting %s VM %s with image %s", vmType, id, image)
 
 	t0 := time.Now()
@@ -107,10 +170,26 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		"startvm_entry": t0.UnixNano(),
 	}
 
-	// Per-VM key generation + distribution (Host Daemon TCB duty)
-	vmKP, err := o.secMgr.GenerateVMKeyPair()
-	if err != nil {
-		return fmt.Errorf("failed to generate per-VM keypair: %w", err)
+	// Per-VM key: pop from pregen ring if available (saves Generate in hot path for <1s on-demand).
+	// Done under a short lock (not the whole StartVM) to avoid nested lock with the later
+	// insert lock and to keep the existence/insert critical section tiny.
+	var vmKP struct {
+		PublicKey  ed25519.PublicKey
+		PrivateKey ed25519.PrivateKey
+	}
+	o.mu.Lock()
+	if len(o.pregenKeys) > 0 {
+		vmKP = o.pregenKeys[0]
+		o.pregenKeys = o.pregenKeys[1:]
+	}
+	o.mu.Unlock()
+	if vmKP.PublicKey == nil {
+		kp, err := o.secMgr.GenerateVMKeyPair()
+		if err != nil {
+			return fmt.Errorf("failed to generate per-VM keypair: %w", err)
+		}
+		vmKP.PublicKey = kp.PublicKey
+		vmKP.PrivateKey = kp.PrivateKey
 	}
 	phases["key_generated"] = time.Now().UnixNano()
 
@@ -143,10 +222,8 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		PublicKey:      vmKP.PublicKey,
 		PrivateKeyPath: keyPath, // new secure distribution path (guest consumes once)
 		NetworkConfig: &sandbox.NetworkConfig{
-			// Allocate small sequential guest CIDs (3+). CID 2 is conventionally the host side
-			// in Firecracker vsock setups. The old 9000+ allocator produced values that modern
-			// Firecracker rejects in the JSON config (vsock_id must be string, guest_cid small int).
-			VsockPort:          uint32(3 + len(o.vms)),
+			// VsockPort / CID is allocated just before backend.Start (short RLock snapshot
+			// of len) and then assigned, to keep allocation out of long-held lock sections.
 			// 7.1: Most VMs must egress exclusively through the Network Boundary.
 			// The Boundary itself (and certain privileged components) may have direct access.
 			EgressViaBoundary:  vmType != "network-boundary",
@@ -162,7 +239,10 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		},
 	}
 
-	// For Firecracker on Linux, set kernel and rootfs paths
+	// For Firecracker on Linux, set kernel and rootfs paths.
+	// NOTE: EnsureBootableRootfsImage may perform I/O or (if build-microvms did not
+	// produce a ready .img) on-the-fly conversion. This is now outside the main
+	// orchestrator lock so status / vm.list callers are not blocked.
 	if o.config.SandboxType == config.Firecracker {
 		vmConfig.KernelPath = o.config.KernelPath
 		imgName := image
@@ -198,11 +278,28 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
 			fmt.Sprintf(" aegis.component_id=%s aegis.paired_agent_id=agent-%s aegis.hub_vsock=1", id, session))
 	}
+	if vmType == "project-manager" || id == "project-manager" || strings.HasPrefix(id, "project-manager-") {
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+			fmt.Sprintf(" aegis.component_id=%s aegis.hub_vsock=1", id))
+		if model := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); model != "" {
+			vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+				" aegis.default_model=" + model)
+		}
+	}
+	// Dynamic on-demand roles (coder/tester etc.) reuse agent.img but keep a non-agent- id.
+	if vmType == "agent" && !strings.HasPrefix(id, "agent-") {
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+			fmt.Sprintf(" aegis.component_id=%s aegis.hub_vsock=1", id))
+	}
 	if vmType == "store" || id == "store" || vmType == "network-boundary" || id == "network-boundary" {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.hub_vsock=1")
 	}
 	if vmType == "court-scribe" || id == "court-scribe" || vmType == "court-persona" || strings.HasPrefix(id, "court-persona-") {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.hub_vsock=1")
+		// Always append timing for Court VMs (base early start). Guarantees the flag is in
+		// cmdline for court-persona-* guests so they emit BOOT_TIMING (the early timing append
+		// in StartVM should suffice but this forces for base Court guest phase capture in metrics).
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.boot_timing=1")
 	}
 	if vmType == "web-portal" || id == "web-portal" {
 		vmConfig.ExtraBootArgs = "aegis.web_portal_listen_addr=127.0.0.1:18080"
@@ -210,6 +307,18 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 			vmConfig.NetworkConfig = &sandbox.NetworkConfig{}
 		}
 		vmConfig.NetworkConfig.ExposedPorts = []string{"18080:18080"}
+	}
+
+	// Allocate a small CID outside the long-held lock (was previously under the big lock
+	// via len(o.vms) while building config). A short RLock gives a consistent-enough
+	// value for the base set + burst of on-demand roles; exact uniqueness is enforced
+	// by the final insert check + Firecracker rejecting bad CIDs.
+	nextVsock := uint32(3)
+	o.mu.RLock()
+	nextVsock = uint32(3 + len(o.vms))
+	o.mu.RUnlock()
+	if vmConfig.NetworkConfig != nil {
+		vmConfig.NetworkConfig.VsockPort = nextVsock
 	}
 
 	// Boot via the image's custom /init wrapper for components whose Dockerfile
@@ -221,9 +330,12 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		vmConfig.InitProcess = "/init"
 	}
 
-	// Inject boot timing flag (when host env is set) so /init + guests enable
-	// RecordPhase + BOOT_TIMING lines. Works for agent-*/memory-* + base components.
-	if os.Getenv("AEGIS_BOOT_TIMING") == "1" {
+	// Inject boot timing flag using the value captured at orchestrator creation.
+	// This ensures early-launched components (Court scribe + personas started
+	// during daemon bootstrap) as well as on-demand paired agents and future
+	// PM/SDLC role agents all get the flag when the user runs with
+	// AEGIS_BOOT_TIMING=1. See collaboration-model implementation plan <1s section.
+	if o.timingEnabled {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.boot_timing=1")
 	}
 
@@ -237,9 +349,17 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	phases["backend_start_return"] = time.Now().UnixNano()
 	phases["startvm_return"] = time.Now().UnixNano()
 
-	// Store the lifecycle record. The raw private key was never placed in vmConfig
-	// for the new path-based channel; only the path is present. This satisfies
-	// host-daemon.md:Test Requirements / Keypair Isolation.
+	// Brief critical section: duplicate check + insert only.
+	// All expensive work (Ensure, key files, backend spawn) happened outside the lock
+	// so that status / "vm.list" (RLock) and other concurrent operations are not
+	// blocked for seconds during base or on-demand VM launches. This is the key fix
+	// for "aegis status never hangs".
+	o.mu.Lock()
+	if _, exists := o.vms[id]; exists {
+		o.mu.Unlock()
+		_ = os.Remove(vmConfig.PrivateKeyPath)
+		return fmt.Errorf("VM %s already running", id)
+	}
 	o.vms[id] = &VMLifecycle{
 		ID:             id,
 		Type:           vmType,
@@ -248,6 +368,7 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 		StartedAt:      t0,
 		BootHostPhases: phases,
 	}
+	o.mu.Unlock()
 
 	// Register the VM's public key with the security manager so AegisHub etc. can verify its signatures.
 	// The private key material lives only in the ephemeral 0600 file (to be consumed by the guest).
@@ -456,6 +577,107 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 	return nil
 }
 
+// EnsureCourtPersona ensures a specific Court persona VM is running (on-demand path
+// for the collaboration model). For the initial implementation this delegates to
+// StartVM (best-effort, matching the prior StartCourtSystem behaviour). Future
+// work will add snapshot resume, pooled/shared fast paths, and idle release.
+// channelHint is optional (for "governance" channel visibility).
+// Returns the ID (e.g. "court-persona-ciso").
+func (o *Orchestrator) EnsureCourtPersona(ctx context.Context, persona string, channelHint string) (string, error) {
+	id := "court-persona-" + persona
+	if st, err := o.GetVMStatus(ctx, id); err == nil && st == sandbox.StatusRunning {
+		// Update channel if provided (for roster)
+		o.mu.Lock()
+		if lc, ok := o.vms[id]; ok && channelHint != "" {
+			lc.Channel = channelHint
+		}
+		o.mu.Unlock()
+		return id, nil
+	}
+	if err := o.StartVM(ctx, "court-persona", id, "court-persona"); err != nil {
+		return "", err
+	}
+	if channelHint != "" {
+		o.mu.Lock()
+		if lc, ok := o.vms[id]; ok {
+			lc.Channel = channelHint
+		}
+		o.mu.Unlock()
+	}
+	return id, nil
+}
+
+// EnsureRoleAgent is the general entry point for on-demand role agents (project-manager,
+// sdlc-coder, tester, general, etc.). Supports channelHint for attachment (used for
+// roster, @mentions, per-channel accounting).
+// For memory-backed we use the parallel paired path.
+// Returns the agent ID.
+func (o *Orchestrator) EnsureRoleAgent(ctx context.Context, roleType string, channelHint string) (string, error) {
+	// For memory-backed roles we still use the (now parallel) paired path for now.
+	// A future role-specific table can decide binary/image + whether paired.
+	if roleType == "agent" || roleType == "" {
+		sid := channelHint
+		if sid == "" {
+			sid = "temp-" + roleType
+		}
+		memID, agtID, err := o.StartPairedAgentAndMemory(ctx, sid)
+		_ = memID
+		if err == nil && channelHint != "" && agtID != "" {
+			o.mu.Lock()
+			if lc, ok := o.vms[agtID]; ok {
+				lc.Channel = channelHint
+			}
+			o.mu.Unlock()
+		}
+		return agtID, err
+	}
+	// Generic role (PM, sdlc-*, future court on-demand via EnsureCourtPersona).
+	id := roleType + "-" + channelHint
+	if channelHint == "" {
+		id = roleType
+	}
+	if st, err := o.GetVMStatus(ctx, id); err == nil && st == sandbox.StatusRunning {
+		if channelHint != "" {
+			o.mu.Lock()
+			if lc, ok := o.vms[id]; ok {
+				lc.Channel = channelHint
+			}
+			o.mu.Unlock()
+		}
+		return id, nil
+	}
+	// Use a conventional image name derived from roleType (single image + role/cmdline
+	// specialisation, exactly like court-persona today).
+	// For dynamic roles extracted by the Project Manager (coder, tester + keywords from
+	// extractRolesFromText in cmd/project-manager/main.go), there is typically no dedicated
+	// <role>.img from build-microvms (only agent, project-manager, court-*, base components).
+	// Fall back to the agent runtime image (which benefits from pre-warm/reflink pools for <1s
+	// on-demand) while preserving the desired id (e.g. "coder-plan-demo...") and Channel
+	// attachment for roster, vm list `channel=`, and visibility in channel conversations.
+	img := roleType + ".img"
+	if err := o.StartVM(ctx, roleType, id, img); err != nil {
+		logrus.Warnf("EnsureRoleAgent: no dedicated image for role %q (StartVM error: %v); falling back to agent.img (pre-warm pools + real agent runtime) while keeping id=%s and channel attachment for collab visibility", roleType, err, id)
+		if err2 := o.StartVM(ctx, "agent", id, "agent.img"); err2 != nil {
+			return "", fmt.Errorf("role %s start failed (original: %v; agent fallback: %w)", roleType, err, err2)
+		}
+	} 
+	if channelHint != "" {
+		o.mu.Lock()
+		if lc, ok := o.vms[id]; ok {
+			lc.Channel = channelHint
+		}
+		o.mu.Unlock()
+	}
+	return id, nil
+}
+
+// ReleaseIdle is a hook for explicit or timer-driven spin-down of role agents.
+// Initial impl is a thin StopVM (future: graceful drain, membership update in Store,
+// metrics, resource release).
+func (o *Orchestrator) ReleaseIdle(ctx context.Context, id string) error {
+	return o.StopVM(ctx, id)
+}
+
 // StartPairedAgentAndMemory launches a dedicated Memory VM and its 1:1
 // paired Agent Runtime VM for a given session.
 //
@@ -490,24 +712,43 @@ func (o *Orchestrator) StartPairedAgentAndMemory(ctx context.Context, sessionID 
 	memID := "memory-" + sessionID
 	agtID := "agent-" + sessionID
 
-	// 1. Launch Memory VM (the agent will talk to it via the Hub after registration)
-	if err := o.StartVM(ctx, "memory", memID, "memory.img"); err != nil {
-		return "", "", fmt.Errorf("failed to start paired memory VM %s: %w", memID, err)
-	}
+	// Collaboration model: launch memory + agent in parallel goroutines for lower
+	// tail latency on the paired hot path (agent already has retry logic for hub dial).
+	// "Memory first" discovery hint via bootargs is still satisfied because the agent
+	// waits/reconnects if needed. Error cleanup is best-effort.
+	// See docs/implementation-plan/collaboration-model.md <1s tactics + StartVM notes.
+	var wg sync.WaitGroup
+	var memErr, agtErr error
 
-	// 2. Launch Agent Runtime VM (paired by naming convention + future explicit
-	//    metadata in VMConfig or boot args for AEGIS_PAIRED_MEMORY_ID etc.)
-	//
-	// We pass the well-known hub vsock port via the standard env the thin agent
-	// binary already understands (AEGIS_HUB_VSOCK_PORT). This is the small
-	// orchestrator support for hub vsock port info called out in the 1.3 plan.
-	if err := o.StartVM(ctx, "agent", agtID, "agent.img"); err != nil {
-		// Best-effort cleanup of the memory VM we just started
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := o.StartVM(ctx, "memory", memID, "memory.img"); err != nil {
+			memErr = fmt.Errorf("failed to start paired memory VM %s: %w", memID, err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := o.StartVM(ctx, "agent", agtID, "agent.img"); err != nil {
+			agtErr = fmt.Errorf("failed to start paired agent VM %s: %w", agtID, err)
+		}
+	}()
+
+	wg.Wait()
+
+	if memErr != nil {
+		// Best-effort cleanup if agent also partially started
+		_ = o.StopVM(ctx, agtID)
+		return "", "", memErr
+	}
+	if agtErr != nil {
 		_ = o.StopVM(ctx, memID)
-		return "", "", fmt.Errorf("failed to start paired agent VM %s: %w", agtID, err)
+		return "", "", agtErr
 	}
 
-	logrus.Infof("Started paired runtime: memory=%s agent=%s (session=%s)", memID, agtID, sessionID)
+	logrus.Infof("Started paired runtime: memory=%s agent=%s (session=%s) [parallel]", memID, agtID, sessionID)
 	return memID, agtID, nil
 }
 
@@ -557,14 +798,23 @@ func (o *Orchestrator) StartCourtSystem(ctx context.Context) error {
 	// 2. 7 Court Persona microVMs (distinct registered sources: court-persona-ciso, etc.)
 	// All share the same court-persona.img rootfs. Identity is derived from the VM ID
 	// by the Firecracker backend at boot time (no per-persona images needed).
+	//
+	// Collaboration <1s: launch the 7 personas in parallel (they are fully independent).
+	// This + pre-warm/snapshot tactics target visible Court <30s (ideally sub-second ensure).
+	var courtWG sync.WaitGroup
 	for _, p := range courtPersonas {
 		id := "court-persona-" + p
-		if err := o.StartVM(ctx, "court-persona", id, "court-persona"); err != nil {
-			logrus.Warnf("Court Persona %s microVM launch (best-effort): %v", p, err)
-			continue
-		}
-		logrus.Infof("Court Persona microVM started: %s", id)
+		courtWG.Add(1)
+		go func(persona, personaID string) {
+			defer courtWG.Done()
+			if err := o.StartVM(ctx, "court-persona", personaID, "court-persona"); err != nil {
+				logrus.Warnf("Court Persona %s microVM launch (best-effort): %v", persona, err)
+				return
+			}
+			logrus.Infof("Court Persona microVM started: %s", personaID)
+		}(p, id)
 	}
+	courtWG.Wait()
 
 	logrus.Info("Court system launch complete (watchdog is monitoring court-* components)")
 	return nil
@@ -581,14 +831,21 @@ func (o *Orchestrator) ListVMs(ctx context.Context) ([]VMLifecycle, error) {
 	defer o.mu.RUnlock()
 
 	vms := make([]VMLifecycle, 0, len(o.vms)+len(o.aux))
+	seen := make(map[string]bool)
 	for _, lifecycle := range o.vms {
 		vms = append(vms, *lifecycle)
+		seen[lifecycle.ID] = true
 	}
 	// Include aux (base infrastructure components launched by daemon as host children in current dev realization).
 	// These satisfy the "daemon starts AegisHub + Store + Network Boundary + Web Portal" requirement
 	// (host-daemon.md, web-portal-vm.md, user-journeys/01-installation-onboarding.md) without requiring
 	// dedicated rootfs images for them yet (deferred per phased plan).
+	// Skip any that are also present as real VMs (avoids the duplicate web-portal / store / network-boundary
+	// entries seen in `aegis vm list`).
 	for _, a := range o.aux {
+		if seen[a.ID] {
+			continue
+		}
 		vms = append(vms, VMLifecycle{
 			ID:     a.ID,
 			Type:   a.Type,
@@ -704,6 +961,7 @@ var initShippingComponents = map[string]bool{
 	"store":            true,
 	"network-boundary": true,
 	"agent":            true,
+	"project-manager":  true,
 	"memory":           true,
 	"court-scribe":     true,
 	"court-persona":    true,
@@ -715,7 +973,7 @@ func componentShipsInit(vmType, id string) bool {
 	if initShippingComponents[vmType] || initShippingComponents[id] {
 		return true
 	}
-	return strings.HasPrefix(id, "agent-") || strings.HasPrefix(id, "memory-")
+	return strings.HasPrefix(id, "agent-") || strings.HasPrefix(id, "memory-") || strings.HasPrefix(id, "project-manager-")
 }
 
 // criticalTypes defines the component types that the watchdog considers

@@ -37,7 +37,8 @@ var pendingRPC = struct {
 func isEphemeralHubClient(id string) bool {
 	return id == "aegis-daemon-temp" ||
 		strings.HasPrefix(id, "aegis-daemon-temp-") ||
-		strings.HasPrefix(id, "daemon-temp-")
+		strings.HasPrefix(id, "daemon-temp-") ||
+		strings.HasPrefix(id, "aegis-cli-internal") // CLI hub RPC (one reader loop per process)
 }
 
 func registerPendingRPC(requesterID string) chan Message {
@@ -503,9 +504,48 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				encoder.Encode(response)
 			}
 		} else {
+			// Correlate replies (store channel.*, memory.*, PM response, etc.) with in-flight
+			// hub RPC waiters. Without this, a store reply is mistaken for a new outbound RPC
+			// from store and the original caller (aegis-cli-internal, daemon-internal) hangs.
+			if deliverPendingRPC(msg.Destination, msg) {
+				continue
+			}
 			// One-way replies (agent poll/chat responses) vs synchronous RPC (memory.get_context, llm.call).
 			if isOneWayHubReply(msg.Command) {
 				forwardReplyToRequester(msg)
+				continue
+			}
+			// Store channel relays are fire-and-forget. Do not RPC-correlate on store's
+			// connection or the hub injects response/error frames into the store read loop.
+			if msg.Source == "store" && msg.Command == "channel.relay_activity" {
+				registeredMutex.RLock()
+				destComponent, exists := registered[msg.Destination]
+				registeredMutex.RUnlock()
+				if exists && destComponent.Encoders != nil {
+					destComponent.Encoders.Mutex.Lock()
+					_ = destComponent.Encoders.Encoder.Encode(msg)
+					destComponent.Encoders.Mutex.Unlock()
+				} else {
+					debugLog("hub", fmt.Sprintf("channel.relay_activity dropped: %s not registered", msg.Destination))
+				}
+				continue
+			}
+			if msg.Source == "store" && msg.Command == "channel.updated" {
+				registeredMutex.RLock()
+				destComponent, exists := registered[msg.Destination]
+				registeredMutex.RUnlock()
+				if exists && destComponent.Encoders != nil {
+					destComponent.Encoders.Mutex.Lock()
+					_ = destComponent.Encoders.Encoder.Encode(msg)
+					destComponent.Encoders.Mutex.Unlock()
+				}
+				continue
+			}
+			// Store outbound frames (relay, update, posted) must never enter forwardHubRPC on
+			// the store connection reader. Mistaking them for new RPCs blocks this goroutine for
+			// RPC timeouts and stalls subsequent channel.relay_activity fan-out (E2E portal/CLI).
+			if componentID == "store" && msg.Source == "store" {
+				debugLog("hub", fmt.Sprintf("store outbound ignored cmd=%q dest=%s", msg.Command, msg.Destination))
 				continue
 			}
 			reply := forwardHubRPC(componentID, msg)
@@ -574,10 +614,16 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 
 	rpcTimeout := 120 * time.Second
 	switch msg.Command {
-	case "chat.message", "user.turn":
-		rpcTimeout = 300 * time.Second
+	case "chat.message", "user.turn", "user.goal":
+		// user.goal (PM plan generation via real LLM) can exceed 120s on cold on-demand PM boot + Ollama.
+		rpcTimeout = 600 * time.Second
 	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
 		rpcTimeout = 8 * time.Second
+	case "channel.activity":
+		// Agent may channel.post to store before replying.
+		rpcTimeout = 180 * time.Second
+	case "channel.post":
+		rpcTimeout = 60 * time.Second
 	}
 
 	select {

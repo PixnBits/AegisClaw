@@ -160,11 +160,21 @@ rules:
   commands:
     - proposal.get
     - proposal.data
+    - channel.post
+    - channel.*
 - source: court-persona-*
   destination: court-scribe
   commands:
     - scribe.submit_vote
     - scribe.*
+- source: court-persona-*
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: court-persona-*
+  commands:
+    - llm.*
 
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
 - source: store
@@ -184,6 +194,67 @@ rules:
   commands:
     - scribe.notify_review
     - scribe.*
+# Channel activity fan-out (Store relays every channel.post → daemon-orchestrator → members)
+- source: store
+  destination: "daemon-orchestrator"
+  commands:
+    - channel.relay_activity
+    - channel.*
+- source: web-portal
+  destination: "daemon-orchestrator"
+  commands:
+    - channel.fanout
+- source: "daemon-orchestrator"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-orchestrator"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
+# Legacy CLI/daemon direct delivery (if relay bypassed during tests)
+- source: "aegis-cli-internal*"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "aegis-cli-internal"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-internal*"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-internal-*"
+  destination: court-persona-*
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "aegis-cli-internal*"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "aegis-cli-internal"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-internal*"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
+- source: "daemon-internal-*"
+  destination: "project-manager*"
+  commands:
+    - channel.activity
+    - channel.member_notify
 
 # Teams (lightweight collaboration - Phase 5 slice)
 # Web Portal and CLI can create/list teams and send messages
@@ -205,6 +276,179 @@ rules:
   destination: store
   commands:
     - team.*
+
+# Channels (collaboration model - channels + roles + PM)
+# Minimal: create/list/get/join/post for membership + history (Store owns durable state)
+- source: web-portal
+  destination: store
+  commands:
+    - channel.create
+    - channel.list
+    - channel.get
+    - channel.join
+    - channel.post
+    - channel.*
+    - skill.*
+    - proposal.*
+- source: store
+  destination: web-portal
+  commands:
+    - "*"
+- source: aegis
+  destination: store
+  commands:
+    - channel.*
+# Future: PM, SDLC roles, and agents will post to channels too
+- source: "agent*"
+  destination: store
+  commands:
+    - channel.*
+- source: "project-manager*"
+  destination: store
+  commands:
+    - channel.*
+- source: "project-manager*"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+
+# daemon-orchestrator (the receiver started early in daemon) needs to do channel.* to store
+# for the E2E auto-default "main" channel + Court members setup (best-effort, idempotent).
+# This prevents ACL violations and "temp" spam from the auto go func during startup.
+# Source is the persistent "daemon-orchestrator" client (we updated the auto code to use it
+# instead of always creating new daemon-internal-* clients via sendToComponentViaHub).
+- source: "daemon-orchestrator"
+  destination: store
+  commands:
+    - channel.*
+
+# Host CLI path for `aegis pm goal` (and internal ensure sends) talks to the receiver as
+# daemon-internal-N (fresh per `aegis` process). Allow ensure.role / orchestrator.* so the
+# CLI-driven collaboration path (pm goal → ensure for PM + dynamic roles with channel=) works
+# without ACL blocks (parallel to the project-manager* rule below).
+- source: "daemon-internal*"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+- source: "daemon-internal-*"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+
+# The second half of the CLI pm goal path: after ensuring the project-manager (with channel),
+# the CLI sends the actual "user.goal" (containing the channel hint and goal text) to the
+# project-manager component (registered as "project-manager", or the ensured "project-manager-xxx"
+# ID). This was the ACL violation observed in manual verification runs after the other collab
+# ACLs were added: "daemon-internal-N -> project-manager : user.goal".
+# Without this, the PM never receives the goal, returns empty response, never posts the plan
+# or does the dynamic ensure.role for coder/tester, and channel gets time out or show nothing.
+- source: "daemon-internal*"
+  destination: "project-manager*"
+  commands:
+    - user.goal
+    - chat.message
+- source: "daemon-internal-*"
+  destination: "project-manager*"
+  commands:
+    - user.goal
+    - chat.message
+
+# aegis-cli-internal-*: one persistent hub client per short-lived CLI process (unique per pid).
+# Replaces per-send daemon-internal-N ephemeral registrations during E2E polls.
+- source: "aegis-cli-internal*"
+  destination: store
+  commands:
+    - channel.*
+    - timer.*
+    - sessions.*
+- source: "aegis-cli-internal*"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+- source: "aegis-cli-internal*"
+  destination: "project-manager*"
+  commands:
+    - user.goal
+    - chat.message
+- source: store
+  destination: "aegis-cli-internal*"
+  commands:
+    - "*"
+# Legacy exact id (older binaries):
+- source: "aegis-cli-internal"
+  destination: store
+  commands:
+    - channel.*
+    - timer.*
+    - sessions.*
+- source: "aegis-cli-internal"
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
+- source: "aegis-cli-internal"
+  destination: "project-manager*"
+  commands:
+    - user.goal
+    - chat.message
+- source: store
+  destination: "aegis-cli-internal"
+  commands:
+    - "*"
+
+# daemon-internal: persistent client for the long-lived daemon process (bg probes, portal
+# bridge, setupDefaultMainChannelAndMembers, SSE/dashboard, etc.). CLI uses aegis-cli-internal.
+# daemon-internal-N (legacy ephemeral fallback; should no longer appear after persistent clients):
+# (the readiness probe in startBase, setupDefaultMainChannelAndMembers for auto "main",
+# status store probe, portal bridge internal sends, dashboard/SSE stats (timer.list + sessions.list + channel.list),
+# chat sessions host, etc.). Each CLI invocation starts its local counter, so you often see "daemon-internal-1".
+# They must be allowed channel.* / timer.* / sessions.* to store for readiness, status, dashboard,
+# auto-main, channel ops, and collab paths. Without this, probes get ACL violations, the bg store-ready
+# gate never succeeds (or times out), lazy Court never starts, base stays "launch attempted (Store still starting...)",
+# and logs spam violations on every poll / 2s SSE tick during startup or steady state.
+- source: "daemon-internal*"
+  destination: store
+  commands:
+    - channel.*
+    - timer.*
+    - sessions.*
+    - skill.*
+    - proposal.*
+- source: "daemon-internal-*"
+  destination: store
+  commands:
+    - channel.*
+    - timer.*
+    - sessions.*
+    - skill.*
+    - proposal.*
+# Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
+# clients for the commands above (responses may carry the original command name in audit; observed
+# as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).
+# Grant broad "*" for these internal sources so status, auto-defaults, Court setup, PM ensure add_member,
+# and portal stats all succeed without ACL noise once Store is bridged.
+- source: store
+  destination: "daemon-internal*"
+  commands:
+    - "*"
+- source: store
+  destination: "daemon-internal-*"
+  commands:
+    - "*"
+
+# Project Manager <-> Network Boundary for real LLM plan generation (same contract as agents; enables unmocked Ollama E2E via NewRealLLMCaller)
+- source: "project-manager*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "project-manager*"
+  commands:
+    - llm.*
 
 # Memory <-> Store (long-term persistence per memory-vm.md)
 - source: memory

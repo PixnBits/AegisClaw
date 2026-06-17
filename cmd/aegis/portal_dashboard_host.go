@@ -51,6 +51,11 @@ func hostCollectOverviewBundle() map[string]interface{} {
 	sessions, _ := callStoreSessionsAction("sessions.list", nil)
 	sessCount := countItems(sessions)
 
+	channelCount := 0
+	if chs, err := sendToComponentViaHub("store", "channel.list", nil); err == nil {
+		channelCount = countItems(chs)
+	}
+
 	hostRAMTotalMB := int64(toFloat64(hostStats["host_ram_total_mb"]))
 	hostRAMUsedMB := int64(toFloat64(hostStats["host_ram_used_mb"]))
 	hostRAMPct := int(toFloat64(hostStats["host_ram_pct"]))
@@ -60,6 +65,7 @@ func hostCollectOverviewBundle() map[string]interface{} {
 		"worker_count":         len(workers),
 		"approval_count":       0,
 		"session_count":        sessCount,
+		"channel_count":        channelCount,
 		"timer_count":          timerCount,
 		"memory_count":         0,
 		"running_vm_count":     runningVMCount,

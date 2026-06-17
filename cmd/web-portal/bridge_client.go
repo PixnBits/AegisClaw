@@ -85,7 +85,9 @@ func newHubBridgeClient() (dashboard.APIClient, error) {
 	return c, nil
 }
 
-// dialHubOrPortalBridge tries unix hub, then guest→host hub vsock, then host portal bridge.
+// dialHubOrPortalBridge connects the portal guest to backends.
+// In Firecracker, guest outbound vsock dial to the host (:9999 / :1030) is unreliable;
+// use the inverted guest hub bridge (guest listens :9101, host dials in) per store/court VMs.
 func dialHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
 	socket := expandPath(getHubSocket())
 	if st, statErr := os.Stat(socket); statErr == nil && !st.IsDir() {
@@ -95,14 +97,17 @@ func dialHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
 	}
 
 	if runningInFirecrackerGuest() {
-		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.HubVsockPort, 16, 250*time.Millisecond); dialErr == nil {
+		if c, dialErr := acceptGuestHubBridgeConn(); dialErr == nil {
 			return c, false, nil
 		}
-		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.PortalBridgeVsockPort, 24, 500*time.Millisecond); dialErr == nil {
+		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.HubVsockPort, 8, 250*time.Millisecond); dialErr == nil {
+			return c, false, nil
+		}
+		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.PortalBridgeVsockPort, 12, 500*time.Millisecond); dialErr == nil {
 			return c, true, nil
 		}
-		return nil, false, fmt.Errorf("web-portal guest: failed to reach Hub (vsock :%d) or host portal bridge (vsock :%d)",
-			hubclient.HubVsockPort, hubclient.PortalBridgeVsockPort)
+		return nil, false, fmt.Errorf("web-portal guest: failed guest hub bridge :%d or host vsock :%d/:%d",
+			hubclient.GuestHubBridgePort, hubclient.HubVsockPort, hubclient.PortalBridgeVsockPort)
 	}
 
 	if c, dialErr := net.Dial("unix", socket); dialErr == nil {
@@ -113,6 +118,19 @@ func dialHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
 	}
 	return nil, false, fmt.Errorf("web-portal: failed to connect to Hub (unix %s and vsock :%d)",
 		socket, hubclient.HubVsockPort)
+}
+
+func acceptGuestHubBridgeConn() (net.Conn, error) {
+	ln, err := vsock.Listen(hubclient.GuestHubBridgePort, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer ln.Close()
+	conn, err := ln.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 func runningInFirecrackerGuest() bool {

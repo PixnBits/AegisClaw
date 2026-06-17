@@ -1,11 +1,7 @@
-// Package dashboard implements the local web dashboard for AegisClaw Phase 4.
-//
-// Architecture: pure Go + html/template, no external frameworks.
-// SSE endpoint (/events) pushes real-time updates for live views.
-// All state is fetched from the daemon via the Unix socket API.
 package dashboard
 
 import (
+	"AegisClaw/internal/portalstomp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +17,7 @@ type Server struct {
 	apiClient APIClient
 	funcMap   template.FuncMap
 	mux       *http.ServeMux
+	stompHub  *portalstomp.Hub
 }
 
 // APIClient abstracts daemon API calls for the dashboard.
@@ -49,7 +46,11 @@ func New(addr string, client APIClient) (*Server, error) {
 			}
 			return t.Format("2006-01-02 15:04:05")
 		},
-		"truncate": func(s string, n int) string {
+		"truncate": func(v interface{}, n int) string {
+			if v == nil {
+				return ""
+			}
+			s := fmt.Sprintf("%v", v)
 			if len(s) <= n {
 				return s
 			}
@@ -163,6 +164,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/proposals/", s.handleAPIProposalDetail)
 	s.mux.HandleFunc("/api/workspace/read", s.handleAPIWorkspaceRead)
 
+	// Channels-first SPA (web-portal-vm.md: dynamic API routes + STOMP gateway in portal sandbox)
+	s.initSTOMP()
+	s.mux.HandleFunc("/stomp", s.handleSTOMP)
+	s.mux.HandleFunc("/api/dashboard", s.handleAPIDashboard)
+	s.mux.HandleFunc("/api/monitoring", s.handleAPIMonitoring)
+	s.mux.HandleFunc("/api/channels", s.handleAPIChannels)
+	s.mux.HandleFunc("/api/channels/", s.handleAPIChannels)
+
 	// Recommended public REST endpoints per web-portal.md for E2E/SDLC visibility
 	s.mux.HandleFunc("/api/skills", s.handleAPISkills)
 	s.mux.HandleFunc("/api/approvals", s.handleAPIApprovals)
@@ -178,6 +187,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	// Fetch quick-stats from the daemon.
 	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
+	workers = safeWorkersList(workers)
 	approvals, _ := s.fetchRaw(r.Context(), "event.approvals.list", map[string]bool{"pending_only": true})
 	timers, _ := s.fetchRaw(r.Context(), "event.timers.list", nil)
 	sandboxes, _ := s.fetchRaw(r.Context(), "sandbox.list", map[string]bool{"running_only": true})
@@ -229,6 +239,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": false})
+	workers = safeWorkersList(workers)
 	s.renderTemplate(w, "Agents", agentsTmpl, map[string]interface{}{
 		"Workers": workers,
 	})
@@ -389,6 +400,7 @@ func (s *Server) handleCanvas(w http.ResponseWriter, r *http.Request) {
 	// via the existing /events SSE stream so no additional server state is
 	// needed.
 	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
+	workers = safeWorkersList(workers)
 	sandboxes, _ := s.fetchRaw(r.Context(), "sandbox.list", map[string]bool{"running_only": true})
 	skills, _ := s.fetchRaw(r.Context(), "skill.list", nil)
 
@@ -424,6 +436,7 @@ func (s *Server) handleTeams(w http.ResponseWriter, r *http.Request) {
 
 	// For demo, also pull workers so we can show member counts by team
 	workers, _ := s.fetchRaw(r.Context(), "worker.list", map[string]bool{"active_only": true})
+	workers = safeWorkersList(workers)
 	enhancedWorkers := enhanceWorkersWithTeams(workers)
 
 	s.renderTemplate(w, "Teams", teamsTmpl, map[string]interface{}{
@@ -1008,6 +1021,30 @@ func countItems(v interface{}) int {
 	return 0
 }
 
+// safeWorkersList returns a []interface{} containing only map items (or nil).
+// It protects the Go templates (which do "index . "foo"" and truncate on
+// worker rows) from non-slice "Workers" values or lists containing non-map
+// entries. Such shapes have been observed from stubs, early startup bridge
+// responses, and json roundtrips for "worker.list".
+// This prevents "template exec error ... at <"worker_id"> : invalid value; expected string"
+// (and similar for other keys) and makes the dashboard resilient to partial data.
+func safeWorkersList(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+	list, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	clean := make([]interface{}, 0, len(list))
+	for _, it := range list {
+		if m, ok := it.(map[string]interface{}); ok {
+			clean = append(clean, m)
+		}
+	}
+	return clean
+}
+
 func sandboxResourceTotals(v interface{}) (vcpus int64, memoryMB int64, rssMB int64) {
 	if v == nil {
 		return 0, 0, 0
@@ -1349,7 +1386,7 @@ const agentsTmpl = `
     <tbody>
     {{range .Workers}}
     <tr>
-      <td><code>{{truncate (index . "worker_id") 8}}</code></td>
+      <td><code>{{with $id := or (index . "id") (index . "worker_id") (index . "name")}}{{if $id}}{{truncate $id 8}}{{else}}—{{end}}{{else}}—{{end}}</code></td>
       <td>{{index . "role"}}</td>
       <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
       <td>{{index . "step_count"}}</td>
@@ -1686,7 +1723,7 @@ const overviewTmpl = `
     <tbody>
     {{range .Workers}}
     <tr>
-      <td><code>{{truncate (index . "worker_id") 8}}</code></td>
+      <td><code>{{with $id := or (index . "id") (index . "worker_id") (index . "name")}}{{if $id}}{{truncate $id 8}}{{else}}—{{end}}{{else}}—{{end}}</code></td>
       <td>{{index . "role"}}</td>
       <td><span class="badge badge-{{index . "status"}}">{{index . "status"}}</span></td>
       <td>{{truncate (index . "task_description") 80}}</td>
@@ -4158,7 +4195,7 @@ func (s *Server) handleAPIProposals(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
 			return
 		}
-		json.NewEncoder(w).Encode(data) //nolint:errcheck
+		json.NewEncoder(w).Encode(spaNormalizeProposals(data)) //nolint:errcheck
 		return
 	}
 
@@ -4254,7 +4291,7 @@ func (s *Server) handleAPISkills(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
 		return
 	}
-	json.NewEncoder(w).Encode(data) //nolint:errcheck
+	json.NewEncoder(w).Encode(spaNormalizeSkills(data)) //nolint:errcheck
 }
 
 func (s *Server) handleAPIApprovals(w http.ResponseWriter, r *http.Request) {

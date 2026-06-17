@@ -35,6 +35,18 @@ fi
 KERNEL_DIR=$(dirname "$KERNEL_PATH")
 mkdir -p "$KERNEL_DIR"
 
+# Idempotency: if a kernel is already present and contains the virtio_rng driver
+# (the key artifact from the PR #63 / #62 CRNG fix), skip the download. This
+# prevents repeated full downloads during `make build-microvms` and makes it
+# safe to always invoke from build flows and doctor.
+if [ -f "$KERNEL_PATH" ]; then
+    if grep -q 'virtio_rng' "$KERNEL_PATH" 2>/dev/null || grep -q 'virtio-rng' "$KERNEL_PATH" 2>/dev/null; then
+        log "Kernel at $KERNEL_PATH already contains virtio_rng driver (post #63 fix for fast guest CRNG). Skipping download."
+        exit 0
+    fi
+    warn "Existing kernel at $KERNEL_PATH does not appear to include the virtio_rng driver; re-downloading the required 5.10+ kernel..."
+fi
+
 # Use a known-good minimal kernel from the Firecracker CI artifacts (v1.7 series).
 # This is a small vmlinux-5.10 build that includes CONFIG_HW_RANDOM_VIRTIO=y
 # (and other virtio drivers) built-in. Required for the virtio-rng device
@@ -62,7 +74,7 @@ warn "You should now set:"
 echo "  export AEGIS_KERNEL_PATH=$KERNEL_PATH"
 echo ""
 warn "Then start the daemon (re-run this script + restart after any kernel change):"
-echo "  sudo -E make start"
+echo "  sudo ./bin/aegis start --foreground"
 echo ""
 log "This kernel enables the virtio-rng device (see internal/sandbox/firecracker.go)"
 log "so that guest CRNG init happens in seconds instead of minutes."

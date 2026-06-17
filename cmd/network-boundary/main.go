@@ -450,6 +450,10 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	defer conn.Close()
 	timing.RecordPhase("hub_dialed")
 
+	if bootargs.UseHubVsock() {
+		startOllamaInvertBridge()
+	}
+
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
 	var connMutex sync.Mutex
@@ -829,6 +833,57 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				response.Command = "version"
 				response.Payload = map[string]string{"version": getBuildVersion()}
 			}
+
+		// llm.call: real Ollama path for Project Manager (and full agents via NewRealLLMCaller).
+		// Matches the wire contract in internal/agent/loop/loop.go: "llm.call" with payload
+		// { "request": {"model":.., "prompt":.., "stream":false}, "endpoint": "/api/generate" }.
+		// We call the configured ollama host (already in allowlist) directly (the boundary VM
+		// is the only component allowed egress). Returns shape expected by caller:
+		// Payload["response"] = the generated text (or raw ollama JSON string for compatibility).
+		// On any failure we set Command="error" so NewRealLLMCaller surfaces err and PM falls back.
+		case "llm.call":
+			if !boundaryHealthy {
+				response.Command = "error"
+				response.Payload = "Network Boundary degraded - LLM calls blocked for safety"
+				break
+			}
+			payload, ok := msg.Payload.(map[string]interface{})
+			if !ok {
+				response.Command = "error"
+				response.Payload = "invalid llm.call payload"
+				break
+			}
+			reqIface, _ := payload["request"].(map[string]interface{})
+			endpoint, _ := payload["endpoint"].(string)
+			if strings.TrimSpace(endpoint) == "" {
+				endpoint = "/api/generate"
+			}
+			model := ""
+			prompt := ""
+			if reqIface != nil {
+				if m, ok := reqIface["model"].(string); ok {
+					model = m
+				}
+				if p, ok := reqIface["prompt"].(string); ok {
+					prompt = p
+				}
+			}
+			if model == "" || prompt == "" {
+				response.Command = "error"
+				response.Payload = "llm.call requires model and prompt in request"
+				break
+			}
+
+			text, err := callOllamaGenerate(model, prompt, endpoint)
+			if err != nil {
+				response.Command = "error"
+				response.Payload = "ollama request failed: " + err.Error()
+				log.Printf("llm.call ollama request failed: %v", err)
+				break
+			}
+			response.Command = "llm.call.response"
+			response.Payload = map[string]interface{}{"response": text}
+			log.Printf("LLM plan gen via ollama (%s, %d bytes response)", model, len(text))
 
 		// === 7.1 Hub secrets delivery path (first implementation) ===
 		// The Store VM (via the Hub) can now push updated per-skill secrets

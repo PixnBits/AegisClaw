@@ -116,6 +116,39 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 		log.Println("  (hub/portal bridge connects in background — /health and vsock :18080 available immediately)")
 	}
 
+	// Serve the modern channels-first SPA UI (copied to /static in the guest image via Dockerfile,
+	// with dev fallbacks). This is the UI the e2e collaboration tests expect (data-testid channels-panel,
+	// nav-channels, channel-detail, channelPostForm etc). The SPA calls the /api/* endpoints provided
+	// by the dashboard srv below. We serve static assets + index.html for SPA routes (#channels etc),
+	// and delegate everything else (APIs, health, legacy pages) to the dashboard handler.
+	staticDir := "/static"
+	if _, err := os.Stat(filepath.Join(staticDir, "index.html")); err != nil {
+		if _, err2 := os.Stat("cmd/web-portal/static/index.html"); err2 == nil {
+			staticDir = "cmd/web-portal/static"
+		} else if _, err3 := os.Stat("../../cmd/web-portal/static/index.html"); err3 == nil {
+			staticDir = "../../cmd/web-portal/static"
+		}
+	}
+	log.Printf("web-portal: serving channels SPA static from %s", staticDir)
+	staticFS := http.FileServer(http.Dir(staticDir))
+
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		if p == "/" || p == "/index.html" || strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".map") || strings.HasSuffix(p, ".ico") || strings.HasSuffix(p, ".png") || strings.HasSuffix(p, ".svg") {
+			if p == "/" || p == "/index.html" {
+				http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
+				return
+			}
+			staticFS.ServeHTTP(w, r)
+			return
+		}
+		// Delegate /api/* , /health, legacy /chat etc to dashboard (SPA consumes the APIs; legacy pages still work)
+		srv.ServeHTTP(w, r)
+	})
+
 	// Additionally serve the exact same handler over vsock port 18080 when possible.
 	// This is the path the Host Daemon reverse proxy uses for Firecracker microVM web-portal
 	// instances (no NIC / no direct network per web-portal-vm.md). Safe no-op on Docker
@@ -131,7 +164,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 			guestLogger.Info("vsock listener ready", "port", 18080, "status", "success")
 			timing.RecordPhase("vsock_18080_ready")
 			// Separate server so the main tcp ListenAndServe below can still be fatal.
-			s2 := &http.Server{Handler: srv}
+			s2 := &http.Server{Handler: h}
 			if serveErr := s2.Serve(l); serveErr != nil && serveErr != http.ErrServerClosed {
 				log.Printf("vsock HTTP server exited: %v", serveErr)
 			}
@@ -172,7 +205,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	log.Println("!!! DEBUG: Starting main TCP ListenAndServe on", listenAddr)
 	timing.RecordPhase("http_listeners_ready")
 	timing.WriteComponentReadySentinel()
-	log.Fatal(http.ListenAndServe(listenAddr, srv))
+	log.Fatal(http.ListenAndServe(listenAddr, h))
 }
 
 func main() {
@@ -186,7 +219,7 @@ func main() {
 
 // noopAPIClient satisfies dashboard.APIClient when the Hub is unreachable.
 // This is the intentional fallback when the web-portal is started without a live
-// AegisHub/daemon connection (see AGENTS.md for proper startup via `make start`).
+// AegisHub/daemon connection (see AGENTS.md for proper startup via `sudo ./bin/aegis start`).
 // It allows the static UI shell and documented public REST endpoints to remain
 // functional for contract testing and development.
 //
@@ -202,7 +235,7 @@ type noopAPIClient struct{}
 func (n *noopAPIClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
 	return &dashboard.APIResponse{
 		Success: false,
-		Error:   "web-portal: no live daemon connection (start via `make start` per AGENTS.md). Action not available: " + action,
+		Error:   "web-portal: no live daemon connection (start via `sudo ./bin/aegis start` per AGENTS.md). Action not available: " + action,
 	}, nil
 }
 

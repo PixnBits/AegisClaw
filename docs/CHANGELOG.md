@@ -21,7 +21,7 @@ All notable changes to this project are documented here. The format is based on 
 - **Clean make targets + release notes (Task 7.8 priority 3)**:
   - `make sbom` fully documented in `make help` and Makefile comments (additive, modeled on existing test-* targets).
   - This CHANGELOG.md (v2 entry) as the initial release notes draft (summarizes 7.5 TCB hardening, 7.6/7.7 autonomy + chaos + coverage, 7.8 SBOM).
-  - No changes to any existing `make start/stop/test/test-chaos` or doctor behavior.
+  - No changes to any existing start/stop (`sudo ./bin/aegis start`), `make test/test-chaos` or doctor behavior.
 
 - **Final security audit + verification (Task 7.8 priorities 4-5)**:
   - Review of 7.5 TCB (key distribution, watchdog, containment, socket auth, expanded doctor) against threat-model.md and host-daemon.md.

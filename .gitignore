@@ -15,6 +15,7 @@ bin/
 /shared/ollama/id_ed25519*
 /guest-agent
 *.log
+*.log.*
 /logs
 proposals.json
 skills.json
