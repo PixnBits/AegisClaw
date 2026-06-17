@@ -79,9 +79,39 @@ function updateConnectionStatus(mode) {
   elements.connectionLabel.textContent = labels[mode] || 'Conn …';
 }
 
+function unwrapChannelEvent(event) {
+  if (!event) return null;
+  if (typeof event === 'string') {
+    try {
+      return JSON.parse(event);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof event === 'object') return event;
+  return null;
+}
+
+function applyHarnessRealtime(payload, channelId) {
+  if (!payload?.type?.startsWith('harness.') || !channelId) return;
+  const prev = state.harnessByChannel[channelId] || { plan: null, tasks: [] };
+  state.harnessByChannel[channelId] = applyHarnessEvent(prev, payload);
+  if (state.currentChannel?.id === channelId && elements.harnessOverview) {
+    renderHarnessOverview(elements.harnessOverview, state.harnessByChannel[channelId]);
+  }
+  if (activePage() === 'canvas') {
+    loadCanvas().catch(() => {});
+  }
+}
+
 function handleRealtimeMessage(payload) {
   if (!payload?.type) return;
   if (payload.type === EVENT.channelActivity && payload.channel_id) {
+    const inner = unwrapChannelEvent(payload.event);
+    if (inner?.type?.startsWith('harness.')) {
+      applyHarnessRealtime(inner, payload.channel_id);
+      return;
+    }
     if (state.currentChannel?.id === payload.channel_id) {
       refreshCurrentChannelMessages();
     }
@@ -104,14 +134,7 @@ function handleRealtimeMessage(payload) {
     loadCanvas().catch(() => {});
   }
   if (String(payload.type).startsWith('harness.')) {
-    const chId = payload.channel_id || state.currentChannel?.id;
-    if (chId) {
-      const prev = state.harnessByChannel[chId] || { plan: null, tasks: [] };
-      state.harnessByChannel[chId] = applyHarnessEvent(prev, payload);
-      if (state.currentChannel?.id === chId && elements.harnessOverview) {
-        renderHarnessOverview(elements.harnessOverview, state.harnessByChannel[chId]);
-      }
-    }
+    applyHarnessRealtime(payload, payload.channel_id || state.currentChannel?.id);
   }
 }
 
@@ -432,7 +455,8 @@ function refreshActiveWorkPanel() {
 }
 
 async function loadCanvas() {
-  const data = await fetchJSON('/api/canvas');
+  const channelId = state.currentChannel?.id || 'main';
+  const data = await fetchJSON(`/api/canvas?channel_id=${encodeURIComponent(channelId)}`);
   renderCanvas(elements.canvasRoot, data);
 }
 
@@ -570,9 +594,12 @@ function navigate(page) {
     btn.classList.toggle('is-active', btn.dataset.navPage === safePage);
   });
   document.title = `${PAGE_TITLES[safePage]} — AegisClaw Secure Command Center`;
+  const channelId = state.currentChannel?.id;
+  const planId = state.harnessByChannel[channelId]?.plan?.plan_id
+    || state.harnessByChannel.main?.plan?.plan_id;
   realtime.setViewTopics(safePage, {
-    channelId: state.currentChannel?.id,
-    planId: state.harnessByChannel[state.currentChannel?.id]?.plan?.plan_id,
+    channelId: safePage === 'canvas' ? (channelId || 'main') : channelId,
+    planId,
     proposalId: state.selectedProposal?.id,
   });
   if (safePage === 'canvas') loadCanvas().catch(() => {});

@@ -195,54 +195,22 @@ func (s *Server) handleAPICanvas(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
 	}
+	channelID := strings.TrimSpace(r.URL.Query().Get("channel_id"))
+	if channelID == "" {
+		channelID = "main"
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
 	defer cancel()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.collectCanvasState(ctx)) //nolint:errcheck
+	json.NewEncoder(w).Encode(s.collectCanvasState(ctx, channelID)) //nolint:errcheck
 }
 
-func (s *Server) collectCanvasState(ctx context.Context) map[string]interface{} {
-	workers, _ := s.fetchRaw(ctx, "worker.list", nil)
-	tasks := []contracts.NarrowTask{}
-	if list, ok := workers.([]interface{}); ok {
-		for i, raw := range list {
-			m, ok := raw.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			progress := 0
-			if p, ok := m["progress"].(string); ok && strings.HasSuffix(p, "%") {
-				fmt.Sscanf(p, "%d", &progress)
-			}
-			tasks = append(tasks, contracts.NarrowTask{
-				TaskID:       fmt.Sprintf("task_%d", i+1),
-				AgentPersona: spaStringOr(m["role"], spaStringOr(m["name"], "agent")),
-				Scope:        sanitize.Text(sanitize.ContextChat, spaStringOr(m["task"], "idle")),
-				Status:       spaStringOr(m["status"], "running"),
-				CurrentStage: "Execute",
-				Progress:     progress,
-				LastUpdate:   time.Now().UTC().Format(time.RFC3339),
-			})
-		}
-	}
-	plan := map[string]interface{}{
-		"goal":   "Active inter-agent collaboration",
-		"stages": contracts.DefaultStages(),
-	}
-	if raw, err := s.fetchRaw(ctx, "harness.get", map[string]string{"channel_id": "main"}); err == nil {
-		if m, ok := raw.(map[string]interface{}); ok {
-			if p, ok := m["plan"].(map[string]interface{}); ok && p != nil {
-				plan = p
-			}
-			if ts, ok := m["tasks"].([]interface{}); ok && len(ts) > 0 {
-				tasks = harnessFromMap(m).Tasks
-			}
-		}
-	}
-	return map[string]interface{}{
-		"plan":  plan,
-		"tasks": tasks,
-	}
+func (s *Server) collectCanvasState(ctx context.Context, channelID string) map[string]interface{} {
+	state := s.collectHarnessState(ctx, channelID)
+	body, _ := json.Marshal(state)
+	out := map[string]interface{}{"channel_id": channelID}
+	_ = json.Unmarshal(body, &out)
+	return out
 }
 
 func (s *Server) handleProposalAction(w http.ResponseWriter, r *http.Request, proposalID, action string) {
