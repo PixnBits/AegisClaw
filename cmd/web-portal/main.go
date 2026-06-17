@@ -247,6 +247,7 @@ type e2eFixtureClient struct {
 	skills    map[string]map[string]interface{}
 	proposals map[string]map[string]interface{}
 	created   map[string]map[string]interface{} // ephemeral creates during a test run
+	channels  map[string]map[string]interface{} // mutable channel state for collab E2E
 }
 
 func tryNewE2EFixtureClient() *e2eFixtureClient {
@@ -264,7 +265,9 @@ func tryNewE2EFixtureClient() *e2eFixtureClient {
 		skills:    map[string]map[string]interface{}{},
 		proposals: map[string]map[string]interface{}{},
 		created:   map[string]map[string]interface{}{},
+		channels:  map[string]map[string]interface{}{},
 	}
+	c.seedChannels()
 
 	if skillsFile != "" {
 		if b, err := os.ReadFile(filepath.Join(dataDir, skillsFile)); err == nil {
@@ -286,6 +289,40 @@ func tryNewE2EFixtureClient() *e2eFixtureClient {
 		return nil
 	}
 	return c
+}
+
+func (c *e2eFixtureClient) seedChannels() {
+	c.channels["main"] = map[string]interface{}{
+		"id": "main",
+		"members": []interface{}{
+			map[string]interface{}{"role": "project-manager"},
+			map[string]interface{}{"role": "court-persona-user-advocate"},
+			map[string]interface{}{"role": "user"},
+		},
+		"messages": []interface{}{},
+	}
+}
+
+func (c *e2eFixtureClient) channelMessages(id string) []interface{} {
+	ch := c.channels[id]
+	if ch == nil {
+		return []interface{}{}
+	}
+	if msgs, ok := ch["messages"].([]interface{}); ok {
+		return msgs
+	}
+	return []interface{}{}
+}
+
+func (c *e2eFixtureClient) channelMembers(id string) []interface{} {
+	ch := c.channels[id]
+	if ch == nil {
+		return []interface{}{}
+	}
+	if members, ok := ch["members"].([]interface{}); ok {
+		return members
+	}
+	return []interface{}{}
 }
 
 func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
@@ -416,23 +453,89 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "channel.list":
-		data, _ := json.Marshal([]interface{}{
-			map[string]interface{}{"id": "main", "members": []interface{}{
-				map[string]interface{}{"role": "project-manager"},
-				map[string]interface{}{"role": "user"},
-			}},
-		})
+		list := []interface{}{}
+		for id, ch := range c.channels {
+			list = append(list, map[string]interface{}{
+				"id":      id,
+				"members": ch["members"],
+			})
+		}
+		data, _ := json.Marshal(list)
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "channel.get":
-		data, _ := json.Marshal(map[string]interface{}{
-			"id": "main", "messages": []interface{}{},
-			"members": []interface{}{
-				map[string]interface{}{"role": "project-manager"},
-				map[string]interface{}{"role": "court-persona-user-advocate"},
-				map[string]interface{}{"role": "user"},
-			},
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		id := req["id"]
+		if id == "" {
+			id = "main"
+		}
+		ch := c.channels[id]
+		if ch == nil {
+			ch = map[string]interface{}{"id": id, "members": []interface{}{}, "messages": []interface{}{}}
+		}
+		data, _ := json.Marshal(ch)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "channel.post":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		id := req["channel_id"]
+		if id == "" {
+			id = "main"
+		}
+		if c.channels[id] == nil {
+			c.seedChannels()
+		}
+		msgs := c.channelMessages(id)
+		msgs = append(msgs, map[string]interface{}{
+			"from":    req["from"],
+			"content": req["content"],
+			"ts":      time.Now().UTC().Format(time.RFC3339),
 		})
+		c.channels[id]["messages"] = msgs
+		data, _ := json.Marshal(map[string]interface{}{"ok": true})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "channel.add_member":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		id := req["channel_id"]
+		role := req["role"]
+		if c.channels[id] == nil {
+			c.channels[id] = map[string]interface{}{"id": id, "members": []interface{}{}, "messages": []interface{}{}}
+		}
+		members := c.channelMembers(id)
+		members = append(members, map[string]interface{}{"role": role})
+		c.channels[id]["members"] = members
+		data, _ := json.Marshal(map[string]interface{}{"ok": true})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "channel.remove_member":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		id := req["channel_id"]
+		role := req["role"]
+		members := c.channelMembers(id)
+		filtered := []interface{}{}
+		for _, raw := range members {
+			m, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if toStringFixture(m["role"]) == role {
+				continue
+			}
+			filtered = append(filtered, m)
+		}
+		if c.channels[id] != nil {
+			c.channels[id]["members"] = filtered
+		}
+		data, _ := json.Marshal(map[string]interface{}{"ok": true})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "channel.fanout":
+		data, _ := json.Marshal(map[string]interface{}{"ok": true})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	// Phase 5 Group 1 polish (final): Complete deterministic fixture responses for Git/Workspace/Memory/Approvals
@@ -608,6 +711,16 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 // tiny helper (no rand import needed for test fixture ids)
 func randomSuffix() string {
 	return time.Now().Format("05000")
+}
+
+func toStringFixture(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
 }
 
 // getWebPortalListenAddr returns the address the web-portal should listen on.

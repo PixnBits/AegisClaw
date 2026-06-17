@@ -40,7 +40,7 @@
       <div class="topbar-meta">
         <div class="status-chip" data-testid="connection-status-chip">
           <span class="status-dot status-dot--success" aria-hidden="true"></span>
-          <span id="connectionStatusLabel">Conn …</span>
+          <span id="connectionStatusLabel" data-testid="connection-status-label">Conn …</span>
         </div>
         <div class="status-chip" data-testid="notification-chip">Notifications <span id="notificationCount">0</span></div>
         <button type="button" class="avatar-button" data-testid="avatar-button">Operator ▾</button>
@@ -212,9 +212,9 @@
               <h4>Members / Participants</h4>
               <ul id="membersList" class="list-stack" data-testid="members-list"></ul>
 
-              <form id="addMemberForm" class="inline-form" novalidate>
-                <input id="newMemberRole" type="text" placeholder="project-manager or coder or user:alice" required />
-                <button type="submit" class="secondary-button">Add Participant</button>
+              <form id="addMemberForm" class="inline-form" data-testid="add-member-form" novalidate>
+                <input id="newMemberRole" type="text" placeholder="project-manager or coder or user:alice" required data-testid="add-member-input" />
+                <button type="submit" class="secondary-button" data-testid="add-member-button">Add Participant</button>
               </form>
 
               <h4>Channel History / Messages</h4>
