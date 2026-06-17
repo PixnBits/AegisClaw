@@ -52,6 +52,8 @@ test.describe('Web Portal real-time (fixture)', () => {
     await openMainChannel(page);
 
     const role = `coder-${Date.now()}`;
+    await page.getByTestId('toggle-invite-button').click();
+    await expect(page.getByTestId('add-member-form')).toBeVisible({ timeout: 5000 });
     await page.getByTestId('add-member-input').fill(role);
     await page.getByTestId('add-member-button').click();
 

@@ -122,7 +122,8 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     await expect(page.locator('#statActiveAgents')).toBeVisible();
 
     await page.goto('/#monitoring');
-    await expect(page.getByTestId('monitoring-panel')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('dashboard-panel')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('dashboard-system-health')).toBeVisible();
   });
 
   test('User Journey 9 (SDLC end-to-end skeleton): Full proposal → status → audit flow via thin portal REST (maps to journey 04/09 + web-portal e2e sdlc vision)', async ({ request }) => {
@@ -256,7 +257,8 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     }
 
     await page.goto('/#monitoring');
-    await expect(page.getByTestId('monitoring-panel')).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId('dashboard-panel')).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId('dashboard-system-health')).toBeVisible();
 
     await openChannelsComposer(page);
     await expect(page.getByTestId('message-input')).toBeVisible({ timeout: 3000 }).catch(() => {});

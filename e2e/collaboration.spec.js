@@ -205,8 +205,9 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
   });
 
   test('User Journey 5+8: Monitoring + multi-agent/teams nav (browser)', async ({ page }) => {
-    await openHashPanel(page, 'monitoring', 'monitoring-panel');
-    await expect(page.getByTestId('monitoring-stats')).toBeVisible({ timeout: 10000 });
+    await openHashPanel(page, 'monitoring', 'dashboard-panel');
+    await expect(page.getByTestId('dashboard-system-health')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#statRunningVMs')).toBeVisible();
 
     await openHashPanel(page, 'teams', 'teams-panel');
     await expect(page.getByTestId('teams-list')).toBeAttached();
