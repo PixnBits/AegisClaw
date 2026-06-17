@@ -134,6 +134,9 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
+		if strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		if p == "/" || p == "/index.html" || strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".map") || strings.HasSuffix(p, ".ico") || strings.HasSuffix(p, ".png") || strings.HasSuffix(p, ".svg") {
 			if p == "/" || p == "/index.html" {
 				http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))

@@ -220,15 +220,39 @@ function renderMembers(members) {
   });
 }
 
+function formatMessageTime(ts) {
+  if (ts == null || ts === '') return '';
+  if (typeof ts === 'object') {
+    if (typeof ts.seconds === 'number') ts = ts.seconds * 1000;
+    else if (typeof ts.nanos === 'number' && typeof ts.seconds === 'number') ts = ts.seconds * 1000 + Math.floor(ts.nanos / 1e6);
+    else return '';
+  }
+  if (typeof ts === 'string' && /^\d+$/.test(ts)) ts = Number(ts);
+  const d = typeof ts === 'number'
+    ? new Date(ts > 1e15 ? ts / 1e6 : ts > 1e12 ? ts : ts * 1000)
+    : new Date(ts);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
+}
+
 function renderChannelMessages(messages) {
   const div = document.getElementById('channelMessages');
   if (!div) return;
-  div.innerHTML = '';
+  div.replaceChildren();
   messages.forEach((m) => {
     const entry = document.createElement('div');
     entry.className = 'message';
-    const ts = m.ts ? new Date(m.ts / 1000000).toLocaleTimeString() : '';
-    entry.innerHTML = `<strong>${m.from || 'unknown'}</strong> <small>${ts}</small><br>${m.content || ''}`;
+
+    const header = document.createElement('div');
+    const who = document.createElement('strong');
+    who.textContent = m.from || 'unknown';
+    const when = document.createElement('small');
+    when.textContent = formatMessageTime(m.ts);
+    header.append(who, document.createTextNode(' '), when);
+
+    const body = document.createElement('div');
+    body.textContent = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+
+    entry.append(header, body);
     div.appendChild(entry);
   });
   div.scrollTop = div.scrollHeight;

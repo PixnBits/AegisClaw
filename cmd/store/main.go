@@ -518,7 +518,7 @@ func runStore(cmd *cobra.Command, args []string) {
 		response := Message{
 			Source:      "store",
 			Destination: msg.Source,
-			Timestamp:   "2026-05-09T19:40:01Z",
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			Signature:   "",
 		}
 
