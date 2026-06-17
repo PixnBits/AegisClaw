@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/dashboard/realtime"
 	"AegisClaw/internal/portalstomp"
 )
 
@@ -19,22 +20,16 @@ func (s *Server) initSTOMP() {
 	}
 }
 
-// PublishChannelSTOMP notifies subscribed browsers of a channel message (web-portal-vm.md STOMP gateway).
+// PublishChannelSTOMP notifies subscribed browsers of a channel activity event.
 func (s *Server) PublishChannelSTOMP(chID, from, content string) {
-	if s == nil || s.stompHub == nil || chID == "" {
-		return
-	}
-	payload, err := json.Marshal(map[string]interface{}{
-		"type":       "channel.message",
-		"channel_id": chID,
-		"from":       from,
-		"content":    content,
-		"ts":         time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		return
-	}
-	s.stompHub.Publish(portalstomp.ChannelTopic(chID), payload)
+	s.initSTOMP()
+	realtime.NewPublisher(s.stompHub).PublishChannelActivity(chID, from, content)
+}
+
+// stompPublisher returns a sanitized STOMP publisher for the server hub.
+func (s *Server) stompPublisher() *realtime.Publisher {
+	s.initSTOMP()
+	return realtime.NewPublisher(s.stompHub)
 }
 
 func (s *Server) handleSTOMP(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +129,10 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		s.initSTOMP()
 		s.PublishChannelSTOMP(parts[0], from, postReq.Content)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
+
+	case len(parts) == 2 && parts[1] == "harness" && r.Method == http.MethodGet:
+		state := s.collectHarnessState(ctx, parts[0])
+		json.NewEncoder(w).Encode(state) //nolint:errcheck
 
 	case len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodPost:
 		_, _ = s.fetchRaw(ctx, "channel.archive", map[string]interface{}{"channel_id": parts[0]})

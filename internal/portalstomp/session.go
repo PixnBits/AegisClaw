@@ -2,6 +2,8 @@ package portalstomp
 
 import (
 	"sync"
+
+	"AegisClaw/internal/dashboard/contracts"
 )
 
 // Session is one browser STOMP connection.
@@ -43,7 +45,7 @@ func (s *Session) HandleFrame(command string, headers map[string]string, body st
 	case "SUBSCRIBE":
 		dest := headers["destination"]
 		subID := headers["id"]
-		if dest == "" {
+		if dest == "" || !contracts.IsAllowedTopic(dest) {
 			return
 		}
 		s.mu.Lock()

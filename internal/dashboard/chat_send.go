@@ -209,6 +209,9 @@ func handleChatSendStream(w http.ResponseWriter, r *http.Request, client APIClie
 }
 
 func fetchRaw(ctx context.Context, client APIClient, action string, req interface{}) (interface{}, error) {
+	if err := bridgeGuard.Validate(action); err != nil {
+		return nil, err
+	}
 	var payload json.RawMessage
 	if req != nil {
 		payload, _ = json.Marshal(req)

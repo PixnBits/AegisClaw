@@ -3,12 +3,12 @@ package portalstomp
 import "testing"
 
 func TestParseFrameSubscribe(t *testing.T) {
-	raw := "SUBSCRIBE\nid:sub-1\ndestination:/topic/channels.main.messages\n\n\x00"
+	raw := "SUBSCRIBE\nid:sub-1\ndestination:/topic/channel.main.activity\n\n\x00"
 	cmd, headers, body, ok := ParseFrame(raw)
 	if !ok || cmd != "SUBSCRIBE" {
 		t.Fatalf("parse failed: %v", cmd)
 	}
-	if headers["destination"] != "/topic/channels.main.messages" {
+	if headers["destination"] != "/topic/channel.main.activity" {
 		t.Fatalf("destination: %v", headers)
 	}
 	if body != "" {
@@ -21,9 +21,9 @@ func TestHubPublishDeliver(t *testing.T) {
 	sess := NewSession(hub)
 	sess.HandleFrame("SUBSCRIBE", map[string]string{
 		"id":          "sub-1",
-		"destination": "/topic/channels.main.messages",
+		"destination": "/topic/channel.main.activity",
 	}, "")
-	hub.Publish("/topic/channels.main.messages", []byte(`{"ok":true}`))
+	hub.Publish("/topic/channel.main.activity", []byte(`{"ok":true}`))
 	frame := <-sess.Outbound()
 	if len(frame) < 7 || frame[:7] != "MESSAGE" {
 		t.Fatalf("bad frame %q", frame)
