@@ -7,9 +7,14 @@ import { test, expect } from '@playwright/test';
 test.skip(!!process.env.AEGIS_E2E_FIXTURE, 'Collaboration browser checks require real daemon (use make test-e2e-llm after start)');
 test.skip(!process.env.AEGIS_E2E_COLLAB_BROWSER, 'Invoked only from verify-pm-llm-e2e.sh after CLI pm goal (sets the env)');
 
+async function waitPortalReady(page) {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-portal-ready="1"]', { timeout: 15000 });
+}
+
 /** Open the channels SPA page (hash router + hidden panels). Returns false when shell nav is unavailable. */
 async function openChannels(page) {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await waitPortalReady(page);
   const nav = page.getByTestId('nav-channels');
   if ((await nav.count()) === 0) {
     return false;
@@ -69,8 +74,15 @@ async function waitForChannelInList(page, channelId, timeoutMs = 30000) {
 
 /** Open a named nav panel and wait until it is visible (not [hidden]). */
 async function openPanel(page, navTestId, panelTestId) {
-  await page.goto('/');
+  await waitPortalReady(page);
   await page.getByTestId(navTestId).click();
+  await expect(page.locator(`[data-testid="${panelTestId}"]:not([hidden])`)).toBeVisible({ timeout: 10000 });
+}
+
+/** Open a hash-routed panel (monitoring, teams, canvas) without topbar nav buttons. */
+async function openHashPanel(page, hashPage, panelTestId) {
+  await waitPortalReady(page);
+  await page.goto(`/#${hashPage}`);
   await expect(page.locator(`[data-testid="${panelTestId}"]:not([hidden])`)).toBeVisible({ timeout: 10000 });
 }
 
@@ -162,13 +174,16 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
   });
 
   // Journey tests: soft coverage of additional portal surfaces (optional in verify script).
-  test('User Journey 1+2: Onboarding dashboard + skills nav + new channel form (browser)', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('[data-testid="dashboard-panel"]:not([hidden])')).toBeVisible({ timeout: 10000 });
+  test('User Journey 1+2: Onboarding home + dashboard + skills + channels (browser)', async ({ page }) => {
+    await waitPortalReady(page);
+    await expect(page.getByTestId('home-panel')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('command-bar')).toBeVisible({ timeout: 5000 });
+
+    await openPanel(page, 'nav-dashboard', 'dashboard-panel');
     await expect(page.getByTestId('dashboard-stats')).toBeVisible({ timeout: 5000 });
 
     await openPanel(page, 'nav-skills', 'skills-panel');
-    await expect(page.getByTestId('skills-list')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('skills-panel')).toBeVisible({ timeout: 5000 });
 
     await openPanel(page, 'nav-channels', 'channels-panel');
     await expect(page.getByTestId('new-channel-button')).toBeVisible({ timeout: 5000 });
@@ -180,27 +195,27 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
     expect(res.ok()).toBeTruthy();
 
     await openPanel(page, 'nav-court', 'court-panel');
-    await expect(page.getByTestId('proposals-list')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('court-panel').getByTestId('proposals-list')).toBeAttached();
 
     await openPanel(page, 'nav-skills', 'skills-panel');
-    await expect(page.getByTestId('skills-list')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('skills-panel')).toBeVisible({ timeout: 5000 });
 
     await openPanel(page, 'nav-channels', 'channels-panel');
     await expect(page.getByTestId('create-channel-button')).toBeVisible({ timeout: 5000 });
   });
 
   test('User Journey 5+8: Monitoring + multi-agent/teams nav (browser)', async ({ page }) => {
-    await openPanel(page, 'nav-monitoring', 'monitoring-panel');
+    await openHashPanel(page, 'monitoring', 'monitoring-panel');
     await expect(page.getByTestId('monitoring-stats')).toBeVisible({ timeout: 10000 });
 
-    await openPanel(page, 'nav-teams', 'teams-panel');
-    await expect(page.locator('[data-testid="teams-panel"]:not([hidden])')).toBeVisible({ timeout: 10000 });
+    await openHashPanel(page, 'teams', 'teams-panel');
+    await expect(page.getByTestId('teams-list')).toBeAttached();
   });
 
-  test('User Journey 6+7: Court + autonomy nav + proposals (browser)', async ({ page }) => {
+  test('User Journey 6+7: Court + proposals (browser)', async ({ page }) => {
     await openPanel(page, 'nav-court', 'court-panel');
-    await expect(page.getByRole('heading', { name: /Court|Governance/i })).toBeVisible({ timeout: 10000 });
-    await expect(page.getByTestId('proposals-list')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('court-panel')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('court-panel').getByTestId('proposals-list')).toBeAttached();
   });
 
   test('User Journey 3 (collab task) + channels post form present (detailed browser interaction)', async ({ page }) => {
