@@ -323,6 +323,10 @@ func handlePortalDaemonLocal(command string, payload interface{}) (interface{}, 
 			}, nil
 		}
 		return map[string]interface{}{"content": "", "thinking": ""}, nil
+	case "goal.submit":
+		return portalGoalSubmit(payload)
+	case "harness.get":
+		return portalHarnessGet(payload)
 	case "event.approvals.list":
 		return []interface{}{}, nil
 	case "event.timers.list", "event.signals.list":
