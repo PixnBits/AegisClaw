@@ -39,7 +39,7 @@ func (s *Server) collectActiveWork(ctx context.Context) map[string]interface{} {
 			if !ok {
 				continue
 			}
-			items = append(items, map[string]interface{}{
+			items = append(items, sanitize.JSONMap(sanitize.ContextChat, map[string]interface{}{
 				"id":          stringField(m, "id"),
 				"persona":     spaStringOr(m["role"], spaStringOr(m["name"], "agent")),
 				"scope":       spaStringOr(m["task"], "idle"),
@@ -48,7 +48,7 @@ func (s *Server) collectActiveWork(ctx context.Context) map[string]interface{} {
 				"status":      spaStringOr(m["status"], "running"),
 				"channel_id":  spaStringOr(m["channel_id"], spaStringOr(m["team_id"], "")),
 				"last_update": time.Now().UTC().Format(time.RFC3339),
-			})
+			}))
 		}
 	}
 	proposals, _ := s.fetchRaw(ctx, "proposal.list", nil)
@@ -62,7 +62,7 @@ func (s *Server) collectActiveWork(ctx context.Context) map[string]interface{} {
 			if state == "approved" || state == "rejected" {
 				continue
 			}
-			items = append(items, map[string]interface{}{
+			items = append(items, sanitize.JSONMap(sanitize.ContextProposal, map[string]interface{}{
 				"id":          stringField(m, "id"),
 				"persona":     "court",
 				"scope":       spaStringOr(m["title"], "Proposal"),
@@ -72,7 +72,7 @@ func (s *Server) collectActiveWork(ctx context.Context) map[string]interface{} {
 				"channel_id":  spaStringOr(m["channel_id"], ""),
 				"proposal_id": stringField(m, "id"),
 				"last_update": time.Now().UTC().Format(time.RFC3339),
-			})
+			}))
 		}
 	}
 	return map[string]interface{}{"items": items, "count": len(items)}
@@ -172,7 +172,7 @@ func (s *Server) collectAgentTrace(ctx context.Context, agentID string) map[stri
 			phases = append(phases, map[string]interface{}{
 				"phase":   "Act",
 				"tool":    spaStringOr(m["tool"], "tool"),
-				"summary": fmt.Sprintf("%s (%s)", spaStringOr(m["tool"], "tool"), spaStringOr(m["status"], "ok")),
+				"summary": traceToolSummary(m),
 				"status":  spaStringOr(m["status"], "success"),
 				"ts":      time.Now().UTC().Format(time.RFC3339),
 			})
@@ -188,6 +188,18 @@ func (s *Server) collectAgentTrace(ctx context.Context, agentID string) map[stri
 		"session_id": sessionID,
 		"phases":     phases,
 	}
+}
+
+func traceToolSummary(m map[string]interface{}) string {
+	tool := spaStringOr(m["tool"], "tool")
+	parts := []string{tool}
+	for _, key := range []string{"input", "output", "args", "result", "path", "error"} {
+		if v := spaStringOr(m[key], ""); v != "" {
+			parts = append(parts, fmt.Sprintf("%s: %s", key, sanitize.Text(sanitize.ContextTrace, v)))
+		}
+	}
+	status := spaStringOr(m["status"], "ok")
+	return sanitize.Text(sanitize.ContextTrace, fmt.Sprintf("%s (%s)", strings.Join(parts, ", "), status))
 }
 
 func (s *Server) handleAPICanvas(w http.ResponseWriter, r *http.Request) {

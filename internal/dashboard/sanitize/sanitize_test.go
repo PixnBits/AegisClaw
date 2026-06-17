@@ -59,6 +59,20 @@ func TestJSONMapStripsInternalFields(t *testing.T) {
 	}
 }
 
+func TestValueSanitizesNestedMaps(t *testing.T) {
+	in := map[string]interface{}{
+		"content": "password: hunter2 path /etc/shadow",
+	}
+	out, ok := Value(ContextChat, in).(map[string]interface{})
+	if !ok {
+		t.Fatal("expected map")
+	}
+	content, _ := out["content"].(string)
+	if !strings.Contains(content, "[REDACTED]") {
+		t.Fatalf("content not redacted: %q", content)
+	}
+}
+
 func TestJSONBytesRoundTrip(t *testing.T) {
 	raw := []byte(`{"type":"channel.activity","event":{"from":"user","content":"token=abc123"}}`)
 	clean, err := JSONBytes(ContextChat, raw)

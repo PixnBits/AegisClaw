@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/dashboard/realtime"
+	"AegisClaw/internal/dashboard/sanitize"
 	"AegisClaw/internal/portalstomp"
 )
 
@@ -80,7 +81,9 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"channels": data}) //nolint:errcheck
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"channels": sanitize.Value(sanitize.ContextChat, data),
+		})
 
 	case len(parts) == 0 && r.Method == http.MethodPost:
 		var req struct{ ID string `json:"id"` }
@@ -99,7 +102,7 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(data) //nolint:errcheck
+		json.NewEncoder(w).Encode(sanitize.Value(sanitize.ContextChat, data)) //nolint:errcheck
 
 	case len(parts) == 1 && r.Method == http.MethodPost:
 		var postReq struct {
@@ -111,10 +114,11 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		if from == "" {
 			from = "user"
 		}
+		content := sanitize.Text(sanitize.ContextChat, postReq.Content)
 		_, err := s.fetchRaw(ctx, "channel.post", map[string]interface{}{
 			"channel_id": parts[0],
 			"from":       from,
-			"content":    postReq.Content,
+			"content":    content,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -124,10 +128,10 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.fetchRaw(ctx, "channel.fanout", map[string]interface{}{
 			"channel_id": parts[0],
 			"from":       from,
-			"content":    postReq.Content,
+			"content":    content,
 		})
 		s.initSTOMP()
-		s.PublishChannelSTOMP(parts[0], from, postReq.Content)
+		s.PublishChannelSTOMP(parts[0], from, content)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	case len(parts) == 2 && parts[1] == "harness" && r.Method == http.MethodGet:
@@ -295,7 +299,7 @@ func spaNormalizeSkills(data interface{}) []interface{} {
 		if name == "" {
 			name = id
 		}
-		out = append(out, map[string]interface{}{
+		out = append(out, sanitize.JSONMap(sanitize.ContextChat, map[string]interface{}{
 			"id":              id,
 			"name":            name,
 			"version":         spaStringOr(m["version"], "0.0.0"),
@@ -303,7 +307,7 @@ func spaNormalizeSkills(data interface{}) []interface{} {
 			"description":     spaStringOr(m["description"], ""),
 			"required_scopes": spaStringSliceOr(m["required_scopes"]),
 			"secrets":         spaStringSliceOr(m["secrets"]),
-		})
+		}))
 	}
 	return out
 }
@@ -324,14 +328,14 @@ func spaNormalizeProposals(data interface{}) []interface{} {
 		if title == "" {
 			title = id
 		}
-		out = append(out, map[string]interface{}{
+		out = append(out, sanitize.JSONMap(sanitize.ContextProposal, map[string]interface{}{
 			"id":             id,
 			"title":          title,
 			"status":         spaStringOr(m["state"], spaStringOr(m["status"], "pending")),
 			"summary":        spaStringOr(m["description"], spaStringOr(m["summary"], "")),
 			"votes":          spaStringOr(m["votes"], "0/0"),
 			"security_gates": []interface{}{},
-		})
+		}))
 	}
 	return out
 }

@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"AegisClaw/internal/dashboard/sanitize"
 	"AegisClaw/internal/portalstomp"
 	"context"
 	"encoding/json"
@@ -931,13 +932,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 					}
 					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
 						"type": evType,
-						"data": map[string]interface{}{
+						"data": sanitize.Value(sanitize.ContextTrace, map[string]interface{}{
 							"tool":        toString(ev["tool"]),
 							"agent_id":    toString(ev["session_id"]),
 							"agent_name":  toString(ev["session_id"]),
 							"error":       toString(ev["error"]),
 							"duration_ms": ev["duration_ms"],
-						},
+						}),
 					})
 				}
 			}
@@ -956,18 +957,18 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 					lastWorkerEventID = id
 					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
 						"type": "worker_start",
-						"data": wk,
+						"data": sanitize.Value(sanitize.ContextChat, wk),
 					})
 				}
 			}
 
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type":              "update",
-				"active_workers":    workers,
-				"pending_approvals": approvals,
-				"tool_events":       toolEvents,
-				"thought_events":    thoughtEvents,
-				"sessions":          sessionsList,
+				"active_workers":    sanitize.Value(sanitize.ContextChat, workers),
+				"pending_approvals": sanitize.Value(sanitize.ContextProposal, approvals),
+				"tool_events":       sanitize.Value(sanitize.ContextTrace, toolEvents),
+				"thought_events":    sanitize.Value(sanitize.ContextTrace, thoughtEvents),
+				"sessions":          sanitize.Value(sanitize.ContextChat, sessionsList),
 				"ts":                time.Now().UTC().Format(time.RFC3339),
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)
@@ -4301,7 +4302,7 @@ func (s *Server) handleAPIProposalDetail(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
-	json.NewEncoder(w).Encode(propData) //nolint:errcheck
+	json.NewEncoder(w).Encode(sanitize.Value(sanitize.ContextProposal, propData)) //nolint:errcheck
 }
 
 func (s *Server) handleAPISkills(w http.ResponseWriter, r *http.Request) {

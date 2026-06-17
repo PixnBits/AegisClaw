@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"AegisClaw/internal/dashboard/sanitize"
 )
 
 // HandleChatSend serves POST /chat/send (JSON body, optional ?stream=1 SSE).
@@ -126,7 +128,7 @@ func handleChatSendStream(w http.ResponseWriter, r *http.Request, client APIClie
 			if id := eventID(ev); id > lastToolID {
 				lastToolID = id
 			}
-			if !writeSSE(map[string]interface{}{"type": "tool_event", "event": ev}) {
+			if !writeSSE(map[string]interface{}{"type": "tool_event", "event": sanitize.Value(sanitize.ContextTrace, ev)}) {
 				return false
 			}
 		}
@@ -159,7 +161,7 @@ func handleChatSendStream(w http.ResponseWriter, r *http.Request, client APIClie
 			if id := eventID(ev); id > lastThoughtID {
 				lastThoughtID = id
 			}
-			if !writeSSE(map[string]interface{}{"type": "thought_event", "event": ev}) {
+			if !writeSSE(map[string]interface{}{"type": "thought_event", "event": sanitize.Value(sanitize.ContextTrace, ev)}) {
 				return false
 			}
 		}

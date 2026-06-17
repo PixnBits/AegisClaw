@@ -65,6 +65,26 @@ func JSONMap(ctx Context, m map[string]interface{}) map[string]interface{} {
 	return out
 }
 
+// Value sanitizes an arbitrary JSON-serializable value for browser responses.
+func Value(ctx Context, v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	clean, err := JSONBytes(ctx, b)
+	if err != nil {
+		return v
+	}
+	var out interface{}
+	if err := json.Unmarshal(clean, &out); err != nil {
+		return v
+	}
+	return out
+}
+
 // JSONBytes parses, sanitizes, and re-marshals JSON for STOMP/SSE payloads.
 func JSONBytes(ctx Context, body []byte) ([]byte, error) {
 	var v interface{}
