@@ -28,9 +28,9 @@ var allowedBridgeActions = map[string]struct{}{
 	"court.get_reviews":    {},
 
 	// System overview (read-only)
-	"worker.list":   {},
-	"sandbox.list":  {},
-	"system.stats":  {},
+	"worker.list":    {},
+	"sandbox.list":   {},
+	"system.stats":   {},
 	"sessions.list": {},
 
 	// Chat / trace (read + send)

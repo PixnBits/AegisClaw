@@ -304,7 +304,7 @@ function renderMembers(members) {
         if (!state.currentChannel || !confirm(`Remove ${role}?`)) return;
         await fetch(`/api/channels/${state.currentChannel.id}/members/remove`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Aegis-Confirmed': '1' },
           body: JSON.stringify({ role }),
         });
         const fresh = await fetchJSON(`/api/channels/${state.currentChannel.id}`);
@@ -402,7 +402,10 @@ async function addMember(ev) {
 
 async function archiveChannel() {
   if (!state.currentChannel || !confirm('Archive this channel?')) return;
-  await fetch(`/api/channels/${state.currentChannel.id}/archive`, { method: 'POST' });
+  await fetch(`/api/channels/${state.currentChannel.id}/archive`, {
+    method: 'POST',
+    headers: { 'X-Aegis-Confirmed': '1' },
+  });
   if (elements.channelDetail) elements.channelDetail.style.display = 'none';
   state.currentChannel = null;
   await loadChannelsForUI();

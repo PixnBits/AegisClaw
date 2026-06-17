@@ -4165,16 +4165,11 @@ func (s *Server) handleAPIProposals(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Thin delegation ONLY: forward to Store via signed bridge (no local state/logic)
-		resp, err := s.apiClient.Call(r.Context(), "proposal.create", mustMarshal(payload))
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
-			return
-		}
-		if !resp.Success {
+		ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+		defer cancel()
+		if _, err := s.fetchRaw(ctx, "proposal.create", payload); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": resp.Error}) //nolint:errcheck
+			json.NewEncoder(w).Encode(map[string]string{"error": sanitize.Text(sanitize.ContextChat, err.Error())}) //nolint:errcheck
 			return
 		}
 

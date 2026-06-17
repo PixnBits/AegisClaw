@@ -139,19 +139,39 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(state) //nolint:errcheck
 
 	case len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodPost:
-		_, _ = s.fetchRaw(ctx, "channel.archive", map[string]interface{}{"channel_id": parts[0]})
+		if bridgeGuard.NeedsConfirmation("channel.archive") && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
+		_, err := s.fetchRaw(ctx, "channel.archive", map[string]interface{}{"channel_id": parts[0]})
+		if err != nil {
+			http.Error(w, sanitize.Text(sanitize.ContextChat, err.Error()), http.StatusBadRequest)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	case len(parts) == 2 && parts[1] == "members" && r.Method == http.MethodPost:
 		var m struct{ Role string `json:"role"` }
 		_ = json.NewDecoder(r.Body).Decode(&m)
-		_, _ = s.fetchRaw(ctx, "channel.add_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
+		_, err := s.fetchRaw(ctx, "channel.add_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
+		if err != nil {
+			http.Error(w, sanitize.Text(sanitize.ContextChat, err.Error()), http.StatusBadRequest)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	case len(parts) == 3 && parts[1] == "members" && parts[2] == "remove" && r.Method == http.MethodPost:
+		if bridgeGuard.NeedsConfirmation("channel.remove_member") && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
 		var m struct{ Role string `json:"role"` }
 		_ = json.NewDecoder(r.Body).Decode(&m)
-		_, _ = s.fetchRaw(ctx, "channel.remove_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
+		_, err := s.fetchRaw(ctx, "channel.remove_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
+		if err != nil {
+			http.Error(w, sanitize.Text(sanitize.ContextChat, err.Error()), http.StatusBadRequest)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	default:
