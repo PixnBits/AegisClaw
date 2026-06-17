@@ -15,6 +15,7 @@ const state = {
   selectedProposal: null,
   traceAgentId: null,
   dashboardFilter: 'all',
+  monitoring: null,
 };
 
 const PAGE_TITLES = {
@@ -26,25 +27,33 @@ const PAGE_TITLES = {
   skills: 'Skills Registry',
   audit: 'Audit Log',
   settings: 'Settings',
-  monitoring: 'Monitoring',
+  monitoring: 'Dashboard',
   teams: 'Team Workspace',
   canvas: 'Canvas',
   trace: 'Single-Agent Trace',
 };
 
+const LAYOUT_BY_PAGE = {
+  home: 'layout--home',
+  channels: 'layout--channels',
+  dashboard: 'layout--dashboard',
+  canvas: 'layout--canvas',
+  trace: 'layout--trace',
+};
+
 const elements = {
+  workspaceGrid: document.getElementById('workspaceGrid'),
   systemStatusLabel: document.getElementById('systemStatusLabel'),
   runtimeLabel: document.getElementById('runtimeLabel'),
   notificationCount: document.getElementById('notificationCount'),
   safeModeLabel: document.getElementById('safeModeLabel'),
   connectionLabel: document.getElementById('connectionStatusLabel'),
-  activeAgentsList: document.getElementById('activeAgentsList'),
+  sidebarChannelsList: document.getElementById('sidebarChannelsList'),
   recentActivityList: document.getElementById('recentActivityList'),
+  homeRecentList: document.getElementById('homeRecentList'),
   skillsList: document.getElementById('skillsList'),
   proposalsList: document.getElementById('proposalsList'),
-  monitoringAgentsList: document.getElementById('monitoringAgentsList'),
-  monitoringLogs: document.getElementById('monitoringLogs'),
-  channelsList: document.getElementById('channelsList'),
+  channelEmptyState: document.getElementById('channelEmptyState'),
   newChannelForm: document.getElementById('newChannelForm'),
   newChannelId: document.getElementById('newChannelId'),
   channelDetail: document.getElementById('channelDetail'),
@@ -62,6 +71,8 @@ const elements = {
   canvasRoot: document.querySelector('[data-canvas-root]'),
   traceTimeline: document.getElementById('traceTimeline'),
   agentsList: document.getElementById('agentsList'),
+  harnessTeaserGoal: document.getElementById('harnessTeaserGoal'),
+  channelContextSummary: document.getElementById('channelContextSummary'),
 };
 
 const realtime = new RealtimeClient({
@@ -71,25 +82,16 @@ const realtime = new RealtimeClient({
 
 function updateConnectionStatus(mode) {
   if (!elements.connectionLabel) return;
-  const labels = {
-    stomp: 'Conn STOMP',
-    'sse-fallback': 'Conn SSE',
-    disconnected: 'Conn Off',
-  };
+  const labels = { stomp: 'Conn STOMP', 'sse-fallback': 'Conn SSE', disconnected: 'Conn Off' };
   elements.connectionLabel.textContent = labels[mode] || 'Conn …';
 }
 
 function unwrapChannelEvent(event) {
   if (!event) return null;
   if (typeof event === 'string') {
-    try {
-      return JSON.parse(event);
-    } catch {
-      return null;
-    }
+    try { return JSON.parse(event); } catch { return null; }
   }
-  if (typeof event === 'object') return event;
-  return null;
+  return typeof event === 'object' ? event : null;
 }
 
 function applyHarnessRealtime(payload, channelId) {
@@ -99,9 +101,8 @@ function applyHarnessRealtime(payload, channelId) {
   if (state.currentChannel?.id === channelId && elements.harnessOverview) {
     renderHarnessOverview(elements.harnessOverview, state.harnessByChannel[channelId]);
   }
-  if (activePage() === 'canvas') {
-    loadCanvas().catch(() => {});
-  }
+  updateHarnessTeaser(channelId);
+  if (activePage() === 'canvas') loadCanvas().catch(() => {});
 }
 
 function handleRealtimeMessage(payload) {
@@ -112,27 +113,19 @@ function handleRealtimeMessage(payload) {
       applyHarnessRealtime(inner, payload.channel_id);
       return;
     }
-    if (state.currentChannel?.id === payload.channel_id) {
-      refreshCurrentChannelMessages();
-    }
+    if (state.currentChannel?.id === payload.channel_id) refreshCurrentChannelMessages();
     return;
   }
   if (payload.type === EVENT.overviewStats) {
-    if (elements.livePulseAgents) {
-      elements.livePulseAgents.textContent = String(payload.active_agents?.total ?? 0);
-    }
-    if (elements.livePulseProposals) {
-      elements.livePulseProposals.textContent = String(payload.pending_proposals ?? 0);
-    }
+    if (elements.livePulseAgents) elements.livePulseAgents.textContent = String(payload.active_agents?.total ?? 0);
+    if (elements.livePulseProposals) elements.livePulseProposals.textContent = String(payload.pending_proposals ?? 0);
     const statAgents = document.getElementById('statActiveAgents');
     const statProposals = document.getElementById('statPendingProposals');
     if (statAgents) statAgents.textContent = String(payload.active_agents?.total ?? 0);
     if (statProposals) statProposals.textContent = String(payload.pending_proposals ?? 0);
     return;
   }
-  if (payload.type === EVENT.canvasEvent) {
-    loadCanvas().catch(() => {});
-  }
+  if (payload.type === EVENT.canvasEvent) loadCanvas().catch(() => {});
   if (String(payload.type).startsWith('harness.')) {
     applyHarnessRealtime(payload, payload.channel_id || state.currentChannel?.id);
   }
@@ -151,9 +144,12 @@ async function loadPortalData() {
     state.proposals = proposalsR.value;
     renderCourtProposals(proposalsR.value);
   }
-  if (monR.status === 'fulfilled') renderMonitoring(monR.value);
-  loadChannelsForUI().catch(() => {});
+  if (monR.status === 'fulfilled') {
+    state.monitoring = monR.value;
+    renderSystemHealth(monR.value);
+  }
   loadSidebarChannels().catch(() => {});
+  loadHarness('main').then(() => updateHarnessTeaser('main')).catch(() => {});
 }
 
 async function loadHarness(channelId) {
@@ -163,10 +159,24 @@ async function loadHarness(channelId) {
     if (state.currentChannel?.id === channelId && elements.harnessOverview) {
       renderHarnessOverview(elements.harnessOverview, data);
     }
-    const planId = data?.plan?.plan_id;
-    realtime.subscribeChannel(channelId, planId);
+    realtime.subscribeChannel(channelId, data?.plan?.plan_id);
+    return data;
   } catch {
-    /* harness optional on cold boot */
+    return null;
+  }
+}
+
+function updateHarnessTeaser(channelId = 'main') {
+  if (!elements.harnessTeaserGoal) return;
+  const data = state.harnessByChannel[channelId];
+  const goal = data?.plan?.goal;
+  const taskCount = data?.tasks?.length || 0;
+  if (goal) {
+    elements.harnessTeaserGoal.textContent = taskCount
+      ? `${goal} — ${taskCount} active task(s)`
+      : goal;
+  } else {
+    elements.harnessTeaserGoal.textContent = 'No active plan — submit a goal to begin.';
   }
 }
 
@@ -188,11 +198,12 @@ async function submitGoal(ev) {
       const chEl = elements.planPreview.querySelector('[data-preview-channel]');
       if (goalEl) goalEl.textContent = preview.goal;
       if (chEl) chEl.textContent = preview.channel_id;
-      renderHarnessOverview(elements.planPreview.querySelector('[data-harness-preview]'), {
-        plan: { goal: preview.goal, stages: preview.stages },
-        tasks: [],
-      });
     }
+    state.harnessByChannel[preview.channel_id] = {
+      plan: { goal: preview.goal, stages: preview.stages, channel_id: preview.channel_id },
+      tasks: [],
+    };
+    updateHarnessTeaser(preview.channel_id);
     if (input) input.value = '';
   } catch (e) {
     alert('Goal submission failed: ' + e.message);
@@ -204,52 +215,34 @@ function openPlanPreviewChannel() {
   location.hash = 'channels';
   fetchJSON('/api/channels').then((data) => {
     const ch = (data.channels || []).find((c) => c.id === state.planPreview.channel_id);
-    if (ch) selectChannel(ch);
-    else selectChannel({ id: state.planPreview.channel_id, members: [] });
-  }).catch(() => {
-    selectChannel({ id: state.planPreview.channel_id, members: [] });
-  });
+    selectChannel(ch || { id: state.planPreview.channel_id, members: [] });
+  }).catch(() => selectChannel({ id: state.planPreview.channel_id, members: [] }));
   if (elements.planPreview) elements.planPreview.hidden = true;
 }
 
-async function loadChannelsForUI() {
-  const data = await fetchJSON('/api/channels');
-  renderChannelsList(data.channels || []);
+function loadSidebarChannels() {
+  return fetchJSON('/api/channels').then((data) => {
+    renderChannelsList(data.channels || []);
+  });
 }
 
 function renderChannelsList(chs) {
-  const ul = elements.channelsList;
+  const ul = elements.sidebarChannelsList;
   if (!ul) return;
-  ul.innerHTML = '';
+  ul.replaceChildren();
   chs.forEach((ch) => {
     if (ch.archived) return;
     const li = document.createElement('li');
     li.className = 'list-card';
+    if (state.currentChannel?.id === ch.id) li.classList.add('active');
     const memCount = (ch.members || []).length;
     li.innerHTML = `<span>${ch.id}</span><small>${memCount} members</small>`;
-    li.onclick = () => selectChannel(ch);
+    li.onclick = () => {
+      location.hash = 'channels';
+      selectChannel(ch);
+    };
     ul.appendChild(li);
   });
-}
-
-function loadSidebarChannels() {
-  fetchJSON('/api/channels').then((data) => {
-    const ul = document.getElementById('sidebarChannelsList');
-    if (!ul) return;
-    ul.innerHTML = '';
-    (data.channels || []).forEach((ch) => {
-      if (ch.archived) return;
-      const li = document.createElement('li');
-      li.className = 'list-card';
-      const memCount = (ch.members || []).length;
-      li.innerHTML = `<span>${ch.id}</span><small>${memCount} members</small>`;
-      li.onclick = () => {
-        location.hash = 'channels';
-        selectChannel(ch);
-      };
-      ul.appendChild(li);
-    });
-  }).catch(() => {});
 }
 
 async function createChannel(ev) {
@@ -262,22 +255,33 @@ async function createChannel(ev) {
     body: JSON.stringify({ id }),
   });
   if (elements.newChannelId) elements.newChannelId.value = '';
-  await loadChannelsForUI();
+  await loadSidebarChannels();
 }
 
 function selectChannel(ch) {
   state.currentChannel = ch;
+  if (elements.channelEmptyState) elements.channelEmptyState.style.display = 'none';
+  if (elements.channelDetail) elements.channelDetail.style.display = 'grid';
   if (elements.selectedChannelId) elements.selectedChannelId.textContent = ch.id;
-  if (elements.channelDetail) elements.channelDetail.style.display = 'block';
+  if (elements.channelContextSummary) {
+    elements.channelContextSummary.textContent = `Channel ${ch.id} — ${(ch.members || []).length} members`;
+  }
   renderMembers(ch.members || []);
+  loadSidebarChannels();
   fetchJSON(`/api/channels/${ch.id}`).then((full) => {
     state.currentChannel = full;
     renderChannelMessages(full.messages || []);
-    loadHarness(ch.id);
+    loadHarness(ch.id).then(() => updateHarnessTeaser(ch.id));
   }).catch(() => {
     renderChannelMessages(ch.messages || []);
     loadHarness(ch.id);
   });
+}
+
+function showChannelEmpty() {
+  state.currentChannel = null;
+  if (elements.channelEmptyState) elements.channelEmptyState.style.display = 'block';
+  if (elements.channelDetail) elements.channelDetail.style.display = 'none';
 }
 
 function renderMembers(members) {
@@ -286,6 +290,7 @@ function renderMembers(members) {
   if (!ul) return;
   ul.replaceChildren();
   Object.entries(groups).forEach(([group, items]) => {
+    if (!items.length) return;
     const section = document.createElement('li');
     section.className = 'member-group';
     section.innerHTML = `<strong class="member-group__title">${group}</strong>`;
@@ -310,6 +315,7 @@ function renderMembers(members) {
         const fresh = await fetchJSON(`/api/channels/${state.currentChannel.id}`);
         state.currentChannel = fresh;
         renderMembers(fresh.members || []);
+        loadSidebarChannels();
       };
       li.appendChild(btn);
       inner.appendChild(li);
@@ -332,8 +338,7 @@ function groupMembers(members) {
 
 function formatMessageTime(ts) {
   if (ts == null || ts === '') return '';
-  if (typeof ts === 'number') return new Date(ts).toLocaleString();
-  const d = new Date(ts);
+  const d = new Date(typeof ts === 'number' ? ts : ts);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
 }
 
@@ -364,9 +369,7 @@ async function refreshCurrentChannelMessages() {
     const fresh = await fetchJSON(`/api/channels/${state.currentChannel.id}`);
     state.currentChannel = fresh;
     renderChannelMessages(fresh.messages || []);
-  } catch {
-    /* keep last rendered */
-  }
+  } catch { /* keep */ }
 }
 
 async function postToChannel(ev) {
@@ -395,9 +398,11 @@ async function addMember(ev) {
     body: JSON.stringify({ role }),
   });
   if (elements.newMemberRole) elements.newMemberRole.value = '';
+  if (elements.addMemberForm) elements.addMemberForm.hidden = true;
   const fresh = await fetchJSON(`/api/channels/${state.currentChannel.id}`);
   state.currentChannel = fresh;
   renderMembers(fresh.members || []);
+  loadSidebarChannels();
 }
 
 async function archiveChannel() {
@@ -406,9 +411,8 @@ async function archiveChannel() {
     method: 'POST',
     headers: { 'X-Aegis-Confirmed': '1' },
   });
-  if (elements.channelDetail) elements.channelDetail.style.display = 'none';
-  state.currentChannel = null;
-  await loadChannelsForUI();
+  showChannelEmpty();
+  await loadSidebarChannels();
 }
 
 async function fetchJSON(url, options = {}) {
@@ -423,24 +427,42 @@ async function fetchJSON(url, options = {}) {
 
 function renderDashboard(data) {
   if (!elements.systemStatusLabel) return;
-  elements.systemStatusLabel.textContent = `Daemon ${titleCase(data.system_status)}`;
+  elements.systemStatusLabel.textContent = titleCase(data.system_status);
   elements.runtimeLabel.textContent = data.runtime;
-  elements.notificationCount.textContent = String(data.notifications);
-  elements.safeModeLabel.textContent = data.safe_mode ? 'ON' : 'OFF';
+  if (elements.notificationCount) elements.notificationCount.textContent = String(data.notifications);
+  if (elements.safeModeLabel) elements.safeModeLabel.textContent = data.safe_mode ? 'ON' : 'OFF';
+  const settingsSafe = document.getElementById('settingsSafeModeLabel');
+  if (settingsSafe) settingsSafe.textContent = data.safe_mode ? 'ON' : 'OFF';
   document.getElementById('statActiveAgents').textContent = String(data.quick_stats.active_agents);
   document.getElementById('statBackgroundTasks').textContent = String(data.quick_stats.background_tasks);
   document.getElementById('statSkillsInstalled').textContent = String(data.quick_stats.skills_installed);
   document.getElementById('statPendingProposals').textContent = String(data.quick_stats.pending_proposals);
-  const chCount = data.channel_count || data.quick_stats?.channel_count || 0;
-  document.getElementById('statChannels').textContent = String(chCount);
+  document.getElementById('statChannels').textContent = String(data.channel_count || data.quick_stats?.channel_count || 0);
   if (elements.livePulseAgents) elements.livePulseAgents.textContent = String(data.quick_stats.active_agents);
   if (elements.livePulseProposals) elements.livePulseProposals.textContent = String(data.quick_stats.pending_proposals);
-  renderList(elements.activeAgentsList, data.agents, (agent) =>
-    buildListCard(agent.name, `${titleCase(agent.status)} • ${agent.task} (${agent.progress})`),
-  );
-  renderList(elements.recentActivityList, data.recent_activity, (entry) => buildListCard(entry, 'Recent audited activity'));
+  renderList(elements.recentActivityList, data.recent_activity, (entry) => buildListCard(entry, 'Recent activity'));
+  renderHomeRecent(data);
   state.activeWork = data.active_work || [];
   refreshActiveWorkPanel();
+  if (state.monitoring) renderSystemHealth(state.monitoring);
+}
+
+function renderHomeRecent(data) {
+  const items = [];
+  (data.active_work || []).slice(0, 3).forEach((w) => {
+    items.push({ title: w.scope || w.persona || 'Task', subtitle: `${w.stage || '—'} • ${w.channel_id || 'main'}` });
+  });
+  (data.recent_activity || []).slice(0, 3 - items.length).forEach((a) => {
+    items.push({ title: String(a), subtitle: 'Activity' });
+  });
+  renderList(elements.homeRecentList, items, (item) => buildListCard(item.title, item.subtitle));
+}
+
+function renderSystemHealth(monitoring) {
+  const el = (id, val) => { const n = document.getElementById(id); if (n) n.textContent = val; };
+  el('statRunningVMs', String(monitoring.stats?.running_vms ?? 0));
+  el('statCPUUsage', monitoring.stats?.cpu_usage ?? '—');
+  el('statMemoryUsage', monitoring.stats?.memory_usage ?? '—');
 }
 
 function refreshActiveWorkPanel() {
@@ -460,7 +482,16 @@ function refreshActiveWorkPanel() {
 async function loadCanvas() {
   const channelId = state.currentChannel?.id || 'main';
   const data = await fetchJSON(`/api/canvas?channel_id=${encodeURIComponent(channelId)}`);
-  renderCanvas(elements.canvasRoot, data);
+  renderCanvas(elements.canvasRoot, data, {
+    onChannelLink: (id) => {
+      location.hash = 'channels';
+      fetchJSON('/api/channels').then((resp) => {
+        const ch = (resp.channels || []).find((c) => c.id === id);
+        if (ch) selectChannel(ch);
+        else selectChannel({ id, members: [] });
+      }).catch(() => selectChannel({ id, members: [] }));
+    },
+  });
 }
 
 async function loadAgents() {
@@ -503,6 +534,7 @@ function renderCourtProposals(proposals) {
 
 async function selectProposal(proposal) {
   state.selectedProposal = proposal;
+  if (elements.courtDetail) elements.courtDetail.hidden = false;
   const detail = await fetchJSON(`/api/proposals/${proposal.id}/reviews`);
   renderProposalDetail(elements.courtDetail, detail);
   wireCourtActions(proposal.id);
@@ -541,22 +573,6 @@ function renderSkills(skills) {
   }));
 }
 
-function renderProposals(proposals) {
-  state.proposals = proposals;
-  renderCourtProposals(proposals);
-}
-
-function renderMonitoring(monitoring) {
-  document.getElementById('statRunningVMs').textContent = String(monitoring.stats.running_vms);
-  document.getElementById('statMonitoringTasks').textContent = String(monitoring.stats.background_tasks);
-  document.getElementById('statCPUUsage').textContent = monitoring.stats.cpu_usage;
-  document.getElementById('statMemoryUsage').textContent = monitoring.stats.memory_usage;
-  renderList(elements.monitoringAgentsList, monitoring.agents, (agent) =>
-    buildListCard(agent.name, `${agent.status} • ${agent.progress}`),
-  );
-  if (elements.monitoringLogs) elements.monitoringLogs.textContent = monitoring.logs.join('\n');
-}
-
 function renderList(target, items, mapper) {
   if (!target) return;
   target.replaceChildren(...(items || []).map(mapper));
@@ -579,7 +595,8 @@ function titleCase(value) {
 
 function activePage() {
   const raw = location.hash.slice(1);
-  const page = raw.split('?')[0];
+  let page = raw.split('?')[0];
+  if (page === 'monitoring') page = 'dashboard';
   if (page === 'trace') {
     const params = new URLSearchParams(raw.split('?')[1] || '');
     const agent = params.get('agent');
@@ -588,15 +605,43 @@ function activePage() {
   return Object.prototype.hasOwnProperty.call(PAGE_TITLES, page) ? page : 'home';
 }
 
+function applyLayout(page) {
+  const grid = elements.workspaceGrid;
+  if (!grid) return;
+  const layout = LAYOUT_BY_PAGE[page] || 'layout--main';
+  grid.className = `workspace-grid ${layout}`;
+  if (sessionStorage.getItem('sidebarCollapsed') === '1') grid.classList.add('sidebar-collapsed');
+  if (sessionStorage.getItem('contextCollapsed') === '1') grid.classList.add('context-collapsed');
+
+  document.querySelectorAll('[data-context-mode]').forEach((el) => {
+    const mode = el.dataset.contextMode;
+    el.hidden = !(
+      (page === 'home' && mode === 'home') ||
+      (page === 'channels' && mode === 'channels') ||
+      (page === 'trace' && mode === 'trace')
+    );
+  });
+
+  const titles = { home: 'Overview', channels: 'Channel', trace: 'Agent Trace' };
+  const titleEl = document.getElementById('contextPanelTitle');
+  if (titleEl) titleEl.textContent = titles[page] || 'Context';
+}
+
 function navigate(page) {
+  if (page === 'monitoring') {
+    location.hash = 'dashboard';
+    return;
+  }
   const safePage = Object.prototype.hasOwnProperty.call(PAGE_TITLES, page) ? page : 'home';
   document.querySelectorAll('[data-page]').forEach((panel) => {
-    panel.hidden = panel.dataset.page !== safePage;
+    panel.hidden = panel.dataset.page !== safePage && !(safePage === 'dashboard' && panel.dataset.page === 'monitoring');
   });
   document.querySelectorAll('[data-nav-page]').forEach((btn) => {
     btn.classList.toggle('is-active', btn.dataset.navPage === safePage);
   });
   document.title = `${PAGE_TITLES[safePage]} — AegisClaw Secure Command Center`;
+  applyLayout(safePage);
+
   const channelId = state.currentChannel?.id;
   const planId = state.harnessByChannel[channelId]?.plan?.plan_id
     || state.harnessByChannel.main?.plan?.plan_id;
@@ -605,6 +650,8 @@ function navigate(page) {
     planId,
     proposalId: state.selectedProposal?.id,
   });
+
+  if (safePage === 'channels' && !state.currentChannel) showChannelEmpty();
   if (safePage === 'canvas') loadCanvas().catch(() => {});
   if (safePage === 'agents') loadAgents().catch(() => {});
   if (safePage === 'trace' && state.traceAgentId) loadTrace(state.traceAgentId).catch(() => {});
@@ -619,9 +666,39 @@ function wireRouter() {
   window.addEventListener('hashchange', () => navigate(activePage()));
 }
 
+function wireQuickStarts() {
+  document.querySelectorAll('[data-quick-start]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById('commandBarInput');
+      if (input) {
+        input.value = btn.dataset.quickStart || '';
+        input.focus();
+      }
+    });
+  });
+}
+
+function wireLayoutToggles() {
+  document.getElementById('toggleSidebarBtn')?.addEventListener('click', () => {
+    const grid = elements.workspaceGrid;
+    const collapsed = grid?.classList.toggle('sidebar-collapsed');
+    sessionStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0');
+  });
+  document.getElementById('toggleContextBtn')?.addEventListener('click', () => {
+    const grid = elements.workspaceGrid;
+    const collapsed = grid?.classList.toggle('context-collapsed');
+    sessionStorage.setItem('contextCollapsed', collapsed ? '1' : '0');
+  });
+  document.getElementById('toggleInviteBtn')?.addEventListener('click', () => {
+    if (elements.addMemberForm) elements.addMemberForm.hidden = !elements.addMemberForm.hidden;
+  });
+}
+
 async function boot() {
   document.body.dataset.portalReady = '1';
   wireRouter();
+  wireQuickStarts();
+  wireLayoutToggles();
   if (elements.newChannelForm) elements.newChannelForm.addEventListener('submit', createChannel);
   if (elements.addMemberForm) elements.addMemberForm.addEventListener('submit', addMember);
   if (elements.archiveChannelBtn) elements.archiveChannelBtn.addEventListener('click', archiveChannel);
@@ -630,6 +707,7 @@ async function boot() {
   document.getElementById('planPreviewOpen')?.addEventListener('click', openPlanPreviewChannel);
   document.querySelector('[data-testid="new-channel-button"]')?.addEventListener('click', () => {
     location.hash = 'channels';
+    elements.newChannelId?.focus();
   });
   document.getElementById('dashboardFilter')?.addEventListener('change', (ev) => {
     state.dashboardFilter = ev.target.value;

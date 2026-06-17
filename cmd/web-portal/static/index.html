@@ -18,81 +18,84 @@
       </div>
 
       <div class="status-blocks">
-        <div class="status-chip" data-testid="system-status-chip">
-          <span class="status-dot status-dot--success" aria-hidden="true"></span>
-          <span id="systemStatusLabel">Daemon Running</span>
-          <span class="status-divider">|</span>
-          <span id="runtimeLabel">Firecracker</span>
-        </div>
-
         <nav class="primary-nav" aria-label="Primary">
           <button type="button" class="nav-button is-active" data-nav-page="home" data-testid="nav-home">Home</button>
           <button type="button" class="nav-button" data-nav-page="channels" data-testid="nav-channels">Channels</button>
           <button type="button" class="nav-button" data-nav-page="dashboard" data-testid="nav-dashboard">Dashboard</button>
+          <button type="button" class="nav-button" data-nav-page="canvas" data-testid="nav-canvas">Canvas</button>
           <button type="button" class="nav-button" data-nav-page="court" data-testid="nav-court">Court</button>
           <button type="button" class="nav-button" data-nav-page="agents" data-testid="nav-agents">Agents</button>
           <button type="button" class="nav-button" data-nav-page="skills" data-testid="nav-skills">Skills</button>
-          <button type="button" class="nav-button" data-nav-page="audit" data-testid="nav-audit">Audit</button>
-          <button type="button" class="nav-button" data-nav-page="settings" data-testid="nav-settings">Settings</button>
+          <button type="button" class="nav-button nav-button--overflow" data-nav-page="audit" data-testid="nav-audit">Audit</button>
+          <button type="button" class="nav-button nav-button--overflow" data-nav-page="settings" data-testid="nav-settings">Settings</button>
         </nav>
       </div>
 
       <div class="topbar-meta">
-        <div class="status-chip" data-testid="connection-status-chip">
+        <div class="status-chip status-chip--compact" data-testid="system-status-chip">
+          <span class="status-dot status-dot--success" aria-hidden="true"></span>
+          <span id="systemStatusLabel">Running</span>
+          <span class="status-divider">|</span>
+          <span id="runtimeLabel">Firecracker</span>
+        </div>
+        <div class="status-chip status-chip--compact" data-testid="connection-status-chip">
           <span class="status-dot status-dot--success" aria-hidden="true"></span>
           <span id="connectionStatusLabel" data-testid="connection-status-label">Conn …</span>
         </div>
-        <div class="status-chip" data-testid="notification-chip">Notifications <span id="notificationCount">0</span></div>
-        <button type="button" class="avatar-button" data-testid="avatar-button">Operator ▾</button>
+        <button type="button" class="avatar-button" data-testid="avatar-button" title="Notifications">
+          <span id="notificationCount">0</span>
+        </button>
       </div>
     </header>
 
-    <main class="workspace-grid">
-      <aside class="panel sidebar-panel" data-testid="channels-sidebar">
-        <div class="panel-heading">
-          <p class="eyebrow">Collaboration</p>
-          <h2>Channels</h2>
+    <main id="workspaceGrid" class="workspace-grid layout--home" data-testid="workspace-grid">
+      <aside id="channelsSidebar" class="panel sidebar-panel" data-testid="channels-sidebar">
+        <div class="panel-heading panel-heading--toolbar">
+          <div>
+            <p class="eyebrow">Collaboration</p>
+            <h2>Channels</h2>
+          </div>
+          <button type="button" class="icon-button" id="toggleSidebarBtn" aria-label="Collapse channels sidebar">⟨</button>
         </div>
-        <ul id="sidebarChannelsList" class="list-stack compact-list" data-testid="sidebar-channels-list"></ul>
+        <ul id="sidebarChannelsList" class="list-stack compact-list" data-testid="channels-list"></ul>
+        <form id="newChannelForm" class="inline-form sidebar-create-form" novalidate>
+          <input id="newChannelId" type="text" placeholder="new-channel-id" required />
+          <button type="submit" class="primary-button" data-testid="create-channel-button">Add</button>
+        </form>
         <div class="panel-subsection">
           <p class="eyebrow">Quick Actions</p>
           <div class="button-stack">
             <button type="button" class="primary-button" data-testid="new-channel-button">New Channel</button>
-            <button type="button" class="secondary-button">New Team</button>
-            <button type="button" class="secondary-button" data-testid="propose-skill-button">Propose Skill</button>
+            <button type="button" class="secondary-button" data-nav-page="teams">New Team</button>
+            <button type="button" class="secondary-button" data-testid="propose-skill-button" data-nav-page="skills">Propose Skill</button>
           </div>
         </div>
       </aside>
 
       <section class="main-column">
-        <section id="homePanel" class="panel content-panel" data-testid="home-panel" data-page="home">
-          <div class="panel-heading">
+        <!-- HOME -->
+        <section id="homePanel" class="panel content-panel content-panel--home" data-testid="home-panel" data-page="home">
+          <form id="commandBarForm" class="command-bar command-bar--hero" data-testid="command-bar" novalidate>
             <p class="eyebrow">Command Center</p>
-            <h1>Home</h1>
-          </div>
-
-          <form id="commandBarForm" class="command-bar" data-testid="command-bar" novalidate>
             <label for="commandBarInput" class="command-bar__label">What do you want to accomplish?</label>
-            <textarea id="commandBarInput" rows="3" maxlength="4000" placeholder="Describe your goal in natural language…" data-testid="command-bar-input"></textarea>
-            <p class="subtle command-bar__hint">The Project Manager will decompose your goal into narrow tasks for specialists, with Court review on proposals.</p>
+            <textarea id="commandBarInput" rows="4" maxlength="4000" placeholder="Describe your goal in natural language…" data-testid="command-bar-input"></textarea>
+            <p class="subtle command-bar__hint">The Project Manager decomposes goals into narrow tasks for specialists, with Court review on proposals.</p>
             <button type="submit" class="primary-button" data-testid="command-bar-submit">Start Plan Preview</button>
           </form>
 
-          <article id="planPreview" class="subpanel plan-preview" data-testid="plan-preview" hidden>
+          <article id="planPreview" class="subpanel plan-preview plan-preview--compact" data-testid="plan-preview" hidden>
             <div class="subpanel-header">
               <h3>Plan Preview</h3>
-              <button type="button" class="primary-button" id="planPreviewOpen" data-testid="plan-preview-open">Open Channel</button>
+              <div class="button-row">
+                <button type="button" class="secondary-button" data-nav-page="canvas" data-testid="plan-preview-canvas">View Canvas</button>
+                <button type="button" class="primary-button" id="planPreviewOpen" data-testid="plan-preview-open">Open Channel</button>
+              </div>
             </div>
             <p><strong>Goal:</strong> <span data-preview-goal></span></p>
             <p><strong>Channel:</strong> <span data-preview-channel></span></p>
-            <div data-harness-preview class="harness-overview">
-              <p class="harness-overview__goal" data-harness-goal></p>
-              <div class="pipeline-strip" data-harness-pipeline></div>
-              <div class="harness-tasks" data-harness-tasks></div>
-            </div>
           </article>
 
-          <div class="live-pulse" data-testid="live-pulse">
+          <div class="live-pulse live-pulse--subtle" data-testid="live-pulse">
             <button type="button" class="live-pulse__item" data-nav-page="dashboard">
               <span>Active agents</span><strong id="livePulseAgents">0</strong>
             </button>
@@ -100,11 +103,30 @@
               <span>Pending proposals</span><strong id="livePulseProposals">0</strong>
             </button>
           </div>
+
+          <details class="home-disclosure" id="quickStarts" data-testid="quick-starts">
+            <summary>Quick starts</summary>
+            <div class="quick-start-grid">
+              <button type="button" class="quick-start-card" data-quick-start="Research a topic for my home lab">Research a topic</button>
+              <button type="button" class="quick-start-card" data-quick-start="Start a feature channel with coder and tester">Start a feature channel</button>
+              <button type="button" class="quick-start-card" data-quick-start="Audit security posture of the workspace">Audit security posture</button>
+              <button type="button" class="quick-start-card" data-nav-page="skills">Propose a custom skill</button>
+            </div>
+          </details>
+
+          <article class="subpanel home-recent" data-testid="home-recent-activity">
+            <div class="subpanel-header">
+              <h3>Recent activity</h3>
+              <button type="button" class="secondary-button" data-nav-page="dashboard">Dashboard</button>
+            </div>
+            <ul id="homeRecentList" class="list-stack compact-list"></ul>
+          </article>
         </section>
 
+        <!-- DASHBOARD -->
         <section id="dashboardPanel" class="panel content-panel" data-testid="dashboard-panel" data-page="dashboard" hidden>
           <div class="panel-heading">
-            <p class="eyebrow">Dashboard</p>
+            <p class="eyebrow">Global oversight</p>
             <h1>Dashboard</h1>
           </div>
 
@@ -121,29 +143,23 @@
           </div>
 
           <div class="stats-grid" data-testid="dashboard-stats">
-            <article class="stat-card">
-              <span>Active Agents</span>
-              <strong id="statActiveAgents">0</strong>
-            </article>
-            <article class="stat-card">
-              <span>Background Tasks</span>
-              <strong id="statBackgroundTasks">0</strong>
-            </article>
-            <article class="stat-card">
-              <span>Skills Installed</span>
-              <strong id="statSkillsInstalled">0</strong>
-            </article>
-            <article class="stat-card">
-              <span>Pending Proposals</span>
-              <strong id="statPendingProposals">0</strong>
-            </article>
-            <article class="stat-card">
-              <span>Channels</span>
-              <strong id="statChannels">0</strong>
-            </article>
+            <article class="stat-card"><span>Active Agents</span><strong id="statActiveAgents">0</strong></article>
+            <article class="stat-card"><span>Background Tasks</span><strong id="statBackgroundTasks">0</strong></article>
+            <article class="stat-card"><span>Pending Proposals</span><strong id="statPendingProposals">0</strong></article>
+            <article class="stat-card"><span>Channels</span><strong id="statChannels">0</strong></article>
           </div>
 
-          <article class="subpanel" data-testid="active-work-panel">
+          <details class="dashboard-disclosure" id="systemHealth" open data-testid="dashboard-system-health">
+            <summary>System health</summary>
+            <div class="stats-grid stats-grid--compact">
+              <article class="stat-card"><span>Running VMs</span><strong id="statRunningVMs">0</strong></article>
+              <article class="stat-card"><span>CPU Usage</span><strong id="statCPUUsage">0%</strong></article>
+              <article class="stat-card"><span>Memory</span><strong id="statMemoryUsage">—</strong></article>
+              <article class="stat-card"><span>Skills</span><strong id="statSkillsInstalled">0</strong></article>
+            </div>
+          </details>
+
+          <article class="subpanel subpanel--hero" data-testid="active-work-panel">
             <div class="subpanel-header">
               <h3>Active Work</h3>
               <span class="subtle">Harness tasks + governance</span>
@@ -151,23 +167,12 @@
             <div id="activeWorkList" class="card-grid" data-testid="active-work-list"></div>
           </article>
 
-          <div class="two-column-grid">
-            <article class="subpanel" data-testid="active-agents-list">
-              <div class="subpanel-header">
-                <h3>Active Agents</h3>
-                <span class="subtle">Live state</span>
-              </div>
-              <ul id="activeAgentsList" class="list-stack"></ul>
-            </article>
-
-            <article class="subpanel" data-testid="recent-activity-list">
-              <div class="subpanel-header">
-                <h3>Recent Activity</h3>
-                <span class="subtle">Audit friendly</span>
-              </div>
-              <ul id="recentActivityList" class="list-stack"></ul>
-            </article>
-          </div>
+          <article class="subpanel" data-testid="recent-activity-list">
+            <div class="subpanel-header">
+              <h3>Global Activity</h3>
+            </div>
+            <ul id="recentActivityList" class="list-stack"></ul>
+          </article>
 
           <div class="safe-mode-bar" data-testid="safe-mode-banner">
             <span>Safe Mode is <strong id="safeModeLabel">OFF</strong></span>
@@ -175,98 +180,82 @@
           </div>
         </section>
 
-        <section id="channelsPanel" class="panel content-panel" data-testid="channels-panel" data-page="channels" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Collaboration</p>
-            <h2>Channels</h2>
+        <!-- CHANNELS -->
+        <section id="channelsPanel" class="panel content-panel content-panel--channels" data-testid="channels-panel" data-page="channels" hidden>
+          <div id="channelEmptyState" class="channel-empty-state" data-testid="channel-empty-state">
+            <h2>Select a channel</h2>
+            <p class="subtle">Choose a channel from the sidebar to view the harness, activity feed, and collaboration tools.</p>
           </div>
 
-          <div class="channels-toolbar">
-            <form id="newChannelForm" class="inline-form" novalidate>
-              <input id="newChannelId" type="text" placeholder="new-channel-id" required />
-              <button type="submit" class="primary-button" data-testid="create-channel-button">Add Channel</button>
-            </form>
-            <span class="subtle">Defaults to including project-manager</span>
-          </div>
-
-          <div class="two-column-grid">
-            <article class="subpanel">
-              <div class="subpanel-header">
-                <h3>Channels</h3>
+          <article id="channelDetail" class="channel-workspace" style="display:none" data-testid="channel-detail">
+            <header class="channel-header">
+              <div>
+                <p class="eyebrow">Channel</p>
+                <h2 id="selectedChannelId"></h2>
               </div>
-              <ul id="channelsList" class="list-stack" data-testid="channels-list"></ul>
-            </article>
-
-            <article id="channelDetail" class="subpanel" style="display:none" data-testid="channel-detail">
-              <div class="subpanel-header">
-                <h3 id="selectedChannelId"></h3>
+              <div class="button-row">
+                <button type="button" class="secondary-button" data-nav-page="canvas">Canvas</button>
                 <button type="button" class="danger-button" id="archiveChannelBtn" data-testid="archive-channel-button">Archive</button>
               </div>
+            </header>
 
-              <section id="harnessOverview" class="harness-overview" data-testid="harness-overview">
-                <p class="harness-overview__goal" data-harness-goal></p>
-                <div class="pipeline-strip" data-harness-pipeline data-testid="pipeline-strip"></div>
-                <div class="harness-tasks" data-harness-tasks data-testid="harness-tasks"></div>
-              </section>
+            <section id="harnessOverview" class="harness-overview harness-overview--prominent" data-testid="harness-overview">
+              <p class="harness-overview__goal" data-harness-goal></p>
+              <div class="pipeline-strip" data-harness-pipeline data-testid="pipeline-strip"></div>
+              <div class="harness-tasks harness-tasks--scroll" data-harness-tasks data-testid="harness-tasks"></div>
+            </section>
 
-              <h4>Members / Participants</h4>
-              <ul id="membersList" class="list-stack" data-testid="members-list"></ul>
-
-              <form id="addMemberForm" class="inline-form" data-testid="add-member-form" novalidate>
-                <input id="newMemberRole" type="text" placeholder="project-manager or coder or user:alice" required data-testid="add-member-input" />
-                <button type="submit" class="secondary-button" data-testid="add-member-button">Add Participant</button>
-              </form>
-
-              <h4>Channel History / Messages</h4>
+            <div class="channel-feed">
+              <h3 class="channel-feed__title">Activity</h3>
               <div id="channelMessages" class="chat-stream" data-testid="channel-messages" aria-live="polite"></div>
-
               <form id="channelPostForm" class="chat-composer" novalidate>
                 <input id="postFrom" type="text" value="user" placeholder="from" />
-                <textarea id="postContent" rows="2" maxlength="2000" placeholder="Post to channel..." data-testid="message-input"></textarea>
+                <textarea id="postContent" rows="2" maxlength="2000" placeholder="Post to channel…" data-testid="message-input"></textarea>
                 <div class="composer-actions">
                   <button type="submit" class="primary-button" data-testid="send-button">Post</button>
                 </div>
               </form>
-            </article>
-          </div>
+            </div>
+          </article>
         </section>
 
+        <!-- SKILLS -->
         <section id="skillsPanel" class="panel content-panel" data-testid="skills-panel" data-page="skills" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Skills</p>
-            <h2>Skills Registry</h2>
-          </div>
+          <div class="panel-heading"><p class="eyebrow">Skills</p><h2>Skills Registry</h2></div>
           <div id="skillsList" class="card-grid" data-testid="skills-list"></div>
         </section>
 
+        <!-- COURT -->
         <section id="courtPanel" class="panel content-panel" data-testid="court-panel" data-page="court" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Court</p>
-            <h2>Court / Governance</h2>
-          </div>
+          <div class="panel-heading"><p class="eyebrow">Court</p><h2>Court / Governance</h2></div>
           <div class="two-column-grid">
             <div id="proposalsList" class="card-grid" data-testid="proposals-list"></div>
             <article id="courtDetail" class="subpanel" data-testid="court-detail" hidden></article>
           </div>
         </section>
 
-        <section id="canvasPanel" class="panel content-panel" data-testid="canvas-panel" data-page="canvas" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Canvas</p>
-            <h2>Inter-Agent Pipeline</h2>
-          </div>
+        <!-- CANVAS -->
+        <section id="canvasPanel" class="panel content-panel content-panel--canvas" data-testid="canvas-panel" data-page="canvas" hidden>
+          <header class="canvas-header" data-testid="canvas-header">
+            <div>
+              <p class="eyebrow">Inter-Agent Pipeline</p>
+              <h1 class="harness-overview__goal" data-canvas-goal>Parallel agent collaboration</h1>
+              <p class="subtle">Channel: <button type="button" class="link-button" id="canvasChannelLink" data-testid="canvas-channel-link">main</button></p>
+            </div>
+          </header>
           <div class="harness-overview" data-canvas-root>
-            <p class="harness-overview__goal" data-canvas-goal></p>
             <div class="pipeline-strip" data-canvas-pipeline data-testid="canvas-pipeline"></div>
-            <div class="canvas-grid" data-canvas-grid data-testid="canvas-agent-grid"></div>
+            <div class="canvas-stage-board" data-canvas-grid data-testid="canvas-agent-grid"></div>
+            <article class="subpanel canvas-artifacts" data-testid="canvas-artifacts">
+              <div class="subpanel-header"><h3>Shared artifacts</h3></div>
+              <ul id="canvasArtifactsList" class="list-stack compact-list"></ul>
+            </article>
           </div>
         </section>
 
+        <!-- TRACE -->
         <section id="tracePanel" class="panel content-panel" data-testid="trace-panel" data-page="trace" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Trace</p>
-            <h2 id="traceAgentTitle">Single-Agent Trace</h2>
-          </div>
+          <div class="panel-heading"><p class="eyebrow">Trace</p><h2 id="traceAgentTitle">Single-Agent Trace</h2></div>
           <div class="trace-actions" data-testid="trace-actions">
             <button type="button" class="secondary-button" data-trace-action="pause" data-testid="trace-pause">Pause</button>
             <button type="button" class="secondary-button" data-trace-action="resume" data-testid="trace-resume">Resume</button>
@@ -275,124 +264,98 @@
           <div id="traceTimeline" class="trace-timeline" data-testid="trace-timeline"></div>
         </section>
 
-        <section id="monitoringPanel" class="panel content-panel" data-testid="monitoring-panel" data-page="monitoring" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Monitoring</p>
-            <h2>Monitoring / Status</h2>
-          </div>
-
-          <div class="stats-grid" data-testid="monitoring-stats">
-            <article class="stat-card"><span>Running VMs</span><strong id="statRunningVMs">0</strong></article>
-            <article class="stat-card"><span>Background Tasks</span><strong id="statMonitoringTasks">0</strong></article>
-            <article class="stat-card"><span>CPU Usage</span><strong id="statCPUUsage">0%</strong></article>
-            <article class="stat-card"><span>Memory Usage</span><strong id="statMemoryUsage">0GB</strong></article>
-          </div>
-
-          <div class="two-column-grid">
-            <article class="subpanel">
-              <div class="subpanel-header">
-                <h3>Agent Status</h3>
-                <span class="subtle">Live timeline</span>
-              </div>
-              <ul id="monitoringAgentsList" class="list-stack"></ul>
-            </article>
-
-            <article class="subpanel">
-              <div class="subpanel-header">
-                <h3>Live Logs</h3>
-                <span class="subtle">Last 50 lines</span>
-              </div>
-              <pre id="monitoringLogs" class="log-box" data-testid="monitoring-logs"></pre>
-            </article>
-          </div>
+        <!-- MONITORING (redirect target → dashboard) -->
+        <section id="monitoringPanel" class="panel content-panel" data-page="monitoring" data-testid="monitoring-panel" hidden>
+          <p class="subtle">Monitoring metrics are on the Dashboard.</p>
+          <button type="button" class="primary-button" data-nav-page="dashboard">Go to Dashboard</button>
         </section>
 
         <section id="teamsPanel" class="panel content-panel" data-testid="teams-panel" data-page="teams" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Teams</p>
-            <h2>Team Workspace</h2>
-          </div>
+          <div class="panel-heading"><p class="eyebrow">Teams</p><h2>Team Workspace</h2></div>
           <ul id="teamsList" class="list-stack" data-testid="teams-list"></ul>
         </section>
 
         <section id="agentsPanel" class="panel content-panel" data-testid="agents-panel" data-page="agents" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Agents</p>
-            <h2>Agents</h2>
-          </div>
+          <div class="panel-heading"><p class="eyebrow">Agents</p><h2>Agents</h2></div>
           <ul id="agentsList" class="list-stack" data-testid="agents-list"></ul>
-          <p class="subtle">Select an agent to open its trace view.</p>
         </section>
 
         <section id="auditPanel" class="panel content-panel" data-testid="audit-panel" data-page="audit" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Audit</p>
-            <h2>Audit Log</h2>
-          </div>
+          <div class="panel-heading"><p class="eyebrow">Audit</p><h2>Audit Log</h2></div>
           <pre id="auditLog" class="log-box" data-testid="audit-log"></pre>
         </section>
 
         <section id="settingsPanel" class="panel content-panel" data-testid="settings-panel" data-page="settings" hidden>
-          <div class="panel-heading">
-            <p class="eyebrow">Settings</p>
-            <h2>Operator Settings</h2>
-          </div>
+          <div class="panel-heading"><p class="eyebrow">Settings</p><h2>Operator Settings</h2></div>
           <article class="subpanel">
             <h3>Safe Mode</h3>
-            <p class="subtle">Restrict high-impact actions until explicitly confirmed.</p>
             <div class="safe-mode-bar" data-testid="settings-safe-mode">
               <span>Safe Mode is <strong id="settingsSafeModeLabel">OFF</strong></span>
             </div>
           </article>
-          <article class="subpanel">
-            <h3>Monitoring</h3>
-            <p class="subtle">System metrics live on the Dashboard; detailed VM stats below.</p>
-            <button type="button" class="secondary-button" data-nav-page="monitoring">Open Monitoring</button>
-          </article>
         </section>
       </section>
 
-      <aside class="panel context-panel" data-testid="context-panel">
-        <div class="panel-heading">
-          <p class="eyebrow">Context Panel</p>
-          <h2>Operator Context</h2>
+      <aside id="contextPanel" class="panel context-panel" data-testid="context-panel">
+        <div class="panel-heading panel-heading--toolbar">
+          <div>
+            <p class="eyebrow">Context</p>
+            <h2 id="contextPanelTitle">Overview</h2>
+          </div>
+          <button type="button" class="icon-button" id="toggleContextBtn" aria-label="Collapse context panel">⟩</button>
         </div>
-        <div class="context-stack">
-          <article class="subpanel">
-            <div class="subpanel-header">
-              <h3>Current Agent</h3>
-            </div>
-            <dl class="meta-list">
-              <div><dt>Agent</dt><dd id="currentAgentName">researcher</dd></div>
-              <div><dt>Autonomy</dt><dd>Research Mode</dd></div>
-              <div><dt>Trace</dt><dd id="currentTraceId">waiting</dd></div>
-            </dl>
-          </article>
 
-          <article class="subpanel">
-            <div class="subpanel-header">
-              <h3>Recent Tools</h3>
+        <div class="context-mode" data-context-mode="home">
+          <article class="subpanel" data-testid="harness-teaser">
+            <div class="subpanel-header"><h3>Harness</h3></div>
+            <p id="harnessTeaserGoal" class="subtle">No active plan — submit a goal to begin.</p>
+            <div class="button-row">
+              <button type="button" class="secondary-button" data-nav-page="canvas">Open Canvas</button>
+              <button type="button" class="secondary-button" data-nav-page="channels">Channels</button>
             </div>
-            <ul id="recentToolsList" class="list-stack compact-list">
-              <li class="list-card"><span>tool.search</span><small>Awaiting first request</small></li>
-            </ul>
           </article>
-
           <article class="subpanel">
-            <div class="subpanel-header">
-              <h3>Security Posture</h3>
-            </div>
+            <div class="subpanel-header"><h3>Security Posture</h3></div>
             <ul class="list-stack compact-list">
-              <li class="list-card"><span>No external resources</span><small>Scripts, styles, and assets are served locally.</small></li>
-              <li class="list-card"><span>Browser isolated</span><small>The portal is presentation-only and does not access secrets.</small></li>
-              <li class="list-card"><span>Stable selectors</span><small>All key UI paths expose automation-friendly hooks.</small></li>
+              <li class="list-card"><span>No external resources</span><small>Assets served locally.</small></li>
+              <li class="list-card"><span>Browser isolated</span><small>Presentation-only portal.</small></li>
+              <li class="list-card"><span>Stable selectors</span><small>Automation-friendly UI.</small></li>
             </ul>
+          </article>
+        </div>
+
+        <div class="context-mode" data-context-mode="channels" hidden>
+          <article class="subpanel">
+            <div class="subpanel-header"><h3>Channel Context</h3></div>
+            <p id="channelContextSummary" class="subtle">Select a channel</p>
+            <button type="button" class="secondary-button" data-nav-page="court" id="channelCourtLink">Court</button>
+          </article>
+          <article class="subpanel">
+            <div class="subpanel-header">
+              <h3>Members</h3>
+              <button type="button" class="secondary-button" id="toggleInviteBtn" data-testid="toggle-invite-button">Invite</button>
+            </div>
+            <ul id="membersList" class="list-stack" data-testid="members-list"></ul>
+            <form id="addMemberForm" class="inline-form invite-form" data-testid="add-member-form" hidden novalidate>
+              <input id="newMemberRole" type="text" placeholder="coder or user:alice" required data-testid="add-member-input" />
+              <button type="submit" class="secondary-button" data-testid="add-member-button">Add</button>
+            </form>
+          </article>
+        </div>
+
+        <div class="context-mode" data-context-mode="trace" hidden>
+          <article class="subpanel">
+            <div class="subpanel-header"><h3>Agent</h3></div>
+            <dl class="meta-list">
+              <div><dt>Agent</dt><dd id="currentAgentName">—</dd></div>
+              <div><dt>Trace</dt><dd id="currentTraceId">—</dd></div>
+            </dl>
           </article>
         </div>
       </aside>
     </main>
   </div>
 
-  <script type="module" src="/app.js?v=20260617"></script>
+  <script type="module" src="/app.js?v=20260618"></script>
 </body>
 </html>
