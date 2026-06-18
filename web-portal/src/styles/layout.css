@@ -1,0 +1,240 @@
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  min-height: var(--topbar-height);
+  flex-shrink: 0;
+}
+
+.brand-block {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.brand-mark {
+  font-size: 1.5rem;
+}
+
+.primary-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  flex: 1;
+}
+
+.nav-button {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--color-muted);
+  min-height: 44px;
+}
+
+.nav-button.is-active,
+.nav-button:hover {
+  color: var(--color-text);
+  background: var(--color-elevated);
+}
+
+.nav-button.is-active {
+  box-shadow: inset 0 -2px 0 var(--color-primary);
+}
+
+.topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.status-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-elevated);
+  border-radius: 999px;
+  font-size: 0.8125rem;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot--success {
+  background: var(--color-success);
+}
+
+.workspace-grid {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.layout--home,
+.layout--dashboard {
+  grid-template-columns: var(--sidebar-width) 1fr var(--context-width);
+}
+
+.layout--channels {
+  grid-template-columns: var(--sidebar-width) 1fr var(--context-width);
+}
+
+.layout--canvas,
+.layout--trace {
+  grid-template-columns: 1fr;
+}
+
+.layout--simple {
+  grid-template-columns: var(--sidebar-width) 1fr;
+}
+
+.sidebar-panel,
+.context-panel {
+  overflow-y: auto;
+  padding: var(--space-4);
+  border-right: 1px solid var(--color-border);
+}
+
+.context-panel {
+  border-right: none;
+  border-left: 1px solid var(--color-border);
+}
+
+.context-panel.is-collapsed {
+  display: none;
+}
+
+.main-column {
+  overflow-y: auto;
+  padding: var(--space-4);
+  min-width: 0;
+}
+
+.content-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.content-panel[hidden] {
+  display: none !important;
+}
+
+.bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  z-index: 100;
+}
+
+.bottom-nav__items {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  height: var(--bottom-nav-height);
+}
+
+.bottom-nav__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+  min-height: 44px;
+}
+
+.bottom-nav__item.is-active {
+  color: var(--color-primary);
+}
+
+.bottom-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 200;
+}
+
+.bottom-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 85vh;
+  background: var(--color-surface);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  z-index: 201;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-shadow: var(--shadow-elevated);
+}
+
+.bottom-sheet__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.bottom-sheet__body {
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+@media (max-width: 768px) {
+  .primary-nav .nav-button:not(.nav-button--mobile-hidden) {
+    display: none;
+  }
+
+  .workspace-grid.layout--home,
+  .workspace-grid.layout--dashboard,
+  .workspace-grid.layout--channels,
+  .workspace-grid.layout--simple {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar-panel {
+    display: none;
+  }
+
+  .context-panel {
+    display: none;
+  }
+
+  .bottom-nav {
+    display: block;
+  }
+
+  .main-column {
+    padding-bottom: calc(var(--bottom-nav-height) + var(--space-4));
+  }
+}
+
+@media (min-width: 769px) {
+  .nav-button--overflow {
+    display: none;
+  }
+}

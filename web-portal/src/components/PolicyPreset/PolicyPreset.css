@@ -1,0 +1,36 @@
+.policy-preset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.policy-preset__segments {
+  display: inline-flex;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.policy-preset__segment {
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.8125rem;
+  color: var(--color-muted);
+  min-height: 44px;
+  border-right: 1px solid var(--color-border);
+}
+
+.policy-preset__segment:last-child {
+  border-right: none;
+}
+
+.policy-preset__segment.is-active {
+  background: var(--color-primary);
+  color: #0a0a0a;
+  font-weight: 600;
+}
+
+.policy-preset__segment:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

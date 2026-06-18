@@ -35,7 +35,7 @@ export default defineConfig({
         webServer: {
           command: fixtureWebPortalCmd,
           url: 'http://localhost:8080/health',
-          reuseExistingServer: false,
+          reuseExistingServer: !process.env.CI,
           timeout: 45 * 1000,
         },
       }
