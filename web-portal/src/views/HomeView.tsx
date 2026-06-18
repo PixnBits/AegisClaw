@@ -44,7 +44,7 @@ export function HomeView({ onOpenChannel, onOpenCanvas }: Props) {
         </label>
         <textarea
           id="commandBarInput"
-          rows={4}
+          rows={isMobile ? 3 : 4}
           maxLength={4000}
           placeholder="Describe your goal in natural language…"
           data-testid="command-bar-input"

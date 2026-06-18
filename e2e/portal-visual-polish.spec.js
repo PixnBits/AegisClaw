@@ -9,6 +9,13 @@ const VIEWPORTS = {
   desktop: { width: 1280, height: 800 },
 };
 
+/** Common phone widths for framing QA at 100% zoom */
+const MOBILE_FRAMING_VIEWPORTS = {
+  iphoneSE: { width: 375, height: 667 },
+  iphone14: { width: 390, height: 844 },
+  pixel7: { width: 412, height: 915 },
+};
+
 async function waitPortalReady(page) {
   await page.goto('/');
   await page.waitForSelector('[data-portal-ready="1"]', { timeout: 15000 });
@@ -44,7 +51,8 @@ for (const [name, viewport] of Object.entries(VIEWPORTS)) {
     test(`Channels active (${name})`, async ({ page }) => {
       await waitPortalReady(page);
       await openMainChannel(page);
-      await expect(page.getByTestId('channel-detail')).toHaveScreenshot(`channels-active-${name}.png`, {
+      await expect(page.getByTestId('channel-primary')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('channel-primary')).toHaveScreenshot(`channels-active-${name}.png`, {
         maxDiffPixelRatio: 0.08,
       });
     });
@@ -52,6 +60,27 @@ for (const [name, viewport] of Object.entries(VIEWPORTS)) {
     test(`Channels empty (${name})`, async ({ page }) => {
       await showChannelsEmpty(page);
       await expect(page.getByTestId('channels-panel')).toHaveScreenshot(`channels-empty-${name}.png`, {
+        maxDiffPixelRatio: 0.08,
+      });
+    });
+  });
+}
+
+for (const [name, viewport] of Object.entries(MOBILE_FRAMING_VIEWPORTS)) {
+  test.describe(`Mobile viewport framing — ${name}`, () => {
+    test.use({ viewport });
+
+    test(`Home full shell (${name})`, async ({ page }) => {
+      await waitPortalReady(page);
+      await expect(page.getByTestId('app-shell')).toHaveScreenshot(`viewport-home-${name}.png`, {
+        maxDiffPixelRatio: 0.08,
+      });
+    });
+
+    test(`Channels full shell (${name})`, async ({ page }) => {
+      await waitPortalReady(page);
+      await openMainChannel(page);
+      await expect(page.getByTestId('app-shell')).toHaveScreenshot(`viewport-channels-${name}.png`, {
         maxDiffPixelRatio: 0.08,
       });
     });

@@ -26,9 +26,14 @@ export function ActivityFeed({ items, channelId, onCollapseAll, onExpandRecent }
           )}
         </div>
       )}
-      <div className="chat-stream" data-testid="channel-messages" aria-live="polite">
+      <div
+        className="chat-stream"
+        data-testid="channel-messages"
+        data-empty={items.length === 0 ? 'true' : undefined}
+        aria-live="polite"
+      >
         {items.length === 0 ? (
-          <p className="subtle">No messages yet. Give the PM a goal to get started.</p>
+          <p className="subtle activity-feed__empty">No messages yet. Give the PM a goal to get started.</p>
         ) : (
           items.map((item) => <FeedItemRow key={item.id} item={item} channelId={channelId} />)
         )}

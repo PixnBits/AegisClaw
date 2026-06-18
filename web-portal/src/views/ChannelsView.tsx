@@ -90,6 +90,7 @@ export function ChannelsView({ onOpenCanvas, onOpenContext, onGoHome }: Props) {
   return (
     <section className="panel content-panel content-panel--channels" data-testid="channels-panel" data-page="channels">
       <article className="channel-workspace" data-testid="channel-detail">
+        <div className="channel-primary" data-testid="channel-primary">
         <header className="channel-header">
           <div className="channel-header__identity">
             <p className="eyebrow">Channel</p>
@@ -116,6 +117,7 @@ export function ChannelsView({ onOpenCanvas, onOpenContext, onGoHome }: Props) {
         />
 
         <CompactHarness state={harness} onOpenCanvas={onOpenCanvas} compactTasks={isMobile} />
+        </div>
 
         <ActivityFeed
           items={feed}

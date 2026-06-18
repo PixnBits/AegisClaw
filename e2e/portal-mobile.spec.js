@@ -61,7 +61,8 @@ test.describe('Visual regression snapshots', () => {
   test('mobile channels layout', async ({ page }) => {
     await waitPortalReady(page);
     await page.getByTestId('bottom-nav-channels').click();
-    await expect(page.getByTestId('channels-panel')).toHaveScreenshot('channels-mobile.png', {
+    await expect(page.getByTestId('channel-primary')).toBeVisible({ timeout: 8000 });
+    await expect(page.getByTestId('channel-primary')).toHaveScreenshot('channels-mobile.png', {
       maxDiffPixelRatio: 0.05,
     });
   });

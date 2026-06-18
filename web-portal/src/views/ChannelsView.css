@@ -4,6 +4,22 @@
   gap: var(--section-gap);
 }
 
+.channel-primary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--section-gap);
+}
+
+@media (max-width: 768px) {
+  .channel-workspace {
+    gap: var(--space-5);
+  }
+
+  .content-panel--channels {
+    gap: var(--space-5);
+  }
+}
+
 .channel-header__identity {
   min-width: 0;
 }

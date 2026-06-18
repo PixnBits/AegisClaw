@@ -35,4 +35,6 @@
   --topbar-height: 56px;
   --sidebar-width: 280px;
   --context-width: 320px;
+  --mobile-gutter: 24px;
+  --mobile-scroll-bottom: calc(var(--bottom-nav-height) + var(--space-5));
 }

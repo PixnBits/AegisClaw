@@ -34,14 +34,28 @@
   }
 
   .chat-stream {
-    min-height: 160px;
+    min-height: 0;
     max-height: none;
     padding: 0;
     gap: var(--space-3);
   }
 
+  .chat-stream:empty,
+  .chat-stream[data-empty='true'] {
+    min-height: 0;
+  }
+
   .feed-item {
     padding: var(--space-4);
+  }
+
+  .activity-feed__empty {
+    margin: var(--space-2) 0 var(--space-4);
+    padding: var(--space-4);
+    text-align: center;
+    background: var(--color-elevated);
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-md);
   }
 }
 
