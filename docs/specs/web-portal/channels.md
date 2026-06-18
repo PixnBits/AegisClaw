@@ -31,7 +31,9 @@ Channels use a three-zone desktop layout:
 - **Main content area**: Channel header, harness/pipeline overview, activity feed, and input.
 - **Right context panel**: Channel-specific context, grouped member management, security posture, and quick actions.
 
-The layout is responsive and supports collapsing the right panel on smaller viewports or when focus is needed on the feed.
+The layout is responsive:
+- Desktop: full three-zone with collapsible right panel.
+- Mobile: right context collapses to a bottom sheet triggered from header or floating action. Main area includes a persistent quick-command affordance near the top and an Agent Activity Summary component.
 
 ### Left Sidebar
 
@@ -46,14 +48,14 @@ The layout is responsive and supports collapsing the right panel on smaller view
 - Status badges.
 - Archive button (with confirmation).
 
-**Harness / Pipeline Overview**
-A prominent but calm section (strip or card group) that shows:
+**Harness / Pipeline Overview (Compact Harness)**
+A prominent but calm strip or card group that shows:
 - The current high-level plan or goal.
 - Decomposition into narrow-scope tasks with assigned specialist personas.
 - Progress and status per task/stage.
 - Visible pipeline stages: Plan → Delegate → Execute → Propose → Court Review → Apply.
 
-This section makes the Cloudflare-inspired harness principles (narrow scope, parallel work, adversarial review) immediately visible without requiring the user to open separate views.
+This section makes the harness principles immediately visible without requiring the user to open separate views. It serves as the low-friction entry point to the richer Canvas view.
 
 **Activity Feed**
 The core of the channel. Real-time feed containing:
@@ -62,6 +64,13 @@ The core of the channel. Real-time feed containing:
 - Tool calls and results (sanitized).
 - Inter-agent hand-offs and collaboration events.
 - Proposal and Court decision events (with vote summaries and links).
+
+**Reasoning Visibility (Progressive default)**
+- Live/in-flight agent reasoning steps (Observe → Think → Plan → Act, tool calls) are expanded and highlighted for live observability.
+- Once a decisive result, proposal, or stage transition occurs, intermediate reasoning automatically collapses to a compact one-line summary (e.g. "Researcher completed scope with 3 tool calls") with a clear "Show reasoning" affordance.
+- Human messages and Court decisions remain fully expanded.
+- Feed-level controls ("Collapse all reasoning", "Expand recent") are available in the header or feed menu to manage density, especially valuable on mobile.
+- Policy presets (Progressive / Paranoid / Velocity) are available globally and per-channel; enterprise policy can lock the preset.
 
 Features:
 - Threading for focused discussion.
@@ -75,6 +84,14 @@ Natural language input at the bottom of the feed.
 - Supports @mentions.
 - High-privilege or high-risk actions trigger clear approval prompts before execution.
 - Send action routes through the PM or relevant agent as appropriate.
+
+**Agent Activity Summary**
+Lightweight chips or cards in the header area showing:
+- Currently active narrow tasks and personas
+- Overall stage progress
+- Token usage or activity cost (when safely exposed by the backend)
+
+This gives at-a-glance visibility into what work is happening and what resources it is consuming, directly supporting velocity and governance needs.
 
 ### Right Context Panel
 
@@ -101,6 +118,7 @@ Contextual buttons such as:
 - Propose change to this channel
 - Review pending Court decisions
 - Open in Canvas
+- Quick export of recent artefacts (from completed proposals)
 
 ## Real-Time Behavior
 
@@ -112,16 +130,16 @@ Contextual buttons such as:
 ## Interaction Patterns & Edge Cases
 
 - **Empty or new channel**: Helpful guidance such as "Give the PM a goal to get started" or template suggestions that trigger plan creation.
-- **High volume of activity**: Good default filtering (e.g., show decisions + proactive updates first) and threading.
+- **High volume of activity**: Good default filtering (e.g., show decisions + proactive updates first) and threading. Progressive reasoning collapsing helps maintain scannability.
 - **Many members**: Sections are collapsed by default; search works across all groups.
-- **Proposal arising from work**: Appears inline in the activity feed with clear status and link to full Court detail.
+- **Proposal arising from work**: Appears inline in the activity feed with clear status and link to full Court detail. Quick export action available.
 - **Agent spin-up time**: Graceful loading states that mask microVM startup while showing the harness is working.
 
 ## Persona Considerations
 
-- **Alex Rivera**: Easy access to traces from the member list and prominent Court rationales in the feed.
-- **Jordan Hale / Sam Chen**: Clear role visibility, @mention power, and export paths from proposals.
-- **Dr. Lena Moreau**: Governance status and proposal visibility at the channel level.
+- **Alex Rivera**: Easy access to traces from the member list and prominent Court rationales in the feed. Progressive reasoning gives depth without permanent noise.
+- **Jordan Hale / Sam Chen**: Clear role visibility, @mention power, export paths from proposals, and the Agent Activity Summary for token/work visibility. Velocity preset available.
+- **Dr. Lena Moreau**: Governance status and proposal visibility at the channel level. Paranoid preset and quick exports support compliance needs.
 
 ## Open Areas
 
@@ -129,5 +147,6 @@ Contextual buttons such as:
 - Member invite flow details (modal vs drawer).
 - Thread vs flat feed preference (user testing).
 - Performance targets for very long activity histories.
+- Exact mobile bottom-sheet interaction details and pull-to-refresh behaviour.
 
 This specification defines the target behavior for Channels. Implementation should prioritize scannability, harness visibility, and low-friction collaboration.

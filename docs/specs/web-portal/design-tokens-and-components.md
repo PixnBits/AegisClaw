@@ -36,7 +36,15 @@ All colors should be defined as CSS custom properties (e.g., `--color-bg`, `--co
 
 ## Spacing
 
-Base unit: 4px (multiples of 4 recommended).
+Base unit: 4px (multiples of 4 recommended). Generous application for breathing room in command surfaces and feeds.
+
+## Interaction States
+
+- Hover: subtle surface lift or border highlight
+- Focus: cyan ring (`--color-focus`) with 2px offset
+- Active / Pressed: slight scale or background shift
+- Disabled: muted text and reduced opacity
+- Loading / Skeleton: calm pulse or static placeholder blocks matching surface colour
 
 ## Component Patterns
 
@@ -48,26 +56,66 @@ Base unit: 4px (multiples of 4 recommended).
 ### Badges & Status
 - Semantic color coding as defined above
 - Small, readable, consistent across views
+- Compact variants for Activity Summary chips
 
 ### Timeline / Trace
 - Clear phase separation
 - Expandable tool call details
 - Good visual hierarchy
+- Collapsible by default for completed sections in feeds
 
-### Pipeline Stages
+### Pipeline Stages (Compact Harness)
 - Horizontal or vertical representation of Plan → Delegate → Execute → Propose → Court Review → Apply
-- Current stage highlighted
-- Completed stages in success color
+- Current stage highlighted with semantic colour
+- Completed stages in success colour
+- Compact version for Channels and Home headers
 
 ### Member Representation
-- Grouped by category (Core Court, Project Roles, Humans)
-- Status indicators
-- Consistent chip/avatar treatment
+- Grouped by category (Core Court, Project Roles, Humans) with collapsible sections
+- Status indicators and consistent chip/avatar treatment
+- Searchable within groups
+
+### Collapsible Sections
+- Clear affordance (chevron or "Show/Hide" text)
+- Smooth height transition
+- Default collapsed for reasoning steps (post-decision), member groups, and long traces
+- Live/in-flight sections start expanded
+- Persist user preference where appropriate (e.g. per-channel reasoning collapse state)
+
+### Bottom Sheets (Mobile Context)
+- Slide-up from bottom with backdrop
+- Header with title and close affordance
+- Scrollable content area
+- Safe-area padding for device notches
+- Used for right-context content (member management, harness details, operator controls) on mobile
+- Dismiss on backdrop tap or swipe down
+
+### Agent Activity Summary
+- Lightweight horizontal chip row or small card group
+- Shows: active narrow tasks/personas, overall stage progress, token usage (when exposed)
+- Semantic colour for status
+- Clickable to open deeper view (Dashboard or Canvas)
+- Appears in Home header (desktop), Channels header area (desktop + mobile), and Dashboard
+- Graceful empty state when no active work
+
+### Policy / Preset Toggles
+- Clear segmented control or dropdown for Progressive / Paranoid / Velocity presets
+- Visual indicator of current policy
+- Per-channel override option with clear inheritance note
+- Enterprise lock state shown with admin-only messaging
+- Placed in Settings, Channel header menu, or operator context panel
+
+### Pipeline Stages (Expanded / Canvas)
+- Richer visual representation when opened from Compact Harness strip
+- Supports grid/kanban or lightweight flow view of parallel tasks
+- Direct links to traces and proposals
 
 ## Accessibility
 
 - WCAG AA minimum contrast
-- Visible focus states
-- Proper ARIA for dynamic content
+- Visible focus states (cyan ring)
+- Proper ARIA for dynamic content (expanded/collapsed states, live regions for activity feed and Agent Activity Summary)
+- Minimum 44px touch targets on mobile
+- Keyboard navigation support for all interactive elements including bottom sheets and policy toggles
 
-This document should be referenced by all other specification files when describing visual elements.
+This document should be referenced by all other specification files when describing visual elements. New components (Agent Activity Summary, bottom sheets, policy toggles) must follow the patterns defined here.
