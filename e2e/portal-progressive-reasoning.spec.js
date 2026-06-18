@@ -20,6 +20,16 @@ test.describe('Progressive reasoning & policy (fixture)', () => {
     await waitPortalReady(page);
     await openMainChannel(page);
 
+    const viewport = page.viewportSize();
+    const isMobile = viewport && viewport.width <= 768;
+    if (isMobile) {
+      await page.getByRole('button', { name: 'Context' }).click();
+      await expect(page.getByTestId('bottom-sheet')).toBeVisible({ timeout: 5000 });
+    } else {
+      await expect(page.getByTestId('context-panel')).toBeVisible({ timeout: 5000 });
+    }
+
+    await expect(page.getByTestId('policy-preset-toggle')).toBeVisible({ timeout: 5000 });
     await page.getByTestId('policy-progressive').click();
     await expect(page.getByTestId('policy-progressive')).toHaveAttribute('aria-pressed', 'true');
 

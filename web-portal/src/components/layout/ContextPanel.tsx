@@ -1,9 +1,12 @@
 import { FormEvent, useState } from 'react';
 import { api } from '@/api/client';
 import { HarnessState } from '@/contracts';
-import { groupMembers, memberRole } from '@/lib/members';
+import { memberRole } from '@/lib/members';
 import { usePortalStore } from '@/store/portalStore';
 import { PolicyPresetToggle } from '@/components/PolicyPreset/PolicyPresetToggle';
+import { MemberGroups } from '@/components/members/MemberGroups';
+import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import './ContextPanel.css';
 
 type Props = {
   harness?: HarnessState | null;
@@ -21,7 +24,6 @@ export function ContextPanel({ harness, channelId, collapsed }: Props) {
   if (collapsed) return null;
 
   const members = currentChannel?.members || [];
-  const groups = groupMembers(members);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
@@ -34,7 +36,7 @@ export function ContextPanel({ harness, channelId, collapsed }: Props) {
   };
 
   const handleRemove = async (r: string) => {
-    if (!currentChannel || !confirm(`Remove ${r}?`)) return;
+    if (!currentChannel || !confirm(`Remove ${r} from this channel?`)) return;
     await api.removeMember(currentChannel.id, r);
     await selectChannel(currentChannel);
     await loadChannels();
@@ -42,63 +44,44 @@ export function ContextPanel({ harness, channelId, collapsed }: Props) {
 
   return (
     <aside className="panel context-panel" data-testid="context-panel">
-      <div className="panel-heading">
+      <div className="context-panel__heading">
         <p className="eyebrow">Context</p>
-        <h2>Operator</h2>
+        <h2 className="context-panel__title">Operator</h2>
       </div>
 
-      <article className="subpanel" data-testid="harness-teaser">
-        <p className="eyebrow">Harness</p>
-        <p id="harnessTeaserGoal">
+      <CollapsibleSection title="Harness" defaultOpen>
+        <p className="context-panel__body-text" id="harnessTeaserGoal" data-testid="harness-teaser">
           {harness?.plan?.goal
             ? `${harness.plan.goal}${harness.tasks?.length ? ` — ${harness.tasks.length} active task(s)` : ''}`
-            : 'No active plan — submit a goal to begin.'}
+            : 'No active plan yet. Use the command bar on Home to submit a goal.'}
         </p>
-      </article>
+      </CollapsibleSection>
 
       {channelId && (
         <>
-          <article className="subpanel">
-            <p className="eyebrow">Reasoning Policy</p>
+          <CollapsibleSection title="Reasoning policy" defaultOpen>
             <PolicyPresetToggle channelId={channelId} showInheritance />
-          </article>
+          </CollapsibleSection>
 
-          <article className="subpanel">
-            <div className="panel-heading--toolbar">
-              <p className="eyebrow">Members</p>
+          <CollapsibleSection
+            title="Members"
+            count={members.length}
+            defaultOpen={false}
+            testId="members-section"
+          >
+            <div className="context-panel__toolbar">
               <button
                 type="button"
-                className="secondary-button"
+                className="secondary-button secondary-button--small"
                 data-testid="toggle-invite-button"
                 onClick={() => setShowInvite(!showInvite)}
               >
-                Invite
+                {showInvite ? 'Cancel' : 'Invite'}
               </button>
             </div>
-            <ul className="list-stack" data-testid="members-list">
-              {Object.entries(groups).map(([group, items]) =>
-                items.length ? (
-                  <li key={group} className="member-group">
-                    <strong className="member-group__title">{group}</strong>
-                    <ul className="list-stack compact-list">
-                      {items.map((m) => {
-                        const r = memberRole(m);
-                        return (
-                          <li key={r} className="list-card member-chip" data-testid={`member-${r}`}>
-                            {r}
-                            <button type="button" className="danger-button" onClick={() => handleRemove(r)}>
-                              Remove
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </li>
-                ) : null,
-              )}
-            </ul>
+            <MemberGroups members={members} onRemove={handleRemove} />
             {showInvite && (
-              <form className="inline-form invite-form" data-testid="add-member-form" onSubmit={handleAdd} noValidate>
+              <form className="invite-form" data-testid="add-member-form" onSubmit={handleAdd} noValidate>
                 <input
                   type="text"
                   placeholder="coder or user:alice"
@@ -112,18 +95,22 @@ export function ContextPanel({ harness, channelId, collapsed }: Props) {
                 </button>
               </form>
             )}
-          </article>
+          </CollapsibleSection>
         </>
       )}
 
-      <article className="subpanel">
-        <p className="eyebrow">Security Posture</p>
-        <ul className="list-stack subtle">
+      <CollapsibleSection title="Security posture" defaultOpen={false}>
+        <ul className="context-panel__list subtle">
           <li>Browser isolated</li>
           <li>Stable selectors</li>
           <li>No external resources</li>
         </ul>
-      </article>
+      </CollapsibleSection>
     </aside>
   );
+}
+
+/** Extract persona labels from channel members for activity summary fallback */
+export function memberPersonas(members: { role?: string; agent_id?: string }[]): string[] {
+  return members.map(memberRole).filter((r) => !r.startsWith('user'));
 }

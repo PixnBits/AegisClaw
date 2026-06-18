@@ -83,13 +83,12 @@ export function HomeView({ onOpenChannel, onOpenCanvas }: Props) {
         </article>
       )}
 
-      {!isMobile && (
-        <AgentActivitySummary
-          harness={mainHarness}
-          tokenUsage={tokenUsage}
-          onDrillDown={() => onOpenChannel('main')}
-        />
-      )}
+      <AgentActivitySummary
+        harness={mainHarness}
+        tokenUsage={tokenUsage}
+        onDrillDown={() => onOpenChannel('main')}
+        compact={isMobile}
+      />
 
       <div className="live-pulse live-pulse--subtle" data-testid="live-pulse">
         <span>
@@ -104,11 +103,11 @@ export function HomeView({ onOpenChannel, onOpenCanvas }: Props) {
         <p className="eyebrow">Recent Activity</p>
         <ul className="list-stack" id="homeRecentList">
           {(dashboard?.active_work || []).slice(0, 3).map((w) => (
-            <li key={w.id} className="list-card">
-              <strong>{w.scope || w.persona}</strong>
-              <small className="subtle">
-                {w.stage} • {w.channel_id}
-              </small>
+            <li key={w.id} className="list-card recent-item">
+              <strong className="recent-item__title">{w.scope || w.persona}</strong>
+              <span className="recent-item__meta subtle">
+                {w.stage} · {w.channel_id}
+              </span>
             </li>
           ))}
         </ul>

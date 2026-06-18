@@ -1,21 +1,77 @@
 .activity-summary {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
+  gap: var(--space-3);
+  padding: var(--space-4);
   background: var(--color-elevated);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
 }
 
 .activity-summary--compact {
-  padding: var(--space-2);
+  padding: var(--space-3);
+  gap: var(--space-2);
+}
+
+.activity-summary--live {
+  border-color: rgba(0, 212, 255, 0.25);
 }
 
 .activity-summary--empty {
-  min-height: 40px;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  gap: var(--space-4);
+  min-height: 3.5rem;
+}
+
+.activity-summary__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.activity-summary__drill {
+  font-size: 0.8125rem;
+}
+
+.activity-summary__pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-muted);
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.activity-summary--live .activity-summary__pulse,
+.activity-summary__empty-text + .activity-summary__pulse {
+  background: var(--color-success);
+  opacity: 1;
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.activity-summary__empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.activity-summary__empty-label {
+  font-size: 0.875rem;
+  font-weight: 500;
 }
 
 .activity-summary__chips {
@@ -29,12 +85,13 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 999px;
   font-size: 0.8125rem;
   min-height: 36px;
+  transition: border-color 0.15s ease;
 }
 
 .activity-summary__chip:hover {
@@ -43,6 +100,10 @@
 
 .activity-summary__persona {
   font-weight: 600;
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .activity-summary__progress {
@@ -52,7 +113,12 @@
 
 .activity-summary__meta {
   display: flex;
-  gap: var(--space-4);
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-4);
   font-size: 0.75rem;
   color: var(--color-muted);
+}
+
+.activity-summary__goal {
+  display: inline;
 }

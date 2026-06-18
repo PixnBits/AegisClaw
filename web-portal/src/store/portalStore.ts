@@ -36,6 +36,8 @@ type PortalState = {
   overviewStats: OverviewStats | null;
   contextPanelOpen: boolean;
   bottomSheetOpen: boolean;
+  /** E2E / test hook — prevents auto-selecting the first channel */
+  skipChannelAutoSelect: boolean;
   expandedReasoning: Set<string>;
   dashboardFilter: string;
 
@@ -77,6 +79,7 @@ export const usePortalStore = create<PortalState>((set, get) => ({
   overviewStats: null,
   contextPanelOpen: true,
   bottomSheetOpen: false,
+  skipChannelAutoSelect: false,
   expandedReasoning: new Set(),
   dashboardFilter: 'all',
 
@@ -253,3 +256,13 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     });
   },
 }));
+
+declare global {
+  interface Window {
+    __portalStore?: typeof usePortalStore;
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.__portalStore = usePortalStore;
+}

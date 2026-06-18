@@ -33,16 +33,15 @@ export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Pr
       </div>
       <ul className="list-stack compact-list" data-testid="channels-list">
         {channels.map((ch) => (
-          <li
-            key={ch.id}
-            className={`list-card${currentChannelId === ch.id ? ' active' : ''}`}
-            onClick={() => onSelect(ch)}
-            onKeyDown={(e) => e.key === 'Enter' && onSelect(ch)}
-            role="button"
-            tabIndex={0}
-          >
-            <span>{ch.id}</span>
-            <small className="subtle">{(ch.members || []).length} members</small>
+          <li key={ch.id}>
+            <button
+              type="button"
+              className={`list-card channel-list-item${currentChannelId === ch.id ? ' active' : ''}`}
+              onClick={() => onSelect(ch)}
+            >
+              <span>{ch.id}</span>
+              <small className="subtle">{(ch.members || []).length} members</small>
+            </button>
           </li>
         ))}
       </ul>

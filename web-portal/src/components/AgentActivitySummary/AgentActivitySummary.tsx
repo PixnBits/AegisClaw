@@ -6,62 +6,109 @@ type Props = {
   tokenUsage?: number;
   onDrillDown?: () => void;
   compact?: boolean;
+  /** Fallback personas when harness has no active tasks (e.g. from channel roster) */
+  idlePersonas?: string[];
 };
 
 function activeTasks(tasks: NarrowTask[]): NarrowTask[] {
-  return (tasks || []).filter((t) => t.status === 'active' || t.progress < 100);
+  return (tasks || []).filter((t) => t.status === 'active' || (t.progress ?? 0) < 100);
 }
 
-function stageProgress(stages: HarnessState['plan']): number {
-  if (!stages?.stages?.length) return 0;
-  const completed = stages.stages.filter((s) => s.status === 'completed').length;
-  return Math.round((completed / stages.stages.length) * 100);
+function stageProgress(plan: HarnessState['plan']): number {
+  if (!plan?.stages?.length) return 0;
+  const completed = plan.stages.filter((s) => s.status === 'completed').length;
+  return Math.round((completed / plan.stages.length) * 100);
 }
 
-export function AgentActivitySummary({ harness, tokenUsage, onDrillDown, compact }: Props) {
+export function AgentActivitySummary({
+  harness,
+  tokenUsage,
+  onDrillDown,
+  compact,
+  idlePersonas = [],
+}: Props) {
   const tasks = activeTasks(harness?.tasks || []);
   const progress = stageProgress(harness?.plan ?? null);
+  const hasGoal = Boolean(harness?.plan?.goal);
+  const hasWork = tasks.length > 0;
 
-  if (!tasks.length && !harness?.plan?.goal) {
+  if (!hasWork && !hasGoal && idlePersonas.length === 0) {
     return (
       <div
         className={`activity-summary activity-summary--empty${compact ? ' activity-summary--compact' : ''}`}
         data-testid="agent-activity-summary"
         aria-live="polite"
+        role="region"
+        aria-label="Agent activity summary"
       >
-        <span className="subtle">No active work</span>
+        <span className="activity-summary__pulse" aria-hidden="true" />
+        <div className="activity-summary__empty-text">
+          <span className="activity-summary__empty-label">No active work</span>
+          <span className="subtle">Submit a goal to start the harness</span>
+        </div>
       </div>
     );
   }
 
+  const displayChips = hasWork
+    ? tasks.slice(0, 4).map((task) => ({
+        key: task.task_id,
+        label: task.agent_persona,
+        stage: task.current_stage,
+        detail: `${task.progress}%`,
+      }))
+    : idlePersonas.slice(0, 4).map((p) => ({
+        key: p,
+        label: p,
+        stage: 'Idle',
+        detail: null as string | null,
+      }));
+
   return (
     <div
-      className={`activity-summary${compact ? ' activity-summary--compact' : ''}`}
+      className={`activity-summary${compact ? ' activity-summary--compact' : ''}${hasWork ? ' activity-summary--live' : ''}`}
       data-testid="agent-activity-summary"
       aria-live="polite"
       role="region"
       aria-label="Agent activity summary"
     >
+      <div className="activity-summary__header">
+        <p className="eyebrow">Activity</p>
+        {onDrillDown && (
+          <button type="button" className="link-button activity-summary__drill" onClick={onDrillDown}>
+            View details
+          </button>
+        )}
+      </div>
       <div className="activity-summary__chips">
-        {tasks.slice(0, 4).map((task) => (
+        {displayChips.map((chip) => (
           <button
-            key={task.task_id}
+            key={chip.key}
             type="button"
             className="activity-summary__chip"
-            data-testid={`activity-chip-${task.task_id}`}
+            data-testid={`activity-chip-${chip.key}`}
             onClick={onDrillDown}
           >
-            <span className="activity-summary__persona">{task.agent_persona}</span>
-            <span className="badge badge--active">{task.current_stage}</span>
-            <span className="activity-summary__progress">{task.progress}%</span>
+            <span className="activity-summary__persona">{chip.label}</span>
+            <span className={`badge ${chip.stage === 'Idle' ? 'badge--pending' : 'badge--active'}`}>{chip.stage}</span>
+            {chip.detail && <span className="activity-summary__progress">{chip.detail}</span>}
           </button>
         ))}
-        {tasks.length > 4 && (
-          <span className="activity-summary__more subtle">+{tasks.length - 4} more</span>
+        {(hasWork ? tasks.length : idlePersonas.length) > 4 && (
+          <span className="activity-summary__more subtle">
+            +{(hasWork ? tasks.length : idlePersonas.length) - 4} more
+          </span>
         )}
       </div>
       <div className="activity-summary__meta">
-        <span data-testid="activity-stage-progress">Stage {progress}%</span>
+        <span data-testid="activity-stage-progress">
+          Pipeline {progress}%
+          {hasGoal && !compact && (
+            <span className="activity-summary__goal subtle"> · {harness!.plan!.goal.slice(0, 48)}
+              {(harness!.plan!.goal.length ?? 0) > 48 ? '…' : ''}
+            </span>
+          )}
+        </span>
         {tokenUsage != null && (
           <span data-testid="activity-token-usage">{tokenUsage.toLocaleString()} tokens</span>
         )}

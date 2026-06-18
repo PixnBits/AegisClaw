@@ -52,16 +52,19 @@ test.describe('Web Portal real-time (fixture)', () => {
     await openMainChannel(page);
 
     const role = `coder-${Date.now()}`;
+    await page.getByTestId('members-section').getByRole('button', { name: /Members/i }).click();
     await page.getByTestId('toggle-invite-button').click();
     await expect(page.getByTestId('add-member-form')).toBeVisible({ timeout: 5000 });
     await page.getByTestId('add-member-input').fill(role);
     await page.getByTestId('add-member-button').click();
 
+    await page.getByTestId('member-group-project-sdlc').getByRole('button', { name: /Project/i }).click();
     await expect(page.getByTestId('members-list')).toContainText(role, { timeout: 5000 });
 
-    const removeBtn = page.getByTestId(`member-${role}`).getByRole('button', { name: 'Remove' });
+    const memberRow = page.getByTestId(`member-${role}`);
+    await memberRow.getByRole('button', { name: new RegExp(`Actions for ${role}`) }).click();
     page.once('dialog', (dialog) => dialog.accept());
-    await removeBtn.click();
+    await memberRow.getByRole('button', { name: 'Remove' }).click();
 
     await expect(page.getByTestId('members-list')).not.toContainText(role, { timeout: 5000 });
   });

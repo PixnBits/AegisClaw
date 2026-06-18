@@ -8,6 +8,7 @@
     "test:contract": "AEGIS_E2E_FIXTURE=1 playwright test e2e/journeys.spec.js --project=chromium"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.1",
     "@playwright/test": "1.61.0-alpha-2026-06-08"
   }
 }

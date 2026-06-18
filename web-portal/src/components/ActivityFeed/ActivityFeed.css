@@ -1,26 +1,48 @@
 .activity-feed {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   flex: 1;
   min-height: 0;
 }
 
 .activity-feed__controls {
   display: flex;
-  gap: var(--space-2);
+  gap: var(--space-3);
   flex-wrap: wrap;
+  padding-bottom: var(--space-1);
+}
+
+.activity-feed__controls .secondary-button {
+  font-size: 0.8125rem;
 }
 
 .chat-stream {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   overflow-y: auto;
   flex: 1;
   min-height: 200px;
-  max-height: 50vh;
-  padding: var(--space-2);
+  max-height: 55vh;
+  padding: var(--space-3);
+}
+
+@media (max-width: 768px) {
+  .activity-feed {
+    gap: var(--space-3);
+  }
+
+  .chat-stream {
+    min-height: 160px;
+    max-height: none;
+    padding: 0;
+    gap: var(--space-3);
+  }
+
+  .feed-item {
+    padding: var(--space-4);
+  }
 }
 
 .feed-item {

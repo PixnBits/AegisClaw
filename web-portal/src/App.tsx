@@ -77,7 +77,12 @@ export default function App() {
 
   // Auto-select first channel when entering Channels view once channel list is loaded.
   useEffect(() => {
-    if (view === 'channels' && !currentChannel && channels.length > 0) {
+    if (
+      view === 'channels' &&
+      !currentChannel &&
+      channels.length > 0 &&
+      !usePortalStore.getState().skipChannelAutoSelect
+    ) {
       selectChannel(channels[0]);
     }
   }, [view, currentChannel, channels, selectChannel]);
@@ -88,7 +93,11 @@ export default function App() {
       setView(page === 'monitoring' ? 'dashboard' : page);
       const agent = parseTraceAgent();
       if (agent) setTraceAgent(agent);
-      if (page === 'channels' && !usePortalStore.getState().currentChannel) {
+      if (
+        page === 'channels' &&
+        !usePortalStore.getState().currentChannel &&
+        !usePortalStore.getState().skipChannelAutoSelect
+      ) {
         const first = usePortalStore.getState().channels[0];
         if (first) selectChannel(first);
       }
@@ -144,6 +153,7 @@ export default function App() {
           <ChannelsView
             onOpenCanvas={openCanvas}
             onOpenContext={() => setBottomSheetOpen(true)}
+            onGoHome={() => navigate('home')}
           />
         );
       case 'dashboard':
