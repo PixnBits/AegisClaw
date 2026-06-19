@@ -40,7 +40,8 @@ YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis
 # /home/pixnbits/projects/AegisClaw/main/bin/aegis is the key one for `sudo -n ./bin/aegis start` (and legacy make start wrappers which invoke it under sudo -n internally).
 # Use direct bin for start to avoid broad sudo on make: sudo -n /home/pixnbits/projects/AegisClaw/main/bin/aegis start --foreground
 
-# Env vars for observability (boot-metrics) + model selection + custom E2E sockets must pass under sudo.
+# Env vars for observability (boot-metrics, collab trace, model selection) must pass under sudo when using -E.
+# Prefer `aegis start --collab-trace` instead of AEGIS_COLLAB_TRACE=1 when sudo blocks inline env vars.
 # Top-level + per-command forms for compatibility across sudoers versions.
 Defaults env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
 Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"

@@ -6,6 +6,8 @@
 #
 # Usage:
 #   AEGIS_COLLAB_TRACE=1 sudo ./bin/aegis start --foreground 2>&1 | tee aegis.log
+#   # or (recommended when sudo blocks env vars):
+#   sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log
 #   # in another terminal:
 #   bash scripts/verify-channel-collab-trace-e2e.sh
 #
@@ -42,8 +44,7 @@ echo
 if [[ -f "$DAEMON_LOG" ]] && ! grep -q '\[collab-trace\]' "$DAEMON_LOG" 2>/dev/null; then
   echo "NOTE: No [collab-trace] lines in ${DAEMON_LOG} yet."
   echo "      Restart daemon with trace enabled, e.g.:"
-  echo "        sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start --foreground 2>&1 | tee aegis.log"
-  echo "      (Plain 'AEGIS_COLLAB_TRACE=1 sudo ...' is often stripped by sudo.)"
+  echo "        sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log"
   echo
 fi
 
@@ -138,7 +139,7 @@ if [[ $ASSERT_RC -eq 0 ]]; then
 else
   echo "=== E2E SUMMARY: FAIL ==="
   echo "Tips:"
-  echo "  - Enable trace: sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start --foreground 2>&1 | tee aegis.log"
+  echo "  - Enable trace: sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log"
   echo "  - Confirm Ollama/LLM reachable from network-boundary VM (agents no longer post canned intros)"
   echo "  - grep 'channel.reply.skip' / 'channel.post.fail' in guest logs"
   echo "  - grep 'stomp.notify.fail' in daemon log (agent posts not reaching browser)"

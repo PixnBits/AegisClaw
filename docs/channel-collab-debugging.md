@@ -42,18 +42,24 @@ sequenceDiagram
 
 ## Tracing (`AEGIS_COLLAB_TRACE=1`)
 
-**Important:** `sudo` usually **strips** environment variables unless you use one of these forms:
+**Recommended (no sudo env needed):**
 
 ```bash
-# Recommended — variable on the sudo command line (GNU sudo)
-sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start --foreground 2>&1 | tee aegis.log
+sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log
+```
 
-# Alternative — export then preserve with -E (requires env_keep in sudoers for NOPASSWD setups)
+The `--collab-trace` flag sets tracing inside the daemon before VMs start. Use this when sudo blocks environment variables (common default).
+
+**Alternative — environment variable** (only if your sudoers allows it):
+
+```bash
 export AEGIS_COLLAB_TRACE=1
 sudo -E ./bin/aegis start --foreground 2>&1 | tee aegis.log
 ```
 
-**Not reliable alone:** `AEGIS_COLLAB_TRACE=1 sudo ./bin/aegis start` — the variable applies to the `sudo` process, but `sudo` often resets the environment before running `aegis` unless `env_keep` includes `AEGIS_COLLAB_TRACE` (see `scripts/aegisclaw-sudoers.example`).
+Add `AEGIS_COLLAB_TRACE` to `env_keep` in `scripts/aegisclaw-sudoers.example` for NOPASSWD setups.
+
+**Usually fails:** `sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start` — many sudo policies reject inline env assignment (`you are not allowed to set the following environment variables`).
 
 On successful start you should see:
 
@@ -61,11 +67,11 @@ On successful start you should see:
 level=info msg="AEGIS_COLLAB_TRACE=1: channel collaboration tracing enabled ..."
 ```
 
-Guest VMs (store, court-persona, PM, web-portal) receive `aegis.collab_trace=1` on the kernel cmdline when the **daemon** was started with trace enabled. Already-running VMs from a prior start will not trace until you restart the daemon.
+Guest VMs (store, court-persona, PM, web-portal) receive `aegis.collab_trace=1` on the kernel cmdline when the daemon was started with `--collab-trace` or the env var. Already-running VMs from a prior start will not trace until you restart the daemon.
 
 ```bash
-# Terminal 1 — foreground daemon with trace
-sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start --foreground 2>&1 | tee aegis.log
+# Terminal 1
+sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log
 
 # Terminal 2 — after collab ready
 make test-e2e-channel-trace

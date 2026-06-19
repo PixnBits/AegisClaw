@@ -597,6 +597,10 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
+	if collabTrace, _ := cmd.Flags().GetBool("collab-trace"); collabTrace {
+		_ = os.Setenv("AEGIS_COLLAB_TRACE", "1")
+	}
+
 	if os.Getuid() != 0 {
 		fmt.Println("daemon must be started with root privileges (use: sudo aegis start)")
 		os.Exit(1)
@@ -659,10 +663,15 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	foreground, _ := cmd.Flags().GetBool("foreground")
+	collabTrace, _ := cmd.Flags().GetBool("collab-trace")
 
 	// Fork to background if not in foreground mode
 	if !foreground {
-		daemonCmd := exec.Command(os.Args[0], "start", "--foreground")
+		childArgs := []string{"start", "--foreground"}
+		if collabTrace {
+			childArgs = append(childArgs, "--collab-trace")
+		}
+		daemonCmd := exec.Command(os.Args[0], childArgs...)
 
 		// Pin paths into the child environment. The foreground daemon re-exec may
 		// not inherit SUDO_USER (depends on sudo/sudo-rs), but images almost always
@@ -2808,6 +2817,7 @@ func main() {
 		Run:   startDaemon,
 	}
 	startCmd.Flags().Bool("foreground", false, "Run daemon in foreground")
+	startCmd.Flags().Bool("collab-trace", false, "Log channel post/fan-out/STOMP stages ([collab-trace]; avoids sudo env friction)")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",
