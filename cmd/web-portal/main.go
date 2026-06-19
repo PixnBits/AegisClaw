@@ -636,6 +636,19 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
+	case "security.posture":
+		data, _ := json.Marshal(map[string]interface{}{
+			"indicators": []interface{}{
+				map[string]interface{}{"id": "browser_isolated", "label": "Browser isolated", "status": "ok", "detail": "Fixture mode"},
+				map[string]interface{}{"id": "no_client_secrets", "label": "No secrets in client", "status": "ok", "detail": "Fixture mode"},
+			},
+			"store_collab_ready":    true,
+			"court_personas_online": 7,
+			"web_portal_status":     "ok",
+			"updated_at":            time.Now().UTC().Format(time.RFC3339),
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
 	case "worker.list":
 		data, _ := json.Marshal([]interface{}{
 			map[string]interface{}{"id": "worker-research", "name": "researcher", "status": "running", "task": "Analyzing proposal", "team_id": "alpha", "role": "researcher", "progress": "65%"},

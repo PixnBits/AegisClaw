@@ -10,6 +10,7 @@ import (
 
 const (
 	TopicOverviewStats      = "/topic/overview.stats"
+	TopicMonitoringStats    = "/topic/monitoring.stats"
 	TopicCanvasEvents       = "/topic/canvas.events"
 	TopicApprovalsPending   = "/topic/approvals.pending"
 	TopicConversationPrefix = "/topic/conversation."
@@ -67,7 +68,7 @@ func IsAllowedTopic(destination string) bool {
 		return false
 	}
 	switch dest {
-	case TopicOverviewStats, TopicCanvasEvents, TopicApprovalsPending:
+	case TopicOverviewStats, TopicCanvasEvents, TopicApprovalsPending, TopicMonitoringStats:
 		return true
 	}
 	if strings.HasPrefix(dest, TopicConversationPrefix) && strings.HasSuffix(dest, ".updates") {
@@ -110,7 +111,7 @@ func TopicsForView(view View, ctx ViewContext) []string {
 	case ViewHome:
 		topics = append(topics, TopicOverviewStats, TopicApprovalsPending)
 	case ViewDashboard:
-		topics = append(topics, TopicOverviewStats, TopicCanvasEvents, TopicApprovalsPending)
+		topics = append(topics, TopicOverviewStats, TopicMonitoringStats, TopicCanvasEvents, TopicApprovalsPending)
 	case ViewChannels:
 		if ctx.ChannelID != "" {
 			topics = append(topics, ChannelActivityTopic(ctx.ChannelID))

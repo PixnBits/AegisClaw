@@ -17,6 +17,7 @@ func (s *Server) registerExtendedPortalRoutes() {
 	s.mux.HandleFunc("/api/agents", s.handleAPIAgents)
 	s.mux.HandleFunc("/api/agents/", s.handleAPIAgentDetail)
 	s.mux.HandleFunc("/api/canvas", s.handleAPICanvas)
+	s.mux.HandleFunc("/api/security/posture", s.handleAPISecurityPosture)
 }
 
 func (s *Server) handleAPIActiveWork(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +224,22 @@ func (s *Server) collectCanvasState(ctx context.Context, channelID string) map[s
 	out := map[string]interface{}{"channel_id": channelID}
 	_ = json.Unmarshal(body, &out)
 	return out
+}
+
+func (s *Server) handleAPISecurityPosture(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+	defer cancel()
+	w.Header().Set("Content-Type", "application/json")
+	data, err := s.fetchRaw(ctx, "security.posture", nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(data) //nolint:errcheck
 }
 
 func (s *Server) handleProposalAction(w http.ResponseWriter, r *http.Request, proposalID, action string) {

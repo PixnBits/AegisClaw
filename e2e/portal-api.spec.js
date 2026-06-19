@@ -43,6 +43,18 @@ test.describe('Portal SPA API contract (latency + shape)', () => {
     expect(Array.isArray(body.messages)).toBeTruthy();
   });
 
+  test('GET /api/agents returns agent cards array', async ({ request }) => {
+    const res = await request.get('/api/agents', { timeout: MAX_MS + 5000 });
+    expect(res.ok()).toBeTruthy();
+    const body = await res.json();
+    expect(body).toHaveProperty('agents');
+    expect(Array.isArray(body.agents)).toBeTruthy();
+    for (const agent of body.agents) {
+      expect(agent).toHaveProperty('name');
+      expect(agent).toHaveProperty('status');
+    }
+  });
+
   test('POST /api/channels/{id} accepts portal user post', async ({ request }) => {
     const marker = `PORTAL-API-E2E-${Date.now()}`;
     const chRes = await request.get('/api/channels/main');

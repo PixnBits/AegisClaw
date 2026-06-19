@@ -14,6 +14,7 @@ const (
 	TypeHarnessTaskProgress = "harness.task.progress"
 	TypeHarnessStageTrans   = "harness.stage.transition"
 	TypeHarnessProposal     = "harness.proposal.created"
+	TypeMonitoringStats     = "monitoring.stats"
 )
 
 // OverviewStats is pushed on /topic/overview.stats.

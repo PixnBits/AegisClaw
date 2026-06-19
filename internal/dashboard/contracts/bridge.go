@@ -31,6 +31,7 @@ var allowedBridgeActions = map[string]struct{}{
 	"worker.list":    {},
 	"sandbox.list":   {},
 	"system.stats":   {},
+	"security.posture": {},
 	"sessions.list": {},
 
 	// Chat / trace (read + send)

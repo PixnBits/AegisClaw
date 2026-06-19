@@ -19,6 +19,7 @@ async function fetchJSON<T>(url: string, options: RequestInit = {}): Promise<T> 
 export const api = {
   dashboard: () => fetchJSON<DashboardData>('/api/dashboard'),
   monitoring: () => fetchJSON<{ stats: Record<string, unknown>; agents: unknown[] }>('/api/monitoring'),
+  securityPosture: () => fetchJSON<import('@/contracts').SecurityPosture>('/api/security/posture'),
   channels: () => fetchJSON<{ channels: Channel[] }>('/api/channels'),
   channel: (id: string) => fetchJSON<Channel>(`/api/channels/${id}`),
   createChannel: (id: string) =>

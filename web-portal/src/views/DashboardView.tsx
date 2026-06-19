@@ -1,7 +1,8 @@
 import { usePortalStore } from '@/store/portalStore';
 import { AgentActivitySummary } from '@/components/AgentActivitySummary/AgentActivitySummary';
 import { api } from '@/api/client';
-import { useEffect, useState } from 'react';
+import { MonitoringStats } from '@/contracts';
+import { useEffect } from 'react';
 
 type Props = {
   onOpenCanvas: () => void;
@@ -15,11 +16,22 @@ export function DashboardView({ onOpenCanvas, onOpenTrace, onOpenCourt }: Props)
   const dashboardFilter = usePortalStore((s) => s.dashboardFilter);
   const setDashboardFilter = usePortalStore((s) => s.setDashboardFilter);
   const overviewStats = usePortalStore((s) => s.overviewStats);
-  const [monitoring, setMonitoring] = useState<Record<string, unknown> | null>(null);
+  const monitoringStats = usePortalStore((s) => s.monitoringStats);
 
   useEffect(() => {
-    api.monitoring().then(setMonitoring).catch(() => {});
+    api.monitoring().then((data) => {
+      usePortalStore.setState({
+        monitoringStats: {
+          type: 'monitoring.stats',
+          timestamp: new Date().toISOString(),
+          stats: data.stats as MonitoringStats['stats'],
+          agents: data.agents,
+        },
+      });
+    }).catch(() => {});
   }, []);
+
+  const liveStats = monitoringStats?.stats;
 
   const activeWork = dashboard?.active_work || [];
   const filtered =
@@ -84,15 +96,15 @@ export function DashboardView({ onOpenCanvas, onOpenTrace, onOpenCourt }: Props)
         <div className="stats-grid">
           <div className="stat-card">
             <span className="eyebrow">Running VMs</span>
-            <strong id="statRunningVMs">{String((monitoring?.stats as Record<string, unknown>)?.running_vms ?? 0)}</strong>
+            <strong id="statRunningVMs">{String(liveStats?.running_vms ?? 0)}</strong>
           </div>
           <div className="stat-card">
             <span className="eyebrow">CPU</span>
-            <strong id="statCPUUsage">{String((monitoring?.stats as Record<string, unknown>)?.cpu_usage ?? '—')}</strong>
+            <strong id="statCPUUsage">{String(liveStats?.cpu_usage ?? '—')}</strong>
           </div>
           <div className="stat-card">
             <span className="eyebrow">Memory</span>
-            <strong id="statMemoryUsage">{String((monitoring?.stats as Record<string, unknown>)?.memory_usage ?? '—')}</strong>
+            <strong id="statMemoryUsage">{String(liveStats?.memory_usage ?? '—')}</strong>
           </div>
         </div>
       </details>
