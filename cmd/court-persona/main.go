@@ -234,12 +234,12 @@ func generateChannelReply(persona, userQuestion string, hubClient hubclient.Clie
 	text, err := callRealLLMViaHub(context.Background(), hubClient, prompt)
 	if err != nil || strings.TrimSpace(text) == "" {
 		log.Printf("court-persona-%s: channel reply LLM failed (%v)", persona, err)
-		collab.Tracef("court-persona-%s", "channel.reply.skip", "ch=? err=%v", err)
+		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "ch=? err=%v", err)
 		return ""
 	}
-	trimmed := strings.TrimSpace(text)
-	if strings.EqualFold(trimmed, "NO_REPLY") {
-		collab.Tracef("court-persona-%s", "channel.reply.skip", "reason=no_reply")
+	trimmed, skip := collab.NormalizeChannelLLMReply(text)
+	if skip {
+		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "reason=no_reply")
 		return ""
 	}
 	return trimmed
@@ -271,7 +271,7 @@ func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueS
 		chID = "main"
 	}
 
-	collab.Tracef("court-persona-%s", "channel.activity.recv", "ch=%s from=%s", chID, from)
+	collab.Tracef("court-persona-"+persona, "channel.activity.recv", "ch=%s from=%s", chID, from)
 
 	shouldRespond, reason := collab.ShouldRespondToActivity(uniqueSource, from, userContent)
 	if !shouldRespond {
@@ -302,19 +302,20 @@ func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueS
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
-	go func() {
-		reply := generateChannelReply(persona, userContent, hcl)
-		if strings.TrimSpace(reply) == "" {
-			return
-		}
-		if err := postChannelIntro(hcl, uniqueSource, chID, reply); err != nil {
-			log.Printf("court-persona-%s: channel.post failed: %v", persona, err)
-			collab.Tracef("court-persona-%s", "channel.post.fail", "ch=%s err=%v", chID, err)
-			return
-		}
-		collab.Tracef("court-persona-%s", "channel.post.ok", "ch=%s len=%d", chID, len(reply))
-		fmt.Printf("Persona %s posted channel reply to %s (%s)\n", persona, chID, reason)
-	}()
+	// Process inline on the hubclient connection. Do not spawn a goroutine:
+	// nested hcl.Send (llm.call, channel.post) shares the decoder with Receive;
+	// a background Receive steals llm.call.response and replies never post.
+	reply := generateChannelReply(persona, userContent, hcl)
+	if strings.TrimSpace(reply) == "" {
+		return
+	}
+	if err := postChannelIntro(hcl, uniqueSource, chID, reply); err != nil {
+		log.Printf("court-persona-%s: channel.post failed: %v", persona, err)
+		collab.Tracef("court-persona-"+persona, "channel.post.fail", "ch=%s err=%v", chID, err)
+		return
+	}
+	collab.Tracef("court-persona-"+persona, "channel.post.ok", "ch=%s len=%d", chID, len(reply))
+	fmt.Printf("Persona %s posted channel reply to %s (%s)\n", persona, chID, reason)
 }
 
 // callRealLLMViaHub performs the production LLM call for a Court persona.
@@ -511,6 +512,9 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 		switch msg.Command {
 		case "channel.activity", "channel.member_notify":
 			processChannelActivity(hcl, msg, uniqueSource, persona)
+
+		case "llm.call.response":
+			log.Printf("court-persona-%s: ignoring stray %s (hubclient decoder race guard)", persona, msg.Command)
 
 		case "scribe.notify_review":
 			payload, _ := msg.Payload.(map[string]interface{})

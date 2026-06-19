@@ -470,6 +470,9 @@ func daemonChildEnv() []string {
 	if v := os.Getenv("AEGIS_COLLAB_TRACE"); v != "" {
 		env = setEnvPair(env, "AEGIS_COLLAB_TRACE", v)
 	}
+	if v := os.Getenv("AEGIS_DEFAULT_MODEL"); v != "" {
+		env = setEnvPair(env, "AEGIS_DEFAULT_MODEL", v)
+	}
 	return env
 }
 
@@ -597,8 +600,8 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
-	if collabTrace, _ := cmd.Flags().GetBool("collab-trace"); collabTrace {
-		_ = os.Setenv("AEGIS_COLLAB_TRACE", "1")
+	if model, _ := cmd.Flags().GetString("default-model"); strings.TrimSpace(model) != "" {
+		_ = os.Setenv("AEGIS_DEFAULT_MODEL", strings.TrimSpace(model))
 	}
 
 	if os.Getuid() != 0 {
@@ -663,13 +666,13 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	foreground, _ := cmd.Flags().GetBool("foreground")
-	collabTrace, _ := cmd.Flags().GetBool("collab-trace")
+	defaultModel, _ := cmd.Flags().GetString("default-model")
 
 	// Fork to background if not in foreground mode
 	if !foreground {
 		childArgs := []string{"start", "--foreground"}
-		if collabTrace {
-			childArgs = append(childArgs, "--collab-trace")
+		if strings.TrimSpace(defaultModel) != "" {
+			childArgs = append(childArgs, "--default-model", strings.TrimSpace(defaultModel))
 		}
 		daemonCmd := exec.Command(os.Args[0], childArgs...)
 
@@ -2817,7 +2820,7 @@ func main() {
 		Run:   startDaemon,
 	}
 	startCmd.Flags().Bool("foreground", false, "Run daemon in foreground")
-	startCmd.Flags().Bool("collab-trace", false, "Log channel post/fan-out/STOMP stages ([collab-trace]; avoids sudo env friction)")
+	startCmd.Flags().String("default-model", "", "Ollama model tag for guest LLM calls (e.g. llama3.2:3b); avoids sudo env friction")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",

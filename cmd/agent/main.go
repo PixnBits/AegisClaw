@@ -348,40 +348,38 @@ func processAgentChannelActivity(client hubclient.Client, msg hubclient.Message,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
-	go func() {
-		roleLabel := collab.AgentRoleLabel(sourceID)
-		prompt := customInstructionsPrefix() +
-			"\n\nYou are the " + roleLabel + " in channel " + chID + ". A user posted:\n" + userContent +
-			"\n\nReply in 2-4 sentences from your role's perspective. If no reply is needed, respond with exactly: NO_REPLY"
-		llmReply, err := realLLM(context.Background(), prompt)
-		if err != nil {
-			log.Printf("agent %s: channel reply LLM failed (not posting canned text): %v", sourceID, err)
-			collab.Tracef(sourceID, "channel.reply.skip", "ch=%s err=%v", chID, err)
-			return
-		}
-		trimmed := strings.TrimSpace(llmReply)
-		if trimmed == "" || strings.EqualFold(trimmed, "NO_REPLY") {
-			log.Printf("agent %s: chose not to reply in %s", sourceID, chID)
-			collab.Tracef(sourceID, "channel.reply.skip", "ch=%s reason=no_reply", chID)
-			return
-		}
-		postCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		_, err = client.Send(postCtx, hubclient.Message{
-			Source: sourceID, Destination: "store", Command: "channel.post",
-			Payload: map[string]interface{}{
-				"channel_id": chID, "from": sourceID, "content": trimmed,
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
-		if err != nil {
-			log.Printf("agent %s: channel.post failed: %v", sourceID, err)
-			collab.Tracef(sourceID, "channel.post.fail", "ch=%s err=%v", chID, err)
-			return
-		}
-		collab.Tracef(sourceID, "channel.post.ok", "ch=%s len=%d", chID, len(trimmed))
-		log.Printf("agent %s: posted channel reply to %s (%s)", sourceID, chID, reason)
-	}()
+	roleLabel := collab.AgentRoleLabel(sourceID)
+	prompt := customInstructionsPrefix() +
+		"\n\nYou are the " + roleLabel + " in channel " + chID + ". A user posted:\n" + userContent +
+		"\n\nReply in 2-4 sentences from your role's perspective. If no reply is needed, respond with exactly: NO_REPLY"
+	llmReply, err := realLLM(context.Background(), prompt)
+	if err != nil {
+		log.Printf("agent %s: channel reply LLM failed (not posting canned text): %v", sourceID, err)
+		collab.Tracef(sourceID, "channel.reply.skip", "ch=%s err=%v", chID, err)
+		return
+	}
+	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
+	if skip {
+		log.Printf("agent %s: chose not to reply in %s", sourceID, chID)
+		collab.Tracef(sourceID, "channel.reply.skip", "ch=%s reason=no_reply", chID)
+		return
+	}
+	postCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, err = client.Send(postCtx, hubclient.Message{
+		Source: sourceID, Destination: "store", Command: "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID, "from": sourceID, "content": trimmed,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		log.Printf("agent %s: channel.post failed: %v", sourceID, err)
+		collab.Tracef(sourceID, "channel.post.fail", "ch=%s err=%v", chID, err)
+		return
+	}
+	collab.Tracef(sourceID, "channel.post.ok", "ch=%s len=%d", chID, len(trimmed))
+	log.Printf("agent %s: posted channel reply to %s (%s)", sourceID, chID, reason)
 }
 
 func drainChatPolls(client hubclient.Client, skillIndex *agentSkills.AgentSkillIndex) {

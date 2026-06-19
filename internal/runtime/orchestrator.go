@@ -36,6 +36,7 @@ type Orchestrator struct {
 	aux             map[string]*AuxComponent // auxiliary host-managed base components (hub, store, net-boundary, web-portal) for unified lifecycle/watchdog
 	timingEnabled   bool                     // captured at New() from AEGIS_BOOT_TIMING so all StartVM (early Court + later agents) get consistent cmdline flag for boot metrics
 	collabTraceEnabled bool                  // captured at New() from AEGIS_COLLAB_TRACE for guest cmdline + host tracing
+	defaultLLMModel string                   // captured at New() from AEGIS_DEFAULT_MODEL for guest llm.call model tag
 	pregenKeys      []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
 }
 
@@ -104,6 +105,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	// collaboration model implementation plan.
 	o.timingEnabled = os.Getenv("AEGIS_BOOT_TIMING") == "1"
 	o.collabTraceEnabled = os.Getenv("AEGIS_COLLAB_TRACE") == "1"
+	o.defaultLLMModel = strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL"))
 
 	// Pre-generate a small ring of VM keypairs at New() (collab model <1s tactic).
 	// StartVM will pop from here instead of GenerateVMKeyPair + write each time (saves crypto + disk in hot path for first on-demand agents/roles).
@@ -283,10 +285,6 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	if vmType == "project-manager" || id == "project-manager" || strings.HasPrefix(id, "project-manager-") {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
 			fmt.Sprintf(" aegis.component_id=%s aegis.hub_vsock=1", id))
-		if model := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); model != "" {
-			vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
-				" aegis.default_model=" + model)
-		}
 	}
 	// Dynamic on-demand roles (coder/tester etc.) reuse agent.img but keep a non-agent- id.
 	if vmType == "agent" && !strings.HasPrefix(id, "agent-") {
@@ -342,6 +340,10 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	}
 	if o.collabTraceEnabled {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.collab_trace=1")
+	}
+	if o.defaultLLMModel != "" {
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+			" aegis.default_model=" + o.defaultLLMModel)
 	}
 
 	phases["backend_start_entry"] = time.Now().UnixNano()

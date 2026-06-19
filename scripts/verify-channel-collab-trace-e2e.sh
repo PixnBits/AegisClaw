@@ -5,9 +5,8 @@
 # and print collab-trace stages from the daemon log when AEGIS_COLLAB_TRACE=1.
 #
 # Usage:
-#   AEGIS_COLLAB_TRACE=1 sudo ./bin/aegis start --foreground 2>&1 | tee aegis.log
-#   # or (recommended when sudo blocks env vars):
-#   sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log
+#   export AEGIS_COLLAB_TRACE=1
+#   sudo -E ./bin/aegis start --foreground 2>&1 | tee aegis.log
 #   # in another terminal:
 #   bash scripts/verify-channel-collab-trace-e2e.sh
 #
@@ -24,6 +23,7 @@ POLL_SECONDS="${AEGIS_COLLAB_POLL_SECONDS:-180}"
 POLL_INTERVAL=3
 CHANNEL_JSON="${AEGIS_PORTAL_CHANNEL_JSON:-/tmp/aegis-collab-channel.json}"
 DAEMON_LOG="${AEGIS_DAEMON_LOG:-aegis.log}"
+MIN_REPLIES="${AEGIS_CHANNEL_MIN_AGENT_REPLIES:-2}"
 
 EXPECTED=(
   project-manager
@@ -44,7 +44,7 @@ echo
 if [[ -f "$DAEMON_LOG" ]] && ! grep -q '\[collab-trace\]' "$DAEMON_LOG" 2>/dev/null; then
   echo "NOTE: No [collab-trace] lines in ${DAEMON_LOG} yet."
   echo "      Restart daemon with trace enabled, e.g.:"
-  echo "        sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log"
+  echo "        export AEGIS_COLLAB_TRACE=1 && sudo -E ./bin/aegis start --foreground 2>&1 | tee aegis.log"
   echo
 fi
 
@@ -54,7 +54,7 @@ if [[ ! -x ./bin/aegis ]]; then
 fi
 
 if ! ./bin/aegis status >/dev/null 2>&1; then
-  echo "ERROR: daemon not running. Start with: AEGIS_COLLAB_TRACE=1 sudo ./bin/aegis start" >&2
+  echo "ERROR: daemon not running. Start with: AEGIS_COLLAB_TRACE=1 sudo -E ./bin/aegis start" >&2
   exit 2
 fi
 
@@ -94,29 +94,40 @@ if [[ "$HTTP_CODE" != "200" ]]; then
 fi
 echo "Portal post accepted (HTTP 200)"
 
-check_replies() {
+check_min_replies() {
+  channel_messages_json
+  python3 scripts/check_channel_min_agent_replies.py "$CHANNEL_JSON" "$BEFORE_COUNT" "$MARKER" "$MIN_REPLIES" "${AEGIS_CHANNEL_MIN_COURT_REPLIES:-1}"
+}
+
+check_all_replies() {
   channel_messages_json
   python3 scripts/check_channel_portal_fanout.py "$CHANNEL_JSON" "$BEFORE_COUNT" "$MARKER" "${EXPECTED[@]}"
 }
 
-echo "Polling for agent replies (up to ${POLL_SECONDS}s)..."
+echo "Polling for >= ${MIN_REPLIES} agent replies (up to ${POLL_SECONDS}s)..."
 deadline=$((SECONDS + POLL_SECONDS))
 ASSERT_RC=0
 
 while (( SECONDS < deadline )); do
-  if check_replies >/dev/null 2>&1; then
-    echo "✓ Store has new non-canned replies from expected agents"
+  if check_min_replies >/dev/null 2>&1; then
+    echo "✓ $(check_min_replies)"
     break
   fi
-  line=$(check_replies 2>/dev/null || true)
+  line=$(check_min_replies 2>/dev/null || true)
   echo "  waiting... ${line:-still polling}"
   sleep "$POLL_INTERVAL"
 done
 
-if ! check_replies >/dev/null 2>&1; then
-  echo "✗ FAIL: not all agents replied with real (non-canned) messages"
-  check_replies || true
+if ! check_min_replies >/dev/null 2>&1; then
+  echo "✗ FAIL: fewer than ${MIN_REPLIES} agent replies (hubclient/LLM pipeline broken)"
+  check_min_replies || true
   ASSERT_RC=1
+fi
+
+if check_all_replies >/dev/null 2>&1; then
+  echo "✓ All ${#EXPECTED[@]} expected agents replied (bonus)"
+else
+  echo "NOTE: not all agents replied ($(check_all_replies 2>/dev/null || true)) — NO_REPLY is valid"
 fi
 
 echo
@@ -130,7 +141,7 @@ if [[ -f "$DAEMON_LOG" ]]; then
   echo "  → agent.channel.post.ok → store.channel.updated → daemon.stomp.notify.ok"
   echo "  → web-portal.stomp.notify.recv → web-portal.stomp.publish"
 else
-  echo "Log file not found. Capture with: AEGIS_COLLAB_TRACE=1 sudo ./bin/aegis start --foreground 2>&1 | tee aegis.log"
+  echo "Log file not found. Capture with: AEGIS_COLLAB_TRACE=1 sudo -E ./bin/aegis start --foreground 2>&1 | tee aegis.log"
 fi
 
 echo
@@ -139,11 +150,10 @@ if [[ $ASSERT_RC -eq 0 ]]; then
 else
   echo "=== E2E SUMMARY: FAIL ==="
   echo "Tips:"
-  echo "  - Enable trace: sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log"
-  echo "  - Confirm Ollama/LLM reachable from network-boundary VM (agents no longer post canned intros)"
+  echo "  - Enable trace: export AEGIS_COLLAB_TRACE=1 && sudo -E ./bin/aegis start --foreground 2>&1 | tee aegis.log"
+  echo "  - Confirm Ollama/LLM reachable from network-boundary VM"
   echo "  - grep 'channel.reply.skip' / 'channel.post.fail' in guest logs"
-  echo "  - grep 'stomp.notify.fail' in daemon log (agent posts not reaching browser)"
-  echo "  - Rebuild microVMs after agent/trace code changes: sudo make build-microvms"
+  echo "  - Rebuild microVMs after agent changes: sudo make build-microvms"
 fi
 
 exit $ASSERT_RC

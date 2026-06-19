@@ -60,6 +60,7 @@ test.describe('Web Portal real-time (fixture)', () => {
       'data-connection-mode',
       'disconnected',
     );
+    await expect(page.getByTestId('system-status-chip')).toHaveCount(0);
     await context.close();
   });
 

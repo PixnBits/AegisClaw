@@ -41,6 +41,6 @@ YOURUSER ALL=(ALL) NOPASSWD: /home/pixnbits/projects/AegisClaw/main/bin/aegis
 Defaults! /home/pixnbits/projects/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
 
 # Env vars for observability (boot-metrics, collab trace, model selection) when using sudo -E.
-# Prefer `aegis start --collab-trace` instead of inline AEGIS_COLLAB_TRACE=1 (often blocked by sudo).
+# Export before `sudo -E ./bin/aegis start` (inline `sudo VAR=1 cmd` is often blocked).
 Defaults env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
 
