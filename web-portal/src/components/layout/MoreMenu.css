@@ -1,0 +1,33 @@
+.more-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.more-menu__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-4);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  text-align: left;
+  min-height: 44px;
+}
+
+.more-menu__item:hover {
+  border-color: var(--color-primary);
+}
+
+.more-menu__label {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.more-menu__desc {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}

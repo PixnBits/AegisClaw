@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/api/client';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 type Props = {
   onOpenTrace: (id: string) => void;
@@ -19,7 +20,16 @@ export function AgentsView({ onOpenTrace }: Props) {
         <h1>Agents</h1>
       </header>
       <ul className="list-stack" data-testid="agents-list">
-        {agents.map((agent) => (
+        {agents.length === 0 ? (
+          <EmptyState
+            testId="agents-empty-state"
+            eyebrow="Fleet"
+            title="No agents running"
+            description="Active microVM agents appear here when the harness spins up specialists for channel work."
+            hint="Submit a goal from Home or post in a channel to wake the Project Manager and roster."
+          />
+        ) : (
+          agents.map((agent) => (
           <li
             key={agent.name}
             className="list-card"
@@ -33,7 +43,8 @@ export function AgentsView({ onOpenTrace }: Props) {
               {agent.status} • {agent.task}
             </span>
           </li>
-        ))}
+        ))
+        )}
       </ul>
     </section>
   );

@@ -20,8 +20,9 @@
   --space-7: 40px;
   --space-8: 48px;
 
-  --section-gap: var(--space-5);
+  --section-gap: var(--space-6);
   --panel-padding: var(--space-5);
+  --card-padding: var(--space-5);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -35,6 +36,7 @@
   --topbar-height: 56px;
   --sidebar-width: 280px;
   --context-width: 320px;
-  --mobile-gutter: 24px;
-  --mobile-scroll-bottom: calc(var(--bottom-nav-height) + var(--space-5));
+  --mobile-gutter: 20px;
+  --mobile-section-gap: var(--space-6);
+  --mobile-scroll-bottom: calc(var(--bottom-nav-height) + var(--space-6));
 }

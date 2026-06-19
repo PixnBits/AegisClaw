@@ -1,5 +1,6 @@
 import { StageStatus } from '@/contracts';
 import { defaultStages, slugStage } from '@/lib/harness';
+import { useIsMobile } from '@/hooks/useMediaQuery';
 import './CompactHarness.css';
 
 type Props = {
@@ -7,10 +8,17 @@ type Props = {
 };
 
 export function PipelineStrip({ stages }: Props) {
+  const isMobile = useIsMobile();
   const list = stages?.length ? stages : defaultStages();
 
   return (
-    <div className="pipeline-strip" data-testid="pipeline-strip">
+    <div
+      className="pipeline-strip"
+      data-testid="pipeline-strip"
+      tabIndex={isMobile ? 0 : undefined}
+      role={isMobile ? 'region' : undefined}
+      aria-label={isMobile ? 'Pipeline stages' : undefined}
+    >
       {list.map((stage) => (
         <div
           key={stage.name}

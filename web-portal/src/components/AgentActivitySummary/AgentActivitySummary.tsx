@@ -1,4 +1,6 @@
 import { HarnessState, NarrowTask } from '@/contracts';
+import { formatPersonaLabel } from '@/lib/display';
+import { useIsMobile } from '@/hooks/useMediaQuery';
 import './AgentActivitySummary.css';
 
 type Props = {
@@ -27,6 +29,7 @@ export function AgentActivitySummary({
   compact,
   idlePersonas = [],
 }: Props) {
+  const isMobile = useIsMobile();
   const tasks = activeTasks(harness?.tasks || []);
   const progress = stageProgress(harness?.plan ?? null);
   const hasGoal = Boolean(harness?.plan?.goal);
@@ -43,23 +46,23 @@ export function AgentActivitySummary({
       >
         <span className="activity-summary__pulse" aria-hidden="true" />
         <div className="activity-summary__empty-text">
-          <span className="activity-summary__empty-label">No active work</span>
-          <span className="subtle">Submit a goal to start the harness</span>
+          <span className="activity-summary__empty-label">Ready when you are</span>
+          <span className="subtle">Submit a goal and the PM will spin up narrow tasks for specialists.</span>
         </div>
       </div>
     );
   }
 
   const displayChips = hasWork
-    ? tasks.slice(0, 4).map((task) => ({
+    ? tasks.slice(0, compact ? 6 : 4).map((task) => ({
         key: task.task_id,
-        label: task.agent_persona,
+        label: formatPersonaLabel(task.agent_persona),
         stage: task.current_stage,
         detail: `${task.progress}%`,
       }))
-    : idlePersonas.slice(0, 4).map((p) => ({
+    : idlePersonas.slice(0, compact ? 6 : 4).map((p) => ({
         key: p,
-        label: p,
+        label: formatPersonaLabel(p),
         stage: 'Idle',
         detail: null as string | null,
       }));
@@ -80,7 +83,12 @@ export function AgentActivitySummary({
           </button>
         )}
       </div>
-      <div className="activity-summary__chips">
+      <div
+        className="activity-summary__chips"
+        tabIndex={isMobile || compact ? 0 : undefined}
+        role={isMobile || compact ? 'region' : undefined}
+        aria-label={isMobile || compact ? 'Active agents' : undefined}
+      >
         {displayChips.map((chip) => (
           <button
             key={chip.key}
@@ -94,25 +102,33 @@ export function AgentActivitySummary({
             {chip.detail && <span className="activity-summary__progress">{chip.detail}</span>}
           </button>
         ))}
-        {(hasWork ? tasks.length : idlePersonas.length) > 4 && (
+        {(hasWork ? tasks.length : idlePersonas.length) > (compact ? 6 : 4) && (
           <span className="activity-summary__more subtle">
-            +{(hasWork ? tasks.length : idlePersonas.length) - 4} more
+            +{(hasWork ? tasks.length : idlePersonas.length) - (compact ? 6 : 4)} more
           </span>
         )}
       </div>
-      <div className="activity-summary__meta">
-        <span data-testid="activity-stage-progress">
-          Pipeline {progress}%
-          {hasGoal && !compact && (
-            <span className="activity-summary__goal subtle"> · {harness!.plan!.goal.slice(0, 48)}
-              {(harness!.plan!.goal.length ?? 0) > 48 ? '…' : ''}
-            </span>
+      <div className="activity-summary__progress-row">
+        <div
+          className="activity-summary__progress-bar"
+          role="progressbar"
+          aria-valuenow={progress}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`Pipeline ${progress}% complete`}
+        >
+          <div className="activity-summary__progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="activity-summary__meta">
+          <span data-testid="activity-stage-progress">Pipeline {progress}%</span>
+          {tokenUsage != null && (
+            <span data-testid="activity-token-usage">{tokenUsage.toLocaleString()} tokens</span>
           )}
-        </span>
-        {tokenUsage != null && (
-          <span data-testid="activity-token-usage">{tokenUsage.toLocaleString()} tokens</span>
-        )}
+        </div>
       </div>
+      {hasGoal && !compact && (
+        <p className="activity-summary__goal subtle">{harness!.plan!.goal}</p>
+      )}
     </div>
   );
 }

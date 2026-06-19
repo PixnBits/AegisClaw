@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Member, MemberGroup, groupMembers, memberRole } from '@/lib/members';
+import { formatPersonaLabel } from '@/lib/display';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
 import './MemberGroups.css';
 
@@ -37,9 +38,9 @@ export function MemberGroups({ members, onRemove }: Props) {
                   <li key={role} className="member-row" data-testid={`member-${role}`}>
                     <div className="member-row__info">
                       <span className="member-row__avatar" aria-hidden="true">
-                        {role.charAt(0).toUpperCase()}
+                        {formatPersonaLabel(role).charAt(0).toUpperCase()}
                       </span>
-                      <span className="member-row__name">{role}</span>
+                      <span className="member-row__name">{formatPersonaLabel(role)}</span>
                     </div>
                     <div className="member-row__actions">
                       <button

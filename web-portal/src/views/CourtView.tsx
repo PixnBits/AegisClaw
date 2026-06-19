@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '@/api/client';
 import { Proposal } from '@/contracts';
 import { usePortalStore } from '@/store/portalStore';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 export function CourtView() {
   const proposals = usePortalStore((s) => s.proposals);
@@ -41,7 +42,16 @@ export function CourtView() {
         <h1>Court</h1>
       </header>
       <div className="card-grid" data-testid="proposals-list">
-        {proposals.map((p: Proposal) => (
+        {proposals.length === 0 ? (
+          <EmptyState
+            testId="court-empty-state"
+            eyebrow="Governance"
+            title="No proposals yet"
+            description="Court decisions appear here when work in a channel triggers a governance review. Start a goal on Home or post in a channel to generate proposals."
+            hint="Pending proposals also surface inline in channel activity feeds."
+          />
+        ) : (
+          proposals.map((p: Proposal) => (
           <article
             key={p.id}
             className={`list-card${selected?.id === p.id ? ' active' : ''}`}
@@ -66,7 +76,8 @@ export function CourtView() {
               Quick Export
             </button>
           </article>
-        ))}
+        ))
+        )}
       </div>
 
       {selected && (

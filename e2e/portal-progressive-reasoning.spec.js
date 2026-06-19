@@ -43,7 +43,13 @@ test.describe('Progressive reasoning & policy (fixture)', () => {
   test('Agent Activity Summary visible on Channels', async ({ page }) => {
     await waitPortalReady(page);
     await openMainChannel(page);
-    await expect(page.getByTestId('agent-activity-summary')).toBeVisible();
+    const viewport = page.viewportSize();
+    const isMobile = viewport && viewport.width <= 768;
+    if (isMobile) {
+      await expect(page.getByTestId('agent-activity-summary')).toBeVisible();
+    } else {
+      await expect(page.getByTestId('context-panel').getByTestId('agent-activity-summary')).toBeVisible();
+    }
   });
 
   test('collapse all reasoning control present on channel feed', async ({ page }) => {

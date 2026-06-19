@@ -10,30 +10,40 @@ type Props = {
 };
 
 export function ActivityFeed({ items, channelId, onCollapseAll, onExpandRecent }: Props) {
+  const isEmpty = items.length === 0;
+
   return (
     <section className="activity-feed" aria-label="Channel activity feed">
       {(onCollapseAll || onExpandRecent) && (
         <div className="activity-feed__controls" data-testid="feed-controls">
           {onCollapseAll && (
-            <button type="button" className="secondary-button" data-testid="collapse-all-reasoning" onClick={onCollapseAll}>
+            <button type="button" className="link-button activity-feed__control" data-testid="collapse-all-reasoning" onClick={onCollapseAll}>
               Collapse all reasoning
             </button>
           )}
           {onExpandRecent && (
-            <button type="button" className="secondary-button" data-testid="expand-recent-reasoning" onClick={onExpandRecent}>
+            <button type="button" className="link-button activity-feed__control" data-testid="expand-recent-reasoning" onClick={onExpandRecent}>
               Expand recent
             </button>
           )}
         </div>
       )}
       <div
-        className="chat-stream"
+        className={`chat-stream${isEmpty ? ' chat-stream--empty' : ''}`}
         data-testid="channel-messages"
-        data-empty={items.length === 0 ? 'true' : undefined}
+        data-empty={isEmpty ? 'true' : undefined}
         aria-live="polite"
+        role={isEmpty ? undefined : 'log'}
+        tabIndex={isEmpty ? undefined : 0}
+        aria-label={isEmpty ? undefined : 'Channel messages'}
       >
-        {items.length === 0 ? (
-          <p className="subtle activity-feed__empty">No messages yet. Give the PM a goal to get started.</p>
+        {isEmpty ? (
+          <div className="activity-feed__empty" data-testid="feed-empty-state">
+            <p className="activity-feed__empty-title">Quiet for now</p>
+            <p className="activity-feed__empty-desc">
+              Give the PM a goal and activity will appear here — agent updates, tool calls, and Court decisions.
+            </p>
+          </div>
         ) : (
           items.map((item) => <FeedItemRow key={item.id} item={item} channelId={channelId} />)
         )}

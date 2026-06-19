@@ -44,6 +44,8 @@ test.describe('Mobile layout (fixture)', () => {
     if (await contextBtn.isVisible()) {
       await contextBtn.click();
       await expect(page.getByTestId('bottom-sheet')).toBeVisible();
+      await expect(page.getByTestId('context-panel')).toBeVisible();
+      await expect(page.getByTestId('members-section')).toBeVisible();
     }
   });
 });

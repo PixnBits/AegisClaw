@@ -1,4 +1,6 @@
 import { HarnessState } from '@/contracts';
+import { formatPersonaLabel } from '@/lib/display';
+import { useIsMobile } from '@/hooks/useMediaQuery';
 import { PipelineStrip } from './PipelineStrip';
 import './CompactHarness.css';
 
@@ -10,7 +12,10 @@ type Props = {
 };
 
 export function CompactHarness({ state, onOpenCanvas, compactTasks }: Props) {
+  const isMobile = useIsMobile();
   const goal = state?.plan?.goal || 'No active plan — use the command bar to start.';
+  const hasTasks = Boolean(state?.tasks?.length);
+  const scrollTasks = !compactTasks && hasTasks && isMobile;
 
   return (
     <section className="harness-overview" data-testid="harness-overview">
@@ -28,7 +33,13 @@ export function CompactHarness({ state, onOpenCanvas, compactTasks }: Props) {
         )}
       </div>
       <PipelineStrip stages={state?.plan?.stages} />
-      <div className={`harness-tasks${compactTasks ? ' harness-tasks--compact' : ''}`} data-testid="harness-tasks">
+      <div
+        className={`harness-tasks${compactTasks ? ' harness-tasks--compact' : ''}${scrollTasks ? ' harness-tasks--scroll' : ''}`}
+        data-testid="harness-tasks"
+        tabIndex={scrollTasks ? 0 : undefined}
+        role={scrollTasks ? 'region' : undefined}
+        aria-label={scrollTasks ? 'Narrow tasks' : undefined}
+      >
         {compactTasks ? (
           <p className="subtle harness-tasks__hint">
             {state?.tasks?.length
@@ -41,7 +52,7 @@ export function CompactHarness({ state, onOpenCanvas, compactTasks }: Props) {
           state.tasks.map((task) => (
             <article key={task.task_id} className="harness-task-card" data-testid={`task-${task.task_id}`}>
               <div className="harness-task-card__header">
-                <strong>{task.agent_persona}</strong>
+                <strong>{formatPersonaLabel(task.agent_persona)}</strong>
                 <span className={`badge badge--${task.status || 'pending'}`}>{task.current_stage}</span>
               </div>
               <p className="harness-task-card__scope">{task.scope}</p>

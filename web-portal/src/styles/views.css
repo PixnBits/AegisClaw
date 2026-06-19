@@ -2,7 +2,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  padding: var(--space-5);
+  padding: var(--card-padding);
   background: var(--color-elevated);
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
@@ -87,7 +87,7 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: var(--space-4);
-  padding-bottom: var(--space-2);
+  padding-bottom: var(--space-3);
 }
 
 .channel-header__actions {
@@ -101,11 +101,11 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-4);
+  padding: var(--card-padding);
   background: var(--color-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  margin-top: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 @media (min-width: 640px) {
@@ -175,7 +175,10 @@
   text-decoration: underline;
   background: none;
   border: none;
-  padding: 0;
+  padding: var(--space-1) var(--space-2);
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
 }
 
 .member-group__title {
@@ -319,4 +322,27 @@
   display: flex;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
+}
+
+.canvas-task-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.canvas-task-card__progress {
+  height: 6px;
+  background: var(--color-elevated);
+  border-radius: 999px;
+  overflow: hidden;
+  margin: var(--space-2) 0 var(--space-1);
+}
+
+.canvas-task-card__progress-bar {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 999px;
+  transition: width 0.3s ease;
 }

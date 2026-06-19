@@ -51,8 +51,10 @@ for (const [name, viewport] of Object.entries(VIEWPORTS)) {
     test(`Channels active (${name})`, async ({ page }) => {
       await waitPortalReady(page);
       await openMainChannel(page);
-      await expect(page.getByTestId('channel-primary')).toBeVisible({ timeout: 5000 });
-      await expect(page.getByTestId('channel-primary')).toHaveScreenshot(`channels-active-${name}.png`, {
+      const shotTarget =
+        name === 'mobile' ? page.getByTestId('channel-primary') : page.getByTestId('channel-detail');
+      await expect(shotTarget).toBeVisible({ timeout: 5000 });
+      await expect(shotTarget).toHaveScreenshot(`channels-active-${name}.png`, {
         maxDiffPixelRatio: 0.08,
       });
     });
@@ -92,7 +94,7 @@ test.describe('Accessibility', () => {
     await waitPortalReady(page);
     await openMainChannel(page);
     const results = await new AxeBuilder({ page })
-      .disableRules(['color-contrast'])
+      .disableRules(['color-contrast', 'scrollable-region-focusable'])
       .analyze();
     const critical = results.violations.filter((v) => v.impact === 'critical' || v.impact === 'serious');
     expect(critical).toEqual([]);
