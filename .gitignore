@@ -23,6 +23,9 @@ audit.json
 # Node.js and npm
 node_modules
 
+# webportal build
+cmd/web-portal/static/assets
+
 # E2E / browser test artifacts (Playwright)
 test-results/
 playwright-report/
