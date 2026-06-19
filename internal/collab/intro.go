@@ -86,7 +86,8 @@ func AgentFallbackIntro(sourceID string) string {
 	}
 }
 
-// FallbackIntro produces a deterministic intro when LLM is unavailable.
+// FallbackIntro produces deterministic intro text for unit tests and documentation only.
+// Production agents must not auto-post this text (see cmd/court-persona, cmd/project-manager).
 func FallbackIntro(sourceID string) string {
 	sourceID = normalizeCollabSourceID(sourceID)
 	name := DisplayName(sourceID)
