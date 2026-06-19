@@ -11,6 +11,7 @@ import (
 
 	"AegisClaw/internal/dashboard/realtime"
 	"AegisClaw/internal/dashboard/sanitize"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/portalstomp"
 )
 
@@ -29,6 +30,7 @@ func (s *Server) initSTOMP() {
 // PublishChannelSTOMP notifies subscribed browsers of a channel activity event.
 func (s *Server) PublishChannelSTOMP(chID, from, content string) {
 	s.initSTOMP()
+	collab.Tracef("web-portal", "stomp.publish", "ch=%s from=%s len=%d", chID, from, len(content))
 	realtime.NewPublisher(s.stompHub).PublishChannelActivity(chID, from, content)
 }
 
@@ -61,6 +63,7 @@ func (s *Server) handleInternalChannelActivitySTOMP(w http.ResponseWriter, r *ht
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
+	collab.Tracef("web-portal", "stomp.notify.recv", "ch=%s from=%s", req.ChannelID, req.From)
 	s.PublishChannelSTOMP(req.ChannelID, req.From, req.Content)
 	w.WriteHeader(http.StatusNoContent)
 }

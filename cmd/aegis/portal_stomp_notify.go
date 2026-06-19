@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/dashboard"
 
 	"github.com/sirupsen/logrus"
@@ -26,6 +27,7 @@ func setWebPortalInternalTarget(target string) {
 func notifyWebPortalChannelActivity(chID, from, content string) {
 	target := webPortalInternalTarget
 	if target == "" || chID == "" {
+		collab.Tracef("daemon", "stomp.notify.skip", "ch=%s reason=no_target", chID)
 		return
 	}
 	body, err := json.Marshal(map[string]string{
@@ -60,7 +62,10 @@ func notifyWebPortalChannelActivity(chID, from, content string) {
 	resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		logrus.Warnf("web-portal channel-activity STOMP notify: HTTP %d", resp.StatusCode)
+		collab.Tracef("daemon", "stomp.notify.fail", "ch=%s from=%s http=%d", chID, from, resp.StatusCode)
+		return
 	}
+	collab.Tracef("daemon", "stomp.notify.ok", "ch=%s from=%s", chID, from)
 }
 
 func webPortalInternalHTTPClient(target string) (*http.Client, string) {

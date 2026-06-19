@@ -5,7 +5,7 @@ CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.
 ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
 AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-web-portal build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-roster test-e2e-portal-channel test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
+.PHONY: build build-binaries build-web-portal build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-roster test-e2e-portal-channel test-e2e-channel-trace test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
 
 # Default target
 all: build
@@ -284,6 +284,10 @@ test-e2e-portal-channel:
 	@echo "=== Portal channel fan-out E2E (PM + Court personas via :8080/api/channels) ==="
 	bash scripts/verify-channel-portal-e2e.sh
 
+test-e2e-channel-trace:
+	@echo "=== Channel collab trace E2E (set AEGIS_COLLAB_TRACE=1 on daemon for full logs) ==="
+	bash scripts/verify-channel-collab-trace-e2e.sh
+
 # Portal SPA API contract + latency (dashboard, monitoring, skills, proposals, channels, STOMP).
 test-e2e-portal-api:
 	@echo "=== Portal SPA API contract + latency E2E ==="
@@ -400,6 +404,7 @@ help:
 	@echo "  make test-e2e-llm       Real unmocked PM+LLM+channels E2E (CLI pm goal + channel get + browser UI + status check; hits Ollama, no fixtures; see script)"
 	@echo "  make test-e2e-roster       PM + 7 Court personas intro replies on main channel (automatic fan-out)"
 	@echo "  make test-e2e-portal-channel  Portal POST /api/channels fan-out + agent replies (browser UI check)"
+	@echo "  make test-e2e-channel-trace   Channel collab trace E2E + collab-trace log summary"
 	@echo "  make test-e2e-portal-api     Portal SPA APIs: contract, latency budget, STOMP path"
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
 	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"

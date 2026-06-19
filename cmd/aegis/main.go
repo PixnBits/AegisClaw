@@ -5281,6 +5281,7 @@ func startOrchestratorCommandReceiver() {
 					from, _ := payload["from"].(string)
 					content := collab.PayloadContentString(payload["content"])
 					if chID != "" {
+						collab.Tracef("daemon", "channel.updated.recv", "ch=%s from=%s human=%v", chID, from, collab.IsHumanPoster(from))
 						go notifyWebPortalChannelActivity(chID, from, content)
 						if collab.IsHumanPoster(from) && content != "" {
 							go fanOutChannelActivity(chID, from, content)
