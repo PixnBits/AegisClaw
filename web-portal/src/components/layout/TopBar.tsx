@@ -27,7 +27,13 @@ export function TopBar({ onNavigate }: Props) {
 
   return (
     <header className="topbar" data-testid="topbar">
-      <div className="brand-block">
+      <button
+        type="button"
+        className="brand-block brand-block--home"
+        data-testid="brand-home"
+        aria-label="Go to Home"
+        onClick={() => onNavigate('home')}
+      >
         <span className="brand-mark" aria-hidden="true">
           🛡️
         </span>
@@ -35,7 +41,7 @@ export function TopBar({ onNavigate }: Props) {
           <p className="eyebrow">AegisClaw</p>
           <strong>Secure Command Center</strong>
         </div>
-      </div>
+      </button>
 
       <nav className="primary-nav" aria-label="Primary">
         {NAV_ITEMS.map((item) => (
