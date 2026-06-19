@@ -47,6 +47,22 @@ test.describe('Web Portal real-time (fixture)', () => {
     await context.close();
   });
 
+  test('shows disconnected when STOMP and SSE are unavailable', async ({ browser }) => {
+    const context = await browser.newContext();
+    await context.routeWebSocket(/\/stomp$/, (ws) => ws.close());
+    await context.route('**/events', (route) => route.abort());
+    const page = await context.newPage();
+    await waitPortalReady(page);
+    await expect(page.getByTestId('connection-status-label')).toContainText('Disconnected', {
+      timeout: 10000,
+    });
+    await expect(page.getByTestId('connection-status-chip')).toHaveAttribute(
+      'data-connection-mode',
+      'disconnected',
+    );
+    await context.close();
+  });
+
   test('member invite and remove updates grouped list', async ({ page }) => {
     await waitPortalReady(page);
     await openMainChannel(page);

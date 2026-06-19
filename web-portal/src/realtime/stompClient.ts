@@ -2,7 +2,7 @@ import { PortalView, ViewContext, topicsForView } from '@/contracts';
 
 const NULL = '\x00';
 
-export type ConnectionMode = 'disconnected' | 'stomp' | 'sse-fallback';
+export type ConnectionMode = 'disconnected' | 'connecting' | 'stomp' | 'sse-fallback';
 
 export type RealtimeHandlers = {
   onMessage: (payload: Record<string, unknown>) => void;
@@ -22,6 +22,7 @@ export class RealtimeClient {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
+    this.setMode('connecting');
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.ws = new WebSocket(`${proto}//${location.host}/stomp`);
     this.ws.onopen = () => {
@@ -29,15 +30,29 @@ export class RealtimeClient {
     };
     this.ws.onmessage = (ev) => this.handleStompFrame(String(ev.data || ''));
     this.ws.onclose = () => {
-      this.setMode('sse-fallback');
-      this.startSSE();
+      this.ws = null;
+      this.ensureFallbackTransport();
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(() => this.connect(), 5000);
     };
     this.ws.onerror = () => {
-      this.setMode('sse-fallback');
-      this.startSSE();
+      // onclose follows; avoid claiming SSE until EventSource is actually open.
     };
+  }
+
+  /** Prefer live STOMP, then open SSE; otherwise disconnected. */
+  private ensureFallbackTransport(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      return;
+    }
+    if (this.eventSource?.readyState === EventSource.OPEN) {
+      this.setMode('sse-fallback');
+      return;
+    }
+    this.startSSE();
+    if (this.eventSource?.readyState !== EventSource.OPEN) {
+      this.setMode('disconnected');
+    }
   }
 
   private setMode(mode: ConnectionMode): void {
@@ -95,6 +110,17 @@ export class RealtimeClient {
   private startSSE(): void {
     if (this.eventSource) return;
     this.eventSource = new EventSource('/events');
+    this.eventSource.onopen = () => {
+      if (this.ws?.readyState !== WebSocket.OPEN) {
+        this.setMode('sse-fallback');
+      }
+    };
+    this.eventSource.onerror = () => {
+      if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+        return;
+      }
+      this.setMode('disconnected');
+    };
     this.eventSource.onmessage = (ev) => {
       try {
         const payload = JSON.parse(ev.data) as Record<string, unknown>;

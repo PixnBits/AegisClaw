@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api } from '@/api/client';
+import type { ConnectionMode } from '@/realtime/stompClient';
 import { appendFeedItem, feedItemFromActivityPayload } from '@/lib/channelActivity';
 import { applyHarnessEvent } from '@/lib/harness';
 import { messageToFeedItem } from '@/lib/reasoning';
@@ -26,7 +27,7 @@ export type PlanPreview = {
 type PortalState = {
   ready: boolean;
   view: PortalView;
-  connectionMode: 'disconnected' | 'stomp' | 'sse-fallback';
+  connectionMode: ConnectionMode;
   dashboard: DashboardData | null;
   channels: Channel[];
   currentChannel: Channel | null;

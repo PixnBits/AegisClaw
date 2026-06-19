@@ -97,6 +97,14 @@
   background: var(--color-success);
 }
 
+.status-dot--warning {
+  background: var(--color-warning);
+}
+
+.status-dot--danger {
+  background: var(--color-danger);
+}
+
 .workspace-grid {
   display: grid;
   flex: 1;

@@ -1,5 +1,20 @@
 import { PortalView } from '@/contracts';
+import type { ConnectionMode } from '@/realtime/stompClient';
 import { usePortalStore } from '@/store/portalStore';
+
+function connectionDisplay(mode: ConnectionMode): { label: string; dotClass: string } {
+  switch (mode) {
+    case 'stomp':
+      return { label: 'Conn STOMP', dotClass: 'status-dot--success' };
+    case 'sse-fallback':
+      return { label: 'Conn SSE', dotClass: 'status-dot--success' };
+    case 'connecting':
+      return { label: 'Connecting…', dotClass: 'status-dot--warning' };
+    case 'disconnected':
+    default:
+      return { label: 'Disconnected', dotClass: 'status-dot--danger' };
+  }
+}
 
 const NAV_ITEMS: { id: PortalView; label: string; testId: string; mobileHidden?: boolean; overflow?: boolean }[] = [
   { id: 'home', label: 'Home', testId: 'nav-home' },
@@ -22,8 +37,7 @@ export function TopBar({ onNavigate }: Props) {
   const dashboard = usePortalStore((s) => s.dashboard);
   const connectionMode = usePortalStore((s) => s.connectionMode);
 
-  const connLabel =
-    connectionMode === 'stomp' ? 'Conn STOMP' : connectionMode === 'sse-fallback' ? 'Conn SSE' : 'Conn …';
+  const { label: connLabel, dotClass: connDotClass } = connectionDisplay(connectionMode);
 
   return (
     <header className="topbar" data-testid="topbar">
@@ -64,8 +78,12 @@ export function TopBar({ onNavigate }: Props) {
           <span className="status-divider">|</span>
           <span>{dashboard?.runtime || 'Firecracker'}</span>
         </div>
-        <div className="status-chip status-chip--compact" data-testid="connection-status-chip">
-          <span className="status-dot status-dot--success" aria-hidden="true" />
+        <div
+          className="status-chip status-chip--compact"
+          data-testid="connection-status-chip"
+          data-connection-mode={connectionMode}
+        >
+          <span className={`status-dot ${connDotClass}`} aria-hidden="true" />
           <span data-testid="connection-status-label">{connLabel}</span>
         </div>
         <button type="button" className="avatar-button" data-testid="avatar-button" title="Notifications">
