@@ -467,6 +467,9 @@ func daemonChildEnv() []string {
 	if v := os.Getenv("AEGIS_BOOT_TIMING"); v != "" {
 		env = setEnvPair(env, "AEGIS_BOOT_TIMING", v)
 	}
+	if v := os.Getenv("AEGIS_COLLAB_TRACE"); v != "" {
+		env = setEnvPair(env, "AEGIS_COLLAB_TRACE", v)
+	}
 	return env
 }
 
@@ -733,6 +736,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	// Build / debug ID for this daemon run (helps confirm we are not running stale binary)
 	logrus.Infof("Aegis daemon starting — build/debug ID: %s", time.Now().UTC().Format("2006-01-02T15:04:05Z")+" (debug-build)")
+	if collab.TraceEnabled() {
+		logrus.Info("AEGIS_COLLAB_TRACE=1: channel collaboration tracing enabled (restart required for already-running VMs)")
+	}
 	daemonBootStart = time.Now()
 	storeCollabReady.Store(false)
 

@@ -5,11 +5,16 @@ import (
 	"log"
 	"os"
 	"strings"
+
+	"AegisClaw/internal/bootargs"
 )
 
 // TraceEnabled reports whether AEGIS_COLLAB_TRACE=1 (channel post / fan-out / STOMP tracing).
 func TraceEnabled() bool {
-	return strings.TrimSpace(os.Getenv("AEGIS_COLLAB_TRACE")) == "1"
+	if strings.TrimSpace(os.Getenv("AEGIS_COLLAB_TRACE")) == "1" {
+		return true
+	}
+	return bootargs.CollabTraceEnabled()
 }
 
 // Trace logs a single hop in the channel collaboration pipeline when tracing is enabled.

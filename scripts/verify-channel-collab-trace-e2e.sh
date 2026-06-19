@@ -39,6 +39,14 @@ echo "Channel: $CHANNEL  Portal: $PORTAL_URL"
 echo "Marker:  $MARKER"
 echo
 
+if [[ -f "$DAEMON_LOG" ]] && ! grep -q '\[collab-trace\]' "$DAEMON_LOG" 2>/dev/null; then
+  echo "NOTE: No [collab-trace] lines in ${DAEMON_LOG} yet."
+  echo "      Restart daemon with trace enabled, e.g.:"
+  echo "        sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start --foreground 2>&1 | tee aegis.log"
+  echo "      (Plain 'AEGIS_COLLAB_TRACE=1 sudo ...' is often stripped by sudo.)"
+  echo
+fi
+
 if [[ ! -x ./bin/aegis ]]; then
   echo "ERROR: ./bin/aegis not found. Run 'make build' first." >&2
   exit 2
@@ -130,9 +138,11 @@ if [[ $ASSERT_RC -eq 0 ]]; then
 else
   echo "=== E2E SUMMARY: FAIL ==="
   echo "Tips:"
-  echo "  - Confirm Ollama/LLM reachable from network-boundary VM"
+  echo "  - Enable trace: sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start --foreground 2>&1 | tee aegis.log"
+  echo "  - Confirm Ollama/LLM reachable from network-boundary VM (agents no longer post canned intros)"
   echo "  - grep 'channel.reply.skip' / 'channel.post.fail' in guest logs"
   echo "  - grep 'stomp.notify.fail' in daemon log (agent posts not reaching browser)"
+  echo "  - Rebuild microVMs after agent/trace code changes: sudo make build-microvms"
 fi
 
 exit $ASSERT_RC

@@ -123,6 +123,15 @@ func BootTimingEnabled() bool {
 	return false
 }
 
+// CollabTraceEnabled returns whether channel collaboration tracing is active.
+// Activated by AEGIS_COLLAB_TRACE=1 on the host or aegis.collab_trace=1 on the kernel cmdline.
+func CollabTraceEnabled() bool {
+	if os.Getenv("AEGIS_COLLAB_TRACE") == "1" {
+		return true
+	}
+	return parseCmdlineKV("aegis.collab_trace=") == "1"
+}
+
 // ParseCmdlineKV is the exported form of the internal parser for use by
 // timing and other packages that need to read aegis.* flags from /proc/cmdline
 // inside guests (where env may not have been explicitly exported by /init).

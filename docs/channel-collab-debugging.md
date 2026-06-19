@@ -42,14 +42,33 @@ sequenceDiagram
 
 ## Tracing (`AEGIS_COLLAB_TRACE=1`)
 
-Enable trace on **every component that handles messages** (daemon, store, hub, agents, web-portal):
+**Important:** `sudo` usually **strips** environment variables unless you use one of these forms:
+
+```bash
+# Recommended — variable on the sudo command line (GNU sudo)
+sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start --foreground 2>&1 | tee aegis.log
+
+# Alternative — export then preserve with -E (requires env_keep in sudoers for NOPASSWD setups)
+export AEGIS_COLLAB_TRACE=1
+sudo -E ./bin/aegis start --foreground 2>&1 | tee aegis.log
+```
+
+**Not reliable alone:** `AEGIS_COLLAB_TRACE=1 sudo ./bin/aegis start` — the variable applies to the `sudo` process, but `sudo` often resets the environment before running `aegis` unless `env_keep` includes `AEGIS_COLLAB_TRACE` (see `scripts/aegisclaw-sudoers.example`).
+
+On successful start you should see:
+
+```
+level=info msg="AEGIS_COLLAB_TRACE=1: channel collaboration tracing enabled ..."
+```
+
+Guest VMs (store, court-persona, PM, web-portal) receive `aegis.collab_trace=1` on the kernel cmdline when the **daemon** was started with trace enabled. Already-running VMs from a prior start will not trace until you restart the daemon.
 
 ```bash
 # Terminal 1 — foreground daemon with trace
-AEGIS_COLLAB_TRACE=1 sudo ./bin/aegis start --foreground 2>&1 | tee aegis.log
+sudo AEGIS_COLLAB_TRACE=1 ./bin/aegis start --foreground 2>&1 | tee aegis.log
 
 # Terminal 2 — after collab ready
-bash scripts/verify-channel-collab-trace-e2e.sh
+make test-e2e-channel-trace
 ```
 
 Trace lines look like:

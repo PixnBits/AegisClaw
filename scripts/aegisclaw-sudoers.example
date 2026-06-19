@@ -42,6 +42,6 @@ YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis
 
 # Env vars for observability (boot-metrics) + model selection + custom E2E sockets must pass under sudo.
 # Top-level + per-command forms for compatibility across sudoers versions.
-Defaults env_keep += "AEGIS_BOOT_TIMING AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
-Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
+Defaults env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
+Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
 
