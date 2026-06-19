@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/agent"
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/eventbus"
@@ -327,7 +328,7 @@ func callRealLLMViaHub(ctx context.Context, hub hubclient.Client, prompt string)
 	}
 
 	llmReq := map[string]interface{}{
-		"model":  "default", // boundary / config will resolve (same as agent)
+		"model":  bootargs.DefaultModel(agent.DefaultLLMModel),
 		"prompt": prompt,
 		"stream": false,
 	}

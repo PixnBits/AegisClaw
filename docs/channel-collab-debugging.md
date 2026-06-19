@@ -91,15 +91,30 @@ Trace lines look like:
 
 | Component | Log location |
 |-----------|----------------|
-| Host daemon | stdout / `aegis.log` |
-| AegisHub | `/tmp/hub-debug.log` (always) + `[collab-trace]` when env set |
-| Store / agents / web-portal | Guest serial / `aegis guest-logs` (if configured) |
+| Host daemon + hub | stdout / `aegis.log` — hub `[collab-trace][hub][route]` lines |
+| Store / court-persona / PM | **Guest console** — `./bin/aegis vm logs court-persona-ciso` (not in `aegis.log`) |
 
-Rebuild microVMs after changing store, court-persona, PM, or web-portal:
+If you see `fanout.deliver.ok` for all roles but **no** `hub][route] src=court-persona-* dest=store cmd=channel.post`, agents received activity but did not post (usually `llm.call` failed). Check guest logs:
+
+```bash
+./bin/aegis vm logs court-persona-ciso | tail -30
+./bin/aegis vm logs project-manager-main | tail -30
+grep -i 'llm\|channel.reply\|ollama' ~/.aegis/state/fc-court-persona-ciso-console.log 2>/dev/null | tail -20
+```
+
+Set a real Ollama model on the host (injected to guests via `aegis.default_model=`):
+
+```bash
+AEGIS_DEFAULT_MODEL=llama3.2:3b sudo -E ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log
+```
+
+Court personas previously sent `model: "default"` to Ollama (invalid); use a tagged model name from `curl http://127.0.0.1:11434/api/tags`.
+
+Rebuild microVMs after changing store, court-persona, PM, network-boundary, or web-portal:
 
 ```bash
 sudo make build-microvms
-sudo ./bin/aegis stop && AEGIS_COLLAB_TRACE=1 sudo ./bin/aegis start
+sudo ./bin/aegis stop && sudo ./bin/aegis start --foreground --collab-trace 2>&1 | tee aegis.log
 ```
 
 ## Verification commands

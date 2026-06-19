@@ -36,13 +36,11 @@ YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis/daemon.pid
 YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/rm /tmp/aegis
 YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis
 
-# Example for this specific workspace (edit paths as needed):
-# /home/pixnbits/projects/AegisClaw/main/bin/aegis is the key one for `sudo -n ./bin/aegis start` (and legacy make start wrappers which invoke it under sudo -n internally).
-# Use direct bin for start to avoid broad sudo on make: sudo -n /home/pixnbits/projects/AegisClaw/main/bin/aegis start --foreground
+# Example for this workspace (edit YOURUSER and paths):
+YOURUSER ALL=(ALL) NOPASSWD: /home/pixnbits/projects/AegisClaw/main/bin/aegis
+Defaults! /home/pixnbits/projects/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
 
-# Env vars for observability (boot-metrics, collab trace, model selection) must pass under sudo when using -E.
-# Prefer `aegis start --collab-trace` instead of AEGIS_COLLAB_TRACE=1 when sudo blocks inline env vars.
-# Top-level + per-command forms for compatibility across sudoers versions.
+# Env vars for observability (boot-metrics, collab trace, model selection) when using sudo -E.
+# Prefer `aegis start --collab-trace` instead of inline AEGIS_COLLAB_TRACE=1 (often blocked by sudo).
 Defaults env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
-Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
 
