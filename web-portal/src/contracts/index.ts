@@ -13,6 +13,7 @@ export type PipelineStageName = (typeof PIPELINE_STAGES)[number];
 
 export const EVENT = {
   overviewStats: 'overview.stats',
+  monitoringStats: 'monitoring.stats',
   channelActivity: 'channel.activity',
   conversationUpdate: 'conversation.update',
   canvasEvent: 'canvas.event',
@@ -25,6 +26,7 @@ export const EVENT = {
 
 export const TOPIC = {
   overviewStats: '/topic/overview.stats',
+  monitoringStats: '/topic/monitoring.stats',
   canvasEvents: '/topic/canvas.events',
   approvalsPending: '/topic/approvals.pending',
   channelActivity: (channelId: string) => `/topic/channel.${channelId}.activity`,
@@ -49,20 +51,31 @@ export type PortalView =
 
 export type ViewContext = {
   channelId?: string;
+  /** All known channel IDs — subscribe for live updates + unread badges */
+  channelIds?: string[];
   planId?: string;
+  planIds?: string[];
   sessionId?: string;
   proposalId?: string;
 };
 
 export function topicsForView(view: PortalView, ctx: ViewContext = {}): string[] {
   const topics: string[] = [];
+  const channelTopics = new Set<string>();
+  if (ctx.channelIds?.length) {
+    for (const id of ctx.channelIds) {
+      channelTopics.add(TOPIC.channelActivity(id));
+    }
+  } else if (ctx.channelId) {
+    channelTopics.add(TOPIC.channelActivity(ctx.channelId));
+  }
   switch (view) {
     case 'home':
       topics.push(TOPIC.overviewStats, TOPIC.approvalsPending);
       break;
     case 'dashboard':
     case 'monitoring':
-      topics.push(TOPIC.overviewStats, TOPIC.canvasEvents, TOPIC.approvalsPending);
+      topics.push(TOPIC.overviewStats, TOPIC.monitoringStats, TOPIC.canvasEvents, TOPIC.approvalsPending);
       break;
     case 'channels':
       if (ctx.channelId) {
@@ -75,8 +88,10 @@ export function topicsForView(view: PortalView, ctx: ViewContext = {}): string[]
       if (ctx.proposalId) topics.push(TOPIC.proposalUpdates(ctx.proposalId));
       break;
     case 'canvas':
-      topics.push(TOPIC.canvasEvents);
-      if (ctx.planId) topics.push(TOPIC.harnessUpdates(ctx.planId));
+      topics.push(TOPIC.canvasEvents, TOPIC.monitoringStats);
+      if (ctx.planIds?.length) {
+        for (const id of ctx.planIds) topics.push(TOPIC.harnessUpdates(id));
+      } else if (ctx.planId) topics.push(TOPIC.harnessUpdates(ctx.planId));
       break;
     case 'trace':
       if (ctx.sessionId) topics.push(TOPIC.conversationUpdates(ctx.sessionId));
@@ -84,8 +99,39 @@ export function topicsForView(view: PortalView, ctx: ViewContext = {}): string[]
     default:
       break;
   }
+  for (const topic of channelTopics) {
+    if (!topics.includes(topic)) topics.push(topic);
+  }
   return topics;
 }
+
+export type MonitoringStats = {
+  type: typeof EVENT.monitoringStats;
+  timestamp: string;
+  stats?: {
+    running_vms?: number;
+    background_tasks?: number;
+    cpu_usage?: string;
+    memory_usage?: string;
+  };
+  agents?: unknown[];
+};
+
+export type SecurityIndicator = {
+  id: string;
+  label: string;
+  status: 'ok' | 'warn' | 'error' | string;
+  detail?: string;
+};
+
+export type SecurityPosture = {
+  indicators: SecurityIndicator[];
+  store_collab_ready?: boolean;
+  court_personas_online?: number;
+  web_portal_status?: string;
+  collab?: string;
+  updated_at?: string;
+};
 
 export type StageStatus = {
   name: PipelineStageName | string;

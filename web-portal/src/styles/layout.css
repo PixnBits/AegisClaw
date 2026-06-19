@@ -23,6 +23,25 @@
   flex-shrink: 0;
 }
 
+.brand-block--home {
+  text-align: left;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.brand-block--home:hover {
+  opacity: 0.9;
+}
+
+.brand-block--home:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 .brand-mark {
   font-size: 1.5rem;
 }
@@ -169,6 +188,43 @@
   color: var(--color-primary);
 }
 
+.bottom-nav__item span {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.bottom-nav__unread-dot {
+  position: absolute;
+  top: -2px;
+  right: -8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary);
+}
+
+.channel-list-item__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.channel-unread-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  padding: 0 var(--space-1);
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+  background: var(--color-primary);
+  color: #0a0a0a;
+}
+
 .bottom-sheet-backdrop {
   position: fixed;
   inset: 0;
@@ -245,6 +301,14 @@
     display: none;
   }
 
+  /* Context panel inside mobile bottom sheet must remain visible */
+  .bottom-sheet .context-panel {
+    display: flex;
+    border: none;
+    background: transparent;
+    padding: 0;
+  }
+
   .bottom-nav {
     display: block;
     padding-left: env(safe-area-inset-left, 0px);
@@ -260,13 +324,14 @@
   }
 
   :root {
-    --section-gap: var(--space-5);
+    --section-gap: var(--mobile-section-gap);
     --panel-padding: var(--mobile-gutter);
+    --card-padding: var(--space-4);
     --mobile-scroll-bottom: calc(var(--bottom-nav-height) + var(--space-7));
   }
 
   .content-panel {
-    gap: var(--space-5);
+    gap: var(--mobile-section-gap);
   }
 
   /* Let inner cards provide structure — avoid a full-bleed outer panel on phones */

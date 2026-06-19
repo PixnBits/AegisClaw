@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api } from '@/api/client';
+import { appendFeedItem, feedItemFromActivityPayload } from '@/lib/channelActivity';
 import { applyHarnessEvent } from '@/lib/harness';
 import { messageToFeedItem } from '@/lib/reasoning';
 import {
@@ -11,6 +12,8 @@ import {
   OverviewStats,
   PortalView,
   Proposal,
+  MonitoringStats,
+  SecurityPosture,
 } from '@/contracts';
 
 export type PlanPreview = {
@@ -34,22 +37,29 @@ type PortalState = {
   planPreview: PlanPreview | null;
   traceAgentId: string | null;
   overviewStats: OverviewStats | null;
+  monitoringStats: MonitoringStats | null;
+  securityPosture: SecurityPosture | null;
   contextPanelOpen: boolean;
   bottomSheetOpen: boolean;
+  moreMenuOpen: boolean;
   /** E2E / test hook — prevents auto-selecting the first channel */
   skipChannelAutoSelect: boolean;
   expandedReasoning: Set<string>;
   dashboardFilter: string;
+  /** Unread message bursts per channel (debounced for active agent traffic) */
+  unreadByChannel: Record<string, number>;
 
   setView: (view: PortalView) => void;
   setReady: (ready: boolean) => void;
   setConnectionMode: (mode: PortalState['connectionMode']) => void;
   setContextPanelOpen: (open: boolean) => void;
   setBottomSheetOpen: (open: boolean) => void;
+  setMoreMenuOpen: (open: boolean) => void;
   toggleReasoningExpanded: (id: string) => void;
   setDashboardFilter: (filter: string) => void;
 
   loadInitial: () => Promise<void>;
+  loadSecurityPosture: () => Promise<void>;
   loadChannels: () => Promise<void>;
   selectChannel: (ch: Channel) => Promise<void>;
   loadHarness: (channelId: string) => Promise<HarnessState | null>;
@@ -61,7 +71,12 @@ type PortalState = {
   setSelectedProposal: (p: Proposal | null) => void;
   setTraceAgent: (id: string | null) => void;
   collapseAllFeedReasoning: (channelId: string) => void;
+  bumpUnread: (channelId: string) => void;
+  clearUnread: (channelId: string) => void;
 };
+
+const UNREAD_DEBOUNCE_MS = 4000;
+const unreadBurstActive: Record<string, boolean> = {};
 
 export const usePortalStore = create<PortalState>((set, get) => ({
   ready: false,
@@ -77,17 +92,22 @@ export const usePortalStore = create<PortalState>((set, get) => ({
   planPreview: null,
   traceAgentId: null,
   overviewStats: null,
+  monitoringStats: null,
+  securityPosture: null,
   contextPanelOpen: true,
   bottomSheetOpen: false,
+  moreMenuOpen: false,
   skipChannelAutoSelect: false,
   expandedReasoning: new Set(),
   dashboardFilter: 'all',
+  unreadByChannel: {},
 
   setView: (view) => set({ view }),
   setReady: (ready) => set({ ready }),
   setConnectionMode: (connectionMode) => set({ connectionMode }),
   setContextPanelOpen: (contextPanelOpen) => set({ contextPanelOpen }),
   setBottomSheetOpen: (bottomSheetOpen) => set({ bottomSheetOpen }),
+  setMoreMenuOpen: (moreMenuOpen) => set({ moreMenuOpen }),
   toggleReasoningExpanded: (id) =>
     set((s) => {
       const next = new Set(s.expandedReasoning);
@@ -100,15 +120,26 @@ export const usePortalStore = create<PortalState>((set, get) => ({
   setTraceAgent: (traceAgentId) => set({ traceAgentId }),
 
   loadInitial: async () => {
-    const [dash, proposals] = await Promise.allSettled([
+    const [dash, proposals, posture] = await Promise.allSettled([
       api.dashboard(),
       api.proposals(),
+      api.securityPosture(),
     ]);
     if (dash.status === 'fulfilled') set({ dashboard: dash.value });
     if (proposals.status === 'fulfilled') set({ proposals: proposals.value });
+    if (posture.status === 'fulfilled') set({ securityPosture: posture.value });
     await get().loadChannels();
     await get().loadHarness('main');
     set({ ready: true });
+  },
+
+  loadSecurityPosture: async () => {
+    try {
+      const posture = await api.securityPosture();
+      set({ securityPosture: posture });
+    } catch {
+      /* optional surface */
+    }
   },
 
   loadChannels: async () => {
@@ -117,6 +148,7 @@ export const usePortalStore = create<PortalState>((set, get) => ({
   },
 
   selectChannel: async (ch) => {
+    get().clearUnread(ch.id);
     set({ currentChannel: ch, view: 'channels' });
     try {
       const full = await api.channel(ch.id);
@@ -177,7 +209,36 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     const ch = get().currentChannel;
     if (!ch) return;
     await api.postChannel(ch.id, content);
+    // STOMP from portal POST usually arrives first; refresh is fallback only.
     await get().refreshChannelMessages();
+  },
+
+  bumpUnread: (channelId) => {
+    const { currentChannel, view } = get();
+    if (view === 'channels' && currentChannel?.id === channelId) return;
+
+    if (!unreadBurstActive[channelId]) {
+      unreadBurstActive[channelId] = true;
+      set((s) => ({
+        unreadByChannel: {
+          ...s.unreadByChannel,
+          [channelId]: (s.unreadByChannel[channelId] || 0) + 1,
+        },
+      }));
+      setTimeout(() => {
+        delete unreadBurstActive[channelId];
+      }, UNREAD_DEBOUNCE_MS);
+    }
+  },
+
+  clearUnread: (channelId) => {
+    delete unreadBurstActive[channelId];
+    set((s) => {
+      if (!s.unreadByChannel[channelId]) return s;
+      const next = { ...s.unreadByChannel };
+      delete next[channelId];
+      return { unreadByChannel: next };
+    });
   },
 
   refreshChannelMessages: async () => {
@@ -195,6 +256,30 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     const type = String(payload.type || '');
     if (type === EVENT.overviewStats) {
       set({ overviewStats: payload as unknown as OverviewStats });
+      return;
+    }
+    if (type === EVENT.monitoringStats) {
+      set({ monitoringStats: payload as unknown as MonitoringStats });
+      return;
+    }
+    if (type === EVENT.canvasEvent) {
+      const channelId = String(payload.channel_id || get().currentChannel?.id || 'main');
+      set((s) => {
+        const prev = s.harnessByChannel[channelId] || { plan: null, tasks: [] };
+        const taskId = String(payload.task_id || payload.persona_task_id || '');
+        if (!taskId) return s;
+        const tasks = (prev.tasks || []).map((t) =>
+          t.task_id === taskId
+            ? {
+                ...t,
+                progress: Number(payload.progress ?? t.progress),
+                current_stage: String(payload.stage || t.current_stage),
+                agent_persona: String(payload.persona || t.agent_persona),
+              }
+            : t,
+        );
+        return { harnessByChannel: { ...s.harnessByChannel, [channelId]: { ...prev, tasks } } };
+      });
       return;
     }
     if (type === EVENT.channelActivity && payload.channel_id) {
@@ -221,6 +306,24 @@ export const usePortalStore = create<PortalState>((set, get) => ({
         });
         return;
       }
+
+      const feedItem = feedItemFromActivityPayload(payload, channelId);
+      if (feedItem) {
+        const isActive =
+          get().view === 'channels' && get().currentChannel?.id === channelId;
+        if (isActive) {
+          set((s) => ({
+            feedByChannel: {
+              ...s.feedByChannel,
+              [channelId]: appendFeedItem(s.feedByChannel[channelId] || [], feedItem),
+            },
+          }));
+        } else {
+          get().bumpUnread(channelId);
+        }
+        return;
+      }
+
       if (get().currentChannel?.id === channelId) {
         get().refreshChannelMessages();
       }

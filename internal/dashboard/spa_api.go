@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -36,6 +37,37 @@ func (s *Server) stompPublisher() *realtime.Publisher {
 func (s *Server) handleSTOMP(w http.ResponseWriter, r *http.Request) {
 	s.initSTOMP()
 	portalstomp.ServeWebSocket(s.stompHub, w, r)
+}
+
+func (s *Server) handleInternalChannelActivitySTOMP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if !requestFromLoopback(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		ChannelID string `json:"channel_id"`
+		From      string `json:"from"`
+		Content   string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChannelID == "" {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	s.PublishChannelSTOMP(req.ChannelID, req.From, req.Content)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func requestFromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handleAPIDashboard(w http.ResponseWriter, r *http.Request) {
@@ -124,12 +156,7 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Trigger roster replies (web-portal → hub → store only persists; fan-out via orchestrator).
-		_, _ = s.fetchRaw(ctx, "channel.fanout", map[string]interface{}{
-			"channel_id": parts[0],
-			"from":       from,
-			"content":    content,
-		})
+		// Fan-out to channel members is triggered by store → channel.updated on the daemon.
 		s.initSTOMP()
 		s.PublishChannelSTOMP(parts[0], from, content)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck

@@ -20,5 +20,5 @@ export function useRealtime(view: string, ctx: ViewContext = {}) {
 
   useEffect(() => {
     clientRef.current?.setViewTopics(view as Parameters<RealtimeClient['setViewTopics']>[0], ctx);
-  }, [view, ctx.channelId, ctx.planId, ctx.sessionId, ctx.proposalId]);
+  }, [view, ctx.channelId, ctx.channelIds?.join(','), ctx.planId, ctx.planIds?.join(','), ctx.sessionId, ctx.proposalId]);
 }

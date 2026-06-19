@@ -58,14 +58,15 @@ test.describe('Web Portal real-time (fixture)', () => {
     await page.getByTestId('add-member-input').fill(role);
     await page.getByTestId('add-member-button').click();
 
-    await page.getByTestId('member-group-project-sdlc').getByRole('button', { name: /Project/i }).click();
-    await expect(page.getByTestId('members-list')).toContainText(role, { timeout: 5000 });
-
+    const group = page.getByTestId('member-group-project-sdlc');
+    await group.getByRole('button', { name: /Project \/ SDLC/i }).click();
     const memberRow = page.getByTestId(`member-${role}`);
-    await memberRow.getByRole('button', { name: new RegExp(`Actions for ${role}`) }).click();
+    await expect(memberRow).toBeVisible({ timeout: 5000 });
+
+    await memberRow.getByRole('button', { name: `Actions for ${role}` }).click();
     page.once('dialog', (dialog) => dialog.accept());
     await memberRow.getByRole('button', { name: 'Remove' }).click();
 
-    await expect(page.getByTestId('members-list')).not.toContainText(role, { timeout: 5000 });
+    await expect(page.getByTestId(`member-${role}`)).toHaveCount(0, { timeout: 5000 });
   });
 });

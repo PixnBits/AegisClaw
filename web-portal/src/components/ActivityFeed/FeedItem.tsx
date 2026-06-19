@@ -1,7 +1,9 @@
 import { FeedItem as FeedItemType } from '@/contracts';
+import { formatPersonaLabel } from '@/lib/display';
 import { shouldExpandReasoning, buildCollapsedSummary } from '@/lib/reasoning';
 import { usePolicyStore } from '@/store/policyStore';
 import { usePortalStore } from '@/store/portalStore';
+import { MarkdownContent } from '@/components/ui/MarkdownContent';
 import './ActivityFeed.css';
 
 type Props = {
@@ -23,7 +25,7 @@ export function FeedItemRow({ item, channelId }: Props) {
       data-testid={`feed-item-${item.id}`}
     >
       <header className="feed-item__header">
-        <strong>{item.from}</strong>
+        <strong>{formatPersonaLabel(item.from)}</strong>
         {item.inFlight && <span className="feed-item__live-badge">Live</span>}
         <time className="subtle">{formatTime(item.ts)}</time>
       </header>
@@ -57,7 +59,13 @@ export function FeedItemRow({ item, channelId }: Props) {
               ))}
             </div>
           ) : (
-            <div className="feed-item__content">{item.content}</div>
+            <div className="feed-item__content">
+              {item.kind === 'human_message' || item.kind === 'agent_update' || item.kind === 'court_decision' ? (
+                <MarkdownContent content={item.content} />
+              ) : (
+                item.content
+              )}
+            </div>
           )}
           {isReasoning && item.decisive && expanded && (
             <button

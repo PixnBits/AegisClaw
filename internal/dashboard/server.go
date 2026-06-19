@@ -168,6 +168,8 @@ func (s *Server) registerRoutes() {
 	// Channels-first SPA (web-portal-vm.md: dynamic API routes + STOMP gateway in portal sandbox)
 	s.initSTOMP()
 	s.mux.HandleFunc("/stomp", s.handleSTOMP)
+	s.mux.HandleFunc("/internal/realtime/channel-activity", s.handleInternalChannelActivitySTOMP)
+	s.startMonitoringPublisher()
 	s.mux.HandleFunc("/api/goals", s.handleAPIGoals)
 	s.mux.HandleFunc("/api/dashboard", s.handleAPIDashboard)
 	s.mux.HandleFunc("/api/monitoring", s.handleAPIMonitoring)

@@ -17,5 +17,12 @@ describe('STOMP topic subscriptions', () => {
   it('dashboard includes canvas events', () => {
     const topics = topicsForView('dashboard');
     expect(topics).toContain(TOPIC.canvasEvents);
+    expect(topics).toContain(TOPIC.monitoringStats);
+  });
+
+  it('subscribes all channelIds for live updates', () => {
+    const topics = topicsForView('home', { channelIds: ['main', 'ops'] });
+    expect(topics).toContain('/topic/channel.main.activity');
+    expect(topics).toContain('/topic/channel.ops.activity');
   });
 });

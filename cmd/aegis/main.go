@@ -4947,6 +4947,7 @@ func dialFirecrackerVsock(ctx context.Context, udsPath string, port uint32) (net
 func startWebPortalProxy(listenAddr, target string) error {
 	// Clear any previous listen error on (re)start attempts.
 	webPortalProxyListenErr = nil
+	setWebPortalInternalTarget(target)
 
 	var proxy *httputil.ReverseProxy
 
@@ -5275,6 +5276,17 @@ func startOrchestratorCommandReceiver() {
 				continue
 			}
 			if msg.Command == "channel.updated" {
+				if payload, ok := msg.Payload.(map[string]interface{}); ok {
+					chID, _ := payload["channel_id"].(string)
+					from, _ := payload["from"].(string)
+					content := collab.PayloadContentString(payload["content"])
+					if chID != "" {
+						go notifyWebPortalChannelActivity(chID, from, content)
+						if collab.IsHumanPoster(from) && content != "" {
+							go fanOutChannelActivity(chID, from, content)
+						}
+					}
+				}
 				continue
 			}
 			if msg.Command == "ensure.role" || msg.Command == "orchestrator.ensure_role" {

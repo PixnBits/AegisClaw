@@ -8,6 +8,7 @@ import { BottomNav } from '@/components/layout/BottomNav';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { ContextPanel } from '@/components/layout/ContextPanel';
 import { BottomSheet } from '@/components/layout/BottomSheet';
+import { MoreMenu } from '@/components/layout/MoreMenu';
 import { HomeView } from '@/views/HomeView';
 import { ChannelsView } from '@/views/ChannelsView';
 import { DashboardView } from '@/views/DashboardView';
@@ -52,8 +53,12 @@ export default function App() {
   const harnessByChannel = usePortalStore((s) => s.harnessByChannel);
   const contextPanelOpen = usePortalStore((s) => s.contextPanelOpen);
   const bottomSheetOpen = usePortalStore((s) => s.bottomSheetOpen);
+  const moreMenuOpen = usePortalStore((s) => s.moreMenuOpen);
+  const overviewStats = usePortalStore((s) => s.overviewStats);
+  const unreadByChannel = usePortalStore((s) => s.unreadByChannel);
   const setView = usePortalStore((s) => s.setView);
   const setBottomSheetOpen = usePortalStore((s) => s.setBottomSheetOpen);
+  const setMoreMenuOpen = usePortalStore((s) => s.setMoreMenuOpen);
   const setContextPanelOpen = usePortalStore((s) => s.setContextPanelOpen);
   const setTraceAgent = usePortalStore((s) => s.setTraceAgent);
   const loadInitial = usePortalStore((s) => s.loadInitial);
@@ -62,11 +67,15 @@ export default function App() {
   const realtimeCtx = useMemo(
     () => ({
       channelId: currentChannel?.id,
+      channelIds: channels.map((c) => c.id),
       planId: currentChannel ? harnessByChannel[currentChannel.id]?.plan?.plan_id : undefined,
+      planIds: Object.values(harnessByChannel)
+        .map((h) => h?.plan?.plan_id)
+        .filter((id): id is string => Boolean(id)),
       sessionId: usePortalStore.getState().traceAgentId || undefined,
       proposalId: usePortalStore.getState().selectedProposal?.id,
     }),
-    [currentChannel?.id, harnessByChannel, currentChannel],
+    [currentChannel?.id, channels, harnessByChannel, currentChannel],
   );
 
   useRealtime(view, realtimeCtx);
@@ -139,6 +148,11 @@ export default function App() {
     [navigate],
   );
 
+  const channelsUnreadTotal = useMemo(
+    () => Object.values(unreadByChannel).reduce((sum, n) => sum + n, 0),
+    [unreadByChannel],
+  );
+
   const layoutClass = LAYOUT_BY_PAGE[view] || 'layout--simple';
   const showSidebar = !['canvas', 'trace', 'teams'].includes(view);
   const showContext = ['home', 'channels', 'dashboard'].includes(view) && !isMobile && contextPanelOpen;
@@ -201,6 +215,10 @@ export default function App() {
             harness={channelHarness}
             channelId={currentChannel?.id}
             collapsed={!contextPanelOpen}
+            showChannelHarness={view === 'channels'}
+            tokenUsage={overviewStats?.token_usage?.channel}
+            onOpenCanvas={openCanvas}
+            compactHarness={false}
           />
         )}
         {showContext && (
@@ -214,15 +232,30 @@ export default function App() {
           </button>
         )}
       </main>
-      <BottomNav view={view} onNavigate={navigate} />
+      <BottomNav
+        view={view}
+        onNavigate={navigate}
+        onOpenMore={() => setMoreMenuOpen(true)}
+        channelsUnread={channelsUnreadTotal}
+      />
       {isMobile && (
-        <BottomSheet
-          open={bottomSheetOpen}
-          title="Channel Context"
-          onClose={() => setBottomSheetOpen(false)}
-        >
-          <ContextPanel harness={channelHarness} channelId={currentChannel?.id} />
-        </BottomSheet>
+        <>
+          <BottomSheet
+            open={bottomSheetOpen}
+            title="Channel Context"
+            onClose={() => setBottomSheetOpen(false)}
+          >
+            <ContextPanel
+              harness={channelHarness}
+              channelId={currentChannel?.id}
+              showChannelHarness
+              tokenUsage={overviewStats?.token_usage?.channel}
+              onOpenCanvas={openCanvas}
+              compactHarness
+            />
+          </BottomSheet>
+          <MoreMenu open={moreMenuOpen} onClose={() => setMoreMenuOpen(false)} onNavigate={navigate} />
+        </>
       )}
     </div>
   );

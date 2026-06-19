@@ -12,6 +12,7 @@ type Props = {
 
 export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Props) {
   const loadChannels = usePortalStore((s) => s.loadChannels);
+  const unreadByChannel = usePortalStore((s) => s.unreadByChannel);
   const [newId, setNewId] = useState('');
 
   const handleCreate = async (e: FormEvent) => {
@@ -39,7 +40,14 @@ export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Pr
               className={`list-card channel-list-item${currentChannelId === ch.id ? ' active' : ''}`}
               onClick={() => onSelect(ch)}
             >
-              <span>{ch.id}</span>
+              <span className="channel-list-item__label">
+                {ch.id}
+                {(unreadByChannel[ch.id] || 0) > 0 && currentChannelId !== ch.id ? (
+                  <span className="channel-unread-badge" aria-label="Unread messages">
+                    {unreadByChannel[ch.id] > 9 ? '9+' : unreadByChannel[ch.id]}
+                  </span>
+                ) : null}
+              </span>
               <small className="subtle">{(ch.members || []).length} members</small>
             </button>
           </li>
