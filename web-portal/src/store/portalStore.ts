@@ -211,6 +211,15 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     await api.postChannel(ch.id, content);
     // STOMP from portal POST usually arrives first; refresh is fallback only.
     await get().refreshChannelMessages();
+    // Agent replies are async; poll briefly when daemon→guest STOMP notify is unavailable.
+    const channelId = ch.id;
+    for (const delayMs of [4000, 12000]) {
+      setTimeout(() => {
+        if (get().currentChannel?.id === channelId) {
+          void get().refreshChannelMessages();
+        }
+      }, delayMs);
+    }
   },
 
   bumpUnread: (channelId) => {

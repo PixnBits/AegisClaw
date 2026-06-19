@@ -16,6 +16,10 @@ import (
 
 const spaAPITimeout = 25 * time.Second
 
+// ChannelNotifyHeader is set by the host daemon when pushing agent posts over
+// Firecracker hybrid vsock (RemoteAddr is not loopback inside the guest).
+const ChannelNotifyHeader = "X-Aegis-Channel-Notify"
+
 func (s *Server) initSTOMP() {
 	if s.stompHub == nil {
 		s.stompHub = portalstomp.NewHub()
@@ -44,7 +48,7 @@ func (s *Server) handleInternalChannelActivitySTOMP(w http.ResponseWriter, r *ht
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if !requestFromLoopback(r) {
+	if !requestAuthorizedChannelNotify(r) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -68,6 +72,13 @@ func requestFromLoopback(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func requestAuthorizedChannelNotify(r *http.Request) bool {
+	if r.Header.Get(ChannelNotifyHeader) == "1" {
+		return true
+	}
+	return requestFromLoopback(r)
 }
 
 func (s *Server) handleAPIDashboard(w http.ResponseWriter, r *http.Request) {

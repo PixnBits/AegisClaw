@@ -449,7 +449,13 @@ func portalSandboxList() []interface{} {
 }
 
 func portalSystemStats() map[string]interface{} {
-	return readHostSystemStats()
+	stats := readHostSystemStats()
+	hostRAMUsedMB := int64(toFloat64(stats["host_ram_used_mb"]))
+	hostRAMTotalMB := int64(toFloat64(stats["host_ram_total_mb"]))
+	hostLoadAvg1 := toFloat64(stats["host_load_avg_1"])
+	stats["host_ram_label"] = fmtHostRAMLabel(hostRAMUsedMB, hostRAMTotalMB)
+	stats["host_load_label"] = fmt.Sprintf("%.2f", hostLoadAvg1)
+	return stats
 }
 
 // startDaemonPortalHubReceiver registers "daemon" on AegisHub so the web-portal guest

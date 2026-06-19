@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/dashboard"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -47,16 +49,17 @@ func notifyWebPortalChannelActivity(chID, from, content string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(dashboard.ChannelNotifyHeader, "1")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		logrus.Debugf("web-portal channel-activity STOMP notify failed: %v", err)
+		logrus.Warnf("web-portal channel-activity STOMP notify failed: %v", err)
 		return
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		logrus.Debugf("web-portal channel-activity STOMP notify: HTTP %d", resp.StatusCode)
+		logrus.Warnf("web-portal channel-activity STOMP notify: HTTP %d", resp.StatusCode)
 	}
 }
 

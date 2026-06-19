@@ -33,4 +33,13 @@ func TestHandleInternalChannelActivitySTOMPLoopbackOnly(t *testing.T) {
 	if w2.Code != http.StatusForbidden {
 		t.Fatalf("remote POST: got %d, want 403", w2.Code)
 	}
+
+	req3 := httptest.NewRequest(http.MethodPost, "/internal/realtime/channel-activity", bytes.NewReader(body))
+	req3.RemoteAddr = "10.0.0.1:12345"
+	req3.Header.Set(ChannelNotifyHeader, "1")
+	w3 := httptest.NewRecorder()
+	s.handleInternalChannelActivitySTOMP(w3, req3)
+	if w3.Code != http.StatusNoContent {
+		t.Fatalf("daemon notify POST: got %d", w3.Code)
+	}
 }
