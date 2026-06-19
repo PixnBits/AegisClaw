@@ -1,8 +1,9 @@
+import { useEffect } from 'react';
 import { usePortalStore } from '@/store/portalStore';
 import { AgentActivitySummary } from '@/components/AgentActivitySummary/AgentActivitySummary';
 import { api } from '@/api/client';
 import { MonitoringStats } from '@/contracts';
-import { useEffect } from 'react';
+import { formatMemoryUsage } from '@/lib/display';
 
 type Props = {
   onOpenCanvas: () => void;
@@ -104,7 +105,7 @@ export function DashboardView({ onOpenCanvas, onOpenTrace, onOpenCourt }: Props)
           </div>
           <div className="stat-card">
             <span className="eyebrow">Memory</span>
-            <strong id="statMemoryUsage">{String(liveStats?.memory_usage ?? '—')}</strong>
+            <strong id="statMemoryUsage">{formatMemoryUsage(liveStats?.memory_usage)}</strong>
           </div>
         </div>
       </details>
