@@ -1,10 +1,29 @@
-https://github.com/PixnBits/AegisClaw/issues/35
+# SDLC Web Portal Specification
+
+**Status:** Draft  
+**Last Updated:** June 2026  
+**Origin:** [GitHub Issue #35](https://github.com/PixnBits/AegisClaw/issues/35)  
+**Priority:** High | **Complexity:** High (multi-phase, ~16 weeks estimated) | **Risk:** Medium
+
+## Documentation Layout
+
+All web portal specifications live in `docs/specs/web-portal/`:
+
+- **Target state:** `web-portal.md` (IA, principles, navigation) plus per-page specs (channels, court, dashboard, canvas, real-time contracts, testing, etc.)
+- **Implementation current:** `implementation-current.md` — monolith snapshot of what ships today
+- **SDLC vision:** `sdlc-web-portal.md` (this document)
+- **Runtime & isolation:** `web-portal-vm.md`
+- **Chat streaming:** `chat-ui-data-flow.md`
+- **PRD:** `docs/PRD/web-portal/index.md` captures the redesign direction
+
+## Purpose
 
 Enhance the AegisClaw web portal to provide comprehensive visibility and control over the complete Software Development Life Cycle (SDLC) for skill addition, from proposal through deployment. This addresses the need for a continuous, transparent development process with appropriate Governance Court and user involvement at each stage, particularly around source code management, build pipelines, reviews, and deployment workflows.
 
 ## Background
 
 AegisClaw implements a paranoid-by-design SDLC for adding skills:
+
 1. **Proposal Creation** → User describes desired skill
 2. **Governance Court Review** → 5 AI personas evaluate proposal
 3. **Builder Pipeline** → Code generation in sandboxed Firecracker VM
@@ -12,9 +31,10 @@ AegisClaw implements a paranoid-by-design SDLC for adding skills:
 5. **Deployment** → Versioned composition with automatic rollback
 
 While this architecture is sound, **visibility into the continuous development process** is limited. Users and Court reviewers lack comprehensive tooling to:
+
 - Browse and edit source code across workspaces
 - Visualize git history, branches, and proposal evolution
-- Review generated code as proper \"Pull Requests\"
+- Review generated code as proper Pull Requests
 - Monitor build pipeline status in real-time
 - Conduct threaded discussions on code changes
 - Approve deployments with full context
@@ -23,46 +43,47 @@ While this architecture is sound, **visibility into the continuous development p
 
 ### What Exists Today
 
-#### 1. **Git Infrastructure** (`internal/git/manager.go`)
+#### 1. Git Infrastructure (`internal/git/manager.go`)
 - ✅ Dual repository structure: `skills/` (user skills) and `self/` (kernel)
 - ✅ Proposal branches (`proposal-<id>`) created from main
 - ✅ All commits signed by kernel with Ed25519
 - ✅ Merkle audit log for all git operations
-- ⚠️ **Limited**: No web-based visualization or PR workflow
+- ⚠️ **Limited**: No web-based visualization or full PR workflow
 
-#### 2. **Builder Pipeline** (`internal/builder/pipeline.go`)
+#### 2. Builder Pipeline (`internal/builder/pipeline.go`)
 - ✅ Complete build orchestration with security gates
 - ✅ SBOM generation (CycloneDX 1.4)
 - ✅ File hashes and diff generation
 - ✅ Artifact signing
-- ⚠️ **Limited**: Build status visible only through CLI/status commands, no live dashboard
+- ⚠️ **Limited**: Build status visible primarily through CLI/status commands; live dashboard incomplete
 
-#### 3. **Web Dashboard** (`internal/dashboard/server.go`, `docs/specs/web-portal.md`)
+#### 3. Web Portal (`internal/dashboard/server.go`, `implementation-current.md`)
 **Implemented:**
 - Overview page (system health, recent activity)
 - Skills & Proposals listing
 - Memory Vault with semantic search
 - Audit Log Explorer
 - Settings page with PII controls
+- Partial Source, Git, Workspace, PR screens (scaffolding)
 
-**Planned but Not Implemented:**
-- Source code browser
-- Git history visualization
-- Pull Request interface
-- Build pipeline live view
+**Planned / Incomplete:**
+- Full source code browser with syntax highlighting
+- Rich git history visualization
+- Full Pull Request interface with Court code review
+- Live build pipeline view
 - Threaded code review discussions
 - Deployment approval workflow
 
-#### 4. **Governance Court** (`internal/court/`)
+#### 4. Governance Court (`internal/court/`)
 - ✅ 5 personas review proposals in isolated microVMs
 - ✅ Weighted consensus with risk scoring
 - ✅ Structured verdicts with evidence
 - ⚠️ **Limited**: Reviews happen on proposal text/schema, not on actual generated code diffs
 
-#### 5. **Workspace Management** (`internal/workspace/workspace.go`)
+#### 5. Workspace Management (`internal/workspace/workspace.go`)
 - ✅ User workspace at `~/.aegisclaw/workspace/`
 - ✅ Custom files: `SOUL.md`, `AGENTS.md`, `TOOLS.md`, `<skill>.SKILL.md`
-- ⚠️ **Limited**: No web interface for editing or viewing workspace files
+- ⚠️ **Limited**: Web interface for editing/viewing workspace files is partial
 
 ### Current SDLC Flow
 
@@ -89,108 +110,21 @@ Skill Activation (new Firecracker microVM)
 ```
 
 **Key Gaps:**
+
 1. No source code visibility during/after generation
 2. Court reviews proposal *before* seeing actual code
 3. No PR-style review of generated code
-4. Build pipeline is \"black box\" until completion
-5. No workspace file management in UI
+4. Build pipeline is a "black box" until completion
+5. No full workspace file management in UI
 6. No deployment review gate with full context
 
 ## Ideal State: Continuous SDLC with Court Involvement
 
-### Vision: GitHub-like Internal Development Experience
+### Vision
 
-The ideal state treats skill development as a **complete software project lifecycle** with transparency at every stage, while maintaining paranoid security.
+Transform skill development into a **GitHub-like internal development experience** with transparency at every stage and full Court involvement at key gates (Proposal Review, Code Review, Deployment Approval), while preserving the paranoid-by-design architecture.
 
-### Expanded SDLC Flow with Personas
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ Phase 1: Ideation & Requirements                                    │
-│ Personas: User + UserAdvocate + Main Agent                          │
-├─────────────────────────────────────────────────────────────────────┤
-│ • User describes need via chat/CLI                                  │
-│ • Main agent refines requirements (tools, network, secrets)         │
-│ • UserAdvocate provides early UX feedback                           │
-│ • Draft proposal created                                            │
-│ → WEB PORTAL: Proposal editor with schema validation               │
-└─────────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ Phase 2: Design Review (Pre-Implementation)                         │
-│ Personas: Full Court (CISO, Coder, SecurityArchitect, Tester, UA)  │
-├─────────────────────────────────────────────────────────────────────┤
-│ • Weighted consensus on proposal text                               │
-│ • Risk scoring, security posture evaluation                         │
-│ • Evidence-based verdicts                                           │
-│ → WEB PORTAL: Court dashboard with live review status              │
-│ → Enhancement: Threaded Q&A between user and Court                  │
-└─────────────────────────────────────────────────────────────────────┘
-                              ↓ [approved]
-┌─────────────────────────────────────────────────────────────────────┐
-│ Phase 3: Implementation (Code Generation)                           │
-│ Personas: Builder VM (LLM) + Coder persona observing               │
-├─────────────────────────────────────────────────────────────────────┤
-│ • Builder VM spawned in Firecracker sandbox                         │
-│ • Code generation with iteration support                            │
-│ • Commits to proposal-<id> branch                                   │
-│ → WEB PORTAL: Live build log streaming (ephemeral sandbox view)    │
-│ → WEB PORTAL: Source code browser for generated files              │
-│ → WEB PORTAL: Git diff viewer (main vs proposal branch)            │
-└─────────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ Phase 4: Code Review (Post-Implementation)                          │
-│ Personas: Coder, SecurityArchitect, Tester, CISO                   │
-├─────────────────────────────────────────────────────────────────────┤
-│ • **NEW**: Court reviews actual generated code                      │
-│ • Line-by-line security analysis                                    │
-│ • Architecture pattern validation                                   │
-│ • Test coverage assessment                                          │
-│ → WEB PORTAL: PR-style interface with inline comments              │
-│ → WEB PORTAL: Court personas can request changes                   │
-│ → WEB PORTAL: Change tracking across iterations                    │
-└─────────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│ Phase 5: Security Gates & Build                                     │
-│ Personas: Automated (SAST, SCA, secrets, policy)                   │
-├─────────────────────────────────────────────────────────────────────┤
-│ • MANDATORY gates (no bypass)                                       │
-│ • Finding severity classification                                   │
-│ • Blocking vs. advisory findings                                    │
-│ → WEB PORTAL: Security scan results with file/line links           │
-│ → WEB PORTAL: Vulnerability details and remediation guidance       │
-│ → WEB PORTAL: SBOM viewer (dependencies with CVE cross-reference)  │
-└─────────────────────────────────────────────────────────────────────┘
-                              ↓ [gates passed]
-┌─────────────────────────────────────────────────────────────────────┐
-│ Phase 6: Pre-Deployment Review                                      │
-│ Personas: CISO, User, SecurityArchitect                            │
-├─────────────────────────────────────────────────────────────────────┤
-│ • Review final artifact with SBOM                                   │
-│ • Deployment impact analysis (composition manifest diff)            │
-│ • Network/secrets policy confirmation                               │
-│ • Rollback plan verification                                        │
-│ → WEB PORTAL: Deployment preview with resource estimates           │
-│ → WEB PORTAL: Approval widget (approve/reject with signature)      │
-│ → WEB PORTAL: Composition version timeline                         │
-└─────────────────────────────────────────────────────────────────────┘
-                              ↓ [approved]
-┌─────────────────────────────────────────────────────────────────────┐
-│ Phase 7: Deployment & Monitoring                                    │
-│ Personas: User, System                                              │
-├─────────────────────────────────────────────────────────────────────┤
-│ • Skill activated in new Firecracker microVM                        │
-│ • Health checks and automatic rollback on failure                   │
-│ • Runtime monitoring                                                │
-│ → WEB PORTAL: Deployment status and health dashboard               │
-│ → WEB PORTAL: Skill invocation logs and performance metrics        │
-│ → WEB PORTAL: One-click rollback to previous version               │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Key Principles of Ideal State
+### Key Principles
 
 1. **Transparency**: Every phase visible in web portal
 2. **Court Involvement**: Proposal review (phase 2) + Code review (phase 4) + Deployment review (phase 6)
@@ -199,20 +133,78 @@ The ideal state treats skill development as a **complete software project lifecy
 5. **User Control**: Approve/reject at critical gates
 6. **Auditability**: Full Merkle log trail with rich context
 
+### Expanded SDLC Phases with Portal Features
+
+#### Phase 1: Ideation & Requirements
+**Personas:** User + UserAdvocate + Main Agent
+
+- User describes need via chat/CLI
+- Main agent refines requirements (tools, network, secrets)
+- UserAdvocate provides early UX feedback
+- Draft proposal created
+- **WEB PORTAL:** Proposal editor with schema validation; threaded discussion between User and Court
+
+#### Phase 2: Design Review (Pre-Implementation)
+**Personas:** Full Court (CISO, Coder, SecurityArchitect, Tester, UserAdvocate)
+
+- Weighted consensus on proposal text
+- Risk scoring, security posture evaluation
+- Evidence-based verdicts
+- **WEB PORTAL:** Court dashboard with live review status; threaded Q&A between user and Court
+
+#### Phase 3: Implementation (Code Generation)
+**Personas:** Builder VM (LLM) + Coder persona observing
+
+- Builder VM spawned in Firecracker sandbox
+- Code generation with iteration support
+- Commits to `proposal-<id>` branch
+- **WEB PORTAL:** Live build log streaming; source code browser for generated files; git diff viewer (main vs proposal branch)
+
+#### Phase 4: Code Review (Post-Implementation)
+**Personas:** Coder, SecurityArchitect, Tester, CISO
+
+- **NEW:** Court reviews actual generated code
+- Line-by-line security analysis
+- Architecture pattern validation
+- Test coverage assessment
+- **WEB PORTAL:** PR-style interface with inline comments; Court personas can request changes; change tracking across iterations
+
+#### Phase 5: Security Gates & Build
+**Personas:** Automated (SAST, SCA, secrets, policy)
+
+- MANDATORY gates (no bypass)
+- Finding severity classification
+- Blocking vs. advisory findings
+- **WEB PORTAL:** Security scan results with file/line links; vulnerability details and remediation guidance; SBOM viewer with CVE cross-reference
+
+#### Phase 6: Pre-Deployment Review
+**Personas:** CISO, User, SecurityArchitect
+
+- Review final artifact with SBOM
+- Deployment impact analysis (composition manifest diff)
+- Network/secrets policy confirmation
+- Rollback plan verification
+- **WEB PORTAL:** Deployment preview with resource estimates; approval widget (approve/reject with signature); composition version timeline
+
+#### Phase 7: Deployment & Monitoring
+**Personas:** User, System
+
+- Skill activated in new Firecracker microVM
+- Health checks and automatic rollback on failure
+- Runtime monitoring
+- **WEB PORTAL:** Deployment status and health dashboard; skill invocation logs and performance metrics; one-click rollback
+
 ## Specific Gaps and Recommendations
 
 ### Gap 1: Source Code Visibility and Workspace Management
 
 **Current State:**
-- Generated code exists in git but no web UI to browse it
-- Workspace files (`SOUL.md`, `AGENTS.md`, etc.) editable only via filesystem
+- Generated code exists in git but no full web UI to browse it
+- Workspace files (`SOUL.md`, `AGENTS.md`, etc.) editable only via filesystem or partial portal UI
 - No syntax highlighting or code navigation
 
 **Recommendation: Source Code Tab**
 
-Implement a comprehensive source code browser with:
-
-#### Features:
 1. **File Tree Navigation**
    - Browse `skills/` and `self/` repositories
    - Expand/collapse directory structure
@@ -221,8 +213,7 @@ Implement a comprehensive source code browser with:
 
 2. **Code Viewer**
    - Syntax highlighting (Go, Python, JavaScript, YAML, Markdown)
-   - Line numbers
-   - Permalink to specific lines
+   - Line numbers, permalink to specific lines
    - Raw view / download file options
    - Copy to clipboard
 
@@ -241,19 +232,18 @@ Implement a comprehensive source code browser with:
 **Implementation Path:**
 - Backend: Extend `internal/dashboard/server.go` with file browsing endpoints
 - Leverage existing `internal/git/manager.go` for repository access
-- Frontend: HTMX + Monaco Editor (minimal JS) or CodeMirror
-- Phase: Add to Phase 4 of implementation plan
+- Frontend: Self-contained templates + Monaco Editor or CodeMirror
+- Phase: Phase 2 of implementation roadmap
 
 ### Gap 2: VCS History and Branch Visualization
 
 **Current State:**
-- Git operations happen but no web visualization
+- Git operations happen but web visualization is partial
 - Proposal branches created automatically
-- No diff viewing or commit history exploration
+- Limited diff viewing or commit history exploration
 
 **Recommendation: Git History Tab**
 
-#### Features:
 1. **Commit Timeline**
    - Reverse chronological commit list
    - Commit hash (short), message, author, timestamp
@@ -285,23 +275,22 @@ Implement a comprehensive source code browser with:
 - Audit log linkage for traceability
 
 **Implementation Path:**
-- Backend: Add VCS endpoints using `go-git` (already dependency)
+- Backend: Add VCS endpoints using `go-git` (already a dependency)
 - Reuse existing diff generation from `internal/builder/pipeline.go`
-- Frontend: HTMX with diff2html or custom rendering
-- Phase: Add to Phase 4
+- Frontend: diff2html or custom rendering
+- Phase: Phase 3
 
 ### Gap 3: Pull Request Workflow for Code Review
 
 **Current State:**
 - Court reviews proposals *before* code exists
 - No second review of generated code
-- Proposal branches exist but no PR concept
+- Proposal branches exist but PR concept is minimal
 
 **Recommendation: Internal Pull Request System**
 
-#### Features:
 1. **PR Creation (Auto)**
-   - Automatically create \"PR\" after builder completes
+   - Automatically create PR after builder completes
    - Links proposal → branch → code changes
    - Inherits context from original proposal
 
@@ -331,7 +320,7 @@ Implement a comprehensive source code browser with:
    - CISO/SecurityArchitect veto power for critical findings
 
 6. **Merge/Deploy**
-   - \"Merge PR\" = deploy skill
+   - "Merge PR" = deploy skill
    - Composition manifest updated
    - PR marked as merged with timestamp
    - Link to deployed skill in UI
@@ -345,37 +334,35 @@ Implement a comprehensive source code browser with:
 
 **Integration with Existing Court:**
 - **Phase 2 (Proposal Review)**: Design-level review (what to build)
-- **NEW Phase 4 (PR/Code Review)**: Implementation-level review (how it was built)
+- **Phase 4 (PR/Code Review)**: Implementation-level review (how it was built)
 - Both phases required for high-risk skills
 - Low-risk skills: PR review optional (configurable)
 
 **Implementation Path:**
-- Backend: New `internal/pullrequest/` package
+- Backend: PR handlers in `internal/dashboard/dashboard_pr_handlers.go`; future `internal/pullrequest/` package
 - Store PR metadata in SQLite (similar to proposals)
 - Reuse Court engine for code-level review
-- Frontend: HTMX PR template (inspired by GitHub UI)
 - Phase: Core feature for Phase 4, full polish in Phase 5
 
 ### Gap 4: Build Pipeline Transparency
 
 **Current State:**
 - Builder runs in Firecracker sandbox
-- Build logs exist but only CLI accessible
-- No live status updates
+- Build logs exist but primarily CLI accessible
+- No full live status updates in portal
 
 **Recommendation: Live Build Dashboard**
 
-#### Features:
 1. **Build Status Widget**
    - Current phase indicator (Step 1-10 of pipeline)
    - Progress bar
-   - Live log streaming (SSE)
+   - Live log streaming (STOMP topics; SSE fallback)
    - Elapsed time / estimated remaining
 
 2. **Build Steps Breakdown**
    - Step 1: Launch builder sandbox
    - Step 2: Generate code (with iteration tracking)
-   - Step 3-7: (existing pipeline steps)
+   - Steps 3-7: Existing pipeline steps
    - Step 8.5: Security gates (expandable)
    - Step 9: Git commit
    - Step 9.5: SBOM generation
@@ -407,10 +394,9 @@ Implement a comprehensive source code browser with:
 - All artifacts signed and verified before display
 
 **Implementation Path:**
-- Backend: SSE endpoint in dashboard server
+- Backend: STOMP topic subscriptions in dashboard server (see `real-time-contracts.md`)
 - Extend `internal/builder/pipeline.go` with progress callbacks
-- Frontend: HTMX with SSE for live updates
-- Phase: Add to Phase 2 (aligns with Event Bus/async work)
+- Phase: Phase 5
 
 ### Gap 5: Enhanced Review and Discussion
 
@@ -421,7 +407,6 @@ Implement a comprehensive source code browser with:
 
 **Recommendation: Discussion Threads**
 
-#### Features:
 1. **Proposal Discussion**
    - User posts questions during refinement
    - Court personas respond (via LLM with persona prompts)
@@ -441,7 +426,7 @@ Implement a comprehensive source code browser with:
 
 4. **Historical Context**
    - Link related proposals (dependencies, similar patterns)
-   - \"Court has reviewed 3 similar proposals\" indicator
+   - "Court has reviewed 3 similar proposals" indicator
    - Learning from past decisions
 
 **Security Considerations:**
@@ -450,10 +435,9 @@ Implement a comprehensive source code browser with:
 - Rate limiting to prevent DoS via comment spam
 
 **Implementation Path:**
-- Backend: Extend proposal/PR stores with discussion threads
+- Backend: Extend proposal/PR stores with discussion threads; future `internal/discussion/` package
 - Integrate with Court engine for persona responses
-- Frontend: HTMX comment widgets
-- Phase: Phase 4
+- Phase: Phase 6
 
 ### Gap 6: Deployment Review Workflow
 
@@ -464,7 +448,6 @@ Implement a comprehensive source code browser with:
 
 **Recommendation: Pre-Deployment Approval Gate**
 
-#### Features:
 1. **Deployment Preview**
    - Resource requirements (CPU, memory for new microVM)
    - Network egress destinations (if any)
@@ -474,11 +457,11 @@ Implement a comprehensive source code browser with:
 
 2. **Risk Re-Assessment**
    - Court provides deployment-specific risk score
-   - Impact analysis: \"This skill will have network access to X\"
-   - Dependency analysis: \"Uses library Y (CVE check)\"
+   - Impact analysis: "This skill will have network access to X"
+   - Dependency analysis: "Uses library Y (CVE check)"
 
 3. **Approval UI**
-   - User clicks \"Approve Deployment\" or \"Reject\"
+   - User clicks "Approve Deployment" or "Reject"
    - Optional: Schedule deployment (timer-based)
    - Reason required for rejection
    - Signature captured (Merkle log)
@@ -496,21 +479,20 @@ Implement a comprehensive source code browser with:
 - Emergency stop: User can halt deployment mid-process
 
 **Implementation Path:**
-- Backend: Approval gate in composition flow
-- Extend `internal/composition/manifest.go`
+- Backend: Approval gate in composition flow; extend `internal/composition/manifest.go`
 - Frontend: Approval modal with risk summary
-- Phase: Phase 5 (after PR workflow stabilizes)
+- Phase: Phase 6 (after PR workflow stabilizes)
 
 ## Architectural Considerations
 
 ### Security (Paranoid Design Maintained)
 
-1. **Web Dashboard Isolation**
-   - Dashboard server runs in daemon (root process)
-   - Consider: Move to dedicated microVM (Phase 6 hardening)
+1. **Web Portal Isolation**
+   - Web Portal runs in a dedicated Firecracker microVM (`web-portal-vm.md`)
+   - Presentation-only; all actions mediated via vsock bridge
    - All API endpoints ACL-protected
    - CSP enforced (no external scripts)
-   - mTLS optional for advanced users
+   - mTLS optional for advanced users (Phase 7 hardening)
 
 2. **Data Flow**
    - All reads from audited sources (git, proposal store, audit log)
@@ -519,7 +501,7 @@ Implement a comprehensive source code browser with:
 
 3. **Authentication**
    - Initially: localhost-only, no auth required
-   - Phase 6: Token-based or mTLS
+   - Phase 7: Token-based or mTLS
    - Future: Multi-user support with RBAC
 
 4. **Audit Logging**
@@ -530,8 +512,8 @@ Implement a comprehensive source code browser with:
 ### User Experience
 
 1. **Performance**
-   - Page loads < 300ms (existing goal)
-   - SSE for live updates (not polling)
+   - Page loads < 300ms
+   - STOMP topic subscriptions for live updates (SSE fallback)
    - Lazy loading for large diffs/logs
    - Syntax highlighting on-demand
 
@@ -553,16 +535,17 @@ Implement a comprehensive source code browser with:
 ### Technology Stack
 
 **Backend (Go):**
-- Extend `internal/dashboard/server.go`
-- New packages: `internal/pullrequest/`, `internal/discussion/`
+- `internal/dashboard/server.go` (portal HTTP + bridge)
+- PR handlers in `internal/dashboard/dashboard_pr_handlers.go`
+- Future packages: `internal/pullrequest/`, `internal/discussion/`
 - Reuse: `internal/git/`, `internal/builder/`, `internal/court/`
 
 **Frontend:**
-- HTMX + Tailwind CSS (existing stack)
-- Monaco Editor or CodeMirror for code viewing
-- diff2html for diff rendering
+- Self-contained `html/template` + embedded CSS/JS (no CDNs)
+- Monaco Editor or CodeMirror for code viewing (planned)
+- diff2html or custom rendering
 - mermaid.js for git graph (optional)
-- Server-Sent Events for live updates
+- STOMP-over-WebSocket for live updates; SSE retained for transition compatibility
 
 **Data Storage:**
 - SQLite for PR/discussion metadata
@@ -572,8 +555,7 @@ Implement a comprehensive source code browser with:
 ## Implementation Roadmap
 
 ### Phase 1: Foundation (Weeks 1-2)
-- ✅ Already complete per implementation-plan.md
-- Snapshot management, ToolRegistry, structured output
+- ✅ Complete (snapshot management, ToolRegistry, structured output)
 
 ### Phase 2: Source Code Viewer (Weeks 3-4)
 - File tree browser
@@ -590,12 +572,12 @@ Implement a comprehensive source code browser with:
 ### Phase 4: Pull Request System (Weeks 7-10)
 - PR creation (auto-generated after build)
 - PR overview with diff summary
-- Inline code comments (read-only)
+- Inline code comments (read-only initially)
 - Court code review integration
 - Basic approval workflow
 
 ### Phase 5: Live Build Dashboard (Weeks 11-12)
-- Build status widget with SSE
+- Build status widget with STOMP/SSE
 - Security gate results display
 - SBOM viewer
 - Log streaming
@@ -616,18 +598,23 @@ Implement a comprehensive source code browser with:
 
 1. **Transparency**: 100% of SDLC phases visible in web portal
 2. **Court Engagement**: Code review adoption rate > 80% for medium+ risk skills
-3. **User Satisfaction**: \"I understand what's happening\" metric via survey
+3. **User Satisfaction**: "I understand what's happening" metric via survey
 4. **Security**: Zero bypass of deployment approval gate
-5. **Performance**: Build log streaming latency < 1s
+5. **Performance**: Build log streaming latency < 1s; page loads < 300ms
 6. **Adoption**: Web portal usage > CLI for review workflows
 
-## Related Documentation
+## Acceptance Criteria
 
-- `docs/architecture.md` — North-star architecture, component boundaries
-- `docs/PRD.md` — Original SDLC vision (§11)
-- `docs/specs/web-portal.md` — Current web portal spec (features, look & feel, API, implementation status)
-- `docs/implementation-plan.md` — Phased delivery roadmap
-- `docs/prd-deviations.md` — Alignment tracking
+- [ ] Source code tab: Browse all files in `skills/` and `self/` repos
+- [ ] Git history tab: View commits, branches, diffs
+- [ ] PR system: Auto-created after build, displays diff + security results
+- [ ] Court code review: Inline comments on generated code (read-only Phase 1)
+- [ ] Live build: Stream logs during builder pipeline execution
+- [ ] Deployment approval: Modal with risk summary, one-click approve/reject
+- [ ] All UI actions logged in Merkle audit tree
+- [ ] Performance: Page loads < 300ms, real-time latency < 1s
+- [ ] Security: All endpoints ACL-protected, CSP enforced
+- [ ] Documentation: Updated tutorial showing web-based skill development flow
 
 ## Open Questions
 
@@ -637,34 +624,28 @@ Implement a comprehensive source code browser with:
 4. Notification delivery: Dashboard-only or also native OS notifications?
 5. Multi-user support: Single-user first or design for multi-user from start?
 
-## Acceptance Criteria
+## Related Documents
 
-- [ ] Source code tab: Browse all files in skills/ and self/ repos
-- [ ] Git history tab: View commits, branches, diffs
-- [ ] PR system: Auto-created after build, displays diff + security results
-- [ ] Court code review: Inline comments on generated code (read-only Phase 1)
-- [ ] Live build: Stream logs during builder pipeline execution
-- [ ] Deployment approval: Modal with risk summary, one-click approve/reject
-- [ ] All UI actions logged in Merkle audit tree
-- [ ] Performance: Page loads < 300ms, SSE latency < 1s
-- [ ] Security: All endpoints ACL-protected, CSP enforced
-- [ ] Documentation: Updated tutorial showing web-based skill development flow
+**SDLC & governance:**
+- `docs/prd/sdlc-governance.md`
+- `docs/specs/governance-court.md`
+- `docs/specs/builder-security-gates.md`
+- `docs/architecture.md`
 
-## Governance Court Review Required
+**Portal (this folder):**
+- `web-portal.md` — target-state IA, principles, navigation
+- `implementation-current.md` — shipped features, API surface, styling
+- `web-portal-vm.md` — isolation model
+- `chat-ui-data-flow.md` — chat streaming
+- `dashboard.md`, `court.md`, `canvas.md` — per-page target-state specs
+- `real-time-contracts.md` — STOMP topics for build/PR/proposal updates
+- `implementation-gaps-and-priorities.md` — remaining open areas
 
-This proposal constitutes a significant expansion of the web dashboard and introduces new workflow concepts (PR system, deployment gates). Per AegisClaw principles:
+**Testing & traceability:**
+- `docs/testing-standards.md`
+- `web_portal_e2e_sdlc_test.go`
+- `cmd/aegisclaw/portal_contract_test.go`
 
-- [ ] Submit this issue as formal proposal
-- [ ] Court review by all 5 personas (CISO, Coder, SecurityArchitect, Tester, UserAdvocate)
-- [ ] Weighted consensus approval
-- [ ] Implementation proposal with detailed security analysis
-
----
-
-**Priority**: High  
-**Complexity**: High (multi-phase, 16 weeks estimated)  
-**Risk**: Medium (significant UI expansion, new approval gates)  
-**Dependencies**: Phases 0-1 of implementation-plan.md (complete)  
-**Labels**: enhancement, web-dashboard, sdlc, governance-court, security, ux
-
-https://github.com/PixnBits/AegisClaw/tasks/fe7972ee-8c48-43a7-a099-2726477c1ebf
+**Issue tracking:**
+- [GitHub Issue #35](https://github.com/PixnBits/AegisClaw/issues/35)
+- [GitHub Task fe7972ee](https://github.com/PixnBits/AegisClaw/tasks/fe7972ee-8c48-43a7-a099-2726477c1ebf)

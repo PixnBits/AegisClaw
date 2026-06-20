@@ -4,9 +4,9 @@
 # Exported by scripts/build-microvms-docker.sh into web-portal.img.tar.gz.
 #
 # SPEC REFERENCES:
-#   - docs/specs/web-portal-vm.md (started exclusively by Host Daemon, receives traffic only
+#   - docs/specs/web-portal/web-portal-vm.md (started exclusively by Host Daemon, receives traffic only
 #     via the daemon's hardened reverse proxy, no business logic, no secrets)
-#   - docs/specs/web-portal.md (thin layer; all actions go through AegisHub)
+#   - docs/specs/web-portal/implementation-current.md (thin layer; all actions go through AegisHub)
 #   - host-daemon.md (lifecycle managed by daemon; reverse proxy on :8080)
 
 # === Build stage ===

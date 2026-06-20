@@ -50,7 +50,7 @@ AegisClaw uses a **lightweight, AegisHub-mediated Event System** instead of a fu
 
 To relieve unnecessary data transfer and resource usage (network to browser, portal CPU for filtering/bundling, upstream event fan-out), the web portal exposes **STOMP over WebSocket** as the preferred mechanism for fine-grained, topic-based pub/sub from browser clients.
 
-The web portal acts as a **trusted STOMP gateway** (presentation-only component, all traffic still mediated by Host Daemon reverse proxy per `web-portal-vm.md`):
+The web portal acts as a **trusted STOMP gateway** (presentation-only component, all traffic still mediated by Host Daemon reverse proxy per `web-portal/web-portal-vm.md`):
 
 - Browser clients (embedded JS) use a lightweight STOMP-over-WS client (self-contained, no external deps) to `CONNECT` to the portal's STOMP endpoint (e.g. `/stomp` or WS upgrade on existing), `SUBSCRIBE` to topics, receive `MESSAGE` frames with JSON payloads, and `UNSUBSCRIBE` when leaving a view or closing tab.
 - **Topic naming** (STOMP destination convention):
@@ -75,7 +75,7 @@ This extension keeps the event system as the single source of truth while giving
 
 - `../aegishub.md` — Central mediator for all events
 - `../store-vm.md` — Persistent timer storage
-- `../web-portal.md` — STOMP gateway implementation and topic usage in UI
+- `web-portal/implementation-current.md` — STOMP gateway implementation and topic usage in UI
 - `../skill-discovery.md`
 - `../safe-mode.md`
 - `../builder-security-gates.md`

@@ -53,7 +53,7 @@ Current per-conversation model + independent Court reviews (no debate, 5-vs-7 pe
 - `docs/prd/conversation-model.md` — Content migrated to `collaboration-model.md`. Old file deleted in this branch (or noted as superseded).
 
 ### Out of Scope for this PR (future work)
-- Full updates to `docs/specs/` (agent-runtime.md, host-daemon.md, aegishub.md, chat-ui-data-flow.md, court-scribe.md, store-vm.md, event-system.md, etc.)
+- Full updates to `docs/specs/` (agent-runtime.md, host-daemon.md, aegishub.md, web-portal/chat-ui-data-flow.md, court-scribe.md, store-vm.md, event-system.md, etc.)
 - Implementation of fast <1s microVM spin-up, channel state management, PM Agent logic, UI channel support, role prompt templates.
 - Migration guide, tests, solo-user defaults.
 

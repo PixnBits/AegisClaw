@@ -252,10 +252,13 @@ These areas will be expanded in focused follow-on specification documents within
 
 ## Related Documents
 
+- `sdlc-web-portal.md` — SDLC visibility (proposal → Court → build → PR → deploy)
+- `implementation-current.md` — implementation-current snapshot
+- `web-portal-vm.md` — isolation model
+- `chat-ui-data-flow.md` — chat streaming
 - `docs/prd/personas.md` and `docs/prd/user-personas.md`
 - `docs/prd/collaboration-model.md`
 - `docs/specs/user-journeys/` (particularly collaborative task execution, monitoring, and Court review journeys)
-- `docs/specs/web-portal-vm.md`
-- `docs/specs/event-system.md`
+- `../event-system.md`
 
 This specification defines the target experience. Implementation should align to these behaviors and interaction patterns.

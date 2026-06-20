@@ -71,9 +71,9 @@ Every message sent over the real-time stream (SSE or WebSocket) has this structu
   - RAIL flow (thinking → tool calls → partial response)
 
 ## Related Documents
-- `./web-portal.md` (current features, look & feel, API, chat streaming details)
+- `./implementation-current.md` (implementation-current features, look & feel, API, chat streaming details)
+- `./web-portal.md` (target-state portal spec)
 - `./web-portal-vm.md`
-- `./web-portal-screens.md` (legacy wireframes)
 - `../agent-runtime.md`
 - `../observability.md`
 

@@ -82,7 +82,7 @@ const (
 
 	// PortalBridgeVsockPort is the host listener for the Web Portal microVM when
 	// direct guest→hub vsock is unavailable. The daemon forwards actions to Hub/backends.
-	// See docs/specs/web-portal.md (portalAPIClient dials host bridge vsock 1030).
+	// See docs/specs/web-portal/implementation-current.md (portalAPIClient dials host bridge vsock 1030).
 	PortalBridgeVsockPort = 1030
 
 	// GuestHubBridgePort is used on Firecracker when guest→host AF_VSOCK is unavailable

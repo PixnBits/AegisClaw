@@ -66,7 +66,7 @@ When performing tasks that require privileged operations (daemon lifecycle, micr
 
 ## Accessing the Web UI for Review (SSH / Remote Machines)
 
-The Web Portal is only reachable through the Host Daemon's hardened reverse proxy (see `web-portal-vm.md`).
+The Web Portal is only reachable through the Host Daemon's hardened reverse proxy (see `docs/specs/web-portal/web-portal-vm.md`).
 
 **Default (localhost only):**
 - UI available at `http://localhost:8080` on the machine running the daemon.

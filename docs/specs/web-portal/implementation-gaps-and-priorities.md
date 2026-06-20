@@ -21,6 +21,7 @@ The following areas have dedicated target-state specifications:
 - Dashboard, monitoring, and intervention (`dashboard.md`)
 - Canvas / inter-agent pipeline visualization (`canvas.md`)
 - Single-agent trace and deep observability (`single-agent-trace.md`)
+- SDLC flows: source browser, git history, PR system, build dashboard, deployment gates (`./sdlc-web-portal.md`)
 
 ## Remaining Open Areas (Prioritized)
 
