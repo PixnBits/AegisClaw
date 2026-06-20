@@ -11,7 +11,7 @@ This PRD defines the redesigned AegisClaw Web Portal as a calm, immediately prod
 
 The design draws from:
 - Detailed user personas (Alex Rivera, Jordan Hale, Sam Chen, Dr. Lena Moreau) and their journeys.
-- Existing specs (collaboration-model, user-journeys, web-portal.md, web-portal-screens.md).
+- Existing specs (collaboration-model, user-journeys, `docs/specs/web-portal/` modular target-state specs, `sdlc-web-portal.md`, `web-portal.md`).
 - Cloudflare harness lessons (narrow scope + rich context, parallel tasks + deduplication, adversarial review, structured pipeline stages, observability/feedback loops).
 - Slack-inspired channel and member management patterns for low-friction collaboration without visual overwhelm.
 - Real-time STOMP/WebSocket architecture already in progress.
@@ -270,15 +270,16 @@ Non-responsibilities remain: Portal is strictly presentation-only. All mutations
 - Member management modal vs inline pane — user testing preference.
 - How external signals (news, stock, etc.) are sourced and opted-in without adding attack surface.
 - Prioritize which page to fully wireframe/mock next (Channels with harness pipeline + grouped members is high impact).
-- Update legacy `docs/specs/web-portal-screens.md` and `web-portal.md` with links to this PRD or migrate content.
+- Keep `docs/specs/web-portal/` target-state specs aligned with this PRD; `web-portal.md` remains the implementation-current snapshot.
 - E2E test coverage expansion for new flows (command bar → plan preview → channel with visible pipeline).
 
 ## Related Documents
 
 - `docs/prd/personas.md`, `docs/prd/user-personas.md`, `docs/prd/user-experience-principles.md`, `docs/prd/collaboration-model.md`
 - `docs/specs/user-journeys/` (especially 02, 03, 05, 06)
-- `docs/specs/web-portal.md` (architecture, STOMP, current implementation — to be updated/superseded)
-- `docs/specs/web-portal-screens.md` (legacy wireframes — superseded by this redesign direction)
+- `docs/specs/web-portal/` (target-state modular specs — supersedes legacy `web-portal-screens.md`)
+- `docs/specs/sdlc-web-portal.md` (SDLC visibility: proposal → Court → build → PR → deploy)
+- `docs/specs/web-portal.md` (implementation-current snapshot)
 - `docs/specs/web-portal-vm.md`
 - Cloudflare harness post (https://blog.cloudflare.com/cyber-frontier-models/#what-a-harness-actually-fixes) — key inspiration for UI visibility of narrow/adversarial/parallel patterns.
 

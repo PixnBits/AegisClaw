@@ -1,3 +1,5 @@
+> **Deprecated (June 2026):** This issue document has been migrated to the canonical specification at [`docs/specs/sdlc-web-portal.md`](./specs/sdlc-web-portal.md). Portal documentation now lives under `docs/specs/web-portal/` (target state) with `docs/specs/web-portal.md` as the implementation-current snapshot. The content below is retained for historical traceability only.
+
 https://github.com/PixnBits/AegisClaw/issues/35
 
 Enhance the AegisClaw web portal to provide comprehensive visibility and control over the complete Software Development Life Cycle (SDLC) for skill addition, from proposal through deployment. This addresses the need for a continuous, transparent development process with appropriate Governance Court and user involvement at each stage, particularly around source code management, build pipelines, reviews, and deployment workflows.

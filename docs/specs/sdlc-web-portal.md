@@ -1,8 +1,18 @@
 # SDLC Web Portal Specification
 
 **Status:** Draft  
-**Last Updated:** May 2026
-**Related:** Issue #35, `docs/specs/web-portal-screens.md`, `docs/web-dashboard.md`
+**Last Updated:** June 2026  
+**Origin:** Migrated from [GitHub Issue #35](https://github.com/PixnBits/AegisClaw/issues/35) (`docs/issue-35.md`, now deprecated)
+
+## Documentation Layout (June 2026)
+
+Recent commits reorganized portal documentation. When cross-referencing:
+
+- **Target-state portal specs** live under `docs/specs/web-portal/` (added in #74). Start with `web-portal.md` for IA, principles, and page behaviors; per-page specs cover channels, court, dashboard, canvas, real-time contracts, testing, etc.
+- **Implementation-current snapshot** remains at `docs/specs/web-portal.md` (legacy monolith spec; tracks what ships today).
+- **Removed:** `docs/specs/web-portal-screens.md` (legacy wireframes — superseded by modular specs in `docs/specs/web-portal/`).
+- **PRD:** `docs/PRD/web-portal/index.md` captures the redesign direction.
+- **This document** is the canonical SDLC-specific vision (proposal → Court → build → PR → deploy transparency). It complements, not replaces, the general portal specs.
 
 ## Purpose
 
@@ -69,7 +79,7 @@ Transform skill development into a GitHub-like internal development experience w
 - Iteration support (request changes → builder re-runs)
 
 ### 4. Live Build Dashboard
-- Real-time progress with SSE
+- Real-time progress via STOMP topic subscriptions (transitioning from SSE)
 - Build steps breakdown with status/duration/logs
 - Security gate results (expandable)
 - Sandbox resource monitoring
@@ -88,24 +98,24 @@ Transform skill development into a GitHub-like internal development experience w
 
 ## Architectural Principles
 
-- **Dashboard Isolation**: Dashboard runs in daemon (root) initially; consider dedicated microVM in Phase 6
+- **Portal Isolation**: Web Portal runs in a dedicated Firecracker microVM (`docs/specs/web-portal-vm.md`); presentation-only, all actions mediated via vsock bridge
 - **Read-Only by Default**: All git/workspace access read-only from UI
 - **Full Auditability**: Every UI action (view, comment, approve) logged to Merkle tree
 - **No Bypass**: All security gates remain mandatory
-- **Performance**: Page loads < 300ms, SSE latency < 1s
+- **Performance**: Page loads < 300ms; real-time updates via targeted STOMP topics (see `docs/specs/web-portal/real-time-contracts.md`)
 
 ## Technology Stack
 
 **Backend (Go):**
-- Extend `internal/dashboard/server.go`
-- New packages: `internal/pullrequest/`, `internal/discussion/`
+- `internal/dashboard/server.go` (portal HTTP + bridge)
+- PR handlers in `internal/dashboard/dashboard_pr_handlers.go`
 - Reuse: `internal/git/`, `internal/builder/`, `internal/court/`
 
 **Frontend:**
-- HTMX + Tailwind CSS (existing stack)
-- Monaco Editor or CodeMirror for code viewing
+- Self-contained `html/template` + embedded CSS/JS (no CDNs)
+- Monaco Editor or CodeMirror for code viewing (planned)
 - diff2html or custom rendering
-- Server-Sent Events for live updates
+- STOMP-over-WebSocket for live updates; SSE retained for transition compatibility
 
 ## Implementation Phases (from Issue #35)
 
@@ -120,7 +130,7 @@ Transform skill development into a GitHub-like internal development experience w
 - 100% of SDLC phases visible in web portal
 - Court code review adoption > 80% for medium+ risk skills
 - Zero bypass of deployment approval gate
-- Page loads < 300ms, SSE latency < 1s
+- Page loads < 300ms; real-time latency < 1s
 
 ## Open Questions
 - Should Court code review be mandatory for all skills or only medium+ risk?
@@ -129,8 +139,31 @@ Transform skill development into a GitHub-like internal development experience w
 - Multi-user support timeline?
 
 ## Related Documents
-- `docs/specs/web-portal-screens.md`
-- `docs/specs/web-portal-vm.md`
-- `docs/architecture.md`
+
+**SDLC & governance:**
 - `docs/prd/sdlc-governance.md`
-- Original Issue #35 (historical context)
+- `docs/specs/governance-court.md`
+- `docs/specs/builder-security-gates.md`
+- `docs/architecture.md`
+
+**Portal (target state — `docs/specs/web-portal/`):**
+- `web-portal.md` — overall IA, principles, navigation
+- `dashboard.md` — monitoring and intervention
+- `court.md` — governance flows
+- `canvas.md` — pipeline visualization
+- `real-time-contracts.md` — STOMP topics for build/PR/proposal updates
+- `implementation-gaps-and-priorities.md` — remaining open areas
+
+**Portal (implementation current):**
+- `docs/specs/web-portal.md` — shipped features, API surface, styling
+- `docs/specs/web-portal-vm.md` — isolation model
+- `docs/specs/chat-ui-data-flow.md` — chat streaming
+
+**Testing & traceability:**
+- `docs/testing-standards.md`
+- `web_portal_e2e_sdlc_test.go`
+- `cmd/aegisclaw/portal_contract_test.go`
+
+**Historical:**
+- `docs/issue-35.md` — original issue text (deprecated; retained for audit trail)
+- [GitHub Issue #35](https://github.com/PixnBits/AegisClaw/issues/35)

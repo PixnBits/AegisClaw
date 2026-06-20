@@ -73,7 +73,7 @@ Every message sent over the real-time stream (SSE or WebSocket) has this structu
 ## Related Documents
 - `./web-portal.md` (current features, look & feel, API, chat streaming details)
 - `./web-portal-vm.md`
-- `./web-portal-screens.md` (legacy wireframes)
+- `./web-portal/` (target-state modular specs; supersedes legacy `web-portal-screens.md`)
 - `../agent-runtime.md`
 - `../observability.md`
 

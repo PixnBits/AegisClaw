@@ -160,7 +160,7 @@ func (s *Server) registerRoutes() {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
-	// Public REST API surface for E2E/clients and SDLC visibility (design per docs/issue-35.md, phase4-pr-system.md, web-portal.md + e2e/*.spec.js)
+	// Public REST API surface for E2E/clients and SDLC visibility (design per docs/specs/sdlc-web-portal.md, web-portal.md + e2e/*.spec.js)
 	s.mux.HandleFunc("/api/proposals", s.handleAPIProposals)
 	s.mux.HandleFunc("/api/proposals/", s.handleAPIProposalDetail)
 	s.mux.HandleFunc("/api/workspace/read", s.handleAPIWorkspaceRead)
@@ -4144,7 +4144,7 @@ s.renderTemplate(w, "Pull Request", prDetailTmpl, map[string]interface{}{
 })
 }
 
-// --- Public REST API handlers (follow design in docs/specs/web-portal.md, issue-35.md, E2E test) ---
+// --- Public REST API handlers (follow design in docs/specs/web-portal.md, sdlc-web-portal.md, E2E test) ---
 
 func (s *Server) handleAPIProposals(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

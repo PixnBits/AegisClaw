@@ -252,10 +252,12 @@ These areas will be expanded in focused follow-on specification documents within
 
 ## Related Documents
 
+- `docs/specs/sdlc-web-portal.md` — SDLC visibility (proposal → Court → build → PR → deploy)
 - `docs/prd/personas.md` and `docs/prd/user-personas.md`
 - `docs/prd/collaboration-model.md`
 - `docs/specs/user-journeys/` (particularly collaborative task execution, monitoring, and Court review journeys)
 - `docs/specs/web-portal-vm.md`
 - `docs/specs/event-system.md`
+- `docs/specs/web-portal.md` — implementation-current snapshot (legacy monolith spec)
 
 This specification defines the target experience. Implementation should align to these behaviors and interaction patterns.
