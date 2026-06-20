@@ -145,7 +145,19 @@ func fmtHostRAMLabel(usedMB, totalMB int64) string {
 	if totalMB <= 0 {
 		return "— / —"
 	}
+	const gbThresholdMB = int64(1280) // 1.25 GiB
+	if totalMB > gbThresholdMB {
+		return fmt.Sprintf("%s / %s", fmtRAMAsGB(usedMB), fmtRAMAsGB(totalMB))
+	}
 	return fmt.Sprintf("%d MB / %d MB", usedMB, totalMB)
+}
+
+func fmtRAMAsGB(mb int64) string {
+	gb := float64(mb) / 1024.0
+	if gb >= 10 {
+		return fmt.Sprintf("%.0f GB", gb)
+	}
+	return fmt.Sprintf("%.1f GB", gb)
 }
 
 func countItems(v interface{}) int {

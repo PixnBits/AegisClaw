@@ -1,0 +1,42 @@
+:root {
+  --color-bg: #0a0a0a;
+  --color-surface: #1f1f1f;
+  --color-elevated: #2a2a2a;
+  --color-text: #e0e0e0;
+  --color-muted: #8b949e;
+  --color-primary: #00d4ff;
+  --color-success: #22ff88;
+  --color-warning: #ffcc00;
+  --color-danger: #ff3333;
+  --color-border: #333333;
+  --color-focus: #00d4ff;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 48px;
+
+  --section-gap: var(--space-6);
+  --panel-padding: var(--space-5);
+  --card-padding: var(--space-5);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+
+  --shadow-elevated: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --bottom-nav-height: 64px;
+  --topbar-height: 56px;
+  --sidebar-width: 280px;
+  --context-width: 320px;
+  --mobile-gutter: 20px;
+  --mobile-section-gap: var(--space-6);
+  --mobile-scroll-bottom: calc(var(--bottom-nav-height) + var(--space-6));
+}

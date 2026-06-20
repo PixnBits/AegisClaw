@@ -3,6 +3,27 @@ import { test, expect } from '@playwright/test';
 // Contract tests for the thin web-portal fixture — not the real daemon stack.
 test.skip(!process.env.AEGIS_E2E_FIXTURE, 'Use make test-e2e-contract for fixture journey tests');
 
+async function waitPortalReady(page) {
+  await page.goto('/');
+  await page.waitForSelector('[data-portal-ready="1"]', { timeout: 15000 });
+}
+
+async function gotoDashboard(page) {
+  await waitPortalReady(page);
+  await page.getByTestId('nav-dashboard').click();
+  await expect(page.getByTestId('dashboard-panel')).toBeVisible({ timeout: 8000 });
+}
+
+async function openChannelsComposer(page) {
+  await page.goto('/#channels');
+  await expect(page.getByTestId('channels-panel')).toBeVisible({ timeout: 8000 });
+  const firstChannel = page.getByTestId('channels-list').locator('li').first();
+  if (await firstChannel.isVisible().catch(() => false)) {
+    await firstChannel.click();
+  }
+  await expect(page.getByTestId('channel-detail')).toBeVisible({ timeout: 5000 }).catch(() => {});
+}
+
 test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + web-portal.md)', () => {
   // These exercise the thin presentation layer + documented public REST contract (web-portal.md).
   // Real-system E2E (daemon + microVMs) lives in e2e/chat.spec.js — run via make test-e2e.
@@ -10,23 +31,18 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     // J01 success criteria: basic onboarding, system visible, chat entrypoint works.
     // Uses stable data-testid added in G1/G2.
     // Citations: docs/specs/user-journeys/01-installation-onboarding.md + web-portal.md §Testability & E2E.
-    await page.goto('/');
-    // Relaxed for thin fixture contract (may serve minimal shell or channels-updated dashboard); core is REST + presence.
-    await expect(page.getByRole('heading', { level: 1, name: /Dashboard|Channels|Aegis/i }).or(page.locator('body'))).toBeVisible({ timeout: 8000 });
-    await expect(page.getByTestId('app-shell').or(page.locator('#dashboard, #channelsPanel'))).toBeVisible({ timeout: 8000 }).catch(() => {});
-    // dashboard-stats may be dynamic or in full daemon only; soft for contract
-    await expect(page.getByTestId('dashboard-stats').or(page.locator('body'))).toBeVisible({ timeout: 3000 }).catch(() => {});
+    await waitPortalReady(page);
+    await expect(page.getByTestId('app-shell')).toBeVisible({ timeout: 8000 });
+    await expect(page.getByTestId('home-panel')).toBeVisible({ timeout: 8000 });
 
-    // Chat / channels entry (J01 + J02, hash nav)
-    await page.goto('/#chat').catch(() => page.goto('/#channels'));
-    await expect(page.getByTestId('message-input').or(page.locator('#channelPostForm, #postContent'))).toBeVisible({ timeout: 5000 }).catch(() => {});
+    // Channels entry (J01 + J02, hash nav)
+    await openChannelsComposer(page);
+    await expect(page.getByTestId('message-input').or(page.locator('#postContent'))).toBeVisible({ timeout: 5000 }).catch(() => {});
   });
 
   test('User Journey 2+4: Skills discovery + Propose Skill button (journey 04)', async ({ page }) => {
-    await page.goto('/');
-
-    // Use stable nav + testid from data-testid sweep (soft for thin fixture contract)
-    await page.getByTestId('nav-skills').click().catch(() => page.goto('/#skills'));
+    await waitPortalReady(page);
+    await page.getByTestId('nav-skills').click();
     await expect(page.getByTestId('propose-skill-button').or(page.locator('[data-testid*="propose"], text=Propose'))).toBeVisible({ timeout: 5000 }).catch(() => {});
 
     // Proposals section (now has data-testid from server.go templates) + REST is the contract
@@ -34,9 +50,8 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   });
 
   test('User Journey 3+4+6+9: Proposals list + detail via UI and documented public REST (web-portal.md contract)', async ({ page, request }) => {
-    // 1. UI path (Skills/Proposals screen)
-    await page.goto('/');
-    await page.getByTestId('nav-skills').click();
+    await waitPortalReady(page);
+    await page.getByTestId('nav-court').click();
     await expect(page.getByTestId('proposals-list')).toBeVisible();
 
     // 2. Exercise the exact public REST we implemented (thin delegation)
@@ -83,7 +98,7 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   });
 
   test('User Journey 6: Court decisions + approvals via new REST + UI (per journey 06 Success Criteria)', async ({ page, request }) => {
-    await page.goto('/');
+    await waitPortalReady(page);
     await page.getByTestId('nav-court').click();
 
     // New documented endpoint
@@ -102,13 +117,13 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   });
 
   test('User Journey 5+8: Monitoring / Dashboard live stats + navigation (per journey 05)', async ({ page }) => {
-    await page.goto('/');
+    await gotoDashboard(page);
     await expect(page.getByTestId('dashboard-stats')).toBeVisible();
-    await expect(page.getByTestId('stat-running-vms')).toBeVisible();
+    await expect(page.locator('#statActiveAgents')).toBeVisible();
 
-    await page.getByTestId('nav-monitoring').click();
-    // Monitoring panel / tasks would appear in full UI; assert nav worked
-    await expect(page.getByTestId('nav-monitoring')).toHaveClass(/is-active|active/);
+    await page.goto('/#monitoring');
+    await expect(page.getByTestId('dashboard-panel')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('dashboard-system-health')).toBeVisible();
   });
 
   test('User Journey 9 (SDLC end-to-end skeleton): Full proposal → status → audit flow via thin portal REST (maps to journey 04/09 + web-portal e2e sdlc vision)', async ({ request }) => {
@@ -168,19 +183,16 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
       expect(st).toHaveProperty('phase');
     }
 
-    // UI navigation for skill creation area (with explicit wait for reliability)
-    await page.goto('/');
+    await waitPortalReady(page);
     await page.getByTestId('nav-skills').click();
-    await expect(page.getByTestId('nav-skills')).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId('skills-panel')).toBeVisible({ timeout: 3000 });
 
-    // The propose skill button or proposals section should be visible
     const hasPropose = await page.getByTestId('propose-skill-button').isVisible().catch(() => false);
-    const hasProposals = await page.getByTestId('proposals-section').isVisible().catch(() => false);
-    expect(hasPropose || hasProposals).toBeTruthy();
+    const hasSkills = await page.getByTestId('skills-list').isVisible().catch(() => false);
+    expect(hasPropose || hasSkills).toBeTruthy();
 
-    // Court navigation
-    await page.goto('/court');
-    await expect(page.getByTestId('nav-court')).toBeVisible();
+    await page.getByTestId('nav-court').click();
+    await expect(page.getByTestId('court-panel')).toBeVisible();
   });
 
   // 6.7: User Journey 07 - Granting/Adjusting Autonomy (per 07-granting-adjusting-autonomy.md)
@@ -188,7 +200,7 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   // E2E exercises related Court + proposal flows that tie into autonomy review (high-risk scopes trigger Court).
   // Full runtime enforcement + live agent reflection requires daemon + Agent Runtime (surface-only here; honest per Autonomy Rule).
   test('User Journey 7: Autonomy grant/revoke surface + Court tie-in (per 07 spec)', async ({ page, request }) => {
-    await page.goto('/');
+    await waitPortalReady(page);
     await page.getByTestId('nav-court').click();
 
     // Court decisions REST (core to autonomy review flow in J07 success criteria)
@@ -205,8 +217,9 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
 
     // UI presence for review surface
     await page.goto('/approvals');
-    await expect(page.getByTestId('approvals-section')).toBeVisible({ timeout: 4000 }).catch(() => {});
-    await expect(page.getByTestId('nav-court')).toBeVisible();
+    await expect(page.getByTestId('approvals-section')).toBeVisible({ timeout: 5000 });
+    await page.goto('/#court');
+    await expect(page.getByTestId('court-panel')).toBeVisible();
   });
 
   // 6.7 + 6.6: User Journey 08 - Multi-agent Team Workflows (per 08-multi-agent-team-workflows.md)
@@ -214,22 +227,17 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   // CLI `aegis team *` (new with --roles, list, status, message) now has stateful surface (6.6).
   // This test + core nav smoke cover the UI/REST contract. Full role VMs + Memory ACLs + delegation = later runtime.
   test('User Journey 8: Multi-agent teams nav + dashboard (per 08 spec skeleton)', async ({ page, request }) => {
-    await page.goto('/');
+    await gotoDashboard(page);
     await expect(page.getByTestId('dashboard-stats')).toBeVisible({ timeout: 3000 });
 
-    // Teams nav (data-testid from static shell)
-    await page.getByTestId('nav-teams').click().catch(() => {});
-    await expect(page.getByTestId('teams-panel')).toBeVisible({ timeout: 4000 }).catch(() => {});
+    await waitPortalReady(page);
+    await page.goto('/#teams');
+    await expect(page.getByTestId('teams-panel')).toBeVisible({ timeout: 4000 });
 
-    // Exercise thin teams REST (create form posts to /api/teams/create; list at /api/teams)
     const teamsRes = await request.get('/api/teams');
     expect(teamsRes.ok() || teamsRes.status() === 200 || teamsRes.status() === 500).toBeTruthy();
 
-    // Create form presence (success feedback elements from handleTeams)
-    const hasCreate = await page.getByTestId('create-team-form').isVisible().catch(() => false);
-    const hasMsg = await page.getByTestId('send-team-msg-form').isVisible().catch(() => false);
-    expect(hasCreate || hasMsg).toBeTruthy();
-
+    await expect(page.getByTestId('teams-list')).toBeAttached();
     await expect(page.getByTestId('system-status-chip')).toBeVisible();
   });
 
@@ -237,20 +245,23 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   // Ensures no breakage in shell routing and key testids across fixture runs.
   test('Core journeys navigation smoke (all 9 journeys nav + key elements)', async ({ page }) => {
     const navs = [
-      { testid: 'nav-skills', expectTestId: 'proposals-section' },
-      { testid: 'nav-court', expectTestId: 'nav-court' },
-      { testid: 'nav-monitoring', expectTestId: 'nav-monitoring' },
+      { testid: 'nav-skills', expectTestId: 'skills-panel' },
+      { testid: 'nav-court', expectTestId: 'court-panel' },
+      { testid: 'nav-dashboard', expectTestId: 'dashboard-panel' },
     ];
 
     for (const nav of navs) {
-      await page.goto('/');
+      await waitPortalReady(page);
       await page.getByTestId(nav.testid).click();
-      await expect(page.getByTestId(nav.expectTestId)).toBeVisible({ timeout: 4000 }).catch(() => {});
+      await expect(page.getByTestId(nav.expectTestId)).toBeVisible({ timeout: 4000 });
     }
 
-    // Chat entrypoint (J02)
-    await page.goto('/#chat');
-    await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 3000 });
+    await page.goto('/#monitoring');
+    await expect(page.getByTestId('dashboard-panel')).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId('dashboard-system-health')).toBeVisible();
+
+    await openChannelsComposer(page);
+    await expect(page.getByTestId('message-input')).toBeVisible({ timeout: 3000 }).catch(() => {});
   });
 
   // 6.7 visual regression foundation (opt-in). LFS-ready via .gitattributes.
@@ -272,7 +283,7 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     }
     await page.goto('/');
     await page.getByTestId('nav-skills').click();
-    await expect(page.getByTestId('proposals-section')).toBeVisible({ timeout: 4000 }).catch(() => {});
+    await expect(page.getByTestId('skills-panel')).toBeVisible({ timeout: 4000 });
     await expect(page).toHaveScreenshot('skills-proposals.png', { maxDiffPixelRatio: 0.02 });
   });
 
@@ -355,20 +366,17 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   // ============================================================
 
   test('User Journey 1 (Failure + Recovery): Chat input error + stream recovery using new Markdown renderer', async ({ page }) => {
-    await page.goto('/#chat');
+    await openChannelsComposer(page);
     await expect(page.getByTestId('message-input')).toBeVisible();
 
-    // Send something that may fail in limited mode
     await page.getByTestId('message-input').fill('Force a transient chat error for recovery test');
     await page.getByTestId('send-button').click();
 
-    // Expect status to update (error or progress) — per chat-ui-data-flow.md
-    await expect(page.getByTestId('chat-status')).toBeVisible({ timeout: 4000 });
+    await expect(page.getByTestId('channel-messages')).toBeVisible({ timeout: 4000 });
 
-    // Recovery: subsequent valid message works and uses full Markdown renderer (G2)
     await page.getByTestId('message-input').fill('Recovery: **bold** and `code` should render after failure');
     await page.getByTestId('send-button').click();
-    await expect(page.getByTestId('messages')).toBeVisible();
+    await expect(page.getByTestId('channel-messages')).toBeVisible();
   });
 
   test('User Journey 6 + 7 (Failure + Recovery): Approval rejection + Court decision audit trail', async ({ page, request }) => {
@@ -388,16 +396,12 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   });
 
   test('User Journey 8 (Failure + Recovery): Team creation failure + Canvas recovery', async ({ page }) => {
-    await page.goto('/');
-    await page.getByTestId('nav-teams').click().catch(() => {});
+    await page.goto('/#teams');
+    await expect(page.getByTestId('teams-panel')).toBeVisible({ timeout: 4000 });
 
-    // The create team form (data-testid from G2 / teams wiring) should be present
-    const createForm = page.getByTestId('create-team-form');
-    await expect(createForm).toBeVisible({ timeout: 4000 }).catch(() => {});
-
-    // Even if creation fails in fixture, Canvas and dashboard remain usable (recovery)
-    await page.goto('/');
-    await expect(page.getByTestId('dashboard-stats')).toBeVisible();
+    await gotoDashboard(page);
+    await page.getByTestId('open-canvas-button').click();
+    await expect(page.getByTestId('canvas-panel')).toBeVisible({ timeout: 5000 });
   });
 
   test('User Journey 9 (Failure + Recovery): Proposal under Court review + safe retry after simulated rejection', async ({ page, request }) => {
@@ -413,26 +417,25 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     const status = await request.get(`/api/proposals/${propId}/status`);
     expect(status.ok() || status.status() === 200 || status.status() === 500).toBeTruthy();
 
-    // UI recovery path
-    await page.goto('/');
-    await page.getByTestId('nav-skills').click();
-    await expect(page.getByTestId('proposals-list')).toBeVisible({ timeout: 4000 }).catch(() => {});
+    await waitPortalReady(page);
+    await page.getByTestId('nav-court').click();
+    await expect(page.getByTestId('proposals-list')).toBeVisible({ timeout: 4000 });
   });
 
   test('All 9 journeys: Core navigation + data-testid smoke after any prior failure (resilience)', async ({ page }) => {
     const criticalTestIds = [
-      'nav-dashboard', 'nav-chat', 'nav-skills', 'nav-court', 'nav-teams',
+      'nav-dashboard', 'nav-channels', 'nav-skills', 'nav-court', 'nav-agents',
       'app-shell', 'system-status-chip'
     ];
 
+    await waitPortalReady(page);
     for (const tid of criticalTestIds) {
-      await page.goto('/');
       const el = page.getByTestId(tid);
-      await expect(el).toBeVisible({ timeout: 3000 }).catch(() => {});
+      await expect(el).toBeVisible({ timeout: 3000 });
     }
 
-    // Canvas elements added in G2 must also survive
-    await expect(page.getByTestId('canvas-agent-grid')).toBeVisible({ timeout: 3000 }).catch(() => {});
+    await page.goto('/#canvas');
+    await expect(page.getByTestId('canvas-agent-grid')).toBeVisible({ timeout: 5000 });
   });
 
   // ============================================================
@@ -443,31 +446,20 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   // ============================================================
 
   test('User Journey 5: Monitoring agent activity via Canvas (live cards, tool feed, graph)', async ({ page }) => {
-    // Canvas is the primary monitoring surface (J05 success criteria).
-    await page.goto('/');
-    // Navigate via teams/monitoring or direct (the Canvas template is rich after G2).
-    await page.getByTestId('nav-teams').click().catch(() => {});
-
-    // With G3 fixtures, we expect real agent cards + tool feeds to render.
-    await expect(page.getByTestId('canvas-agent-grid')).toBeVisible({ timeout: 6000 }).catch(() => {});
-    await expect(page.getByTestId('canvas-interaction-graph')).toBeVisible().catch(() => {});
-    await expect(page.getByTestId('canvas-live-log')).toBeVisible().catch(() => {});
-
-    // Per-agent tool feed (populated by tool_events in fixture) — key for J05 observability.
-    const toolFeed = page.getByTestId(/agent-tool-feed-/).first();
-    await expect(toolFeed).toBeVisible({ timeout: 4000 }).catch(() => {});
+    await gotoDashboard(page);
+    await page.getByTestId('open-canvas-button').click();
+    await expect(page.getByTestId('canvas-panel')).toBeVisible({ timeout: 6000 });
+    await expect(page.getByTestId('canvas-agent-grid')).toBeVisible({ timeout: 6000 });
   });
 
   test('User Journey 8: Multi-agent team workflows via Canvas + teams surfaces', async ({ page }) => {
-    await page.goto('/');
-    await page.getByTestId('nav-teams').click().catch(() => {});
+    await waitPortalReady(page);
+    await page.goto('/#teams');
+    await expect(page.getByTestId('teams-panel')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('teams-list')).toBeAttached();
 
-    // Teams list + create form (data-testid from G2 wiring).
-    await expect(page.getByTestId('teams-list-section')).toBeVisible({ timeout: 5000 }).catch(() => {});
-    await expect(page.getByTestId('create-team-form')).toBeVisible().catch(() => {});
-
-    // Canvas should reflect team filtering (G2 feature) and show grouped agents from fixture workers.
-    await expect(page.getByTestId('canvas-agent-grid')).toBeVisible({ timeout: 5000 }).catch(() => {});
+    await page.goto('/#canvas');
+    await expect(page.getByTestId('canvas-agent-grid')).toBeVisible({ timeout: 5000 });
   });
 
   test('User Journey 3 + 5: Collaborative task + memory search (monitoring context)', async ({ page }) => {
@@ -501,23 +493,20 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   // ============================================================
 
   test('User Journey 2: Starting new conversation with full streaming Markdown + failure recovery', async ({ page }) => {
-    await page.goto('/#chat');
+    await openChannelsComposer(page);
     await expect(page.getByTestId('message-input')).toBeVisible();
     await expect(page.getByTestId('send-button')).toBeVisible();
 
-    // Happy path: send message, expect streaming status + messages container (uses G2 full Markdown renderer)
     await page.getByTestId('message-input').fill('Hello AegisClaw, please analyze the current workspace');
     await page.getByTestId('send-button').click();
 
-    await expect(page.getByTestId('chat-status')).toBeVisible({ timeout: 4000 });
-    await expect(page.getByTestId('messages')).toBeVisible();
+    await expect(page.getByTestId('channel-messages')).toBeVisible({ timeout: 4000 });
 
-    // Failure + recovery: send something that may error in fixture, then recover with valid input
     await page.getByTestId('message-input').fill('Force transient error for recovery test');
     await page.getByTestId('send-button').click();
     await page.getByTestId('message-input').fill('Recovery message with **bold** and `code` after failure');
     await page.getByTestId('send-button').click();
-    await expect(page.getByTestId('messages')).toBeVisible();
+    await expect(page.getByTestId('channel-messages')).toBeVisible();
   });
 
   test('User Journey 4: Creating and iterating a new skill (proposal + detail + Court review)', async ({ page, request }) => {
@@ -540,14 +529,12 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     const detailRes = await request.get(`/api/proposals/${propId}/status`);
     expect(detailRes.ok() || detailRes.status() === 200 || detailRes.status() === 500).toBeTruthy();
 
-    // UI navigation to skills/proposals (G1 data-testid)
-    await page.goto('/');
+    await waitPortalReady(page);
     await page.getByTestId('nav-skills').click();
-    await expect(page.getByTestId('proposals-list')).toBeVisible({ timeout: 4000 }).catch(() => {});
+    await expect(page.getByTestId('skills-panel')).toBeVisible({ timeout: 4000 });
 
-    // Court surface for review (J04 success criteria)
-    await page.getByTestId('nav-court').click().catch(() => {});
-    await expect(page.getByTestId('nav-court')).toBeVisible();
+    await page.getByTestId('nav-court').click();
+    await expect(page.getByTestId('proposals-list')).toBeVisible({ timeout: 4000 });
   });
 
   test('User Journey 7: Granting and adjusting autonomy with Court review + revocation recovery', async ({ page, request }) => {
@@ -570,9 +557,9 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     const courtRes = await request.get('/api/court/decisions');
     expect(courtRes.ok() || courtRes.status() === 200 || courtRes.status() === 500).toBeTruthy();
 
-    await page.goto('/');
+    await waitPortalReady(page);
     await page.getByTestId('nav-court').click();
-    await expect(page.getByTestId('nav-court')).toBeVisible();
+    await expect(page.getByTestId('court-panel')).toBeVisible();
   });
 
   test('User Journey 9 (enhanced): Full SDLC proposal -> Court -> (simulated) build failure + recovery retry', async ({ page, request }) => {
@@ -592,13 +579,9 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     const audit = await request.get(`/api/proposals/${propId}/audit`);
     expect(audit.ok() || audit.status() === 200 || audit.status() === 500).toBeTruthy();
 
-    // UI recovery path through skills and Court (using G1/G2 testids)
-    await page.goto('/');
-    await page.getByTestId('nav-skills').click();
-    await expect(page.getByTestId('proposals-list')).toBeVisible({ timeout: 4000 }).catch(() => {});
-
+    await waitPortalReady(page);
     await page.getByTestId('nav-court').click();
-    await expect(page.getByTestId('nav-court')).toBeVisible();
+    await expect(page.getByTestId('proposals-list')).toBeVisible({ timeout: 4000 });
   });
 
   // ============================================================

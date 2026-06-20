@@ -20,6 +20,7 @@ import (
 	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/chatstore"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 
@@ -966,6 +967,7 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.post":
 			payload := msg.Payload.(map[string]interface{})
 			chID := payload["channel_id"].(string)
+			collab.Tracef("store", "channel.post", "ch=%s from=%v", chID, payload["from"])
 
 			entry := map[string]interface{}{
 				"ts":      response.Timestamp,
@@ -985,6 +987,7 @@ func runStore(cmd *cobra.Command, args []string) {
 				posted = true
 			}
 			if posted {
+				collab.Tracef("store", "channel.updated", "ch=%s from=%v dest=daemon-orchestrator", chID, payload["from"])
 				updateMsg := Message{
 					Source:      "store",
 					Destination: "daemon-orchestrator",

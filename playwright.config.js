@@ -4,12 +4,17 @@ import fs from 'fs';
 
 // Default: real system (daemon + microVMs on localhost:8080). Opt-in fixture via AEGIS_E2E_FIXTURE=1.
 const fixtureMode = !!process.env.AEGIS_E2E_FIXTURE;
+// Fixture tests bind a dedicated port so they always serve freshly built cmd/web-portal/static,
+// even when the Host Daemon already occupies :8080 with a microVM image that may be stale.
+const fixturePort = process.env.AEGIS_E2E_FIXTURE_PORT || '8090';
+const fixtureBaseURL = `http://localhost:${fixturePort}`;
 const useBinWebPortal =
   process.env.AEGIS_E2E_USE_BIN_WEBPORTAL === '1' ||
   (process.env.AEGIS_E2E_USE_BIN_WEBPORTAL !== '0' && fs.existsSync('bin/web-portal'));
+const fixtureEnv = `AEGIS_E2E_FIXTURE=1 AEGIS_WEB_PORTAL_LISTEN_ADDR=:${fixturePort} AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json`;
 const fixtureWebPortalCmd = useBinWebPortal
-  ? 'AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json ./bin/web-portal'
-  : 'AEGIS_STORE_DATA_DIR=cmd/web-portal/testdata AEGIS_SKILLS_FILE=skills.fixture.json AEGIS_PROPOSALS_FILE=proposals.fixture.json go run ./cmd/web-portal';
+  ? `${fixtureEnv} ./bin/web-portal`
+  : `${fixtureEnv} go run ./cmd/web-portal`;
 
 export default defineConfig({
   testDir: './e2e',
@@ -20,7 +25,7 @@ export default defineConfig({
   timeout: fixtureMode ? 30_000 : 240_000,
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:8080',
+    baseURL: fixtureMode ? fixtureBaseURL : 'http://localhost:8080',
     trace: 'on-first-retry',
   },
   projects: fixtureMode
@@ -34,8 +39,8 @@ export default defineConfig({
     ? {
         webServer: {
           command: fixtureWebPortalCmd,
-          url: 'http://localhost:8080/health',
-          reuseExistingServer: !process.env.CI,
+          url: `${fixtureBaseURL}/health`,
+          reuseExistingServer: false,
           timeout: 45 * 1000,
         },
       }

@@ -58,7 +58,12 @@ func (h *Hub) Publish(topic string, body []byte) {
 	}
 }
 
-// ChannelTopic returns the STOMP destination for channel message updates.
+// ChannelTopic returns the canonical channel activity destination.
 func ChannelTopic(channelID string) string {
+	return "/topic/channel." + channelID + ".activity"
+}
+
+// LegacyChannelTopic returns the pre-spec messages topic (dual-publish shim).
+func LegacyChannelTopic(channelID string) string {
 	return "/topic/channels." + channelID + ".messages"
 }

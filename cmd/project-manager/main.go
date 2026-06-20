@@ -276,6 +276,8 @@ func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqu
 		chID = "main"
 	}
 
+	collab.Tracef("project-manager", "channel.activity.recv", "ch=%s from=%s", chID, from)
+
 	shouldDeliver, reason := collab.ShouldRespondToActivity(uniqueSource, from, userContent)
 	if !shouldDeliver {
 		_ = hcl.Reply(context.Background(), hubclient.Message{
@@ -304,40 +306,41 @@ func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqu
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
-	go func() {
-		broadcast, _ := collab.ActivityHints(uniqueSource, userContent)
-		intro := collab.FallbackIntro("project-manager")
-		if !broadcast {
-			prompt := getPMPrompt() + "\n\nA user asked in channel " + chID + ":\n" + userContent +
-				"\n\nReply in 2-4 sentences as the Project Manager. If the message does not need your reply, respond with exactly: NO_REPLY"
-			if llmIntro, err := realLLM(context.Background(), prompt); err == nil {
-				trimmed := strings.TrimSpace(llmIntro)
-				if strings.EqualFold(trimmed, "NO_REPLY") || trimmed == "" {
-					fmt.Printf("PM: chose not to reply in %s\n", chID)
-					return
-				}
-				intro = trimmed
-			}
-		}
-		postCtx, postCancel := context.WithTimeout(context.Background(), 90*time.Second)
-		_, postErr := hcl.Send(postCtx, hubclient.Message{
-			Source:      uniqueSource,
-			Destination: "store",
-			Command:     "channel.post",
-			Payload: map[string]interface{}{
-				"channel_id": chID,
-				"from":       uniqueSource,
-				"content":    strings.TrimSpace(intro),
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
-		postCancel()
-		if postErr != nil {
-			log.Printf("PM: channel.post failed: %v", postErr)
-			return
-		}
-		fmt.Printf("PM: posted channel reply to %s (%s)\n", chID, reason)
-	}()
+	// Inline on hubclient connection — see court-persona processChannelActivity (no goroutine).
+	prompt := getPMPrompt() + "\n\nA user asked in channel " + chID + ":\n" + userContent +
+		"\n\nReply in 2-4 sentences as the Project Manager. If the message does not need your reply, respond with exactly: NO_REPLY"
+	llmReply, err := realLLM(context.Background(), prompt)
+	if err != nil {
+		log.Printf("PM: channel reply LLM failed (not posting canned text): %v", err)
+		collab.Tracef("project-manager", "channel.reply.skip", "ch=%s err=%v", chID, err)
+		return
+	}
+	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
+	if skip {
+		fmt.Printf("PM: chose not to reply in %s\n", chID)
+		collab.Tracef("project-manager", "channel.reply.skip", "ch=%s reason=no_reply", chID)
+		return
+	}
+	postCtx, postCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	_, postErr := hcl.Send(postCtx, hubclient.Message{
+		Source:      uniqueSource,
+		Destination: "store",
+		Command:     "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"from":       uniqueSource,
+			"content":    trimmed,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	postCancel()
+	if postErr != nil {
+		log.Printf("PM: channel.post failed: %v", postErr)
+		collab.Tracef("project-manager", "channel.post.fail", "ch=%s err=%v", chID, postErr)
+		return
+	}
+	collab.Tracef("project-manager", "channel.post.ok", "ch=%s len=%d", chID, len(trimmed))
+	fmt.Printf("PM: posted channel reply to %s (%s)\n", chID, reason)
 }
 
 func runProjectManager(cmd *cobra.Command, args []string) {

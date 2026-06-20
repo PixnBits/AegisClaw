@@ -8,7 +8,6 @@
 /court-persona
 /builder
 /network-boundary
-/web-portal
 bin/
 /shared/ollama/models/*
 /REPO_SUMMARY.md
@@ -23,6 +22,12 @@ audit.json
 
 # Node.js and npm
 node_modules
+
+# Python
+__pycache__
+
+# webportal build
+cmd/web-portal/static/assets
 
 # E2E / browser test artifacts (Playwright)
 test-results/

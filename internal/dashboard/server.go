@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"AegisClaw/internal/dashboard/sanitize"
 	"AegisClaw/internal/portalstomp"
 	"context"
 	"encoding/json"
@@ -167,6 +168,9 @@ func (s *Server) registerRoutes() {
 	// Channels-first SPA (web-portal-vm.md: dynamic API routes + STOMP gateway in portal sandbox)
 	s.initSTOMP()
 	s.mux.HandleFunc("/stomp", s.handleSTOMP)
+	s.mux.HandleFunc("/internal/realtime/channel-activity", s.handleInternalChannelActivitySTOMP)
+	s.startMonitoringPublisher()
+	s.mux.HandleFunc("/api/goals", s.handleAPIGoals)
 	s.mux.HandleFunc("/api/dashboard", s.handleAPIDashboard)
 	s.mux.HandleFunc("/api/monitoring", s.handleAPIMonitoring)
 	s.mux.HandleFunc("/api/channels", s.handleAPIChannels)
@@ -178,6 +182,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/court/decisions", s.handleAPICourtDecisions)
 	s.mux.HandleFunc("/api/prs", s.handleAPIPRs)
 	s.mux.HandleFunc("/api/build/status", s.handleAPIBuildStatus)
+	s.registerExtendedPortalRoutes()
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -929,13 +934,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 					}
 					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
 						"type": evType,
-						"data": map[string]interface{}{
+						"data": sanitize.Value(sanitize.ContextTrace, map[string]interface{}{
 							"tool":        toString(ev["tool"]),
 							"agent_id":    toString(ev["session_id"]),
 							"agent_name":  toString(ev["session_id"]),
 							"error":       toString(ev["error"]),
 							"duration_ms": ev["duration_ms"],
-						},
+						}),
 					})
 				}
 			}
@@ -954,18 +959,18 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 					lastWorkerEventID = id
 					writeSSEMsg(map[string]interface{}{ //nolint:errcheck
 						"type": "worker_start",
-						"data": wk,
+						"data": sanitize.Value(sanitize.ContextChat, wk),
 					})
 				}
 			}
 
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type":              "update",
-				"active_workers":    workers,
-				"pending_approvals": approvals,
-				"tool_events":       toolEvents,
-				"thought_events":    thoughtEvents,
-				"sessions":          sessionsList,
+				"active_workers":    sanitize.Value(sanitize.ContextChat, workers),
+				"pending_approvals": sanitize.Value(sanitize.ContextProposal, approvals),
+				"tool_events":       sanitize.Value(sanitize.ContextTrace, toolEvents),
+				"thought_events":    sanitize.Value(sanitize.ContextTrace, thoughtEvents),
+				"sessions":          sanitize.Value(sanitize.ContextChat, sessionsList),
 				"ts":                time.Now().UTC().Format(time.RFC3339),
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)
@@ -1484,19 +1489,20 @@ const approvalsTmpl = `
   <div class="section-header">{{if .ShowAll}}All Approvals{{else}}Pending Approvals{{end}}</div>
   {{if .Approvals}}
   {{range .Approvals}}
-  <div style="padding:1rem;border-bottom:1px solid #21262d" data-testid="approval-card-{{index . "approval_id"}}">
+  {{$approval := .}}
+  <div style="padding:1rem;border-bottom:1px solid #21262d" data-testid="approval-card-{{index $approval "approval_id"}}">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.5rem">
       <div>
-        <strong>{{index . "title"}}</strong>
-        <span class="badge badge-{{index . "status"}}" style="margin-left:.5rem" data-testid="approval-status-{{index . "approval_id"}}">{{index . "status"}}</span>
-        <span class="badge badge-pending" style="margin-left:.25rem" data-testid="approval-risk-{{index . "approval_id"}}">risk: {{index . "risk_level"}}</span>
+        <strong>{{index $approval "title"}}</strong>
+        <span class="badge badge-{{index $approval "status"}}" style="margin-left:.5rem" data-testid="approval-status-{{index $approval "approval_id"}}">{{index $approval "status"}}</span>
+        <span class="badge badge-pending" style="margin-left:.25rem" data-testid="approval-risk-{{index $approval "approval_id"}}">risk: {{index $approval "risk_level"}}</span>
       </div>
-      <code style="font-size:.75rem;color:#8b949e" data-testid="approval-id">{{index . "approval_id"}}</code>
+      <code style="font-size:.75rem;color:#8b949e" data-testid="approval-id">{{index $approval "approval_id"}}</code>
     </div>
-    {{with index . "description"}}<p style="color:#8b949e;font-size:.875rem;margin-bottom:.75rem" data-testid="approval-description-{{index . "approval_id"}}">{{truncate . 200}}</p>{{end}}
-    {{if eq (index . "status") "pending"}}
-    <form method="POST" action="/approvals/decide" style="display:flex;gap:.5rem;align-items:center" data-testid="approval-decide-form-{{index . "approval_id"}}">
-      <input type="hidden" name="approval_id" value="{{index . "approval_id"}}">
+    {{with index $approval "description"}}<p style="color:#8b949e;font-size:.875rem;margin-bottom:.75rem" data-testid="approval-description-{{index $approval "approval_id"}}">{{truncate . 200}}</p>{{end}}
+    {{if eq (index $approval "status") "pending"}}
+    <form method="POST" action="/approvals/decide" style="display:flex;gap:.5rem;align-items:center" data-testid="approval-decide-form-{{index $approval "approval_id"}}">
+      <input type="hidden" name="approval_id" value="{{index $approval "approval_id"}}">
       <input type="text" name="reason" placeholder="Reason (optional)" style="width:200px" data-testid="approval-reason-input">
       <button type="submit" name="decision" value="approve" class="approve" data-testid="approval-approve-button">Approve</button>
       <button type="submit" name="decision" value="reject" class="danger" data-testid="approval-reject-button">Reject</button>
@@ -4161,16 +4167,11 @@ func (s *Server) handleAPIProposals(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Thin delegation ONLY: forward to Store via signed bridge (no local state/logic)
-		resp, err := s.apiClient.Call(r.Context(), "proposal.create", mustMarshal(payload))
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
-			return
-		}
-		if !resp.Success {
+		ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+		defer cancel()
+		if _, err := s.fetchRaw(ctx, "proposal.create", payload); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": resp.Error}) //nolint:errcheck
+			json.NewEncoder(w).Encode(map[string]string{"error": sanitize.Text(sanitize.ContextChat, err.Error())}) //nolint:errcheck
 			return
 		}
 
@@ -4256,6 +4257,24 @@ func (s *Server) handleAPIProposalDetail(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if strings.HasSuffix(path, "/reviews") {
+		s.handleAPIProposalReviews(w, r, proposalID)
+		return
+	}
+
+	if strings.HasSuffix(path, "/approve") {
+		s.handleProposalAction(w, r, proposalID, "approve")
+		return
+	}
+	if strings.HasSuffix(path, "/reject") {
+		s.handleProposalAction(w, r, proposalID, "reject")
+		return
+	}
+	if strings.HasSuffix(path, "/defer") {
+		s.handleProposalAction(w, r, proposalID, "defer")
+		return
+	}
+
 	if strings.HasSuffix(path, "/audit") {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		// Thin delegation for audit trail (markdown/text per spec)
@@ -4280,7 +4299,7 @@ func (s *Server) handleAPIProposalDetail(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
-	json.NewEncoder(w).Encode(propData) //nolint:errcheck
+	json.NewEncoder(w).Encode(sanitize.Value(sanitize.ContextProposal, propData)) //nolint:errcheck
 }
 
 func (s *Server) handleAPISkills(w http.ResponseWriter, r *http.Request) {

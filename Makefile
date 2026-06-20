@@ -5,7 +5,7 @@ CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.
 ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
 AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-roster test-e2e-portal-channel test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
+.PHONY: build build-binaries build-web-portal build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-roster test-e2e-portal-channel test-e2e-channel-replies test-e2e-channel-trace test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
 
 # Default target
 all: build
@@ -68,8 +68,16 @@ build: build-binaries
 		echo "==> Skipping microVM image build (not on Linux; Docker sandboxes are used)."; \
 	fi
 
+# Build React web portal SPA → cmd/web-portal/static (served by web-portal guest binary)
+build-web-portal:
+	@if [ ! -d web-portal/node_modules ]; then \
+		echo "==> Installing web-portal npm dependencies..."; \
+		cd web-portal && npm ci 2>/dev/null || npm install; \
+	fi
+	cd web-portal && npm run build
+
 # Build all command binaries
-build-binaries:
+build-binaries: build-web-portal
 	go build -o bin/aegis ./cmd/aegis
 	go build -o bin/aegishub ./cmd/aegishub
 	go build -o bin/agent ./cmd/agent
@@ -247,7 +255,7 @@ test-e2e:
 
 # Contract-only E2E against the thin web-portal fixture (no daemon). For CI without Firecracker.
 test-e2e-contract:
-	AEGIS_E2E_FIXTURE=1 bash scripts/run-playwright-e2e.sh e2e/journeys.spec.js --project=chromium
+	AEGIS_E2E_FIXTURE=1 bash scripts/run-playwright-e2e.sh e2e/journeys.spec.js e2e/portal-spec-journeys.spec.js e2e/portal-realtime.spec.js e2e/portal-progressive-reasoning.spec.js e2e/portal-mobile.spec.js e2e/portal-visual-polish.spec.js e2e/portal-navigation.spec.js --project=chromium
 
 # Real unmocked E2E exercising PM + LLM (Ollama via network-boundary) + channels exactly as a user would:
 #   `aegis pm goal "..." --channel foo` then `aegis channel get foo` (or view in portal #channels).
@@ -275,6 +283,14 @@ test-e2e-roster:
 test-e2e-portal-channel:
 	@echo "=== Portal channel fan-out E2E (PM + Court personas via :8080/api/channels) ==="
 	bash scripts/verify-channel-portal-e2e.sh
+
+test-e2e-channel-replies:
+	@echo "=== Channel agent reply regression E2E (>=2 agents post to store after user message) ==="
+	bash scripts/verify-channel-agent-replies-e2e.sh
+
+test-e2e-channel-trace:
+	@echo "=== Channel collab trace E2E (set AEGIS_COLLAB_TRACE=1 on daemon for full logs) ==="
+	bash scripts/verify-channel-collab-trace-e2e.sh
 
 # Portal SPA API contract + latency (dashboard, monitoring, skills, proposals, channels, STOMP).
 test-e2e-portal-api:
@@ -392,6 +408,8 @@ help:
 	@echo "  make test-e2e-llm       Real unmocked PM+LLM+channels E2E (CLI pm goal + channel get + browser UI + status check; hits Ollama, no fixtures; see script)"
 	@echo "  make test-e2e-roster       PM + 7 Court personas intro replies on main channel (automatic fan-out)"
 	@echo "  make test-e2e-portal-channel  Portal POST /api/channels fan-out + agent replies (browser UI check)"
+	@echo "  make test-e2e-channel-replies  Agent reply regression (>=2 store posts after user message)"
+	@echo "  make test-e2e-channel-trace   Channel collab trace E2E + collab-trace log summary"
 	@echo "  make test-e2e-portal-api     Portal SPA APIs: contract, latency budget, STOMP path"
 	@echo "  make test-tcb           TCB-specific tests (7.5)"
 	@echo "  make test-chaos         Chaos/restart tests (7.7, requires AEGIS_CHAOS=1)"

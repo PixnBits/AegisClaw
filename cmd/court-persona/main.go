@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/agent"
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/eventbus"
@@ -222,24 +223,26 @@ func analyzeProposal(persona, proposalDesc string, hubClient hubclient.Client) (
 	return vote, reasoning
 }
 
-// generateChannelIntro produces a short name + role description for channel roster prompts.
-func generateChannelIntro(persona, userQuestion string, hubClient hubclient.Client) string {
+// generateChannelReply produces a short contextual reply via LLM (no canned fallback text).
+func generateChannelReply(persona, userQuestion string, hubClient hubclient.Client) string {
 	display := collab.DisplayName("court-persona-" + persona)
-	// Broadcast/roster prompts: use deterministic fallback so channel posts succeed
-	// even when LLM via network-boundary is unavailable (common in Court microVMs).
-	if collab.IsBroadcast(userQuestion) {
-		return collab.FallbackIntro("court-persona-" + persona)
-	}
 	prompt := getPersonaPrompt(persona) + "\n\nA user asked in a collaboration channel:\n" + userQuestion +
-		"\n\nReply in 2-4 sentences. State your name as \"" + display + "\" and briefly describe what you do on this team. " +
-		"Do NOT use VOTE format or proposal review structure — this is a friendly introduction only."
+		"\n\nReply in 2-4 sentences addressing their message from your role as \"" + display + "\". " +
+		"If no reply is needed, respond with exactly: NO_REPLY. " +
+		"Do NOT use VOTE format or proposal review structure."
 
 	text, err := callRealLLMViaHub(context.Background(), hubClient, prompt)
 	if err != nil || strings.TrimSpace(text) == "" {
-		log.Printf("court-persona-%s: channel intro LLM failed (%v), using fallback", persona, err)
-		return collab.FallbackIntro("court-persona-" + persona)
+		log.Printf("court-persona-%s: channel reply LLM failed (%v)", persona, err)
+		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "ch=? err=%v", err)
+		return ""
 	}
-	return strings.TrimSpace(text)
+	trimmed, skip := collab.NormalizeChannelLLMReply(text)
+	if skip {
+		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "reason=no_reply")
+		return ""
+	}
+	return trimmed
 }
 
 func postChannelIntro(hcl hubclient.Client, uniqueSource, chID, content string) error {
@@ -267,6 +270,8 @@ func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueS
 	if chID == "" {
 		chID = "main"
 	}
+
+	collab.Tracef("court-persona-"+persona, "channel.activity.recv", "ch=%s from=%s", chID, from)
 
 	shouldRespond, reason := collab.ShouldRespondToActivity(uniqueSource, from, userContent)
 	if !shouldRespond {
@@ -297,14 +302,20 @@ func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueS
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
-	go func() {
-		intro := generateChannelIntro(persona, userContent, hcl)
-		if err := postChannelIntro(hcl, uniqueSource, chID, intro); err != nil {
-			log.Printf("court-persona-%s: channel.post failed: %v", persona, err)
-			return
-		}
-		fmt.Printf("Persona %s posted channel reply to %s (%s)\n", persona, chID, reason)
-	}()
+	// Process inline on the hubclient connection. Do not spawn a goroutine:
+	// nested hcl.Send (llm.call, channel.post) shares the decoder with Receive;
+	// a background Receive steals llm.call.response and replies never post.
+	reply := generateChannelReply(persona, userContent, hcl)
+	if strings.TrimSpace(reply) == "" {
+		return
+	}
+	if err := postChannelIntro(hcl, uniqueSource, chID, reply); err != nil {
+		log.Printf("court-persona-%s: channel.post failed: %v", persona, err)
+		collab.Tracef("court-persona-"+persona, "channel.post.fail", "ch=%s err=%v", chID, err)
+		return
+	}
+	collab.Tracef("court-persona-"+persona, "channel.post.ok", "ch=%s len=%d", chID, len(reply))
+	fmt.Printf("Persona %s posted channel reply to %s (%s)\n", persona, chID, reason)
 }
 
 // callRealLLMViaHub performs the production LLM call for a Court persona.
@@ -318,7 +329,7 @@ func callRealLLMViaHub(ctx context.Context, hub hubclient.Client, prompt string)
 	}
 
 	llmReq := map[string]interface{}{
-		"model":  "default", // boundary / config will resolve (same as agent)
+		"model":  bootargs.DefaultModel(agent.DefaultLLMModel),
 		"prompt": prompt,
 		"stream": false,
 	}
@@ -501,6 +512,9 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 		switch msg.Command {
 		case "channel.activity", "channel.member_notify":
 			processChannelActivity(hcl, msg, uniqueSource, persona)
+
+		case "llm.call.response":
+			log.Printf("court-persona-%s: ignoring stray %s (hubclient decoder race guard)", persona, msg.Command)
 
 		case "scribe.notify_review":
 			payload, _ := msg.Payload.(map[string]interface{})

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"AegisClaw/internal/collab"
 )
 
 var channelActivityFanOutMu sync.Mutex
@@ -30,14 +32,18 @@ func fanOutChannelActivitySync(chID, from, content string, perMemberTimeout time
 	channelActivityFanOutMu.Lock()
 	defer channelActivityFanOutMu.Unlock()
 
+	collab.Tracef("daemon", "fanout.start", "ch=%s from=%s", chID, from)
+
 	chData, err := sendToComponentViaEphemeralHubRetry("store", "channel.get", map[string]interface{}{"channel_id": chID}, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("channel.get: %w", err)
 	}
 	roles := prioritizeFanOutRoles(extractChannelMemberRoles(chData))
 	if len(roles) == 0 {
+		collab.Tracef("daemon", "fanout.skip", "ch=%s reason=no_members", chID)
 		return nil
 	}
+	collab.Tracef("daemon", "fanout.members", "ch=%s count=%d roles=%s", chID, len(roles), strings.Join(roles, ","))
 
 	// PM is on-demand per channel; boot before fan-out so project-manager-main is hub-ready.
 	for _, role := range roles {
@@ -109,6 +115,7 @@ func deliverChannelActivity(ctx context.Context, role, chID string, payload map[
 			}
 			_, err := sendToComponentViaEphemeralHubContext(ctx, dest, "channel.activity", payload)
 			if err == nil {
+				collab.Tracef("daemon", "fanout.deliver.ok", "dest=%s role=%s ch=%s", dest, role, chID)
 				return nil
 			}
 			lastErr = err

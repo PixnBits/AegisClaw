@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Validate agent replies after a portal/API channel post (since message index)."""
+"""Validate agent replies after a portal/API channel post (since message index).
+
+Rejects canned FallbackIntro-style replies so E2E reflects real LLM/agent output.
+"""
 import json
 import re
 import sys
 
-KEYWORDS = {
-    "project-manager": r"project manager|coordinate|plan",
-    "court-persona-ciso": r"ciso|security officer|chief information security",
-    "court-persona-security-architect": r"security architect|attack surface",
-    "court-persona-architect": r"system architect|modularity|design",
-    "court-persona-senior-coder": r"senior coder|code quality|implementation",
-    "court-persona-tester": r"tester|testing strategy|coverage",
-    "court-persona-efficiency": r"efficiency|performance|resource",
-    "court-persona-user-advocate": r"user advocate|usability|accessibility",
-}
+# Legacy canned intros from collab.FallbackIntro (must not appear after agent changes).
+CANNED_INTRO_RE = re.compile(
+    r"^I'm the .+\. I (evaluate|assess|review|coordinate|consider|participate)",
+    re.I,
+)
 
 
 def usable_content(content: str) -> str:
@@ -21,6 +19,10 @@ def usable_content(content: str) -> str:
     if text.strip().startswith("map[") and "channel_id:" in text:
         return ""
     return text
+
+
+def is_canned_intro(content: str) -> bool:
+    return bool(CANNED_INTRO_RE.match(usable_content(content).strip()))
 
 
 def load_channel(path: str) -> dict:
@@ -37,7 +39,7 @@ def normalize_from(frm: str) -> str:
     return frm
 
 
-def check_new_replies(data: dict, since_index: int, roles: list[str], marker: str) -> tuple[list[str], bool]:
+def check_new_replies(data: dict, since_index: int, roles: list[str], marker: str) -> tuple[list[str], list[str], bool]:
     messages = data.get("messages") or []
     new_msgs = messages[since_index:] if since_index < len(messages) else []
 
@@ -60,16 +62,16 @@ def check_new_replies(data: dict, since_index: int, roles: list[str], marker: st
             by_from[frm] = by_from.get(frm, "") + "\n" + content
 
     missing = []
+    canned = []
     for role in roles:
-        content = by_from.get(role, "").lower()
-        if not content.strip():
+        content = by_from.get(role, "").strip()
+        if not content:
             missing.append(role)
             continue
-        pat = KEYWORDS.get(role, re.escape(role))
-        if not re.search(pat, content, re.I):
-            missing.append(role)
+        if is_canned_intro(content):
+            canned.append(role)
 
-    return missing, marker_ok
+    return missing, canned, marker_ok
 
 
 def main() -> int:
@@ -86,9 +88,12 @@ def main() -> int:
     roles = sys.argv[4:]
     data = load_channel(path)
 
-    missing, marker_ok = check_new_replies(data, since_index, roles, marker)
+    missing, canned, marker_ok = check_new_replies(data, since_index, roles, marker)
     if not marker_ok:
         print("MISSING:portal_post_marker")
+        return 1
+    if canned:
+        print("CANNED:" + ",".join(canned))
         return 1
     if missing:
         print("MISSING:" + ",".join(missing))

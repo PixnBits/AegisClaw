@@ -1,0 +1,144 @@
+.harness-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--card-padding);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.harness-overview__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.harness-overview__goal {
+  margin: var(--space-1) 0 0;
+  font-size: 0.9375rem;
+}
+
+.pipeline-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.pipeline-stage {
+  flex: 1;
+  min-width: 80px;
+  padding: var(--space-2);
+  text-align: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  font-size: 0.75rem;
+}
+
+.pipeline-stage--completed {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.pipeline-stage--in_progress {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.2);
+}
+
+.pipeline-stage--pending {
+  color: var(--color-muted);
+}
+
+.harness-tasks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.harness-tasks--scroll {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: var(--space-1);
+  -webkit-overflow-scrolling: touch;
+}
+
+.harness-tasks--compact {
+  display: block;
+  overflow: visible;
+}
+
+.harness-tasks__hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.harness-task-card {
+  flex: 0 0 220px;
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.harness-task-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.harness-task-card__scope {
+  margin: 0 0 var(--space-3);
+  font-size: 0.8125rem;
+  color: var(--color-muted);
+  line-height: 1.45;
+}
+
+.harness-task-card__progress {
+  height: 4px;
+  background: var(--color-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.harness-task-card__bar {
+  height: 100%;
+  background: var(--color-success);
+  transition: width 0.3s ease;
+}
+
+@media (max-width: 768px) {
+  .harness-overview {
+    padding: var(--space-4);
+    gap: var(--space-4);
+    background: var(--color-elevated);
+  }
+
+  .harness-overview__goal {
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+
+  .pipeline-strip {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: var(--space-2);
+    padding-bottom: var(--space-1);
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .pipeline-strip::-webkit-scrollbar {
+    display: none;
+  }
+
+  .pipeline-stage {
+    flex: 0 0 auto;
+    min-width: 4.5rem;
+    padding: var(--space-2) var(--space-3);
+  }
+}
