@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"AegisClaw/internal/dashboard/contracts"
 	"AegisClaw/internal/dashboard/sanitize"
 	"AegisClaw/internal/portalstomp"
 	"context"
@@ -9,6 +10,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +21,9 @@ type Server struct {
 	funcMap   template.FuncMap
 	mux       *http.ServeMux
 	stompHub  *portalstomp.Hub
+
+	harnessMu    sync.Mutex
+	harnessCache map[string]contracts.HarnessState
 }
 
 // APIClient abstracts daemon API calls for the dashboard.

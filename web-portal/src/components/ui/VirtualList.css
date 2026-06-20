@@ -1,0 +1,24 @@
+.virtual-list {
+  position: relative;
+  overflow-y: auto;
+  max-height: min(70vh, 720px);
+}
+
+.virtual-list__spacer {
+  position: relative;
+  width: 100%;
+}
+
+.virtual-list__window {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+}
+
+.virtual-list__meta {
+  display: block;
+  padding: 0.35rem 0.5rem 0;
+  font-size: 0.75rem;
+  text-align: right;
+}
