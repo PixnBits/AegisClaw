@@ -89,22 +89,45 @@ func handlePortalBridgeAction(command string, payload interface{}) (interface{},
 	switch dest {
 	case "store":
 		result, err := sendToComponentViaHub("store", command, payload)
-		if err == nil && command == "channel.post" {
-			if m, ok := payload.(map[string]interface{}); ok {
-				chID, _ := m["channel_id"].(string)
-				from, _ := m["from"].(string)
-				content := collab.PayloadContentString(m["content"])
-				if chID != "" && collab.IsHumanPoster(from) {
-					go fanOutChannelActivity(chID, from, content)
-				}
-			}
-		}
 		return result, err
 	case "agent":
 		return handlePortalChatAction(command, payload)
+	case "daemon-orchestrator":
+		return handlePortalOrchestratorAction(command, payload)
 	default:
 		return handlePortalDaemonLocal(command, payload)
 	}
+}
+
+func handlePortalOrchestratorAction(command string, payload interface{}) (interface{}, error) {
+	switch command {
+	case "channel.fanout":
+		return portalChannelFanout(payload)
+	default:
+		_, err := sendToComponentViaHub("daemon-orchestrator", command, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"ok": true}, nil
+	}
+}
+
+func portalChannelFanout(payload interface{}) (interface{}, error) {
+	m, ok := payload.(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{"status": "skipped", "reason": "invalid payload"}, nil
+	}
+	chID, _ := m["channel_id"].(string)
+	from, _ := m["from"].(string)
+	content := collab.PayloadContentString(m["content"])
+	if chID == "" || content == "" {
+		return map[string]interface{}{"status": "skipped", "reason": "missing channel or content"}, nil
+	}
+	if !collab.IsHumanPoster(from) {
+		return map[string]interface{}{"status": "skipped", "reason": "not a human poster"}, nil
+	}
+	go fanOutChannelActivity(chID, from, content)
+	return map[string]interface{}{"status": "fanout_started", "channel_id": chID}, nil
 }
 
 func handlePortalChatAction(command string, payload interface{}) (interface{}, error) {
@@ -323,6 +346,12 @@ func handlePortalDaemonLocal(command string, payload interface{}) (interface{}, 
 			}, nil
 		}
 		return map[string]interface{}{"content": "", "thinking": ""}, nil
+	case "goal.submit":
+		return portalGoalSubmit(payload)
+	case "harness.get":
+		return portalHarnessGet(payload)
+	case "security.posture":
+		return collectSecurityPostureForPortal(), nil
 	case "event.approvals.list":
 		return []interface{}{}, nil
 	case "event.timers.list", "event.signals.list":
@@ -350,16 +379,51 @@ func portalWorkerList() []interface{} {
 	}
 	out := make([]interface{}, 0)
 	for _, vm := range vms {
-		if vm.Type == "agent" || strings.HasPrefix(vm.ID, "agent") {
-			out = append(out, map[string]interface{}{
-				"id":     vm.ID,
-				"name":   vm.ID,
-				"status": string(vm.Status),
-				"role":   "agent",
-			})
+		if portalInfraVM(vm.ID, vm.Type) {
+			continue
 		}
+		if vm.Status != sandbox.StatusRunning && vm.Status != "" {
+			continue
+		}
+		role := portalVMRoleLabel(vm.ID, vm.Type)
+		out = append(out, map[string]interface{}{
+			"id":       vm.ID,
+			"name":     vm.ID,
+			"status":   string(vm.Status),
+			"role":     role,
+			"task":     role,
+			"progress": "—",
+		})
 	}
 	return out
+}
+
+func portalInfraVM(id, vmType string) bool {
+	switch id {
+	case "hub", "store", "network-boundary", "web-portal", "aegishub", "court-scribe":
+		return true
+	}
+	if strings.HasPrefix(id, "memory-") {
+		return true
+	}
+	switch vmType {
+	case "hub", "store", "network-boundary", "web-portal", "memory", "court-scribe":
+		return true
+	}
+	return false
+}
+
+func portalVMRoleLabel(id, vmType string) string {
+	if strings.HasPrefix(id, "project-manager") || vmType == "project-manager" {
+		return "project-manager"
+	}
+	if strings.HasPrefix(id, "court-persona-") || vmType == "court-persona" {
+		return "court"
+	}
+	if vmType != "" && vmType != "agent" {
+		return vmType
+	}
+	return "agent"
 }
 
 func portalSandboxList() []interface{} {
@@ -385,7 +449,13 @@ func portalSandboxList() []interface{} {
 }
 
 func portalSystemStats() map[string]interface{} {
-	return readHostSystemStats()
+	stats := readHostSystemStats()
+	hostRAMUsedMB := int64(toFloat64(stats["host_ram_used_mb"]))
+	hostRAMTotalMB := int64(toFloat64(stats["host_ram_total_mb"]))
+	hostLoadAvg1 := toFloat64(stats["host_load_avg_1"])
+	stats["host_ram_label"] = fmtHostRAMLabel(hostRAMUsedMB, hostRAMTotalMB)
+	stats["host_load_label"] = fmt.Sprintf("%.2f", hostLoadAvg1)
+	return stats
 }
 
 // startDaemonPortalHubReceiver registers "daemon" on AegisHub so the web-portal guest

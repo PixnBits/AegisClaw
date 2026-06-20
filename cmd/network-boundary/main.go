@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"AegisClaw/internal/agent"
 	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/timing"
@@ -867,6 +868,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				if p, ok := reqIface["prompt"].(string); ok {
 					prompt = p
 				}
+			}
+			if model == "" || strings.EqualFold(model, "default") {
+				model = bootargs.DefaultModel(agent.DefaultLLMModel)
 			}
 			if model == "" || prompt == "" {
 				response.Command = "error"

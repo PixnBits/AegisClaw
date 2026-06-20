@@ -4,14 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"AegisClaw/internal/dashboard/realtime"
+	"AegisClaw/internal/dashboard/sanitize"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/portalstomp"
 )
 
 const spaAPITimeout = 25 * time.Second
+
+// ChannelNotifyHeader is set by the host daemon when pushing agent posts over
+// Firecracker hybrid vsock (RemoteAddr is not loopback inside the guest).
+const ChannelNotifyHeader = "X-Aegis-Channel-Notify"
 
 func (s *Server) initSTOMP() {
 	if s.stompHub == nil {
@@ -19,27 +27,61 @@ func (s *Server) initSTOMP() {
 	}
 }
 
-// PublishChannelSTOMP notifies subscribed browsers of a channel message (web-portal-vm.md STOMP gateway).
+// PublishChannelSTOMP notifies subscribed browsers of a channel activity event.
 func (s *Server) PublishChannelSTOMP(chID, from, content string) {
-	if s == nil || s.stompHub == nil || chID == "" {
-		return
-	}
-	payload, err := json.Marshal(map[string]interface{}{
-		"type":       "channel.message",
-		"channel_id": chID,
-		"from":       from,
-		"content":    content,
-		"ts":         time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		return
-	}
-	s.stompHub.Publish(portalstomp.ChannelTopic(chID), payload)
+	s.initSTOMP()
+	collab.Tracef("web-portal", "stomp.publish", "ch=%s from=%s len=%d", chID, from, len(content))
+	realtime.NewPublisher(s.stompHub).PublishChannelActivity(chID, from, content)
+}
+
+// stompPublisher returns a sanitized STOMP publisher for the server hub.
+func (s *Server) stompPublisher() *realtime.Publisher {
+	s.initSTOMP()
+	return realtime.NewPublisher(s.stompHub)
 }
 
 func (s *Server) handleSTOMP(w http.ResponseWriter, r *http.Request) {
 	s.initSTOMP()
 	portalstomp.ServeWebSocket(s.stompHub, w, r)
+}
+
+func (s *Server) handleInternalChannelActivitySTOMP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if !requestAuthorizedChannelNotify(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		ChannelID string `json:"channel_id"`
+		From      string `json:"from"`
+		Content   string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChannelID == "" {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	collab.Tracef("web-portal", "stomp.notify.recv", "ch=%s from=%s", req.ChannelID, req.From)
+	s.PublishChannelSTOMP(req.ChannelID, req.From, req.Content)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func requestFromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func requestAuthorizedChannelNotify(r *http.Request) bool {
+	if r.Header.Get(ChannelNotifyHeader) == "1" {
+		return true
+	}
+	return requestFromLoopback(r)
 }
 
 func (s *Server) handleAPIDashboard(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +127,9 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"channels": data}) //nolint:errcheck
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"channels": sanitize.Value(sanitize.ContextChat, data),
+		})
 
 	case len(parts) == 0 && r.Method == http.MethodPost:
 		var req struct{ ID string `json:"id"` }
@@ -104,7 +148,7 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(data) //nolint:errcheck
+		json.NewEncoder(w).Encode(sanitize.Value(sanitize.ContextChat, data)) //nolint:errcheck
 
 	case len(parts) == 1 && r.Method == http.MethodPost:
 		var postReq struct {
@@ -116,39 +160,59 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		if from == "" {
 			from = "user"
 		}
+		content := sanitize.Text(sanitize.ContextChat, postReq.Content)
 		_, err := s.fetchRaw(ctx, "channel.post", map[string]interface{}{
 			"channel_id": parts[0],
 			"from":       from,
-			"content":    postReq.Content,
+			"content":    content,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Trigger roster replies (web-portal → hub → store only persists; fan-out via orchestrator).
-		_, _ = s.fetchRaw(ctx, "channel.fanout", map[string]interface{}{
-			"channel_id": parts[0],
-			"from":       from,
-			"content":    postReq.Content,
-		})
+		// Fan-out to channel members is triggered by store → channel.updated on the daemon.
 		s.initSTOMP()
-		s.PublishChannelSTOMP(parts[0], from, postReq.Content)
+		s.PublishChannelSTOMP(parts[0], from, content)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
+	case len(parts) == 2 && parts[1] == "harness" && r.Method == http.MethodGet:
+		state := s.collectHarnessState(ctx, parts[0])
+		json.NewEncoder(w).Encode(state) //nolint:errcheck
+
 	case len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodPost:
-		_, _ = s.fetchRaw(ctx, "channel.archive", map[string]interface{}{"channel_id": parts[0]})
+		if bridgeGuard.NeedsConfirmation("channel.archive") && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
+		_, err := s.fetchRaw(ctx, "channel.archive", map[string]interface{}{"channel_id": parts[0]})
+		if err != nil {
+			http.Error(w, sanitize.Text(sanitize.ContextChat, err.Error()), http.StatusBadRequest)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	case len(parts) == 2 && parts[1] == "members" && r.Method == http.MethodPost:
 		var m struct{ Role string `json:"role"` }
 		_ = json.NewDecoder(r.Body).Decode(&m)
-		_, _ = s.fetchRaw(ctx, "channel.add_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
+		_, err := s.fetchRaw(ctx, "channel.add_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
+		if err != nil {
+			http.Error(w, sanitize.Text(sanitize.ContextChat, err.Error()), http.StatusBadRequest)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	case len(parts) == 3 && parts[1] == "members" && parts[2] == "remove" && r.Method == http.MethodPost:
+		if bridgeGuard.NeedsConfirmation("channel.remove_member") && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
 		var m struct{ Role string `json:"role"` }
 		_ = json.NewDecoder(r.Body).Decode(&m)
-		_, _ = s.fetchRaw(ctx, "channel.remove_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
+		_, err := s.fetchRaw(ctx, "channel.remove_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
+		if err != nil {
+			http.Error(w, sanitize.Text(sanitize.ContextChat, err.Error()), http.StatusBadRequest)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	default:
@@ -164,6 +228,7 @@ func (s *Server) collectDashboardSPA(ctx context.Context) map[string]interface{}
 	if skills, err := s.fetchRaw(ctx, "skill.list", nil); err == nil {
 		skillCount = spaCountItems(skills)
 	}
+	activeWork := s.collectActiveWork(ctx)
 	return map[string]interface{}{
 		"system_status": "running",
 		"runtime":       "firecracker",
@@ -178,6 +243,7 @@ func (s *Server) collectDashboardSPA(ctx context.Context) map[string]interface{}
 			"channel_count":     bundle["channel_count"],
 		},
 		"agents":          agents,
+		"active_work":     activeWork["items"],
 		"recent_activity": []interface{}{},
 	}
 }
@@ -294,7 +360,7 @@ func spaNormalizeSkills(data interface{}) []interface{} {
 		if name == "" {
 			name = id
 		}
-		out = append(out, map[string]interface{}{
+		out = append(out, sanitize.JSONMap(sanitize.ContextChat, map[string]interface{}{
 			"id":              id,
 			"name":            name,
 			"version":         spaStringOr(m["version"], "0.0.0"),
@@ -302,7 +368,7 @@ func spaNormalizeSkills(data interface{}) []interface{} {
 			"description":     spaStringOr(m["description"], ""),
 			"required_scopes": spaStringSliceOr(m["required_scopes"]),
 			"secrets":         spaStringSliceOr(m["secrets"]),
-		})
+		}))
 	}
 	return out
 }
@@ -323,14 +389,14 @@ func spaNormalizeProposals(data interface{}) []interface{} {
 		if title == "" {
 			title = id
 		}
-		out = append(out, map[string]interface{}{
+		out = append(out, sanitize.JSONMap(sanitize.ContextProposal, map[string]interface{}{
 			"id":             id,
 			"title":          title,
 			"status":         spaStringOr(m["state"], spaStringOr(m["status"], "pending")),
 			"summary":        spaStringOr(m["description"], spaStringOr(m["summary"], "")),
 			"votes":          spaStringOr(m["votes"], "0/0"),
 			"security_gates": []interface{}{},
-		})
+		}))
 	}
 	return out
 }

@@ -36,12 +36,15 @@ YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis/daemon.pid
 YOURUSER ALL=(ALL) NOPASSWD: /usr/bin/rm /tmp/aegis
 YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis
 
-# Example for this specific workspace (edit paths as needed):
-# /home/pixnbits/projects/AegisClaw/main/bin/aegis is the key one for `sudo -n ./bin/aegis start` (and legacy make start wrappers which invoke it under sudo -n internally).
-# Use direct bin for start to avoid broad sudo on make: sudo -n /home/pixnbits/projects/AegisClaw/main/bin/aegis start --foreground
-
-# Env vars for observability (boot-metrics) + model selection + custom E2E sockets must pass under sudo.
-# Top-level + per-command forms for compatibility across sudoers versions.
-Defaults env_keep += "AEGIS_BOOT_TIMING AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
-Defaults! /path/to/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
+# Example for this workspace (edit YOURUSER and paths):
+YOURUSER ALL=(ALL) NOPASSWD: /home/pixnbits/projects/AegisClaw/main/bin/aegis
+#
+# env_keep: only for the aegis binary (not global Defaults). Each var is optional;
+# export on the host before `sudo -E ./bin/aegis …` when needed.
+#   AEGIS_BOOT_TIMING     — guest BOOT_TIMING phases + boot-metrics (dev profiling)
+#   AEGIS_COLLAB_TRACE    — channel fan-out/STOMP trace logs (dev debugging only)
+#   AEGIS_DEFAULT_MODEL   — Ollama model tag injected to guest VMs (e.g. llama3.2:3b)
+#   AEGIS_HUB_SOCKET      — isolated E2E / custom hub socket path
+#   AEGIS_STATE_DIR       — isolated E2E daemon state directory
+Defaults! /home/pixnbits/projects/AegisClaw/main/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
 

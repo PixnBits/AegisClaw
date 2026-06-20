@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/transport/hubclient" // for HubVsockPort constant (Phase 1.1c vsock support)
 	"github.com/mdlayher/vsock"
 	"github.com/spf13/cobra"
@@ -417,6 +418,9 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 
 		debugLog("hub", fmt.Sprintf("Received message from %s to %s, command: %s", msg.Source, msg.Destination, msg.Command))
+		if collab.TraceEnabled() && (msg.Command == "channel.updated" || msg.Command == "channel.activity" || msg.Command == "channel.post" || msg.Command == "channel.relay_activity") {
+			collab.Tracef("hub", "route", "src=%s dest=%s cmd=%s", msg.Source, msg.Destination, msg.Command)
+		}
 
 		// Verify signature
 		registeredMutex.RLock()
@@ -531,6 +535,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				continue
 			}
 			if msg.Source == "store" && msg.Command == "channel.updated" {
+				collab.Tracef("hub", "channel.updated.forward", "dest=%s", msg.Destination)
 				registeredMutex.RLock()
 				destComponent, exists := registered[msg.Destination]
 				registeredMutex.RUnlock()

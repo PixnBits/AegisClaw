@@ -467,6 +467,12 @@ func daemonChildEnv() []string {
 	if v := os.Getenv("AEGIS_BOOT_TIMING"); v != "" {
 		env = setEnvPair(env, "AEGIS_BOOT_TIMING", v)
 	}
+	if v := os.Getenv("AEGIS_COLLAB_TRACE"); v != "" {
+		env = setEnvPair(env, "AEGIS_COLLAB_TRACE", v)
+	}
+	if v := os.Getenv("AEGIS_DEFAULT_MODEL"); v != "" {
+		env = setEnvPair(env, "AEGIS_DEFAULT_MODEL", v)
+	}
 	return env
 }
 
@@ -594,6 +600,10 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
+	if model, _ := cmd.Flags().GetString("default-model"); strings.TrimSpace(model) != "" {
+		_ = os.Setenv("AEGIS_DEFAULT_MODEL", strings.TrimSpace(model))
+	}
+
 	if os.Getuid() != 0 {
 		fmt.Println("daemon must be started with root privileges (use: sudo aegis start)")
 		os.Exit(1)
@@ -656,10 +666,15 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	foreground, _ := cmd.Flags().GetBool("foreground")
+	defaultModel, _ := cmd.Flags().GetString("default-model")
 
 	// Fork to background if not in foreground mode
 	if !foreground {
-		daemonCmd := exec.Command(os.Args[0], "start", "--foreground")
+		childArgs := []string{"start", "--foreground"}
+		if strings.TrimSpace(defaultModel) != "" {
+			childArgs = append(childArgs, "--default-model", strings.TrimSpace(defaultModel))
+		}
+		daemonCmd := exec.Command(os.Args[0], childArgs...)
 
 		// Pin paths into the child environment. The foreground daemon re-exec may
 		// not inherit SUDO_USER (depends on sudo/sudo-rs), but images almost always
@@ -733,6 +748,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 
 	// Build / debug ID for this daemon run (helps confirm we are not running stale binary)
 	logrus.Infof("Aegis daemon starting — build/debug ID: %s", time.Now().UTC().Format("2006-01-02T15:04:05Z")+" (debug-build)")
+	if collab.TraceEnabled() {
+		logrus.Info("AEGIS_COLLAB_TRACE=1: channel collaboration tracing enabled (restart required for already-running VMs)")
+	}
 	daemonBootStart = time.Now()
 	storeCollabReady.Store(false)
 
@@ -2802,6 +2820,7 @@ func main() {
 		Run:   startDaemon,
 	}
 	startCmd.Flags().Bool("foreground", false, "Run daemon in foreground")
+	startCmd.Flags().String("default-model", "", "Ollama model tag for guest LLM calls (e.g. llama3.2:3b); avoids sudo env friction")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",
@@ -4947,6 +4966,7 @@ func dialFirecrackerVsock(ctx context.Context, udsPath string, port uint32) (net
 func startWebPortalProxy(listenAddr, target string) error {
 	// Clear any previous listen error on (re)start attempts.
 	webPortalProxyListenErr = nil
+	setWebPortalInternalTarget(target)
 
 	var proxy *httputil.ReverseProxy
 
@@ -5275,6 +5295,18 @@ func startOrchestratorCommandReceiver() {
 				continue
 			}
 			if msg.Command == "channel.updated" {
+				if payload, ok := msg.Payload.(map[string]interface{}); ok {
+					chID, _ := payload["channel_id"].(string)
+					from, _ := payload["from"].(string)
+					content := collab.PayloadContentString(payload["content"])
+					if chID != "" {
+						collab.Tracef("daemon", "channel.updated.recv", "ch=%s from=%s human=%v", chID, from, collab.IsHumanPoster(from))
+						go notifyWebPortalChannelActivity(chID, from, content)
+						if collab.IsHumanPoster(from) && content != "" {
+							go fanOutChannelActivity(chID, from, content)
+						}
+					}
+				}
 				continue
 			}
 			if msg.Command == "ensure.role" || msg.Command == "orchestrator.ensure_role" {
