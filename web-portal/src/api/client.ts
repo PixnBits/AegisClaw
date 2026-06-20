@@ -5,6 +5,19 @@ import type {
   HarnessState,
   Proposal,
 } from '@/contracts';
+import { sanitizeProposalNote } from '@/lib/sanitize';
+
+/** Court proposal actions exposed by the portal bridge (see internal/dashboard/contracts/bridge.go). */
+export type ProposalAction = 'approve' | 'reject' | 'defer';
+
+const PROPOSAL_ACTIONS = new Set<ProposalAction>(['approve', 'reject', 'defer']);
+
+function assertProposalAction(action: string): ProposalAction {
+  if (!PROPOSAL_ACTIONS.has(action as ProposalAction)) {
+    throw new Error(`Invalid proposal action: ${action}`);
+  }
+  return action as ProposalAction;
+}
 
 async function fetchJSON<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
@@ -50,14 +63,22 @@ export const api = {
   skills: () => fetchJSON<unknown[]>('/api/skills'),
   proposals: () => fetchJSON<Proposal[]>('/api/proposals'),
   proposalReviews: (id: string) => fetchJSON<{ reviews: unknown[] }>(`/api/proposals/${id}/reviews`),
-  proposalAction: (id: string, action: string, note?: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/proposals/${id}/${action}`, {
+  proposalAction: (id: string, action: ProposalAction, note?: string) => {
+    const safeAction = assertProposalAction(action);
+    const safeId = encodeURIComponent(id);
+    const safeNote = sanitizeProposalNote(note);
+    const body: { note?: string } = {};
+    if (safeNote !== undefined) body.note = safeNote;
+    return fetchJSON<{ ok: boolean }>(`/api/proposals/${safeId}/${safeAction}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note }),
-    }),
+      headers: { 'Content-Type': 'application/json', 'X-Aegis-Confirmed': '1' },
+      body: JSON.stringify(body),
+    });
+  },
   exportProposal: (id: string, format = 'report') =>
-    fetch(`/api/proposals/${id}/export?format=${format}`, { credentials: 'same-origin' }),
+    fetch(`/api/proposals/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`, {
+      credentials: 'same-origin',
+    }),
   addMember: (channelId: string, role: string) =>
     fetchJSON<{ ok: boolean }>(`/api/channels/${channelId}/members`, {
       method: 'POST',
