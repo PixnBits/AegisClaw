@@ -58,8 +58,9 @@ The Web Portal VM is a dedicated, isolated sandbox that hosts the rich collabora
 - Must gracefully handle AegisHub or backend unavailability
 
 ## Related Documents
-- [./web-portal.md](./web-portal.md) — User-facing application specification (features, look & feel, API surface)
-- [./web-portal/](./web-portal/) — Target-state modular portal specs (supersedes legacy `web-portal-screens.md`)
+- [./implementation-current.md](./implementation-current.md) — Implementation-current application spec (features, look & feel, API surface)
+- [./web-portal.md](./web-portal.md) — Target-state portal specification
+- [./sdlc-web-portal.md](./sdlc-web-portal.md) — SDLC visibility (proposal → Court → build → PR → deploy)
 - [../host-daemon.md](../host-daemon.md) — Reverse proxy and lifecycle management
 - [../aegishub.md](../aegishub.md) — All communication mediation
 - [../../architecture.md](../../architecture.md) — Overall sandbox model

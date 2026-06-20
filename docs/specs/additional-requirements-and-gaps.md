@@ -51,7 +51,7 @@ This enables strong personalization.
 - **Journey automation (`docs/tasks/phase-0-foundations.md`, `docs/roadmap.md`)**: Major progress in Phase 5 Group 3. All 9 journeys now have dedicated or strongly enhanced automated Playwright E2E coverage in `e2e/journeys.spec.js`, including explicit failure + recovery paths, using stable data-testid from Groups 1-2. Some journeys remain fixture-heavy; full live daemon coverage is expected in later phases. (See `docs/no-stubs-plan/phase-5.md` Group 3 completion notes.)
 - **Host Daemon (`docs/specs/host-daemon.md`)**: watchdog behavior, audit-root signing, static-binary verification, socket-hardening tests, and lifecycle-containment coverage remain incomplete.
 - **AegisHub (`docs/specs/aegishub.md`)**: ACL hot reload, denied-message audit persistence, and fuller handshake/signature enforcement coverage still need implementation.
-- **Web Portal (`docs/specs/web-portal.md`)**: Significant progress across Phase 5 Groups 1-3. 
+- **Web Portal (`docs/specs/web-portal/implementation-current.md`)**: Significant progress across Phase 5 Groups 1-3. 
   - Handlers for Git, Workspace, Memory, Approvals, Canvas, and full streaming Markdown chat are wired with deterministic E2E fixture support.
   - Stable `data-testid` added across all major surfaces (G1/G2).
   - All 9 user journeys have automated E2E coverage (G3), including failure + recovery.

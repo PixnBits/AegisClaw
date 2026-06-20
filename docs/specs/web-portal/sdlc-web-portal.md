@@ -5,15 +5,16 @@
 **Origin:** [GitHub Issue #35](https://github.com/PixnBits/AegisClaw/issues/35)  
 **Priority:** High | **Complexity:** High (multi-phase, ~16 weeks estimated) | **Risk:** Medium
 
-## Documentation Layout (June 2026)
+## Documentation Layout
 
-Recent commits reorganized portal documentation. When cross-referencing:
+All web portal specifications live in `docs/specs/web-portal/`:
 
-- **Target-state portal specs** live under `docs/specs/web-portal/` (added in #74). Start with `web-portal.md` for IA, principles, and page behaviors; per-page specs cover channels, court, dashboard, canvas, real-time contracts, testing, etc.
-- **Implementation-current snapshot** remains at `docs/specs/web-portal.md` (legacy monolith spec; tracks what ships today).
-- **Removed:** `docs/specs/web-portal-screens.md` (legacy wireframes — superseded by modular specs in `docs/specs/web-portal/`).
-- **PRD:** `docs/PRD/web-portal/index.md` captures the redesign direction.
-- **This document** is the canonical SDLC-specific vision (proposal → Court → build → PR → deploy transparency). It complements, not replaces, the general portal specs.
+- **Target state:** `web-portal.md` (IA, principles, navigation) plus per-page specs (channels, court, dashboard, canvas, real-time contracts, testing, etc.)
+- **Implementation current:** `implementation-current.md` — monolith snapshot of what ships today
+- **SDLC vision:** `sdlc-web-portal.md` (this document)
+- **Runtime & isolation:** `web-portal-vm.md`
+- **Chat streaming:** `chat-ui-data-flow.md`
+- **PRD:** `docs/PRD/web-portal/index.md` captures the redesign direction
 
 ## Purpose
 
@@ -56,7 +57,7 @@ While this architecture is sound, **visibility into the continuous development p
 - ✅ Artifact signing
 - ⚠️ **Limited**: Build status visible primarily through CLI/status commands; live dashboard incomplete
 
-#### 3. Web Portal (`internal/dashboard/server.go`, `docs/specs/web-portal.md`)
+#### 3. Web Portal (`internal/dashboard/server.go`, `implementation-current.md`)
 **Implemented:**
 - Overview page (system health, recent activity)
 - Skills & Proposals listing
@@ -487,7 +488,7 @@ Transform skill development into a **GitHub-like internal development experience
 ### Security (Paranoid Design Maintained)
 
 1. **Web Portal Isolation**
-   - Web Portal runs in a dedicated Firecracker microVM (`docs/specs/web-portal-vm.md`)
+   - Web Portal runs in a dedicated Firecracker microVM (`web-portal-vm.md`)
    - Presentation-only; all actions mediated via vsock bridge
    - All API endpoints ACL-protected
    - CSP enforced (no external scripts)
@@ -631,18 +632,14 @@ Transform skill development into a **GitHub-like internal development experience
 - `docs/specs/builder-security-gates.md`
 - `docs/architecture.md`
 
-**Portal (target state — `docs/specs/web-portal/`):**
-- `web-portal.md` — overall IA, principles, navigation
-- `dashboard.md` — monitoring and intervention
-- `court.md` — governance flows
-- `canvas.md` — pipeline visualization
+**Portal (this folder):**
+- `web-portal.md` — target-state IA, principles, navigation
+- `implementation-current.md` — shipped features, API surface, styling
+- `web-portal-vm.md` — isolation model
+- `chat-ui-data-flow.md` — chat streaming
+- `dashboard.md`, `court.md`, `canvas.md` — per-page target-state specs
 - `real-time-contracts.md` — STOMP topics for build/PR/proposal updates
 - `implementation-gaps-and-priorities.md` — remaining open areas
-
-**Portal (implementation current):**
-- `docs/specs/web-portal.md` — shipped features, API surface, styling
-- `docs/specs/web-portal-vm.md` — isolation model
-- `docs/specs/chat-ui-data-flow.md` — chat streaming
 
 **Testing & traceability:**
 - `docs/testing-standards.md`

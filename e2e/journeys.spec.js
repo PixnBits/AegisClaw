@@ -610,6 +610,6 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   // and "Zero remaining 'limited mode' / 'surface-only' / stub disclaimers in user-facing E2E paths."
   //
   // References: docs/no-stubs-left-resolution-plan.md (Phase 5), web-portal.md, testing-standards.md,
-  // all 9 files under docs/specs/user-journeys/, chat-ui-data-flow.md.
+  // all 9 files under docs/specs/user-journeys/, docs/specs/web-portal/chat-ui-data-flow.md.
   // ============================================================
 });

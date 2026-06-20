@@ -11,7 +11,7 @@ This PRD defines the redesigned AegisClaw Web Portal as a calm, immediately prod
 
 The design draws from:
 - Detailed user personas (Alex Rivera, Jordan Hale, Sam Chen, Dr. Lena Moreau) and their journeys.
-- Existing specs (collaboration-model, user-journeys, `docs/specs/web-portal/` modular target-state specs, `sdlc-web-portal.md`, `web-portal.md`).
+- Existing specs (collaboration-model, user-journeys, `docs/specs/web-portal/` including target-state `web-portal.md`, `implementation-current.md`, `sdlc-web-portal.md`).
 - Cloudflare harness lessons (narrow scope + rich context, parallel tasks + deduplication, adversarial review, structured pipeline stages, observability/feedback loops).
 - Slack-inspired channel and member management patterns for low-friction collaboration without visual overwhelm.
 - Real-time STOMP/WebSocket architecture already in progress.
@@ -245,7 +245,7 @@ This directly addresses generic agent failure modes (wandering, noise, inconsist
 
 ## Real-time Architecture & Technical Notes
 
-Builds directly on existing `docs/specs/web-portal.md` (STOMP topic subscriptions, presentation-only isolated VM, vsock bridge, self-contained dark theme, GitHub-inspired aesthetic).
+Builds directly on existing `docs/specs/web-portal/implementation-current.md` (STOMP topic subscriptions, presentation-only isolated VM, vsock bridge, self-contained dark theme, GitHub-inspired aesthetic).
 
 Key evolutions:
 - Per-view and per-channel STOMP topics for efficiency (already in progress).
@@ -270,7 +270,7 @@ Non-responsibilities remain: Portal is strictly presentation-only. All mutations
 - Member management modal vs inline pane — user testing preference.
 - How external signals (news, stock, etc.) are sourced and opted-in without adding attack surface.
 - Prioritize which page to fully wireframe/mock next (Channels with harness pipeline + grouped members is high impact).
-- Keep `docs/specs/web-portal/` target-state specs aligned with this PRD; `web-portal.md` remains the implementation-current snapshot.
+- Keep `docs/specs/web-portal/` target-state specs aligned with this PRD; `implementation-current.md` tracks what ships today.
 - E2E test coverage expansion for new flows (command bar → plan preview → channel with visible pipeline).
 
 ## Related Documents
@@ -278,9 +278,9 @@ Non-responsibilities remain: Portal is strictly presentation-only. All mutations
 - `docs/prd/personas.md`, `docs/prd/user-personas.md`, `docs/prd/user-experience-principles.md`, `docs/prd/collaboration-model.md`
 - `docs/specs/user-journeys/` (especially 02, 03, 05, 06)
 - `docs/specs/web-portal/` (target-state modular specs — supersedes legacy `web-portal-screens.md`)
-- `docs/specs/sdlc-web-portal.md` (SDLC visibility: proposal → Court → build → PR → deploy)
-- `docs/specs/web-portal.md` (implementation-current snapshot)
-- `docs/specs/web-portal-vm.md`
+- `docs/specs/web-portal/sdlc-web-portal.md` (SDLC visibility: proposal → Court → build → PR → deploy)
+- `docs/specs/web-portal/implementation-current.md` (implementation-current snapshot)
+- `docs/specs/web-portal/web-portal-vm.md`
 - Cloudflare harness post (https://blog.cloudflare.com/cyber-frontier-models/#what-a-harness-actually-fixes) — key inspiration for UI visibility of narrow/adversarial/parallel patterns.
 
 **This PRD establishes the vision and functional foundation. Detailed component specs, wireframes, and implementation tasks will follow in subsequent documents or issues.**

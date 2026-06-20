@@ -1,5 +1,7 @@
 # Web Portal Application Specification
 
+**Status:** Implementation current (tracks what ships today; target-state spec is `web-portal.md` in this folder)
+
 ## Overview
 The AegisClaw Web Portal is the primary rich, real-time web interface for users, reviewers, and operators. It runs in a dedicated isolated Web Portal VM (see `web-portal-vm.md`) and provides visibility, interaction, and control across chat, agents, governance (Court/approvals), SDLC flows (proposals, PRs, source, git, build), memory, audit, workspace, and system state.
 
@@ -54,7 +56,7 @@ Overview • Canvas • Chat • Agents • Skills • PRs • Source • Git �
 This replaces the older wireframe nav (Conversations/Teams/Court/Monitoring).
 
 ## Key Features & Screens (Current)
-See also target-state specs in `docs/specs/web-portal/` for the redesign direction; below reflects actual rendered templates + JS.
+See also target-state specs in this folder (notably `web-portal.md`) for the redesign direction; below reflects actual rendered templates + JS.
 
 ### 1. Overview (`/`)
 Stat cards grid (Running MicroVMs, Active Workers, Pending Approvals, Active Timers, Memory Entries, vCPUs/Mem allocated, Host RAM bar + Load). Tables for Running VMs (with RSS/CPU), Active Workers, Pending Approvals summary. Initial fetch via `system.stats` etc.; **live updates via STOMP subscription to `/topic/overview.stats`** (preferred) or existing SSE bundles. Quick links to other areas.
@@ -165,7 +167,7 @@ Additional: `/health` (ok), real-time endpoints (SSE + STOMP), error pages, trun
 This mechanism directly addresses resource usage concerns while enhancing the real-time feel of the dashboard.
 
 ## API for the Web Portal (Design + Current)
-The portal follows the design articulated in `docs/specs/sdlc-web-portal.md` (SDLC visibility, proposal→Court→build→PR→deploy transparency), target-state specs in `docs/specs/web-portal/`, `docs/specs/chat-ui-data-flow.md`, E2E contract in `web_portal_e2e_sdlc_test.go`, and trusted bridge list in `dashboard_daemon.go`.
+The portal follows the design articulated in `sdlc-web-portal.md` (SDLC visibility, proposal→Court→build→PR→deploy transparency), target-state specs in this folder (notably `web-portal.md`), `chat-ui-data-flow.md`, E2E contract in `web_portal_e2e_sdlc_test.go`, and trusted bridge list in `dashboard_daemon.go`.
 
 ### Consumed Internal Actions (via bridge, many trusted)
 - `worker.list` / `worker.status`
@@ -230,7 +232,7 @@ All public API calls from browser are untrusted by default (unless marked); sens
 - STOMP implementation: frame validation, size limits, rate limiting, no secret exposure. All traffic proxied.
 
 ## Related Documents & Traceability
-- `web-portal-vm.md`, `docs/specs/web-portal/` (target-state modular specs)
+- `web-portal-vm.md`, `web-portal.md` and sibling per-page specs (target-state modular specs)
 - `sdlc-web-portal.md` (SDLC portal vision + gaps that drove Canvas/PRs/Source/Workspace/Git)
 - `chat-ui-data-flow.md` (streaming/RAIL requirements; update for STOMP per-conversation path)
 - `event-system.md` (now includes STOMP gateway role)

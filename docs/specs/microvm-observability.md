@@ -2,7 +2,7 @@
 
 **Status:** Draft (Phases 0 & 1 prioritized)  
 **Date:** 2026-05-29  
-**Related:** host-daemon.md, web-portal-vm.md, builder-vm.md, event-system.md, cli.md
+**Related:** host-daemon.md, web-portal/web-portal-vm.md, builder-vm.md, event-system.md, cli.md
 
 ## Motivation
 
@@ -141,7 +141,7 @@ These are valuable but can be tackled after the immediate web-portal reachabilit
 - Current console handling in `internal/sandbox/firecracker.go`
 - vsock usage patterns in `cmd/web-portal/`, `cmd/aegishub/`, and the hubclient package
 - Host daemon responsibilities in `host-daemon.md`
-- Web Portal VM networking in `web-portal-vm.md`
+- Web Portal VM networking in `web-portal/web-portal-vm.md`
 
 ---
 
