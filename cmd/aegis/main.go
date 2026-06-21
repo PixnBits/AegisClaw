@@ -1561,7 +1561,7 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 
 	// Journey 01 Success Criteria: exact phrasing + exit 0 when healthy
 	if healthy {
-		fmt.Println("\nAll systems healthy")
+		fmt.Println("\nHealth checks complete — all systems healthy")
 	} else {
 		fmt.Println("\nHealth checks complete (issues found — see ⚠ items above)")
 	}
