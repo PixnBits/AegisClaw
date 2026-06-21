@@ -34,6 +34,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/config"
 	"AegisClaw/internal/eventbus"
@@ -811,6 +812,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// These are lightweight and do not contend heavily with base boots; they enable on-demand
 	// roles as soon as the PM registers (after its own base boot + hub dial).
 	go startOrchestratorCommandReceiver()
+	go startChannelFacilitatorReceiver()
 	_ = getDaemonInternalHubClient() // eager init of persistent "daemon-internal" client (one registration; stops N spam from internal sends)
 	go reconcileGuestHubBridges()
 
@@ -2123,8 +2125,8 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			if !collab.IsHumanPoster(from) {
 				resp.Data = map[string]string{"status": "skipped", "reason": "not a human poster"}
 			} else {
-				go fanOutChannelActivity(chID, from, content)
-				resp.Data = map[string]string{"status": "fanout_started", "channel_id": chID}
+				// Store channel.post already notifies channel-facilitator; legacy fan-out ack only.
+				resp.Data = map[string]string{"status": "turn_scheduled", "channel_id": chID}
 			}
 		case "orchestrator.ensure_role":
 			role := req.Args["role"]
@@ -2588,6 +2590,21 @@ func runChannelGet(cmd *cobra.Command, args []string) {
 	fmt.Printf("Channel %s:\n%+v\n", id, data)
 }
 
+func runChannelTurnState(cmd *cobra.Command, args []string) {
+	id := args[0]
+	data, err := sendToComponentViaHubRetry("store", channelfacilitator.CmdTurnState, map[string]string{"channel_id": id}, 15*time.Second)
+	if err != nil {
+		fmt.Printf("channel turn-state error: %v\n", err)
+		return
+	}
+	if jsonOutput {
+		b, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("Turn state for channel %s:\n%+v\n", id, data)
+}
+
 func runChannelPost(cmd *cobra.Command, args []string) {
 	if len(args) < 2 {
 		fmt.Println("usage: aegis channel post <channel-id> <content...>")
@@ -2945,11 +2962,17 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	}
 	channelPostCmd := &cobra.Command{
 		Use:   "post <channel-id> <content...>",
-		Short: "Post a message to a channel (delivered to all members via channel.activity fan-out)",
+		Short: "Post a message to a channel (triggers turn-based agent delivery)",
 		Args:  cobra.MinimumNArgs(2),
 		Run:   runChannelPost,
 	}
-	channelCmd.AddCommand(channelListCmd, channelGetCmd, channelPostCmd)
+	channelTurnStateCmd := &cobra.Command{
+		Use:   "turn-state <channel-id>",
+		Short: "Show round-robin position and last_seen_seq per member (turn observability)",
+		Args:  cobra.ExactArgs(1),
+		Run:   runChannelTurnState,
+	}
+	channelCmd.AddCommand(channelListCmd, channelGetCmd, channelPostCmd, channelTurnStateCmd)
 
 	// PM (Project Manager) commands for direct E2E triggering (plan Phase 3/5)
 	pmCmd := &cobra.Command{
@@ -5280,15 +5303,12 @@ func startOrchestratorCommandReceiver() {
 			if msg.Command == "channel.relay_activity" || msg.Command == "channel.fanout" {
 				payload, _ := msg.Payload.(map[string]interface{})
 				chID, _ := payload["channel_id"].(string)
-				from, _ := payload["from"].(string)
-				content := collab.PayloadContentString(payload["content"])
-				go fanOutChannelActivity(chID, from, content)
 				if msg.Command == "channel.fanout" {
 					_ = client.Reply(context.Background(), hubclient.Message{
 						Source:      requesterID,
 						Destination: msg.Source,
 						Command:     "response",
-						Payload:     map[string]interface{}{"status": "fanout_started", "channel_id": chID},
+						Payload:     map[string]interface{}{"status": "turn_scheduled", "channel_id": chID},
 						Timestamp:   time.Now().UTC().Format(time.RFC3339),
 					})
 				}
@@ -5302,9 +5322,7 @@ func startOrchestratorCommandReceiver() {
 					if chID != "" {
 						collab.Tracef("daemon", "channel.updated.recv", "ch=%s from=%s human=%v", chID, from, collab.IsHumanPoster(from))
 						go notifyWebPortalChannelActivity(chID, from, content)
-						if collab.IsHumanPoster(from) && content != "" {
-							go fanOutChannelActivity(chID, from, content)
-						}
+						// Agent delivery is turn-based via channel-facilitator (not human-only fan-out).
 					}
 				}
 				continue

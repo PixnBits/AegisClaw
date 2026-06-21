@@ -212,6 +212,11 @@ rules:
   destination: "*"
   commands:
     - channel.turn
+- source: channel-facilitator
+  destination: "daemon-orchestrator"
+  commands:
+    - ensure.role
+    - orchestrator.*
 
 # Agents query relevance and message history via Store tools
 - source: "agent*"

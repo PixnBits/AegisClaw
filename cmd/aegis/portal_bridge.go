@@ -126,8 +126,8 @@ func portalChannelFanout(payload interface{}) (interface{}, error) {
 	if !collab.IsHumanPoster(from) {
 		return map[string]interface{}{"status": "skipped", "reason": "not a human poster"}, nil
 	}
-	go fanOutChannelActivity(chID, from, content)
-	return map[string]interface{}{"status": "fanout_started", "channel_id": chID}, nil
+	// Store channel.post already notifies channel-facilitator for agent turns.
+	return map[string]interface{}{"status": "turn_scheduled", "channel_id": chID}, nil
 }
 
 func handlePortalChatAction(command string, payload interface{}) (interface{}, error) {
