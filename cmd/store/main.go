@@ -434,6 +434,7 @@ func runStore(cmd *cobra.Command, args []string) {
 	teams := loadFromFile("teams.json")
 	chatSessions := chatstore.New("chat-sessions.json")
 	channels := loadFromFile("channels.json")
+	initPermissionState()
 
 	// Phase 2.1a + 2.3 recovery (store-vm.md + event-system.md):
 	// Explicitly load ALL durable timer/ grant state at startup.
@@ -1224,17 +1225,25 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = "ok"
 		case "version", "get-version":
 			if msg.Command == "get-version" {
-				// For get-version from hub, send proper Message response back
 				response.Command = "version"
 				response.Source = "store"
 				response.Destination = msg.Source
 				response.Payload = map[string]string{"version": getBuildVersion()}
-				// Don't continue - let normal flow sign and send
 			} else {
 				response.Command = "version"
 				response.Payload = map[string]string{"version": getBuildVersion()}
 			}
 		default:
+			if handled, cmd, payload := handlePermissionCommand(msg, &response, skills, &auditLog); handled {
+				response.Command = cmd
+				response.Payload = payload
+				break
+			}
+			if ok, errMsg := permissionCheckAtStore(msg.Source, msg.Command, skills); !ok {
+				response.Command = "error"
+				response.Payload = errMsg
+				break
+			}
 			response.Command = "error"
 			response.Payload = "unknown command"
 		}
@@ -1287,7 +1296,9 @@ func runStore(cmd *cobra.Command, args []string) {
 			msg.Command == "court.review_complete" ||
 			msg.Command == "pr.create" ||
 			msg.Command == "skill.register" ||
-			msg.Command == "memory.store" {
+			msg.Command == "memory.store" ||
+			strings.HasPrefix(msg.Command, "permission.") ||
+			strings.HasPrefix(msg.Command, "visibility.") {
 			entry := map[string]interface{}{
 				"ts":      response.Timestamp,
 				"command": msg.Command,

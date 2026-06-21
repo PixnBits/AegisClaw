@@ -516,6 +516,101 @@ rules:
     - chat.message
     - user.turn
 
+# --- Permissions & Capability Grants (permissions-model.md) ---
+# Hub fetches/pushes permission snapshots; Store owns durable grants + visibility.
+- source: hub
+  destination: store
+  commands:
+    - permission.snapshot
+    - permission.request
+    - permission.grant
+    - permission.revoke
+    - permission.list
+    - permission.check
+    - permission.requests.list
+    - visibility.list
+    - visibility.get
+    - visibility.set
+- source: "hub-perm-fetch"
+  destination: store
+  commands:
+    - permission.snapshot
+    - permission.request
+- source: store
+  destination: hub
+  commands:
+    - permission.snapshot
+    - permission.granted
+    - permission.revoked
+    - permission.request
+    - visibility.set
+- source: store
+  destination: "hub-perm-fetch"
+  commands:
+    - permission.snapshot
+    - error
+    - response
+# Hub pushes snapshots to agent microVMs
+- source: hub
+  destination: "agent*"
+  commands:
+    - permission.snapshot
+- source: hub
+  destination: "project-manager*"
+  commands:
+    - permission.snapshot
+- source: hub
+  destination: "coder*"
+  commands:
+    - permission.snapshot
+# Portal + CLI manage grants (user-controlled)
+- source: web-portal
+  destination: store
+  commands:
+    - permission.grant
+    - permission.revoke
+    - permission.list
+    - permission.check
+    - permission.snapshot
+    - permission.requests.list
+    - visibility.set
+    - visibility.get
+    - visibility.list
+- source: "daemon-internal*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+- source: "daemon-internal-*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+- source: "aegis-cli-internal*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+- source: "aegis-cli-internal"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+# Agents may record permission requests (denied attempts) but never self-grant
+- source: "agent*"
+  destination: store
+  commands:
+    - permission.request
+- source: "project-manager*"
+  destination: store
+  commands:
+    - permission.request
+- source: "coder*"
+  destination: store
+  commands:
+    - permission.request
+    - tool.registry.discover
+
 # --- Catch common response patterns (signed replies often mirror cmd names or use response/*) ---
 # Broad but explicit for known components during Phase 3 iteration
 - source: "*"

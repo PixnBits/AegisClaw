@@ -404,6 +404,12 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	encoders.Encoder.Encode(response)
 	encoders.Mutex.Unlock()
 
+	// Push permission + visibility snapshot to agent-like microVMs (permissions-model.md §Enforcement flow step 1).
+	if shouldReceivePermissionSnapshot(componentID) {
+		snap := fetchPermissionSnapshotFromStore(componentID)
+		pushPermissionSnapshot(componentID, encoders, snap)
+	}
+
 	if isEphemeralHubClient(componentID) {
 		ephemeralHubRPCLoop(componentID, encoders)
 		return
@@ -452,6 +458,18 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			encoder.Encode(map[string]string{"error": "ERR_ACL_VIOLATION"})
 			log.Printf("Audit: ACL violation %s -> %s : %s", msg.Source, msg.Destination, msg.Command)
 			continue
+		}
+
+		// Fine-grained permission check (permissions-model.md §Enforcement)
+		if allowed, reason := checkHubPermission(msg.Source, msg.Command); !allowed {
+			encoder.Encode(map[string]string{"error": reason})
+			log.Printf("Audit: permission denied %s : %s -> %s", msg.Source, msg.Command, msg.Destination)
+			continue
+		}
+
+		// Hot invalidation on grant/visibility changes from Store
+		if msg.Command == "permission.granted" || msg.Command == "permission.revoked" || msg.Command == "visibility.set" {
+			handlePermissionInvalidationEvent(msg)
 		}
 
 		if msg.Destination == "hub" {
@@ -546,9 +564,6 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				}
 				continue
 			}
-			// Store outbound frames (relay, update, posted) must never enter forwardHubRPC on
-			// the store connection reader. Mistaking them for new RPCs blocks this goroutine for
-			// RPC timeouts and stalls subsequent channel.relay_activity fan-out (E2E portal/CLI).
 			if componentID == "store" && msg.Source == "store" {
 				debugLog("hub", fmt.Sprintf("store outbound ignored cmd=%q dest=%s", msg.Command, msg.Destination))
 				continue
@@ -633,6 +648,7 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 
 	select {
 	case reply := <-waitCh:
+		maybeInvalidatePermissionsFromReply(reply)
 		return reply
 	case <-time.After(rpcTimeout):
 		return Message{Command: "error", Payload: "ERR_RPC_TIMEOUT"}

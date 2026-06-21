@@ -104,5 +104,19 @@ export const api = {
       method: 'POST',
       headers: { 'X-Aegis-Confirmed': '1' },
     }),
+  agentPermissions: (agentId: string) =>
+    fetchJSON<{
+      agent_id: string;
+      grants: unknown[];
+      requests: unknown[];
+      visibility: unknown[];
+      snapshot: unknown;
+    }>(`/api/agents/${encodeURIComponent(agentId)}/permissions`),
+  agentPermissionAction: (agentId: string, action: 'grant' | 'revoke' | 'hide', capability: string, reason?: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/permissions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Aegis-Confirmed': '1' },
+      body: JSON.stringify({ action, capability, reason }),
+    }),
   activeWork: () => fetchJSON<{ items: unknown[]; count: number }>('/api/active-work'),
 };

@@ -176,6 +176,12 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Belt-and-suspenders: ensure member fan-out even if store→daemon channel.updated is delayed.
+		_, _ = s.fetchRaw(ctx, "channel.fanout", map[string]interface{}{
+			"channel_id": parts[0],
+			"from":       from,
+			"content":    content,
+		})
 		// Fan-out to channel members is triggered by store → channel.updated on the daemon.
 		s.initSTOMP()
 		s.PublishChannelSTOMP(parts[0], from, content)

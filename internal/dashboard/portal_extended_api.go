@@ -109,6 +109,9 @@ func (s *Server) handleAPIAgentDetail(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) >= 2 {
 		switch parts[1] {
+		case "permissions":
+			s.handleAPIAgentPermissions(w, r, ctx, agentID)
+			return
 		case "trace":
 			if r.Method != http.MethodGet {
 				http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -192,6 +195,64 @@ func (s *Server) collectAgentTrace(ctx context.Context, agentID string) map[stri
 		"agent_id":   agentID,
 		"session_id": sessionID,
 		"phases":     phases,
+	}
+}
+
+func (s *Server) handleAPIAgentPermissions(w http.ResponseWriter, r *http.Request, ctx context.Context, agentID string) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		grants, _ := s.fetchRaw(ctx, "permission.list", map[string]interface{}{"subject": agentID})
+		requests, _ := s.fetchRaw(ctx, "permission.requests.list", map[string]interface{}{"subject": agentID})
+		visibility, _ := s.fetchRaw(ctx, "visibility.list", map[string]interface{}{"subject": agentID})
+		snapshot, _ := s.fetchRaw(ctx, "permission.snapshot", map[string]interface{}{"subject": agentID})
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"agent_id":   agentID,
+			"grants":     grants,
+			"requests":   requests,
+			"visibility": visibility,
+			"snapshot":   snapshot,
+		})
+	case http.MethodPost:
+		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
+			return
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		action, _ := body["action"].(string)
+		capability, _ := body["capability"].(string)
+		switch action {
+		case "grant":
+			_, err := s.fetchRaw(ctx, "permission.grant", map[string]interface{}{
+				"subject": agentID, "capability": capability, "reason": body["reason"],
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		case "revoke":
+			_, err := s.fetchRaw(ctx, "permission.revoke", map[string]interface{}{
+				"subject": agentID, "capability": capability,
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		case "hide":
+			_, err := s.fetchRaw(ctx, "visibility.set", map[string]interface{}{
+				"subject": agentID, "capability": capability, "level": "hidden", "reason": body["reason"],
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, "unknown action", http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "action": action}) //nolint:errcheck
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 

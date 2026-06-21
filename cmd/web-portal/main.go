@@ -16,6 +16,7 @@ import (
 
 	"AegisClaw/internal/dashboard"
 	guestlog "AegisClaw/internal/guest/log"
+	"AegisClaw/internal/permissions"
 	"AegisClaw/internal/timing"
 
 	"github.com/spf13/cobra"
@@ -244,10 +245,11 @@ func (n *noopAPIClient) Call(ctx context.Context, action string, payload json.Ra
 // This makes the thin layer return data that matches the shapes expected by E2E specs
 // and the dashboard templates (skills list, proposals, etc.) without needing a full daemon/Hub.
 type e2eFixtureClient struct {
-	skills    map[string]map[string]interface{}
-	proposals map[string]map[string]interface{}
-	created   map[string]map[string]interface{} // ephemeral creates during a test run
-	channels  map[string]map[string]interface{} // mutable channel state for collab E2E
+	skills      map[string]map[string]interface{}
+	proposals   map[string]map[string]interface{}
+	created     map[string]map[string]interface{} // ephemeral creates during a test run
+	channels    map[string]map[string]interface{} // mutable channel state for collab E2E
+	permissions *permissions.State                  // capability grants + visibility (permissions-model.md)
 }
 
 func tryNewE2EFixtureClient() *e2eFixtureClient {
@@ -262,12 +264,15 @@ func tryNewE2EFixtureClient() *e2eFixtureClient {
 	}
 
 	c := &e2eFixtureClient{
-		skills:    map[string]map[string]interface{}{},
-		proposals: map[string]map[string]interface{}{},
-		created:   map[string]map[string]interface{}{},
-		channels:  map[string]map[string]interface{}{},
+		skills:      map[string]map[string]interface{}{},
+		proposals:   map[string]map[string]interface{}{},
+		created:     map[string]map[string]interface{}{},
+		channels:    map[string]map[string]interface{}{},
+		permissions: permissions.DefaultBootstrap(),
 	}
 	c.seedChannels()
+	// Seed a pending permission request for per-agent Portal E2E (permissions-model.md §Request flow).
+	_ = permissions.RecordRequest(c.permissions, "coder-test", "channel.create", "need channel for isolated task")
 
 	if skillsFile != "" {
 		if b, err := os.ReadFile(filepath.Join(dataDir, skillsFile)); err == nil {
@@ -653,7 +658,102 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		data, _ := json.Marshal([]interface{}{
 			map[string]interface{}{"id": "worker-research", "name": "researcher", "status": "running", "task": "Analyzing proposal", "team_id": "alpha", "role": "researcher", "progress": "65%"},
 			map[string]interface{}{"id": "worker-builder", "name": "builder", "status": "idle", "task": "Waiting", "team_id": "alpha", "role": "builder"},
+			map[string]interface{}{"id": "coder-test", "name": "coder-test", "status": "running", "task": "Fixture coder", "role": "coder", "progress": "10%"},
 		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "permission.list":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		subject := req["subject"]
+		var list []permissions.Grant
+		if subject != "" {
+			list = permissions.ListGrantsForSubject(c.permissions, subject)
+		} else {
+			list = c.permissions.Grants
+		}
+		out := make([]interface{}, len(list))
+		for i, g := range list {
+			out[i] = g
+		}
+		data, _ := json.Marshal(out)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "permission.requests.list":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		subject := req["subject"]
+		var reqs []permissions.Request
+		if subject != "" {
+			reqs = permissions.ListRequestsForSubject(c.permissions, subject)
+		} else {
+			reqs = c.permissions.Requests
+		}
+		out := make([]interface{}, len(reqs))
+		for i, r := range reqs {
+			out[i] = r
+		}
+		data, _ := json.Marshal(out)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "permission.snapshot":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		subject := req["subject"]
+		if subject == "" {
+			subject = "coder-test"
+		}
+		snap := permissions.BuildSnapshot(c.permissions, subject, permissions.KnownCapabilities())
+		data, _ := json.Marshal(snap)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "permission.grant":
+		var req map[string]interface{}
+		json.Unmarshal(payload, &req)
+		subject, _ := req["subject"].(string)
+		capability, _ := req["capability"].(string)
+		reason, _ := req["reason"].(string)
+		if err := permissions.GrantCapability(c.permissions, subject, capability, "web-portal", reason); err != nil {
+			return &dashboard.APIResponse{Success: false, Error: err.Error()}, nil
+		}
+		data, _ := json.Marshal(map[string]interface{}{"subject": subject, "capability": capability, "version": c.permissions.Version})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "permission.revoke":
+		var req map[string]interface{}
+		json.Unmarshal(payload, &req)
+		subject, _ := req["subject"].(string)
+		capability, _ := req["capability"].(string)
+		revoked := permissions.RevokeCapability(c.permissions, subject, capability)
+		data, _ := json.Marshal(map[string]interface{}{"revoked": revoked, "subject": subject, "capability": capability})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "visibility.list":
+		var req map[string]string
+		json.Unmarshal(payload, &req)
+		subject := req["subject"]
+		var rules []permissions.VisibilityRule
+		for _, r := range c.permissions.Visibility {
+			if subject == "" || permissions.SubjectMatches(subject, r.Subject) {
+				rules = append(rules, r)
+			}
+		}
+		out := make([]interface{}, len(rules))
+		for i, r := range rules {
+			out[i] = r
+		}
+		data, _ := json.Marshal(out)
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "visibility.set":
+		var req map[string]interface{}
+		json.Unmarshal(payload, &req)
+		subject, _ := req["subject"].(string)
+		capability, _ := req["capability"].(string)
+		level, _ := req["level"].(string)
+		reason, _ := req["reason"].(string)
+		permissions.SetVisibility(c.permissions, subject, capability, permissions.VisibilityLevel(level), "web-portal", reason)
+		data, _ := json.Marshal(map[string]interface{}{"subject": subject, "capability": capability, "level": level})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "sandbox.list":

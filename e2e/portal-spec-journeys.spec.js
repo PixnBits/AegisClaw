@@ -55,11 +55,31 @@ test.describe('Web Portal spec journeys (fixture)', () => {
     await waitPortalReady(page);
     await page.getByTestId('nav-agents').click();
     await expect(page.getByTestId('agents-panel')).toBeVisible({ timeout: 8000 });
-    const first = page.locator('[data-testid="agents-list"] .list-card').first();
+    const first = page.locator('[data-testid="agents-specialists-list"] .list-card').first();
     if (await first.isVisible()) {
       await first.click();
       await expect(page.getByTestId('trace-panel')).toBeVisible();
       await expect(page.getByTestId('trace-timeline')).toBeVisible();
+    }
+  });
+
+  test('Agent trace shows permission requests and grants panel', async ({ page, request }) => {
+    const perms = await request.get('/api/agents/coder-test/permissions');
+    expect(perms.ok()).toBeTruthy();
+    const body = await perms.json();
+    expect(body).toHaveProperty('grants');
+    expect(body).toHaveProperty('requests');
+    expect(Array.isArray(body.requests)).toBeTruthy();
+
+    await waitPortalReady(page);
+    await page.getByTestId('nav-agents').click();
+    await expect(page.getByTestId('agents-panel')).toBeVisible({ timeout: 8000 });
+    const coderCard = page.getByTestId('agent-card-coder-test');
+    if (await coderCard.isVisible()) {
+      await coderCard.click();
+      await expect(page.getByTestId('agent-permissions-panel')).toBeVisible();
+      await expect(page.getByTestId('agent-grants-list')).toBeVisible();
+      await expect(page.getByTestId('agent-permission-requests')).toBeVisible();
     }
   });
 

@@ -1,0 +1,386 @@
+{
+  "grants": [
+    {
+      "subject": "project-manager*",
+      "capability": "channel.create",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "channel.list",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "channel.get",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "channel.join",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "channel.post",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "llm.call",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "memory.store",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "memory.query",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "tool.list",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "tool.search",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal PM bootstrap"
+    },
+    {
+      "subject": "agent*",
+      "capability": "channel.list",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal agent bootstrap"
+    },
+    {
+      "subject": "agent*",
+      "capability": "channel.get",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal agent bootstrap"
+    },
+    {
+      "subject": "agent*",
+      "capability": "channel.post",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal agent bootstrap"
+    },
+    {
+      "subject": "agent*",
+      "capability": "llm.call",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal agent bootstrap"
+    },
+    {
+      "subject": "agent*",
+      "capability": "memory.store",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal agent bootstrap"
+    },
+    {
+      "subject": "agent*",
+      "capability": "memory.query",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal agent bootstrap"
+    },
+    {
+      "subject": "agent*",
+      "capability": "tool.list",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal agent bootstrap"
+    },
+    {
+      "subject": "agent*",
+      "capability": "tool.search",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal agent bootstrap"
+    },
+    {
+      "subject": "coder*",
+      "capability": "channel.list",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal coder bootstrap"
+    },
+    {
+      "subject": "coder*",
+      "capability": "channel.get",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal coder bootstrap"
+    },
+    {
+      "subject": "coder*",
+      "capability": "channel.post",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal coder bootstrap"
+    },
+    {
+      "subject": "coder*",
+      "capability": "llm.call",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal coder bootstrap"
+    },
+    {
+      "subject": "coder*",
+      "capability": "memory.store",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal coder bootstrap"
+    },
+    {
+      "subject": "coder*",
+      "capability": "tool.list",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal coder bootstrap"
+    },
+    {
+      "subject": "coder*",
+      "capability": "tool.search",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "minimal coder bootstrap"
+    },
+    {
+      "subject": "court-persona*",
+      "capability": "channel.list",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "court persona bootstrap"
+    },
+    {
+      "subject": "court-persona*",
+      "capability": "channel.get",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "court persona bootstrap"
+    },
+    {
+      "subject": "court-persona*",
+      "capability": "channel.post",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "court persona bootstrap"
+    },
+    {
+      "subject": "court-persona*",
+      "capability": "llm.call",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "court persona bootstrap"
+    },
+    {
+      "subject": "court-persona*",
+      "capability": "tool.list",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "court persona bootstrap"
+    },
+    {
+      "subject": "court-persona*",
+      "capability": "tool.search",
+      "granted_by": "bootstrap",
+      "granted_at": "2026-06-21T17:07:28Z",
+      "reason": "court persona bootstrap"
+    }
+  ],
+  "visibility": [
+    {
+      "subject": "agent*",
+      "capability": "court.review",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "coder*",
+      "capability": "court.review",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "court.review",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "agent*",
+      "capability": "permission.grant",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "coder*",
+      "capability": "permission.grant",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "permission.grant",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "agent*",
+      "capability": "permission.revoke",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "coder*",
+      "capability": "permission.revoke",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "permission.revoke",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "agent*",
+      "capability": "visibility.set",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "coder*",
+      "capability": "visibility.set",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "visibility.set",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "agent*",
+      "capability": "secrets.push",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "coder*",
+      "capability": "secrets.push",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "secrets.push",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "agent*",
+      "capability": "proposal.create",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "coder*",
+      "capability": "proposal.create",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "project-manager*",
+      "capability": "proposal.create",
+      "level": "hidden",
+      "reason": "anti-fingerprinting default",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    },
+    {
+      "subject": "*",
+      "capability": "tool.registry.discover",
+      "level": "granted_only",
+      "reason": "broad discovery is grant-gated",
+      "set_by": "bootstrap",
+      "set_at": "2026-06-21T17:07:28Z"
+    }
+  ],
+  "requests": [
+    {
+      "id": "perm-req-1",
+      "subject": "coder-evil",
+      "capability": "proposal.create",
+      "context": "denied at store enforcement",
+      "timestamp": "2026-06-21T17:07:28Z",
+      "status": "pending"
+    }
+  ],
+  "version": 51
+}
