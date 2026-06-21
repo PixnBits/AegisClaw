@@ -1,117 +1,197 @@
 # Turn-Based Message Propagation
 
-**Status**: Initial spec draft
+**Status**: Detailed specification (v1)
 
-This document captures the technical specification for batched turn-based message propagation in channels.
+This is the authoritative technical specification for implementing batched turn-based message propagation. It is intentionally specific to minimise surprises and ad-hoc decisions during implementation.
 
-## Overview
+## 1. Goals & Non-Goals
 
-Replace the current human-only `channel.activity` fan-out with a turn-based delivery system. Agents receive coherent batches of new messages since their last turn, along with lightweight relevance anchors. Context reconstruction and handling of large batches is performed inside the receiving agent's existing agentic loop.
+**Goals**
+- Enable agents to collaborate by receiving coherent batches of new messages since their own last turn.
+- Provide lightweight relevance context so agents can understand what discussion the batch advances.
+- Keep LLM token usage bounded even on long or bursty channels.
+- Keep the host daemon minimal (no new privileged logic).
+- Preserve existing security model (signed hub messages, ACLs, isolation).
 
-## Components
+**Non-Goals (for v1)**
+- Explicit `reply_to` threading.
+- Facilitator performing summarisation.
+- Rich pre-computed conversation state in every turn.
+- Cross-channel turn coordination.
 
-### 1. Channel Facilitator (new thin microVM)
+## 2. High-Level Architecture
 
-**Responsibilities**:
-- Maintain per-channel round-robin turn order.
-- Track per-member `last_seen_seq`.
-- Apply bounded mention priority boosts.
-- Compute cheap relevance anchors using implicit signals from recent messages.
-- Build and deliver `channel.turn` payloads.
+- **Channel Facilitator**: New thin microVM (or initially part of `project-manager`). Owns turn scheduling and delivery.
+- **Store**: Source of truth for messages + new `get_relevant_since` query.
+- **Agents**: Consume turns via their existing agentic loop + new relevance tool.
+- **Web Portal / Humans**: Continue to receive full real-time stream via STOMP (unchanged).
 
-**Location**: New thin guest binary (or initially absorbed into `project-manager`).
-**Registration**: Standard hub registration + ACL rules.
-**Lifecycle**: On-demand / pre-warmable, consistent with other roles.
+All inter-component communication uses existing signed hubclient patterns.
 
-**No responsibilities**:
-- Summarisation
-- Maintaining rich conversation state
-- LLM calls
+## 3. Turn Scheduling & Delivery
 
-### 2. Store
+### 3.1 Turn Order
 
-**New / extended queries**:
-- `get_relevant_since(channel_id, since_seq, anchors, focus?)` — returns curated prior messages.
-- Efficient access to recent message metadata for anchor computation (mentions, author, keywords, assignment markers).
+- Per-channel round-robin queue of current members.
+- After a human post or significant agent post, the facilitator advances the queue and delivers the next turn(s).
+- **Mention boost**: An agent mentioned in the most recent activity receives a +2 position boost (maximum 2 boosts per full cycle). Boosts decay after use.
+- Starvation guard: Any member whose last turn is older than N full cycles is forced to the front on the next cycle.
 
-Store remains the single source of truth for all message history and membership.
+### 3.2 Turn Payload (Wire Format)
 
-### 3. Agent Runtime (existing)
-
-- On receipt of a turn, the agent's main loop treats it as new observations.
-- First micro-step: relevance triage using anchors + optional call to `get_relevant_since`.
-- Subsequent steps: decide action, possibly self-summarise, or stay silent.
-- Strengthens existing `ShouldRespondToActivity` logic.
-
-### 4. Web Portal / STOMP
-
-- Human view remains real-time full message stream (unchanged).
-- Agents receive private turn batches.
-
-## Data Model
-
-### Turn Payload (hub message)
+Hub command: `channel.turn`
 
 ```json
 {
-  "type": "channel.turn",
   "channel_id": "string",
-  "recipient": "string",           // role or specific agent id
-  "since_seq": number,
-  "new_messages": [...],
-  "relevance_anchors": number[],   // seqs/ids
-  "mention_boosts_applied": {...}
+  "recipient_role_or_id": "string",     // e.g. "project-manager" or "court-persona-ciso"
+  "since_seq": 42,
+  "new_messages": [ Message, ... ],
+  "relevance_anchors": [38, 39, 41],   // seq numbers
+  "mention_boosts": { "court-persona-ciso": 1 },
+  "generated_at": "2026-06-21T..."
 }
 ```
 
-### Relevance Anchors
+`Message` shape is the existing channel message format used by Store.
 
-Computed from implicit signals (no explicit threading required):
-- Recent messages that @mention the recipient
-- Recent messages by the same author as recent activity
-- Messages containing assignment language or proposal references
-- Topical keyword overlap with the new batch
+`relevance_anchors` is a small ordered list (max 8 in v1) of prior message seqs that the facilitator determined are likely relevant via implicit signals.
 
-## Interfaces
+### 3.3 When Turns Are Delivered
 
-### New Tool (agent-callable)
+Primary triggers:
+- Human post to channel (immediate consideration for turn delivery).
+- Agent post that is a broadcast, assignment, or contains strong signals.
+- Time-based / idle catch-up (configurable, default off in v1).
 
-`channel.get_relevant_since(last_seq, anchors, focus?)`
+The facilitator decides the recipient list for each turn based on current channel membership + round-robin state.
 
-Returns a short list of prior messages/excerpts relevant to the current turn.
+## 4. Relevance Anchors (Implicit Signals)
 
-### Hub Commands / Routing
+The facilitator computes `relevance_anchors` using only cheap, local signals from the recent message window (last 50 messages or last 5 minutes, whichever is smaller).
 
-- New or extended routing for `channel.turn` delivery.
-- ACLs: facilitator → agents (turn delivery), agents → store (relevance queries).
+Signals (in priority order):
+1. Messages that directly @mention the recipient role/id.
+2. Messages authored by the same agent as the most recent activity in the batch.
+3. Messages containing explicit assignment language ("assign to", "@Coder", "your task").
+4. Recent PM monitoring or plan posts.
+5. Topical keyword overlap (simple token match on key nouns from the new batch).
 
-## Security & Isolation
+The facilitator returns the top 8 distinct seqs. No scoring beyond ordering; simple recency + signal strength tie-break.
 
-- All turn delivery goes through signed hub messages.
-- Facilitator has minimal privileges (read recent channel metadata + deliver turns).
-- No new privileged operations in the host daemon.
+**No LLM is used** for anchor selection in v1.
 
-## Observability
+## 5. Relevance Tool (Agent-Facing)
 
-Extend existing `[collab-trace]` instrumentation to cover:
-- Turn computation
-- Anchor selection
-- Relevance tool calls
-- Agent triage decisions
+New agent-callable tool exposed via hub:
 
-## Open Implementation Questions
+**Command**: `channel.get_relevant_since`
 
-- Exact algorithm / window size for computing implicit relevance anchors.
-- Hard limits on `new_messages` per turn and `relevance_anchors` per turn.
-- Whether `last_seen_seq` lives in Store membership or facilitator-local state.
-- Performance budget and caching strategy for the relevance tool.
+**Request**:
+```json
+{
+  "channel_id": "string",
+  "since_seq": number,
+  "anchors": number[],
+  "focus": "string?"          // optional: "assignments", "security", "my_tasks", ...
+  "max_results": number      // default 12, max 20 in v1
+}
+```
 
-## Related Documents
+**Response**:
+```json
+{
+  "messages": [ Message, ... ],
+  "total_available": number
+}
+```
 
-- `docs/prd/turn-based-message-propagation.md`
-- `docs/channel-collab-debugging.md` (will be extended)
-- `docs/implementation-plan/collaboration-model.md` (tracking item needed)
+The tool must return messages that help the agent understand the context of the current turn. It may use the supplied `anchors` as strong seeds and `focus` as a filter hint.
+
+Implementation note for v1: Simple recency + anchor overlap + optional keyword filter is acceptable. More sophisticated retrieval can be added later without changing the interface.
+
+Error cases: Channel not found, seq out of range → clear error with `since_seq` suggestion.
+
+## 6. Facilitator MicroVM Detailed Responsibilities
+
+### State
+- Per-channel: current round-robin position, per-member `last_seen_seq`, mention boost counters (decay after use).
+- `last_seen_seq` may be stored in facilitator-local state or written back to Store membership record (decision: local state in v1 for simplicity; can move to Store later).
+
+### Startup
+- Registers on AegisHub as `channel-facilitator` (or `project-manager` if absorbed).
+- Receives `channel.*` events it cares about via hub subscription.
+
+### On Receiving Activity
+1. Update internal last-seen for the poster.
+2. Compute relevance anchors for affected recipients.
+3. For each recipient due for a turn: build payload and send `channel.turn`.
+4. Update last-seen for recipients after successful delivery.
+
+### Concurrency
+- Single goroutine / actor per channel to avoid races on round-robin state.
+- Use existing ephemeral hub client pattern for delivery (already hardened).
+
+## 7. ACL & Security Requirements
+
+New or extended ACL rules (in `config/acls.yaml`):
+
+```yaml
+- source: channel-facilitator
+  destination: "*"
+  commands: ["channel.turn"]
+
+- source: "*"
+  destination: channel-facilitator
+  commands: ["channel.activity", "channel.updated"]
+
+- source: agent-*
+  destination: store
+  commands: ["channel.get_relevant_since"]
+```
+
+All messages remain signed. Facilitator has read-only access to recent channel metadata.
+
+## 8. Observability & Debugging
+
+Extend existing `[collab-trace]` with stages:
+- `facilitator.turn.compute`
+- `facilitator.anchor.select`
+- `agent.turn.received`
+- `agent.relevance.triage`
+- `agent.relevance.tool_call`
+
+Add `AEGIS_TURN_TRACE=1` env var (propagated to facilitator and agents).
+
+## 9. Error Handling & Resilience
+
+- Failed turn delivery → retry with backoff (max 3 attempts, then log and continue).
+- Store query failure for anchors → fall back to most recent N messages.
+- Agent fails to process turn → facilitator still advances last_seen (prevents repeated delivery of same batch).
+
+## 10. Performance & Sizing (v1 Targets)
+
+- Turn payload size: < 50 messages + 8 anchors.
+- Relevance tool latency: < 200 ms p99 on warm Store.
+- Facilitator memory: < 50 MB per active channel (soft target).
+- No impact on cold-start or pre-warm budgets for other roles.
+
+## 11. Implementation Order Recommendation
+
+1. Define hub message types and ACLs.
+2. Implement facilitator skeleton + round-robin state.
+3. Add `get_relevant_since` to Store (simple version).
+4. Wire turn delivery from facilitator.
+5. Add relevance tool call + triage in a test agent.
+6. Add E2E test with the driving use case.
+7. Harden, trace, and measure.
+
+## 12. Open Questions (to be resolved before or during implementation)
+
+- Exact storage location for `last_seen_seq` (facilitator vs Store).
+- Whether mention boost logic lives only in facilitator or is also visible to Store for query hints.
+- v1 limit values (max messages per turn, max anchors, boost amount).
 
 ---
 
-*Initial spec to drive implementation. Expect iteration as the facilitator and relevance tool are built.*
+*This spec is intentionally detailed. Implementors should raise questions here rather than making local decisions.*
