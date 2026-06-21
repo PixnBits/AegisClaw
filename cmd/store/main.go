@@ -1117,8 +1117,12 @@ func runStore(cmd *cobra.Command, args []string) {
 			chID := ""
 			if v, ok := payload["id"].(string); ok { chID = v }
 			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			role := ""
+			if v, ok := payload["role"].(string); ok {
+				role = collab.NormalizeMemberRole(v)
+			}
 			member := map[string]interface{}{
-				"role":     payload["role"],
+				"role":     role,
 				"agent_id": payload["agent_id"],
 				"added_at": response.Timestamp,
 			}

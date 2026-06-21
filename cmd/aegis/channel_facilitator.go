@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"os"
 	"time"
 
 	"AegisClaw/internal/channelfacilitator"
+	"AegisClaw/internal/config"
 	"AegisClaw/internal/transport/hubclient"
 
 	"github.com/sirupsen/logrus"
@@ -16,10 +16,7 @@ import (
 // startChannelFacilitatorReceiver registers channel-facilitator on the hub and
 // schedules turn-based delivery (logic lives in internal/channelfacilitator).
 func startChannelFacilitatorReceiver() {
-	hubPath := expandPath("~/.aegis/hub.sock")
-	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
-		hubPath = expandPath(env)
-	}
+	hubPath := config.ResolveHubSocket()
 	for {
 		pub, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {

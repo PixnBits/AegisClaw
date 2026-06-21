@@ -200,6 +200,11 @@ rules:
   commands:
     - channel.updated
     - channel.*
+# Ephemeral facilitator RPC clients (channel.get → channel.data, member_turn_update acks)
+- source: store
+  destination: channel-facilitator-out-*
+  commands:
+    - channel.*
 
 # Channel Facilitator ↔ Store (membership, last_seen_seq, turn tools, state)
 - source: channel-facilitator

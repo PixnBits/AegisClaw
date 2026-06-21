@@ -76,6 +76,7 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 	}
 	rrIndex := intFromMember(chMap["round_robin_index"])
 	recipient, newRR, mentionBoosts := SelectNextRecipient(members, rrIndex, content, settings)
+	recipient = collab.NormalizeMemberRole(recipient)
 	if recipient == "" {
 		return
 	}
@@ -255,6 +256,7 @@ func (f *Facilitator) deliverTurn(ctx context.Context, chID, role string, turn m
 }
 
 func turnDestinations(role, chID string) []string {
+	role = collab.NormalizeMemberRole(role)
 	if role == "project-manager" && chID != "" {
 		return []string{"project-manager-" + chID, "project-manager"}
 	}

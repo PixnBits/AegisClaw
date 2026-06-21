@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"os"
 	"sync/atomic"
 	"time"
 
+	"AegisClaw/internal/config"
 	"AegisClaw/internal/transport/hubclient"
 )
 
@@ -20,11 +20,7 @@ type EphemeralHub struct {
 
 // NewEphemeralHub dials the host hub socket for outbound facilitator RPCs.
 func NewEphemeralHub() *EphemeralHub {
-	socket := os.ExpandEnv("$HOME/.aegis/hub.sock")
-	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
-		socket = env
-	}
-	return &EphemeralHub{socket: socket}
+	return &EphemeralHub{socket: config.ResolveHubSocket()}
 }
 
 // Fire sends a signed one-way hub message (no RPC response wait).

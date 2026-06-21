@@ -463,6 +463,8 @@ func daemonChildEnv() []string {
 	if su := os.Getenv("SUDO_USER"); su != "" {
 		env = setEnvPair(env, "SUDO_USER", su)
 	}
+	env = setEnvPair(env, "AEGIS_HUB_SOCKET", config.ResolveHubSocket())
+	env = setEnvPair(env, "AEGIS_DATA_DIR", config.ResolveAegisDataDir())
 	// Explicitly carry AEGIS_BOOT_TIMING through the re-exec to the foreground
 	// child. This is required for reliable guest boot metrics on all VMs
 	// (including the early Court system) when measuring the <1s target for the
@@ -809,6 +811,12 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		logrus.Fatalf("failed to write PID file: %v", err)
 	}
 	defer removePIDFile()
+
+	// Pin hub socket for all daemon-side hub clients (facilitator ephemeral RPCs used $HOME
+	// previously, which is /root under sudo and missed the real socket under SUDO_USER).
+	if hubSocket := config.ResolveHubSocket(); hubSocket != "" {
+		_ = os.Setenv("AEGIS_HUB_SOCKET", hubSocket)
+	}
 
 	// Early receiver for PM ensure.role (daemon-orchestrator) and guest bridge reconciliation.
 	// These are lightweight and do not contend heavily with base boots; they enable on-demand
@@ -4624,10 +4632,8 @@ func startBaseInfrastructure() error {
 	dlog("ENTER startBaseInfrastructure (hub first, then real Firecracker VMs for boundary/store/web-portal)")
 
 	// 1. Determine a stable hub socket (used by all subsequent components and the daemon itself).
-	hubSocket := expandPath("~/.aegis/hub.sock")
-	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
-		hubSocket = expandPath(env)
-	}
+	hubSocket := config.ResolveHubSocket()
+	_ = os.Setenv("AEGIS_HUB_SOCKET", hubSocket)
 	if err := os.MkdirAll(filepath.Dir(hubSocket), 0755); err != nil {
 		return fmt.Errorf("hub socket dir: %w", err)
 	}
