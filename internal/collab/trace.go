@@ -18,7 +18,7 @@ func TraceEnabled() bool {
 }
 
 // Trace logs a single hop in the channel collaboration pipeline when tracing is enabled.
-// stage examples: channel.post, channel.updated, fanout.start, fanout.deliver, stomp.notify
+// stage examples: channel.post, channel.updated, channel.turn, turn.schedule, turn.deliver, stomp.notify
 func Trace(component, stage, detail string) {
 	if !TraceEnabled() {
 		return

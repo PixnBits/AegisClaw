@@ -1169,6 +1169,9 @@ func runStore(cmd *cobra.Command, args []string) {
 			chID := channelIDFromPayload(payload)
 			role, _ := payload["role"].(string)
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				if v, ok := payload["round_robin_index"]; ok {
+					ch["round_robin_index"] = intFromPayload(v)
+				}
 				members := channeldata.MembersSlice(ch)
 				for _, m := range members {
 					if channeldata.MemberRole(m) != role {
@@ -1178,21 +1181,10 @@ func runStore(cmd *cobra.Command, args []string) {
 						m["last_seen_seq"] = intFromPayload(v)
 					}
 					if v, ok := payload["cycles_since_turn"]; ok {
-						if n, ok := v.(float64); ok {
-							m["cycles_since_turn"] = int(n)
-						} else if n, ok := v.(int); ok {
-							m["cycles_since_turn"] = n
-						}
+						m["cycles_since_turn"] = intFromPayload(v)
 					}
 					if v, ok := payload["mention_boosts_left"]; ok {
-						if n, ok := v.(float64); ok {
-							m["mention_boosts_left"] = int(n)
-						} else if n, ok := v.(int); ok {
-							m["mention_boosts_left"] = n
-						}
-					}
-					if v, ok := payload["round_robin_index"]; ok {
-						ch["round_robin_index"] = v
+						m["mention_boosts_left"] = intFromPayload(v)
 					}
 					break
 				}

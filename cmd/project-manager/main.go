@@ -16,6 +16,7 @@ import (
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
@@ -248,6 +249,20 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 		}
 	}
 
+	lowerPlan := strings.ToLower(plan)
+	if strings.Contains(lowerPlan, "ciso") || strings.Contains(lowerPlan, "security") {
+		_, _ = hcl.Send(context.Background(), hubclient.Message{
+			Source:      uniqueSource,
+			Destination: "store",
+			Command:     "channel.add_member",
+			Payload: map[string]interface{}{
+				"channel_id": chID,
+				"role":       "court-persona-ciso",
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+
 	monitorContent := fmt.Sprintf("PM monitoring: roles ensured %v in channel %s. Awaiting updates from roles; will synthesize and escalate to Court when needed.", rolesToEnsure, chID)
 	if _, err := hcl.Send(context.Background(), hubclient.Message{
 		Source:      uniqueSource,
@@ -343,6 +358,81 @@ func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqu
 	fmt.Printf("PM: posted channel reply to %s (%s)\n", chID, reason)
 }
 
+func pmProcessChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSource string, realLLM agent.LLMCallFunc) {
+	turn, ok := collab.ParseTurnPayload(msg.Payload)
+	if !ok {
+		return
+	}
+	chID := turn.ChannelID
+	collab.Tracef("project-manager", "channel.turn.recv", "ch=%s since=%d new=%d", chID, turn.SinceSeq, len(turn.NewMessages))
+
+	_ = hcl.Reply(context.Background(), hubclient.Message{
+		Source:      uniqueSource,
+		Destination: msg.Source,
+		Command:     "response",
+		Payload: map[string]interface{}{
+			"status": "delivered", "reason": "turn", "channel_id": chID,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	batchText := collab.FormatTurnMessages(turn.NewMessages)
+	// Human goal / plan trigger: run full planning path when turn includes user content.
+	for _, m := range turn.NewMessages {
+		from := ""
+		if s, ok := m["from"].(string); ok {
+			from = s
+		}
+		content := collab.PayloadContentString(m["content"])
+		if collab.IsHumanPoster(from) && content != "" {
+			planMsg := hubclient.Message{
+				Source:      msg.Source,
+				Destination: uniqueSource,
+				Command:     "user.goal",
+				Payload: map[string]interface{}{
+					"channel":    chID,
+					"channel_id": chID,
+					"content":    content,
+					"goal":       content,
+				},
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			}
+			pmProcessPlanningMessage(hcl, planMsg, uniqueSource, realLLM)
+			return
+		}
+	}
+
+	prompt := getPMPrompt() + "\n\nChannel turn in " + chID + ":\n" + batchText +
+		"\n\nReply in 2-4 sentences as the Project Manager. If no reply is needed, respond with exactly: NO_REPLY"
+	llmReply, err := realLLM(context.Background(), prompt)
+	if err != nil {
+		collab.Tracef("project-manager", "channel.turn.reply.skip", "ch=%s err=%v", chID, err)
+		return
+	}
+	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
+	if skip {
+		return
+	}
+	postCtx, postCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	_, postErr := hcl.Send(postCtx, hubclient.Message{
+		Source:      uniqueSource,
+		Destination: "store",
+		Command:     "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"from":       uniqueSource,
+			"content":    trimmed,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	postCancel()
+	if postErr != nil {
+		collab.Tracef("project-manager", "channel.turn.post.fail", "ch=%s err=%v", chID, postErr)
+		return
+	}
+	collab.Tracef("project-manager", "channel.turn.post.ok", "ch=%s len=%d", chID, len(trimmed))
+}
+
 func runProjectManager(cmd *cobra.Command, args []string) {
 	timing.RecordPhase("main_entry")
 
@@ -404,6 +494,9 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 		fmt.Println("PM received:", msg.Command)
 
 		switch msg.Command {
+		case channelfacilitator.CmdTurn:
+			pmProcessChannelTurn(hcl, msg, uniqueSource, realLLM)
+
 		case "channel.activity", "channel.member_notify":
 			pmProcessChannelActivity(hcl, msg, uniqueSource, realLLM)
 

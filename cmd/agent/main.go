@@ -15,6 +15,7 @@ import (
 
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/agent/progress"
 	agentSkills "AegisClaw/internal/agent/skills"
@@ -298,6 +299,10 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		processAgentChannelActivity(client, msg, realLLM)
 		return true
 	}
+	if msg.Command == channelfacilitator.CmdTurn {
+		processAgentChannelTurn(client, msg, realLLM)
+		return true
+	}
 
 	tc := &agent.TurnContext{
 		Input:              msg.Payload,
@@ -380,6 +385,62 @@ func processAgentChannelActivity(client hubclient.Client, msg hubclient.Message,
 	}
 	collab.Tracef(sourceID, "channel.post.ok", "ch=%s len=%d", chID, len(trimmed))
 	log.Printf("agent %s: posted channel reply to %s (%s)", sourceID, chID, reason)
+}
+
+func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
+	sourceID := client.AssignedID()
+	turn, ok := collab.ParseTurnPayload(msg.Payload)
+	if !ok {
+		return
+	}
+	chID := turn.ChannelID
+	collab.Tracef(sourceID, "channel.turn.recv", "ch=%s since=%d new=%d anchors=%v", chID, turn.SinceSeq, len(turn.NewMessages), turn.RelevanceAnchors)
+
+	_ = client.Reply(context.Background(), hubclient.Message{
+		Source: sourceID, Destination: msg.Source, Command: "response",
+		Payload: map[string]interface{}{
+			"status": "delivered", "reason": "turn", "channel_id": chID,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	ctx := context.Background()
+	anchorMsgs, _ := collab.FetchRelevantSince(ctx, client, chID, turn.SinceSeq, turn.RelevanceAnchors)
+	batchText := collab.FormatTurnMessages(turn.NewMessages)
+	anchorText := collab.FormatAnchorContext(anchorMsgs)
+	roleLabel := collab.AgentRoleLabel(sourceID)
+	prompt := customInstructionsPrefix() +
+		"\n\nYou are the " + roleLabel + " in channel " + chID + ". You received a batched channel turn.\n" +
+		"New messages since your last turn:\n" + batchText
+	if anchorText != "" {
+		prompt += "\n\nRelevant prior context (anchors):\n" + anchorText
+	}
+	prompt += "\n\nReply in 2-4 sentences with a concrete progress update or status from your role. If no reply is needed, respond with exactly: NO_REPLY"
+
+	llmReply, err := realLLM(ctx, prompt)
+	if err != nil {
+		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s err=%v", chID, err)
+		return
+	}
+	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
+	if skip {
+		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s reason=no_reply", chID)
+		return
+	}
+	postCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, err = client.Send(postCtx, hubclient.Message{
+		Source: sourceID, Destination: "store", Command: "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID, "from": sourceID, "content": trimmed,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		collab.Tracef(sourceID, "channel.turn.post.fail", "ch=%s err=%v", chID, err)
+		return
+	}
+	collab.Tracef(sourceID, "channel.turn.post.ok", "ch=%s len=%d", chID, len(trimmed))
 }
 
 func drainChatPolls(client hubclient.Client, skillIndex *agentSkills.AgentSkillIndex) {

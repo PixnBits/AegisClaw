@@ -15,6 +15,7 @@ import (
 
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/eventbus"
 	"AegisClaw/internal/timing"
@@ -318,6 +319,53 @@ func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueS
 	fmt.Printf("Persona %s posted channel reply to %s (%s)\n", persona, chID, reason)
 }
 
+func processChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSource, persona string) {
+	turn, ok := collab.ParseTurnPayload(msg.Payload)
+	if !ok {
+		return
+	}
+	chID := turn.ChannelID
+	collab.Tracef("court-persona-"+persona, "channel.turn.recv", "ch=%s since=%d new=%d anchors=%v", chID, turn.SinceSeq, len(turn.NewMessages), turn.RelevanceAnchors)
+
+	_ = hcl.Reply(context.Background(), hubclient.Message{
+		Source:      uniqueSource,
+		Destination: msg.Source,
+		Command:     "response",
+		Payload: map[string]interface{}{
+			"status": "delivered", "reason": "turn", "channel_id": chID,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	ctx := context.Background()
+	anchorMsgs, err := collab.FetchRelevantSince(ctx, hcl, chID, turn.SinceSeq, turn.RelevanceAnchors)
+	if err != nil {
+		collab.Tracef("court-persona-"+persona, "get_relevant_since.fail", "ch=%s err=%v", chID, err)
+	}
+	collab.Tracef("court-persona-"+persona, "get_relevant_since.ok", "ch=%s anchors=%d", chID, len(anchorMsgs))
+
+	batchText := collab.FormatTurnMessages(turn.NewMessages)
+	anchorText := collab.FormatAnchorContext(anchorMsgs)
+	display := collab.DisplayName(uniqueSource)
+	prompt := "You are the " + display + " persona in channel " + chID + ". You received a batched channel turn.\n" +
+		"New messages since your last turn:\n" + batchText
+	if anchorText != "" {
+		prompt += "\n\nRelevant prior context (from get_relevant_since anchors):\n" + anchorText
+	}
+	prompt += "\n\nReply in 2-4 sentences with a security push-back or concern if warranted. If no reply is needed, respond with exactly: NO_REPLY"
+
+	reply := generateChannelReply(persona, prompt, hcl)
+	if strings.TrimSpace(reply) == "" {
+		return
+	}
+	if err := postChannelIntro(hcl, uniqueSource, chID, reply); err != nil {
+		collab.Tracef("court-persona-"+persona, "channel.turn.post.fail", "ch=%s err=%v", chID, err)
+		return
+	}
+	collab.Tracef("court-persona-"+persona, "channel.turn.post.ok", "ch=%s len=%d", chID, len(reply))
+	fmt.Printf("Persona %s posted turn reply to %s\n", persona, chID)
+}
+
 // callRealLLMViaHub performs the production LLM call for a Court persona.
 // Sends "llm.call" to network-boundary (exactly as Agent Runtime does) with the
 // persona-specialized prompt. The boundary enforces scopes and proxies to the LLM backend.
@@ -510,6 +558,9 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 		fmt.Println("Persona", persona, "received:", msg.Command)
 
 		switch msg.Command {
+		case channelfacilitator.CmdTurn:
+			processChannelTurn(hcl, msg, uniqueSource, persona)
+
 		case "channel.activity", "channel.member_notify":
 			processChannelActivity(hcl, msg, uniqueSource, persona)
 
