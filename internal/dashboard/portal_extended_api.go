@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/dashboard/contracts"
+	"AegisClaw/internal/dashboard/ratelimit"
 	"AegisClaw/internal/dashboard/sanitize"
 )
 
@@ -120,6 +121,9 @@ func (s *Server) handleAPIAgentDetail(w http.ResponseWriter, r *http.Request) {
 		case "pause", "resume", "cancel":
 			if r.Method != http.MethodPost {
 				http.Error(w, "POST required", http.StatusMethodNotAllowed)
+				return
+			}
+			if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
 				return
 			}
 			action := "agent." + parts[1]
@@ -245,6 +249,9 @@ func (s *Server) handleAPISecurityPosture(w http.ResponseWriter, r *http.Request
 func (s *Server) handleProposalAction(w http.ResponseWriter, r *http.Request, proposalID, action string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if !ratelimit.Guard(w, r, ratelimit.CategoryProposalAction) {
 		return
 	}
 	bridgeAction := "proposal." + action

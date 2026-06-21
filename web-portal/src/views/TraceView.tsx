@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/api/client';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { MarkdownContent } from '@/components/ui/MarkdownContent';
+import { VirtualList } from '@/components/ui/VirtualList';
 import { AgentTrace } from '@/contracts';
 import { agentActionConfirmCopy, type AgentControlAction } from '@/lib/confirmCopy';
 import { usePortalStore } from '@/store/portalStore';
@@ -89,13 +91,21 @@ export function TraceView() {
             No trace phases yet.
           </p>
         ) : (
-          trace.phases.map((phase, i) => (
-            <article key={i} className="list-card">
-              <strong>{phase.phase}</strong>
-              <p>{phase.summary}</p>
-              {phase.tool && <code>{phase.tool}</code>}
-            </article>
-          ))
+          <VirtualList
+            items={trace.phases}
+            getKey={(phase, i) => `${phase.phase}-${phase.ts || i}`}
+            testId="trace-timeline-virtual"
+            estimateItemHeight={120}
+            renderItem={(phase) => (
+              <article className="list-card">
+                <strong>{phase.phase}</strong>
+                <div className="trace-phase-summary">
+                  <MarkdownContent content={phase.summary || ''} context="trace" />
+                </div>
+                {phase.tool && <code>{phase.tool}</code>}
+              </article>
+            )}
+          />
         )}
       </div>
 

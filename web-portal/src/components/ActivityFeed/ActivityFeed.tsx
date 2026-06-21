@@ -1,4 +1,5 @@
 import { FeedItem as FeedItemType } from '@/contracts';
+import { VirtualList } from '@/components/ui/VirtualList';
 import { FeedItemRow } from './FeedItem';
 import './ActivityFeed.css';
 
@@ -45,7 +46,14 @@ export function ActivityFeed({ items, channelId, onCollapseAll, onExpandRecent }
             </p>
           </div>
         ) : (
-          items.map((item) => <FeedItemRow key={item.id} item={item} channelId={channelId} />)
+          <VirtualList
+            items={items}
+            getKey={(item) => item.id}
+            testId="channel-messages-virtual"
+            ariaLabel="Channel messages"
+            className="activity-feed__virtual"
+            renderItem={(item) => <FeedItemRow item={item} channelId={channelId} />}
+          />
         )}
       </div>
     </section>

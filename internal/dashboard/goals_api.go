@@ -56,6 +56,21 @@ func (s *Server) handleAPIGoals(w http.ResponseWriter, r *http.Request) {
 		Stages:    stages,
 	}
 	s.stompPublisher().PublishHarness(planID, channelID, event)
+	s.harnessMu.Lock()
+	if s.harnessCache == nil {
+		s.harnessCache = make(map[string]contracts.HarnessState)
+	}
+	s.harnessCache[channelID] = contracts.HarnessState{
+		Plan: &contracts.Plan{
+			PlanID:    planID,
+			ChannelID: channelID,
+			Goal:      req.Goal,
+			Status:    contracts.PlanStatusActive,
+			Stages:    stages,
+		},
+		Tasks: []contracts.NarrowTask{},
+	}
+	s.harnessMu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck

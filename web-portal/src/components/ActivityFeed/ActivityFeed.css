@@ -45,6 +45,16 @@
   padding: 0;
 }
 
+.chat-stream:not(.chat-stream--empty) {
+  overflow: hidden;
+}
+
+.activity-feed__virtual {
+  flex: 1;
+  min-height: 0;
+  max-height: 55vh;
+}
+
 @media (max-width: 768px) {
   .activity-feed {
     gap: var(--space-4);

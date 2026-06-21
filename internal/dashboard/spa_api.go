@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/dashboard/ratelimit"
 	"AegisClaw/internal/dashboard/realtime"
 	"AegisClaw/internal/dashboard/sanitize"
 	"AegisClaw/internal/collab"
@@ -65,6 +66,11 @@ func (s *Server) handleInternalChannelActivitySTOMP(w http.ResponseWriter, r *ht
 	}
 	collab.Tracef("web-portal", "stomp.notify.recv", "ch=%s from=%s", req.ChannelID, req.From)
 	s.PublishChannelSTOMP(req.ChannelID, req.From, req.Content)
+	go func(chID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), spaAPITimeout)
+		defer cancel()
+		s.publishHarnessDeltas(ctx, chID)
+	}(req.ChannelID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -180,6 +186,9 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(state) //nolint:errcheck
 
 	case len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodPost:
+		if !ratelimit.Guard(w, r, ratelimit.CategoryChannelArchive) {
+			return
+		}
 		if bridgeGuard.NeedsConfirmation("channel.archive") && r.Header.Get("X-Aegis-Confirmed") != "1" {
 			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
 			return
@@ -202,6 +211,9 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	case len(parts) == 3 && parts[1] == "members" && parts[2] == "remove" && r.Method == http.MethodPost:
+		if !ratelimit.Guard(w, r, ratelimit.CategoryMemberRemove) {
+			return
+		}
 		if bridgeGuard.NeedsConfirmation("channel.remove_member") && r.Header.Get("X-Aegis-Confirmed") != "1" {
 			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
 			return

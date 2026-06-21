@@ -61,7 +61,12 @@ export function FeedItemRow({ item, channelId }: Props) {
           ) : (
             <div className="feed-item__content">
               {item.kind === 'human_message' || item.kind === 'agent_update' || item.kind === 'court_decision' ? (
-                <MarkdownContent content={item.content} />
+                <MarkdownContent
+                  content={item.content}
+                  context={item.kind === 'court_decision' ? 'proposal' : 'chat'}
+                />
+              ) : item.kind === 'tool_call' ? (
+                <MarkdownContent content={item.content} context="trace" />
               ) : (
                 item.content
               )}
