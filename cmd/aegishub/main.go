@@ -418,7 +418,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 
 		debugLog("hub", fmt.Sprintf("Received message from %s to %s, command: %s", msg.Source, msg.Destination, msg.Command))
-		if collab.TraceEnabled() && (msg.Command == "channel.updated" || msg.Command == "channel.activity" || msg.Command == "channel.post" || msg.Command == "channel.relay_activity") {
+		if collab.TraceEnabled() && (msg.Command == "channel.updated" || msg.Command == "channel.activity" || msg.Command == "channel.turn" || msg.Command == "channel.post" || msg.Command == "channel.relay_activity" || msg.Command == "channel.get_relevant_since" || msg.Command == "channel.get_messages") {
 			collab.Tracef("hub", "route", "src=%s dest=%s cmd=%s", msg.Source, msg.Destination, msg.Command)
 		}
 

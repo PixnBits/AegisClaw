@@ -194,7 +194,43 @@ rules:
   commands:
     - scribe.notify_review
     - scribe.*
-# Channel activity fan-out (Store relays every channel.post → daemon-orchestrator → members)
+# Turn-based propagation: Store notifies facilitator on every channel.post
+- source: store
+  destination: channel-facilitator
+  commands:
+    - channel.updated
+    - channel.*
+
+# Channel Facilitator ↔ Store (membership, last_seen_seq, turn tools, state)
+- source: channel-facilitator
+  destination: store
+  commands:
+    - channel.*
+
+# Facilitator delivers batched turns to agents (replaces human-only fan-out for agents)
+- source: channel-facilitator
+  destination: "*"
+  commands:
+    - channel.turn
+
+# Agents query relevance and message history via Store tools
+- source: "agent*"
+  destination: store
+  commands:
+    - channel.get_relevant_since
+    - channel.get_messages
+- source: "court-persona-*"
+  destination: store
+  commands:
+    - channel.get_relevant_since
+    - channel.get_messages
+- source: "project-manager*"
+  destination: store
+  commands:
+    - channel.get_relevant_since
+    - channel.get_messages
+
+# Channel activity fan-out (Store relays every channel.post → daemon-orchestrator → STOMP only)
 - source: store
   destination: "daemon-orchestrator"
   commands:
