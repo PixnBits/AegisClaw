@@ -15,7 +15,7 @@ func TestPortalChannelFanout(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected map, got %T", got)
 	}
-	if m["status"] != "fanout_started" {
+	if m["status"] != "turn_scheduled" {
 		t.Fatalf("status=%v", m["status"])
 	}
 

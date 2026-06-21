@@ -5,7 +5,7 @@ CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.
 ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
 AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-web-portal build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-roster test-e2e-portal-channel test-e2e-channel-replies test-e2e-channel-trace test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
+.PHONY: build build-binaries build-web-portal build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-turn-based test-e2e-roster test-e2e-portal-channel test-e2e-channel-replies test-e2e-channel-trace test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
 
 # Default target
 all: build
@@ -291,6 +291,10 @@ test-e2e-channel-replies:
 test-e2e-channel-trace:
 	@echo "=== Channel collab trace E2E (set AEGIS_COLLAB_TRACE=1 on daemon for full logs) ==="
 	bash scripts/verify-channel-collab-trace-e2e.sh
+
+test-e2e-turn-based:
+	@echo "=== Turn-based message propagation E2E (PM → Coder → CISO batched turns) ==="
+	bash scripts/verify-turn-based-propagation-e2e.sh
 
 # Portal SPA API contract + latency (dashboard, monitoring, skills, proposals, channels, STOMP).
 test-e2e-portal-api:
