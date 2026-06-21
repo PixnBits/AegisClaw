@@ -1,102 +1,59 @@
 # Turn-Based Message Propagation
 
-**Status**: Active proposal (moved from proposals/ into main PRD area)
-
-This document describes the shift from per-message reactive fan-out to batched, turn-based message propagation in AegisClaw channels. It enables proper multi-agent collaboration while controlling LLM cost and preserving conversational context.
+This document defines the turn-based message propagation model for AegisClaw channels. It replaces the previous per-message reactive fan-out (limited to human posts) with a more efficient, context-aware batched turn system that enables proper multi-agent collaboration.
 
 ## Motivation
 
-Current implementation limits `channel.activity` fan-out to human posts only (see `IsHumanPoster` + `portalChannelFanout` in `cmd/aegis/portal_bridge.go` and the explicit note in `channel-collab-debugging.md`). Agents cannot natively react to each other (PM → Coder assignment, Coder update → CISO review, etc.).
+The original implementation restricted `channel.activity` fan-out to human-originating messages only. Agents could not react to each other in a structured way (e.g. PM assignments triggering Coder work, or Coder updates prompting CISO review). This limited collaborative capability while still risking high LLM usage on busy channels.
 
-We need a model that:
-- Supports true inter-agent collaboration.
-- Avoids quadratic or excessive LLM usage.
-- Keeps the daemon minimal (strong permissions boundary).
-- Leverages the existing agentic loop, Store authority, and hub routing.
+The new model delivers batches of new messages since each agent's last turn, provides lightweight relevance context, and keeps the orchestrating component thin.
 
-## Goals
+## Key Decisions
 
-- Agents receive **batches** of new messages since their last turn (not every individual message).
-- Batches arrive with enough context to understand what discussion they advance.
-- Turn scheduling is fair (round-robin) with limited priority boosts for mentions.
-- Context reconstruction and large-batch handling are performed by the receiving agent's loop using a dedicated tool.
-- The orchestrating component (facilitator) stays thin and dumb.
+- `last_seen_seq` is stored durably in the Store as part of channel membership state.
+- The turn system fully replaces the old human-only fan-out path for agents.
+- Mention priority boosts are configurable per channel (with global defaults in the Settings page).
+- The Channel Facilitator is a logically separate component.
+- Human participants continue to receive the full real-time message stream via STOMP.
+- Agents have both a relevance tool and a direct `channel.get_messages` tool, and may persist relevance judgments in their own memory between turns.
+- Round-robin state and `last_seen_seq` values are observable in v1 (CLI + planned web portal support).
 
-## Model
+## Model Overview
 
 ### Turn Delivery
 
-- A **turn** is a batched delivery of new messages since an agent's last seen sequence number.
-- Turns are delivered in **round-robin** order per channel.
-- Agents mentioned in recent activity receive a **bounded priority boost** in the queue (prevents starvation of other members).
-- Human posts remain a strong immediate trigger for the first turn(s).
+Agents receive **batched turns** containing new messages since their last seen sequence. Turns follow a round-robin order per channel, with bounded priority boosts for recently mentioned agents.
 
-### Turn Payload
+Human posts act as strong triggers for immediate turn consideration.
 
-```json
-{
-  "channel_id": "...",
-  "since_seq": 42,
-  "new_messages": [...],
-  "relevance_anchors": [38, 39, 41],
-  "mention_boosts": {...},
-  "hints": {...}
-}
-```
+### Turn Payload & Relevance
 
-`relevance_anchors` are a small list of prior message IDs/seqs identified via cheap implicit signals (recent @mentions of recipient, author continuity, assignment language, topical keyword overlap).
+Each turn includes the new messages plus a small set of `relevance_anchors` (prior message seqs selected via cheap implicit signals such as @mentions, author continuity, assignment language, and topical overlap).
 
-No rich pre-computed "entering state" summary and no explicit `reply_to` threading at this stage.
+Agents reconstruct necessary prior context by using the supplied anchors and calling the `channel.get_relevant_since` tool from their agentic loop. A separate `channel.get_messages` tool is also available when an agent prefers to perform its own relevance analysis.
 
-### Relevance & Context Reconstruction
+### Facilitator
 
-New messages arrive "in media res". The agent determines relevant prior context by:
+A thin Channel Facilitator microVM (or initially co-located logic) owns round-robin scheduling, anchor computation, and turn delivery. It remains deliberately dumb — it does not perform summarisation or maintain rich conversation state.
 
-1. Using the supplied `relevance_anchors`.
-2. Calling the tool `channel.get_relevant_since(last_seq, anchors, focus?)` from its agentic loop as the first micro-step.
-3. The tool returns a short, curated set of prior messages/excerpts.
+## Deferred
 
-This mechanism also handles large batches gracefully — the agent's triage step decides how much additional context to pull.
-
-The agent may then decide to self-summarise or post a concise state note back to the channel.
-
-### Facilitator MicroVM
-
-- Thin dedicated component (initially may be absorbed into Project Manager responsibilities).
-- Registered on AegisHub with appropriate ACLs.
-- Owns per-channel round-robin state and limited mention-boost counters.
-- Computes cheap implicit-signal anchors by querying Store.
-- Delivers turns via existing hub patterns.
-- No summarisation logic.
-- Pre-warmable and consistent with <1s on-demand targets.
-
-## Deferred / Future
-
-- Explicit threading primitives (`reply_to`).
+- Explicit `reply_to` threading primitives.
 - Facilitator-side summarisation.
-- Rich pre-computed conversation state in every turn.
 
 ## Testing
 
-**Driving E2E use case**:
+The primary validation scenario is:
 
-"PM posts a plan that assigns work to Coder and flags a security concern for CISO. Coder posts a progress update. CISO receives a single batched turn containing both messages plus relevance anchors. CISO's triage step correctly surfaces the relevant prior assignment via tool and posts a push-back comment."
+"PM posts a plan assigning work to Coder and flagging a concern for CISO. Coder posts a progress update. CISO receives a batched turn with relevant anchors, correctly surfaces prior context, and posts a push-back."
 
-Verify:
-- Bounded delivery
-- Correct mention priority without starving other agents
-- Store + portal visibility
-- No unnecessary LLM calls on irrelevant history
+This exercises bounded delivery, mention priority, relevance tools, and correct Store/portal visibility.
 
-Extend existing `make test-e2e-portal-channel`, `test-e2e-llm`, and collab tracing.
+## Related Documents
 
-## Open Questions
-
-- Exact set of implicit signals used to compute relevance anchors.
-- Hard bounds on batch size and number of anchors per turn.
-- Long-term ownership of the facilitator (separate thin VM vs. evolved PM role).
-- Performance characteristics of the relevance tool under sustained load.
+- `docs/specs/turn-based-message-propagation.md` — Detailed technical specification (authoritative for implementation).
+- `docs/implementation-plan/collaboration-model.md` — Implementation tracking.
 
 ---
 
-*This change preserves the paranoid security model, keeps the daemon minimal, and gives agents the tools they need to collaborate effectively.*
+*This model preserves the paranoid security model, keeps the daemon minimal, and gives agents the structured collaboration capabilities they need.*
