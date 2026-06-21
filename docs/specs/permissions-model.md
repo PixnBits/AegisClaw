@@ -5,126 +5,137 @@
 
 ## Purpose
 
-Define a fine-grained, user-controlled, auditable capability-grant system so every agent and microVM can only discover and invoke the exact tools/commands it has been authorized for. This is the technical realization of the Android-style permissions model described in the companion PRD.
+Define a fine-grained, user-controlled, auditable capability-grant system so every agent and microVM can only discover and invoke the exact tools/commands it has been authorized for. This is the technical realization of the Android-style permissions model described in the companion PRD, including safe discovery, permission requests on use attempts, and visibility controls to mitigate fingerprinting.
 
 ## Responsibility Boundaries
 
 **Store VM owns (source of truth):**
-- Durable, signed storage of all grants (alongside autonomy grants and timers; tamper-evident Merkle audit log)
-- New commands: `permission.grant`, `permission.revoke`, `permission.list`, `permission.check`, `permission.snapshot` (for a subject), `permission.request` (event for CISO/user review)
-- Grant/revoke authorization checks (user via Portal, CISO after opt-in, or Court for high-impact)
-- Publishing of `permission.granted` / `permission.revoked` / `permission.denied` events via Hub
-- Reconciliation and audit of denied attempts
+- Durable, signed storage of grants **and visibility policies** (alongside autonomy grants and timers; tamper-evident Merkle audit log)
+- New/extended commands: `permission.grant`, `permission.revoke`, `permission.list`, `permission.check`, `permission.snapshot`, `permission.request` (event), plus visibility policy commands (`visibility.set`, `visibility.get`, `visibility.list`)
+- `tool.registry.discover` handling (when the calling subject holds the grant)
+- Grant/revoke/visibility authorization checks (user via Portal, CISO after opt-in, or Court for high-impact)
+- Publishing of `permission.granted` / `permission.revoked` / `permission.denied` / `permission.request` events via Hub
+- Reconciliation and audit of denied attempts and visibility changes
 
 **AegisHub owns:**
-- Extension of ACL enforcement to include fine-grained permission checks for sensitive commands
-- Distribution of signed permission snapshots to microVMs during/after registration handshake
-- Hot-reload / EventBus-driven invalidation when grants change (so running agents refresh their local view)
-- Rejection with clear `ERR_PERMISSION_DENIED` for unauthorized cross-VM attempts
+- Extension of ACL enforcement to include fine-grained permission checks
+- Distribution of signed permission + visibility snapshots to microVMs during/after registration handshake
+- Hot-reload / EventBus-driven invalidation when grants or visibility policies change
+- Rejection with clear `ERR_PERMISSION_DENIED` for unauthorized attempts; emission of `permission.request` events on denied tool use
 
-**Agent Runtime (and persona microVMs: project-manager*, coder*, court-persona-*, etc.) owns:**
-- Local filtering of `AgentSkillIndex` (or equivalent tool registry) using the permission snapshot received from Hub
-- Runtime enforcement before any tool/skill invocation (even "local" skills)
-- Emitting `permission.request` events when it hits an authorization boundary (with context for review)
-- Clear error surfaces so the 6-step loop and user see exactly why a tool was unavailable
+**Agent Runtime (and persona microVMs) owns:**
+- Local filtering of `AgentSkillIndex` using **both** the permission grant snapshot **and** the visibility policy for that subject
+- Runtime enforcement before any tool/skill invocation
+- Emitting `permission.request` events (with context) when a tool use is denied due to missing grant
+- Clear error surfaces in the 6-step loop
 
 **Web Portal / CLI owns:**
-- The primary grant/revoke UI (initial implementation)
-- Display of active subjects, their current grants, pending requests, and the global tool registry
+- Primary grant/revoke/hide UI, with a dedicated per-agent view showing current grants, pending requests, recent denied attempts (with agent-provided context), and visibility controls
 - Explicit opt-in toggle for CISO delegation (stored in user preferences / Store)
 
 **CISO Persona (post explicit user opt-in only):**
-- Receives `permission.request` events via channel or dedicated topic
-- Evaluates requests using its own limited tool set + Court review path for high-impact items
-- Proposes grants via `permission.grant` (still auditable and revocable by user)
-- Never auto-grants; delegation can be revoked instantly by user
+- Receives `permission.request` events
+- Can propose grants **and** visibility changes via the appropriate Store commands
+- Still subject to Court review for high-impact items; user retains instant revocation of delegation
 
 ## Core Model
 
-- **Capability** = any `noun.verb` command or registered skill tool (examples: `channel.create`, `channel.post`, `proposal.submit`, `store.create_channel`, `discord_monitor.send_message`, scoped `llm.*`).
-- **Subject** = microVM instance ID or persona-type pattern (`project-manager*`, `coder-xyz`).
-- **Grant** = allow record: `{subject, capability, granted_by, granted_at, reason?, conditions?}`. Stored durably and versioned in Store.
-- **Default policy**: Deny everything except explicit grants present in `config/acls.yaml` bootstrap + minimal initial Store state required for core daemon/portal flows.
-- Grants are **additive** to (never replace) the existing ACL layer. ACLs remain the coarse inter-VM routing gate; permissions add the fine-grained "may this subject actually use this specific capability?" check.
+- **Capability** = any `noun.verb` command or registered skill tool.
+- **Subject** = microVM instance ID or persona-type pattern.
+- **Grant** = allow record: `{subject, capability, granted_by, granted_at, reason?, conditions?}`.
+- **Visibility Policy** = first-class rules controlling whether a tool appears in discovery results for a subject (independent of whether the subject holds a grant). Examples: hidden from everyone, visible only to granted subjects, visible to specific personas for request purposes, "requestable" flag.
+- **Default policy**: Deny everything + hide by default except explicit bootstrap grants and minimal public visibility in `config/acls.yaml` + initial Store state.
+- Grants and visibility policies are **additive** to the existing ACL layer.
+
+## Discovery Commands & Safe Exposure
+
+- `tool.list` / `tool.search` (existing, used inside every agent's reasoning loop) → return only tools the subject is **currently granted** + any tools explicitly marked as publicly discoverable for that persona type. These are **always safe** to expose.
+- `tool.registry.discover` (new, itself a grantable capability) → when the subject holds this grant, allows broader queries against the global registry. Results are **still filtered** by the subject's current Visibility Policy. Sensitive implementation details can be redacted in responses.
+- This design solves the "agent cannot request what it does not know exists" problem while directly mitigating fingerprinting: a Coder agent can be configured (via visibility rules) never to learn about the existence of Court or high-privilege admin tools.
 
 ## New / Extended Commands
 
-All routed through AegisHub with normal signature + ACL validation, then handled by Store.
+All routed through AegisHub with signature + ACL validation, then handled primarily by Store.
 
-- `permission.grant` — subject, capability, [reason]
-- `permission.revoke` — subject, capability, [reason]
-- `permission.list` — optional filters (subject, capability prefix)
-- `permission.check` — subject, capability → {allowed: bool, grant_details?, reason?}
-- `permission.snapshot` — subject → full current allow-set (used to initialize or refresh an agent's local index)
-- Events (published by Store via Hub): `permission.granted`, `permission.revoked`, `permission.denied` (with full context for audit + CISO)
+**Permission commands:**
+- `permission.grant`, `permission.revoke`, `permission.list`, `permission.check`, `permission.snapshot` (subject → current allow-set + visibility summary)
+- `permission.request` event (emitted on denied tool attempt; contains subject, capability, context)
 
-High-impact grants (anything that can create persistent state, contact external services, or affect other agents) can be configured to require Court review before Store accepts them.
+**Visibility commands:**
+- `visibility.set` (subject or pattern, capability or skill, visibility_level or hide flag, [reason])
+- `visibility.get` / `visibility.list`
 
-## Enforcement Flow (End-to-End)
+High-impact grants or visibility changes (anything affecting Court, secrets, or cross-agent state) can require Court review before Store accepts them.
 
-1. MicroVM starts / reconnects → AegisHub completes signed handshake → Hub calls `permission.snapshot` on Store for the subject (or persona pattern) → Hub pushes the signed snapshot to the microVM.
-2. Agent Runtime (or project-manager, court-persona, etc.) receives snapshot and filters its local `AgentSkillIndex` (or equivalent) so that `ListSkills`, `SearchTools`, `HandleToolCommand("tool.list"/"tool.search")`, and prompt injection (`FormatAvailableTools`) only ever surface permitted items.
-3. During 6-step loop or direct tool invocation: the act/execute layer performs a final `permission.check` (or relies on the already-filtered index). Unpermitted calls are rejected with `ERR_PERMISSION_DENIED`, logged, and optionally emit a `permission.request` event.
-4. Grant change (user toggle, CISO proposal, or Court decision) → Store records it → publishes event → Hub pushes incremental update or invalidation to affected live microVMs → local indexes refresh.
-5. All denied attempts and grant mutations are appended to the Store audit log (Merkle chain, queryable via existing `audit.*` commands).
+## Enforcement & Request Flow (End-to-End)
+
+1. MicroVM starts/reconnects → Hub handshake → Hub fetches permission snapshot + visibility policy from Store → pushes signed snapshot to the microVM.
+2. Agent Runtime filters its local `AgentSkillIndex` (and any `tool.search` / `FormatAvailableTools` paths) using **both** grants and visibility rules. Only permitted + visible tools appear in reasoning or `tool.list`/`tool.search`.
+3. When the agent attempts a tool call (via act/execute layer or LLM tool emission) for a capability it does **not** hold a grant for:
+   - Call is rejected with `ERR_PERMISSION_DENIED`.
+   - Structured `permission.request` event is emitted (subject, capability, agent-provided context/reason, timestamp).
+   - Event is logged to Store audit and made available to the Portal (per-agent view) and (if opted-in) to the CISO persona.
+4. Grant or visibility change → Store records it → publishes events → Hub pushes invalidation/update → affected agents refresh their local indexes immediately.
+5. All denied attempts, grants, revokes, and visibility changes are appended to the tamper-evident audit log.
 
 ## Integration with Existing Components
 
-- **AgentSkillIndex** (`internal/agent/skills/index.go`): Primary local enforcement surface. Extend `NewAgentSkillIndex` / init path and `SearchTools` to accept (and persistently filter by) a permission allow-set. The existing Jaccard/substring/Levenshtein scoring continues to work on the reduced set. `HandleToolCommand` already dispatches `tool.list`/`tool.search` — they automatically become permission-aware.
-- **AegisHub + ACLs** (`config/acls.yaml`, `cmd/aegishub`): ACL rules stay as the first gate (e.g. `agent*` may talk to `store` for `channel.*`). Permissions add the second, finer gate inside those flows. Minimal new ACL entries will be needed for the new `permission.*` commands and snapshot distribution.
-- **Store VM** (`cmd/store/main.go`, `docs/specs/store-vm.md`): Add grant storage (re-use or extend the grants/timers JSON + SQLite tables), implement the new commands, event publishing, and authorization logic for who may grant what. Build directly on the existing `autonomy.grant` / `grant.list` machinery.
-- **Semantic Tool Discovery** (`docs/specs/semantic-tool-discovery.md`): `tool.search` results are already produced from the local index → become automatically permission-filtered. Future embedding backend can apply the same filter before vector search.
-- **Autonomy Grants & Court** (`docs/prd/agent-autonomy.md`, governance-court): Permissions compose naturally. Level 2 autonomy can carry broader default tool grants. High-impact permission grants can require Court vote (like autonomy promotion).
-- **Channels / Collaboration**: Permission requests, grants, and denials can be posted to a dedicated channel (or #security / #audit) for transparency and Court visibility. `channel.post` itself can be a grantable capability.
-- **Network Boundary / LLM calls**: If tool use routes through `llm.*`, the permission check happens before the LLM is asked to emit a tool call, or on the returned action.
-- **Web Portal / Dashboard**: Extend existing SecurityPosturePanel, members views, or add a lightweight Permissions tab. Re-use real-time STOMP + contracts already in place.
+- **AgentSkillIndex** (`internal/agent/skills/index.go`): Now applies **two filters** on every `SearchTools`, `ListSkills`, `HandleToolCommand`, and `FormatAvailableTools` call: (1) permission grants, (2) visibility policy for the subject. The existing Jaccard/substring/Levenshtein scoring works on the filtered set. This is the primary local enforcement + safe-discovery surface.
+- **AegisHub + ACLs**: ACLs remain the coarse routing gate. Permissions + visibility add the fine-grained layer. New ACL entries needed for `permission.*`, `visibility.*`, and `tool.registry.discover`.
+- **Store VM**: Add storage for visibility policies (alongside grants). Implement new commands and event emission. Build directly on existing autonomy/grant machinery.
+- **Semantic Tool Discovery**: `tool.search` results (and future embedding search) are produced from the already-filtered local index → automatically respect both grants and visibility.
+- **Autonomy Grants & Court**: Visibility policies and permission requests can be reviewed/promoted through the same Court process as autonomy levels.
+- **Channels / Collaboration**: `permission.request` events and visibility changes can be posted to dedicated channels (#permissions, #security, #audit) for transparency.
+- **Web Portal / Dashboard**: Extend SecurityPosture or add per-agent detail view showing grants, pending `permission.request` items (with context), denied attempts, and visibility/hide toggles. Re-use existing real-time contracts and STOMP.
+- **Network Boundary / LLM**: Permission check happens before LLM is asked to emit tool calls, or on the returned action. Denied LLM tool calls can still emit `permission.request`.
 
 ## Security Requirements (Paranoid First)
 
-- Grants are **never** self-granted by any microVM. Only authorized subjects (user via Portal daemon path, CISO after opt-in, or Court-approved flows) may create them.
-- All grant mutations are signed, versioned, and appended to the tamper-evident audit log in Store.
-- Revocation is effective within seconds (hot invalidation path via Hub).
-- Denied invocations always produce a clear, non-leaking error and a full audit entry; never silent.
-- CISO delegation path is **opt-in only** (single user preference flag). While delegated, CISO still cannot grant high-impact capabilities without Court review, and the user retains instant revocation.
-- Least-privilege TCB: permission checks should live in the smallest possible components (Hub for routing, local index inside the agent for discovery, Store only for the grant database).
-- No ambient authority: even if a tool appears in a prompt or index, the runtime enforcement layer double-checks before execution.
-- Threat model coverage: compromised agent cannot escalate its own grants; malicious Hub cannot forge snapshots (signing + verification); user sees exactly what each agent can do.
+- Grants and visibility policies are **never** self-set by any microVM.
+- All mutations are signed, versioned, and audit-logged in Store.
+- Revocation and visibility hide changes are effective within seconds via hot invalidation.
+- Denied tool attempts always produce `ERR_PERMISSION_DENIED` + full `permission.request` event; never silent.
+- **Fingerprinting mitigation is explicit**: Visibility Policy + the fact that broad `tool.registry.discover` is itself a grantable + visibility-filtered capability directly limits what any agent can learn about the global tool surface.
+- CISO delegation is **opt-in only** (single preference flag). Even when delegated, high-impact decisions require Court review; user can revoke instantly.
+- Least-privilege TCB: checks live in Hub (routing), local `AgentSkillIndex` (discovery), and Store (policy database). Double-check at invocation time even if something appears in the filtered index.
+- Threat coverage: compromised agent cannot learn about or request hidden tools; cannot forge snapshots; user (and Court) see exactly what each agent knows and has tried to do.
 
 ## Test Requirements
 
-- **Unit**: Permission snapshot filtering logic in `AgentSkillIndex`; `permission.check` / grant CRUD in Store; invalidation + refresh in Hub.
-- **Integration**: Start a `project-manager*` with narrow grants (e.g. can `channel.post` and `llm.*` but not `channel.create`); verify `tool.search "create channel"` returns nothing or low-score results, and direct call is rejected with `ERR_PERMISSION_DENIED`. Repeat for a `coder*` instance.
-- **E2E / Playwright**: Portal grant/revoke toggle flow; live agent behavior change (tool list in prompt or UI updates); audit log visible; CISO delegation opt-in flow (with mock CISO responses).
-- **Security / adversarial**: Attempt by agent to bypass via crafted messages, direct vsock, or index manipulation — all must be rejected and audited.
-- **Regression**: Existing ACL flows, autonomy grants, Court reviews, and basic agent tool use continue to work unchanged.
+- **Unit**: Dual filtering (grants + visibility) in `AgentSkillIndex`; visibility policy CRUD and application; `permission.request` emission on denied calls.
+- **Integration**: `project-manager*` with narrow grants + restrictive visibility sees only its allowed tools and cannot discover hidden high-privilege tools. `coder*` with `tool.registry.discover` grant still has its view filtered by visibility rules. Attempt to use un-granted tool emits `permission.request` and is reviewable in simulated Portal view.
+- **E2E / Playwright**: Per-agent page in Portal shows pending requests + denied attempts + hide controls; toggling grant/visibility immediately affects agent's `tool.search` results and prompt content; CISO delegation opt-in flow.
+- **Security / adversarial**: Attempts to bypass via index manipulation, direct messaging, or broad discovery queries are rejected/audited. Fingerprinting attempts on hidden tools are blocked by visibility policy.
+- **Regression**: Existing ACLs, autonomy, Court, and basic agent tool use remain unaffected.
 
 ## Traceability
 
 **Driven by:**
 - User request for Android-style per-agent/tool permissions with user (or opt-in CISO) control
-- Existing ACL deny-by-default + local `AgentSkillIndex` least-privilege foundation
-- Autonomy grant + Court graduation model already in Store
-- Threat model of over-privileged or compromised agents in a multi-persona collaborative system
-- Goal of minimal ongoing user toil while keeping paranoid defaults
+- Need for safe discovery so agents can request what they need without prior knowledge
+- Permission request flow on actual tool-use attempts (reviewable per-agent in Portal)
+- Fingerprinting / information-leakage concern when agents can list tools; solved via explicit Visibility Policy + gated broad discovery
+- Existing ACL deny-by-default + local `AgentSkillIndex` foundation
+- Autonomy grant + Court model in Store
+- Goal of minimal user toil while preserving paranoid defaults
 
 **Related Documents:**
-- `../prd/permissions-model.md` (high-level goals + UX)
-- `aegishub.md`, `store-vm.md`, `agent-runtime.md`, `security-model.md`, `semantic-tool-discovery.md`, `security-boundaries.md` (web-portal)
+- `../prd/permissions-model.md` (high-level goals + UX + discovery + request flow + visibility)
+- `aegishub.md`, `store-vm.md`, `agent-runtime.md`, `security-model.md`, `semantic-tool-discovery.md`
 - `../prd/governance-court.md`, `../prd/agent-autonomy.md`, `../prd/collaboration-model.md`
-- Implementation plan collaboration model and existing grant/timer code in Store
 
 ## Implementation Notes for `feat/permissions-model` Branch
 
-This spec will be realized in one cohesive set of changes on this branch (docs already committed; code + tests to follow):
+Docs updated with discovery, request-on-attempt, and visibility controls. Implementation on this branch will include:
 
-1. Extend `internal/agent/skills/index.go` — add permission-filter support to `AgentSkillIndex` and `HandleToolCommand`.
-2. Store changes — new grant storage + `permission.*` command handlers (build on autonomy/timer code).
-3. AegisHub — snapshot distribution on handshake, invalidation on grant events, extended ACL/permission checks.
-4. Minimal Portal UI — grant management surface (can be small extension of existing dashboard/security views).
-5. Bootstrap updates in `config/acls.yaml` and initial Store state.
-6. Comprehensive tests (unit + integration + e2e with differentiated personas) and audit verification.
-7. Update any prompt templates or workspace loader that inject tool lists to respect the filtered index.
+1. `internal/agent/skills/index.go` — dual filter (grants + visibility policy) in `SearchTools`, `ListSkills`, `HandleToolCommand`, and prompt helpers.
+2. Store — storage for visibility policies + new `permission.*` / `visibility.*` / `tool.registry.discover` handlers (reuse autonomy/grant patterns).
+3. AegisHub — snapshot distribution (grants + visibility), invalidation on changes, `permission.request` emission on denied tool calls.
+4. Web Portal — per-agent detail view for requests, denied attempts (with context), grant/revoke/hide controls.
+5. Bootstrap rules in `config/acls.yaml` and initial Store state (minimal public visibility + requestable tools).
+6. Comprehensive tests (unit + integration + e2e) covering safe discovery, request flow, and anti-fingerprinting scenarios with differentiated personas.
+7. Updates to any prompt/workspace injection paths to respect the dual-filtered index.
 
 Once implementation + testing complete on this branch, a single PR to main.
 
-**Current Status (on this branch):** Specs written. Implementation pending.
+**Current Status (on this branch):** PRD and spec refined with discovery + request flow + visibility controls. Implementation pending.
