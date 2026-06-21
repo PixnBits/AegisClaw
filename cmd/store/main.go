@@ -1196,13 +1196,13 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = map[string]interface{}{"channel_id": chID, "role": role}
 
 		case channelfacilitator.CmdTurnState:
-			payload := msg.Payload.(map[string]interface{})
+			payload, _ := msg.Payload.(map[string]interface{})
 			chID := channelIDFromPayload(payload)
 			out := map[string]interface{}{"channel_id": chID}
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
 				prepareChannelRecord(ch)
 				out["round_robin_index"] = ch["round_robin_index"]
-				out["turn_settings"] = channeldata.EffectiveTurnSettings(ch)
+				out["turn_settings"] = channeldata.TurnSettingsAsMap(channeldata.EffectiveTurnSettings(ch))
 				membersOut := []interface{}{}
 				for _, m := range channeldata.MembersSlice(ch) {
 					membersOut = append(membersOut, map[string]interface{}{

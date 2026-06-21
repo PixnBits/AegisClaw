@@ -79,7 +79,9 @@ func sendToComponentViaHubContext(ctx context.Context, target string, cmd string
 		resp, err = client.Send(ctx, msg)
 		daemonInternalHubMu.Unlock()
 	} else {
+		cliInternalHubMu.Lock()
 		resp, err = client.Send(ctx, msg)
+		cliInternalHubMu.Unlock()
 	}
 	if err != nil {
 		if sourceID == "daemon-internal" {

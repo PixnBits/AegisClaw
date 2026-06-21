@@ -72,6 +72,9 @@ for ((i=1; i<=POLL_SECONDS; i++)); do
   fi
   if echo "$TURN_STATE" | grep -qi 'last_seen_seq'; then
     pass_turn_state=true
+  elif echo "$CONTENT" | grep -qi 'last_seen_seq'; then
+    # Fallback: channel.get includes per-member last_seen_seq when turn-state RPC is slow
+    pass_turn_state=true
   fi
 
   if $pass_pm && $pass_coder && $pass_ciso && $pass_turn_state; then

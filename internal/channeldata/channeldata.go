@@ -54,6 +54,22 @@ func EffectiveTurnSettings(ch map[string]interface{}) TurnSettings {
 	return out
 }
 
+// TurnSettingsAsMap returns JSON-friendly turn settings for API responses.
+func TurnSettingsAsMap(s TurnSettings) map[string]interface{} {
+	mins := int(s.RelevanceWindowDuration / time.Minute)
+	if mins <= 0 {
+		mins = int(DefaultTurnSettings.RelevanceWindowDuration / time.Minute)
+	}
+	return map[string]interface{}{
+		"mention_boost_positions":     s.MentionBoostPositions,
+		"max_mention_boosts_per_cycle": s.MaxMentionBoostsPerCycle,
+		"starvation_cycles":           s.StarvationCycles,
+		"relevance_window_messages":   s.RelevanceWindowMessages,
+		"relevance_window_minutes":    mins,
+		"max_relevance_anchors":       s.MaxRelevanceAnchors,
+	}
+}
+
 // MemberTurnState is durable per-member channel participation state.
 type MemberTurnState struct {
 	Role              string `json:"role"`
