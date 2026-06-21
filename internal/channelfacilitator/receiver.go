@@ -26,9 +26,9 @@ func (r *Receiver) ProcessMessage(ctx context.Context, msg hubclient.Message) bo
 	}
 }
 
-// NewReceiver builds a facilitator wired to hub.
-func NewReceiver(hub Hub) *Receiver {
-	return &Receiver{Facilitator: &Facilitator{hub: hub, actors: map[string]*ChannelActor{}}}
+// NewReceiver builds a facilitator wired to ephemeral outbound hub RPCs.
+func NewReceiver() *Receiver {
+	return &Receiver{Facilitator: &Facilitator{hub: NewEphemeralHub(), actors: map[string]*ChannelActor{}}}
 }
 
 // TraceInbound logs channel.updated receipt when tracing is enabled.

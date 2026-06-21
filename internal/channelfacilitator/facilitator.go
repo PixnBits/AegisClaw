@@ -12,10 +12,10 @@ import (
 	"AegisClaw/internal/transport/hubclient"
 )
 
-// Hub is the minimal hub surface the facilitator needs.
+// Hub is the minimal hub surface the facilitator needs for outbound RPCs.
 type Hub interface {
 	Send(ctx context.Context, msg hubclient.Message) (hubclient.Message, error)
-	AssignedID() string
+	Fire(ctx context.Context, msg hubclient.Message) error
 }
 
 // Facilitator schedules batched turns per channel.
@@ -178,8 +178,9 @@ func (f *Facilitator) persistCycles(ctx context.Context, chID string, members []
 }
 
 func (f *Facilitator) fetchChannel(ctx context.Context, chID string) (interface{}, error) {
+	ctx, cancel := rpcTimeout(ctx)
+	defer cancel()
 	resp, err := f.hub.Send(ctx, hubclient.Message{
-		Source:      f.hub.AssignedID(),
 		Destination: "store",
 		Command:     "channel.get",
 		Payload:     map[string]interface{}{"channel_id": chID},
@@ -196,8 +197,9 @@ func (f *Facilitator) updateMemberState(ctx context.Context, chID, role string, 
 	for k, v := range fields {
 		payload[k] = v
 	}
+	ctx, cancel := rpcTimeout(ctx)
+	defer cancel()
 	_, err := f.hub.Send(ctx, hubclient.Message{
-		Source:      f.hub.AssignedID(),
 		Destination: "store",
 		Command:     CmdMemberTurnUpdate,
 		Payload:     payload,
@@ -210,8 +212,9 @@ func (f *Facilitator) ensureRole(ctx context.Context, role, chID string) error {
 	if role == "" || chID == "" {
 		return nil
 	}
+	ctx, cancel := rpcTimeout(ctx)
+	defer cancel()
 	_, err := f.hub.Send(ctx, hubclient.Message{
-		Source:      f.hub.AssignedID(),
 		Destination: "daemon-orchestrator",
 		Command:     "ensure.role",
 		Payload: map[string]interface{}{
@@ -229,13 +232,14 @@ func (f *Facilitator) deliverTurn(ctx context.Context, chID, role string, turn m
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, dest := range dests {
-			_, err := f.hub.Send(ctx, hubclient.Message{
-				Source:      f.hub.AssignedID(),
+			sendCtx, cancel := rpcTimeout(ctx)
+			err := f.hub.Fire(sendCtx, hubclient.Message{
 				Destination: dest,
 				Command:     CmdTurn,
 				Payload:     turn,
 				Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			})
+			cancel()
 			if err == nil {
 				collab.Tracef(ComponentID, "turn.delivered", "ch=%s dest=%s", chID, dest)
 				return nil

@@ -39,7 +39,7 @@ func startChannelFacilitatorReceiver() {
 			continue
 		}
 		logrus.Infof("%s registered (assigned=%s) for turn-based channel propagation", requesterID, regResp.AssignedID)
-		receiver := channelfacilitator.NewReceiver(client)
+		receiver := channelfacilitator.NewReceiver()
 
 		for {
 			msg, err := client.Receive(context.Background())
@@ -51,7 +51,7 @@ func startChannelFacilitatorReceiver() {
 					chID, _ := payload["channel_id"].(string)
 					from, _ := payload["from"].(string)
 					channelfacilitator.TraceInbound(from, chID)
-					receiver.ProcessMessage(context.Background(), msg)
+					go receiver.ProcessMessage(context.Background(), msg)
 				}
 				continue
 			}

@@ -21,7 +21,8 @@ if [[ ! -x ./bin/aegis ]]; then
   exit 2
 fi
 
-if ! ./bin/aegis status 2>/dev/null | grep -q 'daemon is running'; then
+status_line=$(./bin/aegis status 2>&1 | grep -m1 'daemon is running' || true)
+if [ -z "$status_line" ]; then
   echo "ERROR: daemon not running. Start with: sudo ./bin/aegis start" >&2
   exit 2
 fi
