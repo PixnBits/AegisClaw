@@ -142,6 +142,7 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 			m["cycles_since_turn"] = cycles + 1
 		}
 	}
+	collab.Tracef(ComponentID, "turn.last_seen", "ch=%s recipient=%s last_seen=%d rr_next=%d", chID, recipient, maxSeq, newRR)
 	_ = f.updateMemberState(ctx, chID, recipient, map[string]interface{}{
 		"last_seen_seq":       maxSeq,
 		"cycles_since_turn":   0,
