@@ -22,6 +22,30 @@ func TestComputeRelevanceAnchorsMentionAndPM(t *testing.T) {
 	}
 }
 
+func TestComputeRelevanceAnchorsSignals(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	// Window (prior context): PM plan with assignment + mention of ciso, plus another topical post.
+	window := []map[string]interface{}{
+		{"seq": 10, "from": "project-manager-main", "content": "Plan: @coder implement hello; flag security concern for @ciso", "ts": now},
+		{"seq": 11, "from": "user", "content": "Please review risk on auth change", "ts": now},
+		{"seq": 12, "from": "project-manager-main", "content": "Monitoring: coder should start", "ts": now},
+	}
+	// New batch (the turn recipient's new messages)
+	batch := []map[string]interface{}{
+		{"seq": 13, "from": "coder-ch1", "content": "working on hello feature", "ts": now},
+	}
+	// For CISO: direct mention (seq10) + PM post (seq12) + assignment phrase + topical "security"/"risk" should score high.
+	anchors := ComputeRelevanceAnchors("court-persona-ciso", 9, batch, window, channeldata.DefaultTurnSettings)
+	found := map[int]bool{}
+	for _, a := range anchors {
+		found[a] = true
+	}
+	if !found[10] {
+		t.Fatalf("expected anchor 10 (PM plan with @ciso mention), got %v", anchors)
+	}
+	// seq11 has topical overlap ("review risk" ~ security concern), may rank.
+}
+
 func TestSelectNextRecipientRoundRobin(t *testing.T) {
 	members := []map[string]interface{}{
 		{"role": "project-manager", "last_seen_seq": 0, "cycles_since_turn": 0},
