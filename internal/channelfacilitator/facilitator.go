@@ -226,6 +226,17 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 	if deliveredAny {
 		_ = f.persistCycles(ctx, chID, members, recipients[0])
 		collab.Tracef(ComponentID, "turn.last_seen", "ch=%s recipients=%v last_rr=%d", chID, recipients, newRR)
+		// Maintain a single updating status line in channel as visible messages from=system (per spec §8.2).
+		_, _ = f.hub.Send(ctx, hubclient.Message{
+			Destination: "store",
+			Command:     "channel.post",
+			Payload: map[string]interface{}{
+				"channel_id": chID,
+				"from":       "system",
+				"content":    fmt.Sprintf("status: turns delivered to %v (rr=%d)", recipients, newRR),
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
 	}
 	_ = newRR
 }
