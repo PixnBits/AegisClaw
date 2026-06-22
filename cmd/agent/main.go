@@ -295,10 +295,8 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		return true
 	}
 
-	if msg.Command == "channel.activity" || msg.Command == "channel.member_notify" {
-		processAgentChannelActivity(client, msg, realLLM)
-		return true
-	}
+	// channel.activity / human-only fan-out is fully replaced by turn-based delivery (channel.turn).
+	// Agents receive batched turns via the Channel Facilitator + Store relevance tools.
 	if msg.Command == channelfacilitator.CmdTurn {
 		processAgentChannelTurn(client, msg, realLLM)
 		return true
@@ -318,73 +316,6 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 	finalResult, _ := loop.RunTurn(context.Background(), tc, realLLM)
 	replyChatTurn(client, msg, tc.SessionID, finalResult)
 	return true
-}
-
-// processAgentChannelActivity handles channel.activity for on-demand SDLC role VMs (coder-*, tester-*).
-func processAgentChannelActivity(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
-	sourceID := client.AssignedID()
-	payload, _ := msg.Payload.(map[string]interface{})
-	chID, _ := payload["channel_id"].(string)
-	from, _ := payload["from"].(string)
-	userContent := collab.PayloadContentString(payload["content"])
-	if chID == "" {
-		chID = "main"
-	}
-
-	collab.Tracef(sourceID, "channel.activity.recv", "ch=%s from=%s", chID, from)
-
-	shouldRespond, reason := collab.ShouldRespondToActivity(sourceID, from, userContent)
-	if !shouldRespond {
-		_ = client.Reply(context.Background(), hubclient.Message{
-			Source: sourceID, Destination: msg.Source, Command: "response",
-			Payload: map[string]interface{}{
-				"status": "ignored", "reason": string(reason), "channel_id": chID,
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
-		return
-	}
-
-	_ = client.Reply(context.Background(), hubclient.Message{
-		Source: sourceID, Destination: msg.Source, Command: "response",
-		Payload: map[string]interface{}{
-			"status": "delivered", "reason": string(reason), "channel_id": chID,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	})
-
-	roleLabel := collab.AgentRoleLabel(sourceID)
-	prompt := customInstructionsPrefix() +
-		"\n\nYou are the " + roleLabel + " in channel " + chID + ". A user posted:\n" + userContent +
-		"\n\nReply in 2-4 sentences from your role's perspective. If no reply is needed, respond with exactly: NO_REPLY"
-	llmReply, err := realLLM(context.Background(), prompt)
-	if err != nil {
-		log.Printf("agent %s: channel reply LLM failed (not posting canned text): %v", sourceID, err)
-		collab.Tracef(sourceID, "channel.reply.skip", "ch=%s err=%v", chID, err)
-		return
-	}
-	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
-	if skip {
-		log.Printf("agent %s: chose not to reply in %s", sourceID, chID)
-		collab.Tracef(sourceID, "channel.reply.skip", "ch=%s reason=no_reply", chID)
-		return
-	}
-	postCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	_, err = client.Send(postCtx, hubclient.Message{
-		Source: sourceID, Destination: "store", Command: "channel.post",
-		Payload: map[string]interface{}{
-			"channel_id": chID, "from": sourceID, "content": trimmed,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		log.Printf("agent %s: channel.post failed: %v", sourceID, err)
-		collab.Tracef(sourceID, "channel.post.fail", "ch=%s err=%v", chID, err)
-		return
-	}
-	collab.Tracef(sourceID, "channel.post.ok", "ch=%s len=%d", chID, len(trimmed))
-	log.Printf("agent %s: posted channel reply to %s (%s)", sourceID, chID, reason)
 }
 
 func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
