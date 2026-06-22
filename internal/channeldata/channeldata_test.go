@@ -37,3 +37,22 @@ func TestEffectiveTurnSettingsOverride(t *testing.T) {
 		t.Fatalf("override failed: %+v", s)
 	}
 }
+
+func TestMemberLastSeenSeqAndDefaults(t *testing.T) {
+	// Empty member gets defaults for durable turn state (last_seen_seq etc).
+	m := map[string]interface{}{"role": "coder"}
+	EnsureMemberDefaults(m)
+	if MemberLastSeenSeq(m) != 0 {
+		t.Fatalf("expected last_seen_seq=0 default, got %d", MemberLastSeenSeq(m))
+	}
+	if m["cycles_since_turn"] != 0 || m["mention_boosts_left"] != 0 {
+		t.Fatalf("expected turn cycle/boost defaults, got %+v", m)
+	}
+
+	// Persisted last_seen_seq is readable (Store writes this via member_turn_update).
+	m2 := map[string]interface{}{"role": "ciso", "last_seen_seq": 42, "cycles_since_turn": 1}
+	EnsureMemberDefaults(m2)
+	if MemberLastSeenSeq(m2) != 42 {
+		t.Fatalf("expected last_seen_seq=42, got %d", MemberLastSeenSeq(m2))
+	}
+}
