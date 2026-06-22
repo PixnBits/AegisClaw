@@ -15,6 +15,26 @@ func TestDedupeMemberRoles(t *testing.T) {
 	}
 }
 
+func TestCollectMentionAndStarved(t *testing.T) {
+	members := []map[string]interface{}{
+		{"role": "coder", "cycles_since_turn": 0},
+		{"role": "tester", "cycles_since_turn": 5},
+		{"role": "ciso", "cycles_since_turn": 3},
+	}
+	content := "Plan: @coder do X and flag for @ciso"
+	ment := collectMentionedRoles(members, content)
+	if len(ment) == 0 || (ment[0] != "coder" && ment[0] != "ciso") {
+		t.Fatalf("mentioned got %v", ment)
+	}
+	starv := collectStarvedRoles(members, 3)
+	if len(starv) < 1 {
+		t.Fatalf("expected starved")
+	}
+	if !hasStrongMentions(content) {
+		t.Fatal("expected strong mentions")
+	}
+}
+
 func TestFacilitatorActorSkeleton(t *testing.T) {
 	// Skeleton: Facilitator provides per-channel single actor for serialization (spec §7).
 	f := &Facilitator{actors: map[string]*ChannelActor{}}
