@@ -36,6 +36,32 @@ func (f *Facilitator) actorFor(chID string) *ChannelActor {
 	return a
 }
 
+// HandleTurnResult records agent outcome after processing a turn (e.g. "posted" or "no_reply").
+// Used to distinguish intentional NO_REPLY from errors for observability (spec §8.4).
+func (f *Facilitator) HandleTurnResult(ctx context.Context, payload map[string]interface{}) {
+	chID, _ := payload["channel_id"].(string)
+	role, _ := payload["from"].(string)
+	if role == "" {
+		role, _ = payload["role"].(string)
+	}
+	outcome, _ := payload["outcome"].(string)
+	if chID == "" || role == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	fields := map[string]interface{}{
+		"last_outcome":  outcome,
+		"last_activity": now,
+		"pending":       false,
+	}
+	if errStr, ok := payload["error"].(string); ok && errStr != "" {
+		fields["last_error"] = errStr
+		fields["last_outcome"] = "error"
+	}
+	_ = f.updateMemberState(ctx, chID, role, fields)
+	collab.Tracef(ComponentID, "turn.result", "ch=%s role=%s outcome=%s", chID, role, outcome)
+}
+
 // HandleUpdated schedules turn delivery for a channel update (single actor per channel).
 func (f *Facilitator) HandleUpdated(ctx context.Context, payload map[string]interface{}) {
 	chID, _ := payload["channel_id"].(string)
@@ -122,11 +148,29 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 	collab.Tracef(ComponentID, "turn.deliver", "ch=%s recipient=%s since=%d new=%d anchors=%v", chID, recipient, sinceSeq, len(batch), anchors)
 
 	_ = f.ensureRole(ctx, recipient, chID)
+	now := time.Now().UTC().Format(time.RFC3339)
 	if err := f.deliverTurn(ctx, chID, recipient, turn); err != nil {
 		collab.Tracef(ComponentID, "turn.error", "ch=%s recipient=%s err=%v", chID, recipient, err)
+		// Record error for observability (spec §3.4, §8). Do not update last_seen on failure.
+		_ = f.updateMemberState(ctx, chID, recipient, map[string]interface{}{
+			"last_outcome":  "error",
+			"last_error":    err.Error(),
+			"last_activity": now,
+			"pending":       false,
+		})
+		// Post visible error note to channel (from=system per answers) so users see failures instead of silent wait.
+		_, _ = f.hub.Send(ctx, hubclient.Message{
+			Destination: "store",
+			Command:     "channel.post",
+			Payload: map[string]interface{}{
+				"channel_id": chID,
+				"from":       "system",
+				"content":    fmt.Sprintf("[turn error] delivery to %s failed: %v", recipient, err),
+			},
+			Timestamp: now,
+		})
 		return
 	}
-
 	// Persist last_seen_seq and advance scheduler state.
 	for _, m := range members {
 		role := channeldata.MemberRole(m)
@@ -148,6 +192,10 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 		"cycles_since_turn":   0,
 		"round_robin_index":   newRR,
 		"mention_boosts_left": mentionBoostsUsed(members, recipient, content),
+		"last_outcome":        "delivered",
+		"last_error":          "",
+		"last_activity":       now,
+		"pending":             true,
 	})
 	_ = f.persistCycles(ctx, chID, members, recipient)
 	_ = newRR

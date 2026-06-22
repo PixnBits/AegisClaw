@@ -21,6 +21,12 @@ func (r *Receiver) ProcessMessage(ctx context.Context, msg hubclient.Message) bo
 			r.Facilitator.HandleUpdated(ctx, payload)
 		}
 		return true
+	case CmdTurnResult:
+		payload, _ := msg.Payload.(map[string]interface{})
+		if payload != nil {
+			r.Facilitator.HandleTurnResult(ctx, payload)
+		}
+		return true
 	default:
 		return false
 	}

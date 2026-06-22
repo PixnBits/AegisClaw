@@ -1199,6 +1199,18 @@ func runStore(cmd *cobra.Command, args []string) {
 					if v, ok := payload["mention_boosts_left"]; ok {
 						m["mention_boosts_left"] = intFromPayload(v)
 					}
+					if v, ok := payload["last_outcome"]; ok {
+						m["last_outcome"] = v
+					}
+					if v, ok := payload["last_error"]; ok {
+						m["last_error"] = v
+					}
+					if v, ok := payload["last_activity"]; ok {
+						m["last_activity"] = v
+					}
+					if v, ok := payload["pending"]; ok {
+						m["pending"] = v
+					}
 					break
 				}
 				ch["members"] = membersToInterface(members)

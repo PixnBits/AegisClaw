@@ -30,4 +30,5 @@ const (
 	CmdMemberTurnUpdate  = "channel.member_turn_update"
 	CmdTurnState         = "channel.turn_state"
 	CmdTurnStateData     = "channel.turn_state.data"
+	CmdTurnResult        = "channel.turn_result"
 )

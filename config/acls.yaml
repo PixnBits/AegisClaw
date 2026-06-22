@@ -261,6 +261,36 @@ rules:
   destination: "*"
   commands:
     - channel.turn
+
+# Agents report turn outcomes (posted / no_reply / error) to facilitator for observability (spec §8)
+- source: "agent*"
+  destination: channel-facilitator
+  commands:
+    - channel.turn_result
+- source: "coder*"
+  destination: channel-facilitator
+  commands:
+    - channel.turn_result
+- source: "tester*"
+  destination: channel-facilitator
+  commands:
+    - channel.turn_result
+- source: "ciso*"
+  destination: channel-facilitator
+  commands:
+    - channel.turn_result
+- source: "architect*"
+  destination: channel-facilitator
+  commands:
+    - channel.turn_result
+- source: "researcher*"
+  destination: channel-facilitator
+  commands:
+    - channel.turn_result
+- source: "project-manager*"
+  destination: channel-facilitator
+  commands:
+    - channel.turn_result
 - source: channel-facilitator
   destination: "daemon-orchestrator"
   commands:

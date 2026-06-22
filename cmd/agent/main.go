@@ -352,12 +352,28 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	if err != nil {
 		log.Printf("agent %s: channel.turn LLM failed in %s: %v", sourceID, chID, err)
 		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s err=%v", chID, err)
+		// Report outcome so facilitator can record error for observability (not silent).
+		_ = client.Send(ctx, hubclient.Message{
+			Source:      sourceID,
+			Destination: channelfacilitator.ComponentID,
+			Command:     channelfacilitator.CmdTurnResult,
+			Payload: map[string]interface{}{"channel_id": chID, "from": sourceID, "outcome": "error", "error": err.Error()},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
 	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
 	if skip {
 		log.Printf("agent %s: channel.turn chose not to reply in %s", sourceID, chID)
 		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s reason=no_reply", chID)
+		// Report NO_REPLY explicitly so UI can show "NO_REPLY" (not error) per spec §8.4.
+		_ = client.Send(ctx, hubclient.Message{
+			Source:      sourceID,
+			Destination: channelfacilitator.ComponentID,
+			Command:     channelfacilitator.CmdTurnResult,
+			Payload:     map[string]interface{}{"channel_id": chID, "from": sourceID, "outcome": "no_reply"},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
 	postCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -371,9 +387,24 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	})
 	if err != nil {
 		collab.Tracef(sourceID, "channel.turn.post.fail", "ch=%s err=%v", chID, err)
+		_ = client.Send(ctx, hubclient.Message{
+			Source:      sourceID,
+			Destination: channelfacilitator.ComponentID,
+			Command:     channelfacilitator.CmdTurnResult,
+			Payload:     map[string]interface{}{"channel_id": chID, "from": sourceID, "outcome": "error", "error": err.Error()},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
 	collab.Tracef(sourceID, "channel.turn.post.ok", "ch=%s len=%d", chID, len(trimmed))
+	// Report success outcome.
+	_ = client.Send(ctx, hubclient.Message{
+		Source:      sourceID,
+		Destination: channelfacilitator.ComponentID,
+		Command:     channelfacilitator.CmdTurnResult,
+		Payload:     map[string]interface{}{"channel_id": chID, "from": sourceID, "outcome": "posted"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func drainChatPolls(client hubclient.Client, skillIndex *agentSkills.AgentSkillIndex) {
