@@ -14,3 +14,26 @@ func TestDedupeMemberRoles(t *testing.T) {
 		t.Fatalf("dedupeMemberRoles() = %v, want [project-manager coder]", got)
 	}
 }
+
+func TestFacilitatorActorSkeleton(t *testing.T) {
+	// Skeleton: Facilitator provides per-channel single actor for serialization (spec §7).
+	f := &Facilitator{actors: map[string]*ChannelActor{}}
+	a1 := f.actorFor("ch1")
+	a2 := f.actorFor("ch1")
+	if a1 != a2 {
+		t.Fatal("actorFor must return same actor for same channel")
+	}
+	a3 := f.actorFor("ch2")
+	if a3 == a1 {
+		t.Fatal("different channels must have distinct actors")
+	}
+	// Token channel acts as mutex (capacity 1).
+	select {
+	case a1.mu <- struct{}{}:
+		// acquired
+	default:
+		t.Fatal("expected to acquire actor token")
+	}
+	// Release
+	<-a1.mu
+}
