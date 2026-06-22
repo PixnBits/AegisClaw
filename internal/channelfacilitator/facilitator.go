@@ -106,98 +106,127 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 	if recipient == "" {
 		return
 	}
-	sinceSeq := 0
-	for _, m := range members {
-		if channeldata.MemberRole(m) == recipient {
-			sinceSeq = channeldata.MemberLastSeenSeq(m)
-			break
+
+	// Multi-recipient + fairness/catch-up for mention-heavy human posts (spec §3.2, §3.3).
+	// After PM plan or posts with multiple explicit mentions, also deliver to other mentioned or starved roles.
+	recipients := []string{recipient}
+	if collab.IsHumanPoster(from) && (hasStrongMentions(content) || isAssignmentLike(content)) {
+		mentioned := collectMentionedRoles(members, content)
+		starved := collectStarvedRoles(members, settings.StarvationCycles)
+		for _, r := range mentioned {
+			rn := collab.NormalizeMemberRole(r)
+			if rn != recipient && !containsRole(recipients, rn) && len(recipients) < 3 {
+				recipients = append(recipients, rn)
+			}
+		}
+		for _, r := range starved {
+			rn := collab.NormalizeMemberRole(r)
+			if rn != recipient && !containsRole(recipients, rn) && len(recipients) < 3 {
+				recipients = append(recipients, rn)
+			}
 		}
 	}
 	allMsgs := channeldata.MessagesSlice(chMap)
-	var batch []map[string]interface{}
-	maxSeq := sinceSeq
-	for _, m := range allMsgs {
-		seq := channeldata.MessageSeq(m)
-		if seq <= sinceSeq {
+
+	// Deliver (possibly to multiple for fairness/multi) and update state for each.
+	deliveredAny := false
+	for _, rec := range recipients {
+		rec = collab.NormalizeMemberRole(rec)
+		if rec == "" {
 			continue
 		}
-		batch = append(batch, m)
-		if seq > maxSeq {
-			maxSeq = seq
-		}
-	}
-	if len(batch) == 0 && !collab.IsHumanPoster(from) {
-		collab.Tracef(ComponentID, "turn.skip", "ch=%s recipient=%s reason=no_new_messages", chID, recipient)
-		return
-	}
-	window := allMsgs
-	anchors := ComputeRelevanceAnchors(recipient, sinceSeq, batch, window, settings)
-	newMsgs := make([]interface{}, len(batch))
-	for i, m := range batch {
-		newMsgs[i] = m
-	}
-	turn := map[string]interface{}{
-		"channel_id":         chID,
-		"recipient":          recipient,
-		"since_seq":          sinceSeq,
-		"new_messages":       newMsgs,
-		"relevance_anchors":  anchors,
-		"mention_boosts":     mentionBoosts,
-		"generated_at":       time.Now().UTC().Format(time.RFC3339),
-	}
-	collab.Tracef(ComponentID, "turn.deliver", "ch=%s recipient=%s since=%d new=%d anchors=%v", chID, recipient, sinceSeq, len(batch), anchors)
-
-	_ = f.ensureRole(ctx, recipient, chID)
-	now := time.Now().UTC().Format(time.RFC3339)
-	if err := f.deliverTurn(ctx, chID, recipient, turn); err != nil {
-		collab.Tracef(ComponentID, "turn.error", "ch=%s recipient=%s err=%v", chID, recipient, err)
-		// Record error for observability (spec §3.4, §8). Do not update last_seen on failure.
-		_ = f.updateMemberState(ctx, chID, recipient, map[string]interface{}{
-			"last_outcome":  "error",
-			"last_error":    err.Error(),
-			"last_activity": now,
-			"pending":       false,
-		})
-		// Post visible error note to channel (from=system per answers) so users see failures instead of silent wait.
-		_, _ = f.hub.Send(ctx, hubclient.Message{
-			Destination: "store",
-			Command:     "channel.post",
-			Payload: map[string]interface{}{
-				"channel_id": chID,
-				"from":       "system",
-				"content":    fmt.Sprintf("[turn error] delivery to %s failed: %v", recipient, err),
-			},
-			Timestamp: now,
-		})
-		return
-	}
-	// Persist last_seen_seq and advance scheduler state.
-	for _, m := range members {
-		role := channeldata.MemberRole(m)
-		cycles := intFromMember(m["cycles_since_turn"])
-		if role == recipient {
-			m["last_seen_seq"] = maxSeq
-			m["cycles_since_turn"] = 0
-			if collab.IsMentioned(role, content) {
-				left := intFromMember(m["mention_boosts_left"])
-				m["mention_boosts_left"] = left + 1
+		recSince := 0
+		for _, m := range members {
+			if channeldata.MemberRole(m) == rec {
+				recSince = channeldata.MemberLastSeenSeq(m)
+				break
 			}
-		} else {
-			m["cycles_since_turn"] = cycles + 1
 		}
+		var recBatch []map[string]interface{}
+		recMax := recSince
+		for _, m := range allMsgs {
+			seq := channeldata.MessageSeq(m)
+			if seq <= recSince {
+				continue
+			}
+			recBatch = append(recBatch, m)
+			if seq > recMax {
+				recMax = seq
+			}
+		}
+		if len(recBatch) == 0 && !collab.IsHumanPoster(from) {
+			collab.Tracef(ComponentID, "turn.skip", "ch=%s recipient=%s reason=no_new_messages", chID, rec)
+			continue
+		}
+		recAnchors := ComputeRelevanceAnchors(rec, recSince, recBatch, allMsgs, settings)
+		recNewMsgs := make([]interface{}, len(recBatch))
+		for i, m := range recBatch {
+			recNewMsgs[i] = m
+		}
+		recTurn := map[string]interface{}{
+			"channel_id":         chID,
+			"recipient":          rec,
+			"since_seq":          recSince,
+			"new_messages":       recNewMsgs,
+			"relevance_anchors":  recAnchors,
+			"mention_boosts":     mentionBoosts,
+			"generated_at":       time.Now().UTC().Format(time.RFC3339),
+		}
+		collab.Tracef(ComponentID, "turn.deliver", "ch=%s recipient=%s since=%d new=%d anchors=%v", chID, rec, recSince, len(recBatch), recAnchors)
+
+		_ = f.ensureRole(ctx, rec, chID)
+		now := time.Now().UTC().Format(time.RFC3339)
+		if err := f.deliverTurn(ctx, chID, rec, recTurn); err != nil {
+			collab.Tracef(ComponentID, "turn.error", "ch=%s recipient=%s err=%v", chID, rec, err)
+			_ = f.updateMemberState(ctx, chID, rec, map[string]interface{}{
+				"last_outcome":  "error",
+				"last_error":    err.Error(),
+				"last_activity": now,
+				"pending":       false,
+			})
+			_, _ = f.hub.Send(ctx, hubclient.Message{
+				Destination: "store",
+				Command:     "channel.post",
+				Payload: map[string]interface{}{
+					"channel_id": chID,
+					"from":       "system",
+					"content":    fmt.Sprintf("[turn error] delivery to %s failed: %v", rec, err),
+				},
+				Timestamp: now,
+			})
+			continue
+		}
+		// update local + persist for this rec
+		for _, m := range members {
+			role := channeldata.MemberRole(m)
+			cyc := intFromMember(m["cycles_since_turn"])
+			if role == rec {
+				m["last_seen_seq"] = recMax
+				m["cycles_since_turn"] = 0
+				if collab.IsMentioned(role, content) {
+					left := intFromMember(m["mention_boosts_left"])
+					m["mention_boosts_left"] = left + 1
+				}
+			} else {
+				m["cycles_since_turn"] = cyc + 1
+			}
+		}
+		_ = f.updateMemberState(ctx, chID, rec, map[string]interface{}{
+			"last_seen_seq":       recMax,
+			"cycles_since_turn":   0,
+			"round_robin_index":   newRR,
+			"mention_boosts_left": mentionBoostsUsed(members, rec, content),
+			"last_outcome":        "delivered",
+			"last_error":          "",
+			"last_activity":       now,
+			"pending":             true,
+		})
+		deliveredAny = true
 	}
-	collab.Tracef(ComponentID, "turn.last_seen", "ch=%s recipient=%s last_seen=%d rr_next=%d", chID, recipient, maxSeq, newRR)
-	_ = f.updateMemberState(ctx, chID, recipient, map[string]interface{}{
-		"last_seen_seq":       maxSeq,
-		"cycles_since_turn":   0,
-		"round_robin_index":   newRR,
-		"mention_boosts_left": mentionBoostsUsed(members, recipient, content),
-		"last_outcome":        "delivered",
-		"last_error":          "",
-		"last_activity":       now,
-		"pending":             true,
-	})
-	_ = f.persistCycles(ctx, chID, members, recipient)
+	if deliveredAny {
+		_ = f.persistCycles(ctx, chID, members, recipients[0])
+		collab.Tracef(ComponentID, "turn.last_seen", "ch=%s recipients=%v last_rr=%d", chID, recipients, newRR)
+	}
 	_ = newRR
 }
 
@@ -317,4 +346,65 @@ func turnDestinations(role, chID string) []string {
 		return []string{role + "-" + chID, role}
 	}
 	return []string{role}
+}
+
+// hasStrongMentions / isAssignmentLike / collect* support multi-recipient + catch-up fairness (spec §3).
+func hasStrongMentions(content string) bool {
+	lower := strings.ToLower(content)
+	count := 0
+	for _, p := range []string{"@coder", "@tester", "@ciso", "@architect", "assign", "@pm"} {
+		if strings.Contains(lower, p) {
+			count++
+		}
+	}
+	return count >= 2
+}
+
+func isAssignmentLike(content string) bool {
+	lower := strings.ToLower(content)
+	for _, p := range []string{"plan:", "assign", "your task", "please implement", "flag for", "review for"} {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectMentionedRoles(members []map[string]interface{}, content string) []string {
+	var out []string
+	lower := strings.ToLower(content)
+	for _, m := range members {
+		r := channeldata.MemberRole(m)
+		if r == "" {
+			continue
+		}
+		if collab.IsMentioned(r, content) || strings.Contains(lower, "@"+strings.ToLower(r)) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func collectStarvedRoles(members []map[string]interface{}, starvation int) []string {
+	if starvation <= 0 {
+		starvation = channeldata.DefaultTurnSettings.StarvationCycles
+	}
+	var out []string
+	for _, m := range members {
+		if intFromMember(m["cycles_since_turn"]) >= starvation {
+			if r := channeldata.MemberRole(m); r != "" {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
+func containsRole(list []string, r string) bool {
+	for _, x := range list {
+		if x == r {
+			return true
+		}
+	}
+	return false
 }

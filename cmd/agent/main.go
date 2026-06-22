@@ -353,7 +353,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 		log.Printf("agent %s: channel.turn LLM failed in %s: %v", sourceID, chID, err)
 		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s err=%v", chID, err)
 		// Report outcome so facilitator can record error for observability (not silent).
-		_ = client.Send(ctx, hubclient.Message{
+		_, _ = client.Send(ctx, hubclient.Message{
 			Source:      sourceID,
 			Destination: channelfacilitator.ComponentID,
 			Command:     channelfacilitator.CmdTurnResult,
@@ -367,7 +367,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 		log.Printf("agent %s: channel.turn chose not to reply in %s", sourceID, chID)
 		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s reason=no_reply", chID)
 		// Report NO_REPLY explicitly so UI can show "NO_REPLY" (not error) per spec §8.4.
-		_ = client.Send(ctx, hubclient.Message{
+		_, _ = client.Send(ctx, hubclient.Message{
 			Source:      sourceID,
 			Destination: channelfacilitator.ComponentID,
 			Command:     channelfacilitator.CmdTurnResult,
@@ -387,7 +387,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	})
 	if err != nil {
 		collab.Tracef(sourceID, "channel.turn.post.fail", "ch=%s err=%v", chID, err)
-		_ = client.Send(ctx, hubclient.Message{
+		_, _ = client.Send(ctx, hubclient.Message{
 			Source:      sourceID,
 			Destination: channelfacilitator.ComponentID,
 			Command:     channelfacilitator.CmdTurnResult,
@@ -398,7 +398,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	}
 	collab.Tracef(sourceID, "channel.turn.post.ok", "ch=%s len=%d", chID, len(trimmed))
 	// Report success outcome.
-	_ = client.Send(ctx, hubclient.Message{
+	_, _ = client.Send(ctx, hubclient.Message{
 		Source:      sourceID,
 		Destination: channelfacilitator.ComponentID,
 		Command:     channelfacilitator.CmdTurnResult,
