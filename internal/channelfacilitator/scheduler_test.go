@@ -37,3 +37,16 @@ func TestFacilitatorActorSkeleton(t *testing.T) {
 	// Release
 	<-a1.mu
 }
+
+func TestTurnDestinations(t *testing.T) {
+	// Part of wiring: ensure correct hub destinations for turn delivery per role/channel.
+	if got := turnDestinations("coder", "chX"); len(got) == 0 || got[0] != "coder-chX" {
+		t.Fatalf("coder dest: %v", got)
+	}
+	if got := turnDestinations("project-manager", "chY"); len(got) == 0 || got[0] != "project-manager-chY" {
+		t.Fatalf("pm dest: %v", got)
+	}
+	if got := turnDestinations("court-persona-ciso", ""); len(got) == 0 || got[0] != "court-persona-ciso" {
+		t.Fatalf("court dest: %v", got)
+	}
+}
