@@ -85,11 +85,49 @@ Agents are expected to persist useful relevance judgments in their own memory co
 - Single actor per channel for concurrency safety.
 - Exposes current turn position and `last_seen_seq` values for observability (v1 requirement).
 
-## 8. Observability (v1)
+## 8. Observability and User Feedback (v1)
 
-- `last_seen_seq` and current round-robin position per member must be queryable (via CLI and eventually web portal).
-- Web portal UI will display turn/round-robin state per channel (to be detailed in web portal spec update).
-- Extended `[collab-trace]` instrumentation for turn computation, anchor selection, and tool calls.
+A key goal of this feature is to avoid the situation where a user posts a plan, roles are assigned work, and the user has no visibility into what is happening (or failing). Observability must be designed in from the start.
+
+### 8.1 Per-Agent Activity View (Agents Page)
+
+The web portal `#agents` page (and equivalent dashboard views) **must** expose useful state for each running agent/role participating in channels. At minimum, the following should be visible:
+
+- Last turn received (sequence number + timestamp)
+- `cycles_since_turn`
+- Current status (e.g. Idle, Processing turn, Error)
+- Last known outcome (Success / NO_REPLY / Error)
+- Whether a turn is currently pending
+- Last activity timestamp
+
+**Future expansion** (not required in v1 but the data model should support it):
+- Token usage and model invocations
+- Model(s) used for recent turns
+- History of recent turns / state transitions
+
+This view is the primary way users will understand what their agents are doing.
+
+### 8.2 Channel-Level Status Feedback
+
+Channels should provide lightweight, default-visible feedback so users do not have to dig into CLI tools or separate pages.
+
+- A **single line of current status** should be maintained and updated in the channel as turns are assigned and progress.
+- On **actual errors or failures** during turn delivery or processing (e.g. delivery failure after retries, permission/serialization errors, role not ready), a visible error note should be posted to the channel. This note may link to the relevant agent's view for more detail.
+
+**Important distinction**:
+- `NO_REPLY` is an intentional agent decision and is **not** treated as an error.
+- Only genuine failures (where the system or agent attempted something but could not complete it) should surface as errors.
+
+### 8.3 CLI Support
+
+The existing `aegis channel turn-state` command should be improved alongside the web UI changes to remain a useful power-user and debugging tool. It should clearly expose per-member turn state, including `last_seen_seq`, `cycles_since_turn`, boost status, and recent outcomes.
+
+### 8.4 Error vs Non-Error Semantics
+
+- **Non-error**: Agent receives a turn and deliberately returns `NO_REPLY` or stays silent.
+- **Error**: Turn delivery fails, the agent encounters a runtime error while processing, or the system cannot complete an action it attempted on behalf of the agent.
+
+Errors should be visible both in channel notes (when appropriate) and in the agent's activity view.
 
 ## 9. ACLs (to be added)
 
@@ -133,11 +171,14 @@ sequenceDiagram
 - Old human-only fan-out path is removed for agents.
 - Mention boost values and starvation threshold are per-channel settings.
 - Facilitator is a separate logical component.
+- Observability data (last turn, cycles, outcomes) must be exposed via both CLI and web portal.
 
 ## 12. Open Items for Later
 
-- Exact UI presentation of round-robin / turn state in web portal (needs web portal spec update).
+- Exact UI presentation and layout of per-agent activity on the `#agents` page (to be detailed in web portal spec).
+- Richer agent lifecycle observability (token usage, model history, full state transitions) on the Agents page.
 - Potential tightening of relevance tool ACLs in future.
+- Whether channel status notes should be configurable or always-on.
 
 ---
 
