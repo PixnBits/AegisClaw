@@ -346,12 +346,17 @@ func spaWorkersToAgentCards(workers []interface{}) []interface{} {
 		if progress == "" {
 			progress = "—"
 		}
-		out = append(out, map[string]interface{}{
+		ch, _ := m["channel"].(string)
+		card := map[string]interface{}{
 			"name":     name,
 			"status":   status,
 			"task":     task,
 			"progress": progress,
-		})
+		}
+		if ch != "" {
+			card["channel"] = ch
+		}
+		out = append(out, card)
 	}
 	return out
 }

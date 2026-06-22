@@ -7,7 +7,7 @@ type Props = {
 };
 
 export function AgentsView({ onOpenTrace }: Props) {
-  const [agents, setAgents] = useState<Array<{ name: string; status: string; task: string; progress: string }>>([]);
+  const [agents, setAgents] = useState<Array<{ name: string; status: string; task: string; progress: string; last_seen_seq?: number; cycles_since_turn?: number; last_outcome?: string; pending?: boolean; last_activity?: string; channel?: string }>>([]);
 
   useEffect(() => {
     api.agents().then((d) => setAgents(d.agents || [])).catch(() => {});
@@ -41,7 +41,13 @@ export function AgentsView({ onOpenTrace }: Props) {
             <strong>{agent.name}</strong>
             <span className="subtle">
               {agent.status} • {agent.task}
+              {agent.channel ? ` • ${agent.channel}` : ''}
             </span>
+            {(agent.last_seen_seq != null || agent.cycles_since_turn != null || agent.last_outcome) && (
+              <span className="subtle" style={{ fontSize: '0.8em', display: 'block' }}>
+                turn: seen={agent.last_seen_seq ?? '-'} cycles={agent.cycles_since_turn ?? '-'} {agent.last_outcome ? `outcome=${agent.last_outcome}` : ''} {agent.pending ? '(pending)' : ''}
+              </span>
+            )}
           </li>
         ))
         )}
