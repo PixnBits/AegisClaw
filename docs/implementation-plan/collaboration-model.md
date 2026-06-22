@@ -17,14 +17,14 @@
 - Two tools: `get_relevant_since` + `get_messages`
 - Round-robin / turn state observable in v1
 
-**Next implementation steps**:
-1. Facilitator skeleton + hub registration + ACLs
-2. Persist `last_seen_seq` via Store
-3. Implement round-robin + mention boost logic (configurable)
-4. Add `get_relevant_since` and `get_messages` to Store
-5. Wire turn delivery
-6. Add E2E test using the driving collaboration scenario
-7. Observability (CLI + traces)
+**Next implementation steps** (updated for enhanced spec):
+- Observability foundations (member outcomes, CLI, #agents page merge of turn state)
+- Channel status lines + visible error notes (system posts)
+- Strengthened scheduling (multi-recipient, fairness/catch-up after mentions)
+- Delivery resilience + agent outcome reporting (turn_result)
+- Tests + driving E2E (PM plan with multiple roles receives turns + visibility)
+
+See spec for multi-recipient, fairness/catch-up, per-agent activity, error semantics.
 
 See the detailed spec for payload formats, implicit signals, tool interfaces, and error handling.
 
