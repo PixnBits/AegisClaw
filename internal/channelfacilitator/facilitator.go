@@ -196,10 +196,9 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 			})
 			continue
 		}
-		// update local + persist for this rec
+		// update last_seen for this rec (cycles normalized in final pass)
 		for _, m := range members {
 			role := channeldata.MemberRole(m)
-			cyc := intFromMember(m["cycles_since_turn"])
 			if role == rec {
 				m["last_seen_seq"] = recMax
 				m["cycles_since_turn"] = 0
@@ -207,8 +206,6 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 					left := intFromMember(m["mention_boosts_left"])
 					m["mention_boosts_left"] = left + 1
 				}
-			} else {
-				m["cycles_since_turn"] = cyc + 1
 			}
 		}
 		_ = f.updateMemberState(ctx, chID, rec, map[string]interface{}{
@@ -223,7 +220,15 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 		})
 		deliveredAny = true
 	}
+	// Single cycle update pass for the schedule (non-recipients +1 once, even on multi).
 	if deliveredAny {
+		for _, m := range members {
+			role := channeldata.MemberRole(m)
+			if !containsRole(recipients, role) {
+				cyc := intFromMember(m["cycles_since_turn"])
+				m["cycles_since_turn"] = cyc + 1
+			}
+		}
 		_ = f.persistCycles(ctx, chID, members, recipients[0])
 		collab.Tracef(ComponentID, "turn.last_seen", "ch=%s recipients=%v last_rr=%d", chID, recipients, newRR)
 		// Maintain a single updating status line in channel as visible messages from=system (per spec §8.2).
