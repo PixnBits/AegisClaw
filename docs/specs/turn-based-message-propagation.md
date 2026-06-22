@@ -11,22 +11,44 @@ This document defines how batched turn-based message propagation works in AegisC
 - LLM usage remains bounded.
 - The host daemon stays minimal.
 - Full paranoid security model is preserved.
+- Users have reasonable visibility when roles are assigned work and when issues occur.
 
 ## 2. Core Decisions
 
-- **last_seen_seq** is stored durably in the Store (as part of channel membership state). This ensures durability across facilitator restarts.
+- **last_seen_seq** is stored durably in the Store (as part of channel membership state).
 - The turn-based system **fully replaces** the old human-only `channel.activity` fan-out path for agents.
 - Mention boost policy is **configurable per channel**, with global defaults exposed in the Settings page of the web portal.
-- The Channel Facilitator is treated as a logically separate component (even if initially co-located inside the Project Manager binary).
-- Humans always receive the **full real-time message stream** via STOMP (important for RAIL model feedback loops).
-- Agents have access to a direct `channel.get_messages` tool in addition to the relevance tool, so they can perform their own relevance logic when desired. Agents may store relevance judgments in their own memory between turns.
+- The Channel Facilitator is treated as a logically separate component (even if initially co-located).
+- Humans always receive the **full real-time message stream** via STOMP.
+- Agents have access to `channel.get_messages` in addition to the relevance tool.
 
-## 3. Turn Scheduling
+## 3. Turn Scheduling and Delivery
 
-- Per-channel round-robin of members.
-- Mentioned agents receive a configurable priority boost (default +2 positions, max 2 boosts per full cycle).
-- Starvation protection: members whose last turn exceeds a configurable number of cycles are forced forward.
-- Human posts are strong triggers for immediate turn consideration.
+The scheduling model combines round-robin fairness with stronger responsiveness to explicit mentions, while supporting delivery to multiple relevant roles when appropriate.
+
+### 3.1 Base Mechanism
+
+- Per-channel round-robin of current members using `last_seen_seq` and `cycles_since_turn`.
+- Human posts are strong triggers for immediate scheduling consideration.
+- Mention boosts are configurable (default +2 positions, max 2 boosts per full cycle).
+- Starvation protection exists for members with high `cycles_since_turn`.
+
+### 3.2 Mention Handling and Fairness
+
+When a post explicitly mentions roles (e.g. `@Coder`, `@Tester`), those roles receive stronger promotion than the default boost.
+
+After periods of high mention activity (e.g. a detailed PM plan), the scheduler performs a **fairness / catch-up pass**: agents that have not yet received a turn since the last significant human post are given priority before agents who have already received recent turns. This balances responsiveness to assignments with the principle that every agent should have a reasonable chance to contribute.
+
+### 3.3 Multi-Recipient Delivery
+
+A single post may result in turns being delivered to multiple relevant recipients when the post clearly targets several roles (common with PM plans and broadcasts). The facilitator determines the set of recipients based on mentions, role relevance, and current scheduling state.
+
+### 3.4 Delivery and Resilience
+
+- The facilitator attempts to deliver `channel.turn` messages to selected recipients.
+- Successful delivery updates the recipient’s `last_seen_seq`.
+- If delivery fails after retries (role not ready, timeout, transient error), the failure is recorded in turn state and treated as a visible error (see Observability section).
+- `NO_REPLY` from an agent after receiving a turn is **not** treated as a delivery error.
 
 ## 4. Turn Payload
 
@@ -59,77 +81,57 @@ No LLM is used for anchor selection.
 ## 6. Tools Available to Agents
 
 ### 6.1 `channel.get_relevant_since`
-
 Primary tool for context reconstruction after receiving a turn.
 
 ### 6.2 `channel.get_messages`
-
-Direct fetch tool for when an agent wants to perform its own relevance analysis:
-
-```json
-{
-  "channel_id": "string",
-  "since_seq": number,
-  "limit": number,
-  "filter": { ... }   // optional keyword / author / etc.
-}
-```
-
-Agents are expected to persist useful relevance judgments in their own memory component between turns.
+Direct fetch tool for when an agent wants to perform its own relevance analysis. Agents may persist relevance judgments in their own memory between turns.
 
 ## 7. Facilitator Responsibilities
 
-- Maintains round-robin state and per-member `last_seen_seq` (persisted via Store).
-- Computes relevance anchors using the signals above.
-- Delivers `channel.turn` messages.
-- Single actor per channel for concurrency safety.
-- Exposes current turn position and `last_seen_seq` values for observability (v1 requirement).
+The Channel Facilitator is the owner of turn-based collaboration orchestration. Its responsibilities include:
+
+- Maintaining per-channel round-robin state and `last_seen_seq` (persisted via Store).
+- Applying mention boosts and performing fairness / catch-up passes.
+- Computing relevance anchors using cheap implicit signals.
+- Deciding which roles receive turns (including multi-recipient decisions).
+- Delivering `channel.turn` messages and handling delivery resilience.
+- Recording outcomes and surfacing basic errors/status when delivery or processing fails.
+- Exposing current turn position and per-member state for observability.
+
+The facilitator does **not** decide what an agent should do with a turn, nor does it perform LLM calls or response generation.
 
 ## 8. Observability and User Feedback (v1)
 
-A key goal of this feature is to avoid the situation where a user posts a plan, roles are assigned work, and the user has no visibility into what is happening (or failing). Observability must be designed in from the start.
+A key goal of this feature is to avoid users posting plans and receiving no visibility when roles are assigned work or when issues occur.
 
 ### 8.1 Per-Agent Activity View (Agents Page)
 
-The web portal `#agents` page (and equivalent dashboard views) **must** expose useful state for each running agent/role participating in channels. At minimum, the following should be visible:
-
-- Last turn received (sequence number + timestamp)
+The `#agents` page must expose useful state for each running agent/role:
+- Last turn received (seq + timestamp)
 - `cycles_since_turn`
-- Current status (e.g. Idle, Processing turn, Error)
+- Current status
 - Last known outcome (Success / NO_REPLY / Error)
 - Whether a turn is currently pending
 - Last activity timestamp
 
-**Future expansion** (not required in v1 but the data model should support it):
-- Token usage and model invocations
-- Model(s) used for recent turns
-- History of recent turns / state transitions
-
-This view is the primary way users will understand what their agents are doing.
+Future expansion (data model should support): token usage, model invocations, and richer state history.
 
 ### 8.2 Channel-Level Status Feedback
 
-Channels should provide lightweight, default-visible feedback so users do not have to dig into CLI tools or separate pages.
-
-- A **single line of current status** should be maintained and updated in the channel as turns are assigned and progress.
-- On **actual errors or failures** during turn delivery or processing (e.g. delivery failure after retries, permission/serialization errors, role not ready), a visible error note should be posted to the channel. This note may link to the relevant agent's view for more detail.
-
-**Important distinction**:
-- `NO_REPLY` is an intentional agent decision and is **not** treated as an error.
-- Only genuine failures (where the system or agent attempted something but could not complete it) should surface as errors.
+- A single line of current status is maintained and updated in the channel.
+- On actual errors or failures during turn delivery or processing, a visible error note is posted to the channel (may link to the agent’s view).
+- `NO_REPLY` is an intentional agent decision and is **not** surfaced as an error.
 
 ### 8.3 CLI Support
 
-The existing `aegis channel turn-state` command should be improved alongside the web UI changes to remain a useful power-user and debugging tool. It should clearly expose per-member turn state, including `last_seen_seq`, `cycles_since_turn`, boost status, and recent outcomes.
+`aegis channel turn-state` is improved to clearly show per-member state, recent outcomes, and boost/fairness status.
 
-### 8.4 Error vs Non-Error Semantics
+### 8.4 Error Semantics
 
-- **Non-error**: Agent receives a turn and deliberately returns `NO_REPLY` or stays silent.
-- **Error**: Turn delivery fails, the agent encounters a runtime error while processing, or the system cannot complete an action it attempted on behalf of the agent.
+- **Non-error**: Agent receives a turn and returns `NO_REPLY` or stays silent.
+- **Error**: Repeated delivery failure, processing error, or system inability to complete an action it attempted.
 
-Errors should be visible both in channel notes (when appropriate) and in the agent's activity view.
-
-## 9. ACLs (to be added)
+## 9. ACLs
 
 ```yaml
 - source: channel-facilitator
@@ -140,8 +142,6 @@ Errors should be visible both in channel notes (when appropriate) and in the age
   destination: store
   commands: [ "channel.get_relevant_since", "channel.get_messages" ]
 ```
-
-Broad access to the relevance tools by any agent is accepted for v1. This decision should be revisited if abuse or performance issues appear.
 
 ## 10. Example Flow (Mermaid)
 
@@ -169,16 +169,16 @@ sequenceDiagram
 
 - `last_seen_seq` is stored in Store (durable).
 - Old human-only fan-out path is removed for agents.
-- Mention boost values and starvation threshold are per-channel settings.
-- Facilitator is a separate logical component.
-- Observability data (last turn, cycles, outcomes) must be exposed via both CLI and web portal.
+- Scheduling includes mention boosting + fairness/catch-up passes and multi-recipient delivery.
+- Facilitator owns scheduling, delivery, and basic error surfacing.
+- Observability data must be exposed via both CLI and web portal.
 
 ## 12. Open Items for Later
 
-- Exact UI presentation and layout of per-agent activity on the `#agents` page (to be detailed in web portal spec).
-- Richer agent lifecycle observability (token usage, model history, full state transitions) on the Agents page.
-- Potential tightening of relevance tool ACLs in future.
-- Whether channel status notes should be configurable or always-on.
+- Exact UI layout of per-agent activity on the `#agents` page.
+- Richer agent lifecycle observability (tokens, models, invocation history).
+- Tuning of fairness/catch-up thresholds and mention boost behavior.
+- Whether channel status notes should be configurable.
 
 ---
 
