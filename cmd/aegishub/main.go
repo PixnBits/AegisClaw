@@ -624,7 +624,7 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 		rpcTimeout = 600 * time.Second
 	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
 		rpcTimeout = 8 * time.Second
-	case "channel.activity":
+	case "channel.activity", "channel.turn":
 		// Agent may channel.post to store before replying.
 		rpcTimeout = 180 * time.Second
 	case "channel.post":

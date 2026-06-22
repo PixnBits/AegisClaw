@@ -12,6 +12,7 @@ func TestNormalizeMemberRole(t *testing.T) {
 		{"Project Manager", "project-manager"},
 		{"CISO", "ciso"},
 		{"user:alice", "user:alice"},
+		{"Someone", "user:someone"},
 	}
 	for _, tc := range tests {
 		if got := NormalizeMemberRole(tc.in); got != tc.want {

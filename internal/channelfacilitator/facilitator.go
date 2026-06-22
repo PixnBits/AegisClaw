@@ -234,18 +234,22 @@ func (f *Facilitator) deliverTurn(ctx context.Context, chID, role string, turn m
 	for time.Now().Before(deadline) {
 		for _, dest := range dests {
 			sendCtx, cancel := rpcTimeout(ctx)
-			err := f.hub.Fire(sendCtx, hubclient.Message{
+			resp, err := f.hub.Send(sendCtx, hubclient.Message{
 				Destination: dest,
 				Command:     CmdTurn,
 				Payload:     turn,
 				Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			})
 			cancel()
-			if err == nil {
+			if err == nil && resp.Command != "error" {
 				collab.Tracef(ComponentID, "turn.delivered", "ch=%s dest=%s", chID, dest)
 				return nil
 			}
-			lastErr = err
+			if err != nil {
+				lastErr = err
+			} else {
+				lastErr = fmt.Errorf("hub error delivering turn to %s: %v", dest, resp.Payload)
+			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

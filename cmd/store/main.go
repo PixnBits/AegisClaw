@@ -1132,10 +1132,19 @@ func runStore(cmd *cobra.Command, args []string) {
 				if m, ok := ch["members"].([]interface{}); ok {
 					members = m
 				}
-				members = append(members, member)
-				ch["members"] = members
-				channels[chID] = ch
-				saveToFile("channels.json", channels)
+				duplicate := false
+				for _, item := range members {
+					if m, ok := item.(map[string]interface{}); ok && channeldata.MemberRole(m) == role {
+						duplicate = true
+						break
+					}
+				}
+				if !duplicate {
+					members = append(members, member)
+					ch["members"] = members
+					channels[chID] = ch
+					saveToFile("channels.json", channels)
+				}
 			}
 			response.Command = "channel.member_added"
 			response.Payload = map[string]interface{}{"channel_id": chID}

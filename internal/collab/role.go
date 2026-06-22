@@ -40,5 +40,12 @@ func NormalizeMemberRole(role string) string {
 	if slug := PersonaSlugFromSource(role); slug != "" {
 		return "court-persona-" + slug
 	}
+	// Portal invite form accepts "user:alice"; bare names are human placeholders.
+	if !strings.Contains(role, "-") {
+		slug := strings.ToLower(strings.ReplaceAll(role, " ", "-"))
+		if slug != "" && slug != "user" {
+			return "user:" + slug
+		}
+	}
 	return role
 }

@@ -132,6 +132,49 @@ rules:
   commands:
     - llm.*
 
+# On-demand SDLC role VMs (coder-<channel>, tester-<channel>, etc.) reuse agent.img but
+# register as role-prefixed hub ids (not agent-*). Mirror agent LLM + store channel paths.
+- source: "coder*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "coder*"
+  commands:
+    - llm.*
+- source: "tester*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "tester*"
+  commands:
+    - llm.*
+- source: "ciso*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "ciso*"
+  commands:
+    - llm.*
+- source: "architect*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "architect*"
+  commands:
+    - llm.*
+- source: "researcher*"
+  destination: network-boundary
+  commands:
+    - llm.*
+- source: network-boundary
+  destination: "researcher*"
+  commands:
+    - llm.*
+
 # Agent <-> Court Scribe (notify on proposal creation per governance)
 - source: agent
   destination: court-scribe
@@ -207,6 +250,7 @@ rules:
     - channel.*
 
 # Channel Facilitator ↔ Store (membership, last_seen_seq, turn tools, state)
+# Per turn-based-message-propagation spec: facilitator owns round-robin + last_seen_seq.
 - source: channel-facilitator
   destination: store
   commands:
@@ -236,12 +280,43 @@ rules:
   commands:
     - channel.turn
 
-# Agents query relevance and message history via Store tools
+# Agents query relevance and message history via Store tools (turn-based propagation)
+# Broad agent-* / role-* access accepted for v1 per spec.
 - source: "agent*"
   destination: store
   commands:
     - channel.get_relevant_since
     - channel.get_messages
+- source: "coder*"
+  destination: store
+  commands:
+    - channel.get_relevant_since
+    - channel.get_messages
+    - channel.*
+- source: "tester*"
+  destination: store
+  commands:
+    - channel.get_relevant_since
+    - channel.get_messages
+    - channel.*
+- source: "ciso*"
+  destination: store
+  commands:
+    - channel.get_relevant_since
+    - channel.get_messages
+    - channel.*
+- source: "architect*"
+  destination: store
+  commands:
+    - channel.get_relevant_since
+    - channel.get_messages
+    - channel.*
+- source: "researcher*"
+  destination: store
+  commands:
+    - channel.get_relevant_since
+    - channel.get_messages
+    - channel.*
 - source: "court-persona-*"
   destination: store
   commands:

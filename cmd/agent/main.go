@@ -184,7 +184,7 @@ func runAgentSession(client hubclient.Client, pub ed25519.PublicKey, priv ed2551
 	loadedWorkspace = wsCtx
 
 	skillIndex := NewAgentSkillIndex()
-	realLLM := loop.NewRealLLMCaller(client, os.Getenv("AEGIS_DEFAULT_MODEL"))
+	realLLM := loop.NewRealLLMCaller(client, bootargs.DefaultModel(agent.DefaultLLMModel))
 
 	fmt.Println("agent: real message-driven loop active (hubclient Receive + real loop.RunTurn)")
 	timing.RecordPhase("message_loop_ready")
@@ -419,11 +419,13 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 
 	llmReply, err := realLLM(ctx, prompt)
 	if err != nil {
+		log.Printf("agent %s: channel.turn LLM failed in %s: %v", sourceID, chID, err)
 		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s err=%v", chID, err)
 		return
 	}
 	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
 	if skip {
+		log.Printf("agent %s: channel.turn chose not to reply in %s", sourceID, chID)
 		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s reason=no_reply", chID)
 		return
 	}

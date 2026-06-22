@@ -1,6 +1,8 @@
 package channelfacilitator
 
 import (
+	"strings"
+
 	"AegisClaw/internal/channeldata"
 	"AegisClaw/internal/collab"
 )
@@ -10,12 +12,7 @@ func SelectNextRecipient(members []map[string]interface{}, rrIndex int, latestCo
 	if len(members) == 0 {
 		return "", rrIndex, nil
 	}
-	roles := make([]string, 0, len(members))
-	for _, m := range members {
-		if r := channeldata.MemberRole(m); r != "" {
-			roles = append(roles, r)
-		}
-	}
+	roles := dedupeMemberRoles(members)
 	if len(roles) == 0 {
 		return "", rrIndex, nil
 	}
@@ -97,6 +94,28 @@ func SelectNextRecipient(members []map[string]interface{}, rrIndex int, latestCo
 		}
 	}
 	return recipient, newIndex, boosts
+}
+
+// dedupeMemberRoles collapses duplicate membership rows (re-invites) to one slot per role.
+func dedupeMemberRoles(members []map[string]interface{}) []string {
+	seen := make(map[string]bool)
+	roles := make([]string, 0, len(members))
+	for _, m := range members {
+		r := channeldata.MemberRole(m)
+		if r == "" {
+			continue
+		}
+		key := r
+		if r == "project-manager" || strings.HasPrefix(r, "project-manager-") {
+			key = "project-manager"
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		roles = append(roles, r)
+	}
+	return roles
 }
 
 func intFromMember(v interface{}) int {
