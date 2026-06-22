@@ -70,12 +70,18 @@ func TurnSettingsAsMap(s TurnSettings) map[string]interface{} {
 	}
 }
 
-// MemberTurnState is durable per-member channel participation state.
+// MemberTurnState is durable per-member channel participation state (turn-based propagation).
+// last_outcome: "delivered" | "posted" | "no_reply" | "error" (or "").
+// last_error, last_activity (RFC3339), pending for observability (spec §8).
 type MemberTurnState struct {
 	Role              string `json:"role"`
 	LastSeenSeq       int    `json:"last_seen_seq"`
 	CyclesSinceTurn   int    `json:"cycles_since_turn,omitempty"`
 	MentionBoostsLeft int    `json:"mention_boosts_left,omitempty"`
+	LastOutcome       string `json:"last_outcome,omitempty"`
+	LastError         string `json:"last_error,omitempty"`
+	LastActivity      string `json:"last_activity,omitempty"`
+	Pending           bool   `json:"pending,omitempty"`
 }
 
 func asInt(v interface{}) (int, bool) {
@@ -134,6 +140,7 @@ func MessageTimestamp(m map[string]interface{}) (time.Time, bool) {
 }
 
 // EnsureMemberDefaults adds last_seen_seq and turn fields to a member map.
+// Extended for v1 observability: last_outcome, last_error, last_activity, pending.
 func EnsureMemberDefaults(member map[string]interface{}) {
 	if _, ok := member["last_seen_seq"]; !ok {
 		member["last_seen_seq"] = 0
@@ -143,6 +150,18 @@ func EnsureMemberDefaults(member map[string]interface{}) {
 	}
 	if _, ok := member["mention_boosts_left"]; !ok {
 		member["mention_boosts_left"] = 0
+	}
+	if _, ok := member["last_outcome"]; !ok {
+		member["last_outcome"] = ""
+	}
+	if _, ok := member["last_error"]; !ok {
+		member["last_error"] = ""
+	}
+	if _, ok := member["last_activity"]; !ok {
+		member["last_activity"] = ""
+	}
+	if _, ok := member["pending"]; !ok {
+		member["pending"] = false
 	}
 }
 

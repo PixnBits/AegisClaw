@@ -1223,6 +1223,10 @@ func runStore(cmd *cobra.Command, args []string) {
 						"last_seen_seq":       channeldata.MemberLastSeenSeq(m),
 						"cycles_since_turn":   m["cycles_since_turn"],
 						"mention_boosts_left": m["mention_boosts_left"],
+						"last_outcome":        m["last_outcome"],
+						"last_error":          m["last_error"],
+						"last_activity":       m["last_activity"],
+						"pending":             m["pending"],
 					})
 				}
 				out["members"] = membersOut

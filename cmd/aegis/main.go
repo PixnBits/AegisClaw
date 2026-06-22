@@ -2612,7 +2612,33 @@ func runChannelTurnState(cmd *cobra.Command, args []string) {
 		fmt.Println(string(b))
 		return
 	}
-	fmt.Printf("Turn state for channel %s:\n%+v\n", id, data)
+	fmt.Printf("Turn state for channel %s:\n", id)
+	if m, ok := data.(map[string]interface{}); ok {
+		fmt.Printf("  round_robin_index: %v\n", m["round_robin_index"])
+		if ts, ok := m["turn_settings"].(map[string]interface{}); ok {
+			fmt.Printf("  turn_settings: mention_boost=%v max_boosts=%v starvation=%v anchors=%v\n",
+				ts["mention_boost_positions"], ts["max_mention_boosts_per_cycle"], ts["starvation_cycles"], ts["max_relevance_anchors"])
+		}
+		if members, ok := m["members"].([]interface{}); ok {
+			fmt.Println("  members:")
+			for _, raw := range members {
+				if mem, ok := raw.(map[string]interface{}); ok {
+					role := fmt.Sprintf("%v", mem["role"])
+					fmt.Printf("    %-25s last_seen=%-4v cycles=%-2v boosts=%-2v outcome=%-10v pending=%v err=%v\n",
+						role,
+						mem["last_seen_seq"],
+						mem["cycles_since_turn"],
+						mem["mention_boosts_left"],
+						mem["last_outcome"],
+						mem["pending"],
+						mem["last_error"],
+					)
+				}
+			}
+		}
+	} else {
+		fmt.Printf("%+v\n", data)
+	}
 }
 
 func runChannelPost(cmd *cobra.Command, args []string) {
@@ -2978,7 +3004,7 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	}
 	channelTurnStateCmd := &cobra.Command{
 		Use:   "turn-state <channel-id>",
-		Short: "Show round-robin position and last_seen_seq per member (turn observability)",
+		Short: "Show per-member round-robin, last_seen, cycles, outcomes (turn observability per spec)",
 		Args:  cobra.ExactArgs(1),
 		Run:   runChannelTurnState,
 	}
