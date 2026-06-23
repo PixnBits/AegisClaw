@@ -213,6 +213,9 @@ func NewRealLLMCaller(hub hubclient.Client, model string) agent.LLMCallFunc {
 		if resp.Command == "error" {
 			return "", fmt.Errorf("network-boundary error: %v", resp.Payload)
 		}
+		if resp.Command != "llm.call.response" && resp.Command != "" {
+			return "", fmt.Errorf("llm.call unexpected hub command %q", resp.Command)
+		}
 
 		// Expect the same shape the old callLLM parsed.
 		if payload, ok := resp.Payload.(map[string]interface{}); ok {
@@ -230,7 +233,7 @@ func NewRealLLMCaller(hub hubclient.Client, model string) agent.LLMCallFunc {
 				return "", fmt.Errorf("LLM error: %s", e)
 			}
 		}
-		return "", fmt.Errorf("unexpected LLM response shape from hub")
+		return "", fmt.Errorf("unexpected LLM response shape from hub (command=%q payload_type=%T)", resp.Command, resp.Payload)
 	}
 }
 

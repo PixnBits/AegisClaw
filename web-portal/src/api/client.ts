@@ -97,7 +97,7 @@ export const api = {
       headers: { 'X-Aegis-Confirmed': '1' },
     }),
   canvas: (channelId: string) => fetchJSON<Record<string, unknown>>(`/api/canvas?channel_id=${encodeURIComponent(channelId)}`),
-  agents: () => fetchJSON<{ agents: Array<{ name: string; status: string; task: string; progress: string }> }>('/api/agents'),
+  agents: () => fetchJSON<{ agents: Array<{ name: string; status: string; task: string; progress: string; last_seen_seq?: number; cycles_since_turn?: number; last_outcome?: string; pending?: boolean; last_activity?: string; channel?: string }> }>('/api/agents'),
   agentTrace: (agentId: string) => fetchJSON<AgentTrace>(`/api/agents/${encodeURIComponent(agentId)}/trace`),
   agentAction: (agentId: string, action: 'pause' | 'resume' | 'cancel') =>
     fetchJSON<{ ok: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/${action}`, {

@@ -19,8 +19,10 @@ import (
 
 	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/channeldata"
 	"AegisClaw/internal/chatstore"
 	"AegisClaw/internal/collab"
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 
@@ -84,6 +86,87 @@ func loadFromFile(filename string) map[string]interface{} {
 func saveToFile(filename string, data interface{}) {
 	bytes, _ := json.Marshal(data)
 	ioutil.WriteFile(filename, bytes, 0644)
+}
+
+func intFromPayload(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func channelIDFromPayload(payload map[string]interface{}) string {
+	if v, ok := payload["id"].(string); ok && v != "" {
+		return v
+	}
+	if v, ok := payload["channel_id"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func prepareChannelRecord(ch map[string]interface{}) {
+	channeldata.BackfillMessageSeqs(ch)
+	for _, m := range channeldata.MembersSlice(ch) {
+		channeldata.EnsureMemberDefaults(m)
+	}
+}
+
+func membersToInterface(members []map[string]interface{}) []interface{} {
+	out := make([]interface{}, len(members))
+	for i, m := range members {
+		out[i] = m
+	}
+	return out
+}
+
+func messageMatchesFilter(m map[string]interface{}, filter map[string]interface{}) bool {
+	if filter == nil {
+		return true
+	}
+	if author, ok := filter["author"].(string); ok && author != "" {
+		if channeldata.MessageFrom(m) != author {
+			return false
+		}
+	}
+	if kwRaw, ok := filter["keywords"].([]interface{}); ok && len(kwRaw) > 0 {
+		content := strings.ToLower(channeldata.MessageContent(m))
+		for _, k := range kwRaw {
+			kw, _ := k.(string)
+			if kw != "" && !strings.Contains(content, strings.ToLower(kw)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func emitChannelUpdated(encoder *json.Encoder, priv ed25519.PrivateKey, ts, chID, from, content string, seq int) {
+	payload := map[string]interface{}{
+		"channel_id": chID,
+		"from":       from,
+		"content":    content,
+		"seq":        seq,
+	}
+	for _, dest := range []string{"daemon-orchestrator", channelfacilitator.ComponentID} {
+		collab.Tracef("store", "channel.updated", "ch=%s from=%s dest=%s seq=%d", chID, from, dest, seq)
+		updateMsg := Message{
+			Source:      "store",
+			Destination: dest,
+			Command:     channelfacilitator.CmdUpdated,
+			Payload:     payload,
+			Timestamp:   ts,
+			Signature:   "",
+		}
+		signMessage(&updateMsg, priv)
+		_ = encoder.Encode(updateMsg)
+	}
 }
 
 func decodeChatMessages(raw []interface{}) []chatstore.Message {
@@ -918,13 +1001,20 @@ func runStore(cmd *cobra.Command, args []string) {
 			}
 			if _, ok := payload["members"]; !ok || len(payload["members"].([]interface{})) == 0 {
 				// default to including the project manager
-				payload["members"] = []interface{}{
-					map[string]interface{}{"role": "project-manager", "added_at": response.Timestamp},
+				pmMember := map[string]interface{}{"role": "project-manager", "added_at": response.Timestamp}
+				channeldata.EnsureMemberDefaults(pmMember)
+				payload["members"] = []interface{}{pmMember}
+			} else if members, ok := payload["members"].([]interface{}); ok {
+				for _, item := range members {
+					if m, ok := item.(map[string]interface{}); ok {
+						channeldata.EnsureMemberDefaults(m)
+					}
 				}
 			}
 			if _, ok := payload["messages"]; !ok {
 				payload["messages"] = []interface{}{}
 			}
+			payload["next_seq"] = 1
 			channels[id] = payload
 			saveToFile("channels.json", channels)
 			response.Command = "channel.created"
@@ -943,16 +1033,21 @@ func runStore(cmd *cobra.Command, args []string) {
 			if id == "" {
 				if v, ok := payload["channel_id"].(string); ok { id = v }
 			}
+			if ch, ok := channels[id].(map[string]interface{}); ok {
+				prepareChannelRecord(ch)
+				channels[id] = ch
+			}
 			response.Command = "channel.data"
 			response.Payload = channels[id]
 		case "channel.join":
 			payload := msg.Payload.(map[string]interface{})
 			chID := payload["channel_id"].(string)
 			member := map[string]interface{}{
-				"role":     payload["role"],
-				"agent_id": payload["agent_id"], // optional for role-based
+				"role":      payload["role"],
+				"agent_id":  payload["agent_id"], // optional for role-based
 				"joined_at": response.Timestamp,
 			}
+			channeldata.EnsureMemberDefaults(member)
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
 				members := []interface{}{}
 				if m, ok := ch["members"].([]interface{}); ok {
@@ -970,13 +1065,17 @@ func runStore(cmd *cobra.Command, args []string) {
 			chID := payload["channel_id"].(string)
 			collab.Tracef("store", "channel.post", "ch=%s from=%v", chID, payload["from"])
 
-			entry := map[string]interface{}{
-				"ts":      response.Timestamp,
-				"from":    payload["from"], // user, pm, @role, agent-id etc.
-				"content": payload["content"],
-			}
 			posted := false
+			msgSeq := 0
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				prepareChannelRecord(ch)
+				msgSeq = channeldata.NextChannelSeq(ch)
+				entry := map[string]interface{}{
+					"ts":      response.Timestamp,
+					"seq":     msgSeq,
+					"from":    payload["from"], // user, pm, @role, agent-id etc.
+					"content": payload["content"],
+				}
 				msgs := []interface{}{}
 				if m, ok := ch["messages"].([]interface{}); ok {
 					msgs = m
@@ -988,21 +1087,14 @@ func runStore(cmd *cobra.Command, args []string) {
 				posted = true
 			}
 			if posted {
-				collab.Tracef("store", "channel.updated", "ch=%s from=%v dest=daemon-orchestrator", chID, payload["from"])
-				updateMsg := Message{
-					Source:      "store",
-					Destination: "daemon-orchestrator",
-					Command:     "channel.updated",
-					Payload: map[string]interface{}{
-						"channel_id": chID,
-						"from":       payload["from"],
-						"content":    payload["content"],
-					},
-					Timestamp: response.Timestamp,
-					Signature: "",
+				from, _ := payload["from"].(string)
+				content := channeldata.MessageContent(map[string]interface{}{"content": payload["content"]})
+				if content == "" {
+					if s, ok := payload["content"].(string); ok {
+						content = s
+					}
 				}
-				signMessage(&updateMsg, priv)
-				_ = encoder.Encode(updateMsg)
+				emitChannelUpdated(encoder, priv, response.Timestamp, chID, from, content, msgSeq)
 			}
 			response.Command = "channel.posted"
 			response.Payload = "ok"
@@ -1026,20 +1118,34 @@ func runStore(cmd *cobra.Command, args []string) {
 			chID := ""
 			if v, ok := payload["id"].(string); ok { chID = v }
 			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			role := ""
+			if v, ok := payload["role"].(string); ok {
+				role = collab.NormalizeMemberRole(v)
+			}
 			member := map[string]interface{}{
-				"role":     payload["role"],
+				"role":     role,
 				"agent_id": payload["agent_id"],
 				"added_at": response.Timestamp,
 			}
+			channeldata.EnsureMemberDefaults(member)
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
 				members := []interface{}{}
 				if m, ok := ch["members"].([]interface{}); ok {
 					members = m
 				}
-				members = append(members, member)
-				ch["members"] = members
-				channels[chID] = ch
-				saveToFile("channels.json", channels)
+				duplicate := false
+				for _, item := range members {
+					if m, ok := item.(map[string]interface{}); ok && channeldata.MemberRole(m) == role {
+						duplicate = true
+						break
+					}
+				}
+				if !duplicate {
+					members = append(members, member)
+					ch["members"] = members
+					channels[chID] = ch
+					saveToFile("channels.json", channels)
+				}
 			}
 			response.Command = "channel.member_added"
 			response.Payload = map[string]interface{}{"channel_id": chID}
@@ -1071,6 +1177,155 @@ func runStore(cmd *cobra.Command, args []string) {
 			}
 			response.Command = "channel.member_removed"
 			response.Payload = map[string]interface{}{"channel_id": chID}
+
+		case channelfacilitator.CmdMemberTurnUpdate:
+			payload := msg.Payload.(map[string]interface{})
+			chID := channelIDFromPayload(payload)
+			role, _ := payload["role"].(string)
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				if v, ok := payload["round_robin_index"]; ok {
+					ch["round_robin_index"] = intFromPayload(v)
+				}
+				members := channeldata.MembersSlice(ch)
+				for _, m := range members {
+					if channeldata.MemberRole(m) != role {
+						continue
+					}
+					if v, ok := payload["last_seen_seq"]; ok {
+						m["last_seen_seq"] = intFromPayload(v)
+					}
+					if v, ok := payload["cycles_since_turn"]; ok {
+						m["cycles_since_turn"] = intFromPayload(v)
+					}
+					if v, ok := payload["mention_boosts_left"]; ok {
+						m["mention_boosts_left"] = intFromPayload(v)
+					}
+					if v, ok := payload["last_outcome"]; ok {
+						m["last_outcome"] = v
+					}
+					if v, ok := payload["last_error"]; ok {
+						m["last_error"] = v
+					}
+					if v, ok := payload["last_activity"]; ok {
+						m["last_activity"] = v
+					}
+					if v, ok := payload["pending"]; ok {
+						m["pending"] = v
+					}
+					break
+				}
+				ch["members"] = membersToInterface(members)
+				channels[chID] = ch
+				saveToFile("channels.json", channels)
+			}
+			response.Command = "channel.member_turn_updated"
+			response.Payload = map[string]interface{}{"channel_id": chID, "role": role}
+
+		case channelfacilitator.CmdTurnState:
+			payload, _ := msg.Payload.(map[string]interface{})
+			chID := channelIDFromPayload(payload)
+			out := map[string]interface{}{"channel_id": chID}
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				prepareChannelRecord(ch)
+				out["round_robin_index"] = ch["round_robin_index"]
+				out["turn_settings"] = channeldata.TurnSettingsAsMap(channeldata.EffectiveTurnSettings(ch))
+				membersOut := []interface{}{}
+				for _, m := range channeldata.MembersSlice(ch) {
+					membersOut = append(membersOut, map[string]interface{}{
+						"role":                channeldata.MemberRole(m),
+						"last_seen_seq":       channeldata.MemberLastSeenSeq(m),
+						"cycles_since_turn":   m["cycles_since_turn"],
+						"mention_boosts_left": m["mention_boosts_left"],
+						"last_outcome":        m["last_outcome"],
+						"last_error":          m["last_error"],
+						"last_activity":       m["last_activity"],
+						"pending":             m["pending"],
+					})
+				}
+				out["members"] = membersOut
+			}
+			response.Command = channelfacilitator.CmdTurnStateData
+			response.Payload = out
+
+		case channelfacilitator.CmdGetMessages:
+			payload := msg.Payload.(map[string]interface{})
+			chID := channelIDFromPayload(payload)
+			sinceSeq := 0
+			if v, ok := payload["since_seq"]; ok {
+				sinceSeq = intFromPayload(v)
+			}
+			limit := 50
+			if v, ok := payload["limit"]; ok {
+				if n := intFromPayload(v); n > 0 {
+					limit = n
+				}
+			}
+			filter, _ := payload["filter"].(map[string]interface{})
+			var result []interface{}
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				prepareChannelRecord(ch)
+				for _, m := range channeldata.MessagesSlice(ch) {
+					seq := channeldata.MessageSeq(m)
+					if seq <= sinceSeq {
+						continue
+					}
+					if !messageMatchesFilter(m, filter) {
+						continue
+					}
+					result = append(result, m)
+					if len(result) >= limit {
+						break
+					}
+				}
+			}
+			response.Command = channelfacilitator.CmdGetMessages + ".data"
+			response.Payload = map[string]interface{}{
+				"channel_id": chID,
+				"since_seq":  sinceSeq,
+				"messages":   result,
+			}
+
+		case channelfacilitator.CmdGetRelevantSince:
+			payload := msg.Payload.(map[string]interface{})
+			chID := channelIDFromPayload(payload)
+			sinceSeq := 0
+			if v, ok := payload["since_seq"]; ok {
+				sinceSeq = intFromPayload(v)
+			}
+			anchorSet := map[int]struct{}{}
+			if raw, ok := payload["anchor_seqs"].([]interface{}); ok {
+				for _, a := range raw {
+					anchorSet[intFromPayload(a)] = struct{}{}
+				}
+			}
+			var batch []interface{}
+			var anchors []interface{}
+			if ch, ok := channels[chID].(map[string]interface{}); ok {
+				prepareChannelRecord(ch)
+				bySeq := map[int]map[string]interface{}{}
+				for _, m := range channeldata.MessagesSlice(ch) {
+					bySeq[channeldata.MessageSeq(m)] = m
+				}
+				for seq := range anchorSet {
+					if m, ok := bySeq[seq]; ok {
+						anchors = append(anchors, m)
+					}
+				}
+				for _, m := range channeldata.MessagesSlice(ch) {
+					seq := channeldata.MessageSeq(m)
+					if seq <= sinceSeq {
+						continue
+					}
+					batch = append(batch, m)
+				}
+			}
+			response.Command = channelfacilitator.CmdGetRelevantSince + ".data"
+			response.Payload = map[string]interface{}{
+				"channel_id":  chID,
+				"since_seq":   sinceSeq,
+				"new_messages": batch,
+				"anchors":     anchors,
+			}
 
 		// default PM in create if missing
 		// (handled in create above by caller, but ensure here too for robustness)

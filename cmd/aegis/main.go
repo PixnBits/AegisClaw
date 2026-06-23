@@ -34,6 +34,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/config"
 	"AegisClaw/internal/eventbus"
@@ -78,7 +79,9 @@ func sendToComponentViaHubContext(ctx context.Context, target string, cmd string
 		resp, err = client.Send(ctx, msg)
 		daemonInternalHubMu.Unlock()
 	} else {
+		cliInternalHubMu.Lock()
 		resp, err = client.Send(ctx, msg)
+		cliInternalHubMu.Unlock()
 	}
 	if err != nil {
 		if sourceID == "daemon-internal" {
@@ -460,6 +463,8 @@ func daemonChildEnv() []string {
 	if su := os.Getenv("SUDO_USER"); su != "" {
 		env = setEnvPair(env, "SUDO_USER", su)
 	}
+	env = setEnvPair(env, "AEGIS_HUB_SOCKET", config.ResolveHubSocket())
+	env = setEnvPair(env, "AEGIS_DATA_DIR", config.ResolveAegisDataDir())
 	// Explicitly carry AEGIS_BOOT_TIMING through the re-exec to the foreground
 	// child. This is required for reliable guest boot metrics on all VMs
 	// (including the early Court system) when measuring the <1s target for the
@@ -807,10 +812,17 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 	defer removePIDFile()
 
+	// Pin hub socket for all daemon-side hub clients (facilitator ephemeral RPCs used $HOME
+	// previously, which is /root under sudo and missed the real socket under SUDO_USER).
+	if hubSocket := config.ResolveHubSocket(); hubSocket != "" {
+		_ = os.Setenv("AEGIS_HUB_SOCKET", hubSocket)
+	}
+
 	// Early receiver for PM ensure.role (daemon-orchestrator) and guest bridge reconciliation.
 	// These are lightweight and do not contend heavily with base boots; they enable on-demand
 	// roles as soon as the PM registers (after its own base boot + hub dial).
 	go startOrchestratorCommandReceiver()
+	go startChannelFacilitatorReceiver()
 	_ = getDaemonInternalHubClient() // eager init of persistent "daemon-internal" client (one registration; stops N spam from internal sends)
 	go reconcileGuestHubBridges()
 
@@ -1109,11 +1121,23 @@ func computeHealthSnapshot(orch *runtime.Orchestrator) map[string]interface{} {
 	}
 
 	courtCount := 0
+	coreCourts := map[string]bool{
+		"ciso": true,
+		"security-architect": true,
+		"architect": true,
+		"senior-coder": true,
+		"tester": true,
+		"efficiency": true,
+		"user-advocate": true,
+	}
 	if orch != nil {
 		if vms, err := orch.ListVMs(context.Background()); err == nil {
 			for _, v := range vms {
 				if strings.HasPrefix(v.ID, "court-persona-") {
-					courtCount++
+					suffix := strings.TrimPrefix(v.ID, "court-persona-")
+					if coreCourts[suffix] {
+						courtCount++
+					}
 				}
 			}
 		}
@@ -1224,13 +1248,25 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	// Fallback when socket unavailable (older daemon or transient dial issue).
 	base := computeHealthSnapshot(nil)
 	courtCount := 0
+	coreCourts := map[string]bool{
+		"ciso": true,
+		"security-architect": true,
+		"architect": true,
+		"senior-coder": true,
+		"tester": true,
+		"efficiency": true,
+		"user-advocate": true,
+	}
 	if vmsResp, err := sendSocketRequest("vm.list", nil, false); err == nil && vmsResp.OK && vmsResp.Data != nil {
 		if arr, ok := vmsResp.Data.([]interface{}); ok {
 			for _, item := range arr {
 				if m, ok := item.(map[string]interface{}); ok {
 					id := getMapString(m, "id", "ID")
 					if strings.HasPrefix(id, "court-persona-") {
-						courtCount++
+						suffix := strings.TrimPrefix(id, "court-persona-")
+						if coreCourts[suffix] {
+							courtCount++
+						}
 					}
 				}
 			}
@@ -1557,7 +1593,7 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 
 	// Journey 01 Success Criteria: exact phrasing + exit 0 when healthy
 	if healthy {
-		fmt.Println("\nAll systems healthy")
+		fmt.Println("\nHealth checks complete — all systems healthy")
 	} else {
 		fmt.Println("\nHealth checks complete (issues found — see ⚠ items above)")
 	}
@@ -2123,8 +2159,8 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			if !collab.IsHumanPoster(from) {
 				resp.Data = map[string]string{"status": "skipped", "reason": "not a human poster"}
 			} else {
-				go fanOutChannelActivity(chID, from, content)
-				resp.Data = map[string]string{"status": "fanout_started", "channel_id": chID}
+				// Store channel.post already notifies channel-facilitator; legacy fan-out ack only.
+				resp.Data = map[string]string{"status": "turn_scheduled", "channel_id": chID}
 			}
 		case "orchestrator.ensure_role":
 			role := req.Args["role"]
@@ -2588,6 +2624,47 @@ func runChannelGet(cmd *cobra.Command, args []string) {
 	fmt.Printf("Channel %s:\n%+v\n", id, data)
 }
 
+func runChannelTurnState(cmd *cobra.Command, args []string) {
+	id := args[0]
+	data, err := sendToComponentViaHubRetry("store", channelfacilitator.CmdTurnState, map[string]string{"channel_id": id}, 15*time.Second)
+	if err != nil {
+		fmt.Printf("channel turn-state error: %v\n", err)
+		return
+	}
+	if jsonOutput {
+		b, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("Turn state for channel %s:\n", id)
+	if m, ok := data.(map[string]interface{}); ok {
+		fmt.Printf("  round_robin_index: %v\n", m["round_robin_index"])
+		if ts, ok := m["turn_settings"].(map[string]interface{}); ok {
+			fmt.Printf("  turn_settings: mention_boost=%v max_boosts=%v starvation=%v anchors=%v\n",
+				ts["mention_boost_positions"], ts["max_mention_boosts_per_cycle"], ts["starvation_cycles"], ts["max_relevance_anchors"])
+		}
+		if members, ok := m["members"].([]interface{}); ok {
+			fmt.Println("  members:")
+			for _, raw := range members {
+				if mem, ok := raw.(map[string]interface{}); ok {
+					role := fmt.Sprintf("%v", mem["role"])
+					fmt.Printf("    %-25s last_seen=%-4v cycles=%-2v boosts=%-2v outcome=%-10v pending=%v err=%v\n",
+						role,
+						mem["last_seen_seq"],
+						mem["cycles_since_turn"],
+						mem["mention_boosts_left"],
+						mem["last_outcome"],
+						mem["pending"],
+						mem["last_error"],
+					)
+				}
+			}
+		}
+	} else {
+		fmt.Printf("%+v\n", data)
+	}
+}
+
 func runChannelPost(cmd *cobra.Command, args []string) {
 	if len(args) < 2 {
 		fmt.Println("usage: aegis channel post <channel-id> <content...>")
@@ -2671,6 +2748,12 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		}
 	}
 	fmt.Printf("Ensured project-manager for channel %s\n", chID)
+	// Post the original goal as a user message in the channel for context (alongside PM's plan).
+	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
+		"channel_id": chID,
+		"from":       "user",
+		"content":    goalText,
+	})
 	// Each ensured PM registers on the hub as its VM id (bootargs.ComponentID), e.g.
 	// project-manager-plan-demo-e2e-llm. user.goal must target that id when multiple PMs
 	// are running (isolation E2E, other channels); the legacy alias "project-manager" would
@@ -2945,11 +3028,17 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	}
 	channelPostCmd := &cobra.Command{
 		Use:   "post <channel-id> <content...>",
-		Short: "Post a message to a channel (delivered to all members via channel.activity fan-out)",
+		Short: "Post a message to a channel (triggers turn-based agent delivery)",
 		Args:  cobra.MinimumNArgs(2),
 		Run:   runChannelPost,
 	}
-	channelCmd.AddCommand(channelListCmd, channelGetCmd, channelPostCmd)
+	channelTurnStateCmd := &cobra.Command{
+		Use:   "turn-state <channel-id>",
+		Short: "Show per-member round-robin, last_seen, cycles, outcomes (turn observability per spec)",
+		Args:  cobra.ExactArgs(1),
+		Run:   runChannelTurnState,
+	}
+	channelCmd.AddCommand(channelListCmd, channelGetCmd, channelPostCmd, channelTurnStateCmd)
 
 	// PM (Project Manager) commands for direct E2E triggering (plan Phase 3/5)
 	pmCmd := &cobra.Command{
@@ -4599,10 +4688,8 @@ func startBaseInfrastructure() error {
 	dlog("ENTER startBaseInfrastructure (hub first, then real Firecracker VMs for boundary/store/web-portal)")
 
 	// 1. Determine a stable hub socket (used by all subsequent components and the daemon itself).
-	hubSocket := expandPath("~/.aegis/hub.sock")
-	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
-		hubSocket = expandPath(env)
-	}
+	hubSocket := config.ResolveHubSocket()
+	_ = os.Setenv("AEGIS_HUB_SOCKET", hubSocket)
 	if err := os.MkdirAll(filepath.Dir(hubSocket), 0755); err != nil {
 		return fmt.Errorf("hub socket dir: %w", err)
 	}
@@ -5280,15 +5367,12 @@ func startOrchestratorCommandReceiver() {
 			if msg.Command == "channel.relay_activity" || msg.Command == "channel.fanout" {
 				payload, _ := msg.Payload.(map[string]interface{})
 				chID, _ := payload["channel_id"].(string)
-				from, _ := payload["from"].(string)
-				content := collab.PayloadContentString(payload["content"])
-				go fanOutChannelActivity(chID, from, content)
 				if msg.Command == "channel.fanout" {
 					_ = client.Reply(context.Background(), hubclient.Message{
 						Source:      requesterID,
 						Destination: msg.Source,
 						Command:     "response",
-						Payload:     map[string]interface{}{"status": "fanout_started", "channel_id": chID},
+						Payload:     map[string]interface{}{"status": "turn_scheduled", "channel_id": chID},
 						Timestamp:   time.Now().UTC().Format(time.RFC3339),
 					})
 				}
@@ -5302,9 +5386,7 @@ func startOrchestratorCommandReceiver() {
 					if chID != "" {
 						collab.Tracef("daemon", "channel.updated.recv", "ch=%s from=%s human=%v", chID, from, collab.IsHumanPoster(from))
 						go notifyWebPortalChannelActivity(chID, from, content)
-						if collab.IsHumanPoster(from) && content != "" {
-							go fanOutChannelActivity(chID, from, content)
-						}
+						// Agent delivery is turn-based via channel-facilitator (not human-only fan-out).
 					}
 				}
 				continue

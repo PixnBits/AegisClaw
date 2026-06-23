@@ -3,7 +3,7 @@ import { api } from '@/api/client';
 import type { ConnectionMode } from '@/realtime/stompClient';
 import { appendFeedItem, feedItemFromActivityPayload } from '@/lib/channelActivity';
 import { applyHarnessEvent } from '@/lib/harness';
-import { messageToFeedItem } from '@/lib/reasoning';
+import { messageToFeedItem, prepareChannelStatusFeed } from '@/lib/reasoning';
 import {
   Channel,
   DashboardData,
@@ -154,14 +154,16 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     try {
       const full = await api.channel(ch.id);
       const messages = full.messages || [];
-      const feed = messages.map((m, i) => messageToFeedItem(m, ch.id, i));
+      let feed = messages.map((m, i) => messageToFeedItem(m, ch.id, i));
+      feed = prepareChannelStatusFeed(feed);
       set((s) => ({
         currentChannel: full,
         feedByChannel: { ...s.feedByChannel, [ch.id]: feed },
       }));
       await get().loadHarness(ch.id);
     } catch {
-      const feed = (ch.messages || []).map((m, i) => messageToFeedItem(m, ch.id, i));
+      let feed = (ch.messages || []).map((m, i) => messageToFeedItem(m, ch.id, i));
+      feed = prepareChannelStatusFeed(feed);
       set((s) => ({
         feedByChannel: { ...s.feedByChannel, [ch.id]: feed },
       }));
@@ -255,7 +257,8 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     const ch = get().currentChannel;
     if (!ch) return;
     const full = await api.channel(ch.id);
-    const feed = (full.messages || []).map((m, i) => messageToFeedItem(m, ch.id, i));
+    let feed = (full.messages || []).map((m, i) => messageToFeedItem(m, ch.id, i));
+    feed = prepareChannelStatusFeed(feed);
     set((s) => ({
       currentChannel: full,
       feedByChannel: { ...s.feedByChannel, [ch.id]: feed },
@@ -322,12 +325,17 @@ export const usePortalStore = create<PortalState>((set, get) => ({
         const isActive =
           get().view === 'channels' && get().currentChannel?.id === channelId;
         if (isActive) {
-          set((s) => ({
-            feedByChannel: {
-              ...s.feedByChannel,
-              [channelId]: appendFeedItem(s.feedByChannel[channelId] || [], feedItem),
-            },
-          }));
+          set((s) => {
+            let newFeed = appendFeedItem(s.feedByChannel[channelId] || [], feedItem);
+            // Re-prepare so latest channel_status is full, older collapsed.
+            newFeed = prepareChannelStatusFeed(newFeed);
+            return {
+              feedByChannel: {
+                ...s.feedByChannel,
+                [channelId]: newFeed,
+              },
+            };
+          });
         } else {
           get().bumpUnread(channelId);
         }

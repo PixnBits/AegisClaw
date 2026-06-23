@@ -38,8 +38,6 @@ export function TopBar({ onNavigate }: Props) {
   const connectionMode = usePortalStore((s) => s.connectionMode);
 
   const { label: connLabel, dotClass: connDotClass } = connectionDisplay(connectionMode);
-  const showSystemStatus =
-    (connectionMode === 'stomp' || connectionMode === 'sse-fallback') && !!dashboard?.system_status;
 
   return (
     <header className="topbar" data-testid="topbar">
@@ -74,18 +72,6 @@ export function TopBar({ onNavigate }: Props) {
       </nav>
 
       <div className="topbar-meta">
-        {showSystemStatus ? (
-          <div className="status-chip status-chip--compact" data-testid="system-status-chip">
-            <span className="status-dot status-dot--success" aria-hidden="true" />
-            <span>{dashboard.system_status}</span>
-            {dashboard.runtime ? (
-              <>
-                <span className="status-divider">|</span>
-                <span>{dashboard.runtime}</span>
-              </>
-            ) : null}
-          </div>
-        ) : null}
         <div
           className="status-chip status-chip--compact"
           data-testid="connection-status-chip"

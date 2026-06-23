@@ -211,6 +211,9 @@ func handleChatSendStream(w http.ResponseWriter, r *http.Request, client APIClie
 }
 
 func fetchRaw(ctx context.Context, client APIClient, action string, req interface{}) (interface{}, error) {
+	if client == nil {
+		return nil, fmt.Errorf("api client not configured for action: %s", action)
+	}
 	if err := bridgeGuard.Validate(action); err != nil {
 		return nil, err
 	}
