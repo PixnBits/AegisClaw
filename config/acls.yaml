@@ -204,7 +204,9 @@ rules:
     - proposal.get
     - proposal.data
     - channel.post
-    - channel.*
+    - channel.get
+    - channel.get_relevant_since
+    - channel.get_messages
 - source: court-persona-*
   destination: court-scribe
   commands:
@@ -242,7 +244,6 @@ rules:
   destination: channel-facilitator
   commands:
     - channel.updated
-    - channel.*
 # Ephemeral facilitator RPC clients (channel.get → channel.data, member_turn_update acks)
 - source: store
   destination: channel-facilitator-out-*
@@ -251,10 +252,16 @@ rules:
 
 # Channel Facilitator ↔ Store (membership, last_seen_seq, turn tools, state)
 # Per turn-based-message-propagation spec: facilitator owns round-robin + last_seen_seq.
+# Narrowed: only the commands it issues (get for state, member_turn_update for persistence, post for status notes).
 - source: channel-facilitator
   destination: store
   commands:
-    - channel.*
+    - channel.get
+    - channel.get_relevant_since
+    - channel.get_messages
+    - channel.member_turn_update
+    - channel.post
+    - channel.turn_state
 
 # Facilitator delivers batched turns to agents (replaces human-only fan-out for agents)
 - source: channel-facilitator
@@ -299,7 +306,12 @@ rules:
 - source: channel-facilitator-out-*
   destination: store
   commands:
-    - channel.*
+    - channel.get
+    - channel.get_relevant_since
+    - channel.get_messages
+    - channel.member_turn_update
+    - channel.post
+    - channel.turn_state
 - source: channel-facilitator-out-*
   destination: "daemon-orchestrator"
   commands:
@@ -322,31 +334,36 @@ rules:
   commands:
     - channel.get_relevant_since
     - channel.get_messages
-    - channel.*
+    - channel.get
+    - channel.post
 - source: "tester*"
   destination: store
   commands:
     - channel.get_relevant_since
     - channel.get_messages
-    - channel.*
+    - channel.get
+    - channel.post
 - source: "ciso*"
   destination: store
   commands:
     - channel.get_relevant_since
     - channel.get_messages
-    - channel.*
+    - channel.get
+    - channel.post
 - source: "architect*"
   destination: store
   commands:
     - channel.get_relevant_since
     - channel.get_messages
-    - channel.*
+    - channel.get
+    - channel.post
 - source: "researcher*"
   destination: store
   commands:
     - channel.get_relevant_since
     - channel.get_messages
-    - channel.*
+    - channel.get
+    - channel.post
 - source: "court-persona-*"
   destination: store
   commands:
