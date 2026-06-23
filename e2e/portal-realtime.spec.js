@@ -24,6 +24,8 @@ test.describe('Web Portal real-time (fixture)', () => {
 
     await waitPortalReady(pageA);
     await waitPortalReady(pageB);
+    await expect(pageA.getByTestId('connection-status-label')).toContainText('STOMP', { timeout: 10000 });
+    await expect(pageB.getByTestId('connection-status-label')).toContainText('STOMP', { timeout: 10000 });
     await openMainChannel(pageA);
     await openMainChannel(pageB);
 

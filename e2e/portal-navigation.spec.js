@@ -19,6 +19,7 @@ test.describe('Portal navigation (fixture)', () => {
 
   test('markdown renders in channel feed', async ({ page }) => {
     await waitPortalReady(page);
+    await expect(page.getByTestId('connection-status-label')).toContainText('STOMP', { timeout: 10000 });
     await page.goto('/#channels');
     const first = page.getByTestId('channels-list').locator('li').first();
     await first.click();
