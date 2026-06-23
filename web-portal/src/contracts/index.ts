@@ -235,8 +235,6 @@ export type ActiveWorkItem = {
 };
 
 export type DashboardData = {
-  system_status: string;
-  runtime: string;
   notifications: number;
   safe_mode: boolean;
   channel_count: number;

@@ -7,7 +7,7 @@ test.skip(!process.env.AEGIS_E2E_PORTAL_API_BROWSER, 'Invoked from verify-portal
 const MAX_MS = Number(process.env.AEGIS_PORTAL_API_MAX_MS || 30000);
 
 const SPA_GETS = [
-  { path: '/api/dashboard', fields: ['system_status', 'quick_stats', 'agents'] },
+  { path: '/api/dashboard', fields: ['quick_stats', 'agents'] },
   { path: '/api/monitoring', fields: ['stats', 'agents', 'logs'] },
   { path: '/api/skills', array: true },
   { path: '/api/proposals', array: true },

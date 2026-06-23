@@ -242,8 +242,6 @@ func (s *Server) collectDashboardSPA(ctx context.Context) map[string]interface{}
 	}
 	activeWork := s.collectActiveWork(ctx)
 	return map[string]interface{}{
-		"system_status": "running",
-		"runtime":       "firecracker",
 		"notifications": 0,
 		"safe_mode":     false,
 		"channel_count": bundle["channel_count"],
