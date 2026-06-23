@@ -13,6 +13,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const channelFacilitatorMaxWorkers = 16
+
 // startChannelFacilitatorReceiver registers channel-facilitator on the hub and
 // schedules turn-based delivery (logic lives in internal/channelfacilitator).
 func startChannelFacilitatorReceiver() {
@@ -38,19 +40,37 @@ func startChannelFacilitatorReceiver() {
 		logrus.Infof("%s registered (assigned=%s) for turn-based channel propagation", requesterID, regResp.AssignedID)
 		receiver := channelfacilitator.NewReceiver()
 
+		// Bounded worker pool to avoid unbounded goroutines on high update volume (Copilot feedback).
+		// Per-channel actors inside facilitator still serialize processing per ch.
+		workerSem := make(chan struct{}, channelFacilitatorMaxWorkers)
+
 		for {
 			msg, err := client.Receive(context.Background())
 			if err != nil {
 				break
 			}
-			if msg.Command == channelfacilitator.CmdUpdated {
+			isUpdated := msg.Command == channelfacilitator.CmdUpdated
+			isTurnResult := msg.Command == channelfacilitator.CmdTurnResult
+			if isUpdated {
 				if payload, ok := msg.Payload.(map[string]interface{}); ok {
 					chID, _ := payload["channel_id"].(string)
 					from, _ := payload["from"].(string)
 					channelfacilitator.TraceInbound(from, chID)
-					go receiver.ProcessMessage(context.Background(), msg)
 				}
-				continue
+			}
+			if isUpdated || isTurnResult {
+				// Dispatch both updated (for scheduling) and turn_result (to clear pending/outcome for observability).
+				// Use semaphore to bound concurrency (Copilot #3).
+				select {
+				case workerSem <- struct{}{}:
+					go func(m hubclient.Message) {
+						defer func() { <-workerSem }()
+						receiver.ProcessMessage(context.Background(), m)
+					}(msg)
+				default:
+					// Pool full; process synchronously to backpressure (rare).
+					receiver.ProcessMessage(context.Background(), msg)
+				}
 			}
 		}
 		client.Close()
