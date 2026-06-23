@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/channeldata"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/dashboard/contracts"
 	"AegisClaw/internal/dashboard/ratelimit"
 	"AegisClaw/internal/dashboard/sanitize"
@@ -93,24 +94,27 @@ func (s *Server) handleAPIAgents(w http.ResponseWriter, r *http.Request) {
 	cards := spaWorkersToAgentCards(workers)
 
 	// Merge channel turn-state (last_seen, cycles, outcome, pending) for observability on #agents (spec §8.1).
-	// Fetch for "main" (common case); attach by matching name/role + channel.
+	// Fetch for "main" (common case); attach by matching normalized role (handles "coder-main" VM id vs "coder" member role).
 	if tsRaw, err := s.fetchRaw(ctx, "channel.turn_state", map[string]interface{}{"channel_id": "main"}); err == nil {
 		if ts, ok := tsRaw.(map[string]interface{}); ok {
 			if mems, ok := ts["members"].([]interface{}); ok {
 				turnByRole := map[string]map[string]interface{}{}
 				for _, raw := range mems {
 					if m, ok := raw.(map[string]interface{}); ok {
-						role := channeldata.MemberRole(m) // reuse for norm
+						role := collab.NormalizeMemberRole(channeldata.MemberRole(m))
 						if role == "" {
-							role, _ = m["role"].(string)
+							role = collab.NormalizeMemberRole(spaStringOr(m["role"], ""))
 						}
-						turnByRole[role] = m
+						if role != "" {
+							turnByRole[role] = m
+						}
 					}
 				}
 				for _, c := range cards {
 					if cm, ok := c.(map[string]interface{}); ok {
 						name, _ := cm["name"].(string)
-						if t, hit := turnByRole[name]; hit {
+						roleKey := collab.NormalizeMemberRole(name)
+						if t, hit := turnByRole[roleKey]; hit {
 							cm["last_seen_seq"] = t["last_seen_seq"]
 							cm["cycles_since_turn"] = t["cycles_since_turn"]
 							cm["last_outcome"] = t["last_outcome"]

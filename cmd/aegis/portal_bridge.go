@@ -387,12 +387,14 @@ func portalWorkerList() []interface{} {
 		}
 		role := portalVMRoleLabel(vm.ID, vm.Type)
 		out = append(out, map[string]interface{}{
-			"id":       vm.ID,
-			"name":     vm.ID,
-			"status":   string(vm.Status),
-			"role":     role,
-			"task":     role,
-			"progress": "—",
+			"id":         vm.ID,
+			"name":       vm.ID,
+			"status":     string(vm.Status),
+			"role":       role,
+			"task":       role,
+			"progress":   "—",
+			"channel":    vm.Channel,
+			"channel_id": vm.Channel,
 		})
 	}
 	return out

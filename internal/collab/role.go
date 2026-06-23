@@ -9,6 +9,16 @@ func NormalizeMemberRole(role string) string {
 	if role == "" {
 		return role
 	}
+	// Strip -<channel|instance> suffix from on-demand role VM IDs (e.g. "coder-main", "coder-turn-e2e-...", "project-manager-bar")
+	// so they match bare channel member roles for turn state attach on Agents page and elsewhere.
+	if !strings.HasPrefix(role, "court-persona-") && !strings.HasPrefix(role, "user:") {
+		for _, bare := range []string{"project-manager", "coder", "tester", "ciso", "architect", "researcher"} {
+			if strings.HasPrefix(role, bare+"-") {
+				role = bare
+				break
+			}
+		}
+	}
 	if strings.HasPrefix(role, "court-persona-") || strings.HasPrefix(role, "user:") || role == "user" {
 		return role
 	}
