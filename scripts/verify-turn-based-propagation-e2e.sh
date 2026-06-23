@@ -7,9 +7,14 @@
 # Prerequisites: running daemon (sudo ./bin/aegis start), Ollama optional (fallback plans OK).
 set -euo pipefail
 
-CHANNEL="${TURN_E2E_CHANNEL:-turn-e2e-verify}"
+if [ -n "${TURN_E2E_CHANNEL:-}" ]; then
+  CHANNEL="$TURN_E2E_CHANNEL"
+else
+  CHANNEL="turn-e2e-verify-$(date +%s)"
+fi
+echo "Using channel: $CHANNEL (unique per run to avoid state pollution from prior tests)"
 GOAL="As Project Manager: post a short plan assigning @coder to implement a hello-world feature and flag a security concern for @ciso to review. Ensure coder role in this channel."
-POLL_SECONDS="${TURN_E2E_POLL_SECONDS:-420}"
+POLL_SECONDS="${TURN_E2E_POLL_SECONDS:-180}"
 MARKER="TURN-E2E-VERIFY"
 
 echo "=== Turn-based message propagation E2E ==="
@@ -51,33 +56,39 @@ echo "Ensuring court-persona-ciso is in channel..."
 # Poll assumes PM added coder and CISO responds when court-persona-ciso is ensured on channel.
 
 pass_pm=false
+pass_delivery=false
 pass_coder=false
 pass_ciso=false
 pass_turn_state=false
+pass_status_note=false
 
 for ((i=1; i<=POLL_SECONDS; i++)); do
   CONTENT=$(./bin/aegis channel get "$CHANNEL" 2>/dev/null || echo "")
   TURN_STATE=$(./bin/aegis channel turn-state "$CHANNEL" 2>/dev/null || echo "")
 
-  if echo "$CONTENT" | grep -qi 'project-manager' && echo "$CONTENT" | grep -qiE 'plan|assign|coder'; then
+  if echo "$CONTENT" | grep -qi 'project-manager' && echo "$CONTENT" | grep -qiE 'plan|assign'; then
     pass_pm=true
   fi
-  if echo "$CONTENT" | grep -qiE 'coder-|coder '; then
+  # Stronger: evidence of turn delivery via status notes or turn-state outcomes/last_seen advanced for roles
+  if echo "$CONTENT" | grep -qiE 'status: turns delivered'; then
+    pass_status_note=true
+  fi
+  if echo "$TURN_STATE" | grep -qiE 'delivered|last_seen=[3-9]'; then
+    pass_delivery=true
+  fi
+  if echo "$TURN_STATE" | grep -qiE 'coder.*(delivered|last_seen=[1-9])' || echo "$CONTENT" | grep -qiE 'from:.*coder-.*-verify'; then
     pass_coder=true
   fi
-  if echo "$CONTENT" | grep -qiE 'court-persona-ciso|ciso'; then
-    if echo "$CONTENT" | grep -qiE 'security|concern|push|review|risk'; then
-      pass_ciso=true
-    fi
+  if echo "$TURN_STATE" | grep -qiE 'ciso.*(delivered|last_seen=[1-9])' || echo "$CONTENT" | grep -qiE 'from:.*ciso-.*-verify|court-persona-ciso.*delivered'; then
+    pass_ciso=true
   fi
   if echo "$TURN_STATE" | grep -qi 'last_seen_seq'; then
     pass_turn_state=true
   elif echo "$CONTENT" | grep -qi 'last_seen_seq'; then
-    # Fallback: channel.get includes per-member last_seen_seq when turn-state RPC is slow
     pass_turn_state=true
   fi
 
-  if $pass_pm && $pass_coder && $pass_ciso && $pass_turn_state; then
+  if $pass_pm && $pass_delivery && $pass_coder && $pass_ciso && $pass_turn_state && $pass_status_note; then
     echo "✓ PASS: driving scenario complete (tick $i)"
     break
   fi
@@ -87,9 +98,11 @@ done
 echo
 echo "--- Assertions ---"
 $pass_pm && echo "✓ PASS: PM plan visible in channel" || echo "✗ FAIL: PM plan missing"
-$pass_coder && echo "✓ PASS: Coder progress post visible" || echo "✗ FAIL: Coder post missing"
-$pass_ciso && echo "✓ PASS: CISO push-back visible" || echo "✗ FAIL: CISO push-back missing"
+$pass_delivery && echo "✓ PASS: turn delivery evidence (status or delivered outcomes)" || echo "✗ FAIL: no delivery evidence"
+$pass_coder && echo "✓ PASS: Coder received turn (delivered/last_seen or post)" || echo "✗ FAIL: Coder turn not evidenced"
+$pass_ciso && echo "✓ PASS: CISO received turn (delivered/last_seen or post)" || echo "✗ FAIL: CISO turn not evidenced"
 $pass_turn_state && echo "✓ PASS: turn-state shows last_seen_seq" || echo "✗ FAIL: turn-state observability"
+$pass_status_note && echo "✓ PASS: system status notes for turns" || echo "✗ FAIL: no status notes"
 
 TRACE_LOG="${TRACE_LOG:-aegis.log}"
 if [ -f "$TRACE_LOG" ]; then

@@ -44,10 +44,14 @@ func (f *Facilitator) HandleTurnResult(ctx context.Context, payload map[string]i
 	if role == "" {
 		role, _ = payload["role"].(string)
 	}
+	if role == "" {
+		role, _ = payload["recipient"].(string)
+	}
 	outcome, _ := payload["outcome"].(string)
 	if chID == "" || role == "" {
 		return
 	}
+	role = collab.NormalizeMemberRole(role)
 	now := time.Now().UTC().Format(time.RFC3339)
 	fields := map[string]interface{}{
 		"last_outcome":  outcome,
@@ -107,24 +111,28 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 		return
 	}
 
-	// Multi-recipient + fairness/catch-up for mention-heavy human posts (spec §3.2, §3.3).
-	// After PM plan or posts with multiple explicit mentions, also deliver to other mentioned or starved roles.
-	recipients := []string{recipient}
-	if collab.IsHumanPoster(from) && (hasStrongMentions(content) || isAssignmentLike(content)) {
+	// Multi-recipient + fairness/catch-up for mention-heavy/assignment posts (spec §3.2, §3.3).
+	// Trigger on signals (PM plans use @mentions/assign language even if !human from).
+	// Prioritize mentioned for assignment posts (ensures coder etc get turn even in long rosters)
+	recipients := []string{}
+	if hasStrongMentions(content) || isAssignmentLike(content) {
 		mentioned := collectMentionedRoles(members, content)
 		starved := collectStarvedRoles(members, settings.StarvationCycles)
 		for _, r := range mentioned {
 			rn := collab.NormalizeMemberRole(r)
-			if rn != recipient && !containsRole(recipients, rn) && len(recipients) < 3 {
+			if !containsRole(recipients, rn) && len(recipients) < 3 {
 				recipients = append(recipients, rn)
 			}
 		}
 		for _, r := range starved {
 			rn := collab.NormalizeMemberRole(r)
-			if rn != recipient && !containsRole(recipients, rn) && len(recipients) < 3 {
+			if !containsRole(recipients, rn) && len(recipients) < 3 {
 				recipients = append(recipients, rn)
 			}
 		}
+	}
+	if len(recipients) == 0 {
+		recipients = []string{recipient}
 	}
 	allMsgs := channeldata.MessagesSlice(chMap)
 

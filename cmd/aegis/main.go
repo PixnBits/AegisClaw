@@ -1121,11 +1121,23 @@ func computeHealthSnapshot(orch *runtime.Orchestrator) map[string]interface{} {
 	}
 
 	courtCount := 0
+	coreCourts := map[string]bool{
+		"ciso": true,
+		"security-architect": true,
+		"architect": true,
+		"senior-coder": true,
+		"tester": true,
+		"efficiency": true,
+		"user-advocate": true,
+	}
 	if orch != nil {
 		if vms, err := orch.ListVMs(context.Background()); err == nil {
 			for _, v := range vms {
 				if strings.HasPrefix(v.ID, "court-persona-") {
-					courtCount++
+					suffix := strings.TrimPrefix(v.ID, "court-persona-")
+					if coreCourts[suffix] {
+						courtCount++
+					}
 				}
 			}
 		}
@@ -1236,13 +1248,25 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	// Fallback when socket unavailable (older daemon or transient dial issue).
 	base := computeHealthSnapshot(nil)
 	courtCount := 0
+	coreCourts := map[string]bool{
+		"ciso": true,
+		"security-architect": true,
+		"architect": true,
+		"senior-coder": true,
+		"tester": true,
+		"efficiency": true,
+		"user-advocate": true,
+	}
 	if vmsResp, err := sendSocketRequest("vm.list", nil, false); err == nil && vmsResp.OK && vmsResp.Data != nil {
 		if arr, ok := vmsResp.Data.([]interface{}); ok {
 			for _, item := range arr {
 				if m, ok := item.(map[string]interface{}); ok {
 					id := getMapString(m, "id", "ID")
 					if strings.HasPrefix(id, "court-persona-") {
-						courtCount++
+						suffix := strings.TrimPrefix(id, "court-persona-")
+						if coreCourts[suffix] {
+							courtCount++
+						}
 					}
 				}
 			}

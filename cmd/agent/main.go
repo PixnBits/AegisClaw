@@ -357,7 +357,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 			Source:      sourceID,
 			Destination: channelfacilitator.ComponentID,
 			Command:     channelfacilitator.CmdTurnResult,
-			Payload: map[string]interface{}{"channel_id": chID, "from": sourceID, "outcome": "error", "error": err.Error()},
+			Payload: map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "error", "error": err.Error()},
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		})
 		return
@@ -371,7 +371,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 			Source:      sourceID,
 			Destination: channelfacilitator.ComponentID,
 			Command:     channelfacilitator.CmdTurnResult,
-			Payload:     map[string]interface{}{"channel_id": chID, "from": sourceID, "outcome": "no_reply"},
+			Payload:     map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "no_reply"},
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		})
 		return
@@ -391,7 +391,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 			Source:      sourceID,
 			Destination: channelfacilitator.ComponentID,
 			Command:     channelfacilitator.CmdTurnResult,
-			Payload:     map[string]interface{}{"channel_id": chID, "from": sourceID, "outcome": "error", "error": err.Error()},
+			Payload:     map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "error", "error": err.Error()},
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		})
 		return
@@ -402,7 +402,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 		Source:      sourceID,
 		Destination: channelfacilitator.ComponentID,
 		Command:     channelfacilitator.CmdTurnResult,
-		Payload:     map[string]interface{}{"channel_id": chID, "from": sourceID, "outcome": "posted"},
+		Payload:     map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "posted"},
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	})
 }
