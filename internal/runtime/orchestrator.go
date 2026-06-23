@@ -17,6 +17,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"AegisClaw/internal/agent"
 	"AegisClaw/internal/config"
 	"AegisClaw/internal/eventbus"
 	"AegisClaw/internal/sandbox"
@@ -105,7 +106,11 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	// collaboration model implementation plan.
 	o.timingEnabled = os.Getenv("AEGIS_BOOT_TIMING") == "1"
 	o.collabTraceEnabled = os.Getenv("AEGIS_COLLAB_TRACE") == "1"
-	o.defaultLLMModel = strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL"))
+	if v := strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")); v != "" {
+		o.defaultLLMModel = v
+	} else {
+		o.defaultLLMModel = agent.DefaultLLMModel
+	}
 
 	// Pre-generate a small ring of VM keypairs at New() (collab model <1s tactic).
 	// StartVM will pop from here instead of GenerateVMKeyPair + write each time (saves crypto + disk in hot path for first on-demand agents/roles).
@@ -341,10 +346,8 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	if o.collabTraceEnabled {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.collab_trace=1")
 	}
-	if o.defaultLLMModel != "" {
-		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
-			" aegis.default_model=" + o.defaultLLMModel)
-	}
+	vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+		" aegis.default_model=" + o.defaultLLMModel)
 
 	phases["backend_start_entry"] = time.Now().UnixNano()
 	if err := o.backend.Start(ctx, vmConfig); err != nil {

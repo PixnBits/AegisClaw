@@ -15,6 +15,7 @@ import (
 
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/agent/progress"
 	agentSkills "AegisClaw/internal/agent/skills"
@@ -183,7 +184,7 @@ func runAgentSession(client hubclient.Client, pub ed25519.PublicKey, priv ed2551
 	loadedWorkspace = wsCtx
 
 	skillIndex := NewAgentSkillIndex()
-	realLLM := loop.NewRealLLMCaller(client, os.Getenv("AEGIS_DEFAULT_MODEL"))
+	realLLM := loop.NewRealLLMCaller(client, bootargs.DefaultModel(agent.DefaultLLMModel))
 
 	fmt.Println("agent: real message-driven loop active (hubclient Receive + real loop.RunTurn)")
 	timing.RecordPhase("message_loop_ready")
@@ -294,8 +295,10 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		return true
 	}
 
-	if msg.Command == "channel.activity" || msg.Command == "channel.member_notify" {
-		processAgentChannelActivity(client, msg, realLLM)
+	// channel.activity / human-only fan-out is fully replaced by turn-based delivery (channel.turn).
+	// Agents receive batched turns via the Channel Facilitator + Store relevance tools.
+	if msg.Command == channelfacilitator.CmdTurn {
+		processAgentChannelTurn(client, msg, realLLM)
 		return true
 	}
 
@@ -315,53 +318,62 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 	return true
 }
 
-// processAgentChannelActivity handles channel.activity for on-demand SDLC role VMs (coder-*, tester-*).
-func processAgentChannelActivity(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
+func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
 	sourceID := client.AssignedID()
-	payload, _ := msg.Payload.(map[string]interface{})
-	chID, _ := payload["channel_id"].(string)
-	from, _ := payload["from"].(string)
-	userContent := collab.PayloadContentString(payload["content"])
-	if chID == "" {
-		chID = "main"
-	}
-
-	collab.Tracef(sourceID, "channel.activity.recv", "ch=%s from=%s", chID, from)
-
-	shouldRespond, reason := collab.ShouldRespondToActivity(sourceID, from, userContent)
-	if !shouldRespond {
-		_ = client.Reply(context.Background(), hubclient.Message{
-			Source: sourceID, Destination: msg.Source, Command: "response",
-			Payload: map[string]interface{}{
-				"status": "ignored", "reason": string(reason), "channel_id": chID,
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
+	turn, ok := collab.ParseTurnPayload(msg.Payload)
+	if !ok {
 		return
 	}
+	chID := turn.ChannelID
+	collab.Tracef(sourceID, "channel.turn.recv", "ch=%s since=%d new=%d anchors=%v", chID, turn.SinceSeq, len(turn.NewMessages), turn.RelevanceAnchors)
 
 	_ = client.Reply(context.Background(), hubclient.Message{
 		Source: sourceID, Destination: msg.Source, Command: "response",
 		Payload: map[string]interface{}{
-			"status": "delivered", "reason": string(reason), "channel_id": chID,
+			"status": "delivered", "reason": "turn", "channel_id": chID,
 		},
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
+	ctx := context.Background()
+	anchorMsgs, _ := collab.FetchRelevantSince(ctx, client, chID, turn.SinceSeq, turn.RelevanceAnchors)
+	batchText := collab.FormatTurnMessages(turn.NewMessages)
+	anchorText := collab.FormatAnchorContext(anchorMsgs)
 	roleLabel := collab.AgentRoleLabel(sourceID)
 	prompt := customInstructionsPrefix() +
-		"\n\nYou are the " + roleLabel + " in channel " + chID + ". A user posted:\n" + userContent +
-		"\n\nReply in 2-4 sentences from your role's perspective. If no reply is needed, respond with exactly: NO_REPLY"
-	llmReply, err := realLLM(context.Background(), prompt)
+		"\n\nYou are the " + roleLabel + " in channel " + chID + ". You received a batched channel turn.\n" +
+		"New messages since your last turn:\n" + batchText
+	if anchorText != "" {
+		prompt += "\n\nRelevant prior context (anchors):\n" + anchorText
+	}
+	prompt += "\n\nReply in 2-4 sentences with a concrete progress update or status from your role. If no reply is needed, respond with exactly: NO_REPLY"
+
+	llmReply, err := realLLM(ctx, prompt)
 	if err != nil {
-		log.Printf("agent %s: channel reply LLM failed (not posting canned text): %v", sourceID, err)
-		collab.Tracef(sourceID, "channel.reply.skip", "ch=%s err=%v", chID, err)
+		log.Printf("agent %s: channel.turn LLM failed in %s: %v", sourceID, chID, err)
+		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s err=%v", chID, err)
+		// Report outcome so facilitator can record error for observability (not silent).
+		_, _ = client.Send(ctx, hubclient.Message{
+			Source:      sourceID,
+			Destination: channelfacilitator.ComponentID,
+			Command:     channelfacilitator.CmdTurnResult,
+			Payload: map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "error", "error": err.Error()},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
 	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
 	if skip {
-		log.Printf("agent %s: chose not to reply in %s", sourceID, chID)
-		collab.Tracef(sourceID, "channel.reply.skip", "ch=%s reason=no_reply", chID)
+		log.Printf("agent %s: channel.turn chose not to reply in %s", sourceID, chID)
+		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s reason=no_reply", chID)
+		// Report NO_REPLY explicitly so UI can show "NO_REPLY" (not error) per spec §8.4.
+		_, _ = client.Send(ctx, hubclient.Message{
+			Source:      sourceID,
+			Destination: channelfacilitator.ComponentID,
+			Command:     channelfacilitator.CmdTurnResult,
+			Payload:     map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "no_reply"},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
 	postCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -374,12 +386,25 @@ func processAgentChannelActivity(client hubclient.Client, msg hubclient.Message,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		log.Printf("agent %s: channel.post failed: %v", sourceID, err)
-		collab.Tracef(sourceID, "channel.post.fail", "ch=%s err=%v", chID, err)
+		collab.Tracef(sourceID, "channel.turn.post.fail", "ch=%s err=%v", chID, err)
+		_, _ = client.Send(ctx, hubclient.Message{
+			Source:      sourceID,
+			Destination: channelfacilitator.ComponentID,
+			Command:     channelfacilitator.CmdTurnResult,
+			Payload:     map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "error", "error": err.Error()},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
-	collab.Tracef(sourceID, "channel.post.ok", "ch=%s len=%d", chID, len(trimmed))
-	log.Printf("agent %s: posted channel reply to %s (%s)", sourceID, chID, reason)
+	collab.Tracef(sourceID, "channel.turn.post.ok", "ch=%s len=%d", chID, len(trimmed))
+	// Report success outcome.
+	_, _ = client.Send(ctx, hubclient.Message{
+		Source:      sourceID,
+		Destination: channelfacilitator.ComponentID,
+		Command:     channelfacilitator.CmdTurnResult,
+		Payload:     map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "posted"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func drainChatPolls(client hubclient.Client, skillIndex *agentSkills.AgentSkillIndex) {

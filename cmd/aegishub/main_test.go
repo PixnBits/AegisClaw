@@ -206,6 +206,8 @@ func TestCheckACL(t *testing.T) {
 		{Source: "agent", Destination: "memory", Commands: []string{"memory.*"}},
 		{Source: "agent", Destination: "store", Commands: []string{"proposal.*"}},
 		{Source: "court-persona-*", Destination: "court-scribe", Commands: []string{"scribe.submit_vote"}},
+		{Source: "coder*", Destination: "network-boundary", Commands: []string{"llm.*"}},
+		{Source: "coder*", Destination: "store", Commands: []string{"channel.*"}},
 		{Source: "*", Destination: "hub", Commands: []string{"version", "get-version"}},
 		{Source: "client1", Destination: "client2", Commands: []string{"test"}},
 	}
@@ -226,6 +228,8 @@ func TestCheckACL(t *testing.T) {
 		{"client1", "client2", "test", true},
 		{"client1", "client2", "other", false},
 		{"agent", "memory", "other", false},
+		{"coder-another-fresh", "network-boundary", "llm.call", true},
+		{"coder-another-fresh", "store", "channel.post", true},
 	}
 	for _, c := range cases {
 		if got := checkACL(c.src, c.dst, c.cmd); got != c.want {

@@ -418,7 +418,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 
 		debugLog("hub", fmt.Sprintf("Received message from %s to %s, command: %s", msg.Source, msg.Destination, msg.Command))
-		if collab.TraceEnabled() && (msg.Command == "channel.updated" || msg.Command == "channel.activity" || msg.Command == "channel.post" || msg.Command == "channel.relay_activity") {
+		if collab.TraceEnabled() && (msg.Command == "channel.updated" || msg.Command == "channel.activity" || msg.Command == "channel.turn" || msg.Command == "channel.post" || msg.Command == "channel.relay_activity" || msg.Command == "channel.get_relevant_since" || msg.Command == "channel.get_messages") {
 			collab.Tracef("hub", "route", "src=%s dest=%s cmd=%s", msg.Source, msg.Destination, msg.Command)
 		}
 
@@ -624,7 +624,7 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 		rpcTimeout = 600 * time.Second
 	case "chat.tool_events", "chat.thought_events", "chat.stream_progress":
 		rpcTimeout = 8 * time.Second
-	case "channel.activity":
+	case "channel.activity", "channel.turn":
 		// Agent may channel.post to store before replying.
 		rpcTimeout = 180 * time.Second
 	case "channel.post":

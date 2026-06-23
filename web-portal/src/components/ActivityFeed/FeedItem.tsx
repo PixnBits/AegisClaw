@@ -16,12 +16,14 @@ export function FeedItemRow({ item, channelId }: Props) {
   const expanded = usePortalStore((s) => s.expandedReasoning.has(item.id));
   const toggleExpanded = usePortalStore((s) => s.toggleReasoningExpanded);
   const expand = shouldExpandReasoning(item, policy, expanded);
+  const isChannelStatus = item.kind === 'channel_status';
+  const isSystemError = item.kind === 'system_error';
   const isReasoning =
-    item.kind === 'agent_reasoning' || item.kind === 'tool_call' || item.kind === 'agent_update';
+    !isChannelStatus && !isSystemError && (item.kind === 'agent_reasoning' || item.kind === 'tool_call' || item.kind === 'agent_update');
 
   return (
     <article
-      className={`feed-item feed-item--${item.kind}${item.inFlight ? ' feed-item--live' : ''}`}
+      className={`feed-item feed-item--${item.kind}${item.inFlight ? ' feed-item--live' : ''}${isChannelStatus ? ' feed-item--status' : ''}${isSystemError ? ' feed-item--error' : ''}`}
       data-testid={`feed-item-${item.id}`}
     >
       <header className="feed-item__header">
@@ -30,7 +32,36 @@ export function FeedItemRow({ item, channelId }: Props) {
         <time className="subtle">{formatTime(item.ts)}</time>
       </header>
 
-      {isReasoning && !expand ? (
+      {isChannelStatus && !expand ? (
+        <div className="feed-item__collapsed feed-item__status-collapsed">
+          <span>📍 {item.collapsedSummary || item.content}</span>
+          <button
+            type="button"
+            className="feed-item__show-reasoning"
+            data-testid={`show-status-${item.id}`}
+            onClick={() => toggleExpanded(item.id)}
+          >
+            Show full status
+          </button>
+        </div>
+      ) : isChannelStatus ? (
+        <div className="feed-item__content feed-item__status">
+          <span>📍 {item.content}</span>
+          {expanded && (
+            <button
+              type="button"
+              className="feed-item__show-reasoning"
+              onClick={() => toggleExpanded(item.id)}
+            >
+              Hide details
+            </button>
+          )}
+        </div>
+      ) : isSystemError ? (
+        <div className="feed-item__content feed-item__error">
+          ⚠️ {item.content}
+        </div>
+      ) : isReasoning && !expand ? (
         <div className="feed-item__collapsed">
           <span>{item.collapsedSummary || buildCollapsedSummary(item)}</span>
           <button

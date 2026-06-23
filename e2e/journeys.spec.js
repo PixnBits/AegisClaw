@@ -238,7 +238,6 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     expect(teamsRes.ok() || teamsRes.status() === 200 || teamsRes.status() === 500).toBeTruthy();
 
     await expect(page.getByTestId('teams-list')).toBeAttached();
-    await expect(page.getByTestId('system-status-chip')).toBeVisible();
   });
 
   // 6.7 reliability: Core journeys navigation smoke - hits primary navs from all 9 journeys
@@ -306,7 +305,6 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
     // This E2E asserts the *post-recovery* state for the full journey matrix.
 
     await page.goto('/');
-    await expect(page.getByTestId('system-status-chip')).toBeVisible({ timeout: 5000 });
     await expect(page.getByTestId('app-shell')).toBeVisible();
 
     // Health / TCB surface (web portal reflects expanded doctor from 7.5.5)
@@ -425,7 +423,7 @@ test.describe('User Journey E2E Tests (expanded per docs/specs/user-journeys/ + 
   test('All 9 journeys: Core navigation + data-testid smoke after any prior failure (resilience)', async ({ page }) => {
     const criticalTestIds = [
       'nav-dashboard', 'nav-channels', 'nav-skills', 'nav-court', 'nav-agents',
-      'app-shell', 'system-status-chip'
+      'app-shell'
     ];
 
     await waitPortalReady(page);

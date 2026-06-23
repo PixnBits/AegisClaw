@@ -242,8 +242,6 @@ func (s *Server) collectDashboardSPA(ctx context.Context) map[string]interface{}
 	}
 	activeWork := s.collectActiveWork(ctx)
 	return map[string]interface{}{
-		"system_status": "running",
-		"runtime":       "firecracker",
 		"notifications": 0,
 		"safe_mode":     false,
 		"channel_count": bundle["channel_count"],
@@ -346,12 +344,18 @@ func spaWorkersToAgentCards(workers []interface{}) []interface{} {
 		if progress == "" {
 			progress = "—"
 		}
-		out = append(out, map[string]interface{}{
+		ch := spaStringOr(m["channel"], spaStringOr(m["channel_id"], ""))
+		card := map[string]interface{}{
 			"name":     name,
 			"status":   status,
 			"task":     task,
 			"progress": progress,
-		})
+		}
+		if ch != "" {
+			card["channel"] = ch
+			card["channel_id"] = ch
+		}
+		out = append(out, card)
 	}
 	return out
 }

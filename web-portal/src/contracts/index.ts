@@ -184,7 +184,9 @@ export type FeedItemKind =
   | 'tool_call'
   | 'court_decision'
   | 'proposal_event'
-  | 'handoff';
+  | 'handoff'
+  | 'channel_status'
+  | 'system_error';
 
 export type ReasoningPhase = 'Observe' | 'Think' | 'Plan' | 'Act' | 'Judge';
 
@@ -233,8 +235,6 @@ export type ActiveWorkItem = {
 };
 
 export type DashboardData = {
-  system_status: string;
-  runtime: string;
   notifications: number;
   safe_mode: boolean;
   channel_count: number;

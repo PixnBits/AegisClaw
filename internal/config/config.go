@@ -133,6 +133,22 @@ func ResolveRootfsDir() string {
 	return "/opt/aegis/firecracker/rootfs"
 }
 
+// ResolveHubSocket returns the host AegisHub unix socket path. When the daemon
+// runs as root via sudo, this prefers the invoking user's ~/.aegis/hub.sock
+// (matching expandPath in cmd/aegis) instead of /root/.aegis/hub.sock.
+func ResolveHubSocket() string {
+	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
+		return env
+	}
+	for _, home := range candidateHomes() {
+		candidate := filepath.Join(home, ".aegis", "hub.sock")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return filepath.Join(ResolveAegisDataDir(), "hub.sock")
+}
+
 // ResolveAegisDataDir returns the effective user's ~/.aegis directory (host-side
 // state: chat sessions, CLI registries, hub socket, etc.). Used by the daemon
 // reverse proxy for server-backed web-portal chat history.

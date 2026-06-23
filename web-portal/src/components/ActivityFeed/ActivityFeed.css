@@ -46,7 +46,7 @@
 }
 
 .chat-stream:not(.chat-stream--empty) {
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .activity-feed__virtual {
