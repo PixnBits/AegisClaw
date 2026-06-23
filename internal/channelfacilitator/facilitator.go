@@ -210,10 +210,6 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 			if role == rec {
 				m["last_seen_seq"] = recMax
 				m["cycles_since_turn"] = 0
-				if collab.IsMentioned(role, content) {
-					left := intFromMember(m["mention_boosts_left"])
-					m["mention_boosts_left"] = left + 1
-				}
 			}
 		}
 		_ = f.updateMemberState(ctx, chID, rec, map[string]interface{}{
