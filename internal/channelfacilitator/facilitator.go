@@ -263,11 +263,8 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 func mentionBoostsUsed(members []map[string]interface{}, recipient, content string) int {
 	for _, m := range members {
 		if channeldata.MemberRole(m) == recipient {
-			left := intFromMember(m["mention_boosts_left"])
-			if collab.IsMentioned(recipient, content) {
-				return left + 1
-			}
-			return left
+			// caller already applied any mention increment to the member map
+			return intFromMember(m["mention_boosts_left"])
 		}
 	}
 	return 0
