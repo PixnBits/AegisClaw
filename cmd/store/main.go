@@ -1310,16 +1310,12 @@ func runStore(cmd *cobra.Command, args []string) {
 						anchors = append(anchors, m)
 					}
 				}
-				maxSeq := sinceSeq
 				for _, m := range channeldata.MessagesSlice(ch) {
 					seq := channeldata.MessageSeq(m)
 					if seq <= sinceSeq {
 						continue
 					}
 					batch = append(batch, m)
-					if seq > maxSeq {
-						maxSeq = seq
-					}
 				}
 			}
 			response.Command = channelfacilitator.CmdGetRelevantSince + ".data"
