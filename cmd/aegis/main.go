@@ -2748,6 +2748,12 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		}
 	}
 	fmt.Printf("Ensured project-manager for channel %s\n", chID)
+	// Post the original goal as a user message in the channel for context (alongside PM's plan).
+	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
+		"channel_id": chID,
+		"from":       "user",
+		"content":    goalText,
+	})
 	// Each ensured PM registers on the hub as its VM id (bootargs.ComponentID), e.g.
 	// project-manager-plan-demo-e2e-llm. user.goal must target that id when multiple PMs
 	// are running (isolation E2E, other channels); the legacy alias "project-manager" would

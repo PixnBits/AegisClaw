@@ -73,6 +73,14 @@ func portalKickoffPMGoal(chID, goalText string) {
 		_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": chID})
 	}
 
+	// Post the original goal from the Home page (or CLI) as a user message in the channel.
+	// This provides context alongside the PM's structured plan (both are useful).
+	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
+		"channel_id": chID,
+		"from":       "user",
+		"content":    goalText,
+	})
+
 	ensurePayload := map[string]interface{}{
 		"role":    "project-manager",
 		"channel": chID,
