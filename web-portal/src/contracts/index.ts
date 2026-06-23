@@ -184,7 +184,9 @@ export type FeedItemKind =
   | 'tool_call'
   | 'court_decision'
   | 'proposal_event'
-  | 'handoff';
+  | 'handoff'
+  | 'channel_status'
+  | 'system_error';
 
 export type ReasoningPhase = 'Observe' | 'Think' | 'Plan' | 'Act' | 'Judge';
 

@@ -239,17 +239,27 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 		}
 		_ = f.persistCycles(ctx, chID, members, recipients[0])
 		collab.Tracef(ComponentID, "turn.last_seen", "ch=%s recipients=%v last_rr=%d", chID, recipients, newRR)
-		// Maintain a single updating status line in channel as visible messages from=system (per spec §8.2).
-		_, _ = f.hub.Send(ctx, hubclient.Message{
-			Destination: "store",
-			Command:     "channel.post",
-			Payload: map[string]interface{}{
-				"channel_id": chID,
-				"from":       "system",
-				"content":    fmt.Sprintf("status: turns delivered to %v (rr=%d)", recipients, newRR),
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
+		// Post compact status only for significant assignment posts (human or @mentions/plan).
+		// This avoids flooding the channel with a status per internal PM update or routine post.
+		// The UI will show only the latest status line by default + expand for history.
+		// Only surface status for human posts or primary PM *plan-like* posts (containing plan/goal/task structure).
+		// This prevents status spam from routine PM monitoring, agent responses, or follow-ups (even with @).
+		lowerContent := strings.ToLower(content)
+		isPlanLike := strings.Contains(lowerContent, "plan") || strings.Contains(lowerContent, "##") || strings.Contains(lowerContent, "goal") || strings.Contains(lowerContent, "task 1")
+		isSignificant := collab.IsHumanPoster(from) || (strings.Contains(strings.ToLower(from), "project-manager") && isPlanLike)
+		if isSignificant {
+			statusContent := fmt.Sprintf("status: turns delivered to %v (rr=%d) — batch complete, no more pending turns this cycle", recipients, newRR)
+			_, _ = f.hub.Send(ctx, hubclient.Message{
+				Destination: "store",
+				Command:     "channel.post",
+				Payload: map[string]interface{}{
+					"channel_id": chID,
+					"from":       "system",
+					"content":    statusContent,
+				},
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			})
+		}
 	}
 	_ = newRR
 }

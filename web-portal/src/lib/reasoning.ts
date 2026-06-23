@@ -1,4 +1,4 @@
-import { FeedItem, ReasoningPolicy } from '@/contracts';
+import { FeedItem, FeedItemKind, ReasoningPolicy } from '@/contracts';
 
 /** Whether reasoning body should render expanded per policy + item state. */
 export function shouldExpandReasoning(
@@ -6,8 +6,12 @@ export function shouldExpandReasoning(
   policy: ReasoningPolicy,
   userExpanded?: boolean,
 ): boolean {
-  if (item.kind === 'human_message' || item.kind === 'court_decision') return true;
+  if (item.kind === 'human_message' || item.kind === 'court_decision' || item.kind === 'system_error') return true;
   if (userExpanded) return true;
+  if (item.kind === 'channel_status') {
+    // Latest status (decisive=true from prepare) shown full by default; older (decisive=false) collapsed.
+    return !!item.decisive;
+  }
 
   switch (policy) {
     case 'paranoid':
@@ -48,7 +52,7 @@ export function finalizeReasoningItem(item: FeedItem): FeedItem {
 /** Feed-level collapse all reasoning (mobile density control). */
 export function collapseAllReasoning(items: FeedItem[]): FeedItem[] {
   return items.map((item) => {
-    if (item.kind !== 'agent_reasoning' && item.kind !== 'agent_update' && item.kind !== 'tool_call') {
+    if (item.kind !== 'agent_reasoning' && item.kind !== 'agent_update' && item.kind !== 'tool_call' && item.kind !== 'channel_status') {
       return item;
     }
     return finalizeReasoningItem(item);
@@ -78,11 +82,19 @@ export function messageToFeedItem(
   const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? '');
   const isAgent = from !== 'user' && !from.startsWith('user:');
   const isCourt = from.includes('court') || content.toLowerCase().includes('proposal');
-  const kind = isCourt && content.includes('approved')
+  let kind: FeedItemKind = isCourt && content.includes('approved')
     ? 'court_decision'
     : isAgent
       ? 'agent_update'
       : 'human_message';
+  if (from === 'system') {
+    const lower = content.toLowerCase();
+    if (lower.startsWith('status:') || lower.includes('turns delivered') || lower.includes('scheduled turns delivered') || lower.includes('all scheduled turns delivered')) {
+      kind = 'channel_status';
+    } else if (lower.includes('[turn error]') || lower.includes('delivery to') && lower.includes('failed')) {
+      kind = 'system_error';
+    }
+  }
 
   return {
     id: `msg-${channelId}-${index}-${msg.ts ?? Date.now()}`,
@@ -92,6 +104,33 @@ export function messageToFeedItem(
     ts: String(msg.ts ?? new Date().toISOString()),
     channelId,
     inFlight: false,
-    decisive: kind === 'human_message' || kind === 'court_decision',
+    decisive: kind === 'human_message' || kind === 'court_decision' || kind === 'system_error',
   };
+}
+
+/** Post-process feed so only the most recent channel_status is shown full by default;
+ * older status entries get collapsedSummary so UI can collapse them for low noise.
+ */
+export function prepareChannelStatusFeed(items: FeedItem[]): FeedItem[] {
+  const statusIndices: number[] = [];
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].kind === 'channel_status') {
+      statusIndices.push(i);
+    }
+  }
+  if (statusIndices.length <= 1) return items;
+
+  const latest = statusIndices[statusIndices.length - 1];
+  return items.map((item, idx) => {
+    if (item.kind !== 'channel_status') return item;
+    if (idx === latest) {
+      return { ...item, decisive: true, collapsedSummary: undefined };
+    }
+    const short = item.content.length > 60 ? item.content.substring(0, 57) + '...' : item.content;
+    return {
+      ...item,
+      collapsedSummary: short,
+      decisive: false,
+    };
+  });
 }
