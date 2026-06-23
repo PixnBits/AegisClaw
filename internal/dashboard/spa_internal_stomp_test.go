@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,17 @@ import (
 	"AegisClaw/internal/portalstomp"
 )
 
+type noopAPIClient struct{}
+
+func (noopAPIClient) Call(context.Context, string, json.RawMessage) (*APIResponse, error) {
+	return &APIResponse{Success: true, Data: json.RawMessage(`{}`)}, nil
+}
+
 func TestHandleInternalChannelActivitySTOMPLoopbackOnly(t *testing.T) {
-	s := &Server{stompHub: portalstomp.NewHub()}
+	s := &Server{
+		stompHub:  portalstomp.NewHub(),
+		apiClient: noopAPIClient{},
+	}
 	body, _ := json.Marshal(map[string]string{
 		"channel_id": "main",
 		"from":       "project-manager-main",
