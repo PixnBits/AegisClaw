@@ -118,5 +118,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json', 'X-Aegis-Confirmed': '1' },
       body: JSON.stringify({ action, capability, reason }),
     }),
+  cisoDelegation: () => fetchJSON<{ enabled: boolean }>('/api/settings/ciso-delegation'),
+  setCisoDelegation: (enabled: boolean) =>
+    fetchJSON<{ ok: boolean }>('/api/settings/ciso-delegation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Aegis-Confirmed': '1' },
+      body: JSON.stringify({ enabled }),
+    }),
   activeWork: () => fetchJSON<{ items: unknown[]; count: number }>('/api/active-work'),
 };

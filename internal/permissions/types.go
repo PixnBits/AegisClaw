@@ -62,18 +62,20 @@ type Snapshot struct {
 
 // State holds the durable permission + visibility state (Store source of truth).
 type State struct {
-	Grants     []Grant          `json:"grants"`
-	Visibility []VisibilityRule `json:"visibility"`
-	Requests   []Request        `json:"requests"`
-	Version    int64            `json:"version"`
+	Grants               []Grant          `json:"grants"`
+	Visibility           []VisibilityRule `json:"visibility"`
+	Requests             []Request        `json:"requests"`
+	CisoDelegationEnabled bool             `json:"ciso_delegation_enabled"`
+	Version              int64            `json:"version"`
 }
 
 // NewState returns empty deny-by-default state.
 func NewState() *State {
 	return &State{
-		Grants:     []Grant{},
-		Visibility: []VisibilityRule{},
-		Requests:   []Request{},
+		Grants:                []Grant{},
+		Visibility:            []VisibilityRule{},
+		Requests:              []Request{},
+		CisoDelegationEnabled: false,
 	}
 }
 

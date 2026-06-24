@@ -1,6 +1,9 @@
 package permissions
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestSubjectMatches(t *testing.T) {
 	cases := []struct{ subject, pattern string; want bool }{
@@ -91,4 +94,41 @@ func TestIsCapabilityCommand(t *testing.T) {
 	if IsCapabilityCommand("register") {
 		t.Error("register is not capability-gated")
 	}
+}
+
+func TestCisoDelegationOptInAndGrantFlow(t *testing.T) {
+	state := DefaultBootstrap()
+	if state.CisoDelegationEnabled {
+		t.Error("default must be disabled")
+	}
+	// CISO cannot grant when disabled
+	if AllowsCisoDelegation("court-persona-ciso-1", state.CisoDelegationEnabled) {
+		t.Error("should not allow when disabled")
+	}
+	state.CisoDelegationEnabled = true
+	if !AllowsCisoDelegation("court-persona-ciso-1", state.CisoDelegationEnabled) {
+		t.Error("should allow CISO when enabled")
+	}
+	// Simulate grant by CISO source (the store guard uses this)
+	err := GrantCapability(state, "coder-test", "channel.create", "court-persona-ciso-foo", "via delegation")
+	if err != nil {
+		t.Fatalf("ciso grant should succeed when enabled: %v", err)
+	}
+	grants := ListGrantsForSubject(state, "coder-test")
+	found := false
+	for _, g := range grants {
+		if g.Capability == "channel.create" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected grant after ciso delegation action")
+	}
+	// snapshot reflects
+	snap := BuildSnapshot(state, "coder-test", KnownCapabilities())
+	if !snap.AllowedTools["channel.create"] {
+		t.Error("snapshot should show allowed after grant")
+	}
+	b, _ := json.MarshalIndent(state, "", "  ")
+	t.Log("delegation flow state sample:", string(b)[:200])
 }

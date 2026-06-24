@@ -1,6 +1,6 @@
 # Permissions & Capability Grants Model
 
-**Status:** Draft — to be implemented on `feat/permissions-model` branch
+**Status:** Implemented on `feat/permissions-model` branch (CISO delegation opt-in slice added)
 
 AegisClaw agents and specialized microVMs operate under **least-privilege by default**. Each component (Project Manager, Coder, CISO persona, Court members, generic agents, etc.) is granted only the exact capabilities (tools/commands) it needs. Grants are decided explicitly by the user — or later delegated to the CISO persona after explicit opt-in.
 
@@ -58,7 +58,7 @@ This flow makes the system responsive: agents can "ask" for what they need throu
   - "Why this capability?" descriptions come from tool metadata.
 - **Immediate effect**: Grant or visibility changes invalidate the affected agent's local tool index within seconds.
 - **Audit**: Every grant, revoke, hide change, and denied invocation appears in the Store audit log (visible in Portal Audit view).
-- **CISO Delegation (opt-in only)**: In Settings the user can flip a single switch to allow the CISO persona to receive and propose routine permission grants (and visibility decisions). High-impact items still route through Court review. The user can revoke delegation instantly. Default = off.
+- **CISO Delegation (opt-in only)**: In Settings the user can flip a single switch to allow the CISO persona to receive and propose routine permission grants (and visibility decisions). High-impact items still route through Court review. The user can revoke delegation instantly. Default = off. (Implemented as persisted flag + gated grant allowance for ciso* sources.)
 
 ## Visibility & Anti-Fingerprinting Controls
 

@@ -1,7 +1,7 @@
 # Permissions Model Specification
 
-**Status:** Draft — implementation target on `feat/permissions-model` branch
-**Last Updated:** 2026-06-20
+**Status:** Implemented on `feat/permissions-model` branch (CISO delegation opt-in slice included)
+**Last Updated:** 2026-06-24
 
 ## Purpose
 
@@ -126,16 +126,18 @@ High-impact grants or visibility changes (anything affecting Court, secrets, or 
 
 ## Implementation Notes for `feat/permissions-model` Branch
 
-Docs updated with discovery, request-on-attempt, and visibility controls. Implementation on this branch will include:
+Docs updated with discovery, request-on-attempt, and visibility controls. Implementation on this branch includes:
 
 1. `internal/agent/skills/index.go` — dual filter (grants + visibility policy) in `SearchTools`, `ListSkills`, `HandleToolCommand`, and prompt helpers.
-2. Store — storage for visibility policies + new `permission.*` / `visibility.*` / `tool.registry.discover` handlers (reuse autonomy/grant patterns).
+2. Store — storage for visibility policies + new `permission.*` / `visibility.*` / `tool.registry.discover` handlers (reuse autonomy/grant patterns) + CISO delegation flag.
 3. AegisHub — snapshot distribution (grants + visibility), invalidation on changes, `permission.request` emission on denied tool calls.
-4. Web Portal — per-agent detail view for requests, denied attempts (with context), grant/revoke/hide controls.
+4. Web Portal — per-agent detail view for requests, denied attempts (with context), grant/revoke/hide controls + Settings toggle for CISO delegation.
 5. Bootstrap rules in `config/acls.yaml` and initial Store state (minimal public visibility + requestable tools).
-6. Comprehensive tests (unit + integration + e2e) covering safe discovery, request flow, and anti-fingerprinting scenarios with differentiated personas.
+6. Comprehensive tests (unit + integration + e2e) covering safe discovery, request flow, anti-fingerprinting, delegation, and UI actions with differentiated personas.
 7. Updates to any prompt/workspace injection paths to respect the dual-filtered index.
+
+CISO delegation (opt-in) implemented as a persisted flag; court-persona-ciso sources may propose when enabled (high-impact Court routing deferred per non-goals).
 
 Once implementation + testing complete on this branch, a single PR to main.
 
-**Current Status (on this branch):** PRD and spec refined with discovery + request flow + visibility controls. Implementation pending.
+**Current Status (on this branch):** Full implementation complete (grants + visibility + delegation opt-in + Portal review + tests + docs). Ready for PR review.

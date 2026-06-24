@@ -66,6 +66,10 @@ var allowedBridgeActions = map[string]struct{}{
 	"visibility.list":          {},
 	"visibility.get":           {},
 	"visibility.set":           {},
+
+	// CISO delegation (permissions-model)
+	"ciso.delegation.get": {},
+	"ciso.delegation.set": {},
 }
 
 // HighImpactActions require explicit user confirmation before bridge call.
@@ -81,6 +85,7 @@ var HighImpactActions = map[string]struct{}{
 	"permission.grant":      {},
 	"permission.revoke":     {},
 	"visibility.set":        {},
+	"ciso.delegation.set":  {},
 }
 
 // IsAllowedBridgeAction reports whether the portal may call action on the bridge.

@@ -2,6 +2,7 @@ package permissions
 
 import (
 	"fmt"
+	"strings"
 )
 
 // GrantCapability adds or updates a grant. Returns error if subject tries self-grant via microVM source.
@@ -135,6 +136,15 @@ func isMicroVMSource(source string) bool {
 		}
 	}
 	return false
+}
+
+// AllowsCisoDelegation returns whether a CISO persona source is permitted to act on
+// grants/visibility when the delegation flag is enabled (opt-in only).
+func AllowsCisoDelegation(source string, enabled bool) bool {
+	if !enabled {
+		return false
+	}
+	return strings.HasPrefix(source, "court-persona-ciso") || source == "ciso" || strings.HasPrefix(source, "ciso-")
 }
 
 // DefaultBootstrap returns minimal bootstrap grants + visibility for pre-alpha startup.

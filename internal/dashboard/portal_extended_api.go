@@ -21,6 +21,7 @@ func (s *Server) registerExtendedPortalRoutes() {
 	s.mux.HandleFunc("/api/agents/", s.handleAPIAgentDetail)
 	s.mux.HandleFunc("/api/canvas", s.handleAPICanvas)
 	s.mux.HandleFunc("/api/security/posture", s.handleAPISecurityPosture)
+	s.mux.HandleFunc("/api/settings/ciso-delegation", s.handleAPICisoDelegation)
 }
 
 func (s *Server) handleAPIActiveWork(w http.ResponseWriter, r *http.Request) {
@@ -289,6 +290,37 @@ func (s *Server) handleAPIAgentPermissions(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "action": action}) //nolint:errcheck
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAPICisoDelegation exposes the opt-in flag for CISO delegation (GET/POST).
+func (s *Server) handleAPICisoDelegation(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+	defer cancel()
+	switch r.Method {
+	case http.MethodGet:
+		data, err := s.fetchRaw(ctx, "ciso.delegation.get", nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(data) //nolint:errcheck
+	case http.MethodPost:
+		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
+			return
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, err := s.fetchRaw(ctx, "ciso.delegation.set", body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

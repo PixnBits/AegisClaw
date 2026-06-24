@@ -756,6 +756,19 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		data, _ := json.Marshal(map[string]interface{}{"subject": subject, "capability": capability, "level": level})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
+	case "ciso.delegation.get":
+		data, _ := json.Marshal(map[string]interface{}{"enabled": c.permissions.CisoDelegationEnabled})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "ciso.delegation.set":
+		var req map[string]interface{}
+		json.Unmarshal(payload, &req)
+		if enabled, ok := req["enabled"].(bool); ok {
+			c.permissions.CisoDelegationEnabled = enabled
+		}
+		data, _ := json.Marshal(map[string]interface{}{"enabled": c.permissions.CisoDelegationEnabled})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
 	case "sandbox.list":
 		data, _ := json.Marshal([]interface{}{
 			map[string]interface{}{"id": "vm-1", "name": "researcher-vm", "status": "running", "cpu": "23%", "mem": "180MB"},

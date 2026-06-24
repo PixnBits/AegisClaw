@@ -791,6 +791,24 @@ rules:
   commands:
     - permission.request
     - tool.registry.discover
+# CISO personas (when delegation opt-in enabled) may propose grants/visibility
+- source: "court-persona-ciso*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+    - permission.request
+    - permission.grant
+    - permission.revoke
+    - visibility.set
+    - ciso.delegation.get
+    - ciso.delegation.set
+- source: "ciso*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+    - ciso.delegation.*
 
 # --- Catch common response patterns (signed replies often mirror cmd names or use response/*) ---
 # Broad but explicit for known components during Phase 3 iteration

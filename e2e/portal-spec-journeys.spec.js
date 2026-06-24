@@ -80,6 +80,36 @@ test.describe('Web Portal spec journeys (fixture)', () => {
       await expect(page.getByTestId('agent-permissions-panel')).toBeVisible();
       await expect(page.getByTestId('agent-grants-list')).toBeVisible();
       await expect(page.getByTestId('agent-permission-requests')).toBeVisible();
+
+      // Exercise grant/revoke via UI buttons (fixture backed) and verify shape updates
+      const grantBtn = page.getByTestId(/perm-grant-/).first();
+      if (await grantBtn.isVisible()) {
+        await grantBtn.click();
+        // re-fetch to confirm update
+        const afterGrant = await request.get('/api/agents/coder-test/permissions');
+        const bodyAfter = await afterGrant.json();
+        // requests may decrease or grants increase depending on fixture state
+        expect(bodyAfter).toHaveProperty('grants');
+      }
+
+      const revokeBtn = page.getByTestId(/perm-revoke-/).first();
+      if (await revokeBtn.isVisible()) {
+        await revokeBtn.click();
+      }
+
+      // Delegation toggle roundtrip via settings (if rendered)
+      await page.getByTestId('nav-settings').click();
+      const toggle = page.getByTestId('ciso-delegation-toggle');
+      if (await toggle.isVisible()) {
+        await toggle.check();
+        await toggle.uncheck();
+      }
+
+      // Direct API assertion for delegation and updated grants shape
+      const del = await request.get('/api/settings/ciso-delegation');
+      expect(del.ok()).toBeTruthy();
+      const delBody = await del.json();
+      expect(delBody).toHaveProperty('enabled');
     }
   });
 

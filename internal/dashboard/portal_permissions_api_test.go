@@ -20,6 +20,8 @@ func (m *permissionsMockClient) Call(_ context.Context, action string, _ json.Ra
 		return &APIResponse{Success: true, Data: json.RawMessage(`[]`)}, nil
 	case "permission.snapshot":
 		return &APIResponse{Success: true, Data: json.RawMessage(`{"subject":"coder-test","allowed_tools":{"channel.post":true}}`)}, nil
+	case "ciso.delegation.get":
+		return &APIResponse{Success: true, Data: json.RawMessage(`{"enabled":false}`)}, nil
 	default:
 		return &APIResponse{Success: true, Data: json.RawMessage(`{}`)}, nil
 	}

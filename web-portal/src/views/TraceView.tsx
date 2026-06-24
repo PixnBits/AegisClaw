@@ -25,6 +25,15 @@ export function TraceView() {
     api.agentPermissions(traceAgentId).then(setPermissions).catch(() => setPermissions(null));
   }, [traceAgentId]);
 
+  const refetchPermissions = async () => {
+    try {
+      const p = await api.agentPermissions(agentId);
+      setPermissions(p);
+    } catch {
+      setPermissions(null);
+    }
+  };
+
   const agentId = traceAgentId || 'agent';
   const controlsLocked = safeMode === true;
 
@@ -104,11 +113,35 @@ export function TraceView() {
                   {(permissions.grants as Array<{ capability?: string }>).map((g, i) => (
                     <li key={i} className="list-card subtle">
                       {g.capability || JSON.stringify(g)}
+                      {!controlsLocked && g.capability && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          data-testid={`perm-revoke-${i}`}
+                          onClick={() => void api.agentPermissionAction(agentId, 'revoke', g.capability!).then(refetchPermissions)}
+                        >
+                          Revoke
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>
               ) : (
                 <p className="subtle">No explicit grants (deny-by-default).</p>
+              )}
+            </div>
+            <div data-testid="agent-visibility-list">
+              <h3>Visibility rules</h3>
+              {(permissions.visibility as unknown[])?.length ? (
+                <ul className="list-stack">
+                  {(permissions.visibility as Array<{ capability?: string; level?: string; subject?: string }>).map((v, i) => (
+                    <li key={i} className="list-card subtle">
+                      {v.capability} — {v.level} {v.subject ? `(${v.subject})` : ''}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="subtle">No custom visibility overrides.</p>
               )}
             </div>
             <div data-testid="agent-permission-requests">
@@ -126,7 +159,7 @@ export function TraceView() {
                             type="button"
                             className="secondary-button"
                             data-testid={`perm-grant-${i}`}
-                            onClick={() => void api.agentPermissionAction(agentId, 'grant', req.capability!)}
+                            onClick={() => void api.agentPermissionAction(agentId, 'grant', req.capability!).then(refetchPermissions)}
                           >
                             Grant
                           </button>
@@ -134,7 +167,7 @@ export function TraceView() {
                             type="button"
                             className="secondary-button"
                             data-testid={`perm-hide-${i}`}
-                            onClick={() => void api.agentPermissionAction(agentId, 'hide', req.capability!)}
+                            onClick={() => void api.agentPermissionAction(agentId, 'hide', req.capability!).then(refetchPermissions)}
                           >
                             Hide
                           </button>

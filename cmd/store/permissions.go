@@ -60,7 +60,7 @@ func handlePermissionCommand(msg Message, response *Message, skills map[string]i
 		if subject == "" || capability == "" {
 			return true, "error", "subject and capability required"
 		}
-		if permissions.IsMicroVMSourcePublic(msg.Source) {
+		if permissions.IsMicroVMSourcePublic(msg.Source) && !permissions.AllowsCisoDelegation(msg.Source, permissionState.CisoDelegationEnabled) {
 			return true, "error", "ERR_PERMISSION_DENIED: microVMs cannot grant permissions"
 		}
 		if err := permissions.GrantCapability(permissionState, subject, capability, msg.Source, reason); err != nil {
@@ -77,7 +77,7 @@ func handlePermissionCommand(msg Message, response *Message, skills map[string]i
 		}
 		subject, _ := payload["subject"].(string)
 		capability, _ := payload["capability"].(string)
-		if permissions.IsMicroVMSourcePublic(msg.Source) {
+		if permissions.IsMicroVMSourcePublic(msg.Source) && !permissions.AllowsCisoDelegation(msg.Source, permissionState.CisoDelegationEnabled) {
 			return true, "error", "ERR_PERMISSION_DENIED: microVMs cannot revoke permissions"
 		}
 		revoked := permissions.RevokeCapability(permissionState, subject, capability)
@@ -153,6 +153,21 @@ func handlePermissionCommand(msg Message, response *Message, skills map[string]i
 		}
 		return true, "permission.requests.list", out
 
+	case "ciso.delegation.get":
+		return true, "ciso.delegation.get", map[string]interface{}{"enabled": permissionState.CisoDelegationEnabled}
+
+	case "ciso.delegation.set":
+		payload, ok := msg.Payload.(map[string]interface{})
+		if !ok {
+			return true, "error", "invalid payload"
+		}
+		enabled, _ := payload["enabled"].(bool)
+		// ACLs gate who may call this (user/portal); store just persists
+		permissionState.CisoDelegationEnabled = enabled
+		_ = permissions.SaveState(permissionState)
+		appendPermissionAudit(auditLog, response.Timestamp, "ciso.delegation.set", msg.Source, fmt.Sprintf("enabled=%v", enabled))
+		return true, "ciso.delegation.set", map[string]interface{}{"enabled": enabled}
+
 	case "visibility.set":
 		payload, ok := msg.Payload.(map[string]interface{})
 		if !ok {
@@ -162,7 +177,7 @@ func handlePermissionCommand(msg Message, response *Message, skills map[string]i
 		capability, _ := payload["capability"].(string)
 		levelStr, _ := payload["level"].(string)
 		reason, _ := payload["reason"].(string)
-		if permissions.IsMicroVMSourcePublic(msg.Source) {
+		if permissions.IsMicroVMSourcePublic(msg.Source) && !permissions.AllowsCisoDelegation(msg.Source, permissionState.CisoDelegationEnabled) {
 			return true, "error", "ERR_PERMISSION_DENIED: microVMs cannot set visibility"
 		}
 		permissions.SetVisibility(permissionState, subject, capability, permissions.VisibilityLevel(levelStr), msg.Source, reason)
