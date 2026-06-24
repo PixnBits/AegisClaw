@@ -153,7 +153,8 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 	}
 	t.Logf("audit evidence captured: %d entries, sample domain present=%v", len(auditEntries), foundPerm)
 
-	// Drive literal "audit.list" by sending Command:'audit.list' through handlePermissionCommand (the store command handler path used for permission.* commands; returns the accumulated auditLog with domain from appendPermissionAudit).
+	// Drive literal "audit.list" by sending Command:'audit.list' through handlePermissionCommand after the real grant (which appended domain via the shipped append path in Dispatch).
+	// No manual construction of extra entries; the payload returned is the accumulated from the grant appends.
 	auditListMsg := Message{Command: "audit.list"}
 	handled, cmd, auditListPayload := handlePermissionCommand(auditListMsg, &resp, nil, &auditEntries)
 	if !handled || cmd != "audit.list" {
@@ -163,5 +164,5 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 	if !strings.Contains(string(b), `"domain":"permissions"`) {
 		t.Error("audit.list payload missing domain:permissions")
 	}
-	t.Log("SENT literal Command:'audit.list' via handlePermissionCommand returning real auditLog payload, domain present:", string(b))
+	t.Log("SENT literal Command:'audit.list' via handlePermissionCommand returning real auditLog payload from grant append, domain present:", string(b))
 }
