@@ -662,111 +662,25 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
-	case "permission.list":
-		var req map[string]string
-		json.Unmarshal(payload, &req)
-		subject := req["subject"]
-		var list []permissions.Grant
-		if subject != "" {
-			list = permissions.ListGrantsForSubject(c.permissions, subject)
-		} else {
-			list = c.permissions.Grants
+	case "permission.grant", "permission.revoke", "permission.list", "permission.check", "permission.snapshot", "permission.request", "permission.requests.list", "visibility.set", "visibility.list", "visibility.get", "tool.registry.discover", "ciso.delegation.get", "ciso.delegation.set":
+		// Use unified dispatcher so guards, CISO logic, SaveState and audit are identical to store path.
+		var p map[string]interface{}
+		if len(payload) > 0 {
+			_ = json.Unmarshal(payload, &p)
 		}
-		out := make([]interface{}, len(list))
-		for i, g := range list {
-			out[i] = g
+		if p == nil {
+			p = map[string]interface{}{}
 		}
-		data, _ := json.Marshal(out)
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
-	case "permission.requests.list":
-		var req map[string]string
-		json.Unmarshal(payload, &req)
-		subject := req["subject"]
-		var reqs []permissions.Request
-		if subject != "" {
-			reqs = permissions.ListRequestsForSubject(c.permissions, subject)
-		} else {
-			reqs = c.permissions.Requests
+		// The fixture client does not have a per-call auditLog in the same way; we pass a local one for audit.
+		var localAudit []interface{}
+		respCmd, resp, e := permissions.DispatchCommand(c.permissions, "web-portal", action, p, &localAudit, permissions.NowRFC3339())
+		if e != nil {
+			return &dashboard.APIResponse{Success: false, Error: e.Error()}, nil
 		}
-		out := make([]interface{}, len(reqs))
-		for i, r := range reqs {
-			out[i] = r
+		if respCmd == "" {
+			return &dashboard.APIResponse{Success: false, Error: "not handled"}, nil
 		}
-		data, _ := json.Marshal(out)
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
-	case "permission.snapshot":
-		var req map[string]string
-		json.Unmarshal(payload, &req)
-		subject := req["subject"]
-		if subject == "" {
-			subject = "coder-test"
-		}
-		snap := permissions.BuildSnapshot(c.permissions, subject, permissions.KnownCapabilities())
-		data, _ := json.Marshal(snap)
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
-	case "permission.grant":
-		var req map[string]interface{}
-		json.Unmarshal(payload, &req)
-		subject, _ := req["subject"].(string)
-		capability, _ := req["capability"].(string)
-		reason, _ := req["reason"].(string)
-		if err := permissions.GrantCapability(c.permissions, subject, capability, "web-portal", reason); err != nil {
-			return &dashboard.APIResponse{Success: false, Error: err.Error()}, nil
-		}
-		data, _ := json.Marshal(map[string]interface{}{"subject": subject, "capability": capability, "version": c.permissions.Version})
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
-	case "permission.revoke":
-		var req map[string]interface{}
-		json.Unmarshal(payload, &req)
-		subject, _ := req["subject"].(string)
-		capability, _ := req["capability"].(string)
-		revoked := permissions.RevokeCapability(c.permissions, subject, capability)
-		data, _ := json.Marshal(map[string]interface{}{"revoked": revoked, "subject": subject, "capability": capability})
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
-	case "visibility.list":
-		var req map[string]string
-		json.Unmarshal(payload, &req)
-		subject := req["subject"]
-		var rules []permissions.VisibilityRule
-		for _, r := range c.permissions.Visibility {
-			if subject == "" || permissions.SubjectMatches(subject, r.Subject) {
-				rules = append(rules, r)
-			}
-		}
-		out := make([]interface{}, len(rules))
-		for i, r := range rules {
-			out[i] = r
-		}
-		data, _ := json.Marshal(out)
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
-	case "visibility.set":
-		var req map[string]interface{}
-		json.Unmarshal(payload, &req)
-		subject, _ := req["subject"].(string)
-		capability, _ := req["capability"].(string)
-		level, _ := req["level"].(string)
-		reason, _ := req["reason"].(string)
-		permissions.SetVisibility(c.permissions, subject, capability, permissions.VisibilityLevel(level), "web-portal", reason)
-		data, _ := json.Marshal(map[string]interface{}{"subject": subject, "capability": capability, "level": level})
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
-	case "ciso.delegation.get":
-		data, _ := json.Marshal(map[string]interface{}{"enabled": c.permissions.CisoDelegationEnabled})
-		return &dashboard.APIResponse{Success: true, Data: data}, nil
-
-	case "ciso.delegation.set":
-		var req map[string]interface{}
-		json.Unmarshal(payload, &req)
-		if enabled, ok := req["enabled"].(bool); ok {
-			c.permissions.CisoDelegationEnabled = enabled
-		}
-		data, _ := json.Marshal(map[string]interface{}{"enabled": c.permissions.CisoDelegationEnabled})
+		data, _ := json.Marshal(resp)
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "sandbox.list":
