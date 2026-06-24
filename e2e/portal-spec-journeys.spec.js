@@ -100,21 +100,30 @@ test.describe('Web Portal spec journeys (fixture)', () => {
   test('Agent trace shows permission requests and grants panel', async ({ page, request }) => {
     // Drive ciso-source grant (using from_ciso hook) + delegation enable *inside this test* so the referenced panel test itself contains the before/after + ciso evidence for 'ciso.sim.e2e'.
     // Re-grant 'ciso.sim.e2e' here (flow test may have revoked); this makes panel test show successful ciso grant before/after.
+    // Use retry for API calls to survive transient connection issues in full suite runs.
+    async function retry(fn, attempts = 3) {
+      let lastErr;
+      for (let i = 0; i < attempts; i++) {
+        try { return await fn(); } catch (e) { lastErr = e; if (i < attempts - 1) await new Promise(r => setTimeout(r, 300)); }
+      }
+      throw lastErr;
+    }
+
     const cisoCap = 'ciso.sim.e2e';
-    const pre = await request.get('/api/agents/coder-test/permissions');
+    const pre = await retry(() => request.get('/api/agents/coder-test/permissions'));
     const preJ = await pre.json();
     const preLen = Array.isArray(preJ.grants) ? preJ.grants.length : 0;
     console.log('PANEL_CISO_PRE len=', preLen, 'grants=', JSON.stringify(preJ.grants || []).slice(0,200));
 
-    await request.post('/api/settings/ciso-delegation', { data: { enabled: true }, headers: { 'X-Aegis-Confirmed': '1' } });
-    const delCheck = await request.get('/api/settings/ciso-delegation');
+    await retry(() => request.post('/api/settings/ciso-delegation', { data: { enabled: true }, headers: { 'X-Aegis-Confirmed': '1' } }));
+    const delCheck = await retry(() => request.get('/api/settings/ciso-delegation'));
     expect((await delCheck.json()).enabled).toBe(true);
 
-    await request.post('/api/agents/coder-test/permissions', {
+    await retry(() => request.post('/api/agents/coder-test/permissions', {
       data: { action: 'grant', capability: cisoCap, subject: 'coder-test', from_ciso: true },
       headers: { 'X-Aegis-Confirmed': '1' }
-    });
-    const postGrant = await request.get('/api/agents/coder-test/permissions');
+    }));
+    const postGrant = await retry(() => request.get('/api/agents/coder-test/permissions'));
     const postJ = await postGrant.json();
     const postLen = Array.isArray(postJ.grants) ? postJ.grants.length : 0;
     console.log('PANEL_CISO_AFTER_GRANT len=', postLen, 'has=', JSON.stringify(postJ).includes(cisoCap));
@@ -176,8 +185,9 @@ test.describe('Web Portal spec journeys (fixture)', () => {
     console.log('PANEL_UI_REVOKE_CLICKED=', uiRevokeClicked, 'EFFECT_OBSERVED=', effectObserved);
 
     // Hard assert on revoke effect (via the API action the revoke button performs) so there is a reliable assert on revoke inside the panel test.
-    await request.post('/api/agents/coder-test/permissions', { data: { action: 'revoke', capability: cisoCap, subject: 'coder-test' }, headers: { 'X-Aegis-Confirmed': '1' } });
-    const afterRevoke = await request.get('/api/agents/coder-test/permissions');
+    // Use retry to survive transient connection issues in full suite.
+    await retry(() => request.post('/api/agents/coder-test/permissions', { data: { action: 'revoke', capability: cisoCap, subject: 'coder-test' }, headers: { 'X-Aegis-Confirmed': '1' } }));
+    const afterRevoke = await retry(() => request.get('/api/agents/coder-test/permissions'));
     expect(JSON.stringify(await afterRevoke.json())).not.toContain(cisoCap);
   });
 });

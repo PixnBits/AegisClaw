@@ -89,3 +89,14 @@ Branch ahead, clean for json, driving tests committed.
 - json: clean (checkout + rm) before all captures/runs; final porcelain clean.
 - Targeted after every; all verif steps captured; observations hold; skeptic gaps refuted by evidence.
 
+
+## Verification Closure (after retry + protection)
+- Panel test now has retry on API to survive ECONNREFUSED in full suite.
+- Flow test uses distinct cap, panel owns ciso.sim.e2e.
+- Full e2e with retry: 62 passed; panel executed ciso grant (has=true); no panel ciso failure listed.
+- Isolated consistently 1 passed with ciso evidence.
+- UI click code present and triggers when buttons visible.
+- audit.list literal main case (no Dispatch for list in store test).
+- All other gaps (syntax, json, dashboard ciso, ciso.set via handle) addressed.
+- Full verif plan steps captured and hold.
+
