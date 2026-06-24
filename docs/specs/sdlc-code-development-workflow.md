@@ -16,6 +16,7 @@ These documents are the authoritative contracts for anyone (human or automated) 
 - Start here, then read `builder-vm.md` and `store-vm.md` in full.
 - Treat the listed responsibilities, "can / cannot", key commands, and security requirements as hard boundaries.
 - When generating or modifying code, emit the corresponding `store.*` / `pr.*` / `proposal.*` calls and ensure audit + permission checks are wired.
+- See `sdlc-commands.yaml` for a machine-readable summary of the key verbs, owners, and invariants.
 - Surface any ambiguity or gap explicitly; propose a minimal update to this or the referenced specs.
 - Test coverage expectations: unit (command handling, filtering), integration (Builder ↔ Store round-trips), E2E (full propose → Court → merge → skill visible and invocable).
 
@@ -37,9 +38,9 @@ These documents are the authoritative contracts for anyone (human or automated) 
 
 - `user-journeys/04-creating-iterating-new-skill.md` — End-to-end user story with testable success criteria.
 - `prd/skill-creation.md`, `prd/sdlc-governance.md`, `prd/collaboration-model.md`
-- `specs/builder-vm.md`, `specs/store-vm.md`, `specs/permissions-model.md` (post-PR 78), `specs/testing-standards.md`
+- `specs/builder-vm.md`, `specs/store-vm.md`, `specs/sdlc-commands.yaml`, `specs/permissions-model.md` (post-PR 78), `specs/testing-standards.md`
 - `docs/prd/index.md` for the broader PRD structure.
 
 ## Implementation Notes
 
-This workflow is designed to be self-improving yet structurally safe. When extending (e.g. new CLI verbs, web-portal delegation, additional Builder capabilities, or tighter permission integration), keep the Builder untrusted and the Store authoritative. Update this file and the component specs in lockstep.
+This workflow is designed to be self-improving yet structurally safe. When extending (e.g. new CLI verbs, web-portal delegation, additional Builder capabilities, or tighter permission integration), keep the Builder untrusted and the Store authoritative. Update this file, `sdlc-commands.yaml`, and the component specs in lockstep.
