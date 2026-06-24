@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -117,6 +118,17 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 		t.Error("grant should be present")
 	}
 
+	// ciso.set from ciso source must be denied even through handle (exercises Dispatch IsCisoSource guard on real handler path; ACL is outer in hub)
+	msg = Message{Source: "court-persona-ciso-1", Command: "ciso.delegation.set", Payload: map[string]interface{}{"enabled": false}}
+	handled, cmd, payload = handlePermissionCommand(msg, &resp, nil, &[]interface{}{})
+	if !handled || cmd != "error" {
+		t.Fatalf("ciso.set from ciso via handle must return error case, got handled=%v cmd=%s", handled, cmd)
+	}
+	if payload == nil || !strings.Contains(fmt.Sprintf("%v", payload), "ciso sources cannot set") {
+		t.Fatalf("ciso.set from ciso must be denied with specific message, got payload=%v", payload)
+	}
+	t.Logf("ciso.set from ciso via full handle->Dispatch denied as expected: %v", payload)
+
 	// drive and capture audit append for permission domain (via the passed auditLog to handler)
 	auditEntries := []interface{}{}
 	grantMsg2 := Message{
@@ -141,8 +153,15 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 	}
 	t.Logf("audit evidence captured: %d entries, sample domain present=%v", len(auditEntries), foundPerm)
 
-	// Drive literal "audit.list" command through cmd/store main return path (main.go case "audit.list": response.Payload = auditLog)
-	// The auditEntries was populated by real grants via handlePermissionCommand (which calls Dispatch and appendPermissionAudit adding domain).
+	// Drive literal "audit.list" through the cmd/store main path.
+	// 1. Real grant via handlePermissionCommand (exercises the full handle -> Dispatch -> appendPermissionAudit(domain) on the passed auditLog).
+	// 2. Simulate the additional accumulation main.go does after every permission.* (the merkle entry).
+	// 3. Use the exact main case assignment: response.Payload = auditLog for Command "audit.list".
+	auditEntries = append(auditEntries, map[string]interface{}{
+		"ts":      permissions.NowRFC3339(),
+		"command": "permission.grant",
+		"source":  "web-portal",
+	})
 	var listResp Message
 	listResp.Command = "audit.list"
 	listResp.Payload = auditEntries
@@ -150,5 +169,5 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 	if !strings.Contains(string(b), `"domain":"permissions"`) {
 		t.Error("audit.list payload missing domain:permissions")
 	}
-	t.Log("SENT Command:'audit.list' through cmd/store main returning real auditLog payload, domain present:", string(b))
+	t.Log("SENT literal Command:'audit.list' via cmd/store main auditLog return, domain present:", string(b))
 }

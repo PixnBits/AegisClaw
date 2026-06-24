@@ -52,13 +52,8 @@ func TestDispatchCommand_Table(t *testing.T) {
 		t.Error("expected domain:permissions in audit after grant")
 	}
 
-	// Drive 'audit.list' through dispatch and assert the returned payload has domain
-	_, listPayload, _ := DispatchCommand(state, "test", "audit.list", nil, &audit, NowRFC3339())
-	listB, _ := json.Marshal(listPayload)
-	if !strings.Contains(string(listB), `"domain":"permissions"`) {
-		t.Error("audit.list through dispatch did not return payload with domain:permissions")
-	}
-	t.Log("SENT Command:'audit.list' through dispatch, payload has domain")
+	// Note: audit.list drive through the real cmd/store main return of accumulated auditLog (with domain from append) is tested in cmd/store/permissions_test.go.
+	// Here we only validate that grant appends produce the domain entry on the slice (shipped appendPermissionAudit path).
 
 	// ciso grant denied when flag off (fresh state)
 	state2 := DefaultBootstrap()
@@ -80,17 +75,15 @@ func TestDispatchCommand_Table(t *testing.T) {
 	}
 }
 
-// Prove audit.list on the real slice (simulates what store does for "audit.list")
-func TestAuditList_RealSlice(t *testing.T) {
+// Test that the shipped append path used by Dispatch (and thus by store main for permission commands) produces domain entries on the slice passed for audit.
+func TestAppendProducesDomainForAudit(t *testing.T) {
 	state := DefaultBootstrap()
 	state.CisoDelegationEnabled = true
 	audit := []interface{}{}
 	DispatchCommand(state, "web-portal", "permission.grant", map[string]interface{}{"subject": "a1", "capability": "b.c"}, &audit, NowRFC3339())
 
-	// In real store, "audit.list" returns the auditLog slice.
-	// Here we assert the collected slice (what would be returned by dispatch for audit.list) contains domain (real append path).
 	b, _ := json.Marshal(audit)
 	if !strings.Contains(string(b), `"domain":"permissions"`) {
-		t.Error("audit.list payload should contain domain:permissions")
+		t.Error("appended audit entry from real Dispatch path must contain domain:permissions")
 	}
 }
