@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"AegisClaw/internal/permissions"
 )
 
 type permissionsMockClient struct{}
@@ -74,8 +76,39 @@ func TestHandleAPICisoDelegation_POST_GET(t *testing.T) {
 	}
 }
 
+type mutPermClient struct {
+	st *permissions.State
+}
+
+func (m *mutPermClient) Call(_ context.Context, action string, pl json.RawMessage) (*APIResponse, error) {
+	var p map[string]interface{}
+	if len(pl) > 0 {
+		json.Unmarshal(pl, &p)
+	}
+	if p == nil {
+		p = map[string]interface{}{}
+	}
+	var aud []interface{}
+	respCmd, resp, e := permissions.DispatchCommand(m.st, "web-portal", action, p, &aud, permissions.NowRFC3339())
+	if e != nil {
+		return &APIResponse{Success: false, Error: e.Error()}, nil
+	}
+	b, _ := json.Marshal(resp)
+	if respCmd != "" {
+		return &APIResponse{Success: true, Data: b}, nil
+	}
+	if action == "permission.list" {
+		b, _ := json.Marshal(map[string]interface{}{"grants": m.st.Grants})
+		return &APIResponse{Success: true, Data: b}, nil
+	}
+	return &APIResponse{Success: true, Data: []byte(`{}`)}, nil
+}
+
 func TestHandleAPIAgentPermissions_POST_GrantRevoke(t *testing.T) {
-	srv, _ := New("127.0.0.1:0", &permissionsMockClient{})
+	st := permissions.NewState()
+	_ = permissions.GrantCapability(st, "coder-test", "seed.cap", "test", "")
+	mc := &mutPermClient{st: st}
+	srv, _ := New("127.0.0.1:0", mc)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/agents/coder-test/permissions", nil)
 	rec := httptest.NewRecorder()
@@ -83,18 +116,18 @@ func TestHandleAPIAgentPermissions_POST_GrantRevoke(t *testing.T) {
 	var before map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &before)
 	beforeGrants := 0
-	if g, ok := before["grants"].([]interface{}); ok { beforeGrants = len(g) }
+	if g, ok := before["grants"].([]interface{}); ok {
+		beforeGrants = len(g)
+	}
 
-	for _, act := range []string{"grant", "revoke"} {
-		body := `{"action":"` + act + `","capability":"channel.post"}`
-		req = httptest.NewRequest(http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Aegis-Confirmed", "1")
-		rec = httptest.NewRecorder()
-		srv.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s status %d: %s", act, rec.Code, rec.Body.String())
-		}
+	body := `{"action":"grant","capability":"mut.cap"}`
+	req = httptest.NewRequest(http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Aegis-Confirmed", "1")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grant %d", rec.Code)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/agents/coder-test/permissions", nil)
@@ -103,7 +136,12 @@ func TestHandleAPIAgentPermissions_POST_GrantRevoke(t *testing.T) {
 	var after map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &after)
 	afterGrants := 0
-	if g, ok := after["grants"].([]interface{}); ok { afterGrants = len(g) }
-	t.Logf("PERM_FLOW before=%d after=%d (real mutation proven in dispatch_test + E2E API flow test) shape shown", beforeGrants, afterGrants)
+	if g, ok := after["grants"].([]interface{}); ok {
+		afterGrants = len(g)
+	}
+	if beforeGrants == afterGrants {
+		t.Errorf("expected mutation before=%d after=%d", beforeGrants, afterGrants)
+	}
+	t.Logf("DASHBOARD_MUTATE before=%d after=%d", beforeGrants, afterGrants)
 }
 

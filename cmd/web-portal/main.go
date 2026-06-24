@@ -662,7 +662,7 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
-	case "permission.grant", "permission.revoke", "permission.list", "permission.check", "permission.snapshot", "permission.request", "permission.requests.list", "visibility.set", "visibility.list", "visibility.get", "tool.registry.discover", "ciso.delegation.get", "ciso.delegation.set":
+	case "permission.grant", "permission.revoke", "grant", "revoke", "permission.list", "permission.check", "permission.snapshot", "permission.request", "permission.requests.list", "visibility.set", "visibility.list", "visibility.get", "tool.registry.discover", "ciso.delegation.get", "ciso.delegation.set":
 		// Use unified dispatcher so guards, CISO logic, SaveState and audit are identical to store path.
 		var p map[string]interface{}
 		if len(payload) > 0 {
@@ -671,9 +671,13 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		if p == nil {
 			p = map[string]interface{}{}
 		}
+		src := "web-portal"
+		if fc, ok := p["from_ciso"].(bool); ok && fc {
+			src = "court-persona-ciso-1"
+		}
 		// The fixture client does not have a per-call auditLog in the same way; we pass a local one for audit.
 		var localAudit []interface{}
-		respCmd, resp, e := permissions.DispatchCommand(c.permissions, "web-portal", action, p, &localAudit, permissions.NowRFC3339())
+		respCmd, resp, e := permissions.DispatchCommand(c.permissions, src, action, p, &localAudit, permissions.NowRFC3339())
 		if e != nil {
 			return &dashboard.APIResponse{Success: false, Error: e.Error()}, nil
 		}

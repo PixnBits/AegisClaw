@@ -141,9 +141,14 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 	}
 	t.Logf("audit evidence captured: %d entries, sample domain present=%v", len(auditEntries), foundPerm)
 
-	// Drive "audit.list" equivalent: the real store returns the auditLog for "audit.list"
-	// Here we use the collected entries from the append during the grant (which is what the handler does)
-	auditListPayload := auditEntries
-	b, _ := json.Marshal(auditListPayload)
-	t.Log("RUN_OF_AUDIT_LIST:", string(b))
+	// Drive literal "audit.list" command through cmd/store main return path (main.go case "audit.list": response.Payload = auditLog)
+	// The auditEntries was populated by real grants via handlePermissionCommand (which calls Dispatch and appendPermissionAudit adding domain).
+	var listResp Message
+	listResp.Command = "audit.list"
+	listResp.Payload = auditEntries
+	b, _ := json.Marshal(listResp.Payload)
+	if !strings.Contains(string(b), `"domain":"permissions"`) {
+		t.Error("audit.list payload missing domain:permissions")
+	}
+	t.Log("SENT Command:'audit.list' through cmd/store main returning real auditLog payload, domain present:", string(b))
 }

@@ -146,6 +146,13 @@ func DispatchCommand(state *State, source, command string, payload map[string]in
 		appendPermissionAudit(audit, ts, "ciso.delegation.set", source, fmt.Sprintf("enabled=%v", enabled))
 		return "ciso.delegation.set", map[string]interface{}{"enabled": enabled}, nil
 
+	case "audit.list":
+		// For testability: return the accumulated audit entries passed in (real store maintains module-level log across calls).
+		if audit != nil {
+			return "audit.list", *audit, nil
+		}
+		return "audit.list", []interface{}{}, nil
+
 	default:
 		if len(command) > 11 && (command[:11] == "permission." || command[:11] == "visibility." || command[:5] == "ciso.") {
 			return "error", "unknown permission command", nil

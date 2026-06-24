@@ -2,6 +2,7 @@ package permissions
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -32,7 +33,7 @@ func TestDispatchCommand_Table(t *testing.T) {
 	// but to test denial at dispatch for set from ciso we can document; here we test via flag
 	state.CisoDelegationEnabled = false
 	_, resp, err = DispatchCommand(state, "court-persona-ciso-1", "ciso.delegation.set", map[string]interface{}{"enabled": true}, &[]interface{}{}, NowRFC3339())
-	// dispatch allows the set (the denial for ciso on set is done by ACL before calling)
+	// dispatch denies ciso.set for ciso sources (IsCisoSource); ACL is outer gate in real paths
 	// To simulate ACL deny for ciso.set we test the guard in other place; for dispatch we just check it mutates when called.
 	_ = resp
 
@@ -51,6 +52,14 @@ func TestDispatchCommand_Table(t *testing.T) {
 		t.Error("expected domain:permissions in audit after grant")
 	}
 
+	// Drive 'audit.list' through dispatch and assert the returned payload has domain
+	_, listPayload, _ := DispatchCommand(state, "test", "audit.list", nil, &audit, NowRFC3339())
+	listB, _ := json.Marshal(listPayload)
+	if !strings.Contains(string(listB), `"domain":"permissions"`) {
+		t.Error("audit.list through dispatch did not return payload with domain:permissions")
+	}
+	t.Log("SENT Command:'audit.list' through dispatch, payload has domain")
+
 	// ciso grant denied when flag off (fresh state)
 	state2 := DefaultBootstrap()
 	state2.CisoDelegationEnabled = false
@@ -60,6 +69,14 @@ func TestDispatchCommand_Table(t *testing.T) {
 	_, _, err = DispatchCommand(state2, "court-persona-ciso-1", "permission.grant", map[string]interface{}{"subject": "coder-test", "capability": "secret.thing"}, &[]interface{}{}, NowRFC3339())
 	if err == nil {
 		t.Error("expected deny for ciso grant when delegation disabled")
+	}
+
+	// ciso.set from ciso source denied at dispatch (even if flag on)
+	state3 := DefaultBootstrap()
+	state3.CisoDelegationEnabled = true
+	_, _, err = DispatchCommand(state3, "court-persona-ciso-1", "ciso.delegation.set", map[string]interface{}{"enabled": false}, &[]interface{}{}, NowRFC3339())
+	if err == nil {
+		t.Error("expected deny for ciso.set from ciso source at dispatch")
 	}
 }
 
@@ -71,13 +88,9 @@ func TestAuditList_RealSlice(t *testing.T) {
 	DispatchCommand(state, "web-portal", "permission.grant", map[string]interface{}{"subject": "a1", "capability": "b.c"}, &audit, NowRFC3339())
 
 	// In real store, "audit.list" returns the auditLog slice.
-	// Here we assert the collected slice (what would be returned) contains domain.
+	// Here we assert the collected slice (what would be returned by dispatch for audit.list) contains domain (real append path).
 	b, _ := json.Marshal(audit)
-	if !containsDomainPermissions(string(b)) {
+	if !strings.Contains(string(b), `"domain":"permissions"`) {
 		t.Error("audit.list payload should contain domain:permissions")
 	}
-}
-
-func containsDomainPermissions(s string) bool {
-	return len(s) > 0 && (s[0] == '[' || true) // simplistic; in practice the map has it
 }
