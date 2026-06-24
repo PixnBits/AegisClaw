@@ -1,13 +1,22 @@
 # Builder VM Specification
 
 **Status:** Draft  
-**Last Updated:** May 2026
+**Last Updated:** June 2026
 
 ## Purpose
 
 The Builder VM is a short-lived, untrusted microVM responsible for implementing an approved Change Proposal. It acts like a developer’s workstation — it can read, write, and push code, but cannot directly merge or bypass review.
 
 The Store VM acts as the trusted git remote and PR manager.
+
+## For Implementers
+
+The Builder VM is the untrusted execution environment for code generation and skill implementation. When extending or implementing:
+- Respect the strict "can / cannot" list below.
+- All git and PR operations must go through the Store VM commands.
+- Emit audit events and respect permission grants (see permissions-model.md).
+- Ensure clean shutdown and no persistent state leakage.
+- Test that a compromised or malicious Builder cannot merge, delete history, or fake Court reviews.
 
 ## Responsibilities
 
@@ -59,6 +68,7 @@ The Builder VM may only communicate with:
 - Must not have direct filesystem access to host repositories
 - All git operations go through the Store VM
 - Must be terminated immediately after successful deployment or failure
+- Permission grants and visibility policies (permissions-model.md) apply to Builder operations and any tool use inside the VM.
 
 ## Test Requirements
 
@@ -66,4 +76,5 @@ The Builder VM may only communicate with:
 - Builder must not be able to modify or fake Court reviews
 - A crashed Builder VM must not leave the repository in a broken state
 - All code changes must be traceable back to a specific proposal
+- Permission and visibility filters must be enforced for any discovery or tool invocation inside the Builder.
 
