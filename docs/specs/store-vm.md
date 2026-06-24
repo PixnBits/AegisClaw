@@ -1,11 +1,20 @@
 # Store VM Specification
 
 **Status:** Draft  
-**Last Updated:** May 2026 (Phase 2 timer/grant responsibilities added)
+**Last Updated:** June 2026 (Phase 2 timer/grant responsibilities added)
 
 ## Purpose
 
 The Store VM serves as both the **persistent data store** and the **trusted git remote** for all skills.
+
+## For Implementers
+
+The Store VM is the single source of truth and enforcement point for proposals, git state, PRs, audit, and skill registry. When implementing or extending:
+- All mutations to git, PRs, proposals, or grants must go through Store commands.
+- Enforce branch protection and Court-only final merge.
+- Maintain the tamper-evident Merkle audit log on every relevant action.
+- Integrate permission grants and visibility (permissions-model.md) for proposal, Court, and Builder-related capabilities.
+- Expose the documented command surfaces cleanly over the signed vsock API.
 
 ## Responsibility Boundaries
 
@@ -65,7 +74,7 @@ The Store VM acts as the central, trusted authority for both structured data and
 The Store VM is the single source of truth for persistent timers, autonomy grants, and background work expiration.
 
 ### Chat Session Registry (Web Portal)
-The Store VM owns durable web-portal chat session records (id, title, timestamps, message thread snapshots). The Web Portal forwards `sessions.*` bridge actions here; live chat turns flow through the agent chat system (`chat.message`), not the Host Daemon.
+The Store VM owns durable web-portal chat session records (id, title, timestamps, message thread snapshots). The Web Portal forwards `sessions.*` bridge actions here; live chat turns flow through the agent chat system (`chat.message`, not the Host Daemon).
 
 - `sessions.list` — Session summaries for the chat sidebar
 - `sessions.create` — Create a new session
@@ -94,6 +103,7 @@ The Store VM owns durable web-portal chat session records (id, title, timestamps
 - The Store VM enforces branch protection rules (no force push, no direct merges)
 - Only the Store VM can perform the final merge after Court approval
 - Pull Request reviews can only be submitted by Court personas
+- Permission and visibility checks (permissions-model.md) gate sensitive proposal, Court, and grant operations.
 
 ## Test Requirements
 
@@ -102,3 +112,5 @@ The Store VM owns durable web-portal chat session records (id, title, timestamps
 - Only the Store VM can execute the final merge of an approved PR
 - All git operations must be traceable to a specific proposal
 - A malicious Builder VM must not be able to delete history or force-push
+- Permission grants must be enforced before allowing proposal or Court-related commands.
+
