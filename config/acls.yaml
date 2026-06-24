@@ -757,21 +757,26 @@ rules:
     - visibility.set
     - visibility.get
     - visibility.list
+    - ciso.delegation.get
+    - ciso.delegation.set
 - source: "daemon-internal*"
   destination: store
   commands:
     - permission.*
     - visibility.*
+    - ciso.delegation.*
 - source: "daemon-internal-*"
   destination: store
   commands:
     - permission.*
     - visibility.*
+    - ciso.delegation.*
 - source: "aegis-cli-internal*"
   destination: store
   commands:
     - permission.*
     - visibility.*
+    - ciso.delegation.*
 - source: "aegis-cli-internal"
   destination: store
   commands:

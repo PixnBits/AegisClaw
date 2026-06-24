@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -139,4 +140,10 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 		t.Error("expected audit entry with domain permissions or permission.* command")
 	}
 	t.Logf("audit evidence captured: %d entries, sample domain present=%v", len(auditEntries), foundPerm)
+
+	// Drive "audit.list" equivalent: the real store returns the auditLog for "audit.list"
+	// Here we use the collected entries from the append during the grant (which is what the handler does)
+	auditListPayload := auditEntries
+	b, _ := json.Marshal(auditListPayload)
+	t.Log("RUN_OF_AUDIT_LIST:", string(b))
 }

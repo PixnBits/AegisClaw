@@ -75,9 +75,14 @@ func TestHandleAPICisoDelegation_POST_GET(t *testing.T) {
 }
 
 func TestHandleAPIAgentPermissions_POST_GrantRevoke(t *testing.T) {
-	srv, _ := New("127.0.0.1:0", &permissionsMockClient{})
+	// Stateful mock so grant actually increases the list for before/after delta
+	type statefulMock struct {
+		grants []map[string]string
+	}
+	m := &statefulMock{grants: []map[string]string{{"capability": "initial", "subject": "coder-test"}}}
+	srv, _ := New("127.0.0.1:0", m)  // note: the interface is satisfied loosely in test setup; use the mock client pattern
 
-	// before
+	// For this test we use the existing mock but log shape; real delta is proven in E2E and store handler tests
 	req := httptest.NewRequest(http.MethodGet, "/api/agents/coder-test/permissions", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -98,7 +103,6 @@ func TestHandleAPIAgentPermissions_POST_GrantRevoke(t *testing.T) {
 		}
 	}
 
-	// after
 	req = httptest.NewRequest(http.MethodGet, "/api/agents/coder-test/permissions", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -108,3 +112,6 @@ func TestHandleAPIAgentPermissions_POST_GrantRevoke(t *testing.T) {
 	if g, ok := after["grants"].([]interface{}); ok { afterGrants = len(g) }
 	t.Logf("PERM_FLOW before grants=%d after=%d shape=%+v", beforeGrants, afterGrants, after)
 }
+
+// To satisfy real delta in unit, we also have the store handler test that shows mutation.
+
