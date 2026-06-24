@@ -144,14 +144,21 @@ test.describe('Web Portal spec journeys (fixture)', () => {
       const grantsVis = await page.getByTestId('agent-grants-list').isVisible({ timeout: 1500 }).catch(() => false);
       console.log('PANEL_UI_TRACE_VIS=', traceVis, 'PERMS_VIS=', permsVis, 'GRANTS_VIS=', grantsVis);
 
+      // Poll briefly for the grants list to populate the revoke button for the ciso grant we just added (real UI render of permissions data).
+      for (let i = 0; i < 6; i++) {
+        const c = await page.getByTestId(/perm-revoke-/).count().catch(() => 0);
+        if (c > 0) break;
+        await page.waitForTimeout(250);
+      }
+
       // Real button click attempt (when buttons present).
       const rb = page.getByTestId(/perm-revoke-/).first();
       const countBefore = await page.getByTestId(/perm-revoke-/).count().catch(() => 0);
       console.log('PANEL_UI_REVOKE_BUTTON_COUNT_BEFORE_CLICK=', countBefore);
-      if (await rb.isVisible({ timeout: 1000 }).catch(() => false)) {
+      if (await rb.isVisible({ timeout: 1500 }).catch(() => false)) {
         await rb.click({ timeout: 1500 });
         uiRevokeClicked = true;
-        await page.waitForTimeout(400);
+        await page.waitForTimeout(500);
         const countAfter = await page.getByTestId(/perm-revoke-/).count().catch(() => countBefore);
         const afterState = await request.get('/api/agents/coder-test/permissions');
         const afterJ = await afterState.json();
