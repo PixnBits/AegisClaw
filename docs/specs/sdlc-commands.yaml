@@ -1,0 +1,83 @@
+sdlc:
+  version: "2026-06"
+  description: |
+    Key command surfaces and invariants for the SDLC / code-development workflow.
+    Intended for implementers and automated agents (Grok Build /goal mode or equivalent).
+    All commands are routed through AegisHub with signature + ACL validation.
+
+  components:
+    builder_vm:
+      description: Short-lived, explicitly untrusted microVM acting as developer workstation for approved Change Proposals.
+      responsibilities:
+        - Clone skill repository from Store
+        - Create feature branch
+        - Generate and test code (LLM)
+        - Commit, push, create PR
+        - Respond to Court feedback
+        - Clean shutdown after use or failure
+      can:
+        - store.git.clone
+        - store.git.push
+        - store.pr.create
+        - store.pr.update
+        - store.skill.register (final step)
+      cannot:
+        - Merge its own PRs
+        - Delete branches
+        - Modify Court reviews or approvals
+        - Direct host filesystem access
+        - Self-grant permissions
+      permissions_note: "Builder operations respect grants and visibility policies (see permissions-model.md)."
+      audit: "All actions logged via Store audit.append"
+
+    store_vm:
+      description: Sole source of truth for git repos, PR state, proposals, audit log, and skill registry. Enforces branch protection and final merge.
+      key_command_groups:
+        proposal:
+          - proposal.create
+          - proposal.get
+          - proposal.list
+          - proposal.update
+        pr:
+          - pr.create
+          - pr.update
+          - pr.get
+        git:
+          - git.clone
+          - git.push
+        skill:
+          - skill.register
+          - skill.get
+          - skill.list
+        court:
+          - court.submit_vote
+          - court.get_reviews
+        permission_visibility:   # from permissions-model
+          - permission.grant
+          - permission.revoke
+          - permission.list
+          - permission.check
+          - permission.snapshot
+          - permission.request
+          - visibility.set
+          - visibility.get
+          - visibility.list
+      invariants:
+        - Only Store performs final merge after Court approval
+        - Enforces branch protection (no force-push, no direct merges by others)
+        - All relevant mutations append to tamper-evident Merkle audit log
+        - Permission grants + visibility policies gate sensitive operations
+
+  cross_component_invariants:
+    - No code change reaches the live registry without Court review + Store final merge
+    - Builder VMs have no merge rights and no direct host FS access
+    - Discovery (tool.list / tool.search / tool.registry.discover) is always filtered by current grants + visibility
+    - Every action is auditable
+    - MicroVMs cannot self-grant capabilities
+
+  recommended_usage_for_implementers: |
+    When generating code or extending the workflow:
+    1. Emit the exact command names listed above.
+    2. Wire audit.append for mutations.
+    3. Respect permission checks before sensitive actions.
+    4. Update this file + the component specs (builder-vm.md, store-vm.md) when adding new verbs.
