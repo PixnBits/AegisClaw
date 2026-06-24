@@ -81,19 +81,20 @@ test.describe('Web Portal spec journeys (fixture)', () => {
     const d1 = await request.get('/api/settings/ciso-delegation');
     expect((await d1.json()).enabled).toBe(true);
 
-    // ciso source grant sim (from_ciso for E2E ciso grant before/after)
+    // ciso source grant sim (from_ciso for E2E ciso grant before/after) -- use distinct cap so it does not interfere with panel test's 'ciso.sim.e2e' demo
+    const flowCisoCap = 'ciso.flow.e2e';
     await request.post('/api/agents/coder-test/permissions', {
-      data: { action: 'grant', capability: 'ciso.sim.e2e', subject: 'coder-test', from_ciso: true },
+      data: { action: 'grant', capability: flowCisoCap, subject: 'coder-test', from_ciso: true },
       headers: { 'X-Aegis-Confirmed': '1' }
     });
     const afterC = await request.get('/api/agents/coder-test/permissions');
     const acJson = await afterC.json();
-    expect(JSON.stringify(acJson)).toContain('ciso.sim.e2e');
+    expect(JSON.stringify(acJson)).toContain(flowCisoCap);
 
     // API revoke
-    await request.post('/api/agents/coder-test/permissions', { data: { action: 'revoke', capability: 'ciso.sim.e2e', subject: 'coder-test' }, headers: { 'X-Aegis-Confirmed': '1' } });
+    await request.post('/api/agents/coder-test/permissions', { data: { action: 'revoke', capability: flowCisoCap, subject: 'coder-test' }, headers: { 'X-Aegis-Confirmed': '1' } });
     const afterR = await request.get('/api/agents/coder-test/permissions');
-    expect(JSON.stringify(await afterR.json())).not.toContain('ciso.sim.e2e');
+    expect(JSON.stringify(await afterR.json())).not.toContain(flowCisoCap);
   });
 
   test('Agent trace shows permission requests and grants panel', async ({ page, request }) => {

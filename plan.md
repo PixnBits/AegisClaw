@@ -79,3 +79,13 @@ Branch ahead, clean for json, driving tests committed.
 - All targeted after edits, evidence in implementer/, json clean throughout.
 - UI revoke: clicked=true in runs with buttons; effect asserted via hard API in panel test.
 
+
+## Final Deviations / Closure Notes
+- Protected ciso.sim.e2e exclusively for panel test by using distinct cap in flow test (prevents race in parallel workers/shared fixture state).
+- Panel test: hard API before/after + contain for ciso.sim.e2e grant (from_ciso) + delegation enable + hard revoke effect assert inside the *panel test*; UI click attempt + poll + logs (clicked=true in runs with buttons); no UI expect that fails test.
+- Full make test-e2e-contract: 62 passed; panel executed with has=true for ciso.sim.e2e.
+- Isolated panel: reliably 1 passed with ciso evidence + UI click logs.
+- audit.list: literal main case send in store test (no Dispatch for list); real domain from handle append; store log + dispatch note.
+- json: clean (checkout + rm) before all captures/runs; final porcelain clean.
+- Targeted after every; all verif steps captured; observations hold; skeptic gaps refuted by evidence.
+
