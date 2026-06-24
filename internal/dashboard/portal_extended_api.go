@@ -260,6 +260,14 @@ func (s *Server) handleAPIAgentPermissions(w http.ResponseWriter, r *http.Reques
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		action, _ := body["action"].(string)
 		capability, _ := body["capability"].(string)
+		bridgeAction := "permission." + action
+		if action == "hide" {
+			bridgeAction = "visibility.set"
+		}
+		if bridgeGuard.NeedsConfirmation(bridgeAction) && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
 		switch action {
 		case "grant":
 			_, err := s.fetchRaw(ctx, "permission.grant", map[string]interface{}{
@@ -314,6 +322,10 @@ func (s *Server) handleAPICisoDelegation(w http.ResponseWriter, r *http.Request)
 		}
 		var body map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if bridgeGuard.NeedsConfirmation("ciso.delegation.set") && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
 		_, err := s.fetchRaw(ctx, "ciso.delegation.set", body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

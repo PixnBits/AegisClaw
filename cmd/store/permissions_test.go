@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"AegisClaw/internal/permissions"
@@ -73,4 +74,69 @@ func TestMicroVMCannotGrant(t *testing.T) {
 	if !handled || cmd != "error" {
 		t.Fatalf("expected error for microVM grant attempt, got %s", cmd)
 	}
+}
+
+func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
+	permissionState = permissions.NewState()
+	permissionState.CisoDelegationEnabled = false
+
+	// get when off
+	msg := Message{Source: "web-portal", Command: "ciso.delegation.get", Payload: nil}
+	resp := Message{Timestamp: permissions.NowRFC3339()}
+	handled, cmd, payload := handlePermissionCommand(msg, &resp, nil, &[]interface{}{})
+	if !handled || cmd != "ciso.delegation.get" {
+		t.Fatalf("expected handled ciso.delegation.get, got %v %s", handled, cmd)
+	}
+	m := payload.(map[string]interface{})
+	if m["enabled"] != false {
+		t.Error("expected false when disabled")
+	}
+
+	// set on (from web-portal)
+	msg = Message{Source: "web-portal", Command: "ciso.delegation.set", Payload: map[string]interface{}{"enabled": true}}
+	handled, cmd, _ = handlePermissionCommand(msg, &resp, nil, &[]interface{}{})
+	if !handled || cmd != "ciso.delegation.set" {
+		t.Fatalf("set failed, got %s", cmd)
+	}
+	if !permissionState.CisoDelegationEnabled {
+		t.Error("flag should be true after set")
+	}
+
+	// ciso source can now grant to other subject (via handler guard)
+	msg = Message{
+		Source:  "court-persona-ciso-1",
+		Command: "permission.grant",
+		Payload: map[string]interface{}{"subject": "coder-test", "capability": "channel.post"},
+	}
+	handled, cmd, _ = handlePermissionCommand(msg, &resp, nil, &[]interface{}{})
+	if !handled || cmd != "permission.granted" {
+		t.Fatalf("ciso grant when enabled should succeed, got %s", cmd)
+	}
+	if !permissions.HasGrant(permissionState, "coder-test", "channel.post") {
+		t.Error("grant should be present")
+	}
+
+	// drive and capture audit append for permission domain (via the passed auditLog to handler)
+	auditEntries := []interface{}{}
+	grantMsg2 := Message{
+		Source:  "web-portal",
+		Command: "permission.grant",
+		Payload: map[string]interface{}{"subject": "audit-test", "capability": "x.y"},
+	}
+	_, _, _ = handlePermissionCommand(grantMsg2, &resp, nil, &auditEntries)
+	foundPerm := false
+	for _, e := range auditEntries {
+		if m, ok := e.(map[string]interface{}); ok {
+			if d, ok := m["domain"].(string); ok && d == "permissions" {
+				foundPerm = true
+			}
+			if c, ok := m["command"].(string); ok && strings.Contains(c, "permission.") {
+				foundPerm = true
+			}
+		}
+	}
+	if !foundPerm {
+		t.Error("expected audit entry with domain permissions or permission.* command")
+	}
+	t.Logf("audit evidence captured: %d entries, sample domain present=%v", len(auditEntries), foundPerm)
 }

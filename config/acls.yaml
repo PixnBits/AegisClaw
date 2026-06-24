@@ -802,13 +802,13 @@ rules:
     - permission.revoke
     - visibility.set
     - ciso.delegation.get
-    - ciso.delegation.set
+# NOTE: ciso* deliberately NOT granted ciso.delegation.set (user/Settings via web-portal/daemon only; prevents self-opt-in per skeptic)
 - source: "ciso*"
   destination: store
   commands:
     - permission.*
     - visibility.*
-    - ciso.delegation.*
+    - ciso.delegation.get
 
 # --- Catch common response patterns (signed replies often mirror cmd names or use response/*) ---
 # Broad but explicit for known components during Phase 3 iteration
