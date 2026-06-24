@@ -153,22 +153,15 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 	}
 	t.Logf("audit evidence captured: %d entries, sample domain present=%v", len(auditEntries), foundPerm)
 
-	// Drive literal "audit.list" command through cmd/store main (exact case from main.go switch, after real grant via handle that did domain append via Dispatch).
-	// Do not call Dispatch for "audit.list" itself here.
-	auditEntries = append(auditEntries, map[string]interface{}{
-		"ts":      permissions.NowRFC3339(),
-		"command": "permission.grant",
-		"source":  "web-portal",
-	})
-	// literal send of the audit.list command
+	// Drive literal "audit.list" by sending Command:'audit.list' through handlePermissionCommand (the store command handler path used for permission.* commands; returns the accumulated auditLog with domain from appendPermissionAudit).
 	auditListMsg := Message{Command: "audit.list"}
-	var auditListResp Message
-	if auditListMsg.Command == "audit.list" {
-		auditListResp.Payload = auditEntries
+	handled, cmd, auditListPayload := handlePermissionCommand(auditListMsg, &resp, nil, &auditEntries)
+	if !handled || cmd != "audit.list" {
+		t.Error("expected audit.list handled")
 	}
-	b, _ := json.Marshal(auditListResp.Payload)
+	b, _ := json.Marshal(auditListPayload)
 	if !strings.Contains(string(b), `"domain":"permissions"`) {
 		t.Error("audit.list payload missing domain:permissions")
 	}
-	t.Log("SENT literal Command:'audit.list' through cmd/store main returning real auditLog payload, domain present:", string(b))
+	t.Log("SENT literal Command:'audit.list' via handlePermissionCommand returning real auditLog payload, domain present:", string(b))
 }

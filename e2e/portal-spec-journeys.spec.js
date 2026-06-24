@@ -136,6 +136,8 @@ test.describe('Web Portal spec journeys (fixture)', () => {
     // Additionally, to have a reliable hard assert on revoke *effect*, we perform the revoke action via API (the action the button triggers) and assert the cap is gone. The button click code is still run when the grants list renders.
     let uiRevokeClicked = false;
     let effectObserved = false;
+    let countBefore = 0;
+    let grantsVis = false;
     try {
       await page.goto('/');
       await page.waitForSelector('[data-portal-ready="1"]', { timeout: 20000 }).catch(() => {});
@@ -151,7 +153,7 @@ test.describe('Web Portal spec journeys (fixture)', () => {
       }
       const traceVis = await page.getByTestId('trace-panel').isVisible({ timeout: 2000 }).catch(() => false);
       const permsVis = await page.getByTestId('agent-permissions-panel').isVisible({ timeout: 1500 }).catch(() => false);
-      const grantsVis = await page.getByTestId('agent-grants-list').isVisible({ timeout: 1500 }).catch(() => false);
+      grantsVis = await page.getByTestId('agent-grants-list').isVisible({ timeout: 1500 }).catch(() => false);
       console.log('PANEL_UI_TRACE_VIS=', traceVis, 'PERMS_VIS=', permsVis, 'GRANTS_VIS=', grantsVis);
 
       // Poll briefly for the grants list to populate the revoke button for the ciso grant we just added (real UI render of permissions data).
@@ -163,7 +165,7 @@ test.describe('Web Portal spec journeys (fixture)', () => {
 
       // Real button click attempt (when buttons present).
       const rb = page.getByTestId(/perm-revoke-/).first();
-      const countBefore = await page.getByTestId(/perm-revoke-/).count().catch(() => 0);
+      countBefore = await page.getByTestId(/perm-revoke-/).count().catch(() => 0);
       console.log('PANEL_UI_REVOKE_BUTTON_COUNT_BEFORE_CLICK=', countBefore);
       if (await rb.isVisible({ timeout: 1500 }).catch(() => false)) {
         await rb.click({ timeout: 1500 });
@@ -183,6 +185,11 @@ test.describe('Web Portal spec journeys (fixture)', () => {
       console.log('PANEL_UI_PART error (swallowed):', e && e.message ? e.message : e);
     }
     console.log('PANEL_UI_REVOKE_CLICKED=', uiRevokeClicked, 'EFFECT_OBSERVED=', effectObserved);
+
+    // Hard assert on click success when we reached the grants list UI (real UI revoke exercised).
+    if (countBefore > 0 || grantsVis) {
+      expect(uiRevokeClicked).toBe(true);
+    }
 
     // Hard assert on revoke effect (via the API action the revoke button performs) so there is a reliable assert on revoke inside the panel test.
     // Use retry to survive transient connection issues in full suite.

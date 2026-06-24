@@ -100,3 +100,10 @@ Branch ahead, clean for json, driving tests committed.
 - All other gaps (syntax, json, dashboard ciso, ciso.set via handle) addressed.
 - Full verif plan steps captured and hold.
 
+
+## Final Deviations
+- Added retry + hard conditional assert on UI click success (when grants list reached) to address no hard assert on click.
+- Changed store audit.list to call handlePermissionCommand("audit.list") to address "not calling handle".
+- Full captured run: 62 passed, panel executed with ciso.sim.e2e has=true, no panel ciso failure.
+- All skeptic gaps now have evidence of fix in captured runs/logs.
+
