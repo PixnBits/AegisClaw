@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -11,6 +13,8 @@ import (
 	"time"
 
 	"AegisClaw/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 const testSocketPath = "/tmp/aegis_test.sock"
@@ -426,4 +430,141 @@ func TestEnsureUserWorkspaceDir(t *testing.T) {
 	}
 
 	t.Logf("✓ ensureUserWorkspaceDir created safe tree under simulated HOME")
+}
+
+// TestBuildMinimalProposal verifies the pure conversion from natural language
+// description to minimal valid proposal payload (id, type:skill, title, description, proposed_via).
+// This is exercised by the real `runSkillsPropose` path. (unit test per plan)
+func TestBuildMinimalProposal(t *testing.T) {
+	// empty -> sensible default
+	p0 := buildMinimalProposal("")
+	if p0["type"] != "skill" || p0["id"] == nil || p0["description"] != "unspecified change" {
+		t.Errorf("empty desc produced bad minimal: %+v", p0)
+	}
+	if _, ok := p0["proposed_via"]; !ok {
+		t.Error("missing proposed_via in minimal payload")
+	}
+
+	// natural lang desc
+	p := buildMinimalProposal("add discord keyword monitor skill that notifies on matches")
+	if p["type"] != "skill" {
+		t.Error("type must be skill")
+	}
+	if id, ok := p["id"].(string); !ok || !strings.HasPrefix(id, "prop-") {
+		t.Errorf("id must be prop-..., got %v", p["id"])
+	}
+	if desc, ok := p["description"].(string); !ok || !strings.Contains(desc, "discord") {
+		t.Errorf("description must preserve input, got %v", p["description"])
+	}
+	title, _ := p["title"].(string)
+	if title == "" || len(title) > 100 {
+		t.Errorf("title derived and reasonable: %q", title)
+	}
+	if pv, _ := p["proposed_via"].(string); pv != "cli" {
+		t.Error("proposed_via must be cli")
+	}
+
+	// long desc derives short title
+	long := "Implement a new monitoring capability for external services that watches for keywords across multiple channels and posts summaries"
+	pLong := buildMinimalProposal(long)
+	tit := pLong["title"].(string)
+	if len(strings.Fields(tit)) > 8 {
+		t.Errorf("title should be trimmed for long desc: %q", tit)
+	}
+}
+
+// TestRunSkillsProposeDrivesSendTo exercises the shipped runSkillsPropose (the CLI handler)
+// + sendToComponentViaHub path directly (not just buildMinimalProposal) by bringing up a
+// temp hub+store and invoking the cobra command. This provides direct unit-level drive of
+// the propose CLI entry point + internal path.
+func TestRunSkillsProposeDrivesSendTo(t *testing.T) {
+	rootDir := repoRoot(t)
+	hubBinary := buildRepoBinary(t, rootDir, "./cmd/aegishub", "aegishub")
+	storeBinary := buildRepoBinary(t, rootDir, "./cmd/store", "store")
+
+	hubSock := "/tmp/hub_skills_propose_unit.sock"
+	_ = os.Remove(hubSock)
+
+	// Load the real repo ACLs so that aegis-cli-internal* has proposal.* permission to store.
+	// This ensures the test drives the success path (not ACL denial) for the shipped runSkillsPropose + sendTo.
+	aclPath := filepath.Join(rootDir, "config", "acls.yaml")
+	hubCmd := exec.Command(hubBinary, "start")
+	hubCmd.Env = append(os.Environ(),
+		"AEGIS_HUB_SOCKET="+hubSock,
+		"AEGIS_ACL_FILE="+aclPath,
+	)
+	if err := hubCmd.Start(); err != nil {
+		t.Skipf("cannot start hub for direct runSkillsPropose test: %v", err)
+	}
+	defer hubCmd.Process.Kill()
+	time.Sleep(150 * time.Millisecond)
+
+	storeCmd := exec.Command(storeBinary)
+	storeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSock)
+	if err := storeCmd.Start(); err != nil {
+		t.Skipf("cannot start store for direct runSkillsPropose test: %v", err)
+	}
+	defer storeCmd.Process.Kill()
+	time.Sleep(250 * time.Millisecond)
+
+	// set env so this process's getInternalHubClient / sendTo uses the temp socket
+	os.Setenv("AEGIS_HUB_SOCKET", hubSock)
+	defer os.Unsetenv("AEGIS_HUB_SOCKET")
+
+	// Build a real cobra command tree snippet and invoke the Run func (shipped code).
+	// We re-use the same flag setup style as main.
+	proposeCmd := &cobra.Command{
+		Use:  "propose",
+		Args: cobra.ArbitraryArgs,
+		Run:  runSkillsPropose,
+	}
+	proposeCmd.Flags().String("name", "", "")
+	proposeCmd.Flags().String("description", "", "")
+	proposeCmd.Flags().StringSlice("permissions", []string{}, "")
+
+	// capture output
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	// set jsonOutput (package var used by run) to true for machine output
+	jsonOutput = true
+	proposeCmd.SetArgs([]string{"add discord keyword monitor via direct runSkillsPropose test"})
+	proposeCmd.Execute() // drives the real runSkillsPropose + sendTo
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+	out := string(outBytes)
+	jsonOutput = false // restore
+
+	// Must succeed with real ACLs loaded; fail on ACL or other error (drives success path + Store side effects)
+	if !strings.Contains(out, `"success":true`) {
+		t.Fatalf("runSkillsPropose + sendTo must succeed (with ACLs loaded into temp hub); got: %s", out)
+	}
+	if !strings.Contains(out, "proposal_id") {
+		t.Errorf("runSkillsPropose must produce proposal_id on success; got: %s", out)
+	}
+
+	// Parse ID from the json output for side-effect verification
+	var result map[string]interface{}
+	if json.Unmarshal([]byte(out), &result) != nil {
+		t.Fatalf("could not parse propose output as json: %s", out)
+	}
+	gotID, _ := result["proposal_id"].(string)
+	if gotID == "" {
+		t.Fatalf("no proposal_id in success output: %s", out)
+	}
+
+	// Real side-effect proof: use sendTo (with the temp hub socket) to proposal.get the ID we just created
+	getPayload := map[string]interface{}{"id": gotID}
+	getResp, getErr := sendToComponentViaHub("store", "proposal.get", getPayload)
+	if getErr != nil {
+		t.Errorf("failed to proposal.get the just-created ID %s: %v", gotID, getErr)
+	} else if getResp == nil {
+		t.Errorf("proposal.get for %s returned nil", gotID)
+	} else {
+		// success path reached Store and returned data for the ID
+		t.Logf("Store side-effect verified via proposal.get for %s: %v", gotID, getResp)
+	}
 }

@@ -3057,9 +3057,14 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 
 	// Skills & Governance
 	skillsCmd := &cobra.Command{Use: "skills", Short: "Skill lifecycle and proposals"}
-	skillsProposeCmd := &cobra.Command{Use: "propose", Short: "Propose a new skill (opens Court flow)", Run: runSkillsPropose}
-	skillsProposeCmd.Flags().String("name", "", "Skill name")
-	skillsProposeCmd.Flags().String("description", "", "Detailed description")
+	skillsProposeCmd := &cobra.Command{
+		Use:   "propose <description>",
+		Short: "Propose a new skill (creates Change Proposal routed to Store VM then Court)",
+		Args:  cobra.ArbitraryArgs,
+		Run:   runSkillsPropose,
+	}
+	skillsProposeCmd.Flags().String("name", "", "Skill name (derived from description if omitted)")
+	skillsProposeCmd.Flags().String("description", "", "Detailed description (alternative to positional <description>)")
 	skillsProposeCmd.Flags().StringSlice("permissions", []string{}, "Required permissions (e.g. web.search,fs.read)")
 	skillsListCmd := &cobra.Command{Use: "list", Short: "List available skills", Run: runSkillsList}
 	skillsStatusCmd := &cobra.Command{Use: "status <skill-id>", Short: "Skill status", Run: runSkillsStatus}
@@ -4191,59 +4196,89 @@ func runTeamMessage(cmd *cobra.Command, args []string) {
 	fmt.Println("Note: Full delegation/handoff + Memory sharing requires Agent Runtime (later phases).")
 }
 
+// buildMinimalProposal turns a natural-language description into a minimal valid
+// proposal payload for Store VM proposal.create per sdlc-commands.yaml and store-vm.md.
+// Pure function, easily unit-testable in isolation.
+func buildMinimalProposal(desc string) map[string]interface{} {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		desc = "unspecified change"
+	}
+	title := desc
+	if idx := strings.IndexAny(title, ".!?\n"); idx > 5 && idx < 80 {
+		title = strings.TrimSpace(title[:idx])
+	} else if fields := strings.Fields(title); len(fields) > 6 {
+		title = strings.Join(fields[:6], " ") + "..."
+	}
+	if title == "" {
+		title = "New Skill"
+	}
+	id := fmt.Sprintf("prop-%d", time.Now().UnixNano())
+	return map[string]interface{}{
+		"id":           id,
+		"type":         "skill",
+		"title":        title,
+		"description":  desc,
+		"proposed_via": "cli",
+	}
+}
+
 func runSkillsPropose(cmd *cobra.Command, args []string) {
-	name, _ := cmd.Flags().GetString("name")
+	nameFlag, _ := cmd.Flags().GetString("name")
 	desc, _ := cmd.Flags().GetString("description")
 	perms, _ := cmd.Flags().GetStringSlice("permissions")
 
-	// Support natural language from args
+	// natural-language positional description as primary (aegis skills propose "<desc>")
 	if len(args) > 0 && desc == "" {
 		desc = strings.Join(args, " ")
 	}
-	if name == "" && desc != "" {
-		// Simple name derivation
-		name = "skill-" + strings.ToLower(strings.ReplaceAll(strings.Fields(desc)[0], " ", "-"))
-	}
-	if name == "" {
-		name = "new-skill-" + fmt.Sprintf("%d", time.Now().Unix()%10000)
-	}
-	if len(perms) == 0 {
-		perms = []string{"basic.execute"}
+	if desc == "" {
+		fmt.Fprintln(os.Stderr, "error: <description> required (positional or --description)")
+		return
 	}
 
-	payload := map[string]interface{}{
-		"type":         "skill",
-		"title":        name,
-		"description":  desc,
-		"permissions":  perms,
-		"proposed_via": "cli",
-		"version":      "0.1.0",
+	payload := buildMinimalProposal(desc)
+	// allow optional --name to override title for minimal payload
+	if nameFlag != "" {
+		payload["title"] = nameFlag
+	}
+	// retain perms if supplied (minimal otherwise; Store accepts)
+	if len(perms) > 0 {
+		payload["permissions"] = perms
 	}
 
-	body, _ := json.Marshal(payload)
-	data, perr := queryPortal("POST", "/api/proposals", body)
+	// Route through internal hub path directly to Store VM command surface ("proposal.create")
+	// This is the matching internal path (CLI -> hub -> store); satisfies Store as sole owner of proposals.
+	res, perr := sendToComponentViaHub("store", "proposal.create", payload)
 
-	proposalID := name
+	proposalID := ""
 	if perr == nil {
-		// Try to extract ID from response if portal returns one
-		var resp map[string]interface{}
-		if json.Unmarshal(data, &resp) == nil {
-			if id, ok := resp["id"].(string); ok {
-				proposalID = id
-			}
+		// Only trust ID from local payload or Store response on actual success.
+		if idv, ok := payload["id"].(string); ok {
+			proposalID = idv
 		}
-	}
+		switch v := res.(type) {
+		case map[string]interface{}:
+			if id, ok := v["proposal_id"].(string); ok && id != "" {
+				proposalID = id
+			} else if id, ok := v["id"].(string); ok && id != "" {
+				proposalID = id
+			} else if r, ok := v["result"].(string); ok && proposalID == "" {
+				_ = r
+			}
+		case string:
+			// "ok" or similar
+		}
+	} // on error, leave proposalID empty -- do not report a locally-generated one as if Store created it
 
 	if jsonOutput {
 		result := map[string]interface{}{
+			"success":     perr == nil,
 			"proposal_id": proposalID,
-			"name":        name,
-			"status":      "proposed",
-			"next_steps":  []string{"Court review", "Builder gates (5 security gates)", "On approval: registry merge"},
+			"description": desc,
 		}
 		if perr != nil {
 			result["error"] = perr.Error()
-			result["note"] = "Portal may be in fixture mode"
 		}
 		b, _ := json.Marshal(result)
 		fmt.Println(string(b))
@@ -4251,24 +4286,12 @@ func runSkillsPropose(cmd *cobra.Command, args []string) {
 	}
 
 	if perr != nil {
-		fmt.Printf("Proposal submitted (limited/fixture mode): %s\n", proposalID)
-		fmt.Println("\nUseful next commands (work today):")
-		fmt.Printf("  aegis skills status %s\n", proposalID)
-		fmt.Printf("  aegis builder gates --code 'your code here' --json\n")
-		fmt.Printf("  aegis court decisions show %s\n", proposalID)
-		fmt.Printf("  aegis court vote %s --persona security --vote approve\n", proposalID)
+		// Surface real errors including ERR_PERMISSION_DENIED directly
+		fmt.Printf("ERR: %v\n", perr)
 		return
 	}
 
-	fmt.Printf("✓ Skill proposal created: %s\n", proposalID)
-	fmt.Println("  Name:        ", name)
-	fmt.Println("  Permissions: ", strings.Join(perms, ", "))
-
-	fmt.Println("\nRecommended next steps (Journey 04 flow):")
-	fmt.Printf("  1. Check status:           aegis skills status %s\n", proposalID)
-	fmt.Printf("  2. Run the 5 gates:        aegis builder gates --file your-skill.go\n")
-	fmt.Printf("  3. Review Court decisions: aegis court decisions show %s\n", proposalID)
-	fmt.Printf("  4. Cast a vote:            aegis court vote %s --persona security --vote approve\n", proposalID)
+	fmt.Printf("✓ Proposal created: %s\n", proposalID)
 }
 
 func runSkillsList(cmd *cobra.Command, args []string) {

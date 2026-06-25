@@ -9,6 +9,16 @@
 
 User or agent creates a structured Change Proposal → stored and routed via Store VM → Governance Court (via Court Scribe) reviews → on tentative approval a Builder VM is spun up → Builder clones skill repo from Store, creates feature branch, generates and tests code (LLM-driven), commits, pushes, and creates a Pull Request → Court reviews the implementation → on final approval Store performs the merge + skill registration → new capability appears in the registry with full audit trail.
 
+## CLI Entry Point (Wired)
+
+- `aegis skills propose "<natural language description>"` (or with --description / --name)
+  - Converts description to minimal valid payload (id, type:"skill", title, description, proposed_via:"cli")
+  - Calls Store VM `proposal.create` via internal hub path (or /api/proposals bridge)
+  - On success returns proposal_id; emits audit (automatic for proposal.*)
+  - Triggers existing `scribe.notify_review` to Court Scribe (no change to Court path)
+  - Permission: host/daemon/cli sources succeed; low-priv sources (agent-*, builder-*) without grant get `ERR_PERMISSION_DENIED`; attempt audited.
+  - This is first-impl wiring only for creation step. Builder, Court vote, PR, merge paths unchanged and still gated.
+
 ## For Implementers
 
 These documents are the authoritative contracts for anyone (human or automated) extending or implementing the code-development and self-improvement pathways:
@@ -33,6 +43,7 @@ These documents are the authoritative contracts for anyone (human or automated) 
 - Builder VMs have no direct host filesystem access and no merge rights.
 - Every action is recorded in the append-only Merkle audit log in Store.
 - Discovery of tools and skills is always filtered by the subject's current grants + visibility policy.
+- `proposal.create` (and thus `skills propose`) is permission-gated at Store; CLI host paths privileged, microVMs require grant.
 
 ## Related Documents
 
@@ -40,7 +51,13 @@ These documents are the authoritative contracts for anyone (human or automated) 
 - `prd/skill-creation.md`, `prd/sdlc-governance.md`, `prd/collaboration-model.md`
 - `specs/builder-vm.md`, `specs/store-vm.md`, `specs/sdlc-commands.yaml`, `specs/permissions-model.md` (post-PR 78), `specs/testing-standards.md`
 - `docs/prd/index.md` for the broader PRD structure.
+- `docs/specs/cli.md` for CLI surface.
 
 ## Implementation Notes
 
 This workflow is designed to be self-improving yet structurally safe. When extending (e.g. new CLI verbs, web-portal delegation, additional Builder capabilities, or tighter permission integration), keep the Builder untrusted and the Store authoritative. Update this file, `sdlc-commands.yaml`, and the component specs in lockstep.
+
+Edge noted in this wiring:
+- `aegis skills propose` uses natural lang -> minimal payload conversion (pure func buildMinimalProposal); ID generated at CLI before Store call.
+- Court trigger happens via existing scribe.notify_review on successful Store create only (denied attempts audited but not notified).
+- Permission check is minimal convention using source + grants.json (see store main + sdlc-commands.yaml); exact permissions-model.md not present on main branch.

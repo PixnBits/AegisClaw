@@ -439,12 +439,19 @@ func TestDaemonCLICommands(t *testing.T) {
 		cmd := exec.Command(aegisBinary, "skills", "propose", "test skill for journey 04", "--json")
 		output, _ := cmd.CombinedOutput()
 		out := string(output)
-		if !strings.Contains(out, "proposal_id") && !strings.Contains(out, "skill-") {
-			t.Logf("Journey 04 note: skills propose output: %s", out)
+		// Drive real runSkillsPropose + sendTo path; require proposal_id (happy) or clear ERR (denied/no-daemon)
+		if !strings.Contains(out, "proposal_id") {
+			if strings.Contains(out, "ERR_") || strings.Contains(out, "error") {
+				t.Logf("Journey 04 note (expected without live daemon or for denied): %s", out)
+			} else {
+				t.Errorf("Journey 04: skills propose output must contain proposal_id (or ERR); got: %s", out)
+			}
 		}
-		// Check that it suggests useful next commands
-		if !strings.Contains(out, "aegis skills status") {
-			t.Logf("Journey 04 note: propose did not suggest next commands")
+		// Current output uses success or "Proposal created" (no longer emits legacy next-commands strings)
+		if !strings.Contains(out, `"success":true`) && !strings.Contains(out, "Proposal created") && !strings.Contains(out, "proposal_id") {
+			if !strings.Contains(out, "ERR_") {
+				t.Errorf("Journey 04: propose output should indicate success (proposal_id or 'Proposal created' or success:true) or explicit ERR_; got: %s", out)
+			}
 		}
 	})
 
