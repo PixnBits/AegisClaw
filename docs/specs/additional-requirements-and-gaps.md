@@ -37,6 +37,15 @@ This enables strong personalization.
 - Background service management
 - Approval queues for proactive actions
 
+### 6. SDLC & Code Development Workflow Documentation (June 2026)
+Consolidated, implementer-focused documentation to enable safe self-improvement and skill creation:
+
+- New `docs/specs/sdlc-code-development-workflow.md` — single entry point with core flow, immutable contracts, key invariants, and "For Implementers" guidance.
+- "For Implementers" sections added to `builder-vm.md` and `store-vm.md`.
+- Machine-readable command surface in `sdlc-commands.yaml` (verbs, owners, invariants, permissions notes).
+- Cross-references and permissions integration notes added across the SDLC specs.
+- This directly supports automated agents (Grok Build /goal mode or equivalent) while remaining future-proof for human maintainers.
+
 ## Remaining Open Questions
 - Global configuration system (Viper-style layering)
 - Resource quotas and host protection
@@ -61,4 +70,5 @@ This enables strong personalization.
 
 ## Next Actions
 - Create dedicated specs for the top 5 items above
-- Update relevant PRD and architecture docs
+- Continue tightening CLI, web-portal delegation to Store/Builder, and live (non-fixture) paths
+- Maintain `sdlc-commands.yaml` and the workflow overview as living contracts when new verbs or enforcement points are added

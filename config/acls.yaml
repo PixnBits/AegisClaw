@@ -545,6 +545,7 @@ rules:
     - channel.*
     - timer.*
     - sessions.*
+    - proposal.*   # allow CLI "skills propose" (and list/get) to reach Store proposal surface (per sdlc-commands + store-vm)
 - source: "aegis-cli-internal*"
   destination: "daemon-orchestrator"
   commands:
@@ -566,6 +567,7 @@ rules:
     - channel.*
     - timer.*
     - sessions.*
+    - proposal.*   # legacy exact: allow CLI propose path to Store (sdlc)
 - source: "aegis-cli-internal"
   destination: "daemon-orchestrator"
   commands:
