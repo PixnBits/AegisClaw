@@ -347,9 +347,18 @@ func TestHandleProposalCreate(t *testing.T) {
 				if r.wantAudit && len(auditLog) == 0 {
 					t.Error("expected audit entry from handle (case) + real post-switch append")
 				}
-				// For happy we expect a scribe attempt in this setup
-				if r.wantCmd == "proposal.created" && len(sentScribe) == 0 {
-					t.Log("note: no scribe encode captured (encoder may be nil in some paths)")
+				// Hard assert for scribe.notify_review side-effect on happy path (per verification plan)
+				if r.wantCmd == "proposal.created" {
+					if len(sentScribe) == 0 {
+						t.Error("expected scribe.notify_review to be sent for happy create")
+					} else {
+						if sentScribe[0].Command != "scribe.notify_review" {
+							t.Errorf("expected scribe.notify_review, got %s", sentScribe[0].Command)
+						}
+						if p, ok := sentScribe[0].Payload.(map[string]interface{}); !ok || p["proposal_id"] == nil {
+							t.Error("scribe payload must contain proposal_id")
+						}
+					}
 				}
 			})
 		}

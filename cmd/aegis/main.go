@@ -89,6 +89,7 @@ func sendToComponentViaHubContext(ctx context.Context, target string, cmd string
 			if daemonInternalHubClient != nil {
 				daemonInternalHubClient.Close()
 				daemonInternalHubClient = nil
+				daemonInternalHubSocket = ""
 			}
 			daemonInternalHubMu.Unlock()
 		}
@@ -134,42 +135,66 @@ func cliInternalHubSourceID() string {
 // getDaemonInternalHubClient returns (or lazily inits) the daemon's persistent client.
 // Retries dial/register on each call until hub is up (eager init at line ~725 may run
 // before AegisHub starts; without retry the store gate would never succeed).
+// If AEGIS_HUB_SOCKET changed since last dial, closes old client and re-dials (supports test isolation).
 func getDaemonInternalHubClient() hubclient.Client {
 	daemonInternalHubMu.Lock()
 	defer daemonInternalHubMu.Unlock()
+	desired := currentInternalHubPath()
 	if daemonInternalHubClient != nil {
-		return daemonInternalHubClient
+		if daemonInternalHubSocket != desired {
+			daemonInternalHubClient.Close()
+			daemonInternalHubClient = nil
+			daemonInternalHubSocket = ""
+		} else {
+			return daemonInternalHubClient
+		}
 	}
 	c, err := dialAndRegisterInternalHubClient("daemon-internal")
 	if err != nil {
 		return nil
 	}
 	daemonInternalHubClient = c
+	daemonInternalHubSocket = desired
 	return c
 }
 
 // getCLIInternalHubClient returns (or lazily inits) the CLI process persistent client.
 // Uses a unique source ID per process (aegis-cli-internal-<pid>) so concurrent CLI
 // invocations during E2E polls do not stomp each other's hub registration.
+// If AEGIS_HUB_SOCKET changed since last dial, closes old client and re-dials (supports test isolation).
 func getCLIInternalHubClient() hubclient.Client {
 	cliInternalHubMu.Lock()
 	defer cliInternalHubMu.Unlock()
+	desired := currentInternalHubPath()
 	if cliInternalHubClient != nil {
-		return cliInternalHubClient
+		if cliInternalHubSocket != desired {
+			cliInternalHubClient.Close()
+			cliInternalHubClient = nil
+			cliInternalSourceID = ""
+			cliInternalHubSocket = ""
+		} else {
+			return cliInternalHubClient
+		}
 	}
 	c, err := dialAndRegisterInternalHubClient(cliInternalHubSourceID())
 	if err != nil {
 		return nil
 	}
 	cliInternalHubClient = c
+	cliInternalHubSocket = desired
 	return c
 }
 
-func dialAndRegisterInternalHubClient(requesterID string) (hubclient.Client, error) {
+func currentInternalHubPath() string {
 	hubPath := expandPath("~/.aegis/hub.sock")
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
 		hubPath = expandPath(env)
 	}
+	return hubPath
+}
+
+func dialAndRegisterInternalHubClient(requesterID string) (hubclient.Client, error) {
+	hubPath := currentInternalHubPath()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -184,6 +209,28 @@ func dialAndRegisterInternalHubClient(requesterID string) (hubclient.Client, err
 		return nil, fmt.Errorf("register %s: %w", requesterID, err)
 	}
 	return c, nil
+}
+
+// resetInternalHubClientsForTest closes and clears the cached internal hub clients
+// so that subsequent code in the same test process will re-dial using the *current*
+// value of AEGIS_HUB_SOCKET. Intended only for test isolation of temp-hub scenarios.
+func resetInternalHubClientsForTest() {
+	daemonInternalHubMu.Lock()
+	if daemonInternalHubClient != nil {
+		daemonInternalHubClient.Close()
+	}
+	daemonInternalHubClient = nil
+	daemonInternalHubSocket = ""
+	daemonInternalHubMu.Unlock()
+
+	cliInternalHubMu.Lock()
+	if cliInternalHubClient != nil {
+		cliInternalHubClient.Close()
+	}
+	cliInternalHubClient = nil
+	cliInternalSourceID = ""
+	cliInternalHubSocket = ""
+	cliInternalHubMu.Unlock()
 }
 
 var fanoutHubClientSeq uint64
@@ -384,11 +431,13 @@ var (
 	// daemonInternalHubClient: persistent "daemon-internal" (daemon process only).
 	daemonInternalHubClient hubclient.Client
 	daemonInternalHubMu     sync.Mutex
+	daemonInternalHubSocket string // path it was dialed for (to detect AEGIS_HUB_SOCKET changes)
 
 	// cliInternalHubClient: persistent per-CLI-process hub client (unique source ID).
 	cliInternalHubClient hubclient.Client
 	cliInternalHubMu     sync.Mutex
 	cliInternalSourceID  string // aegis-cli-internal-<pid>; one registration per CLI process
+	cliInternalHubSocket string // path it was dialed for (to detect AEGIS_HUB_SOCKET changes)
 
 	// storeCollabReady is set true once the post-launch store channel.list gate passes
 	// in startBaseInfrastructure bg. Used by health.status socket + consistent readiness.
@@ -4221,6 +4270,24 @@ func buildMinimalProposal(desc string) map[string]interface{} {
 		"description":  desc,
 		"proposed_via": "cli",
 	}
+}
+
+// skillsProposeJSONOK is the single source of truth for parsing `aegis skills propose --json`
+// output. It returns the proposal_id and true only if "success":true AND non-empty "proposal_id".
+// Used by CLI tests, J4 integration, and unit table to eliminate duplicated loose string checks.
+func skillsProposeJSONOK(out []byte) (proposalID string, ok bool) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(out, &m); err != nil {
+		return "", false
+	}
+	succ, _ := m["success"].(bool)
+	if !succ {
+		return "", false
+	}
+	if pid, _ := m["proposal_id"].(string); pid != "" {
+		return pid, true
+	}
+	return "", false
 }
 
 func runSkillsPropose(cmd *cobra.Command, args []string) {

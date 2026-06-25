@@ -473,17 +473,85 @@ func TestBuildMinimalProposal(t *testing.T) {
 	}
 }
 
+// TestSkillsProposeJSONOK is the deterministic table-driven proof that the single
+// shipped parser rejects false positives (the exact failure JSON with empty
+// proposal_id, malformed, substring-only) while accepting only real success+id.
+// No daemon, no tags, no live I/O — pure unit coverage for the assertion logic.
+func TestSkillsProposeJSONOK(t *testing.T) {
+	type row struct {
+		name string
+		out  string
+		wantID string
+		wantOK bool
+	}
+	rows := []row{
+		{
+			name:   "happy",
+			out:    `{"success":true,"proposal_id":"prop-123","description":"foo"}`,
+			wantID: "prop-123",
+			wantOK: true,
+		},
+		{
+			name:   "failure-empty-pid",
+			out:    `{"description":"bar","error":"hub: internal client not ready (dial/register failed)","proposal_id":"","success":false}`,
+			wantID: "",
+			wantOK: false,
+		},
+		{
+			name:   "malformed",
+			out:    `not-json`,
+			wantID: "",
+			wantOK: false,
+		},
+		{
+			name:   "substring-only-no-success",
+			out:    `some text with "proposal_id" but no success:true`,
+			wantID: "",
+			wantOK: false,
+		},
+		{
+			name:   "success-but-empty-pid",
+			out:    `{"success":true,"proposal_id":""}`,
+			wantID: "",
+			wantOK: false,
+		},
+	}
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			id, ok := skillsProposeJSONOK([]byte(r.out))
+			if id != r.wantID || ok != r.wantOK {
+				t.Errorf("skillsProposeJSONOK(%q) = (%q, %v); want (%q, %v)", r.out, id, ok, r.wantID, r.wantOK)
+			}
+		})
+	}
+}
+
+// TestSimulateJ4HardErrorOnBad demonstrates (in log) that the J4 live hard assert
+// will now fire t.Error on the exact error JSON (with proposal_id:"") when liveConfirmed.
+func TestSimulateJ4HardErrorOnBad(t *testing.T) {
+	bad := []byte(`{"description":"bar","error":"hub: internal client not ready (dial/register failed)","proposal_id":"","success":false}`)
+	liveConfirmed := true
+	if _, ok := skillsProposeJSONOK(bad); liveConfirmed && !ok {
+		t.Logf("J4 hard t.Error would fire for liveConfirmed + error JSON with empty proposal_id (post-fix strict helper)")
+	}
+}
+
 // TestRunSkillsProposeDrivesSendTo exercises the shipped runSkillsPropose (the CLI handler)
 // + sendToComponentViaHub path directly (not just buildMinimalProposal) by bringing up a
 // temp hub+store and invoking the cobra command. This provides direct unit-level drive of
 // the propose CLI entry point + internal path.
 func TestRunSkillsProposeDrivesSendTo(t *testing.T) {
+	t.Cleanup(resetInternalHubClientsForTest)
 	rootDir := repoRoot(t)
 	hubBinary := buildRepoBinary(t, rootDir, "./cmd/aegishub", "aegishub")
 	storeBinary := buildRepoBinary(t, rootDir, "./cmd/store", "store")
 
-	hubSock := "/tmp/hub_skills_propose_unit.sock"
+	tmp := t.TempDir()
+	hubSock := filepath.Join(tmp, "hub.sock")
 	_ = os.Remove(hubSock)
+	// Ensure clean for this test (prior tests in pkg may have polluted global client)
+	_ = os.Unsetenv("AEGIS_HUB_SOCKET")
+	resetInternalHubClientsForTest()
 
 	// Load the real repo ACLs so that aegis-cli-internal* has proposal.* permission to store.
 	// This ensures the test drives the success path (not ACL denial) for the shipped runSkillsPropose + sendTo.
@@ -505,7 +573,10 @@ func TestRunSkillsProposeDrivesSendTo(t *testing.T) {
 		t.Skipf("cannot start store for direct runSkillsPropose test: %v", err)
 	}
 	defer storeCmd.Process.Kill()
-	time.Sleep(250 * time.Millisecond)
+
+	// Ensure hub socket is actually accepting before driving sendTo (avoids broken pipe)
+	waitForUnixSocket(t, hubSock, 5*time.Second)
+	time.Sleep(100 * time.Millisecond) // small extra for store registration
 
 	// set env so this process's getInternalHubClient / sendTo uses the temp socket
 	os.Setenv("AEGIS_HUB_SOCKET", hubSock)
@@ -530,6 +601,8 @@ func TestRunSkillsProposeDrivesSendTo(t *testing.T) {
 	// set jsonOutput (package var used by run) to true for machine output
 	jsonOutput = true
 	proposeCmd.SetArgs([]string{"add discord keyword monitor via direct runSkillsPropose test"})
+	// Re-assert env immediately before Execute (prior tests may have cached client state)
+	os.Setenv("AEGIS_HUB_SOCKET", hubSock)
 	proposeCmd.Execute() // drives the real runSkillsPropose + sendTo
 
 	w.Close()
@@ -539,11 +612,9 @@ func TestRunSkillsProposeDrivesSendTo(t *testing.T) {
 	jsonOutput = false // restore
 
 	// Must succeed with real ACLs loaded; fail on ACL or other error (drives success path + Store side effects)
-	if !strings.Contains(out, `"success":true`) {
+	// Use the single shipped helper to enforce success:true + non-empty proposal_id (no loose Contains).
+	if gotID, ok := skillsProposeJSONOK([]byte(out)); !ok || gotID == "" {
 		t.Fatalf("runSkillsPropose + sendTo must succeed (with ACLs loaded into temp hub); got: %s", out)
-	}
-	if !strings.Contains(out, "proposal_id") {
-		t.Errorf("runSkillsPropose must produce proposal_id on success; got: %s", out)
 	}
 
 	// Parse ID from the json output for side-effect verification
@@ -567,4 +638,5 @@ func TestRunSkillsProposeDrivesSendTo(t *testing.T) {
 		// success path reached Store and returned data for the ID
 		t.Logf("Store side-effect verified via proposal.get for %s: %v", gotID, getResp)
 	}
+	resetInternalHubClientsForTest()
 }
