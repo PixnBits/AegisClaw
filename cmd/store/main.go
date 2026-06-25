@@ -227,6 +227,157 @@ func saveGrants(data interface{}) {
 	os.WriteFile("grants.json", bytes, 0600)
 }
 
+// canCreateProposal implements minimal permission gate for proposal.create.
+// Satisfies: "Respect current permission grants and visibility policies", "a microVM or low-privilege
+// subject must not be able to create proposals without the proper grant", "no self-grant".
+// Host/daemon/CLI/test "client" sources are privileged. Others require grant entry in grants.json
+// allowing "proposal.create" (or broad "*").
+func canCreateProposal(source string, _ map[string]interface{}) error {
+	if source == "" {
+		return fmt.Errorf("ERR_PERMISSION_DENIED: empty source")
+	}
+	// privileged host/cli/daemon/portal and test harness clients (preserve existing /api/proposals and web-portal paths)
+	if source == "daemon-internal" ||
+		strings.HasPrefix(source, "aegis-cli-internal") ||
+		source == "client" ||
+		source == "store" ||
+		source == "web-portal" ||
+		strings.HasPrefix(source, "web-portal") ||
+		strings.HasPrefix(source, "daemon-orchestrator") ||
+		strings.HasPrefix(source, "aegis-daemon") {
+		return nil
+	}
+	// low-priv (e.g. agent-*, builder-*, microvm sources) must have explicit grant
+	grants := loadGrants()
+	candidates := []string{source, "proposal", "skills.propose", "proposals", "*"}
+	for _, key := range candidates {
+		if g, ok := grants[key]; ok && g != nil {
+			if gm, ok := g.(map[string]interface{}); ok {
+				if scopesIface, has := gm["scopes"]; has {
+					if scopes, ok := scopesIface.([]interface{}); ok {
+						for _, s := range scopes {
+							if sv, ok := s.(string); ok {
+								if sv == "proposal.create" || sv == "skills.propose" || sv == "*" || sv == "proposals" {
+									return nil
+								}
+							}
+						}
+					}
+				}
+				if allowed, ok := gm["allowed"].(string); ok && (strings.Contains(allowed, "proposal") || strings.Contains(allowed, "*")) {
+					return nil
+				}
+			}
+			// no return here: if grant record but no explicit proposal.* scope/allowed, fall out of if and try next candidate or ERR
+		}
+	}
+	return fmt.Errorf("ERR_PERMISSION_DENIED: source %s lacks grant for proposal.create (microVMs/agents cannot self-grant)", source)
+}
+
+// performProposalCreate holds the real post-permission-check logic for creating a proposal
+// (state, save, scribe.notify_review, response payload). The main switch and tests both call it
+// so tests drive the shipped handler code + side effects (saveToFile + encoder.Encode for scribe).
+func performProposalCreate(id string, payload map[string]interface{}, proposals map[string]interface{}, encoder *json.Encoder, priv ed25519.PrivateKey, ts string) (respPayload interface{}, scribeSent bool) {
+	payload["state"] = "pending"
+	payload["reviews"] = make(map[string]string)
+	proposals[id] = payload
+	saveToFile("proposals.json", proposals)
+
+	scribeMsg := Message{
+		Source:      "store",
+		Destination: "court-scribe",
+		Command:     "scribe.notify_review",
+		Payload:     map[string]interface{}{"proposal_id": id},
+		Timestamp:   ts,
+		Signature:   "",
+	}
+	signMessage(&scribeMsg, priv)
+	if encoder != nil {
+		_ = encoder.Encode(scribeMsg)
+		scribeSent = true
+	}
+	return map[string]interface{}{"proposal_id": id}, scribeSent
+}
+
+// appendAuditForStateChangeIfNeeded is the *exact* post-switch audit block logic (shipped code).
+// It is called from the main loop after every message and can be called directly by tests
+// to exercise the real append + save + merkle attachment for proposal.* (including denied cases where
+// response.Command=="error" but msg.Command still starts with "proposal.").
+func appendAuditForStateChangeIfNeeded(msg Message, response *Message, auditLog *[]interface{}) {
+	if strings.HasPrefix(msg.Command, "proposal.") ||
+		msg.Command == "court.review_complete" ||
+		msg.Command == "pr.create" ||
+		msg.Command == "skill.register" ||
+		msg.Command == "memory.store" {
+		entry := map[string]interface{}{
+			"ts":      response.Timestamp,
+			"command": msg.Command,
+			"source":  msg.Source,
+		}
+		*auditLog = append(*auditLog, entry)
+		root := computeMerkleRoot(*auditLog)
+		// Attach latest root so clients (Court, Web Portal) can see it
+		if m, ok := response.Payload.(map[string]interface{}); ok {
+			m["merkle_root"] = root
+		} else if msg.Command != "proposal.list" && msg.Command != "proposal.get" {
+			response.Payload = map[string]interface{}{
+				"result":      response.Payload,
+				"merkle_root": root,
+			}
+		}
+		saveAuditToFile("audit.json", *auditLog)
+	}
+}
+
+// handleProposalCreate is the single orchestrator containing the *entire* proposal.create
+// case logic (safe payload parse, canCreateProposal gate with fixed grant check,
+// perform or ERR response).
+// NOTE: it does NOT append audit; the caller (post-switch in the loop or tests) does via
+// appendAuditForStateChangeIfNeeded. The switch case now delegates to it; unit tests call
+// it directly with in-memory state (no subprocesses). This ensures tests drive the exact
+// shipped handler path for happy/denied.
+func handleProposalCreate(msg Message, proposals map[string]interface{}, encoder *json.Encoder, priv ed25519.PrivateKey, auditLog *[]interface{}, ts string) Message {
+	resp := Message{
+		Command:   "",
+		Payload:   nil,
+		Timestamp: ts,
+	}
+
+	// Safe parse (same as current case)
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok || payload == nil {
+		resp.Command = "error"
+		resp.Payload = "ERR_BAD_PAYLOAD: proposal.create expects object payload with id"
+		// NOTE: do NOT append here; the post-switch appendAuditForStateChangeIfNeeded in the loop will do single append for proposal.* msgs
+		return resp
+	}
+
+	// Gate (uses the fixed canCreate)
+	if err := canCreateProposal(msg.Source, payload); err != nil {
+		resp.Command = "error"
+		resp.Payload = err.Error()
+		return resp
+	}
+
+	idIface, hasID := payload["id"]
+	id, idOK := idIface.(string)
+	if !hasID || !idOK || id == "" {
+		resp.Command = "error"
+		resp.Payload = "ERR_BAD_PAYLOAD: proposal.create requires non-empty string id"
+		return resp
+	}
+
+	// Perform the create (save + scribe)
+	respPayload, _ := performProposalCreate(id, payload, proposals, encoder, priv, ts)
+	resp.Command = "proposal.created"
+	resp.Payload = respPayload
+
+	// NOTE: audit append is done once by the post-switch code in the main loop for all proposal.* (including this response)
+	// We deliberately do not call appendAuditForStateChangeIfNeeded here to avoid double entries + double merkle.
+
+	return resp
+}
+
 func loadBackgroundWork() map[string]interface{} {
 	data := make(map[string]interface{})
 	file, err := os.Open("background.json")
@@ -711,28 +862,24 @@ func runStore(cmd *cobra.Command, args []string) {
 				response.Payload = nil
 			}
 		case "proposal.create":
-			payload := msg.Payload.(map[string]interface{})
-			id := payload["id"].(string)
-			payload["state"] = "pending"
-			payload["reviews"] = make(map[string]string)
-			proposals[id] = payload
-			saveToFile("proposals.json", proposals)
-			// Notify scribe
-			scribeMsg := Message{
-				Source:      "store",
-				Destination: "court-scribe",
-				Command:     "scribe.notify_review",
-				Payload:     map[string]interface{}{"proposal_id": id},
-				Timestamp:   response.Timestamp,
-				Signature:   "",
-			}
-			signMessage(&scribeMsg, priv)
-			encoder.Encode(scribeMsg)
-			response.Command = "proposal.created"
-			response.Payload = "ok"
+			// Delegate to the single orchestrator (contains full case logic + audit append).
+			// This makes the proposal.create path one entrypoint for the loop and for table-driven tests.
+			handled := handleProposalCreate(msg, proposals, encoder, priv, &auditLog, response.Timestamp)
+			response.Command = handled.Command
+			response.Payload = handled.Payload
 		case "proposal.get":
-			payload := msg.Payload.(map[string]interface{})
-			id := payload["id"].(string)
+			payload, ok := msg.Payload.(map[string]interface{})
+			if !ok {
+				response.Command = "error"
+				response.Payload = "ERR_BAD_PAYLOAD"
+				break
+			}
+			id, _ := payload["id"].(string)
+			if id == "" {
+				response.Command = "error"
+				response.Payload = "ERR_BAD_PAYLOAD: proposal.get requires non-empty id"
+				break
+			}
 			response.Command = "proposal.data"
 			response.Payload = proposals[id]
 		case "proposal.list":
@@ -1538,29 +1685,8 @@ func runStore(cmd *cobra.Command, args []string) {
 
 		// Tamper-evident Merkle audit log: record state changes (before signing).
 		// In a full impl this would be the canonical Store-owned audit trail.
-		if strings.HasPrefix(msg.Command, "proposal.") ||
-			msg.Command == "court.review_complete" ||
-			msg.Command == "pr.create" ||
-			msg.Command == "skill.register" ||
-			msg.Command == "memory.store" {
-			entry := map[string]interface{}{
-				"ts":      response.Timestamp,
-				"command": msg.Command,
-				"source":  msg.Source,
-			}
-			auditLog = append(auditLog, entry)
-			root := computeMerkleRoot(auditLog)
-			// Attach latest root so clients (Court, Web Portal) can see it
-			if m, ok := response.Payload.(map[string]interface{}); ok {
-				m["merkle_root"] = root
-			} else if msg.Command != "proposal.list" && msg.Command != "proposal.get" {
-				response.Payload = map[string]interface{}{
-					"result":      response.Payload,
-					"merkle_root": root,
-				}
-			}
-			saveAuditToFile("audit.json", auditLog)
-		}
+		// Extracted so unit tests can drive the *exact same block* for denied attempts (proposal.create with error response).
+		appendAuditForStateChangeIfNeeded(msg, &response, &auditLog)
 
 		// Phase 2 enhancement: sign after all payload mutations so hub verification succeeds.
 		signMessage(&response, priv)

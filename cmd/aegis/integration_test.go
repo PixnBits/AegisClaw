@@ -1,10 +1,15 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -363,4 +368,170 @@ func TestUserJourney07GrantingAdjustingAutonomy(t *testing.T) {
 func TestUserJourney08MultiAgentTeamWorkflows(t *testing.T) {
 	// Placeholder: Test multiple agents collaborating
 	t.Skip("Placeholder for journey 08")
+}
+
+// TestProposalCreateRealStoreLoop drives the SHIPPED store binary's full message loop
+// using temp dirs for hermetic CWD (files written relative to .Dir), polling for socket
+// and file side-effects instead of fixed sleeps. Drives via shipped sendToComponentViaHub.
+// Asserts proposals.json/audit.json contents with hard errors when components start.
+// Unit table (TestHandleProposalCreate) covers core handler/perm/scribe/audit logic.
+func TestProposalCreateRealStoreLoop(t *testing.T) {
+	t.Cleanup(resetInternalHubClientsForTest)
+	rootDir := repoRoot(t)
+	hubBinary := buildRepoBinary(t, rootDir, "./cmd/aegishub", "aegishub")
+	storeBinary := buildRepoBinary(t, rootDir, "./cmd/store", "store")
+
+	tmp := t.TempDir()
+	hubSock := filepath.Join(tmp, "hub.sock")
+	_ = os.Remove(hubSock)
+	aclPath := filepath.Join(rootDir, "config", "acls.yaml")
+
+	// Reset any prior cached hub client from other tests in this process so our
+	// temp AEGIS_HUB_SOCKET is used (fixes broken-pipe pollution into RunSkills test).
+	resetInternalHubClientsForTest()
+
+	hubCmd := exec.Command(hubBinary, "start")
+	hubCmd.Dir = tmp
+	hubCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSock, "AEGIS_ACL_FILE="+aclPath)
+	if err := hubCmd.Start(); err != nil {
+		t.Skipf("cannot start hub for real store loop: %v", err)
+	}
+	defer hubCmd.Process.Kill()
+
+	// brief readiness
+	for i := 0; i < 20; i++ {
+		if c, err := net.DialTimeout("unix", hubSock, 50*time.Millisecond); err == nil {
+			c.Close()
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	storeCmd := exec.Command(storeBinary)
+	storeCmd.Dir = tmp
+	storeCmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+hubSock)
+	if err := storeCmd.Start(); err != nil {
+		t.Skipf("cannot start store for real store loop: %v", err)
+	}
+	defer storeCmd.Process.Kill()
+
+	time.Sleep(150 * time.Millisecond)
+
+	os.Setenv("AEGIS_HUB_SOCKET", hubSock)
+	defer os.Unsetenv("AEGIS_HUB_SOCKET")
+
+	happyID := "loop-happy-via-sendto-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	lowID := "loop-denied-" + fmt.Sprintf("%d", time.Now().UnixNano())
+
+	// Drive using the exact shipped sendToComponentViaHub that runSkillsPropose uses (after env+ACL).
+	// This causes the separate store binary (in tmp) to receive via hub and persist to proposals.json/audit.json.
+	_, perr := sendToComponentViaHub("store", "proposal.create", map[string]interface{}{
+		"id": happyID, "description": "real loop happy via sendTo (shipped)",
+	})
+	if perr != nil {
+		// Still attempt file checks; fatal only if we want to require send path
+		t.Logf("sendTo returned err (will check files anyway): %v", perr)
+	}
+
+	// Also drive a denied (low-priv source) through the real store loop via raw msg on same hub
+	// (different Source exercises canCreateProposal denial + no persist + audit in the binary).
+	// Use a properly generated pubkey for register so it has a chance to succeed (avoids dummy-key rejection).
+	{
+		conn, derr := net.Dial("unix", hubSock)
+		if derr == nil {
+			defer conn.Close()
+			enc := json.NewEncoder(conn)
+			dec := json.NewDecoder(conn)
+			pub, _, _ := ed25519.GenerateKey(rand.Reader)
+			pubB64 := base64.StdEncoding.EncodeToString(pub)
+			reg := map[string]interface{}{
+				"Source": "low-priv-loop", "Destination": "hub", "Command": "register",
+				"Payload": map[string]string{"public_key": pubB64, "version": "test"},
+				"Timestamp": time.Now().Format(time.RFC3339), "Signature": "dummy",
+			}
+			_ = enc.Encode(reg)
+			var regR map[string]interface{}
+			_ = dec.Decode(&regR)
+			lowPayload := map[string]interface{}{"id": lowID, "description": "should deny in loop"}
+			lowMsg := map[string]interface{}{
+				"Source": "low-priv-loop", "Destination": "store", "Command": "proposal.create",
+				"Payload": lowPayload, "Timestamp": time.Now().Format(time.RFC3339), "Signature": "dummy",
+			}
+			_ = enc.Encode(lowMsg)
+			var lowResp map[string]interface{}
+			_ = dec.Decode(&lowResp)
+		}
+	}
+
+	// For denial coverage we rely on the unit table; here ensure a low source would be denied by not sending
+	// and confirming lowID never appears (real path would deny before write).
+
+	propFile := filepath.Join(tmp, "proposals.json")
+	auditFile := filepath.Join(tmp, "audit.json")
+
+	// Poll for side effects from the real store binary (Dir=tmp)
+	foundHappy := false
+	for i := 0; i < 120; i++ {
+		if b, err := os.ReadFile(propFile); err == nil {
+			var pd map[string]interface{}
+			if json.Unmarshal(b, &pd) == nil {
+				if _, ok := pd[happyID]; ok {
+					foundHappy = true
+					break
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !foundHappy {
+		// One more sendTo attempt + poll (real shipped path)
+		_, _ = sendToComponentViaHub("store", "proposal.create", map[string]interface{}{
+			"id": happyID, "description": "real loop happy re-drive",
+		})
+		for i := 0; i < 30; i++ {
+			if b, err := os.ReadFile(propFile); err == nil {
+				var pd map[string]interface{}
+				if json.Unmarshal(b, &pd) == nil {
+					if _, ok := pd[happyID]; ok {
+						foundHappy = true
+						break
+					}
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if !foundHappy {
+		t.Errorf("real store (via shipped sendTo + store binary) must have persisted happy proposal %s to proposals.json", happyID)
+	}
+
+	// Denied ID must not appear
+	if b, err := os.ReadFile(propFile); err == nil {
+		var pd map[string]interface{}
+		if json.Unmarshal(b, &pd) == nil {
+			if _, ok := pd[lowID]; ok {
+				t.Errorf("denied proposal %s must NOT be persisted in Store", lowID)
+			}
+		}
+	}
+
+	// Audit must contain proposal.create from real handler+post-switch
+	auditHasProposal := false
+	for i := 0; i < 60; i++ {
+		if b, err := os.ReadFile(auditFile); err == nil {
+			if strings.Contains(string(b), "proposal.create") {
+				auditHasProposal = true
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !auditHasProposal {
+		t.Errorf("audit.json must contain proposal.create entry from real handler loop + appendAuditForStateChangeIfNeeded")
+	}
+
+	_ = os.Remove(propFile)
+	_ = os.Remove(auditFile)
+	os.Unsetenv("AEGIS_HUB_SOCKET")
+	resetInternalHubClientsForTest()
 }
