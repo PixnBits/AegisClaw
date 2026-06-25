@@ -243,8 +243,8 @@ func canCreateProposal(source string, _ map[string]interface{}) error {
 		source == "store" ||
 		source == "web-portal" ||
 		strings.HasPrefix(source, "web-portal") ||
-		strings.Contains(source, "daemon-orchestrator") ||
-		strings.Contains(source, "aegis-daemon") {
+		strings.HasPrefix(source, "daemon-orchestrator") ||
+		strings.HasPrefix(source, "aegis-daemon") {
 		return nil
 	}
 	// low-priv (e.g. agent-*, builder-*, microvm sources) must have explicit grant
@@ -331,9 +331,11 @@ func appendAuditForStateChangeIfNeeded(msg Message, response *Message, auditLog 
 
 // handleProposalCreate is the single orchestrator containing the *entire* proposal.create
 // case logic (safe payload parse, canCreateProposal gate with fixed grant check,
-// perform or ERR response) PLUS the audit append for the mutation.
-// The switch case now delegates to it; unit tests call it directly with in-memory state
-// (no subprocesses). This ensures tests drive the exact shipped handler path for happy/denied.
+// perform or ERR response).
+// NOTE: it does NOT append audit; the caller (post-switch in the loop or tests) does via
+// appendAuditForStateChangeIfNeeded. The switch case now delegates to it; unit tests call
+// it directly with in-memory state (no subprocesses). This ensures tests drive the exact
+// shipped handler path for happy/denied.
 func handleProposalCreate(msg Message, proposals map[string]interface{}, encoder *json.Encoder, priv ed25519.PrivateKey, auditLog *[]interface{}, ts string) Message {
 	resp := Message{
 		Command:   "",
@@ -873,6 +875,11 @@ func runStore(cmd *cobra.Command, args []string) {
 				break
 			}
 			id, _ := payload["id"].(string)
+			if id == "" {
+				response.Command = "error"
+				response.Payload = "ERR_BAD_PAYLOAD: proposal.get requires non-empty id"
+				break
+			}
 			response.Command = "proposal.data"
 			response.Payload = proposals[id]
 		case "proposal.list":

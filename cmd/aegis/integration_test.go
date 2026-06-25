@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -432,15 +435,18 @@ func TestProposalCreateRealStoreLoop(t *testing.T) {
 
 	// Also drive a denied (low-priv source) through the real store loop via raw msg on same hub
 	// (different Source exercises canCreateProposal denial + no persist + audit in the binary).
+	// Use a properly generated pubkey for register so it has a chance to succeed (avoids dummy-key rejection).
 	{
 		conn, derr := net.Dial("unix", hubSock)
 		if derr == nil {
 			defer conn.Close()
 			enc := json.NewEncoder(conn)
 			dec := json.NewDecoder(conn)
+			pub, _, _ := ed25519.GenerateKey(rand.Reader)
+			pubB64 := base64.StdEncoding.EncodeToString(pub)
 			reg := map[string]interface{}{
 				"Source": "low-priv-loop", "Destination": "hub", "Command": "register",
-				"Payload": map[string]string{"public_key": "dummy", "version": "test"},
+				"Payload": map[string]string{"public_key": pubB64, "version": "test"},
 				"Timestamp": time.Now().Format(time.RFC3339), "Signature": "dummy",
 			}
 			_ = enc.Encode(reg)

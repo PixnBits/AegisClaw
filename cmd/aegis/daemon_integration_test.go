@@ -442,8 +442,9 @@ func TestDaemonCLICommands(t *testing.T) {
 		startCmd := exec.Command("sudo", "-n", aegisBinary, "start")
 		startOut, startErr := startCmd.CombinedOutput()
 		t.Logf("Journey04 sudo -n start output: %s (err=%v)", strings.TrimSpace(string(startOut)), startErr)
-		// Extended poll after sudo start: primary signal for "live for propose" is the hub sock being dialable (the store/hub must accept connections)
-		hubSock := filepath.Join(os.Getenv("HOME"), ".aegis/hub.sock")
+		// Extended poll after sudo start: primary signal for "live for propose" is the hub sock being dialable (the store/hub must accept connections).
+		// Use the shipped currentInternalHubPath() helper so test honors AEGIS_HUB_SOCKET etc.
+		hubSock := currentInternalHubPath()
 		liveConfirmed := false
 		for i := 0; i < 90; i++ {
 			if c, err := net.DialTimeout("unix", hubSock, 100*time.Millisecond); err == nil {

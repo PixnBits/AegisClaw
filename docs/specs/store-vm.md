@@ -74,7 +74,7 @@ The Store VM acts as the central, trusted authority for both structured data and
 The Store VM is the single source of truth for persistent timers, autonomy grants, and background work expiration.
 
 ### Chat Session Registry (Web Portal)
-The Store VM owns durable web-portal chat session records (id, title, timestamps, message thread snapshots). The Web Portal forwards `sessions.*` bridge actions here; live chat turns flow through the agent chat system (`chat.message`, not the Host Daemon).
+The Store VM owns durable web-portal chat session records (id, title, timestamps, message thread snapshots). The Web Portal forwards `sessions.*` bridge actions here; live chat turns flow through the agent chat system (`chat.message` — not the Host Daemon).
 
 - `sessions.list` — Session summaries for the chat sidebar
 - `sessions.create` — Create a new session
