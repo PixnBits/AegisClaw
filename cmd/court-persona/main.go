@@ -224,14 +224,8 @@ func analyzeProposal(persona, proposalDesc string, hubClient hubclient.Client) (
 	return vote, reasoning
 }
 
-// generateChannelReply produces a short contextual reply via LLM (no canned fallback text).
-func generateChannelReply(persona, userQuestion string, hubClient hubclient.Client) string {
-	display := collab.DisplayName("court-persona-" + persona)
-	prompt := getPersonaPrompt(persona) + "\n\nA user asked in a collaboration channel:\n" + userQuestion +
-		"\n\nReply in 2-4 sentences addressing their message from your role as \"" + display + "\". " +
-		"If no reply is needed, respond with exactly: NO_REPLY. " +
-		"Do NOT use VOTE format or proposal review structure."
-
+// llmChannelReply calls the LLM with an already-formed channel prompt (no extra persona wrapper).
+func llmChannelReply(persona string, hubClient hubclient.Client, prompt string) string {
 	text, err := callRealLLMViaHub(context.Background(), hubClient, prompt)
 	if err != nil || strings.TrimSpace(text) == "" {
 		log.Printf("court-persona-%s: channel reply LLM failed (%v)", persona, err)
@@ -244,6 +238,16 @@ func generateChannelReply(persona, userQuestion string, hubClient hubclient.Clie
 		return ""
 	}
 	return trimmed
+}
+
+// generateChannelReply produces a short contextual reply via LLM (no canned fallback text).
+func generateChannelReply(persona, userQuestion string, hubClient hubclient.Client) string {
+	display := collab.DisplayName("court-persona-" + persona)
+	prompt := getPersonaPrompt(persona) + "\n\nA user asked in a collaboration channel:\n" + userQuestion +
+		"\n\nReply in 2-4 sentences addressing their message from your role as \"" + display + "\". " +
+		"If no reply is needed, respond with exactly: NO_REPLY. " +
+		"Do NOT use VOTE format or proposal review structure."
+	return llmChannelReply(persona, hubClient, prompt)
 }
 
 func postChannelIntro(hcl hubclient.Client, uniqueSource, chID, content string) error {
@@ -352,9 +356,11 @@ func processChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSourc
 	if anchorText != "" {
 		prompt += "\n\nRelevant prior context (from get_relevant_since anchors):\n" + anchorText
 	}
-	prompt += "\n\nReply in 2-4 sentences with a security push-back or concern if warranted. If no reply is needed, respond with exactly: NO_REPLY"
+	prompt += "\n\nReply in 2-4 sentences addressing the user's message from your role. " +
+		"If you are directly @mentioned or asked a question, you must reply. " +
+		"If genuinely nothing to add, respond with exactly: NO_REPLY. Do NOT use VOTE format."
 
-	reply := generateChannelReply(persona, prompt, hcl)
+	reply := llmChannelReply(persona, hcl, prompt)
 	if strings.TrimSpace(reply) == "" {
 		return
 	}

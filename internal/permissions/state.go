@@ -150,30 +150,44 @@ func AllowsCisoDelegation(source string, enabled bool) bool {
 // DefaultBootstrap returns minimal bootstrap grants + visibility for pre-alpha startup.
 func DefaultBootstrap() *State {
 	s := NewState()
-	// Project Manager: channel + LLM + memory + safe discovery
+	// Project Manager: channel + LLM + memory + safe discovery + turn anchor tools
 	for _, cap := range []string{
 		"channel.create", "channel.list", "channel.get", "channel.join", "channel.post",
+		"channel.get_relevant_since", "channel.get_messages",
 		"llm.call", "memory.store", "memory.query", "tool.list", "tool.search",
 	} {
 		_ = GrantCapability(s, "project-manager*", cap, "bootstrap", "minimal PM bootstrap")
 	}
-	// Generic agents: memory + LLM + channel read/post
+	// Generic agents: memory + LLM + channel read/post + turn anchor tools
 	for _, cap := range []string{
 		"channel.list", "channel.get", "channel.post",
+		"channel.get_relevant_since", "channel.get_messages",
 		"llm.call", "memory.store", "memory.query", "tool.list", "tool.search",
 	} {
 		_ = GrantCapability(s, "agent*", cap, "bootstrap", "minimal agent bootstrap")
 	}
-	// Coder persona: narrower write surface
+	// Coder persona: narrower write surface + turn anchor tools
 	for _, cap := range []string{
 		"channel.list", "channel.get", "channel.post",
+		"channel.get_relevant_since", "channel.get_messages",
 		"llm.call", "memory.store", "tool.list", "tool.search",
 	} {
 		_ = GrantCapability(s, "coder*", cap, "bootstrap", "minimal coder bootstrap")
 	}
-	// Court personas: channel + LLM for governance participation
+	// Tester / researcher on-demand roles (turn-based channel propagation)
+	for _, pattern := range []string{"tester*", "researcher*", "architect*", "ciso*"} {
+		for _, cap := range []string{
+			"channel.list", "channel.get", "channel.post",
+			"channel.get_relevant_since", "channel.get_messages",
+			"llm.call", "tool.list", "tool.search",
+		} {
+			_ = GrantCapability(s, pattern, cap, "bootstrap", "on-demand role bootstrap")
+		}
+	}
+	// Court personas: channel + LLM for governance participation (incl. turn anchor tools)
 	for _, cap := range []string{
 		"channel.list", "channel.get", "channel.post",
+		"channel.get_relevant_since", "channel.get_messages",
 		"llm.call", "tool.list", "tool.search",
 	} {
 		_ = GrantCapability(s, "court-persona*", cap, "bootstrap", "court persona bootstrap")

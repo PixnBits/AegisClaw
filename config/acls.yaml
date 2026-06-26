@@ -207,6 +207,12 @@ rules:
     - channel.get
     - channel.get_relevant_since
     - channel.get_messages
+# Store RPC replies to court personas (channel.data, get_relevant_since.data, etc.)
+- source: store
+  destination: court-persona-*
+  commands:
+    - channel.*
+    - proposal.*
 - source: court-persona-*
   destination: court-scribe
   commands:
@@ -632,6 +638,14 @@ rules:
   destination: "daemon-internal-*"
   commands:
     - "*"
+
+# Store channel notifications to on-demand PM VMs (channel.updated / channel.posted relay)
+- source: store
+  destination: "project-manager*"
+  commands:
+    - channel.updated
+    - channel.posted
+    - channel.*
 
 # Project Manager <-> Network Boundary for real LLM plan generation (same contract as agents; enables unmocked Ollama E2E via NewRealLLMCaller)
 - source: "project-manager*"

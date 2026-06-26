@@ -40,6 +40,7 @@ func KnownCapabilities() []string {
 	return []string{
 		"tool.list", "tool.search", "tool.registry.discover",
 		"channel.create", "channel.list", "channel.get", "channel.join", "channel.post",
+		"channel.get_relevant_since", "channel.get_messages",
 		"memory.store", "memory.query", "memory.get_context",
 		"llm.call", "proposal.create", "proposal.submit", "proposal.list",
 		"permission.grant", "permission.revoke", "permission.list", "permission.check",
@@ -66,7 +67,8 @@ func IsCapabilityCommand(cmd string) bool {
 	case "channel.activity", "channel.member_notify", "channel.updated",
 		"channel.relay_activity", "channel.fanout", "channel.posted",
 		"chat.message", "chat.tool_events", "chat.thought_events", "chat.stream_progress",
-		"user.goal", "user.turn":
+		"user.goal", "user.turn",
+		"ensure.role", "orchestrator.ensure_role":
 		return false
 	}
 	// Permission management commands are ACL-gated, not capability-granted

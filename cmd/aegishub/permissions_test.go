@@ -26,6 +26,9 @@ func TestHubPermissionAllowed_BootstrapFallback(t *testing.T) {
 	if !hubPermissionAllowed("project-manager-main", "llm.call") {
 		t.Error("bootstrap fallback should allow project-manager llm.call")
 	}
+	if !hubPermissionAllowed("court-persona-senior-coder", "channel.get_relevant_since") {
+		t.Error("bootstrap fallback should allow court persona channel.get_relevant_since")
+	}
 }
 
 func TestShouldReceivePermissionSnapshot(t *testing.T) {
