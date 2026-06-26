@@ -9,7 +9,16 @@
 #   - docs/specs/web-portal/implementation-current.md (thin layer; all actions go through AegisHub)
 #   - host-daemon.md (lifecycle managed by daemon; reverse proxy on :8080)
 
-# === Build stage ===
+# === SPA build stage (generates index.html + hashed assets for cache busting) ===
+FROM node:22-alpine AS spa
+
+WORKDIR /app
+COPY web-portal/package.json web-portal/package-lock.json ./web-portal/
+RUN cd web-portal && npm ci
+COPY web-portal ./web-portal
+RUN cd web-portal && npm run build
+
+# === Go build stage ===
 FROM golang:1.24-alpine AS builder
 
 ENV GOTOOLCHAIN=auto
@@ -36,9 +45,8 @@ WORKDIR /app
 
 COPY --from=builder /web-portal /usr/local/bin/web-portal
 
-# Copy the modern channels-first SPA static assets (replaces legacy chat/templates).
-# The web-portal binary serves these at runtime for the rich UI (data-testid for e2e, #channels etc).
-COPY cmd/web-portal/static /static
+# SPA built in the spa stage (index.html references hashed bundles at image build time).
+COPY --from=spa /app/cmd/web-portal/static /static
 
 # Minimal init script for Firecracker boot.
 # We explicitly redirect all output to the serial console so that

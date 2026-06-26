@@ -92,7 +92,9 @@ build-binaries: build-web-portal
 	go build -o bin/project-manager ./cmd/project-manager
 
 # Build microVM filesystems (Linux/Firecracker only)
-build-microvms:
+# build-web-portal refreshes host-side static for bin/web-portal + fixture E2E; the web-portal
+# Dockerfile also runs npm build so microVM images get a matching index.html + hashed assets.
+build-microvms: build-web-portal
 	@if [ "$(shell uname -s)" = "Linux" ]; then \
 		if [ -d "/opt/aegis" ] && [ ! -w "/opt/aegis" ]; then \
 			echo "Note: /opt/aegis is not writable. Filesystems will be built to ~/.aegis/firecracker/rootfs"; \

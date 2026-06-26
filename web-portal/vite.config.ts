@@ -10,18 +10,10 @@ export default defineConfig({
     },
   },
   build: {
+    // Generated output (index.html + hashed assets) — not committed; see cmd/web-portal/STATIC_BUILD.md.
     outDir: '../cmd/web-portal/static',
     emptyOutDir: true,
     sourcemap: true,
-    // Stable asset names (no content hash) so generated index.html does not churn in git.
-    // Entire cmd/web-portal/static/ is build output — see cmd/web-portal/STATIC_BUILD.md.
-    rollupOptions: {
-      output: {
-        entryFileNames: 'assets/[name].js',
-        chunkFileNames: 'assets/[name].js',
-        assetFileNames: 'assets/[name][extname]',
-      },
-    },
   },
   server: {
     port: 5173,
