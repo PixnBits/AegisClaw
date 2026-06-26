@@ -29,9 +29,15 @@ run_docker() {
 		exit 1
 	fi
 	require_daemon
-	if [ -n "${AEGIS_E2E_FIXTURE:-}" ] && [ ! -x "$ROOT/bin/web-portal" ]; then
-		echo "Building bin/web-portal for fixture-mode E2E in Docker..." >&2
-		go build -o "$ROOT/bin/web-portal" ./cmd/web-portal
+	if [ -n "${AEGIS_E2E_FIXTURE:-}" ]; then
+		if [ ! -f "$ROOT/cmd/web-portal/static/index.html" ]; then
+			echo "Building web-portal SPA static for fixture-mode E2E..." >&2
+			$(MAKE) -C "$ROOT" build-web-portal
+		fi
+		if [ ! -x "$ROOT/bin/web-portal" ]; then
+			echo "Building bin/web-portal for fixture-mode E2E in Docker..." >&2
+			go build -o "$ROOT/bin/web-portal" ./cmd/web-portal
+		fi
 	fi
 	echo "Running Playwright in Docker ($PLAYWRIGHT_IMAGE)..." >&2
 	docker run --rm --network host \

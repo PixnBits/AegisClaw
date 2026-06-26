@@ -13,11 +13,13 @@ export default defineConfig({
     outDir: '../cmd/web-portal/static',
     emptyOutDir: true,
     sourcemap: true,
+    // Stable asset names (no content hash) so generated index.html does not churn in git.
+    // Entire cmd/web-portal/static/ is build output — see cmd/web-portal/STATIC_BUILD.md.
     rollupOptions: {
       output: {
-        entryFileNames: 'assets/[name]-[hash].js',
-        chunkFileNames: 'assets/[name]-[hash].js',
-        assetFileNames: 'assets/[name]-[hash][extname]',
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name][extname]',
       },
     },
   },
