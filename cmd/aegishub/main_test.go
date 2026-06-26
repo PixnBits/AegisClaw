@@ -237,3 +237,42 @@ func TestCheckACL(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyWireSignatureSurvivesPayloadRoundTrip(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulates store permission.list after appendAuditForStateChangeIfNeeded wraps grants.
+	payload := json.RawMessage(`{"merkle_root":"abc","result":[{"subject":"pm","capability":"channel.post","granted_by":"boot","granted_at":"t"}]}`)
+	wire := wireMessage{
+		Source: "store", Destination: "daemon-internal", Command: "permission.list",
+		Payload: payload, Timestamp: "2026-01-01T00:00:00Z",
+	}
+	sigBody, _ := json.Marshal(func() wireMessage {
+		w := wire
+		w.Signature = ""
+		return w
+	}())
+	sig := ed25519.Sign(priv, sigBody)
+	wire.Signature = base64.StdEncoding.EncodeToString(sig)
+
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var round wireMessage
+	if err := json.Unmarshal(encoded, &round); err != nil {
+		t.Fatal(err)
+	}
+	if !verifyWireSignature(round, pub) {
+		t.Fatal("verifyWireSignature failed after JSON round-trip")
+	}
+	var msg Message
+	if err := json.Unmarshal(encoded, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if verifySignature(msg, pub) {
+		t.Fatal("verifySignature should fail after interface{} payload round-trip (regression guard)")
+	}
+}

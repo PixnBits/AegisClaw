@@ -78,7 +78,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	} else {
 		// Connect to Hub/portal-bridge in the background so vsock :18080 and /health
 		// are available immediately (guest entropy pool can block crypto/rand for 60s+).
-		client = newLazyBridgeClient()
+		client = newResilientBridgeClient()
 	}
 
 	// Support being managed by the Host Daemon (reverse proxy mode per web-portal-vm.md)
@@ -114,7 +114,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	if useFixtures {
 		log.Println("  (E2E fixture mode — seeded data for contract/UI tests)")
 	} else {
-		log.Println("  (hub/portal bridge connects in background — /health and vsock :18080 available immediately)")
+		log.Println("  (resilient hub/portal bridge connects in background — /health and vsock :18080 available immediately)")
 	}
 
 	// Serve the modern channels-first SPA UI (copied to /static in the guest image via Dockerfile,
@@ -662,7 +662,7 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
-	case "permission.grant", "permission.revoke", "grant", "revoke", "permission.list", "permission.check", "permission.snapshot", "permission.request", "permission.requests.list", "visibility.set", "visibility.list", "visibility.get", "tool.registry.discover", "ciso.delegation.get", "ciso.delegation.set":
+	case "permission.grant", "permission.revoke", "grant", "revoke", "permission.list", "permission.panel", "permission.check", "permission.snapshot", "permission.request", "permission.requests.list", "visibility.set", "visibility.list", "visibility.get", "tool.registry.discover", "ciso.delegation.get", "ciso.delegation.set":
 		// Use unified dispatcher so guards, CISO logic, SaveState and audit are identical to store path.
 		var p map[string]interface{}
 		if len(payload) > 0 {

@@ -5233,6 +5233,10 @@ func startWebPortalProxy(listenAddr, target string) error {
 			handleHostDashboardStats(w, r)
 			return
 		}
+		if agentID, ok := parseAgentPermissionsPath(r.URL.Path); ok {
+			handleHostAgentPermissions(w, r, agentID)
+			return
+		}
 		if r.URL.Path == "/events" {
 			handleHostSSE(w, r)
 			return

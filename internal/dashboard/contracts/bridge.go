@@ -58,6 +58,7 @@ var allowedBridgeActions = map[string]struct{}{
 
 	// Permissions & visibility (permissions-model.md)
 	"permission.list":          {},
+	"permission.panel":         {},
 	"permission.grant":         {},
 	"permission.revoke":        {},
 	"permission.check":         {},

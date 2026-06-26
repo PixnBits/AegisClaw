@@ -11,7 +11,7 @@ func Destination(action string) string {
 		return "store"
 	case strings.HasPrefix(action, "skill."), strings.HasPrefix(action, "proposal."):
 		return "store"
-	case strings.HasPrefix(action, "permission."), strings.HasPrefix(action, "visibility."):
+	case action == "permission.panel", strings.HasPrefix(action, "permission."), strings.HasPrefix(action, "visibility."):
 		return "store"
 	case action == "tool.registry.discover", action == "audit.list":
 		return "store"

@@ -715,6 +715,7 @@ rules:
   destination: store
   commands:
     - permission.snapshot
+    - permission.panel
     - permission.request
     - permission.grant
     - permission.revoke
@@ -763,6 +764,7 @@ rules:
     - permission.grant
     - permission.revoke
     - permission.list
+    - permission.panel
     - permission.check
     - permission.snapshot
     - permission.requests.list

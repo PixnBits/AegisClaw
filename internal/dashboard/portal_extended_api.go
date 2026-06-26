@@ -189,9 +189,19 @@ func (s *Server) handleAPIAgentDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) collectAgentTrace(ctx context.Context, agentID string) map[string]interface{} {
-	sessionID := strings.TrimPrefix(agentID, "agent-")
-	if sessionID == agentID {
-		sessionID = agentID
+	sessionID := collab.ChatAgentSessionID(agentID)
+	if !collab.IsChatAgentSession(sessionID) {
+		return map[string]interface{}{
+			"agent_id":   agentID,
+			"session_id": sessionID,
+			"phases": []interface{}{
+				map[string]interface{}{
+					"phase":   "Observe",
+					"summary": "Trace is available for paired agent chat sessions only",
+					"ts":      time.Now().UTC().Format(time.RFC3339),
+				},
+			},
+		}
 	}
 	tools, _ := s.fetchRaw(ctx, "chat.tool_events", map[string]interface{}{"limit": 40, "session_id": sessionID})
 	thoughts, _ := s.fetchRaw(ctx, "chat.thought_events", map[string]interface{}{"limit": 60, "session_id": sessionID})
@@ -241,17 +251,12 @@ func (s *Server) handleAPIAgentPermissions(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	switch r.Method {
 	case http.MethodGet:
-		grants, _ := s.fetchRaw(ctx, "permission.list", map[string]interface{}{"subject": agentID})
-		requests, _ := s.fetchRaw(ctx, "permission.requests.list", map[string]interface{}{"subject": agentID})
-		visibility, _ := s.fetchRaw(ctx, "visibility.list", map[string]interface{}{"subject": agentID})
-		snapshot, _ := s.fetchRaw(ctx, "permission.snapshot", map[string]interface{}{"subject": agentID})
-		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"agent_id":   agentID,
-			"grants":     normalizePermissionList(grants),
-			"requests":   normalizePermissionList(requests),
-			"visibility": normalizePermissionList(visibility),
-			"snapshot":   normalizePermissionSnapshot(snapshot),
-		})
+		out, err := s.fetchPermissionPanel(ctx, agentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(out) //nolint:errcheck
 	case http.MethodPost:
 		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
 			return
@@ -336,6 +341,43 @@ func (s *Server) handleAPICisoDelegation(w http.ResponseWriter, r *http.Request)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) fetchPermissionPanel(ctx context.Context, agentID string) (map[string]interface{}, error) {
+	// Try the batched store command first with a short budget so a missing/stale
+	// panel handler cannot consume the entire HTTP timeout before legacy fallbacks run.
+	panelCtx, panelCancel := context.WithTimeout(ctx, 5*time.Second)
+	panel, err := s.fetchRaw(panelCtx, "permission.panel", map[string]interface{}{"subject": agentID})
+	panelCancel()
+	if err == nil {
+		if m, ok := panel.(map[string]interface{}); ok {
+			return map[string]interface{}{
+				"agent_id":   agentID,
+				"grants":     normalizePermissionList(m["grants"]),
+				"requests":   normalizePermissionList(m["requests"]),
+				"visibility": normalizePermissionList(m["visibility"]),
+				"snapshot":   normalizePermissionSnapshot(m["snapshot"]),
+			}, nil
+		}
+	}
+	// Fallback when panel is unavailable (older store image, ACL gap, or hub envelope mismatch).
+	grants, gErr := s.fetchRaw(ctx, "permission.list", map[string]interface{}{"subject": agentID})
+	requests, _ := s.fetchRaw(ctx, "permission.requests.list", map[string]interface{}{"subject": agentID})
+	visibility, _ := s.fetchRaw(ctx, "visibility.list", map[string]interface{}{"subject": agentID})
+	snapshot, _ := s.fetchRaw(ctx, "permission.snapshot", map[string]interface{}{"subject": agentID})
+	if gErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, gErr
+	}
+	return map[string]interface{}{
+		"agent_id":   agentID,
+		"grants":     normalizePermissionList(grants),
+		"requests":   normalizePermissionList(requests),
+		"visibility": normalizePermissionList(visibility),
+		"snapshot":   normalizePermissionSnapshot(snapshot),
+	}, nil
 }
 
 // normalizePermissionList coerces bridge responses into JSON arrays for the Portal UI.

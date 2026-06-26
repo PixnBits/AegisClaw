@@ -2,6 +2,22 @@ package collab
 
 import "strings"
 
+// ChannelMemberAgentID returns the canonical portal/hub agent id for a channel roster role.
+// Matches channelfacilitator turn delivery (project-manager-main, coder-main, court-persona-*).
+func ChannelMemberAgentID(role, channelID string) string {
+	role = NormalizeMemberRole(role)
+	if role == "" {
+		return ""
+	}
+	if role == "project-manager" && channelID != "" {
+		return "project-manager-" + channelID
+	}
+	if channelID != "" && !strings.HasPrefix(role, "court-persona-") {
+		return role + "-" + channelID
+	}
+	return role
+}
+
 // NormalizeMemberRole maps portal display labels and casual aliases to hub role ids
 // used for ensure.role, turn delivery, and channel membership.
 func NormalizeMemberRole(role string) string {

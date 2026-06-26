@@ -15,6 +15,14 @@ type permissionsMockClient struct{}
 
 func (m *permissionsMockClient) Call(_ context.Context, action string, _ json.RawMessage) (*APIResponse, error) {
 	switch action {
+	case "permission.panel":
+		return &APIResponse{Success: true, Data: json.RawMessage(`{
+			"agent_id":"coder-test",
+			"grants":[{"capability":"channel.post","subject":"coder-test"}],
+			"requests":[{"capability":"channel.create","status":"pending","context":"need channel"}],
+			"visibility":[],
+			"snapshot":{"subject":"coder-test","allowed_tools":{"channel.post":true}}
+		}`)}, nil
 	case "permission.list":
 		return &APIResponse{Success: true, Data: json.RawMessage(`[{"capability":"channel.post","subject":"coder-test"}]`)}, nil
 	case "permission.requests.list":
@@ -127,6 +135,15 @@ func (m *mutPermClient) Call(_ context.Context, action string, pl json.RawMessag
 	}
 	b, _ := json.Marshal(resp)
 	if respCmd != "" {
+		return &APIResponse{Success: true, Data: b}, nil
+	}
+	if action == "permission.panel" {
+		subject, _ := p["subject"].(string)
+		_, panel, e := permissions.DispatchCommand(m.st, src, action, map[string]interface{}{"subject": subject}, &aud, permissions.NowRFC3339())
+		if e != nil {
+			return &APIResponse{Success: false, Error: e.Error()}, nil
+		}
+		b, _ := json.Marshal(panel)
 		return &APIResponse{Success: true, Data: b}, nil
 	}
 	if action == "permission.list" {

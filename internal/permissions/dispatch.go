@@ -72,6 +72,40 @@ func DispatchCommand(state *State, source, command string, payload map[string]in
 		snap := BuildSnapshot(state, subject, KnownCapabilities())
 		return "permission.snapshot", snap, nil
 
+	case "permission.panel":
+		subject, _ := payload["subject"].(string)
+		if subject == "" {
+			subject = source
+		}
+		grants := ListGrantsForSubject(state, subject)
+		grantOut := make([]interface{}, len(grants))
+		for i, g := range grants {
+			grantOut[i] = g
+		}
+		reqs := ListRequestsForSubject(state, subject)
+		reqOut := make([]interface{}, len(reqs))
+		for i, r := range reqs {
+			reqOut[i] = r
+		}
+		var visRules []VisibilityRule
+		for _, r := range state.Visibility {
+			if SubjectMatches(subject, r.Subject) {
+				visRules = append(visRules, r)
+			}
+		}
+		visOut := make([]interface{}, len(visRules))
+		for i, r := range visRules {
+			visOut[i] = r
+		}
+		snap := BuildSnapshot(state, subject, KnownCapabilities())
+		return "permission.panel", map[string]interface{}{
+			"agent_id":   subject,
+			"grants":     grantOut,
+			"requests":   reqOut,
+			"visibility": visOut,
+			"snapshot":   snap,
+		}, nil
+
 	case "permission.request":
 		subject, _ := payload["subject"].(string)
 		capability, _ := payload["capability"].(string)

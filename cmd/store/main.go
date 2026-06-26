@@ -299,11 +299,27 @@ func performProposalCreate(id string, payload map[string]interface{}, proposals 
 	return map[string]interface{}{"proposal_id": id}, scribeSent
 }
 
+// isPermissionAuditReadCommand reports store read RPCs that must not mutate response
+// payloads with merkle audit wrappers (breaks Hub signature verify + Portal parsing).
+func isPermissionAuditReadCommand(command string) bool {
+	switch command {
+	case "permission.list", "permission.snapshot", "permission.panel", "permission.check",
+		"permission.requests.list", "visibility.list", "visibility.get",
+		"ciso.delegation.get", "tool.registry.discover", "audit.list":
+		return true
+	default:
+		return false
+	}
+}
+
 // appendAuditForStateChangeIfNeeded is the *exact* post-switch audit block logic (shipped code).
 // It is called from the main loop after every message and can be called directly by tests
 // to exercise the real append + save + merkle attachment for proposal.* (including denied cases where
 // response.Command=="error" but msg.Command still starts with "proposal.").
 func appendAuditForStateChangeIfNeeded(msg Message, response *Message, auditLog *[]interface{}) {
+	if isPermissionAuditReadCommand(msg.Command) {
+		return
+	}
 	if strings.HasPrefix(msg.Command, "proposal.") ||
 		msg.Command == "court.review_complete" ||
 		msg.Command == "pr.create" ||

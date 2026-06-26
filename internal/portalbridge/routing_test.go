@@ -5,6 +5,7 @@ import "testing"
 func TestDestination_PermissionsRouteToStore(t *testing.T) {
 	storeActions := []string{
 		"permission.list",
+		"permission.panel",
 		"permission.grant",
 		"permission.snapshot",
 		"permission.requests.list",
