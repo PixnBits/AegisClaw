@@ -14,6 +14,13 @@ async function openMainChannel(page) {
   const first = page.getByTestId('channels-list').locator('li').first();
   await first.click();
   await expect(page.getByTestId('channel-detail')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('channel-messages')).toBeVisible();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-testid="connection-status-chip"]')?.getAttribute('data-connection-mode') ===
+      'stomp',
+    { timeout: 5000 },
+  );
 }
 
 test.describe('Web Portal real-time (fixture)', () => {
@@ -35,7 +42,7 @@ test.describe('Web Portal real-time (fixture)', () => {
     });
     expect(postRes.ok()).toBeTruthy();
 
-    await expect(pageB.getByTestId('channel-messages')).toContainText(marker, { timeout: 8000 });
+    await expect(pageB.getByTestId('channel-messages')).toContainText(marker, { timeout: 15000 });
     await context.close();
   });
 

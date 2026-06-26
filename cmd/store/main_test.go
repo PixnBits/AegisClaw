@@ -70,6 +70,44 @@ func TestStoreCommands(t *testing.T) {
 	})
 }
 
+func TestPermissionAuditReadSkipsMerkleWrap(t *testing.T) {
+	// Regression: wrapping permission.panel/list responses with merkle_root breaks Hub
+	// signature verify after JSON round-trip and causes Portal 500s.
+	var auditLog []interface{}
+	grants := []interface{}{map[string]interface{}{"capability": "channel.post"}}
+	readMsg := Message{Source: "web-portal", Command: "permission.panel", Timestamp: time.Now().Format(time.RFC3339)}
+	readResp := Message{Command: "permission.panel", Payload: map[string]interface{}{"grants": grants}, Timestamp: readMsg.Timestamp}
+	appendAuditForStateChangeIfNeeded(readMsg, &readResp, &auditLog)
+	if p, ok := readResp.Payload.(map[string]interface{}); ok {
+		if _, hasMerkle := p["merkle_root"]; hasMerkle {
+			t.Fatal("permission.panel read must not be wrapped with merkle_root")
+		}
+		if _, hasResult := p["result"]; hasResult {
+			t.Fatal("permission.panel read must not be wrapped in result")
+		}
+	} else {
+		t.Fatalf("expected map payload, got %T", readResp.Payload)
+	}
+	if len(auditLog) != 0 {
+		t.Fatalf("read-only permission command must not append audit, got %d entries", len(auditLog))
+	}
+
+	// Mutating permission.grant should still attach merkle audit metadata.
+	mutMsg := Message{Source: "web-portal", Command: "permission.grant", Timestamp: time.Now().Format(time.RFC3339)}
+	mutResp := Message{Command: "permission.granted", Payload: map[string]interface{}{"ok": true}, Timestamp: mutMsg.Timestamp}
+	appendAuditForStateChangeIfNeeded(mutMsg, &mutResp, &auditLog)
+	if p, ok := mutResp.Payload.(map[string]interface{}); ok {
+		if _, hasMerkle := p["merkle_root"]; !hasMerkle {
+			t.Fatal("permission.grant should attach merkle_root")
+		}
+	} else {
+		t.Fatalf("expected map payload, got %T", mutResp.Payload)
+	}
+	if len(auditLog) != 1 {
+		t.Fatalf("expected 1 audit entry for grant, got %d", len(auditLog))
+	}
+}
+
 func TestComputeMerkleRoot(t *testing.T) {
 	log := []interface{}{"entry1", "entry2"}
 	root := computeMerkleRoot(log)

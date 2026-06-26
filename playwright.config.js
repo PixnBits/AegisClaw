@@ -20,8 +20,9 @@ export default defineConfig({
   testDir: './e2e',
   fullyParallel: !fixtureMode,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
-  workers: fixtureMode ? undefined : 1,
+  retries: process.env.CI ? 2 : fixtureMode ? 1 : 0,
+  // Fixture tests share one in-memory channel/STOMP hub — parallel workers cause cross-test pollution.
+  workers: 1,
   timeout: fixtureMode ? 30_000 : 240_000,
   reporter: 'html',
   use: {

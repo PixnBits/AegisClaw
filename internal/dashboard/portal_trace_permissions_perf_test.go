@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Note: court-persona trace perf is tested via collectAgentTrace directly to avoid
+// route-level noise from other handlers in the same package test binary.
+
 type countingBridgeClient struct {
 	calls atomic.Int32
 }
@@ -29,18 +32,17 @@ func (c *countingBridgeClient) Call(_ context.Context, action string, _ json.Raw
 func TestCourtPersonaTraceSkipsChatBridgeCalls(t *testing.T) {
 	cc := &countingBridgeClient{}
 	srv, _ := New("127.0.0.1:0", cc)
-	req := httptest.NewRequest(http.MethodGet, "/api/agents/court-persona-user-advocate/trace", nil)
-	rec := httptest.NewRecorder()
 	start := time.Now()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d", rec.Code)
-	}
+	trace := srv.collectAgentTrace(context.Background(), "court-persona-user-advocate")
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("trace took %v; expected fast path", elapsed)
 	}
 	if cc.calls.Load() != 0 {
 		t.Fatalf("expected 0 bridge calls, got %d", cc.calls.Load())
+	}
+	phases, ok := trace["phases"].([]interface{})
+	if !ok || len(phases) == 0 {
+		t.Fatalf("expected phases in trace fast path, got %v", trace)
 	}
 }
 

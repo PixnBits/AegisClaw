@@ -1,13 +1,93 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"AegisClaw/internal/transport/hubclient"
 )
+
+// turnTestHub captures llm.call prompts for channel turn regression tests.
+type turnTestHub struct {
+	assignedID string
+	llmPrompt  string
+}
+
+func (h *turnTestHub) Register(context.Context, string, ed25519.PublicKey, string) (*hubclient.RegisterResponse, error) {
+	return &hubclient.RegisterResponse{AssignedID: h.assignedID}, nil
+}
+
+func (h *turnTestHub) Send(_ context.Context, msg hubclient.Message) (hubclient.Message, error) {
+	switch msg.Command {
+	case "channel.get_relevant_since":
+		return hubclient.Message{
+			Command: "channel.get_relevant_since.data",
+			Payload: map[string]interface{}{"anchors": []interface{}{}},
+		}, nil
+	case "llm.call":
+		if req, ok := msg.Payload.(map[string]interface{}); ok {
+			if inner, ok := req["request"].(map[string]interface{}); ok {
+				if p, ok := inner["prompt"].(string); ok {
+					h.llmPrompt = p
+				}
+			}
+		}
+		return hubclient.Message{
+			Command: "llm.call.response",
+			Payload: map[string]interface{}{"response": "Here is my channel turn reply."},
+		}, nil
+	case "channel.post":
+		return hubclient.Message{Command: "channel.posted", Payload: map[string]interface{}{"ok": true}}, nil
+	default:
+		return hubclient.Message{Command: "response", Payload: map[string]interface{}{"ok": true}}, nil
+	}
+}
+
+func (h *turnTestHub) Close() error                                       { return nil }
+func (h *turnTestHub) AssignedID() string                                 { return h.assignedID }
+func (h *turnTestHub) IsVsock() bool                                      { return false }
+func (h *turnTestHub) Receive(context.Context) (hubclient.Message, error) { return hubclient.Message{}, nil }
+func (h *turnTestHub) Reply(context.Context, hubclient.Message) error     { return nil }
+func (h *turnTestHub) TryReceive(context.Context, time.Duration) (hubclient.Message, bool, error) {
+	return hubclient.Message{}, false, nil
+}
+
+func TestProcessChannelTurnUsesDirectTurnPrompt(t *testing.T) {
+	// Regression: processChannelTurn must call llmChannelReply with the turn prompt,
+	// not generateChannelReply (which double-wraps with VOTE proposal review format).
+	hub := &turnTestHub{assignedID: "court-persona-senior-coder"}
+	msg := hubclient.Message{
+		Source: "store",
+		Command: "channel.turn",
+		Payload: map[string]interface{}{
+			"channel_id": "main",
+			"since_seq":  1,
+			"new_messages": []interface{}{
+				map[string]interface{}{"from": "user", "content": "Can you review this design?"},
+			},
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	processChannelTurn(hub, msg, "court-persona-senior-coder", "senior-coder")
+	if hub.llmPrompt == "" {
+		t.Fatal("expected llm.call with turn prompt")
+	}
+	if !strings.Contains(hub.llmPrompt, "batched channel turn") {
+		t.Fatalf("expected turn-specific prompt, got: %s", hub.llmPrompt)
+	}
+	if strings.Contains(hub.llmPrompt, "VOTE:") || strings.Contains(hub.llmPrompt, "SPECIFIC_FEEDBACK") {
+		t.Fatalf("turn prompt must not use proposal VOTE wrapper: %s", hub.llmPrompt)
+	}
+	if strings.Contains(hub.llmPrompt, "Proposal description:") {
+		t.Fatalf("turn prompt must not use generateChannelReply proposal wrapper: %s", hub.llmPrompt)
+	}
+}
 
 func TestSignMessage(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)

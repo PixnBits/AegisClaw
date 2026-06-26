@@ -265,7 +265,7 @@ test-e2e:
 
 # Contract-only E2E against the thin web-portal fixture (no daemon). For CI without Firecracker.
 test-e2e-contract: build-web-portal
-	AEGIS_E2E_FIXTURE=1 bash scripts/run-playwright-e2e.sh e2e/journeys.spec.js e2e/portal-spec-journeys.spec.js e2e/portal-realtime.spec.js e2e/portal-progressive-reasoning.spec.js e2e/portal-mobile.spec.js e2e/portal-visual-polish.spec.js e2e/portal-navigation.spec.js --project=chromium
+	AEGIS_E2E_FIXTURE=1 bash scripts/run-playwright-e2e.sh e2e/journeys.spec.js e2e/portal-navigation.spec.js e2e/portal-spec-journeys.spec.js e2e/portal-realtime.spec.js e2e/portal-progressive-reasoning.spec.js e2e/portal-mobile.spec.js e2e/portal-visual-polish.spec.js --project=chromium
 
 # Real unmocked E2E exercising PM + LLM (Ollama via network-boundary) + channels exactly as a user would:
 #   `aegis pm goal "..." --channel foo` then `aegis channel get foo` (or view in portal #channels).
