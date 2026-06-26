@@ -12,6 +12,18 @@ async function waitPortalReady(page) {
   await page.waitForSelector('[data-portal-ready="1"]', { timeout: 15000 });
 }
 
+async function scrollFeedToLatest(page) {
+  const virtual = page.getByTestId('channel-messages-virtual');
+  if ((await virtual.count()) > 0) {
+    for (let i = 0; i < 4; i++) {
+      await virtual.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await page.waitForTimeout(150);
+    }
+  }
+}
+
 /** Open the channels SPA page (hash router + hidden panels). Returns false when shell nav is unavailable. */
 async function openChannels(page) {
   await waitPortalReady(page);
@@ -133,6 +145,7 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
 
     const messages = page.locator('[data-testid="channel-messages"]');
     await expect(messages).toBeVisible({ timeout: 10000 });
+    await scrollFeedToLatest(page);
     await expect(messages).toContainText('E2E-LLM-VERIFY', { timeout: 15000 });
     await expect(messages).toContainText('project-manager', { timeout: 10000 });
     await expect(messages).toContainText(/plan|step|coder|tester|hello|monitoring/i, { timeout: 10000 });
@@ -141,32 +154,11 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
     await expect(membersList).toBeVisible({ timeout: 10000 });
     await expect(membersList).toContainText('project-manager', { timeout: 10000 });
 
-    const postForm = page.locator('#channelPostForm');
-    const content = page.locator('#postContent');
-    await expect(postForm).toBeVisible({ timeout: 5000 });
-    await content.fill('E2E browser follow-up from user (detailed journey test)');
-    // Native postToChannel requires module currentChannel; when list was populated via fallback,
-    // submit through the filled form values + channels API (user typed in browser; same POST path).
-    await page.evaluate(async () => {
-      const id = 'plan-demo-e2e-llm';
-      const text = document.getElementById('postContent')?.value || '';
-      if (!text) return;
-      await fetch(`/api/channels/${id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: 'user', content: text }),
-      });
-      const fresh = await fetch(`/api/channels/${id}`, { headers: { Accept: 'application/json' } }).then((r) => r.json());
-      const msgEl = document.querySelector('[data-testid="channel-messages"]');
-      if (msgEl) {
-        msgEl.innerHTML = (fresh.messages || []).map((m) => {
-          const from = m.from || 'unknown';
-          const body = m.content || '';
-          return `<div class="message"><strong>${from}</strong><br>${body}</div>`;
-        }).join('');
-      }
-    });
-    await expect(messages).toContainText('E2E browser follow-up from user', { timeout: 10000 });
+    const postInput = page.getByTestId('message-input');
+    await expect(postInput).toBeVisible({ timeout: 5000 });
+    await postInput.fill('E2E browser follow-up from user (detailed journey test)');
+    await page.getByTestId('send-button').click();
+    await expect(messages).toContainText('E2E browser follow-up from user', { timeout: 15000 });
 
     await openChannels(page);
     await ensureChannelsListPopulated(page);
@@ -222,13 +214,11 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
   test('User Journey 3 (collab task) + channels post form present (detailed browser interaction)', async ({ page }) => {
     await openChannels(page);
     await expect(page.getByTestId('create-channel-button')).toBeVisible({ timeout: 5000 });
-    const composer = page.locator('#channelPostForm');
-    // Composer is inside channel-detail (hidden until a channel is selected).
     const firstChannel = page.locator('[data-testid="channels-list"] li, [data-testid="channels-list"] a').first();
     if (await firstChannel.count() > 0) {
       await firstChannel.click();
       await expect(page.locator('[data-testid="channel-detail"]')).toBeVisible({ timeout: 10000 });
-      await expect(composer).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('message-input')).toBeVisible({ timeout: 5000 });
     }
   });
 });
