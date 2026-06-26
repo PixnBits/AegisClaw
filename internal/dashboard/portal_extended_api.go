@@ -247,10 +247,10 @@ func (s *Server) handleAPIAgentPermissions(w http.ResponseWriter, r *http.Reques
 		snapshot, _ := s.fetchRaw(ctx, "permission.snapshot", map[string]interface{}{"subject": agentID})
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
 			"agent_id":   agentID,
-			"grants":     grants,
-			"requests":   requests,
-			"visibility": visibility,
-			"snapshot":   snapshot,
+			"grants":     normalizePermissionList(grants),
+			"requests":   normalizePermissionList(requests),
+			"visibility": normalizePermissionList(visibility),
+			"snapshot":   normalizePermissionSnapshot(snapshot),
 		})
 	case http.MethodPost:
 		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
@@ -336,6 +336,31 @@ func (s *Server) handleAPICisoDelegation(w http.ResponseWriter, r *http.Request)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// normalizePermissionList coerces bridge responses into JSON arrays for the Portal UI.
+// Daemon-local fallbacks (mis-routed permission.*) historically returned {}.
+func normalizePermissionList(v interface{}) interface{} {
+	if v == nil {
+		return []interface{}{}
+	}
+	if arr, ok := v.([]interface{}); ok {
+		return arr
+	}
+	if m, ok := v.(map[string]interface{}); ok && len(m) == 0 {
+		return []interface{}{}
+	}
+	return v
+}
+
+func normalizePermissionSnapshot(v interface{}) interface{} {
+	if v == nil {
+		return map[string]interface{}{}
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	return v
 }
 
 func traceToolSummary(m map[string]interface{}) string {

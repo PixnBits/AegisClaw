@@ -34,6 +34,34 @@ func (m *permissionsMockClient) Call(_ context.Context, action string, _ json.Ra
 	}
 }
 
+func TestHandleAPIAgentPermissions_GET_ProjectManagerBootstrap(t *testing.T) {
+	st := permissions.DefaultBootstrap()
+	mc := &mutPermClient{st: st}
+	srv, _ := New("127.0.0.1:0", mc)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/project-manager-main/permissions", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	grants, ok := out["grants"].([]interface{})
+	if !ok || len(grants) == 0 {
+		t.Fatalf("expected PM bootstrap grants, got %v", out["grants"])
+	}
+	body := string(rec.Body.Bytes())
+	if !strings.Contains(body, "channel.create") {
+		t.Errorf("expected channel.create in PM grants, got %s", body)
+	}
+	snap, ok := out["snapshot"].(map[string]interface{})
+	if !ok || snap["subject"] != "project-manager-main" {
+		t.Errorf("expected permission snapshot for project-manager-main, got %v", out["snapshot"])
+	}
+}
+
 func TestHandleAPIAgentPermissions_GET(t *testing.T) {
 	srv, _ := New("127.0.0.1:0", &permissionsMockClient{})
 	req := httptest.NewRequest(http.MethodGet, "/api/agents/coder-test/permissions", nil)

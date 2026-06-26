@@ -601,6 +601,11 @@ rules:
     - sessions.*
     - skill.*
     - proposal.*
+    - permission.*
+    - visibility.*
+    - ciso.delegation.*
+    - tool.registry.discover
+    - audit.list
 - source: "daemon-internal-*"
   destination: store
   commands:
@@ -609,6 +614,11 @@ rules:
     - sessions.*
     - skill.*
     - proposal.*
+    - permission.*
+    - visibility.*
+    - ciso.delegation.*
+    - tool.registry.discover
+    - audit.list
 # Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
 # clients for the commands above (responses may carry the original command name in audit; observed
 # as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).
