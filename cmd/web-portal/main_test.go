@@ -160,6 +160,34 @@ func TestDocumentedPublicRESTEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("GET /api/agents returns non-empty fixture roster", func(t *testing.T) {
+		// go test runs with CWD = package dir (cmd/web-portal), not repo root.
+		t.Setenv("AEGIS_STORE_DATA_DIR", "testdata")
+		t.Setenv("AEGIS_SKILLS_FILE", "skills.fixture.json")
+		c := tryNewE2EFixtureClient()
+		if c == nil {
+			t.Fatal("fixture client should initialize with test skills file")
+		}
+		srv, err := dashboard.New("127.0.0.1:0", c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
+		}
+		var out map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		agents, ok := out["agents"].([]interface{})
+		if !ok || len(agents) == 0 {
+			t.Fatalf("fixture /api/agents must expose worker.list agents, got %v", out["agents"])
+		}
+	})
+
 	t.Run("GET /api/approvals?pending=1 delegates", func(t *testing.T) {
 		client.calls = nil
 		req := httptest.NewRequest(http.MethodGet, "/api/approvals?pending=1", nil)

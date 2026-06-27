@@ -47,8 +47,10 @@ test.describe('Portal SPA API contract (latency + shape)', () => {
     const res = await request.get('/api/agents', { timeout: MAX_MS + 5000 });
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
+    expect(body).not.toEqual([]);
     expect(body).toHaveProperty('agents');
     expect(Array.isArray(body.agents)).toBeTruthy();
+    expect(body.agents.length, 'live daemon /api/agents must not return empty agents (worker.list regression)').toBeGreaterThan(0);
     for (const agent of body.agents) {
       expect(agent).toHaveProperty('name');
       expect(agent).toHaveProperty('status');
