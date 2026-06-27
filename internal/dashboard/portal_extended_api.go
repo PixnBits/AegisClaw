@@ -265,6 +265,10 @@ func (s *Server) handleAPIAgentPermissions(w http.ResponseWriter, r *http.Reques
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		action, _ := body["action"].(string)
 		capability, _ := body["capability"].(string)
+		if action == "" || capability == "" {
+			http.Error(w, "action and capability required", http.StatusBadRequest)
+			return
+		}
 		bridgeAction := "permission." + action
 		if action == "hide" {
 			bridgeAction = "visibility.set"

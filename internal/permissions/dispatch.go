@@ -110,7 +110,10 @@ func DispatchCommand(state *State, source, command string, payload map[string]in
 		subject, _ := payload["subject"].(string)
 		capability, _ := payload["capability"].(string)
 		ctx, _ := payload["context"].(string)
-		req := RecordRequest(state, subject, capability, ctx)
+		req, recErr := RecordRequest(state, subject, capability, ctx)
+		if recErr != nil {
+			return "error", recErr.Error(), nil
+		}
 		_ = SaveState(state)
 		appendPermissionAudit(audit, ts, "permission.request", source, subject+":"+capability)
 		return "permission.request", req, nil
@@ -157,9 +160,11 @@ func DispatchCommand(state *State, source, command string, payload map[string]in
 		return "visibility.list", out, nil
 
 	case "tool.registry.discover":
-		if !state.CisoDelegationEnabled && !HasGrant(state, source, "tool.registry.discover") {
-			// simplistic; real uses HasGrant on the flag too
-			req := RecordRequest(state, source, "tool.registry.discover", "registry discover without grant")
+		if !HasGrant(state, source, "tool.registry.discover") {
+			req, recErr := RecordRequest(state, source, "tool.registry.discover", "registry discover without grant")
+			if recErr != nil {
+				return "error", recErr.Error(), nil
+			}
 			_ = SaveState(state)
 			return "error", map[string]interface{}{"error": "ERR_PERMISSION_DENIED", "request_id": req.ID}, nil
 		}

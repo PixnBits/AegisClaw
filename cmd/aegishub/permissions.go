@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -17,12 +18,13 @@ var (
 )
 
 // fetchPermissionSnapshotFromStore synchronously requests permission.snapshot from Store via Hub RPC.
-func fetchPermissionSnapshotFromStore(componentID string) permissions.Snapshot {
+// The second return value is true when Store returned a valid snapshot (including deny-all).
+func fetchPermissionSnapshotFromStore(componentID string) (permissions.Snapshot, bool) {
 	registeredMutex.RLock()
 	storeComp, ok := registered["store"]
 	registeredMutex.RUnlock()
 	if !ok || storeComp.Encoders == nil {
-		return permissions.Snapshot{Subject: componentID, Timestamp: permissions.NowRFC3339()}
+		return permissions.Snapshot{Subject: componentID, Timestamp: permissions.NowRFC3339()}, false
 	}
 
 	msg := Message{
@@ -33,24 +35,16 @@ func fetchPermissionSnapshotFromStore(componentID string) permissions.Snapshot {
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	}
 
-	storeComp.Encoders.Mutex.Lock()
-	_ = storeComp.Encoders.Encoder.Encode(msg)
-	storeComp.Encoders.Mutex.Unlock()
-
-	// Read reply from store connection (store processes on its loop)
-	// Use a short timeout read - store reply comes on store's encoder back to hub
-	// The hub's store connection reader handles this via forwardHubRPC pattern.
-	// For register-time fetch we use a direct synchronous approach via pending RPC on hub side.
 	reply := hubStoreRPC(msg)
 	if reply.Command == "permission.snapshot" {
 		if snap, ok := decodeSnapshot(reply.Payload); ok {
 			permSnapMu.Lock()
 			permSnapshots[componentID] = snap
 			permSnapMu.Unlock()
-			return snap
+			return snap, true
 		}
 	}
-	return permissions.Snapshot{Subject: componentID, Timestamp: permissions.NowRFC3339()}
+	return permissions.Snapshot{Subject: componentID, Timestamp: permissions.NowRFC3339()}, false
 }
 
 func decodeSnapshot(payload interface{}) (permissions.Snapshot, bool) {
@@ -75,7 +69,7 @@ func hubStoreRPC(msg Message) Message {
 		return Message{Command: "error", Payload: "store unavailable"}
 	}
 
-	waitID := "hub-perm-fetch"
+	waitID := fmt.Sprintf("hub-perm-fetch-%d", time.Now().UnixNano())
 	waitCh := registerPendingRPC(waitID)
 	defer clearPendingRPC(waitID)
 
@@ -113,7 +107,7 @@ func pushPermissionSnapshot(componentID string, encoders *ComponentEncoders, sna
 
 // invalidatePermissionSnapshot refetches and pushes updated snapshot after grant/visibility change.
 func invalidatePermissionSnapshot(componentID string) {
-	snap := fetchPermissionSnapshotFromStore(componentID)
+	snap, _ := fetchPermissionSnapshotFromStore(componentID)
 	registeredMutex.RLock()
 	comp, ok := registered[componentID]
 	registeredMutex.RUnlock()
@@ -143,20 +137,17 @@ func checkHubPermission(source, command string) (allowed bool, deniedReason stri
 
 func hubPermissionAllowed(source, command string) bool {
 	permSnapMu.RLock()
-	snap, ok := permSnapshots[source]
+	snap, cached := permSnapshots[source]
 	permSnapMu.RUnlock()
 
-	if !ok || len(snap.AllowedTools) == 0 {
-		snap = fetchPermissionSnapshotFromStore(source)
+	if !cached {
+		var ok bool
+		snap, ok = fetchPermissionSnapshotFromStore(source)
+		if !ok {
+			return permissions.HasGrant(permBootstrap, source, command)
+		}
 	}
-	if snap.AllowedTools[command] {
-		return true
-	}
-	// Fallback: bootstrap grants when snapshot fetch failed or is stale
-	if permissions.HasGrant(permBootstrap, source, command) {
-		return true
-	}
-	return false
+	return snap.AllowedTools[command]
 }
 
 func emitPermissionRequest(subject, capability, context string) {

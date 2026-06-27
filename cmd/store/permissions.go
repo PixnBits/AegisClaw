@@ -11,7 +11,7 @@ var permissionState = permissions.DefaultBootstrap()
 
 func initPermissionState() {
 	permissionState = permissions.LoadState()
-	if permissionState == nil || len(permissionState.Grants) == 0 {
+	if permissionState == nil {
 		permissionState = permissions.DefaultBootstrap()
 	}
 	_ = permissions.SaveState(permissionState)
@@ -91,7 +91,10 @@ func permissionCheckAtStore(source, command string, skills map[string]interface{
 	if permissions.HasGrant(permissionState, pattern, command) {
 		return true, ""
 	}
-	req := permissions.RecordRequest(permissionState, source, command, "denied at store enforcement")
+	req, err := permissions.RecordRequest(permissionState, source, command, "denied at store enforcement")
+	if err != nil {
+		return false, err.Error()
+	}
 	_ = permissions.SaveState(permissionState)
 	_ = req
 	return false, "ERR_PERMISSION_DENIED"

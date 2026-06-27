@@ -448,7 +448,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 
 	// Push permission + visibility snapshot to agent-like microVMs (permissions-model.md §Enforcement flow step 1).
 	if shouldReceivePermissionSnapshot(componentID) {
-		snap := fetchPermissionSnapshotFromStore(componentID)
+		snap, _ := fetchPermissionSnapshotFromStore(componentID)
 		pushPermissionSnapshot(componentID, encoders, snap)
 	}
 

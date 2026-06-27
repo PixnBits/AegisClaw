@@ -135,7 +135,7 @@ func (idx *AgentSkillIndex) isToolAllowed(name string) bool {
 	if !idx.permFilter.Enforce {
 		return true
 	}
-	return idx.permFilter.AllowedTools[name]
+	return idx.permFilter.AllowedTools[name] && idx.permFilter.VisibleTools[name]
 }
 
 // isToolDiscoverable returns true if the tool should appear in tool.list/search.

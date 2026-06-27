@@ -10,6 +10,24 @@ import (
 	"AegisClaw/internal/permissions"
 )
 
+func TestInitPermissionState_PreservesEmptyGrants(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	data := `{"version":1,"grants":[],"visibility":[],"requests":[]}`
+	if err := os.WriteFile("permissions.json", []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	initPermissionState()
+	if permissionState == nil {
+		t.Fatal("expected non-nil permission state")
+	}
+	if len(permissionState.Grants) != 0 {
+		t.Fatalf("expected empty grants preserved, got %d", len(permissionState.Grants))
+	}
+}
+
 func TestHandlePermissionGrantRevokeList(t *testing.T) {
 	// Use temp file for isolation
 	tmp, err := os.CreateTemp("", "perm-*.json")

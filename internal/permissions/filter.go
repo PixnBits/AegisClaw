@@ -6,13 +6,18 @@ type Filter struct {
 	VisibleTools     map[string]bool
 	RequestableTools map[string]bool
 	CanDiscover      bool
-	Enforce          bool // false = backward-compat allow-all (tests/bootstrap)
+	Enforce          bool // when true, deny-by-default for tools not in AllowedTools/VisibleTools
 }
 
 // BuildFilter constructs the local filter for a subject from durable state + known capabilities.
 func BuildFilter(state *State, subjectID string, allCapabilities []string) Filter {
 	if state == nil {
-		return Filter{Enforce: false}
+		return Filter{
+			AllowedTools:     map[string]bool{},
+			VisibleTools:     map[string]bool{},
+			RequestableTools: map[string]bool{},
+			Enforce:          true,
+		}
 	}
 
 	allowed := make(map[string]bool)
@@ -54,11 +59,6 @@ func BuildFilter(state *State, subjectID string, allCapabilities []string) Filte
 		}
 	}
 
-	// Granted tools are always visible for discovery (tool.list safe path).
-	for cap := range allowed {
-		visible[cap] = true
-	}
-
 	canDiscover := allowed["tool.registry.discover"]
 
 	return Filter{
@@ -66,7 +66,7 @@ func BuildFilter(state *State, subjectID string, allCapabilities []string) Filte
 		VisibleTools:     visible,
 		RequestableTools: requestable,
 		CanDiscover:      canDiscover,
-		Enforce:          len(state.Grants) > 0 || len(state.Visibility) > 0,
+		Enforce:          true,
 	}
 }
 
@@ -133,8 +133,5 @@ func HasGrant(state *State, subjectID, capability string) bool {
 // IsVisibleForDiscovery reports whether capability may appear in discovery for subject.
 func IsVisibleForDiscovery(state *State, subjectID, capability string, allCapabilities []string) bool {
 	f := BuildFilter(state, subjectID, allCapabilities)
-	if !f.Enforce {
-		return true
-	}
 	return f.VisibleTools[capability]
 }

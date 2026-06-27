@@ -16,21 +16,50 @@ export function TraceView() {
     requests?: unknown[];
     visibility?: unknown[];
   } | null>(null);
+  const [permissionsLoading, setPermissionsLoading] = useState(false);
+  const [permissionsError, setPermissionsError] = useState<string | null>(null);
+  const [permActionError, setPermActionError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<AgentControlAction | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!traceAgentId) return;
     api.agentTrace(traceAgentId).then(setTrace).catch(() => setTrace(null));
-    api.agentPermissions(traceAgentId).then(setPermissions).catch(() => setPermissions(null));
+    setPermissionsLoading(true);
+    setPermissionsError(null);
+    api.agentPermissions(traceAgentId)
+      .then((p) => {
+        setPermissions(p);
+        setPermissionsError(null);
+      })
+      .catch((err) => {
+        setPermissions(null);
+        setPermissionsError(err instanceof Error ? err.message : 'Failed to load permissions');
+      })
+      .finally(() => setPermissionsLoading(false));
   }, [traceAgentId]);
 
   const refetchPermissions = async () => {
+    setPermissionsLoading(true);
+    setPermissionsError(null);
     try {
       const p = await api.agentPermissions(agentId);
       setPermissions(p);
-    } catch {
+    } catch (err) {
       setPermissions(null);
+      setPermissionsError(err instanceof Error ? err.message : 'Failed to load permissions');
+    } finally {
+      setPermissionsLoading(false);
+    }
+  };
+
+  const runPermissionAction = async (action: 'grant' | 'revoke' | 'hide', capability: string) => {
+    setPermActionError(null);
+    try {
+      await api.agentPermissionAction(agentId, action, capability);
+      await refetchPermissions();
+    } catch (err) {
+      setPermActionError(err instanceof Error ? err.message : 'Permission action failed');
     }
   };
 
@@ -102,10 +131,17 @@ export function TraceView() {
       )}
       <section className="permissions-panel" data-testid="agent-permissions-panel">
         <h2>Permission Requests &amp; Grants</h2>
-        {!permissions ? (
+        {permissionsLoading ? (
           <p className="subtle" data-testid="permissions-loading">Loading permissions…</p>
+        ) : permissionsError ? (
+          <p className="subtle" role="alert" data-testid="permissions-error">{permissionsError}</p>
+        ) : !permissions ? (
+          <p className="subtle" data-testid="permissions-empty">No permission data available.</p>
         ) : (
           <>
+            {permActionError && (
+              <p className="subtle" role="alert" data-testid="perm-action-error">{permActionError}</p>
+            )}
             <div data-testid="agent-grants-list">
               <h3>Granted capabilities</h3>
               {(permissions.grants as unknown[])?.length ? (
@@ -118,7 +154,7 @@ export function TraceView() {
                           type="button"
                           className="secondary-button"
                           data-testid={`perm-revoke-${i}`}
-                          onClick={() => void api.agentPermissionAction(agentId, 'revoke', g.capability!).then(refetchPermissions)}
+                          onClick={() => void runPermissionAction('revoke', g.capability!)}
                         >
                           Revoke
                         </button>
@@ -159,7 +195,7 @@ export function TraceView() {
                             type="button"
                             className="secondary-button"
                             data-testid={`perm-grant-${i}`}
-                            onClick={() => void api.agentPermissionAction(agentId, 'grant', req.capability!).then(refetchPermissions)}
+                            onClick={() => void runPermissionAction('grant', req.capability!)}
                           >
                             Grant
                           </button>
@@ -167,7 +203,7 @@ export function TraceView() {
                             type="button"
                             className="secondary-button"
                             data-testid={`perm-hide-${i}`}
-                            onClick={() => void api.agentPermissionAction(agentId, 'hide', req.capability!).then(refetchPermissions)}
+                            onClick={() => void runPermissionAction('hide', req.capability!)}
                           >
                             Hide
                           </button>

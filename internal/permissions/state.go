@@ -11,7 +11,7 @@ func GrantCapability(state *State, subject, capability, grantedBy, reason string
 		return fmt.Errorf("ERR_PERMISSION_DENIED: self-grant forbidden")
 	}
 	if state == nil {
-		state = NewState()
+		return fmt.Errorf("ERR_PERMISSION_DENIED: nil permission state")
 	}
 	// Remove existing grant for same subject pattern + capability
 	filtered := state.Grants[:0]
@@ -77,9 +77,9 @@ func SetVisibility(state *State, subject, capability string, level VisibilityLev
 }
 
 // RecordRequest appends a permission request for denied tool use.
-func RecordRequest(state *State, subject, capability, context string) Request {
+func RecordRequest(state *State, subject, capability, context string) (Request, error) {
 	if state == nil {
-		state = NewState()
+		return Request{}, fmt.Errorf("ERR_PERMISSION_DENIED: nil permission state")
 	}
 	id := fmt.Sprintf("perm-req-%d", len(state.Requests)+1)
 	req := Request{
@@ -92,7 +92,7 @@ func RecordRequest(state *State, subject, capability, context string) Request {
 	}
 	state.Requests = append(state.Requests, req)
 	state.Version++
-	return req
+	return req, nil
 }
 
 // ListGrantsForSubject returns grants applicable to subjectID.

@@ -272,7 +272,7 @@ func tryNewE2EFixtureClient() *e2eFixtureClient {
 	}
 	c.seedChannels()
 	// Seed a pending permission request for per-agent Portal E2E (permissions-model.md §Request flow).
-	_ = permissions.RecordRequest(c.permissions, "coder-test", "channel.create", "need channel for isolated task")
+	_, _ = permissions.RecordRequest(c.permissions, "coder-test", "channel.create", "need channel for isolated task")
 
 	if skillsFile != "" {
 		if b, err := os.ReadFile(filepath.Join(dataDir, skillsFile)); err == nil {

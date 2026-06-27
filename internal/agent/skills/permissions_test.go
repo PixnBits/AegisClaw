@@ -55,6 +55,34 @@ func TestPermissionFilter_GrantedVsDiscoverable(t *testing.T) {
 	}
 }
 
+func TestCheckToolInvoke_RequiresVisibility(t *testing.T) {
+	idx := NewAgentSkillIndex()
+	idx.AddTool(Tool{Name: "proposal.create", Description: "create proposal", SkillID: "gov"})
+	idx.SetPermissionFilter(PermissionFilter{
+		Enforce:      true,
+		AllowedTools: map[string]bool{"proposal.create": true},
+		VisibleTools: map[string]bool{},
+	})
+
+	if err := idx.CheckToolInvoke("proposal.create"); err == nil {
+		t.Fatal("granted-but-hidden tool must not be invokable")
+	}
+}
+
+// TestSecurity_ForgedEmptySnapshot_FilterFromSnapshot ensures FilterFromSnapshot always enforces.
+func TestSecurity_ForgedEmptySnapshot_FilterFromSnapshot(t *testing.T) {
+	f := FilterFromSnapshot(permissions.Snapshot{})
+	if !f.Enforce {
+		t.Fatal("empty snapshot must enforce deny-by-default")
+	}
+	idx := NewAgentSkillIndex()
+	idx.AddTool(Tool{Name: "proposal.create", Description: "create proposal", SkillID: "gov"})
+	idx.SetPermissionFilter(f)
+	if err := idx.CheckToolInvoke("proposal.create"); err == nil {
+		t.Fatal("empty forged snapshot must not allow privileged invoke")
+	}
+}
+
 // TestSecurity_ForgedEmptySnapshotDoesNotGrantPrivileges ensures an empty snapshot
 // cannot elevate privileges when enforcement is active (deny-by-default).
 func TestSecurity_ForgedEmptySnapshotDoesNotGrantPrivileges(t *testing.T) {

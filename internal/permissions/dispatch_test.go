@@ -75,6 +75,22 @@ func TestDispatchCommand_Table(t *testing.T) {
 	}
 }
 
+func TestDispatch_RegistryDiscoverRequiresGrantEvenWithCisoDelegation(t *testing.T) {
+	state := DefaultBootstrap()
+	state.CisoDelegationEnabled = true
+	cmd, resp, err := DispatchCommand(state, "coder-1", "tool.registry.discover", nil, &[]interface{}{}, NowRFC3339())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd != "error" {
+		t.Fatalf("expected error command, got %s", cmd)
+	}
+	m, ok := resp.(map[string]interface{})
+	if !ok || m["error"] != "ERR_PERMISSION_DENIED" {
+		t.Fatalf("expected ERR_PERMISSION_DENIED, got %v", resp)
+	}
+}
+
 // Test that the shipped append path used by Dispatch (and thus by store main for permission commands) produces domain entries on the slice passed for audit.
 func TestAppendProducesDomainForAudit(t *testing.T) {
 	state := DefaultBootstrap()

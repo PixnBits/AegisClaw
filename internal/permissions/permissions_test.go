@@ -67,9 +67,33 @@ func TestDefaultBootstrap_HidesHighPrivilege(t *testing.T) {
 	}
 }
 
+func TestBuildFilter_GrantedButHiddenNotInvokable(t *testing.T) {
+	state := NewState()
+	_ = GrantCapability(state, "coder*", "proposal.create", "user", "granted but hidden")
+	SetVisibility(state, "coder*", "proposal.create", VisibilityHidden, "user", "anti-fingerprinting")
+
+	f := BuildFilter(state, "coder-abc", KnownCapabilities())
+	if !f.AllowedTools["proposal.create"] {
+		t.Error("proposal.create should remain granted")
+	}
+	if f.VisibleTools["proposal.create"] {
+		t.Error("hidden granted capability must not be visible")
+	}
+}
+
+func TestGrantCapability_NilState(t *testing.T) {
+	err := GrantCapability(nil, "coder*", "channel.post", "user", "")
+	if err == nil {
+		t.Fatal("expected error for nil state")
+	}
+}
+
 func TestRecordRequest(t *testing.T) {
 	state := NewState()
-	req := RecordRequest(state, "agent-1", "channel.create", "need to create channel for task")
+	req, err := RecordRequest(state, "agent-1", "channel.create", "need to create channel for task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if req.Status != "pending" {
 		t.Errorf("expected pending, got %s", req.Status)
 	}

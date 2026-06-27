@@ -23,6 +23,13 @@ func TestSecurity_HiddenToolsNotDiscoverableEvenWithRegistryGrant(t *testing.T) 
 	}
 }
 
+func TestSecurity_NilStateRecordRequestRejected(t *testing.T) {
+	_, err := RecordRequest(nil, "agent-1", "channel.create", "ctx")
+	if err == nil {
+		t.Fatal("nil state must not silently accept record request")
+	}
+}
+
 // TestSecurity_SelfGrantRejected verifies microVMs cannot self-grant capabilities.
 func TestSecurity_SelfGrantRejected(t *testing.T) {
 	state := NewState()

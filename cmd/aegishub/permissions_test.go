@@ -18,7 +18,7 @@ func TestCheckHubPermission_SkipsHostComponents(t *testing.T) {
 }
 
 func TestHubPermissionAllowed_BootstrapFallback(t *testing.T) {
-	// Empty snapshot cache — bootstrap should still allow PM channel.post
+	// No cached snapshot and no store — bootstrap fallback applies.
 	permSnapshots = map[string]permissions.Snapshot{}
 	if !hubPermissionAllowed("project-manager-main", "channel.post") {
 		t.Error("bootstrap fallback should allow project-manager channel.post")
@@ -28,6 +28,20 @@ func TestHubPermissionAllowed_BootstrapFallback(t *testing.T) {
 	}
 	if !hubPermissionAllowed("court-persona-senior-coder", "channel.get_relevant_since") {
 		t.Error("bootstrap fallback should allow court persona channel.get_relevant_since")
+	}
+}
+
+func TestHubPermissionAllowed_EmptyCachedSnapshotDenies(t *testing.T) {
+	// Cached deny-all snapshot from Store must not fall back to bootstrap.
+	permSnapshots = map[string]permissions.Snapshot{
+		"project-manager-main": {
+			Subject:      "project-manager-main",
+			AllowedTools: map[string]bool{},
+			VisibleTools: map[string]bool{},
+		},
+	}
+	if hubPermissionAllowed("project-manager-main", "channel.post") {
+		t.Error("empty cached snapshot must deny even when bootstrap would allow")
 	}
 }
 

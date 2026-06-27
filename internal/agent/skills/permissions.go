@@ -9,7 +9,7 @@ func FilterFromSnapshot(snap permissions.Snapshot) PermissionFilter {
 		VisibleTools:        snap.VisibleTools,
 		RequestableTools:    snap.RequestableTools,
 		CanDiscoverRegistry: snap.CanDiscover,
-		Enforce:             len(snap.AllowedTools) > 0 || len(snap.VisibleTools) > 0,
+		Enforce:             true,
 	}
 }
 

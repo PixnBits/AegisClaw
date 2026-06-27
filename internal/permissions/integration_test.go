@@ -43,7 +43,10 @@ func TestIntegration_PermissionRequestOnDenied(t *testing.T) {
 	if err := idx.CheckToolInvoke("channel.create"); err == nil {
 		t.Fatal("ungranted channel.create must be denied")
 	}
-	req := permissions.RecordRequest(state, "coder-1", "channel.create", "need to create task channel")
+	req, err := permissions.RecordRequest(state, "coder-1", "channel.create", "need to create task channel")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if req.Status != "pending" {
 		t.Errorf("expected pending request, got %s", req.Status)
 	}

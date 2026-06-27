@@ -8,8 +8,8 @@ import (
 const permissionsFile = "permissions.json"
 
 // LoadState reads durable permission state from disk.
-// Returns DefaultBootstrap when missing, corrupt, or empty (deny-by-default must still
-// include explicit bootstrap grants from config).
+// Returns DefaultBootstrap only when the file is missing or corrupt.
+// A persisted file with zero grants is preserved (intentional deny-all).
 func LoadState() *State {
 	data, err := os.ReadFile(permissionsFile)
 	if err != nil {
@@ -17,9 +17,6 @@ func LoadState() *State {
 	}
 	var s State
 	if err := json.Unmarshal(data, &s); err != nil {
-		return DefaultBootstrap()
-	}
-	if len(s.Grants) == 0 {
 		return DefaultBootstrap()
 	}
 	return &s

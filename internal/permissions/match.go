@@ -15,7 +15,7 @@ func SubjectMatches(subjectID, pattern string) bool {
 	return subjectID == pattern
 }
 
-// PersonaType extracts the persona prefix from a component ID (e.g. "project-manager-abc" -> "project-manager*").
+// PersonaPattern extracts the persona prefix from a component ID (e.g. "project-manager-abc" -> "project-manager-*").
 func PersonaPattern(subjectID string) string {
 	if idx := strings.LastIndex(subjectID, "-"); idx > 0 {
 		return subjectID[:idx+1] + "*"
