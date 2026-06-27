@@ -85,11 +85,13 @@ func getPMPrompt() string {
 			custom += "Custom agent/PM instructions: " + loadedWorkspace.AGENTS + ". "
 		}
 	}
-	base := "You are the Project Manager Agent. You receive user goals or channel activity. " +
-		"Break them into plans (tasks, required roles like Coder/Tester/Court, suggested channels). " +
-		"Decide which agents/roles to spin up or invite to which channels using EnsureRoleAgent. " +
-		"Delegate via channel posts or @mentions. Monitor, synthesize, and escalate to Court via formal proposals when changes are needed. " +
-		"Stay in character as the intelligent orchestrator. Respond with structured plans or actions."
+
+	// Shared system context for the Project Manager — mirrors the Court personas so the orchestrator
+	// understands the full architecture and can delegate, monitor, and escalate effectively.
+	systemContext := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with ACLs and signing. LLM calls go through Network Boundary. Persistent state lives in Store VM; per-agent context in Memory VM. Skills/tools are discovered via tool.search after Court review and Builder VM implementation. Collaboration uses turn-based channel.turn with relevance_anchors and Store context tools (get_relevant_since / get_messages). Use NO_REPLY when a reply adds no value. You orchestrate via ensure.role, channel plans, and monitoring; escalate meaningful changes as formal proposals to Court Scribe for the 7 personas to review. Most changes require unanimous Court Approve. Web portal shows real-time updates and #agents observability. Respect prepended workspace AGENTS.md / SOUL.md custom instructions. Never expose secrets. Abstain or escalate on uncertainty."
+
+	base := systemContext + " You receive user goals or channel activity. Break them into plans (tasks, required roles like Coder/Tester/Court, suggested channels). Decide which agents/roles to spin up or invite to which channels using EnsureRoleAgent. Delegate via channel posts or @mentions. Monitor, synthesize, and escalate to Court via formal proposals when changes are needed. Stay in character as the intelligent orchestrator. Respond with structured plans or actions. For channel activity or turns: Reply in 2-4 sentences as the Project Manager or exactly NO_REPLY if nothing valuable to add."
+
 	return custom + base
 }
 
@@ -260,7 +262,7 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 				"role":       "court-persona-ciso",
 			},
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
+			})
 	}
 
 	monitorContent := fmt.Sprintf("PM monitoring: roles ensured %v in channel %s. Awaiting updates from roles; will synthesize and escalate to Court when needed.", rolesToEnsure, chID)
@@ -303,9 +305,9 @@ func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqu
 				"status":     "ignored",
 				"reason":     string(reason),
 				"channel_id": chID,
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
 		return
 	}
 
@@ -317,8 +319,8 @@ func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqu
 			"status":     "delivered",
 			"reason":     string(reason),
 			"channel_id": chID,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	},
+	Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
 	// Inline on hubclient connection — see court-persona processChannelActivity (no goroutine).
@@ -371,9 +373,9 @@ func pmProcessChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSou
 		Destination: msg.Source,
 		Command:     "response",
 		Payload: map[string]interface{}{
-			"status": "delivered", "reason": "turn", "channel_id": chID,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		"status": "delivered", "reason": "turn", "channel_id": chID,
+	},
+	Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
 	batchText := collab.FormatTurnMessages(turn.NewMessages)
@@ -394,8 +396,8 @@ func pmProcessChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSou
 					"channel_id": chID,
 					"content":    content,
 					"goal":       content,
-				},
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
 			}
 			pmProcessPlanningMessage(hcl, planMsg, uniqueSource, realLLM)
 			return
@@ -491,9 +493,9 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		fmt.Println("PM received:", msg.Command)
+	fmt.Println("PM received:", msg.Command)
 
-		switch msg.Command {
+	switch msg.Command {
 		case channelfacilitator.CmdTurn:
 			pmProcessChannelTurn(hcl, msg, uniqueSource, realLLM)
 
@@ -513,16 +515,16 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					Destination: msg.Source,
 					Command:     "response",
 					Payload: map[string]interface{}{
-						"status":  "accepted",
-						"channel": chID,
-						"note":    "planning async (LLM + channel.post + ensure.role)",
-					},
-					Timestamp: time.Now().UTC().Format(time.RFC3339),
-				})
-				pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
-				break
-			}
+					"status":  "accepted",
+					"channel": chID,
+					"note":    "planning async (LLM + channel.post + ensure.role)",
+				},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			})
 			pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
+			break
+		}
+		pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
 
 		case "llm.call.response":
 			// Orphaned RPC reply (should have been consumed by nested Send). Ignore.
