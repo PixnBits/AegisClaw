@@ -24,6 +24,8 @@ type Server struct {
 
 	harnessMu    sync.Mutex
 	harnessCache map[string]contracts.HarnessState
+
+	bgPublishOnce sync.Once
 }
 
 // APIClient abstracts daemon API calls for the dashboard.
@@ -110,8 +112,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
+// EnsureBackgroundPublishers starts STOMP/monitoring background work once.
+// Deferred from New() so unit tests that construct a Server without serving
+// traffic do not race with bridge-call assertions.
+func (s *Server) EnsureBackgroundPublishers() {
+	s.bgPublishOnce.Do(func() {
+		s.startMonitoringPublisher()
+	})
+}
+
 // Start starts the dashboard HTTP server (blocks until ctx is done).
 func (s *Server) Start(ctx context.Context) error {
+	s.EnsureBackgroundPublishers()
 	srv := &http.Server{
 		Addr:    s.addr,
 		Handler: s,
@@ -174,7 +186,6 @@ func (s *Server) registerRoutes() {
 	s.initSTOMP()
 	s.mux.HandleFunc("/stomp", s.handleSTOMP)
 	s.mux.HandleFunc("/internal/realtime/channel-activity", s.handleInternalChannelActivitySTOMP)
-	s.startMonitoringPublisher()
 	s.mux.HandleFunc("/api/goals", s.handleAPIGoals)
 	s.mux.HandleFunc("/api/dashboard", s.handleAPIDashboard)
 	s.mux.HandleFunc("/api/monitoring", s.handleAPIMonitoring)

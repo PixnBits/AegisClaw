@@ -55,7 +55,7 @@ func TestAgentTraceEndpoint(t *testing.T) {
 
 func TestProposalApproveRequiresConfirmation(t *testing.T) {
 	srv, _ := New("127.0.0.1:0", &extendedMockClient{})
-	req := httptest.NewRequest(http.MethodPost, "/api/proposals/p1/approve", nil)
+	req := httptestRequest(t, http.MethodPost, "/api/proposals/p1/approve", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusPreconditionRequired {

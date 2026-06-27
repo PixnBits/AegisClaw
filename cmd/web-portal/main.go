@@ -108,6 +108,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to create rich dashboard server: %v", err)
 	}
+	srv.EnsureBackgroundPublishers()
 
 	log.Printf("!!! DEBUG: About to start listeners. TCP target=%s", listenAddr)
 	log.Printf("Web Portal (thin) starting on %s", listenAddr)

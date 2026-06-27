@@ -258,15 +258,15 @@ func (s *Server) handleAPIAgentPermissions(w http.ResponseWriter, r *http.Reques
 		}
 		json.NewEncoder(w).Encode(out) //nolint:errcheck
 	case http.MethodPost:
-		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
-			return
-		}
 		var body map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		action, _ := body["action"].(string)
 		capability, _ := body["capability"].(string)
 		if action == "" || capability == "" {
 			http.Error(w, "action and capability required", http.StatusBadRequest)
+			return
+		}
+		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
 			return
 		}
 		bridgeAction := "permission." + action

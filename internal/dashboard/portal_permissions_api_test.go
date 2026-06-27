@@ -94,7 +94,7 @@ func TestHandleAPIAgentPermissions_GET(t *testing.T) {
 func TestHandleAPICisoDelegation_POST_GET(t *testing.T) {
 	srv, _ := New("127.0.0.1:0", &permissionsMockClient{})
 	// POST set (high impact requires confirmation header)
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ciso-delegation", strings.NewReader(`{"enabled":true}`))
+	req := httptestRequest(t, http.MethodPost, "/api/settings/ciso-delegation", strings.NewReader(`{"enabled":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Aegis-Confirmed", "1")
 	rec := httptest.NewRecorder()
@@ -161,7 +161,7 @@ func TestHandleAPIAgentPermissions_POST_RejectsMissingFields(t *testing.T) {
 		`{"capability":"channel.post"}`,
 		`{}`,
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(body))
+		req := httptestRequest(t, http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, req)
@@ -188,7 +188,7 @@ func TestHandleAPIAgentPermissions_POST_GrantRevoke(t *testing.T) {
 	}
 
 	body := `{"action":"grant","capability":"mut.cap"}`
-	req = httptest.NewRequest(http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(body))
+	req = httptestRequest(t, http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Aegis-Confirmed", "1")
 	rec = httptest.NewRecorder()
@@ -220,7 +220,7 @@ func TestDashboard_CisoDelegationAndCisoSourceGrant(t *testing.T) {
 
 	// Enable delegation via real POST
 	body := `{"enabled":true}`
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ciso-delegation", strings.NewReader(body))
+	req := httptestRequest(t, http.MethodPost, "/api/settings/ciso-delegation", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Aegis-Confirmed", "1")
 	rec := httptest.NewRecorder()
@@ -231,7 +231,7 @@ func TestDashboard_CisoDelegationAndCisoSourceGrant(t *testing.T) {
 
 	// Ciso source grant via real POST to permissions handler, with from_ciso in body (client will select src=court-persona-ciso-1).
 	grantBody := `{"action":"grant","capability":"ciso.dash.handler","subject":"coder-test","from_ciso":true}`
-	req = httptest.NewRequest(http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(grantBody))
+	req = httptestRequest(t, http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(grantBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Aegis-Confirmed", "1")
 	rec = httptest.NewRecorder()
