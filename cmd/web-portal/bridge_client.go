@@ -19,41 +19,45 @@ import (
 	"github.com/mdlayher/vsock"
 )
 
-// hubBridgeClient implements dashboard.APIClient by speaking the project's
-// standard signed Message protocol to the AegisHub (and through it to backends),
-// or via the Host Daemon portal bridge (vsock 1030) when running inside a
-// Firecracker guest without a shared hub unix socket.
-type hubBridgeClient struct {
+// bridgeSession is one signed JSON RPC stream to AegisHub or the host portal bridge.
+type bridgeSession struct {
 	conn    net.Conn
 	encoder *json.Encoder
 	decoder *json.Decoder
 	priv    ed25519.PrivateKey
+	viaHost bool
 	mu      sync.Mutex
-	viaHost bool // true when connected to daemon portal bridge (not direct hub)
 }
 
-func newHubBridgeClient() (dashboard.APIClient, error) {
-	pub, priv := portalBridgeKey()
-
-	conn, viaHost, err := dialHubOrPortalBridge()
-	if err != nil {
-		return nil, err
-	}
-
-	c := &hubBridgeClient{
+func newBridgeSession(conn net.Conn, priv ed25519.PrivateKey, viaHost bool) (*bridgeSession, error) {
+	s := &bridgeSession{
 		conn:    conn,
 		encoder: json.NewEncoder(conn),
 		decoder: json.NewDecoder(conn),
 		priv:    priv,
 		viaHost: viaHost,
 	}
-
 	if viaHost {
-		// Portal bridge does not require hub registration.
-		return c, nil
+		return s, nil
 	}
+	if err := s.registerOnHub(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return s, nil
+}
 
-	pubStr := base64.StdEncoding.EncodeToString(pub)
+func (s *bridgeSession) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn != nil {
+		_ = s.conn.Close()
+		s.conn = nil
+	}
+}
+
+func (s *bridgeSession) registerOnHub() error {
+	pubStr := base64.StdEncoding.EncodeToString(s.priv.Public().(ed25519.PublicKey))
 	reg := Message{
 		Source:      "web-portal",
 		Destination: "hub",
@@ -65,30 +69,161 @@ func newHubBridgeClient() (dashboard.APIClient, error) {
 		Timestamp: time.Now().Format(time.RFC3339),
 		Signature:   "dummy",
 	}
-	signMessage(&reg, priv)
+	signMessage(&reg, s.priv)
 
-	if err := c.encoder.Encode(reg); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("web-portal: failed to register with Hub: %w", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := encodeWithContext(ctx, s.conn, s.encoder, reg); err != nil {
+		return fmt.Errorf("web-portal: failed to register with Hub: %w", err)
 	}
-
 	var resp map[string]interface{}
-	if err := c.decoder.Decode(&resp); err != nil {
-		conn.Close()
-		return nil, err
+	if err := decodeWithContext(ctx, s.decoder, &resp); err != nil {
+		return err
 	}
 	if errMsg, ok := resp["error"]; ok {
-		conn.Close()
-		return nil, fmt.Errorf("hub rejected web-portal registration: %v", errMsg)
+		return fmt.Errorf("hub rejected web-portal registration: %v", errMsg)
 	}
-
-	return c, nil
+	return nil
 }
 
-// dialHubOrPortalBridge connects the portal guest to backends.
-// In Firecracker, guest outbound vsock dial to the host (:9999 / :1030) is unreliable;
-// use the inverted guest hub bridge (guest listens :9101, host dials in) per store/court VMs.
-func dialHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
+func (s *bridgeSession) call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.conn == nil {
+		return nil, fmt.Errorf("bridge session closed")
+	}
+
+	dest := portalbridge.Destination(action)
+	if s.viaHost {
+		dest = "daemon"
+	}
+
+	var rawPayload interface{}
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &rawPayload)
+	}
+
+	msg := Message{
+		Source:      "web-portal",
+		Destination: dest,
+		Command:     action,
+		Payload:     rawPayload,
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Signature:   "",
+	}
+	signMessage(&msg, s.priv)
+
+	if err := encodeWithContext(ctx, s.conn, s.encoder, msg); err != nil {
+		if err != context.DeadlineExceeded && err != context.Canceled {
+			s.abortConn()
+		}
+		return nil, fmt.Errorf("failed to send %s via bridge: %w", action, err)
+	}
+
+	for {
+		var raw json.RawMessage
+		if err := decodeWithContext(ctx, s.decoder, &raw); err != nil {
+			if err != context.DeadlineExceeded && err != context.Canceled {
+				s.abortConn()
+			}
+			return nil, fmt.Errorf("failed to receive response for %s: %w", action, err)
+		}
+		var resp Message
+		_ = json.Unmarshal(raw, &resp)
+		if !s.viaHost && resp.Command == "ack" {
+			continue
+		}
+
+		apiResp := &dashboard.APIResponse{}
+		if resp.Command == "error" || resp.Command == "" {
+			apiResp.Success = false
+			apiResp.Error = bridgeResponseError(raw, &resp)
+		} else {
+			apiResp.Success = true
+			if data, err := json.Marshal(resp.Payload); err == nil {
+				apiResp.Data = data
+			}
+		}
+		return apiResp, nil
+	}
+}
+
+func (s *bridgeSession) abortConn() {
+	if s.conn != nil {
+		_ = s.conn.Close()
+		s.conn = nil
+	}
+}
+
+func encodeWithContext(ctx context.Context, conn net.Conn, enc *json.Encoder, v interface{}) error {
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetWriteDeadline(dl)
+		defer conn.SetWriteDeadline(time.Time{})
+	}
+	return enc.Encode(v)
+}
+
+func decodeWithContext(ctx context.Context, dec *json.Decoder, v interface{}) error {
+	type decodeResult struct {
+		err error
+	}
+	resCh := make(chan decodeResult, 1)
+	go func() {
+		resCh <- decodeResult{err: dec.Decode(v)}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case r := <-resCh:
+		return r.err
+	}
+}
+
+func bridgeResponseError(raw json.RawMessage, resp *Message) string {
+	if resp != nil && resp.Payload != nil {
+		if s, ok := resp.Payload.(string); ok && s != "" {
+			return s
+		}
+		if m, ok := resp.Payload.(map[string]interface{}); ok {
+			if e, ok := m["error"].(string); ok && e != "" {
+				return e
+			}
+		}
+		text := fmt.Sprintf("%v", resp.Payload)
+		if text != "" && text != "<nil>" {
+			return text
+		}
+	}
+	var hubEnvelope map[string]string
+	if json.Unmarshal(raw, &hubEnvelope) == nil {
+		if e := hubEnvelope["error"]; e != "" {
+			return e
+		}
+	}
+	return "hub or bridge rejected request"
+}
+
+func bridgeIOError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == context.DeadlineExceeded || err == context.Canceled {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "bridge session closed") ||
+		strings.Contains(msg, "failed to send") ||
+		strings.Contains(msg, "failed to receive") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "use of closed network connection")
+}
+
+// dialOutboundHubOrPortalBridge dials hub/portal-bridge from the guest (outbound paths only).
+// The inverted guest listener (:9101) is managed separately by resilientBridgeClient.
+func dialOutboundHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
 	socket := expandPath(getHubSocket())
 	if st, statErr := os.Stat(socket); statErr == nil && !st.IsDir() {
 		if c, dialErr := net.Dial("unix", socket); dialErr == nil {
@@ -97,17 +232,14 @@ func dialHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
 	}
 
 	if runningInFirecrackerGuest() {
-		if c, dialErr := acceptGuestHubBridgeConn(); dialErr == nil {
-			return c, false, nil
-		}
 		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.HubVsockPort, 8, 250*time.Millisecond); dialErr == nil {
 			return c, false, nil
 		}
 		if c, dialErr := dialVsockWithRetry(vsock.Host, hubclient.PortalBridgeVsockPort, 12, 500*time.Millisecond); dialErr == nil {
 			return c, true, nil
 		}
-		return nil, false, fmt.Errorf("web-portal guest: failed guest hub bridge :%d or host vsock :%d/:%d",
-			hubclient.GuestHubBridgePort, hubclient.HubVsockPort, hubclient.PortalBridgeVsockPort)
+		return nil, false, fmt.Errorf("web-portal guest: failed host vsock :%d/:%d",
+			hubclient.HubVsockPort, hubclient.PortalBridgeVsockPort)
 	}
 
 	if c, dialErr := net.Dial("unix", socket); dialErr == nil {
@@ -118,19 +250,6 @@ func dialHubOrPortalBridge() (conn net.Conn, viaHost bool, err error) {
 	}
 	return nil, false, fmt.Errorf("web-portal: failed to connect to Hub (unix %s and vsock :%d)",
 		socket, hubclient.HubVsockPort)
-}
-
-func acceptGuestHubBridgeConn() (net.Conn, error) {
-	ln, err := vsock.Listen(hubclient.GuestHubBridgePort, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer ln.Close()
-	conn, err := ln.Accept()
-	if err != nil {
-		return nil, err
-	}
-	return conn, nil
 }
 
 func runningInFirecrackerGuest() bool {
@@ -154,53 +273,6 @@ func dialVsockWithRetry(cid uint32, port uint32, attempts int, delay time.Durati
 		time.Sleep(delay)
 	}
 	return nil, lastErr
-}
-
-func (c *hubBridgeClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	dest := portalbridge.Destination(action)
-	if c.viaHost {
-		// Host portal bridge performs final routing (store/agent/daemon).
-		dest = "daemon"
-	}
-
-	var rawPayload interface{}
-	if len(payload) > 0 {
-		_ = json.Unmarshal(payload, &rawPayload)
-	}
-
-	msg := Message{
-		Source:      "web-portal",
-		Destination: dest,
-		Command:     action,
-		Payload:     rawPayload,
-		Timestamp:   time.Now().Format(time.RFC3339),
-		Signature:   "",
-	}
-	signMessage(&msg, c.priv)
-
-	if err := c.encoder.Encode(msg); err != nil {
-		return nil, fmt.Errorf("failed to send %s via bridge: %w", action, err)
-	}
-
-	var resp Message
-	if err := c.decoder.Decode(&resp); err != nil {
-		return nil, fmt.Errorf("failed to receive response for %s: %w", action, err)
-	}
-
-	apiResp := &dashboard.APIResponse{}
-	if resp.Command == "error" || resp.Command == "" {
-		apiResp.Success = false
-		apiResp.Error = fmt.Sprintf("%v", resp.Payload)
-	} else {
-		apiResp.Success = true
-		if data, err := json.Marshal(resp.Payload); err == nil {
-			apiResp.Data = data
-		}
-	}
-	return apiResp, nil
 }
 
 type Message struct {

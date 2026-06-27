@@ -44,6 +44,7 @@ Every skill declares its required scopes in `skill.yaml` (reviewed by Court):
 2. **Grant Autonomy**
    - Natural language in chat, or
    - CLI: `aegis autonomy grant <session-id> --preset=research --duration=30m`
+   - Per-agent permission grants/requests (distinct from autonomy scopes) are also reviewable and actionable in the Portal trace view (Agents → trace).
 
 3. **Agent Confirmation**
    - Agent replies: “Understood. I now have web research permission for 30 minutes.”

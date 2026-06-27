@@ -19,6 +19,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// portalBridgeRPCTimeout bounds Store (and other Hub) work initiated from the web-portal
+// guest bridge so a stuck Store RPC cannot wedge the serial portal-bridge connection.
+const portalBridgeRPCTimeout = 25 * time.Second
+
 // portalBridgeMsg matches the web-portal hub bridge wire format.
 type portalBridgeMsg struct {
 	Source      string      `json:"source"`
@@ -88,8 +92,9 @@ func handlePortalBridgeAction(command string, payload interface{}) (interface{},
 	dest := portalbridge.Destination(command)
 	switch dest {
 	case "store":
-		result, err := sendToComponentViaHub("store", command, payload)
-		return result, err
+		ctx, cancel := context.WithTimeout(context.Background(), portalBridgeRPCTimeout)
+		defer cancel()
+		return sendToComponentViaHubContext(ctx, "store", command, payload)
 	case "agent":
 		return handlePortalChatAction(command, payload)
 	case "daemon-orchestrator":
@@ -241,7 +246,7 @@ func portalChatAgentTargets(sessionID string) []string {
 // ensurePairedAgentForSession launches agent+memory for a chat session when missing,
 // or re-attaches hub bridges when the pair is already running.
 func ensurePairedAgentForSession(sessionID string) {
-	if orchestrator == nil || sessionID == "" {
+	if orchestrator == nil || sessionID == "" || !collab.IsChatAgentSession(sessionID) {
 		return
 	}
 	ctx := context.Background()
@@ -397,7 +402,81 @@ func portalWorkerList() []interface{} {
 			"channel_id": vm.Channel,
 		})
 	}
+	mergeChannelRosterIntoWorkers(&out, "main")
 	return out
+}
+
+// mergeChannelRosterIntoWorkers adds on-demand channel members (e.g. project-manager-main)
+// that are roster participants but not currently running as VMs. Permissions and trace
+// APIs use these canonical ids even when the VM is cold.
+func mergeChannelRosterIntoWorkers(out *[]interface{}, channelID string) {
+	if out == nil || channelID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	chData, err := sendToComponentViaHubContext(ctx, "store", "channel.get", map[string]interface{}{"channel_id": channelID})
+	if err != nil {
+		return
+	}
+	ch, ok := chData.(map[string]interface{})
+	if !ok {
+		return
+	}
+	members, ok := ch["members"].([]interface{})
+	if !ok {
+		return
+	}
+	mergeChannelRosterFromMembers(out, channelID, members)
+}
+
+func mergeChannelRosterFromMembers(out *[]interface{}, channelID string, members []interface{}) {
+	if out == nil || channelID == "" || len(members) == 0 {
+		return
+	}
+	existing := make(map[string]struct{}, len(*out))
+	for _, raw := range *out {
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id, _ := m["id"].(string); id != "" {
+			existing[id] = struct{}{}
+		}
+		if name, _ := m["name"].(string); name != "" {
+			existing[name] = struct{}{}
+		}
+	}
+	for _, raw := range members {
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		role = collab.NormalizeMemberRole(role)
+		if role == "" {
+			continue
+		}
+		agentID := collab.ChannelMemberAgentID(role, channelID)
+		if agentID == "" {
+			continue
+		}
+		if _, seen := existing[agentID]; seen {
+			continue
+		}
+		task := portalVMRoleLabel(agentID, role)
+		*out = append(*out, map[string]interface{}{
+			"id":         agentID,
+			"name":       agentID,
+			"status":     "standby",
+			"role":       task,
+			"task":       task,
+			"progress":   "—",
+			"channel":    channelID,
+			"channel_id": channelID,
+		})
+		existing[agentID] = struct{}{}
+	}
 }
 
 func portalInfraVM(id, vmType string) bool {

@@ -278,7 +278,10 @@ func (s *Server) collectOverviewBundle(ctx context.Context) map[string]interface
 	sandboxes, _ := s.fetchRaw(ctx, "sandbox.list", nil)
 	stats, _ := s.fetchRaw(ctx, "system.stats", nil)
 
-	workerList, _ := workers.([]interface{})
+	var workerList []interface{}
+	if cleaned := safeWorkersList(workers); cleaned != nil {
+		workerList, _ = cleaned.([]interface{})
+	}
 	sandboxList, _ := sandboxes.([]interface{})
 	statsMap, _ := stats.(map[string]interface{})
 

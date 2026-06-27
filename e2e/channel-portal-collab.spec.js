@@ -35,6 +35,18 @@ async function openMainChannel(page) {
   await expect(page.locator('[data-testid="channel-detail"]')).toBeVisible({ timeout: 10000 });
 }
 
+async function scrollFeedToLatest(page) {
+  const virtual = page.getByTestId('channel-messages-virtual');
+  if ((await virtual.count()) > 0) {
+    for (let i = 0; i < 4; i++) {
+      await virtual.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await page.waitForTimeout(150);
+    }
+  }
+}
+
 test.describe('Portal channel collaboration (browser post + agent replies)', () => {
   test('Channels UI: post broadcast question and see agent replies', async ({ page, request }) => {
     // API path already validated in verify script; confirm marker visible in REST payload.
@@ -54,6 +66,7 @@ test.describe('Portal channel collaboration (browser post + agent replies)', () 
 
     const messagesEl = page.locator('[data-testid="channel-messages"]');
     await expect(messagesEl).toBeVisible({ timeout: 10000 });
+    await scrollFeedToLatest(page);
     await expect(messagesEl).toContainText(MARKER, { timeout: 15000 });
 
     for (const agent of EXPECTED_AGENTS) {
@@ -64,10 +77,10 @@ test.describe('Portal channel collaboration (browser post + agent replies)', () 
       await expect(messagesEl).toContainText(pattern, { timeout: 5000 });
     }
 
-    // Post a follow-up through the real form (default from=user in SPA).
+    // Post a follow-up through the SPA composer (default from=user).
     const followUp = `${MARKER}-UI: Can you all share one quick tip for new users?`;
-    await page.locator('#postContent').fill(followUp);
-    await page.locator('#channelPostForm').evaluate((form) => form.requestSubmit());
+    await page.getByTestId('message-input').fill(followUp);
+    await page.getByTestId('send-button').click();
 
     await expect(messagesEl).toContainText(`${MARKER}-UI`, { timeout: 20000 });
   });

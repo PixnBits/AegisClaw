@@ -55,6 +55,22 @@ var allowedBridgeActions = map[string]struct{}{
 	"agent.pause":   {},
 	"agent.resume":  {},
 	"agent.cancel":  {},
+
+	// Permissions & visibility (permissions-model.md)
+	"permission.list":          {},
+	"permission.panel":         {},
+	"permission.grant":         {},
+	"permission.revoke":        {},
+	"permission.check":         {},
+	"permission.snapshot":      {},
+	"permission.requests.list": {},
+	"visibility.list":          {},
+	"visibility.get":           {},
+	"visibility.set":           {},
+
+	// CISO delegation (permissions-model)
+	"ciso.delegation.get": {},
+	"ciso.delegation.set": {},
 }
 
 // HighImpactActions require explicit user confirmation before bridge call.
@@ -67,6 +83,10 @@ var HighImpactActions = map[string]struct{}{
 	"agent.resume":          {},
 	"agent.cancel":          {},
 	"channel.remove_member": {},
+	"permission.grant":      {},
+	"permission.revoke":     {},
+	"visibility.set":        {},
+	"ciso.delegation.set":  {},
 }
 
 // IsAllowedBridgeAction reports whether the portal may call action on the bridge.

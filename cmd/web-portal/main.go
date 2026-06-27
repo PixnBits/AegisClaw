@@ -16,6 +16,7 @@ import (
 
 	"AegisClaw/internal/dashboard"
 	guestlog "AegisClaw/internal/guest/log"
+	"AegisClaw/internal/permissions"
 	"AegisClaw/internal/timing"
 
 	"github.com/spf13/cobra"
@@ -77,7 +78,7 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	} else {
 		// Connect to Hub/portal-bridge in the background so vsock :18080 and /health
 		// are available immediately (guest entropy pool can block crypto/rand for 60s+).
-		client = newLazyBridgeClient()
+		client = newResilientBridgeClient()
 	}
 
 	// Support being managed by the Host Daemon (reverse proxy mode per web-portal-vm.md)
@@ -107,13 +108,14 @@ func runWebPortal(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to create rich dashboard server: %v", err)
 	}
+	srv.EnsureBackgroundPublishers()
 
 	log.Printf("!!! DEBUG: About to start listeners. TCP target=%s", listenAddr)
 	log.Printf("Web Portal (thin) starting on %s", listenAddr)
 	if useFixtures {
 		log.Println("  (E2E fixture mode — seeded data for contract/UI tests)")
 	} else {
-		log.Println("  (hub/portal bridge connects in background — /health and vsock :18080 available immediately)")
+		log.Println("  (resilient hub/portal bridge connects in background — /health and vsock :18080 available immediately)")
 	}
 
 	// Serve the modern channels-first SPA UI (copied to /static in the guest image via Dockerfile,
@@ -244,10 +246,11 @@ func (n *noopAPIClient) Call(ctx context.Context, action string, payload json.Ra
 // This makes the thin layer return data that matches the shapes expected by E2E specs
 // and the dashboard templates (skills list, proposals, etc.) without needing a full daemon/Hub.
 type e2eFixtureClient struct {
-	skills    map[string]map[string]interface{}
-	proposals map[string]map[string]interface{}
-	created   map[string]map[string]interface{} // ephemeral creates during a test run
-	channels  map[string]map[string]interface{} // mutable channel state for collab E2E
+	skills      map[string]map[string]interface{}
+	proposals   map[string]map[string]interface{}
+	created     map[string]map[string]interface{} // ephemeral creates during a test run
+	channels    map[string]map[string]interface{} // mutable channel state for collab E2E
+	permissions *permissions.State                  // capability grants + visibility (permissions-model.md)
 }
 
 func tryNewE2EFixtureClient() *e2eFixtureClient {
@@ -262,12 +265,15 @@ func tryNewE2EFixtureClient() *e2eFixtureClient {
 	}
 
 	c := &e2eFixtureClient{
-		skills:    map[string]map[string]interface{}{},
-		proposals: map[string]map[string]interface{}{},
-		created:   map[string]map[string]interface{}{},
-		channels:  map[string]map[string]interface{}{},
+		skills:      map[string]map[string]interface{}{},
+		proposals:   map[string]map[string]interface{}{},
+		created:     map[string]map[string]interface{}{},
+		channels:    map[string]map[string]interface{}{},
+		permissions: permissions.DefaultBootstrap(),
 	}
 	c.seedChannels()
+	// Seed a pending permission request for per-agent Portal E2E (permissions-model.md §Request flow).
+	_, _ = permissions.RecordRequest(c.permissions, "coder-test", "channel.create", "need channel for isolated task")
 
 	if skillsFile != "" {
 		if b, err := os.ReadFile(filepath.Join(dataDir, skillsFile)); err == nil {
@@ -653,7 +659,33 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		data, _ := json.Marshal([]interface{}{
 			map[string]interface{}{"id": "worker-research", "name": "researcher", "status": "running", "task": "Analyzing proposal", "team_id": "alpha", "role": "researcher", "progress": "65%"},
 			map[string]interface{}{"id": "worker-builder", "name": "builder", "status": "idle", "task": "Waiting", "team_id": "alpha", "role": "builder"},
+			map[string]interface{}{"id": "coder-test", "name": "coder-test", "status": "running", "task": "Fixture coder", "role": "coder", "progress": "10%"},
 		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "permission.grant", "permission.revoke", "grant", "revoke", "permission.list", "permission.panel", "permission.check", "permission.snapshot", "permission.request", "permission.requests.list", "visibility.set", "visibility.list", "visibility.get", "tool.registry.discover", "ciso.delegation.get", "ciso.delegation.set":
+		// Use unified dispatcher so guards, CISO logic, SaveState and audit are identical to store path.
+		var p map[string]interface{}
+		if len(payload) > 0 {
+			_ = json.Unmarshal(payload, &p)
+		}
+		if p == nil {
+			p = map[string]interface{}{}
+		}
+		src := "web-portal"
+		if fc, ok := p["from_ciso"].(bool); ok && fc {
+			src = "court-persona-ciso-1"
+		}
+		// The fixture client does not have a per-call auditLog in the same way; we pass a local one for audit.
+		var localAudit []interface{}
+		respCmd, resp, e := permissions.DispatchCommand(c.permissions, src, action, p, &localAudit, permissions.NowRFC3339())
+		if e != nil {
+			return &dashboard.APIResponse{Success: false, Error: e.Error()}, nil
+		}
+		if respCmd == "" {
+			return &dashboard.APIResponse{Success: false, Error: "not handled"}, nil
+		}
+		data, _ := json.Marshal(resp)
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
 	case "sandbox.list":

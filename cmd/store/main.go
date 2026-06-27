@@ -299,16 +299,34 @@ func performProposalCreate(id string, payload map[string]interface{}, proposals 
 	return map[string]interface{}{"proposal_id": id}, scribeSent
 }
 
+// isPermissionAuditReadCommand reports store read RPCs that must not mutate response
+// payloads with merkle audit wrappers (breaks Hub signature verify + Portal parsing).
+func isPermissionAuditReadCommand(command string) bool {
+	switch command {
+	case "permission.list", "permission.snapshot", "permission.panel", "permission.check",
+		"permission.requests.list", "visibility.list", "visibility.get",
+		"ciso.delegation.get", "tool.registry.discover", "audit.list":
+		return true
+	default:
+		return false
+	}
+}
+
 // appendAuditForStateChangeIfNeeded is the *exact* post-switch audit block logic (shipped code).
 // It is called from the main loop after every message and can be called directly by tests
 // to exercise the real append + save + merkle attachment for proposal.* (including denied cases where
 // response.Command=="error" but msg.Command still starts with "proposal.").
 func appendAuditForStateChangeIfNeeded(msg Message, response *Message, auditLog *[]interface{}) {
+	if isPermissionAuditReadCommand(msg.Command) {
+		return
+	}
 	if strings.HasPrefix(msg.Command, "proposal.") ||
 		msg.Command == "court.review_complete" ||
 		msg.Command == "pr.create" ||
 		msg.Command == "skill.register" ||
-		msg.Command == "memory.store" {
+		msg.Command == "memory.store" ||
+		strings.HasPrefix(msg.Command, "permission.") ||
+		strings.HasPrefix(msg.Command, "visibility.") {
 		entry := map[string]interface{}{
 			"ts":      response.Timestamp,
 			"command": msg.Command,
@@ -668,6 +686,7 @@ func runStore(cmd *cobra.Command, args []string) {
 	teams := loadFromFile("teams.json")
 	chatSessions := chatstore.New("chat-sessions.json")
 	channels := loadFromFile("channels.json")
+	initPermissionState()
 
 	// Phase 2.1a + 2.3 recovery (store-vm.md + event-system.md):
 	// Explicitly load ALL durable timer/ grant state at startup.
@@ -1626,17 +1645,25 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = "ok"
 		case "version", "get-version":
 			if msg.Command == "get-version" {
-				// For get-version from hub, send proper Message response back
 				response.Command = "version"
 				response.Source = "store"
 				response.Destination = msg.Source
 				response.Payload = map[string]string{"version": getBuildVersion()}
-				// Don't continue - let normal flow sign and send
 			} else {
 				response.Command = "version"
 				response.Payload = map[string]string{"version": getBuildVersion()}
 			}
 		default:
+			if handled, cmd, payload := handlePermissionCommand(msg, &response, skills, &auditLog); handled {
+				response.Command = cmd
+				response.Payload = payload
+				break
+			}
+			if ok, errMsg := permissionCheckAtStore(msg.Source, msg.Command, skills); !ok {
+				response.Command = "error"
+				response.Payload = errMsg
+				break
+			}
 			response.Command = "error"
 			response.Payload = "unknown command"
 		}

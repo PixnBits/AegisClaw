@@ -21,6 +21,7 @@ func (s *Server) registerExtendedPortalRoutes() {
 	s.mux.HandleFunc("/api/agents/", s.handleAPIAgentDetail)
 	s.mux.HandleFunc("/api/canvas", s.handleAPICanvas)
 	s.mux.HandleFunc("/api/security/posture", s.handleAPISecurityPosture)
+	s.mux.HandleFunc("/api/settings/ciso-delegation", s.handleAPICisoDelegation)
 }
 
 func (s *Server) handleAPIActiveWork(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +148,9 @@ func (s *Server) handleAPIAgentDetail(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) >= 2 {
 		switch parts[1] {
+		case "permissions":
+			s.handleAPIAgentPermissions(w, r, ctx, agentID)
+			return
 		case "trace":
 			if r.Method != http.MethodGet {
 				http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -185,9 +189,19 @@ func (s *Server) handleAPIAgentDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) collectAgentTrace(ctx context.Context, agentID string) map[string]interface{} {
-	sessionID := strings.TrimPrefix(agentID, "agent-")
-	if sessionID == agentID {
-		sessionID = agentID
+	sessionID := collab.ChatAgentSessionID(agentID)
+	if !collab.IsChatAgentSession(sessionID) {
+		return map[string]interface{}{
+			"agent_id":   agentID,
+			"session_id": sessionID,
+			"phases": []interface{}{
+				map[string]interface{}{
+					"phase":   "Observe",
+					"summary": "Trace is available for paired agent chat sessions only",
+					"ts":      time.Now().UTC().Format(time.RFC3339),
+				},
+			},
+		}
 	}
 	tools, _ := s.fetchRaw(ctx, "chat.tool_events", map[string]interface{}{"limit": 40, "session_id": sessionID})
 	thoughts, _ := s.fetchRaw(ctx, "chat.thought_events", map[string]interface{}{"limit": 60, "session_id": sessionID})
@@ -231,6 +245,168 @@ func (s *Server) collectAgentTrace(ctx context.Context, agentID string) map[stri
 		"session_id": sessionID,
 		"phases":     phases,
 	}
+}
+
+func (s *Server) handleAPIAgentPermissions(w http.ResponseWriter, r *http.Request, ctx context.Context, agentID string) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		out, err := s.fetchPermissionPanel(ctx, agentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(out) //nolint:errcheck
+	case http.MethodPost:
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		action, _ := body["action"].(string)
+		capability, _ := body["capability"].(string)
+		if action == "" || capability == "" {
+			http.Error(w, "action and capability required", http.StatusBadRequest)
+			return
+		}
+		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
+			return
+		}
+		bridgeAction := "permission." + action
+		if action == "hide" {
+			bridgeAction = "visibility.set"
+		}
+		if bridgeGuard.NeedsConfirmation(bridgeAction) && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
+		switch action {
+		case "grant":
+			_, err := s.fetchRaw(ctx, "permission.grant", map[string]interface{}{
+				"subject": agentID, "capability": capability, "reason": body["reason"],
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		case "revoke":
+			_, err := s.fetchRaw(ctx, "permission.revoke", map[string]interface{}{
+				"subject": agentID, "capability": capability,
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		case "hide":
+			_, err := s.fetchRaw(ctx, "visibility.set", map[string]interface{}{
+				"subject": agentID, "capability": capability, "level": "hidden", "reason": body["reason"],
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, "unknown action", http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "action": action}) //nolint:errcheck
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAPICisoDelegation exposes the opt-in flag for CISO delegation (GET/POST).
+func (s *Server) handleAPICisoDelegation(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+	defer cancel()
+	switch r.Method {
+	case http.MethodGet:
+		data, err := s.fetchRaw(ctx, "ciso.delegation.get", nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(data) //nolint:errcheck
+	case http.MethodPost:
+		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
+			return
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if bridgeGuard.NeedsConfirmation("ciso.delegation.set") && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
+		_, err := s.fetchRaw(ctx, "ciso.delegation.set", body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) fetchPermissionPanel(ctx context.Context, agentID string) (map[string]interface{}, error) {
+	// Try the batched store command first with a short budget so a missing/stale
+	// panel handler cannot consume the entire HTTP timeout before legacy fallbacks run.
+	panelCtx, panelCancel := context.WithTimeout(ctx, 5*time.Second)
+	panel, err := s.fetchRaw(panelCtx, "permission.panel", map[string]interface{}{"subject": agentID})
+	panelCancel()
+	if err == nil {
+		if m, ok := panel.(map[string]interface{}); ok {
+			return map[string]interface{}{
+				"agent_id":   agentID,
+				"grants":     normalizePermissionList(m["grants"]),
+				"requests":   normalizePermissionList(m["requests"]),
+				"visibility": normalizePermissionList(m["visibility"]),
+				"snapshot":   normalizePermissionSnapshot(m["snapshot"]),
+			}, nil
+		}
+	}
+	// Fallback when panel is unavailable (older store image, ACL gap, or hub envelope mismatch).
+	grants, gErr := s.fetchRaw(ctx, "permission.list", map[string]interface{}{"subject": agentID})
+	requests, _ := s.fetchRaw(ctx, "permission.requests.list", map[string]interface{}{"subject": agentID})
+	visibility, _ := s.fetchRaw(ctx, "visibility.list", map[string]interface{}{"subject": agentID})
+	snapshot, _ := s.fetchRaw(ctx, "permission.snapshot", map[string]interface{}{"subject": agentID})
+	if gErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, gErr
+	}
+	return map[string]interface{}{
+		"agent_id":   agentID,
+		"grants":     normalizePermissionList(grants),
+		"requests":   normalizePermissionList(requests),
+		"visibility": normalizePermissionList(visibility),
+		"snapshot":   normalizePermissionSnapshot(snapshot),
+	}, nil
+}
+
+// normalizePermissionList coerces bridge responses into JSON arrays for the Portal UI.
+// Daemon-local fallbacks (mis-routed permission.*) historically returned {}.
+func normalizePermissionList(v interface{}) interface{} {
+	if v == nil {
+		return []interface{}{}
+	}
+	if arr, ok := v.([]interface{}); ok {
+		return arr
+	}
+	if m, ok := v.(map[string]interface{}); ok && len(m) == 0 {
+		return []interface{}{}
+	}
+	return v
+}
+
+func normalizePermissionSnapshot(v interface{}) interface{} {
+	if v == nil {
+		return map[string]interface{}{}
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	return v
 }
 
 func traceToolSummary(m map[string]interface{}) string {

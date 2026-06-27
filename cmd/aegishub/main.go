@@ -86,6 +86,18 @@ type Message struct {
 	Signature   string      `json:"signature"`
 }
 
+// wireMessage preserves the original JSON payload bytes so Ed25519 verification
+// survives decode/encode round-trips (nested map key reordering broke store replies
+// for permission.* after appendAuditForStateChangeIfNeeded wrapped list payloads).
+type wireMessage struct {
+	Source      string          `json:"source"`
+	Destination string          `json:"destination"`
+	Command     string          `json:"command"`
+	Payload     json.RawMessage `json:"payload"`
+	Timestamp   string          `json:"timestamp"`
+	Signature   string          `json:"signature"`
+}
+
 type RegisteredComponent struct {
 	ID        string
 	PublicKey ed25519.PublicKey
@@ -226,6 +238,36 @@ func verifySignature(msg Message, pubKey ed25519.PublicKey) bool {
 		return false
 	}
 	return ed25519.Verify(pubKey, data, sigBytes)
+}
+
+func verifyWireSignature(wire wireMessage, pubKey ed25519.PublicKey) bool {
+	sig := wire.Signature
+	wire.Signature = ""
+	data, err := json.Marshal(wire)
+	if err != nil {
+		return false
+	}
+	sigBytes, err := base64.StdEncoding.DecodeString(sig)
+	if err != nil {
+		return false
+	}
+	return ed25519.Verify(pubKey, data, sigBytes)
+}
+
+func decodeHubFrame(dec *json.Decoder) (Message, wireMessage, error) {
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return Message{}, wireMessage{}, err
+	}
+	var wire wireMessage
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return Message{}, wireMessage{}, err
+	}
+	var msg Message
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return Message{}, wireMessage{}, err
+	}
+	return msg, wire, nil
 }
 
 func startHub(cmd *cobra.Command, args []string) {
@@ -404,6 +446,12 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	encoders.Encoder.Encode(response)
 	encoders.Mutex.Unlock()
 
+	// Push permission + visibility snapshot to agent-like microVMs (permissions-model.md §Enforcement flow step 1).
+	if shouldReceivePermissionSnapshot(componentID) {
+		snap, _ := fetchPermissionSnapshotFromStore(componentID)
+		pushPermissionSnapshot(componentID, encoders, snap)
+	}
+
 	if isEphemeralHubClient(componentID) {
 		ephemeralHubRPCLoop(componentID, encoders)
 		return
@@ -411,8 +459,8 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 
 	// Now handle normal messages
 	for {
-		var msg Message
-		if err := decoder.Decode(&msg); err != nil {
+		msg, wire, err := decodeHubFrame(decoder)
+		if err != nil {
 			debugLog("hub", fmt.Sprintf("Decode error: %v", err))
 			return
 		}
@@ -441,7 +489,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				continue
 			}
 			log.Printf("DEV MODE: allowing dummy signature from %s", msg.Source)
-		} else if !verifySignature(msg, regComp.PublicKey) {
+		} else if !verifyWireSignature(wire, regComp.PublicKey) {
 			encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			log.Printf("Audit: invalid signature from %s", msg.Source)
 			continue
@@ -452,6 +500,18 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			encoder.Encode(map[string]string{"error": "ERR_ACL_VIOLATION"})
 			log.Printf("Audit: ACL violation %s -> %s : %s", msg.Source, msg.Destination, msg.Command)
 			continue
+		}
+
+		// Fine-grained permission check (permissions-model.md §Enforcement)
+		if allowed, reason := checkHubPermission(msg.Source, msg.Command); !allowed {
+			encoder.Encode(map[string]string{"error": reason})
+			log.Printf("Audit: permission denied %s : %s -> %s", msg.Source, msg.Command, msg.Destination)
+			continue
+		}
+
+		// Hot invalidation on grant/visibility changes from Store
+		if msg.Command == "permission.granted" || msg.Command == "permission.revoked" || msg.Command == "visibility.set" {
+			handlePermissionInvalidationEvent(msg)
 		}
 
 		if msg.Destination == "hub" {
@@ -546,9 +606,6 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				}
 				continue
 			}
-			// Store outbound frames (relay, update, posted) must never enter forwardHubRPC on
-			// the store connection reader. Mistaking them for new RPCs blocks this goroutine for
-			// RPC timeouts and stalls subsequent channel.relay_activity fan-out (E2E portal/CLI).
 			if componentID == "store" && msg.Source == "store" {
 				debugLog("hub", fmt.Sprintf("store outbound ignored cmd=%q dest=%s", msg.Command, msg.Destination))
 				continue
@@ -575,9 +632,8 @@ func isOneWayHubReply(command string) bool {
 // It is the only reader on the connection, avoiding races with hubclient.Send.
 func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders) {
 	for {
-		var msg Message
 		encoders.Mutex.Lock()
-		err := encoders.Decoder.Decode(&msg)
+		msg, _, err := decodeHubFrame(encoders.Decoder)
 		encoders.Mutex.Unlock()
 		if err != nil {
 			debugLog("hub", fmt.Sprintf("ephemeral RPC %s decode end: %v", requesterID, err))
@@ -633,6 +689,7 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 
 	select {
 	case reply := <-waitCh:
+		maybeInvalidatePermissionsFromReply(reply)
 		return reply
 	case <-time.After(rpcTimeout):
 		return Message{Command: "error", Payload: "ERR_RPC_TIMEOUT"}

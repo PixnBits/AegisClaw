@@ -11,13 +11,57 @@ export function TraceView() {
   const traceAgentId = usePortalStore((s) => s.traceAgentId);
   const safeMode = usePortalStore((s) => s.dashboard?.safe_mode);
   const [trace, setTrace] = useState<AgentTrace | null>(null);
+  const [permissions, setPermissions] = useState<{
+    grants?: unknown[];
+    requests?: unknown[];
+    visibility?: unknown[];
+  } | null>(null);
+  const [permissionsLoading, setPermissionsLoading] = useState(false);
+  const [permissionsError, setPermissionsError] = useState<string | null>(null);
+  const [permActionError, setPermActionError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<AgentControlAction | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!traceAgentId) return;
     api.agentTrace(traceAgentId).then(setTrace).catch(() => setTrace(null));
+    setPermissionsLoading(true);
+    setPermissionsError(null);
+    api.agentPermissions(traceAgentId)
+      .then((p) => {
+        setPermissions(p);
+        setPermissionsError(null);
+      })
+      .catch((err) => {
+        setPermissions(null);
+        setPermissionsError(err instanceof Error ? err.message : 'Failed to load permissions');
+      })
+      .finally(() => setPermissionsLoading(false));
   }, [traceAgentId]);
+
+  const refetchPermissions = async () => {
+    setPermissionsLoading(true);
+    setPermissionsError(null);
+    try {
+      const p = await api.agentPermissions(agentId);
+      setPermissions(p);
+    } catch (err) {
+      setPermissions(null);
+      setPermissionsError(err instanceof Error ? err.message : 'Failed to load permissions');
+    } finally {
+      setPermissionsLoading(false);
+    }
+  };
+
+  const runPermissionAction = async (action: 'grant' | 'revoke' | 'hide', capability: string) => {
+    setPermActionError(null);
+    try {
+      await api.agentPermissionAction(agentId, action, capability);
+      await refetchPermissions();
+    } catch (err) {
+      setPermActionError(err instanceof Error ? err.message : 'Permission action failed');
+    }
+  };
 
   const agentId = traceAgentId || 'agent';
   const controlsLocked = safeMode === true;
@@ -85,6 +129,96 @@ export function TraceView() {
           {actionError}
         </p>
       )}
+      <section className="permissions-panel" data-testid="agent-permissions-panel">
+        <h2>Permission Requests &amp; Grants</h2>
+        {permissionsLoading ? (
+          <p className="subtle" data-testid="permissions-loading">Loading permissions…</p>
+        ) : permissionsError ? (
+          <p className="subtle" role="alert" data-testid="permissions-error">{permissionsError}</p>
+        ) : !permissions ? (
+          <p className="subtle" data-testid="permissions-empty">No permission data available.</p>
+        ) : (
+          <>
+            {permActionError && (
+              <p className="subtle" role="alert" data-testid="perm-action-error">{permActionError}</p>
+            )}
+            <div data-testid="agent-grants-list">
+              <h3>Granted capabilities</h3>
+              {(permissions.grants as unknown[])?.length ? (
+                <ul className="list-stack">
+                  {(permissions.grants as Array<{ capability?: string }>).map((g, i) => (
+                    <li key={i} className="list-card subtle">
+                      {g.capability || JSON.stringify(g)}
+                      {!controlsLocked && g.capability && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          data-testid={`perm-revoke-${i}`}
+                          onClick={() => void runPermissionAction('revoke', g.capability!)}
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="subtle">No explicit grants (deny-by-default).</p>
+              )}
+            </div>
+            <div data-testid="agent-visibility-list">
+              <h3>Visibility rules</h3>
+              {(permissions.visibility as unknown[])?.length ? (
+                <ul className="list-stack">
+                  {(permissions.visibility as Array<{ capability?: string; level?: string; subject?: string }>).map((v, i) => (
+                    <li key={i} className="list-card subtle">
+                      {v.capability} — {v.level} {v.subject ? `(${v.subject})` : ''}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="subtle">No custom visibility overrides.</p>
+              )}
+            </div>
+            <div data-testid="agent-permission-requests">
+              <h3>Pending requests &amp; denied attempts</h3>
+              {(permissions.requests as unknown[])?.length ? (
+                <ul className="list-stack">
+                  {(permissions.requests as Array<{ capability?: string; context?: string; status?: string }>).map((req, i) => (
+                    <li key={i} className="list-card">
+                      <strong>{req.capability}</strong>
+                      <span className="subtle"> — {req.status || 'pending'}</span>
+                      {req.context && <p className="subtle">{req.context}</p>}
+                      {!controlsLocked && req.capability && (
+                        <div className="trace-actions">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            data-testid={`perm-grant-${i}`}
+                            onClick={() => void runPermissionAction('grant', req.capability!)}
+                          >
+                            Grant
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            data-testid={`perm-hide-${i}`}
+                            onClick={() => void runPermissionAction('hide', req.capability!)}
+                          >
+                            Hide
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="subtle">No pending permission requests.</p>
+              )}
+            </div>
+          </>
+        )}
+      </section>
       <div className="trace-timeline" data-testid="trace-timeline">
         {!trace?.phases?.length ? (
           <p className="subtle" data-testid="trace-empty">

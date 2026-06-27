@@ -92,7 +92,9 @@ build-binaries: build-web-portal
 	go build -o bin/project-manager ./cmd/project-manager
 
 # Build microVM filesystems (Linux/Firecracker only)
-build-microvms:
+# build-web-portal refreshes host-side static for bin/web-portal + fixture E2E; the web-portal
+# Dockerfile also runs npm build so microVM images get a matching index.html + hashed assets.
+build-microvms: build-web-portal
 	@if [ "$(shell uname -s)" = "Linux" ]; then \
 		if [ -d "/opt/aegis" ] && [ ! -w "/opt/aegis" ]; then \
 			echo "Note: /opt/aegis is not writable. Filesystems will be built to ~/.aegis/firecracker/rootfs"; \
@@ -262,8 +264,8 @@ test-e2e:
 	bash scripts/run-playwright-e2e.sh e2e/chat.spec.js --project=chromium
 
 # Contract-only E2E against the thin web-portal fixture (no daemon). For CI without Firecracker.
-test-e2e-contract:
-	AEGIS_E2E_FIXTURE=1 bash scripts/run-playwright-e2e.sh e2e/journeys.spec.js e2e/portal-spec-journeys.spec.js e2e/portal-realtime.spec.js e2e/portal-progressive-reasoning.spec.js e2e/portal-mobile.spec.js e2e/portal-visual-polish.spec.js e2e/portal-navigation.spec.js --project=chromium
+test-e2e-contract: build-web-portal
+	AEGIS_E2E_FIXTURE=1 bash scripts/run-playwright-e2e.sh e2e/journeys.spec.js e2e/portal-navigation.spec.js e2e/portal-spec-journeys.spec.js e2e/portal-realtime.spec.js e2e/portal-progressive-reasoning.spec.js e2e/portal-mobile.spec.js e2e/portal-visual-polish.spec.js e2e/portal-agents-api.spec.js --project=chromium
 
 # Real unmocked E2E exercising PM + LLM (Ollama via network-boundary) + channels exactly as a user would:
 #   `aegis pm goal "..." --channel foo` then `aegis channel get foo` (or view in portal #channels).

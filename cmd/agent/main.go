@@ -259,6 +259,17 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		return true
 	}
 
+	// Permission snapshot push from Hub (grant/visibility invalidation or register handshake).
+	if msg.Command == "permission.snapshot" {
+		if payload, ok := msg.Payload.(map[string]interface{}); ok {
+			snap := agentSkills.SnapshotFromMap(payload)
+			skillIndex.SetPermissionFilter(agentSkills.FilterFromSnapshot(snap))
+			log.Printf("agent: applied permission snapshot v%d (%d allowed, %d visible)",
+				snap.Version, len(snap.AllowedTools), len(snap.VisibleTools))
+		}
+		return true
+	}
+
 	if msg.Command == "background.work" || msg.Command == "proactive.task" {
 		log.Printf("7.6: background work → running FULL real 6-step loop (no mini/demo)")
 		go func(payload interface{}) {

@@ -34,3 +34,27 @@ func TestPortalVMRoleLabel(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestMergeChannelRosterIntoWorkersAddsOnDemandPM(t *testing.T) {
+	workers := []interface{}{
+		map[string]interface{}{"id": "court-persona-ciso", "name": "court-persona-ciso", "status": "running"},
+	}
+	members := []interface{}{
+		map[string]interface{}{"role": "project-manager"},
+		map[string]interface{}{"role": "court-persona-ciso"},
+	}
+	mergeChannelRosterFromMembers(&workers, "main", members)
+	if len(workers) != 2 {
+		t.Fatalf("expected 2 workers, got %d", len(workers))
+	}
+	pm, ok := workers[1].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected map worker")
+	}
+	if pm["name"] != "project-manager-main" {
+		t.Fatalf("name=%v", pm["name"])
+	}
+	if pm["status"] != "standby" {
+		t.Fatalf("status=%v", pm["status"])
+	}
+}

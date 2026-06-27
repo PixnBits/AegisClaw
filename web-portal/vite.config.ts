@@ -10,16 +10,10 @@ export default defineConfig({
     },
   },
   build: {
+    // Generated output (index.html + hashed assets) — not committed; see cmd/web-portal/STATIC_BUILD.md.
     outDir: '../cmd/web-portal/static',
     emptyOutDir: true,
     sourcemap: true,
-    rollupOptions: {
-      output: {
-        entryFileNames: 'assets/[name]-[hash].js',
-        chunkFileNames: 'assets/[name]-[hash].js',
-        assetFileNames: 'assets/[name]-[hash][extname]',
-      },
-    },
   },
   server: {
     port: 5173,

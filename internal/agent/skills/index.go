@@ -11,6 +11,7 @@
 //   - docs/prd/runtime-architecture.md (Agent Runtime VMs must have fast local discovery)
 //   - docs/no-stubs-plan/phase-1.md 1.1b (move the proven 7.3 index into internal/agent/skills as part of real runtime)
 //   - security-model.md (the index helps enforce "only use tools from the available local index" — least privilege)
+//   - docs/specs/permissions-model.md (dual grant + visibility filtering for least-privilege discovery and use)
 //
 // Design preserved exactly from the prior working implementation (cmd/agent/main.go:556-873):
 //   - Simple in-memory index with Jaccard + substring + Levenshtein + TF boosts
@@ -25,8 +26,12 @@
 package skills
 
 import (
+	"errors"
 	"strings"
 )
+
+// ErrPermissionDenied is returned when a tool invocation lacks a grant.
+var ErrPermissionDenied = errors.New("ERR_PERMISSION_DENIED")
 
 // Skill represents a registered skill (higher level than a single tool).
 type Skill struct {
@@ -40,7 +45,7 @@ type Skill struct {
 // Tool is a concrete invocable action belonging to a Skill.
 type Tool struct {
 	Name        string `json:"name"`
-	Description string `json:"description"`
+	Description string   `json:"description"`
 	SkillID     string `json:"skill_id"`
 }
 
@@ -52,13 +57,35 @@ type SearchResult struct {
 	Description string  `json:"description"`
 }
 
+// PermissionFilter controls which tools are visible in discovery and which
+// may actually be invoked. It is populated from the signed permission snapshot
+// received from AegisHub (which in turn comes from Store).
+//
+// - AllowedTools: capabilities the subject may invoke.
+// - VisibleTools: capabilities that may appear in discovery (includes granted + requestable/public).
+// - RequestableTools: visible but not yet granted (agent can see and request access).
+// - Enforce: when false, allow-all for backward compat (tests without permission state).
+// - CanDiscoverRegistry: subject holds tool.registry.discover grant.
+type PermissionFilter struct {
+	AllowedTools          map[string]bool
+	VisibleTools          map[string]bool
+	RequestableTools      map[string]bool
+	Enforce               bool
+	CanDiscoverRegistry   bool
+}
+
 // AgentSkillIndex is the fast local index every agent runtime carries (7.3).
 // It is injected into every step of the 6-step loop so that reasoning and
 // tool invocation are always constrained to what the agent is actually allowed
 // to use right now (security + spec requirement).
+//
+// With permissions enabled, it also enforces the PermissionFilter so that
+// agents can only discover and use tools they have been explicitly granted
+// (and that are visible to them).
 type AgentSkillIndex struct {
-	skills []Skill
-	tools  []Tool
+	skills     []Skill
+	tools      []Tool
+	permFilter PermissionFilter
 }
 
 // NewAgentSkillIndex creates a fresh index seeded with a small set of realistic
@@ -95,14 +122,73 @@ func (idx *AgentSkillIndex) AddTool(t Tool) {
 	idx.tools = append(idx.tools, t)
 }
 
+// SetPermissionFilter installs (or replaces) the permission + visibility filter
+// for this index. It should be called when the agent receives its signed
+// permission snapshot from AegisHub during startup or after a grant/visibility
+// change.
+func (idx *AgentSkillIndex) SetPermissionFilter(f PermissionFilter) {
+	idx.permFilter = f
+}
+
+// isToolAllowed returns true if the tool may be used/invoked.
+func (idx *AgentSkillIndex) isToolAllowed(name string) bool {
+	if !idx.permFilter.Enforce {
+		return true
+	}
+	return idx.permFilter.AllowedTools[name] && idx.permFilter.VisibleTools[name]
+}
+
+// isToolDiscoverable returns true if the tool should appear in tool.list/search.
+// Per spec: granted tools + publicly discoverable/requestable visible tools.
+func (idx *AgentSkillIndex) isToolDiscoverable(name string) bool {
+	if !idx.permFilter.Enforce {
+		return true
+	}
+	return idx.permFilter.VisibleTools[name]
+}
+
+// CheckToolInvoke verifies the subject may invoke a capability; returns ErrPermissionDenied if not.
+func (idx *AgentSkillIndex) CheckToolInvoke(name string) error {
+	if idx.isToolAllowed(name) {
+		return nil
+	}
+	return ErrPermissionDenied
+}
+
 // ListSkills returns all known skills (exact, fast path).
+// Note: skills are currently not filtered by permission (only tools are).
+// This matches the current spec focus on tool-level grants.
 func (idx *AgentSkillIndex) ListSkills() []Skill {
 	return append([]Skill(nil), idx.skills...) // copy
+}
+
+// ListTools returns tools the agent may invoke (granted only). Used for prompt injection.
+func (idx *AgentSkillIndex) ListTools() []Tool {
+	filtered := make([]Tool, 0, len(idx.tools))
+	for _, t := range idx.tools {
+		if idx.isToolAllowed(t.Name) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
+// ListDiscoverableTools returns granted + requestable/public visible tools for tool.list.
+func (idx *AgentSkillIndex) ListDiscoverableTools() []Tool {
+	filtered := make([]Tool, 0, len(idx.tools))
+	for _, t := range idx.tools {
+		if idx.isToolDiscoverable(t.Name) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 // SearchTools performs a simple stdlib-only semantic-ish search.
 // Uses token overlap (Jaccard-style) + bonus for name/description substring matches.
 // Returns top results sorted by score (highest first).
+//
+// Results are filtered to discoverable tools (granted + requestable/public visible).
 func (idx *AgentSkillIndex) SearchTools(query string, limit int) []SearchResult {
 	if limit <= 0 {
 		limit = 10
@@ -116,6 +202,10 @@ func (idx *AgentSkillIndex) SearchTools(query string, limit int) []SearchResult 
 	results := make([]SearchResult, 0, len(idx.tools))
 
 	for _, t := range idx.tools {
+		if !idx.isToolDiscoverable(t.Name) {
+			continue
+		}
+
 		skillName := t.SkillID
 		for _, s := range idx.skills {
 			if s.ID == t.SkillID {
@@ -277,6 +367,8 @@ func min(a, b, c int) int {
 // for injection into LLM prompts (keeps context reasonable).
 // This is the exact helper used by the 6-step prompts (7.4 / 7.6 integration
 // with custom TOOLS.md and SKILLS.md from the workspace loader).
+//
+// Only granted (invokable) tools are included in LLM prompts.
 func FormatAvailableTools(idx *AgentSkillIndex, loadedWorkspace interface {
 	GetSOUL() string
 	GetAGENTS() string
@@ -298,7 +390,8 @@ func FormatAvailableTools(idx *AgentSkillIndex, loadedWorkspace interface {
 		b.WriteString(")")
 	}
 	b.WriteString(". Tools: ")
-	for i, t := range idx.tools {
+	visibleTools := idx.ListTools()
+	for i, t := range visibleTools {
 		if i > 0 {
 			b.WriteString(", ")
 		}
@@ -322,12 +415,21 @@ func FormatAvailableTools(idx *AgentSkillIndex, loadedWorkspace interface {
 
 // HandleToolCommand is the dispatcher for the fast-path "tool.list" and "tool.search"
 // commands that bypass the full 6-step LLM loop (7.3 requirement).
+//
+// "tool.list" returns discoverable tools (granted + requestable/public visible).
 func HandleToolCommand(cmd string, payload interface{}, idx *AgentSkillIndex) interface{} {
 	switch cmd {
 	case "tool.list":
 		return map[string]interface{}{
 			"skills": idx.ListSkills(),
-			"tools":  idx.tools,
+			"tools":  idx.ListDiscoverableTools(),
+		}
+	case "tool.registry.discover":
+		if idx.permFilter.Enforce && !idx.permFilter.CanDiscoverRegistry {
+			return map[string]string{"error": "ERR_PERMISSION_DENIED"}
+		}
+		return map[string]interface{}{
+			"tools": idx.ListDiscoverableTools(),
 		}
 	case "tool.search":
 		q := ""

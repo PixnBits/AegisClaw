@@ -207,6 +207,12 @@ rules:
     - channel.get
     - channel.get_relevant_since
     - channel.get_messages
+# Store RPC replies to court personas (channel.data, get_relevant_since.data, etc.)
+- source: store
+  destination: court-persona-*
+  commands:
+    - channel.*
+    - proposal.*
 - source: court-persona-*
   destination: court-scribe
   commands:
@@ -601,6 +607,11 @@ rules:
     - sessions.*
     - skill.*
     - proposal.*
+    - permission.*
+    - visibility.*
+    - ciso.delegation.*
+    - tool.registry.discover
+    - audit.list
 - source: "daemon-internal-*"
   destination: store
   commands:
@@ -609,6 +620,11 @@ rules:
     - sessions.*
     - skill.*
     - proposal.*
+    - permission.*
+    - visibility.*
+    - ciso.delegation.*
+    - tool.registry.discover
+    - audit.list
 # Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
 # clients for the commands above (responses may carry the original command name in audit; observed
 # as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).
@@ -622,6 +638,14 @@ rules:
   destination: "daemon-internal-*"
   commands:
     - "*"
+
+# Store channel notifications to on-demand PM VMs (channel.updated / channel.posted relay)
+- source: store
+  destination: "project-manager*"
+  commands:
+    - channel.updated
+    - channel.posted
+    - channel.*
 
 # Project Manager <-> Network Boundary for real LLM plan generation (same contract as agents; enables unmocked Ollama E2E via NewRealLLMCaller)
 - source: "project-manager*"
@@ -698,6 +722,126 @@ rules:
     - chat.*
     - chat.message
     - user.turn
+
+# --- Permissions & Capability Grants (permissions-model.md) ---
+# Hub fetches/pushes permission snapshots; Store owns durable grants + visibility.
+- source: hub
+  destination: store
+  commands:
+    - permission.snapshot
+    - permission.panel
+    - permission.request
+    - permission.grant
+    - permission.revoke
+    - permission.list
+    - permission.check
+    - permission.requests.list
+    - visibility.list
+    - visibility.get
+    - visibility.set
+- source: "hub-perm-fetch"
+  destination: store
+  commands:
+    - permission.snapshot
+    - permission.request
+- source: store
+  destination: hub
+  commands:
+    - permission.snapshot
+    - permission.granted
+    - permission.revoked
+    - permission.request
+    - visibility.set
+- source: store
+  destination: "hub-perm-fetch"
+  commands:
+    - permission.snapshot
+    - error
+    - response
+# Hub pushes snapshots to agent microVMs
+- source: hub
+  destination: "agent*"
+  commands:
+    - permission.snapshot
+- source: hub
+  destination: "project-manager*"
+  commands:
+    - permission.snapshot
+- source: hub
+  destination: "coder*"
+  commands:
+    - permission.snapshot
+# Portal + CLI manage grants (user-controlled)
+- source: web-portal
+  destination: store
+  commands:
+    - permission.grant
+    - permission.revoke
+    - permission.list
+    - permission.panel
+    - permission.check
+    - permission.snapshot
+    - permission.requests.list
+    - visibility.set
+    - visibility.get
+    - visibility.list
+    - ciso.delegation.get
+    - ciso.delegation.set
+- source: "daemon-internal*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+    - ciso.delegation.*
+- source: "daemon-internal-*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+    - ciso.delegation.*
+- source: "aegis-cli-internal*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+    - ciso.delegation.*
+- source: "aegis-cli-internal"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+# Agents may record permission requests (denied attempts) but never self-grant
+- source: "agent*"
+  destination: store
+  commands:
+    - permission.request
+- source: "project-manager*"
+  destination: store
+  commands:
+    - permission.request
+- source: "coder*"
+  destination: store
+  commands:
+    - permission.request
+    - tool.registry.discover
+# CISO personas (when delegation opt-in enabled) may propose grants/visibility
+- source: "court-persona-ciso*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+    - permission.request
+    - permission.grant
+    - permission.revoke
+    - visibility.set
+    - ciso.delegation.get
+# NOTE: ciso* deliberately NOT granted ciso.delegation.set (user/Settings via web-portal/daemon only; prevents self-opt-in per skeptic)
+- source: "ciso*"
+  destination: store
+  commands:
+    - permission.*
+    - visibility.*
+    - ciso.delegation.get
 
 # --- Catch common response patterns (signed replies often mirror cmd names or use response/*) ---
 # Broad but explicit for known components during Phase 3 iteration

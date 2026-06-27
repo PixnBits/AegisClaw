@@ -17,6 +17,19 @@ async function waitPortalReady(page) {
   await expect(page.getByTestId('connection-status-label')).toContainText(/STOMP|SSE/, { timeout: 15000 });
 }
 
+const FEED_ITEM_HEIGHT = 96;
+
+/** Scroll virtualized feed so the message at index is rendered (main often has 100+ items). */
+async function scrollFeedToIndex(page, index) {
+  const virtual = page.getByTestId('channel-messages-virtual');
+  if ((await virtual.count()) === 0 || index < 0) return;
+  const scrollTop = Math.max(0, (index - 3) * FEED_ITEM_HEIGHT);
+  await virtual.evaluate((el, top) => {
+    el.scrollTop = top;
+  }, scrollTop);
+  await page.waitForTimeout(200);
+}
+
 test.describe('Channel agent reply pipeline (regression)', () => {
   test('store agent replies visible in REST, UI, and STOMP', async ({ page, request }) => {
     const apiRes = await request.get(`/api/channels/${CHANNEL}`);
@@ -39,6 +52,8 @@ test.describe('Channel agent reply pipeline (regression)', () => {
         !String(m.content || '').trim().toUpperCase().startsWith('NO_REPLY'),
     );
     expect(agentReplies.length, 'agent replies in store').toBeGreaterThanOrEqual(MIN_REPLIES);
+    const courtReply = agentReplies.find((m) => String(m.from || '').startsWith('court-persona-'));
+    expect(courtReply, 'court persona reply in store').toBeTruthy();
 
     const stompPayloads = [];
     page.on('websocket', (ws) => {
@@ -61,10 +76,21 @@ test.describe('Channel agent reply pipeline (regression)', () => {
     const channelItem = page.getByTestId('channels-list').getByText(CHANNEL, { exact: false }).first();
     await channelItem.click();
     await expect(page.getByTestId('channel-detail')).toBeVisible({ timeout: 10000 });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-testid="connection-status-chip"]')?.getAttribute('data-connection-mode') ===
+        'stomp',
+      { timeout: 10000 },
+    );
 
+    const markerIndex = messages.findIndex((m) => String(m.content || '').includes(MARKER));
+    const courtIndex = messages.findIndex((m) => m === courtReply);
+    await scrollFeedToIndex(page, markerIndex >= 0 ? markerIndex : messages.length - 1);
     const messagesEl = page.locator('[data-testid="channel-messages"]');
     await expect(messagesEl).toContainText(MARKER, { timeout: 15000 });
-    await expect(messagesEl).toContainText(agentReplies[0].content.slice(0, 24), { timeout: 15000 });
+    const courtSnippet = String(courtReply.content).slice(0, 32).trim();
+    await scrollFeedToIndex(page, courtIndex >= 0 ? courtIndex : messages.length - 1);
+    await expect(messagesEl).toContainText(courtSnippet, { timeout: 20000 });
 
     const followUp = `${MARKER}-stomp: Please reply with one short sentence.`;
     const postRes = await request.post(`/api/channels/${CHANNEL}`, {
