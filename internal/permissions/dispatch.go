@@ -10,7 +10,7 @@ import (
 // Both cmd/store and the e2e fixture call this.
 func DispatchCommand(state *State, source, command string, payload map[string]interface{}, audit *[]interface{}, ts string) (respCmd string, resp interface{}, err error) {
 	if state == nil {
-		state = NewState()
+		return "error", "nil permission state", fmt.Errorf("ERR_PERMISSION_DENIED: nil permission state")
 	}
 
 	switch command {

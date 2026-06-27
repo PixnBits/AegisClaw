@@ -153,6 +153,24 @@ func (m *mutPermClient) Call(_ context.Context, action string, pl json.RawMessag
 	return &APIResponse{Success: true, Data: []byte(`{}`)}, nil
 }
 
+func TestHandleAPIAgentPermissions_POST_RejectsMissingFields(t *testing.T) {
+	srv, _ := New("127.0.0.1:0", &permissionsMockClient{})
+
+	for _, body := range []string{
+		`{"action":"grant"}`,
+		`{"capability":"channel.post"}`,
+		`{}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/coder-test/permissions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: expected 400, got %d", body, rec.Code)
+		}
+	}
+}
+
 func TestHandleAPIAgentPermissions_POST_GrantRevoke(t *testing.T) {
 	st := permissions.NewState()
 	_ = permissions.GrantCapability(st, "coder-test", "seed.cap", "test", "")
