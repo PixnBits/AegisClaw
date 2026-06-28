@@ -262,7 +262,7 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 				"role":       "court-persona-ciso",
 			},
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			})
+		})
 	}
 
 	monitorContent := fmt.Sprintf("PM monitoring: roles ensured %v in channel %s. Awaiting updates from roles; will synthesize and escalate to Court when needed.", rolesToEnsure, chID)
@@ -305,9 +305,9 @@ func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqu
 				"status":     "ignored",
 				"reason":     string(reason),
 				"channel_id": chID,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	})
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
 		return
 	}
 
@@ -319,8 +319,8 @@ func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqu
 			"status":     "delivered",
 			"reason":     string(reason),
 			"channel_id": chID,
-	},
-	Timestamp: time.Now().UTC().Format(time.RFC3339),
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
 	// Inline on hubclient connection — see court-persona processChannelActivity (no goroutine).
@@ -373,9 +373,9 @@ func pmProcessChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSou
 		Destination: msg.Source,
 		Command:     "response",
 		Payload: map[string]interface{}{
-		"status": "delivered", "reason": "turn", "channel_id": chID,
-	},
-	Timestamp: time.Now().UTC().Format(time.RFC3339),
+			"status": "delivered", "reason": "turn", "channel_id": chID,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
 	batchText := collab.FormatTurnMessages(turn.NewMessages)
@@ -396,8 +396,8 @@ func pmProcessChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSou
 					"channel_id": chID,
 					"content":    content,
 					"goal":       content,
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
+				},
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
 			}
 			pmProcessPlanningMessage(hcl, planMsg, uniqueSource, realLLM)
 			return
@@ -493,9 +493,9 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-	fmt.Println("PM received:", msg.Command)
+		fmt.Println("PM received:", msg.Command)
 
-	switch msg.Command {
+		switch msg.Command {
 		case channelfacilitator.CmdTurn:
 			pmProcessChannelTurn(hcl, msg, uniqueSource, realLLM)
 
@@ -515,16 +515,16 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					Destination: msg.Source,
 					Command:     "response",
 					Payload: map[string]interface{}{
-					"status":  "accepted",
-					"channel": chID,
-					"note":    "planning async (LLM + channel.post + ensure.role)",
-				},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			})
+						"status":  "accepted",
+						"channel": chID,
+						"note":    "planning async (LLM + channel.post + ensure.role)",
+					},
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
+				})
+				pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
+				break
+			}
 			pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
-			break
-		}
-		pmProcessPlanningMessage(hcl, msg, uniqueSource, realLLM)
 
 		case "llm.call.response":
 			// Orphaned RPC reply (should have been consumed by nested Send). Ignore.

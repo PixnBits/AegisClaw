@@ -92,7 +92,7 @@ func loadDistributedKey() (ed25519.PrivateKey, ed25519.PublicKey, error) {
 			priv := ed25519.PrivateKey(privBytes)
 			pub := priv.Public().(ed25519.PublicKey)
 			return priv, pub, nil
-	}
+		}
 	}
 
 	// 3. Dev/host only: generate (documented that real Court VMs always receive distributed keys)
@@ -289,12 +289,12 @@ func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueS
 			Destination: msg.Source,
 			Command:     "response",
 			Payload: map[string]interface{}{
-			"status":     "ignored",
-			"reason":     string(reason),
-			"channel_id": chID,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	})
+				"status":     "ignored",
+				"reason":     string(reason),
+				"channel_id": chID,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
 		fmt.Printf("Persona %s ignored channel activity in %s (%s)\n", persona, chID, reason)
 		return
 	}
@@ -307,8 +307,8 @@ func processChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqueS
 			"status":     "delivered",
 			"reason":     string(reason),
 			"channel_id": chID,
-	},
-	Timestamp: time.Now().UTC().Format(time.RFC3339),
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
 	// Process inline on the hubclient connection. Do not spawn a goroutine:
@@ -340,9 +340,9 @@ func processChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSourc
 		Destination: msg.Source,
 		Command:     "response",
 		Payload: map[string]interface{}{
-		"status": "delivered", "reason": "turn", "channel_id": chID,
-	},
-	Timestamp: time.Now().UTC().Format(time.RFC3339),
+			"status": "delivered", "reason": "turn", "channel_id": chID,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
 	ctx := context.Background()
@@ -417,6 +417,7 @@ func callRealLLMViaHub(ctx context.Context, hub hubclient.Client, prompt string)
 			if json.Unmarshal([]byte(response), &inner) == nil {
 				if r, ok := inner["response"].(string); ok {
 					return r, nil
+				}
 			}
 			return response, nil
 		}
@@ -564,9 +565,9 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-	fmt.Println("Persona", persona, "received:", msg.Command)
+		fmt.Println("Persona", persona, "received:", msg.Command)
 
-	switch msg.Command {
+		switch msg.Command {
 		case channelfacilitator.CmdTurn:
 			processChannelTurn(hcl, msg, uniqueSource, persona)
 
@@ -603,7 +604,7 @@ func runCourtPersona(cmd *cobra.Command, args []string) {
 			} else {
 				proposalData, _ = getResp.Payload.(map[string]interface{})
 			}
-		description := ""
+			description := ""
 			if d, ok := proposalData["description"].(string); ok {
 				description = d
 			}
