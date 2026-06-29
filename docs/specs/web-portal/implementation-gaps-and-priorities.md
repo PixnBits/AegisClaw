@@ -22,6 +22,7 @@ The following areas have dedicated target-state specifications:
 - Canvas / inter-agent pipeline visualization (`canvas.md`)
 - Single-agent trace and deep observability (`single-agent-trace.md`)
 - SDLC flows: source browser, git history, PR system, build dashboard, deployment gates (`./sdlc-web-portal.md`)
+- **Agent customization foundation** (`../agent-customization.md` – expanded with per-agent SETTINGS.yaml, LLM usage metrics model, and individual agents page requirements)
 
 ## Remaining Open Areas (Prioritized)
 
@@ -44,21 +45,30 @@ The following areas have dedicated target-state specifications:
    - Memory and CPU budgets for the portal VM under load.
    - Status: Not yet specified.
 
+4. **Per-Agent Settings Editor + LLM Usage Metrics (Individual Agents Page)**
+   - Full implementation of the expanded requirements in `../agent-customization.md`:
+     - SETTINGS.yaml schema, validation, hot-reload, and portal editing surface (SOUL + settings form + skills toggles).
+     - LLM usage tracking (per-call tokens + model + correlation), storage strategy (Store VM / metrics component), and required aggregates (grand total, last hour, today, MTD, custom windows, breakdowns).
+     - Individual agents page UI: list + detail view with live metrics cards, time-series charts, configuration editor, and real-time STOMP updates.
+   - Backend collection points, aggregate engine, and portalbridge / REST surface.
+   - Security & isolation guarantees for metrics and settings changes.
+   - Status: Specification expanded (this branch); implementation pending.
+
 ### Medium Priority
 
-4. **Onboarding, Suggestions Engine & Empty States**
+5. **Onboarding, Suggestions Engine & Empty States**
    - Exact logic for detecting first-time vs returning users.
    - Rules and data sources for contextual suggestions on Home.
    - Standardized empty state and guidance copy across views.
    - How external signals (news, market data, etc.) are sourced and filtered securely.
    - Status: High-level guidance exists; detailed rules needed.
 
-5. **Export Formats & Compliance Artifacts**
+6. **Export Formats & Compliance Artifacts**
    - Exact data shapes and file formats for Court exports (structured reports, SBOM mapping, regulatory artifacts).
    - How proposal metadata and rationales are serialized for diligence/compliance use cases.
    - Status: Mentioned in `court.md`; needs concrete schemas.
 
-6. **Testing & Contract Strategy**
+7. **Testing & Contract Strategy**
    - E2E test coverage matrix (which journeys and edge cases require Playwright coverage).
    - Contract tests for STOMP payloads and bridge actions.
    - Strategy for testing real-time behavior reliably.
@@ -67,15 +77,15 @@ The following areas have dedicated target-state specifications:
 
 ### Lower Priority / Nice to Have
 
-7. **Detailed Component Interaction Specs**
+8. **Detailed Component Interaction Specs**
    - State machines or detailed interaction flows for complex components (Command Bar + plan preview, Grouped Member Management, Proposal voting).
    - Loading, error, and optimistic update patterns.
 
-8. **Member Permission Model Details**
+9. **Member Permission Model Details**
    - Fine-grained permissions for who can invite/remove specific member types.
    - Governance requirements for adding powerful Court or specialist personas.
 
-9. **Internationalization & Accessibility**
+10. **Internationalization & Accessibility**
    - i18n strategy and requirements.
    - Detailed a11y requirements beyond basic contrast and keyboard navigation.
 
@@ -83,10 +93,11 @@ The following areas have dedicated target-state specifications:
 
 1. Finalize Harness Pipeline Data Model + integrate with real-time contracts.
 2. Define Design Tokens & core component patterns (this unblocks consistent UI implementation).
-3. Establish Performance Targets & virtualization approach.
-4. Create Testing & Contract Strategy document.
-5. Detail Onboarding / Suggestions logic and Export Formats.
-6. Address remaining lower-priority items as needed during development.
+3. **Implement Per-Agent Settings + LLM Metrics (high value, builds directly on newly expanded spec).**
+4. Establish Performance Targets & virtualization approach.
+5. Create Testing & Contract Strategy document.
+6. Detail Onboarding / Suggestions logic and Export Formats.
+7. Address remaining lower-priority items as needed during development.
 
 ## How to Use This Document
 
@@ -96,4 +107,4 @@ The following areas have dedicated target-state specifications:
 
 ## Next Steps
 
-The remaining high-priority items above are good candidates for the next specification documents to be created.
+The Per-Agent Settings + LLM Metrics item (now #4) and the original high-priority items are the strongest candidates for immediate implementation work on this branch or follow-ups. The expanded `agent-customization.md` provides the target-state definition to drive coding.
