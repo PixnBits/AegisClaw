@@ -26,7 +26,7 @@ type ollamaBridgeReq struct {
 }
 
 type ollamaBridgeResp struct {
-	Response string `json:"response,omitempty"`
+	Response string `json:"response,omitempty"` // now carries full raw Ollama JSON (for usage fields) + legacy text extraction upstream
 	Error    string `json:"error,omitempty"`
 }
 

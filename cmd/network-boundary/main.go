@@ -878,16 +878,60 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				break
 			}
 
-			text, err := callOllamaGenerate(model, prompt, endpoint)
+			raw, err := callOllamaGenerate(model, prompt, endpoint)
 			if err != nil {
 				response.Command = "error"
 				response.Payload = "ollama request failed: " + err.Error()
 				log.Printf("llm.call ollama request failed: %v", err)
 				break
 			}
+
+			// Parse full Ollama response for usage metrics (prompt_eval_count, eval_count, durations, model).
+			// Always surface clean "response" (text) for existing NewRealLLMCaller / loop callers.
+			text := raw
+			usage := map[string]interface{}{"model": model}
+			var ollama map[string]interface{}
+			if json.Unmarshal([]byte(raw), &ollama) == nil {
+				if r, ok := ollama["response"].(string); ok && r != "" {
+					text = r
+				}
+				if v, ok := ollama["prompt_eval_count"].(float64); ok {
+					usage["prompt_tokens"] = int(v)
+				}
+				if v, ok := ollama["eval_count"].(float64); ok {
+					usage["completion_tokens"] = int(v)
+				}
+				if v, ok := ollama["total_duration"].(float64); ok {
+					usage["duration_ms"] = int(v / 1e6) // ns -> ms
+				}
+				if m, ok := ollama["model"].(string); ok && m != "" {
+					usage["model"] = m
+				}
+				// success implicit (no error path)
+				usage["success"] = true
+			} else {
+				usage["success"] = true
+			}
+
 			response.Command = "llm.call.response"
-			response.Payload = map[string]interface{}{"response": text}
-			log.Printf("LLM plan gen via ollama (%s, %d bytes response)", model, len(text))
+			response.Payload = map[string]interface{}{
+				"response": text,
+				"usage":    usage,
+			}
+			log.Printf("LLM plan gen via ollama (%s, %d bytes response, prompt_tokens=%v completion=%v)", model, len(text), usage["prompt_tokens"], usage["completion_tokens"])
+
+			// Metrics emission point (Phase 1): record at boundary (outside any agent guest).
+			// Agent correlation via msg.Source. Full emit to store + STOMP happens in later wiring.
+			// For now structured log + payload enrichment provides the data.
+			_ = map[string]interface{}{ // placeholder for record emit (see next chunk)
+				"agent_id":         msg.Source,
+				"timestamp":        time.Now().UTC().Format(time.RFC3339),
+				"model":            usage["model"],
+				"tokens_prompt":    usage["prompt_tokens"],
+				"tokens_completion": usage["completion_tokens"],
+				"duration_ms":      usage["duration_ms"],
+				"success":          usage["success"],
+			}
 
 		// === 7.1 Hub secrets delivery path (first implementation) ===
 		// The Store VM (via the Hub) can now push updated per-skill secrets

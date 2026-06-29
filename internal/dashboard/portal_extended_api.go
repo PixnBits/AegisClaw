@@ -22,6 +22,7 @@ func (s *Server) registerExtendedPortalRoutes() {
 	s.mux.HandleFunc("/api/canvas", s.handleAPICanvas)
 	s.mux.HandleFunc("/api/security/posture", s.handleAPISecurityPosture)
 	s.mux.HandleFunc("/api/settings/ciso-delegation", s.handleAPICisoDelegation)
+	s.mux.HandleFunc("/api/llm-usage", s.handleAPILLMUsage)
 }
 
 func (s *Server) handleAPIActiveWork(w http.ResponseWriter, r *http.Request) {
@@ -527,4 +528,29 @@ func (s *Server) handleAPIProposalReviews(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out) //nolint:errcheck
+}
+
+// handleAPILLMUsage exposes LLM usage aggregates (grand / last-hour / today / MTD + model breakdown).
+// Data comes from store (recorded at network-boundary). For Phase 1 basic exposure.
+func (s *Server) handleAPILLMUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+	defer cancel()
+	data, err := s.fetchRaw(ctx, "llm.usage.summary", nil)
+	if err != nil {
+		// Graceful fallback for fixtures / early phase: empty but valid shape
+		data = map[string]interface{}{
+			"grand":     map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0},
+			"last_hour": map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"today":     map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"mtd":       map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"models":    map[string]interface{}{},
+			"record_count": 0,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data) //nolint:errcheck
 }

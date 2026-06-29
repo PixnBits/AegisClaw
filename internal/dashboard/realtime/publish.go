@@ -137,3 +137,51 @@ func (p *Publisher) publishCanvasFromHarness(body []byte) {
 	}
 	p.Hub.Publish(contracts.TopicCanvasEvents, clean)
 }
+
+// PublishLLMUsage emits live LLM token usage for an agent (or global).
+// Payload shape matches contracts.LLMUsageEvent for STOMP consumers.
+func (p *Publisher) PublishLLMUsage(agentID string, usage map[string]interface{}) {
+	if p == nil || p.Hub == nil {
+		return
+	}
+	ev := contracts.LLMUsageEvent{
+		Type:      contracts.TypeLLMUsage,
+		AgentID:   agentID,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	if m, ok := usage["model"].(string); ok {
+		ev.Model = m
+	}
+	if v, ok := usage["prompt_tokens"].(int); ok {
+		ev.TokensIn = v
+	} else if v, ok := usage["prompt_tokens"].(float64); ok {
+		ev.TokensIn = int(v)
+	}
+	if v, ok := usage["completion_tokens"].(int); ok {
+		ev.TokensOut = v
+	} else if v, ok := usage["completion_tokens"].(float64); ok {
+		ev.TokensOut = int(v)
+	}
+	if v, ok := usage["duration_ms"].(int); ok {
+		ev.Duration = v
+	} else if v, ok := usage["duration_ms"].(float64); ok {
+		ev.Duration = int(v)
+	}
+	if s, ok := usage["success"].(bool); ok {
+		ev.Success = s
+	} else {
+		ev.Success = true
+	}
+	body, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	clean, err := sanitize.JSONBytes(sanitize.ContextChat, body)
+	if err != nil {
+		clean = body
+	}
+	p.Hub.Publish(contracts.TopicLLMUsagePrefix, clean)
+	if agentID != "" {
+		p.Hub.Publish(contracts.LLMUsageTopic(agentID), clean)
+	}
+}

@@ -610,6 +610,18 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
+	case "llm.usage.summary":
+		// Phase 1 fixture support for LLM usage metrics (individual agents page + contracts).
+		data, _ := json.Marshal(map[string]interface{}{
+			"grand":     map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0},
+			"last_hour": map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"today":     map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"mtd":       map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"models":    map[string]interface{}{},
+			"record_count": 0,
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
 	// Group 3 (E2E enablement): Rich worker + sandbox data for Canvas (J05/J08 monitoring + teams).
 	// This lets the live SSE-driven Canvas render meaningful agent cards, roles, teams, and tool feeds
 	// in fixture mode without a real daemon. Shapes match what handleCanvas + canvasTmpl + SSE handler expect.
