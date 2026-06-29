@@ -36,4 +36,14 @@ test.describe('GET /api/agents regression', () => {
       expect(hasRosterAgent, `expected roster agent in ${JSON.stringify(names)}`).toBeTruthy();
     }
   });
+
+  test('GET /api/llm-usage returns aggregate shape (Phase 1 metrics)', async ({ request }) => {
+    const res = await request.get('/api/llm-usage', { timeout: 10_000 });
+    expect(res.ok(), await res.text()).toBeTruthy();
+    const body = await res.json();
+    expect(body).toHaveProperty('grand');
+    expect(body).toHaveProperty('last_hour');
+    expect(body).toHaveProperty('today');
+    expect(body).toHaveProperty('mtd');
+  });
 });

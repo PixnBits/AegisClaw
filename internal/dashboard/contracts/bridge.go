@@ -71,6 +71,11 @@ var allowedBridgeActions = map[string]struct{}{
 	// CISO delegation (permissions-model)
 	"ciso.delegation.get": {},
 	"ciso.delegation.set": {},
+
+	// LLM usage metrics (Phase 1, read via store)
+	"llm.usage.summary": {},
+	"llm.usage.recent":  {},
+	"llm.usage.record":  {},
 }
 
 // HighImpactActions require explicit user confirmation before bridge call.

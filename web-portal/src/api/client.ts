@@ -126,4 +126,5 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
   activeWork: () => fetchJSON<{ items: unknown[]; count: number }>('/api/active-work'),
+  llmUsage: () => fetchJSON<Record<string, unknown>>('/api/llm-usage'),
 };

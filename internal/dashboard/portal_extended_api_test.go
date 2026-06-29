@@ -22,6 +22,11 @@ func (m *extendedMockClient) Call(_ context.Context, action string, _ json.RawMe
 		return &APIResponse{Success: true, Data: json.RawMessage(`[{"description":"Thinking"}]`)}, nil
 	case "proposal.approve":
 		return &APIResponse{Success: true, Data: json.RawMessage(`{"ok":true}`)}, nil
+	case "llm.usage.summary":
+		// Phase 1 contract: return shape with required windows + model breakdown
+		return &APIResponse{Success: true, Data: json.RawMessage(`{"grand":{"calls":42,"tokens_prompt":1200,"tokens_completion":800,"tokens_total":2000,"by_model":{"qwen":2000}},"last_hour":{"calls":5,"tokens_prompt":100,"tokens_completion":80},"today":{"calls":20,"tokens_prompt":600,"tokens_completion":400},"mtd":{"calls":42,"tokens_prompt":1200,"tokens_completion":800},"models":{"qwen":2000},"record_count":42}`)}, nil
+	case "llm.usage.record":
+		return &APIResponse{Success: true, Data: json.RawMessage(`{"ok":true}`)}, nil
 	default:
 		return &APIResponse{Success: true, Data: json.RawMessage(`{}`)}, nil
 	}
@@ -60,5 +65,25 @@ func TestProposalApproveRequiresConfirmation(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusPreconditionRequired {
 		t.Fatalf("expected 428, got %d", rec.Code)
+	}
+}
+
+func TestAPILLMUsage_ReturnsAggregatesShape(t *testing.T) {
+	// Phase 1 contract test: /api/llm-usage returns required windows (grand/last_hour/today/mtd) + breakdowns.
+	srv, _ := New("127.0.0.1:0", &extendedMockClient{})
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-usage", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	for _, key := range []string{"grand", "last_hour", "today", "mtd", "models"} {
+		if _, ok := out[key]; !ok {
+			t.Errorf("missing aggregate key %q", key)
+		}
 	}
 }

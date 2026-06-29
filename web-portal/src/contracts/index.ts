@@ -250,6 +250,16 @@ export type DashboardData = {
   recent_activity: unknown[];
 };
 
+// LLM usage aggregates (Phase 1)
+export type LLMUsageSummary = {
+  grand?: { calls?: number; tokens_prompt?: number; tokens_completion?: number; tokens_total?: number; by_model?: Record<string, number> };
+  last_hour?: { calls?: number; tokens_prompt?: number; tokens_completion?: number };
+  today?: { calls?: number; tokens_prompt?: number; tokens_completion?: number };
+  mtd?: { calls?: number; tokens_prompt?: number; tokens_completion?: number };
+  models?: Record<string, number>;
+  record_count?: number;
+};
+
 export type Proposal = {
   id: string;
   title: string;

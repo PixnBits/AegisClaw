@@ -127,12 +127,7 @@ func callHostOllama(client *http.Client, backend string, req ollamaBridgeReq) (s
 	if httpResp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("ollama status %d: %s", httpResp.StatusCode, string(respBytes))
 	}
-	text := string(respBytes)
-	var ollamaOut map[string]interface{}
-	if json.Unmarshal(respBytes, &ollamaOut) == nil {
-		if r, ok := ollamaOut["response"].(string); ok && r != "" {
-			text = r
-		}
-	}
-	return text, nil
+	// Return the full raw Ollama JSON body (caller / bridge will surface full for usage metrics extraction at network-boundary).
+	// Text extraction for legacy callers happens upstream.
+	return string(respBytes), nil
 }

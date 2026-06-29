@@ -58,6 +58,10 @@ var hubSocket = "~/.aegis/hub.sock"
 // In a fuller Store VM this would be durable + queryable (store-vm.md).
 var revocations = make(map[string]interface{})
 
+// llmUsageRecords holds recent LLM usage records (agent_id, model, tokens_*, duration, ts, success).
+// Collection happens at network-boundary (outside agent guests). Aggregates computed on query.
+var llmUsageRecords []map[string]interface{}
+
 func init() {
 	if env := os.Getenv("AEGIS_HUB_SOCKET"); env != "" {
 		hubSocket = env
@@ -145,6 +149,76 @@ func messageMatchesFilter(m map[string]interface{}, filter map[string]interface{
 		}
 	}
 	return true
+}
+
+// computeLLMUsageSummary builds the required aggregates (grand total, windows, by model).
+// Windows approximated by timestamp parsing (recent records kept hot in llmUsageRecords).
+func computeLLMUsageSummary(records []map[string]interface{}) map[string]interface{} {
+	now := time.Now().UTC()
+	grand := map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0, "by_model": map[string]interface{}{}}
+	lastHour := map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0}
+	today := map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0}
+	mtd := map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0}
+	modelBreak := map[string]int{}
+
+	add := func(target map[string]interface{}, p, c int) {
+		target["calls"] = target["calls"].(int) + 1
+		target["tokens_prompt"] = target["tokens_prompt"].(int) + p
+		target["tokens_completion"] = target["tokens_completion"].(int) + c
+	}
+
+	for _, r := range records {
+		p := 0
+		if v, ok := r["tokens_prompt"].(int); ok {
+			p = v
+		} else if v, ok := r["tokens_prompt"].(float64); ok {
+			p = int(v)
+		}
+		c := 0
+		if v, ok := r["tokens_completion"].(int); ok {
+			c = v
+		} else if v, ok := r["tokens_completion"].(float64); ok {
+			c = int(v)
+		}
+		mdl := "unknown"
+		if s, ok := r["model"].(string); ok && s != "" {
+			mdl = s
+		}
+		modelBreak[mdl] += (p + c)
+
+		tsStr, _ := r["timestamp"].(string)
+		t, _ := time.Parse(time.RFC3339, tsStr)
+		if t.IsZero() {
+			t = now
+		}
+		add(grand, p, c)
+		if now.Sub(t) <= time.Hour {
+			add(lastHour, p, c)
+		}
+		if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
+			add(today, p, c)
+		}
+		if t.Year() == now.Year() && t.Month() == now.Month() {
+			add(mtd, p, c)
+		}
+	}
+
+	// convert modelBreak
+	mb := map[string]interface{}{}
+	for k, v := range modelBreak {
+		mb[k] = v
+	}
+	grand["by_model"] = mb
+	grand["tokens_total"] = grand["tokens_prompt"].(int) + grand["tokens_completion"].(int)
+
+	return map[string]interface{}{
+		"grand":    grand,
+		"last_hour": lastHour,
+		"today":    today,
+		"mtd":      mtd,
+		"models":   mb,
+		"record_count": len(records),
+	}
 }
 
 func emitChannelUpdated(encoder *json.Encoder, priv ed25519.PrivateKey, ts, chID, from, content string, seq int) {
@@ -1608,6 +1682,47 @@ func runStore(cmd *cobra.Command, args []string) {
 			}
 			response.Command = "build.recorded"
 			response.Payload = "ok"
+
+		// LLM usage metrics recording & query (Phase 1, per agent-customization.md).
+		// Called from network-boundary (or tests) with agent correlation.
+		// Records are outside guest microVMs. Store provides durable append + simple aggregates.
+		case "llm.usage.record":
+			rec, ok := msg.Payload.(map[string]interface{})
+			if !ok {
+				response.Command = "error"
+				response.Payload = "invalid usage record"
+				break
+			}
+			// Enrich with receive ts if absent
+			if _, has := rec["timestamp"]; !has {
+				rec["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+			}
+			llmUsageRecords = append(llmUsageRecords, rec)
+			// Simple cap to avoid unbounded growth in v1 (rollups would persist longer term)
+			if len(llmUsageRecords) > 10000 {
+				llmUsageRecords = llmUsageRecords[len(llmUsageRecords)-5000:]
+			}
+			response.Command = "llm.usage.recorded"
+			response.Payload = map[string]interface{}{"ok": true}
+		case "llm.usage.summary":
+			// Return aggregates for common windows + breakdowns. Computed on the fly for v1.
+			summary := computeLLMUsageSummary(llmUsageRecords)
+			response.Command = "llm.usage.summary"
+			response.Payload = summary
+		case "llm.usage.recent":
+			limit := 50
+			if p, ok := msg.Payload.(map[string]interface{}); ok {
+				if l, ok := p["limit"].(float64); ok && l > 0 {
+					limit = int(l)
+				}
+			}
+			n := len(llmUsageRecords)
+			start := 0
+			if n > limit {
+				start = n - limit
+			}
+			response.Command = "llm.usage.recent"
+			response.Payload = llmUsageRecords[start:]
 		case "skill.list":
 			list := []interface{}{}
 			for _, s := range skills {

@@ -15,6 +15,7 @@ const (
 	TypeHarnessStageTrans   = "harness.stage.transition"
 	TypeHarnessProposal     = "harness.proposal.created"
 	TypeMonitoringStats     = "monitoring.stats"
+	TypeLLMUsage            = "llm.usage" // Phase 1 metrics
 )
 
 // OverviewStats is pushed on /topic/overview.stats.
@@ -94,4 +95,18 @@ var KnownEventTypes = []string{
 	TypeHarnessTaskProgress,
 	TypeHarnessStageTrans,
 	TypeHarnessProposal,
+	TypeLLMUsage,
+}
+
+// LLMUsageEvent is the live metrics update (emitted from boundary via store/dashboard publish).
+type LLMUsageEvent struct {
+	Type      string                 `json:"type"`
+	AgentID   string                 `json:"agent_id"`
+	Timestamp string                 `json:"timestamp"`
+	Model     string                 `json:"model"`
+	TokensIn  int                    `json:"tokens_prompt"`
+	TokensOut int                    `json:"tokens_completion"`
+	Duration  int                    `json:"duration_ms"`
+	Success   bool                   `json:"success"`
+	Extra     map[string]interface{} `json:"extra,omitempty"`
 }
