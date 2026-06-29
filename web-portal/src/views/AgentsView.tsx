@@ -36,9 +36,11 @@ function isSpecialist(name: string): boolean {
 
 export function AgentsView({ onOpenTrace }: Props) {
   const [agents, setAgents] = useState<AgentCard[]>([]);
+  const [usage, setUsage] = useState<any>(null);
 
   useEffect(() => {
     api.agents().then((d) => setAgents(d.agents || [])).catch(() => {});
+    api.llmUsage().then(setUsage).catch(() => {});
   }, []);
 
   const { specialists, court } = useMemo(() => {
@@ -90,6 +92,12 @@ export function AgentsView({ onOpenTrace }: Props) {
         <p className="eyebrow">Fleet</p>
         <h1>Agents</h1>
       </header>
+      {usage && (
+        <div data-testid="metrics-summary" style={{ marginBottom: '1rem', fontSize: '0.9em' }}>
+          <strong>LLM usage:</strong> grand {usage.grand?.calls || 0} calls, {usage.grand?.tokens_total || 0} tokens
+          {' '}(last hour {usage.last_hour?.calls || 0})
+        </div>
+      )}
       {agents.length === 0 ? (
         <EmptyState
           testId="agents-empty-state"

@@ -127,4 +127,11 @@ export const api = {
     }),
   activeWork: () => fetchJSON<{ items: unknown[]; count: number }>('/api/active-work'),
   llmUsage: () => fetchJSON<Record<string, unknown>>('/api/llm-usage'),
+  agentSettings: (id: string) => fetchJSON<{ agent: string; settings?: unknown; soul?: string }>(`/api/agents/${encodeURIComponent(id)}/settings`),
+  saveAgentSettings: (id: string, body: { settings?: unknown; soul?: string }) =>
+    fetchJSON<{ ok: boolean }>(`/api/agents/${encodeURIComponent(id)}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Aegis-Confirmed': '1' },
+      body: JSON.stringify(body),
+    }),
 };
