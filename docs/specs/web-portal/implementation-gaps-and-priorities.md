@@ -47,12 +47,12 @@ The following areas have dedicated target-state specifications:
 
 4. **Per-Agent Settings Editor + LLM Usage Metrics (Individual Agents Page)**
    - Full implementation of the expanded requirements in `../agent-customization.md`:
-     - SETTINGS.yaml schema, validation, hot-reload, and portal editing surface (SOUL + settings form + skills toggles).
-     - LLM usage tracking (per-call tokens + model + correlation), storage strategy (Store VM / metrics component), and required aggregates (grand total, last hour, today, MTD, custom windows, breakdowns).
-     - Individual agents page UI: list + detail view with live metrics cards, time-series charts, configuration editor, and real-time STOMP updates.
-   - Backend collection points, aggregate engine, and portalbridge / REST surface.
-   - Security & isolation guarantees for metrics and settings changes.
-   - Status: Specification expanded (this branch); implementation pending.
+     - SETTINGS.yaml schema, validation, atomic writes + backup, LoadForAgent precedence; portalbridge get/set + daemon handlers.
+     - LLM usage tracking at network-boundary (tokens/model/duration/success from Ollama), store handlers + aggregates (grand/last-hour/today/MTD + by-model), dashboard /api/llm-usage.
+     - Exposure: /api/agents + /api/agents/<id>/settings , /api/agents/<id>/metrics ready; STOMP topics + publish helper; frontend list metrics summary + client/editor APIs.
+   - Backend collection outside guest (boundary+store), contract tests, e2e fixtures.
+   - Security & isolation: metrics/storage in boundary/store/dashboard only; writes validated + via daemon.
+   - Status: **Implemented** (feat/agent-settings-and-metrics). See changed files: cmd/network-boundary/*, cmd/store/main.go, internal/workspace/loader.go, internal/dashboard/* (contracts, extended, realtime), web-portal/src/*, e2e/ + tests. Hot-reload notification partial (file load on start); full live UI polish follow-up.
 
 ### Medium Priority
 
