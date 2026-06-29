@@ -4,13 +4,13 @@
       "subject": "coder-test",
       "capability": "channel.post",
       "granted_by": "court-persona-ciso-1",
-      "granted_at": "2026-06-29T07:08:52Z"
+      "granted_at": "2026-06-29T07:12:12Z"
     },
     {
       "subject": "audit-test",
       "capability": "x.y",
       "granted_by": "web-portal",
-      "granted_at": "2026-06-29T07:08:52Z"
+      "granted_at": "2026-06-29T07:12:12Z"
     }
   ],
   "visibility": [],
