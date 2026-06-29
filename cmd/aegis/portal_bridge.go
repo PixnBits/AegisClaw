@@ -14,6 +14,7 @@ import (
 	"AegisClaw/internal/portalbridge"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/transport/hubclient"
+	"AegisClaw/internal/workspace"
 
 	"github.com/mdlayher/vsock"
 	"github.com/sirupsen/logrus"
@@ -366,6 +367,52 @@ func handlePortalDaemonLocal(command string, payload interface{}) (interface{}, 
 	case "sessions.list":
 		// Delegate to Store when daemon-local path is hit (should not happen if routing matches).
 		return sendToComponentViaHub("store", command, payload)
+
+	// Per-agent SETTINGS + SOUL (Phase 2). Atomic + validated writes. Routed to daemon for host FS safety.
+	case "agent.settings.get", "agent.soul.get":
+		m, _ := payload.(map[string]interface{})
+		name, _ := m["name"].(string)
+		if name == "" {
+			name, _ = m["agent_id"].(string)
+		}
+		if name == "" {
+			name = "default"
+		}
+		ws, err := workspace.LoadForAgent("", name)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasSuffix(command, ".settings.get") {
+			return map[string]interface{}{"agent": name, "settings": ws.SETTINGS}, nil
+		}
+		return map[string]interface{}{"agent": name, "soul": ws.SOUL}, nil
+	case "agent.settings.set", "agent.soul.set":
+		m, _ := payload.(map[string]interface{})
+		name, _ := m["name"].(string)
+		if name == "" {
+			name, _ = m["agent_id"].(string)
+		}
+		if name == "" {
+			name = "default"
+		}
+		if strings.HasSuffix(command, ".settings.set") {
+			setIface := m["settings"]
+			var set map[string]interface{}
+			if mm, ok := setIface.(map[string]interface{}); ok {
+				set = mm
+			} else if b, ok := setIface.([]byte); ok {
+				_ = json.Unmarshal(b, &set)
+			}
+			if err := workspace.WriteSettingsAtomic("", name, set); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"ok": true, "agent": name}, nil
+		}
+		content, _ := m["content"].(string)
+		if err := workspace.WriteSoulAtomic("", name, content); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"ok": true, "agent": name}, nil
 	default:
 		if strings.HasPrefix(command, "sessions.") || strings.HasPrefix(command, "team.") {
 			return sendToComponentViaHub("store", command, payload)

@@ -152,6 +152,9 @@ func (s *Server) handleAPIAgentDetail(w http.ResponseWriter, r *http.Request) {
 		case "permissions":
 			s.handleAPIAgentPermissions(w, r, ctx, agentID)
 			return
+		case "settings":
+			s.handleAPIAgentSettings(w, r, ctx, agentID)
+			return
 		case "trace":
 			if r.Method != http.MethodGet {
 				http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -553,4 +556,44 @@ func (s *Server) handleAPILLMUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data) //nolint:errcheck
+}
+
+// handleAPIAgentSettings supports GET (current SOUL + SETTINGS) and POST save for per-agent config.
+func (s *Server) handleAPIAgentSettings(w http.ResponseWriter, r *http.Request, ctx context.Context, agentID string) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		soul, _ := s.fetchRaw(ctx, "agent.soul.get", map[string]string{"name": agentID})
+		set, _ := s.fetchRaw(ctx, "agent.settings.get", map[string]string{"name": agentID})
+		json.NewEncoder(w).Encode(map[string]interface{}{"agent": agentID, "soul": soul, "settings": set}) //nolint:errcheck
+	case http.MethodPost:
+		if !ratelimit.Guard(w, r, ratelimit.CategoryAgentControl) {
+			return
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if bridgeGuard.NeedsConfirmation("agent.settings.set") && r.Header.Get("X-Aegis-Confirmed") != "1" {
+			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
+			return
+		}
+		// Try settings then soul
+		if body["settings"] != nil {
+			_, err := s.fetchRaw(ctx, "agent.settings.set", map[string]interface{}{"name": agentID, "settings": body["settings"]})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		if body["soul"] != nil || body["content"] != nil {
+			c := spaStringOr(body["soul"], spaStringOr(body["content"], ""))
+			_, err := s.fetchRaw(ctx, "agent.soul.set", map[string]interface{}{"name": agentID, "content": c})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "agent": agentID}) //nolint:errcheck
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }

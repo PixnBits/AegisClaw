@@ -448,11 +448,14 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 	}
 	_ = pub
 
-	wsCtx, wsErr := workspace.Load("")
+	wsCtx, wsErr := workspace.LoadForAgent("", "project-manager")
 	if wsErr != nil {
 		log.Printf("pm: WARNING: %v (using defaults)", wsErr)
-	} else if wsCtx.SOUL != "" || wsCtx.AGENTS != "" {
+	} else if wsCtx != nil && (wsCtx.SOUL != "" || wsCtx.AGENTS != "" || len(wsCtx.SETTINGS) > 0) {
 		log.Printf("pm: Loaded workspace customizations")
+	}
+	if wsCtx != nil {
+		_ = workspace.ValidateSettings(wsCtx.SETTINGS)
 	}
 	loadedWorkspace = wsCtx
 
@@ -482,6 +485,11 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 	timing.WriteComponentReadySentinel()
 
 	llmModel := bootargs.DefaultModel(agent.DefaultLLMModel)
+	if loadedWorkspace != nil && loadedWorkspace.SETTINGS != nil {
+		if m, ok := loadedWorkspace.SETTINGS["model"].(string); ok && m != "" && !strings.EqualFold(m, "inherit") && !strings.EqualFold(m, "default") {
+			llmModel = m
+		}
+	}
 	realLLM := loop.NewRealLLMCaller(hcl, llmModel)
 
 	timing.RecordPhase("message_loop_ready")
