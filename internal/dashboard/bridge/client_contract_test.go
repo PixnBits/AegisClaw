@@ -38,3 +38,24 @@ func TestHighImpactActionsRequireConfirmation(t *testing.T) {
 		t.Error("channel.list should not require confirmation")
 	}
 }
+
+func TestAgentSettingsAndLLMUsageBridgeActionsAllowed(t *testing.T) {
+	// Phase 2/1 coverage for new per-agent settings + metrics bridge actions.
+	g := bridge.NewGuard()
+	for _, act := range []string{
+		"agent.settings.get", "agent.soul.get",
+		"llm.usage.summary", "llm.usage.recent", "llm.usage.record",
+	} {
+		if err := g.Validate(act); err != nil {
+			t.Errorf("new allowed action %q rejected: %v", act, err)
+		}
+	}
+	for _, act := range []string{"agent.settings.set", "agent.soul.set"} {
+		if err := g.Validate(act); err != nil {
+			t.Errorf("write action %q should be allowed: %v", act, err)
+		}
+		if !g.NeedsConfirmation(act) {
+			t.Errorf("write action %q should require confirmation", act)
+		}
+	}
+}

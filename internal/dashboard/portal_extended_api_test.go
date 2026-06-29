@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,10 @@ func (m *extendedMockClient) Call(_ context.Context, action string, _ json.RawMe
 		// Phase 1 contract: return shape with required windows + model breakdown
 		return &APIResponse{Success: true, Data: json.RawMessage(`{"grand":{"calls":42,"tokens_prompt":1200,"tokens_completion":800,"tokens_total":2000,"by_model":{"qwen":2000}},"last_hour":{"calls":5,"tokens_prompt":100,"tokens_completion":80},"today":{"calls":20,"tokens_prompt":600,"tokens_completion":400},"mtd":{"calls":42,"tokens_prompt":1200,"tokens_completion":800},"models":{"qwen":2000},"record_count":42}`)}, nil
 	case "llm.usage.record":
+		return &APIResponse{Success: true, Data: json.RawMessage(`{"ok":true}`)}, nil
+	case "agent.settings.get", "agent.soul.get":
+		return &APIResponse{Success: true, Data: json.RawMessage(`{"agent":"` + "mock" + `","settings":{"model":"qwen"},"soul":"Be safe"}`)}, nil
+	case "agent.settings.set", "agent.soul.set":
 		return &APIResponse{Success: true, Data: json.RawMessage(`{"ok":true}`)}, nil
 	default:
 		return &APIResponse{Success: true, Data: json.RawMessage(`{}`)}, nil
@@ -85,5 +90,39 @@ func TestAPILLMUsage_ReturnsAggregatesShape(t *testing.T) {
 		if _, ok := out[key]; !ok {
 			t.Errorf("missing aggregate key %q", key)
 		}
+	}
+}
+
+func TestAPIAgentSettings_GetAndPost(t *testing.T) {
+	// Coverage for Phase 2 per-agent settings portal surface (GET + confirmed POST via bridge).
+	srv, _ := New("127.0.0.1:0", &extendedMockClient{})
+	// GET
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/researcher/settings", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET settings status %d: %s", rec.Code, rec.Body.String())
+	}
+	var g map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &g)
+	if g["agent"] != "researcher" {
+		t.Error("expected agent id in response")
+	}
+
+	// POST without confirm should 428
+	req = httptestRequest(t, http.MethodPost, "/api/agents/researcher/settings", strings.NewReader(`{"settings":{"model":"special"}}`))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionRequired {
+		t.Fatalf("POST without confirm expected 428, got %d", rec.Code)
+	}
+
+	// with confirm
+	req = httptestRequest(t, http.MethodPost, "/api/agents/researcher/settings", strings.NewReader(`{"settings":{"model":"special"}}`))
+	req.Header.Set("X-Aegis-Confirmed", "1")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST with confirm status %d body=%s", rec.Code, rec.Body.String())
 	}
 }

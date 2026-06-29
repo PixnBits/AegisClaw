@@ -888,30 +888,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 
 			// Parse full Ollama response for usage metrics (prompt_eval_count, eval_count, durations, model).
 			// Always surface clean "response" (text) for existing NewRealLLMCaller / loop callers.
-			text := raw
-			usage := map[string]interface{}{"model": model}
-			var ollama map[string]interface{}
-			if json.Unmarshal([]byte(raw), &ollama) == nil {
-				if r, ok := ollama["response"].(string); ok && r != "" {
-					text = r
-				}
-				if v, ok := ollama["prompt_eval_count"].(float64); ok {
-					usage["prompt_tokens"] = int(v)
-				}
-				if v, ok := ollama["eval_count"].(float64); ok {
-					usage["completion_tokens"] = int(v)
-				}
-				if v, ok := ollama["total_duration"].(float64); ok {
-					usage["duration_ms"] = int(v / 1e6) // ns -> ms
-				}
-				if m, ok := ollama["model"].(string); ok && m != "" {
-					usage["model"] = m
-				}
-				// success implicit (no error path)
-				usage["success"] = true
-			} else {
-				usage["success"] = true
-			}
+			text, usage := parseOllamaForLLMCall(raw, model)
 
 			response.Command = "llm.call.response"
 			response.Payload = map[string]interface{}{
@@ -920,17 +897,27 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 			}
 			log.Printf("LLM plan gen via ollama (%s, %d bytes response, prompt_tokens=%v completion=%v)", model, len(text), usage["prompt_tokens"], usage["completion_tokens"])
 
-			// Metrics emission point (Phase 1): record at boundary (outside any agent guest).
-			// Agent correlation via msg.Source. Full emit to store + STOMP happens in later wiring.
-			// For now structured log + payload enrichment provides the data.
-			_ = map[string]interface{}{ // placeholder for record emit (see next chunk)
-				"agent_id":         msg.Source,
-				"timestamp":        time.Now().UTC().Format(time.RFC3339),
-				"model":            usage["model"],
-				"tokens_prompt":    usage["prompt_tokens"],
+			// Emit usage record to Store for durable aggregates (outside guest). Uses same signed hub path.
+			// This wires the collection end-to-end for /api/llm-usage and portal.
+			rec := map[string]interface{}{
+				"agent_id":          msg.Source,
+				"timestamp":         time.Now().UTC().Format(time.RFC3339),
+				"model":             usage["model"],
+				"tokens_prompt":     usage["prompt_tokens"],
 				"tokens_completion": usage["completion_tokens"],
-				"duration_ms":      usage["duration_ms"],
-				"success":          usage["success"],
+				"duration_ms":       usage["duration_ms"],
+				"success":           usage["success"],
+			}
+			recMsg := Message{
+				Source:      "network-boundary",
+				Destination: "store",
+				Command:     "llm.usage.record",
+				Payload:     rec,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}
+			signMessage(&recMsg, priv)
+			if encErr := encoder.Encode(recMsg); encErr != nil {
+				log.Printf("llm.usage.record emit failed: %v", encErr)
 			}
 
 		// === 7.1 Hub secrets delivery path (first implementation) ===
@@ -1290,6 +1277,36 @@ func loadAllowedDomains(ollamaHost string) map[string]bool {
 		}
 	}
 	return allowed
+}
+
+// parseOllamaForLLMCall extracts the generated text and usage metrics (tokens, duration) from
+// the raw JSON returned by Ollama /api/generate. This is the central point for accurate
+// per-call LLM usage collection (outside any Agent Runtime guest VM). Unit tested.
+func parseOllamaForLLMCall(raw, model string) (string, map[string]interface{}) {
+	text := raw
+	usage := map[string]interface{}{"model": model}
+	var ollama map[string]interface{}
+	if json.Unmarshal([]byte(raw), &ollama) == nil {
+		if r, ok := ollama["response"].(string); ok && r != "" {
+			text = r
+		}
+		if v, ok := ollama["prompt_eval_count"].(float64); ok {
+			usage["prompt_tokens"] = int(v)
+		}
+		if v, ok := ollama["eval_count"].(float64); ok {
+			usage["completion_tokens"] = int(v)
+		}
+		if v, ok := ollama["total_duration"].(float64); ok {
+			usage["duration_ms"] = int(v / 1e6) // ns -> ms
+		}
+		if m, ok := ollama["model"].(string); ok && m != "" {
+			usage["model"] = m
+		}
+		usage["success"] = true
+	} else {
+		usage["success"] = true
+	}
+	return text, usage
 }
 
 // loadSkillAllowlists loads per-skill network access rules from a directory.

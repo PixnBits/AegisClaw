@@ -121,3 +121,30 @@ func TestNetworkBoundaryContract(t *testing.T) {
 		t.Error("allowed host for skill should pass")
 	}
 }
+
+func TestParseOllamaForLLMCall_UsageExtraction(t *testing.T) {
+	// Unit coverage for the core LLM metrics collection logic (called from llm.call handler).
+	raw := `{"model":"qwen2.5-coder:7b","response":"Hello world","done":true,"prompt_eval_count":42,"eval_count":17,"total_duration":1234567890}`
+	text, usage := parseOllamaForLLMCall(raw, "default")
+	if text != "Hello world" {
+		t.Errorf("text: %q", text)
+	}
+	if usage["prompt_tokens"] != 42 || usage["completion_tokens"] != 17 {
+		t.Errorf("tokens: %+v", usage)
+	}
+	if usage["duration_ms"] != 1234 { // ~1.23s
+		t.Errorf("duration: %+v", usage)
+	}
+	if usage["model"] != "qwen2.5-coder:7b" {
+		t.Errorf("model override: %+v", usage)
+	}
+	if usage["success"] != true {
+		t.Error("success")
+	}
+
+	// bad json falls back gracefully
+	_, u2 := parseOllamaForLLMCall("not json", "m")
+	if u2["success"] != true || u2["model"] != "m" {
+		t.Errorf("bad json: %+v", u2)
+	}
+}

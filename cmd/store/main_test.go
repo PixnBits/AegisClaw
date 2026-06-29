@@ -121,6 +121,31 @@ func TestComputeMerkleRoot(t *testing.T) {
 	}
 }
 
+func TestLLMUsageRecordSummaryHandlersLogic(t *testing.T) {
+	// Direct coverage for Phase 1 llm.usage.* store logic (compute + record simulation).
+	records := []map[string]interface{}{
+		{"agent_id": "coder-1", "model": "qwen", "tokens_prompt": 100, "tokens_completion": 50, "duration_ms": 800, "timestamp": time.Now().Add(-2 * time.Hour).Format(time.RFC3339), "success": true},
+		{"agent_id": "pm", "model": "qwen", "tokens_prompt": 200, "tokens_completion": 100, "duration_ms": 1500, "timestamp": time.Now().Format(time.RFC3339), "success": true},
+	}
+	summary := computeLLMUsageSummary(records)
+	if summary == nil {
+		t.Fatal("summary nil")
+	}
+	g := summary["grand"].(map[string]interface{})
+	if g["calls"].(int) != 2 || g["tokens_prompt"].(int) != 300 {
+		t.Errorf("grand wrong: %+v", g)
+	}
+	if summary["record_count"].(int) != 2 {
+		t.Error("record_count")
+	}
+	// simulate record append
+	records = append(records, map[string]interface{}{"agent_id": "test", "model": "llama", "tokens_prompt": 10, "tokens_completion": 5, "timestamp": time.Now().Format(time.RFC3339)})
+	s2 := computeLLMUsageSummary(records)
+	if s2["record_count"].(int) != 3 {
+		t.Error("after record count")
+	}
+}
+
 // fakeWriter captures json.Encoder writes for asserting scribe send side-effect in tests.
 type fakeWriter struct{ msgs *[]Message }
 
