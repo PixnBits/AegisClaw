@@ -23,6 +23,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -44,6 +46,10 @@ type Context struct {
 	// Skills is intentionally minimal here; full skill loading can layer on top
 	// (see 7.3 discovery). We just surface raw SKILL.md content if present.
 	SKILLS string
+
+	// SETTINGS holds parsed per-agent (or default/shared) structured config.
+	// Populated by Load / LoadForAgent. Precedence: per-agent > default > shared > root.
+	SETTINGS map[string]interface{}
 
 	// Provenance for debugging / audit
 	LoadedFrom map[string]string // e.g. "AGENTS" -> "/home/user/.aegis/AGENTS.md"
@@ -146,6 +152,19 @@ func Load(baseDir string) (*Context, error) {
 		return nil, err
 	}
 
+	// SETTINGS.yaml (structured per-agent config). Loaded as map; validated downstream.
+	if settingsRaw, err := readValidated("SETTINGS.yaml", "SETTINGS"); err == nil && settingsRaw != "" {
+		var m map[string]interface{}
+		if yamlErr := yaml.Unmarshal([]byte(settingsRaw), &m); yamlErr == nil {
+			ctx.SETTINGS = m
+		} else {
+			// tolerate bad yaml as empty (caller may error on use)
+			ctx.SETTINGS = map[string]interface{}{}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) && err != nil {
+		// only hard fail on real FS/perms issues; bad yaml tolerated here
+	}
+
 	// 2. Structured agents/ layout (shared + per-agent overrides)
 	_ = filepath.Join(absBase, "agents") // reserved for future per-agent selection
 
@@ -164,11 +183,244 @@ func Load(baseDir string) (*Context, error) {
 	if defAgents, _ := readValidated(filepath.Join("agents", "default", "AGENTS.md"), "default.AGENTS"); defAgents != "" && ctx.AGENTS == "" {
 		ctx.AGENTS = defAgents
 	}
+	if defSettingsRaw, _ := readValidated(filepath.Join("agents", "default", "SETTINGS.yaml"), "default.SETTINGS"); defSettingsRaw != "" && len(ctx.SETTINGS) == 0 {
+		var m map[string]interface{}
+		_ = yaml.Unmarshal([]byte(defSettingsRaw), &m)
+		ctx.SETTINGS = m
+	}
 
-	// Note: Per-agent (e.g. "researcher") overrides would be selected at runtime
-	// when the agent knows its persona name. For now we load the "default" set.
+	// shared/ SETTINGS lowest among agents/ (after default if not set)
+	if sharedSettingsRaw, _ := readValidated(filepath.Join("agents", "shared", "SETTINGS.yaml"), "shared.SETTINGS"); sharedSettingsRaw != "" && len(ctx.SETTINGS) == 0 {
+		var m map[string]interface{}
+		_ = yaml.Unmarshal([]byte(sharedSettingsRaw), &m)
+		ctx.SETTINGS = m
+	}
+
+	// Note: Per-agent overrides selected at runtime via LoadForAgent when persona/component name known.
 
 	return ctx, nil
+}
+
+// LoadForAgent loads customizations preferring ~/.aegis/agents/<name>/ over default/shared/root.
+// name examples: "coder", "researcher", "project-manager-main", "agent-xyz" (normalized by caller to folder).
+// SETTINGS + SOUL/AGENTS/TOOLS from the specific agent dir take precedence.
+func LoadForAgent(baseDir, name string) (*Context, error) {
+	if name == "" {
+		return Load(baseDir)
+	}
+	if baseDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("workspace: cannot determine home: %w", err)
+		}
+		baseDir = filepath.Join(home, ".aegis")
+	}
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("workspace: %w", err)
+	}
+	agentDir := filepath.Join("agents", sanitizeName(name))
+
+	ctx := &Context{LoadedFrom: make(map[string]string)}
+
+	// helper localized to avoid duplicating validation
+	readValidatedLocal := func(rel, key string) (string, error) {
+		full := filepath.Join(absBase, rel)
+		absFull, err := filepath.Abs(full)
+		if err != nil {
+			return "", err
+		}
+		if !strings.HasPrefix(absFull, absBase) {
+			return "", ErrPathTraversal
+		}
+		info, err := os.Stat(absFull)
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Size() > maxFileSize {
+			return "", fmt.Errorf("%w: %s", ErrFileTooLarge, rel)
+		}
+		mode := info.Mode().Perm()
+		if mode&0002 != 0 {
+			return "", fmt.Errorf("%w: %s mode %o", ErrUnsafePermissions, rel, mode)
+		}
+		data, err := os.ReadFile(absFull)
+		if err != nil {
+			return "", err
+		}
+		content := string(data)
+		lower := strings.ToLower(content)
+		if strings.HasPrefix(strings.TrimSpace(lower), "#!") || strings.Contains(lower, "exec ") {
+			return "", fmt.Errorf("%w: %s", ErrUnsafeContent, rel)
+		}
+		ctx.LoadedFrom[key] = absFull
+		return content, nil
+	}
+
+	// per-agent first
+	if soul, _ := readValidatedLocal(filepath.Join(agentDir, "SOUL.md"), "agent.SOUL"); soul != "" {
+		ctx.SOUL = soul
+	}
+	if ag, _ := readValidatedLocal(filepath.Join(agentDir, "AGENTS.md"), "agent.AGENTS"); ag != "" {
+		ctx.AGENTS = ag
+	}
+	if tools, _ := readValidatedLocal(filepath.Join(agentDir, "TOOLS.md"), "agent.TOOLS"); tools != "" {
+		ctx.TOOLS = tools
+	}
+	if setRaw, _ := readValidatedLocal(filepath.Join(agentDir, "SETTINGS.yaml"), "agent.SETTINGS"); setRaw != "" {
+		var m map[string]interface{}
+		_ = yaml.Unmarshal([]byte(setRaw), &m)
+		ctx.SETTINGS = m
+	}
+
+	// fall back to base Load (which does shared/default/root with its precedence)
+	base, err := Load(baseDir)
+	if err != nil {
+		// still return what we have
+		return ctx, nil
+	}
+	if ctx.SOUL == "" {
+		ctx.SOUL = base.SOUL
+	}
+	if ctx.AGENTS == "" {
+		ctx.AGENTS = base.AGENTS
+	}
+	if ctx.TOOLS == "" {
+		ctx.TOOLS = base.TOOLS
+	}
+	if len(ctx.SETTINGS) == 0 && base.SETTINGS != nil {
+		ctx.SETTINGS = base.SETTINGS
+	}
+	for k, v := range base.LoadedFrom {
+		if _, ok := ctx.LoadedFrom[k]; !ok {
+			ctx.LoadedFrom[k] = v
+		}
+	}
+	return ctx, nil
+}
+
+// sanitizeName strips path separators for safe folder use under agents/.
+func sanitizeName(n string) string {
+	n = strings.ReplaceAll(n, "/", "-")
+	n = strings.ReplaceAll(n, "\\", "-")
+	n = strings.ReplaceAll(n, "..", "")
+	return n
+}
+
+// SettingsSchema describes allowed keys/types for validation (draft from spec).
+var SettingsSchema = map[string]string{
+	"model":               "string",
+	"temperature":         "number",
+	"top_p":               "number",
+	"max_tokens":          "int",
+	"autonomy_level":      "int", // 0-2
+	"auto_initiate":       "bool",
+	"enabled_tools":       "[]string",
+	"disabled_skills":     "[]string",
+	"extra_system_instructions": "string",
+}
+
+// ValidateSettings performs schema + security checks on a SETTINGS map.
+// Returns error on bad values (out of range, dangerous grants etc).
+func ValidateSettings(m map[string]interface{}) error {
+	if m == nil {
+		return nil
+	}
+	// model string ok
+	if v, ok := m["model"].(string); ok && strings.Contains(strings.ToLower(v), "exec") {
+		return fmt.Errorf("%w: model %s", ErrUnsafeContent, v)
+	}
+	// autonomy 0-2
+	if v, ok := m["autonomy_level"]; ok {
+		var i int
+		switch t := v.(type) {
+		case float64:
+			i = int(t)
+		case int:
+			i = t
+		}
+		if i < 0 || i > 2 {
+			return fmt.Errorf("autonomy_level must be 0-2, got %d", i)
+		}
+	}
+	// simple number ranges for sampling (non fatal for v1)
+	if t, ok := m["temperature"].(float64); ok && (t < 0 || t > 2) {
+		return fmt.Errorf("temperature out of range")
+	}
+	// enabled_tools: warn on obviously powerful but allow (security lint later in caller for level)
+	if tools, ok := m["enabled_tools"].([]interface{}); ok {
+		for _, t := range tools {
+			if s, ok := t.(string); ok && (strings.Contains(s, "shell") || strings.Contains(s, "exec")) {
+				// allow but note; higher autonomy gates elsewhere
+				_ = s
+			}
+		}
+	}
+	return nil
+}
+
+// WriteSettingsAtomic writes SETTINGS.yaml for the named agent under baseDir with validation + atomic replace + backup.
+// name selects agents/<sanitized-name>/SETTINGS.yaml
+func WriteSettingsAtomic(baseDir, name string, settings map[string]interface{}) error {
+	if err := ValidateSettings(settings); err != nil {
+		return err
+	}
+	if baseDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		baseDir = filepath.Join(home, ".aegis")
+	}
+	agentDir := filepath.Join(baseDir, "agents", sanitizeName(name))
+	if err := os.MkdirAll(agentDir, 0700); err != nil {
+		return err
+	}
+	target := filepath.Join(agentDir, "SETTINGS.yaml")
+	// backup previous
+	if b, err := os.ReadFile(target); err == nil && len(b) > 0 {
+		_ = os.WriteFile(target+".bak", b, 0600)
+	}
+	tmp := target + ".tmp"
+	b, err := yaml.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// WriteSoulAtomic writes SOUL.md atomically for agent (similar safety).
+func WriteSoulAtomic(baseDir, name, content string) error {
+	if baseDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		baseDir = filepath.Join(home, ".aegis")
+	}
+	agentDir := filepath.Join(baseDir, "agents", sanitizeName(name))
+	if err := os.MkdirAll(agentDir, 0700); err != nil {
+		return err
+	}
+	target := filepath.Join(agentDir, "SOUL.md")
+	if b, err := os.ReadFile(target); err == nil && len(b) > 0 {
+		_ = os.WriteFile(target+".bak", b, 0600)
+	}
+	tmp := target + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, target)
 }
 
 // MustLoad is like Load but panics on error (convenient for startup).

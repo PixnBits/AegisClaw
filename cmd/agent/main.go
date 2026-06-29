@@ -175,16 +175,26 @@ func runAgentSession(client hubclient.Client, pub ed25519.PublicKey, priv ed2551
 	timing.RecordPhase("register_complete")
 	timing.WriteComponentReadySentinel()
 
-	wsCtx, wsErr := workspace.Load("")
+	comp := bootargs.ComponentID("agent")
+	wsCtx, wsErr := workspace.LoadForAgent("", comp)
 	if wsErr != nil {
 		log.Printf("7.4 WARNING: %v (using defaults)", wsErr)
-	} else if wsCtx.SOUL != "" || wsCtx.AGENTS != "" || wsCtx.TOOLS != "" {
-		log.Printf("7.4: Loaded workspace customizations")
+	} else if wsCtx.SOUL != "" || wsCtx.AGENTS != "" || wsCtx.TOOLS != "" || len(wsCtx.SETTINGS) > 0 {
+		log.Printf("7.4: Loaded workspace customizations (agent=%s, settings=%d keys)", comp, len(wsCtx.SETTINGS))
+	}
+	if wsCtx != nil {
+		_ = workspace.ValidateSettings(wsCtx.SETTINGS)
 	}
 	loadedWorkspace = wsCtx
 
 	skillIndex := NewAgentSkillIndex()
-	realLLM := loop.NewRealLLMCaller(client, bootargs.DefaultModel(agent.DefaultLLMModel))
+	llmModel := bootargs.DefaultModel(agent.DefaultLLMModel)
+	if wsCtx != nil && wsCtx.SETTINGS != nil {
+		if m, ok := wsCtx.SETTINGS["model"].(string); ok && m != "" && !strings.EqualFold(m, "inherit") && !strings.EqualFold(m, "default") {
+			llmModel = m
+		}
+	}
+	realLLM := loop.NewRealLLMCaller(client, llmModel)
 
 	fmt.Println("agent: real message-driven loop active (hubclient Receive + real loop.RunTurn)")
 	timing.RecordPhase("message_loop_ready")

@@ -76,6 +76,12 @@ var allowedBridgeActions = map[string]struct{}{
 	"llm.usage.summary": {},
 	"llm.usage.recent":  {},
 	"llm.usage.record":  {},
+
+	// Per-agent settings (Phase 2)
+	"agent.settings.get": {},
+	"agent.soul.get":     {},
+	"agent.settings.set": {},
+	"agent.soul.set":     {},
 }
 
 // HighImpactActions require explicit user confirmation before bridge call.
@@ -92,6 +98,8 @@ var HighImpactActions = map[string]struct{}{
 	"permission.revoke":     {},
 	"visibility.set":        {},
 	"ciso.delegation.set":  {},
+	"agent.settings.set":   {},
+	"agent.soul.set":       {},
 }
 
 // IsAllowedBridgeAction reports whether the portal may call action on the bridge.

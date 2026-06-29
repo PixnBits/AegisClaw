@@ -122,3 +122,45 @@ func TestLoad_MissingFilesOK(t *testing.T) {
 		t.Error("expected empty context for missing files")
 	}
 }
+
+func TestLoadForAgent_SettingsPrecedenceAndValidate(t *testing.T) {
+	tmp := t.TempDir()
+	// default
+	os.MkdirAll(filepath.Join(tmp, "agents", "default"), 0755)
+	os.WriteFile(filepath.Join(tmp, "agents", "default", "SETTINGS.yaml"), []byte("model: default-model\nautonomy_level: 1\n"), 0644)
+	// per agent override
+	os.MkdirAll(filepath.Join(tmp, "agents", "researcher"), 0755)
+	os.WriteFile(filepath.Join(tmp, "agents", "researcher", "SETTINGS.yaml"), []byte("model: qwen-special\nmax_tokens: 4096\n"), 0644)
+
+	ctx, err := LoadForAgent(tmp, "researcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := ctx.SETTINGS["model"].(string); !ok || m != "qwen-special" {
+		t.Errorf("expected researcher override model, got %+v", ctx.SETTINGS)
+	}
+
+	// Validate
+	if err := ValidateSettings(ctx.SETTINGS); err != nil {
+		t.Errorf("valid settings rejected: %v", err)
+	}
+
+	// bad autonomy
+	bad := map[string]interface{}{"autonomy_level": 99}
+	if err := ValidateSettings(bad); err == nil {
+		t.Error("expected validate error for bad autonomy")
+	}
+}
+
+func TestWriteSettingsAtomic(t *testing.T) {
+	tmp := t.TempDir()
+	s := map[string]interface{}{"model": "test-m", "temperature": 0.2}
+	if err := WriteSettingsAtomic(tmp, "tester", s); err != nil {
+		t.Fatal(err)
+	}
+	// file created
+	b, _ := os.ReadFile(filepath.Join(tmp, "agents", "tester", "SETTINGS.yaml"))
+	if !strings.Contains(string(b), "test-m") {
+		t.Error("settings not written")
+	}
+}
