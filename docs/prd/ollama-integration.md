@@ -17,7 +17,7 @@ Model choice is a high-risk supply-chain decision.
 
 ## Recommended Models
 
-**Default**: `qwen3-coder:30b` (best balance of tool calling and security)
+**Default**: `gemma4:latest` (or gemma4:31b on high-end hardware)
 
 **High-End (128GB+ RAM)**: `nemotron3-super:120b` or `gemma4:31b`
 

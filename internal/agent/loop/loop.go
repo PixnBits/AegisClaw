@@ -185,6 +185,7 @@ func NewRealLLMCaller(hub hubclient.Client, model string) agent.LLMCallFunc {
 	if model == "" {
 		model = agent.DefaultLLMModel
 	}
+	log.Printf("NewRealLLMCaller configured model=%s", model)
 	return func(ctx context.Context, prompt string) (string, error) {
 		if hub == nil {
 			return "", fmt.Errorf("no hub client for LLM call (fail-closed)")

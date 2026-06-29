@@ -386,8 +386,9 @@ func callRealLLMViaHub(ctx context.Context, hub hubclient.Client, prompt string)
 		return "", fmt.Errorf("no hub client (fail-closed)")
 	}
 
+	model := bootargs.DefaultModel(agent.DefaultLLMModel)
 	llmReq := map[string]interface{}{
-		"model":  bootargs.DefaultModel(agent.DefaultLLMModel),
+		"model":  model,
 		"prompt": prompt,
 		"stream": false,
 	}
@@ -416,12 +417,15 @@ func callRealLLMViaHub(ctx context.Context, hub hubclient.Client, prompt string)
 			var inner map[string]interface{}
 			if json.Unmarshal([]byte(response), &inner) == nil {
 				if r, ok := inner["response"].(string); ok {
+					log.Printf("court LLM call succeeded model=%s chars=%d", model, len(r))
 					return r, nil
 				}
 			}
+			log.Printf("court LLM call succeeded model=%s chars=%d", model, len(response))
 			return response, nil
 		}
 		if r, ok := payload["text"].(string); ok {
+			log.Printf("court LLM call succeeded model=%s chars=%d", model, len(r))
 			return r, nil
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/config"
+	"AegisClaw/internal/ollamametrics"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/transport/hubclient"
 
@@ -127,12 +128,9 @@ func callHostOllama(client *http.Client, backend string, req ollamaBridgeReq) (s
 	if httpResp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("ollama status %d: %s", httpResp.StatusCode, string(respBytes))
 	}
-	text := string(respBytes)
-	var ollamaOut map[string]interface{}
-	if json.Unmarshal(respBytes, &ollamaOut) == nil {
-		if r, ok := ollamaOut["response"].(string); ok && r != "" {
-			text = r
-		}
+	if model, counts, err := ollamametrics.ParseGenerateMetrics(respBytes); err == nil {
+		ollamametrics.LogLLMMetrics(model, len(req.Prompt), counts)
 	}
-	return text, nil
+	// Return full raw so the invert path can parse raw JSON for metrics.
+	return string(respBytes), nil
 }

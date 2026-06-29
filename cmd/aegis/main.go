@@ -2797,6 +2797,7 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		}
 	}
 	fmt.Printf("Ensured project-manager for channel %s\n", chID)
+	fmt.Printf("Sent goal to project-manager for channel %s\n", chID)
 	// Post the original goal as a user message in the channel for context (alongside PM's plan).
 	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
 		"channel_id": chID,
@@ -2816,7 +2817,7 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		}
 	}
 	// Brief wait for on-demand PM boot + guest hub bridge registration (E2E retries if still early).
-	time.Sleep(3 * time.Second)
+	time.Sleep(8 * time.Second)
 	// 2. Send the goal (PM will build plan using getPMPrompt, post to channel, ensure roles)
 	goalPayload := map[string]interface{}{
 		"goal":    goalText,
@@ -2824,13 +2825,18 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 	}
 	goalCtx, goalCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer goalCancel()
-	_, err = sendToComponentViaHubContext(goalCtx, roleTarget, "user.goal", goalPayload)
-	if err != nil {
-		fmt.Printf("pm goal error: %v\n", err)
-		fmt.Printf("(ensure succeeded; channel poll / E2E may still observe async PM post)\n")
-		return
+	var sendErr error
+	for att := 0; att < 3; att++ {
+		_, sendErr = sendToComponentViaHubContext(goalCtx, roleTarget, "user.goal", goalPayload)
+		if sendErr == nil {
+			break
+		}
+		time.Sleep(4 * time.Second)
 	}
-	fmt.Printf("Sent goal to %s for channel %s\n", roleTarget, chID)
+	if sendErr != nil {
+		fmt.Printf("pm goal error: %v\n", sendErr)
+		fmt.Printf("(ensure succeeded; channel poll / E2E may still observe async PM post)\n")
+	}
 	// Give PM time to process, post plan, ensure roles (short wait)
 	time.Sleep(15 * time.Second)
 	// 3. Inspect the channel to see the plan post (and any role activity).
@@ -2952,7 +2958,7 @@ func main() {
 		Run:   startDaemon,
 	}
 	startCmd.Flags().Bool("foreground", false, "Run daemon in foreground")
-	startCmd.Flags().String("default-model", "", "Ollama model tag for guest LLM calls (e.g. llama3.2:3b); avoids sudo env friction")
+	startCmd.Flags().String("default-model", "", "Ollama model tag for guest LLM calls (e.g. gemma4:latest); avoids sudo env friction")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",

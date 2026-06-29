@@ -245,7 +245,7 @@ e2e-clean:
 	@ls -ld /tmp/aegis* ~/.aegis/hub.sock 2>/dev/null | cat || echo '  (no /tmp/aegis* or main hub.sock remaining)'
 	@echo "✓ E2E custom state, sockets, test procs, and temp dirs cleaned."
 	@echo "  Safe to re-run 'make test-e2e-llm' or the script (even after SIGINT/partial fail on real hw)."
-	@echo "  Suggested next: AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start --foreground"
+	@echo "  Suggested next: AEGIS_DEFAULT_MODEL=gemma4:latest sudo ./bin/aegis start --foreground"
 	@echo "    # Then poll until healthy (real Firecracker boots take time):"
 	@echo "    #   while ! make smoke >/dev/null 2>&1; do sleep 5; done; make smoke"
 	@echo "    # Or just: make test-e2e-llm   (the script waits internally for Court==7 + base ready)"
@@ -269,7 +269,7 @@ test-e2e-contract: build-web-portal
 
 # Real unmocked E2E exercising PM + LLM (Ollama via network-boundary) + channels exactly as a user would:
 #   `aegis pm goal "..." --channel foo` then `aegis channel get foo` (or view in portal #channels).
-# Uses isolated custom hub/state + short waits + AEGIS_DEFAULT_MODEL (defaults llama3.2:3b).
+# Uses isolated custom hub/state + short waits + AEGIS_DEFAULT_MODEL (defaults gemma4:latest).
 # Requires: make build, sudo -n for ./bin/aegis (per AGENTS.md), ollama running with the model.
 # Includes explicit `./bin/aegis status` after start (before other tests), plus browser (Playwright)
 # verification of the channels UI showing the PM post (not just CLI).
@@ -277,12 +277,12 @@ test-e2e-contract: build-web-portal
 test-e2e-llm:
 	@echo "=== Real PM+LLM+Channels E2E (unmocked, user path via CLI pm goal + channel inspect + browser) ==="
 	@echo "See scripts/verify-pm-llm-e2e.sh for details and success criteria."
-	AEGIS_DEFAULT_MODEL="$${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
+	AEGIS_DEFAULT_MODEL="$${AEGIS_DEFAULT_MODEL:-gemma4:latest}" bash scripts/verify-pm-llm-e2e.sh
 
 # Fully isolated cold-start E2E (custom hub socket; stops main daemon first).
 test-e2e-llm-isolated: e2e-clean
 	@echo "=== Isolated PM+LLM+Channels E2E (FORCE_ISOLATED=1 after e2e-clean) ==="
-	FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL="$${AEGIS_DEFAULT_MODEL:-llama3.2:3b}" bash scripts/verify-pm-llm-e2e.sh
+	FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL="$${AEGIS_DEFAULT_MODEL:-gemma4:latest}" bash scripts/verify-pm-llm-e2e.sh
 
 # Channel roster intro: PM + 7 Court personas reply to intro question on main channel.
 test-e2e-roster:

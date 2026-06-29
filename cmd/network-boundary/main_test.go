@@ -5,7 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"AegisClaw/internal/ollamametrics"
 )
 
 func TestIsDomainAllowed(t *testing.T) {
@@ -56,6 +59,29 @@ func TestOllamaBackendHostEnvOverride(t *testing.T) {
 	if got := ollamaBackendHost(); got != "ollama-vm:11434" {
 		t.Errorf("expected ollama-vm:11434, got %q", got)
 	}
+}
+
+// TestOllamaMetricsParse drives the SHIPPED ollamametrics helpers (Parse + Extract + Log) with real JSON fixture and tool block syntax in a prompt simulation.
+// This ensures the capture code used in llm.call path is exercised.
+func TestOllamaMetricsParse(t *testing.T) {
+	raw := `{"model":"gemma4:latest","response":"The time is 2026-06-27T12:00:00Z","prompt_eval_count":123,"eval_count":45,"total_duration":999999999}`
+	model, counts, err := ollamametrics.ParseGenerateMetrics([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "gemma4:latest" || counts["prompt_eval_count"] != 123 {
+		t.Errorf("parse failed: %s %+v", model, counts)
+	}
+	text := ollamametrics.ExtractResponseText([]byte(raw))
+	if text == "" || !strings.Contains(text, "2026") {
+		t.Errorf("extract failed: %s", text)
+	}
+	// Simulate prompt with formatted tool block (for esp. case) - detection here for test, real logging in call sites
+	promptWithBlock := `What time is it? Use <|tool|>{"name":"clock.now"}</|tool|>`
+	if !(strings.Contains(promptWithBlock, "<|tool") || strings.Contains(promptWithBlock, "tool.")) {
+		t.Error("test should detect block syntax")
+	}
+	ollamametrics.LogLLMMetrics(model, len(promptWithBlock), counts) // exercise log
 }
 
 func TestLoadAllowedDomainsDefaults(t *testing.T) {

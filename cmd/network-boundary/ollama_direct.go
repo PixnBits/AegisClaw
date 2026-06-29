@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"AegisClaw/internal/ollamametrics"
 )
 
 func callOllamaDirectHTTP(model, prompt, endpoint string) (string, error) {
@@ -33,12 +35,8 @@ func callOllamaDirectHTTP(model, prompt, endpoint string) (string, error) {
 	if httpResp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("ollama status %d: %s", httpResp.StatusCode, string(respBytes))
 	}
-	text := string(respBytes)
-	var ollamaOut map[string]interface{}
-	if json.Unmarshal(respBytes, &ollamaOut) == nil {
-		if r, ok := ollamaOut["response"].(string); ok && r != "" {
-			text = r
-		}
+	if model, counts, err := ollamametrics.ParseGenerateMetrics(respBytes); err == nil {
+		ollamametrics.LogLLMMetrics(model, len(prompt), counts)
 	}
-	return text, nil
+	return ollamametrics.ExtractResponseText(respBytes), nil
 }

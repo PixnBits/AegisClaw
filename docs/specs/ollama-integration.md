@@ -11,7 +11,7 @@ Agent Runtime connects to Ollama via HTTP API. All traffic must route through Ne
 **All LLM calls must go through Network Boundary.**
 
 ## Recommended Models
-Default: qwen3-coder:30b
+Default: gemma4:latest
 High-end: nemotron3-super:120b or gemma4:31b
 
 ## Configuration

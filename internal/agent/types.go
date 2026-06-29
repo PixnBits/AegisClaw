@@ -95,7 +95,7 @@ type MemoryClient interface {
 }
 
 // DefaultLLMModel is the fallback model when AEGIS_DEFAULT_MODEL is not set.
-const DefaultLLMModel = "qwen3-coder:30b"
+const DefaultLLMModel = "gemma4:latest"
 
 // IsScopeRevoked is the central fail-closed governance check for the Agent Runtime.
 // It must be called before any privileged action (tool execution, scope expansion,

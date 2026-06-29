@@ -110,6 +110,8 @@ func NewAgentSkillIndex() *AgentSkillIndex {
 	})
 	idx.AddTool(Tool{Name: "web_research.search", Description: "Perform a web search for a query", SkillID: "web_research"})
 	idx.AddTool(Tool{Name: "web_research.summarize_url", Description: "Fetch and summarize the content of a URL", SkillID: "web_research"})
+	// sandbox.run: execute code in sandbox (e.g. 'date') to get current time. The system uses this to determine time itself.
+	idx.AddTool(Tool{Name: "sandbox.run", Description: "Execute code in sandbox (e.g. 'date' or Go time.Now) to get current time or run commands", SkillID: "sandbox"})
 
 	return idx
 }

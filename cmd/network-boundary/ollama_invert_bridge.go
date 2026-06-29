@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/ollamametrics"
 	"AegisClaw/internal/transport/hubclient"
 
 	"github.com/mdlayher/vsock"
@@ -83,7 +84,11 @@ func callOllamaViaInvertBridge(model, prompt, endpoint string) (string, error) {
 	if resp.Response == "" {
 		return "", fmt.Errorf("empty ollama bridge response")
 	}
-	return resp.Response, nil
+	// Invert-bridge response path: capture raw + log metrics (calls the pure helper).
+	if model, counts, err := ollamametrics.ParseGenerateMetrics([]byte(resp.Response)); err == nil {
+		ollamametrics.LogLLMMetrics(model, len(prompt), counts)
+	}
+	return ollamametrics.ExtractResponseText([]byte(resp.Response)), nil
 }
 
 func callOllamaGenerate(model, prompt, endpoint string) (string, error) {

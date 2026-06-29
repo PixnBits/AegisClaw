@@ -7,7 +7,7 @@
 # Prerequisites: running daemon + Ollama reachable from network-boundary VM.
 #
 # Usage:
-#   export AEGIS_DEFAULT_MODEL=llama3.2:3b   # optional; or start with --default-model
+#   export AEGIS_DEFAULT_MODEL=gemma4:latest   # optional; or start with --default-model
 #   sudo ./bin/aegis start
 #   make test-e2e-channel-replies
 #
@@ -32,7 +32,7 @@ echo "=== Channel agent reply regression E2E ==="
 echo "Channel: $CHANNEL  Portal: $PORTAL_URL"
 echo "Marker:  $MARKER"
 echo "Need:    >= ${MIN_REPLIES} agent replies (>= ${MIN_COURT} court-persona-*) in store (non-canned)"
-echo "Tip:     start daemon with --default-model llama3.2:3b for faster/reliable LLM on dev hardware"
+echo "Tip:     start daemon with --default-model gemma4:latest for faster/reliable LLM on dev hardware"
 echo
 
 if [[ ! -x ./bin/aegis ]]; then

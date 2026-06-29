@@ -4,7 +4,7 @@
 # Real unmocked, no-fixtures E2E for the collaboration model:
 # - Starts the daemon (via sudo -n ./bin/aegis per AGENTS.md) with isolated custom hub/state
 #   so it does not conflict with a dev daemon started via `sudo ./bin/aegis start`.
-# - Uses AEGIS_DEFAULT_MODEL (defaults to llama3.2:3b, the small fast one) + real Ollama.
+# - Uses AEGIS_DEFAULT_MODEL (defaults to gemma4:latest) + real Ollama.
 # - Exercises EXACTLY the user path: `aegis pm goal "..." --channel <name>`
 #   (which sends ensure.role to daemon-orchestrator + user.goal to project-manager).
 # - Project Manager (real binary/VM) receives, calls NewRealLLMCaller (llm.call via hub
@@ -17,25 +17,25 @@
 # Prerequisites (fail fast if not):
 # - bin/aegis and bin/project-manager etc present (run `make build` first).
 # - For full isolated runs: sudoers configured so `sudo -n ./bin/aegis ...` works (AGENTS.md + aegisclaw-sudoers.example).
-# - Ollama running with the chosen model (default llama3.2:3b): `ollama list`.
+# - Ollama running with the chosen model (default gemma4:latest): `ollama list`.
 # - Recommended for speed: run `sudo ./bin/aegis start --foreground` first with your model env, then `make test-e2e-llm`.
 #   The script prefers an already-running daemon (fast path, no custom socket).
 #
 # Usage (recommended for review / daily):
 #   # 1. Start daemon the normal way (per AGENTS.md)
-#   AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start --foreground
+#   AEGIS_DEFAULT_MODEL=gemma4:latest sudo ./bin/aegis start --foreground
 #   # 2. Run the E2E (will auto-detect running daemon and be fast)
-#   AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm
+#   AEGIS_DEFAULT_MODEL=gemma4:latest make test-e2e-llm
 #
 #   # Direct script:
-#   AEGIS_DEFAULT_MODEL=llama3.2:3b bash scripts/verify-pm-llm-e2e.sh
+#   AEGIS_DEFAULT_MODEL=gemma4:latest bash scripts/verify-pm-llm-e2e.sh
 #
 #   # Force fully isolated clean run (custom socket, starts/stops its own daemon):
-#   FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL=llama3.2:3b bash scripts/verify-pm-llm-e2e.sh
+#   FORCE_ISOLATED=1 AEGIS_DEFAULT_MODEL=gemma4:latest bash scripts/verify-pm-llm-e2e.sh
 #
 # To also exercise boot metrics for ensured roles (collab path <1s validation):
-#   AEGIS_BOOT_TIMING=1 AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start --foreground
-#   AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm
+#   AEGIS_BOOT_TIMING=1 AEGIS_DEFAULT_MODEL=gemma4:latest sudo ./bin/aegis start --foreground
+#   AEGIS_DEFAULT_MODEL=gemma4:latest make test-e2e-llm
 #   # Then after: ./bin/aegis vm boot-metrics project-manager-... or similar for coder/tester roles.
 #
 # Success criteria for "hitting real Ollama as user would":
@@ -52,8 +52,8 @@ set -euo pipefail
 
 HUB_SOCK="${AEGIS_HUB_SOCKET:-/tmp/aegis/hub-pmllm-e2e.sock}"
 STATE_DIR="${AEGIS_STATE_DIR:-/tmp/aegis-pmllm-e2e}"
-MODEL="${AEGIS_DEFAULT_MODEL:-llama3.2:3b}"
-[ -n "$MODEL" ] || MODEL="llama3.2:3b"
+MODEL="${AEGIS_DEFAULT_MODEL:-gemma4:latest}"
+[ -n "$MODEL" ] || MODEL="gemma4:latest"
 LOG_FILE="aegis.log.pmllm-e2e"
 CHANNEL="plan-demo-e2e-llm"
 
@@ -685,9 +685,9 @@ else
   echo "=== ACTIONABLE RECOVERY (for repeated clean runs / not-ready states) ==="
   echo "  make e2e-clean"
   echo "  sudo -n ./bin/aegis stop || true"
-  echo "  AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start --foreground"
+  echo "  AEGIS_DEFAULT_MODEL=gemma4:latest sudo ./bin/aegis start --foreground"
   echo "  make smoke     # must show all ✓ (Court 7, base ready, pools, no temp) per testing-standards.md"
-  echo "  AEGIS_DEFAULT_MODEL=llama3.2:3b make test-e2e-llm"
+  echo "  AEGIS_DEFAULT_MODEL=gemma4:latest make test-e2e-llm"
   echo ""
   echo "  Inspect commands:"
   echo "    ./bin/aegis status"

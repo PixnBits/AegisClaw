@@ -887,7 +887,7 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 			}
 			response.Command = "llm.call.response"
 			response.Payload = map[string]interface{}{"response": text}
-			log.Printf("LLM plan gen via ollama (%s, %d bytes response)", model, len(text))
+			log.Printf("LLM plan gen via ollama (model=%s, %d bytes response)", model, len(text))
 
 		// === 7.1 Hub secrets delivery path (first implementation) ===
 		// The Store VM (via the Hub) can now push updated per-skill secrets

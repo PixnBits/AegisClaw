@@ -155,9 +155,9 @@ The collaboration model (channels, PM + real LLM, fan-out conversations, pre-war
 ```bash
 make build
 make e2e-clean   # optional but recommended before isolated runs
-AEGIS_DEFAULT_MODEL=llama3.2:3b sudo ./bin/aegis start
+AEGIS_DEFAULT_MODEL=gemma4:latest sudo ./bin/aegis start
 make smoke
-AEGIS_DEFAULT_MODEL=llama3.2:3b AEGIS_BOOT_TIMING=1 make test-e2e-llm
+AEGIS_DEFAULT_MODEL=gemma4:latest AEGIS_BOOT_TIMING=1 make test-e2e-llm
 ```
 
 `make test-e2e-llm` runs `scripts/verify-pm-llm-e2e.sh`, which asserts startup invariants (Court==7, base ready, pools), triggers `aegis pm goal`, waits for `E2E-LLM-VERIFY` in channel content, checks boot-metrics budgets when `AEGIS_BOOT_TIMING=1`, runs the core Playwright PM-post test, and (by default) the channel roster intro step.
