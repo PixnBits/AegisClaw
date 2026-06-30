@@ -564,6 +564,39 @@ echo
 echo "=== Check default 'main' channel (E2E auto-create + Court) ==="
 ./bin/aegis channel get main 2>&1 | cat || true
 
+echo
+echo "=== Check /api/llm-usage after active channel + real LLM activity (PM goal) ==="
+USAGE_JSON=$(curl -sf --max-time 5 http://localhost:8080/api/llm-usage 2>/dev/null || echo '{}')
+echo "$USAGE_JSON" | head -c 400; echo
+if echo "$USAGE_JSON" | grep -q '"grand"'; then
+  echo "✓ PASS: /api/llm-usage endpoint returns expected aggregate shape (grand, last_hour, today, mtd)"
+else
+  echo "✗ FAIL: /api/llm-usage missing 'grand' (or fetch failed)"
+  ASSERT_RC=1
+fi
+# Real data check is best-effort (async record emit from network-boundary during llm.call, possible fallbacks)
+CALLS=$(echo "$USAGE_JSON" | grep -o '"calls":[0-9]*' | head -1 | cut -d: -f2 || echo 0)
+if [ "${CALLS:-0}" -gt 0 ] 2>/dev/null; then
+  echo "✓ Info: saw $CALLS calls in grand (real LLM usage recorded for active channel)"
+else
+  echo "ℹ Note: grand.calls=0 (may be timing of record emit, model fallback, or no turns yet); shape contract is validated here and in browser test."
+fi
+
+echo "=== Check per-agent settings API (sample roster agent after activity) ==="
+AGENTS_JSON=$(curl -sf --max-time 5 'http://localhost:8080/api/agents' 2>/dev/null || echo '{"agents":[]}')
+SAMPLE_AGENT=$(echo "$AGENTS_JSON" | grep -oE '"name":"(project-manager[^"]*|court-persona-[^"]*|coder[^"]*|tester[^"]*)"' | head -1 | cut -d: -f2 | tr -d '"' || echo "")
+if [ -n "$SAMPLE_AGENT" ]; then
+  SETTINGS_JSON=$(curl -sf --max-time 5 "http://localhost:8080/api/agents/${SAMPLE_AGENT}/settings" 2>/dev/null || echo '{}')
+  echo "Sample: $SAMPLE_AGENT -> $SETTINGS_JSON" | head -c 200; echo
+  if echo "$SETTINGS_JSON" | grep -q '"agent"'; then
+    echo "✓ PASS: /api/agents/.../settings returns agent config for live roster member"
+  else
+    echo "ℹ Note: settings endpoint shape for $SAMPLE_AGENT (may be minimal if no SETTINGS.yaml on disk)"
+  fi
+else
+  echo "ℹ No suitable roster agent found for settings probe"
+fi
+
 # Re-run browser *after* the pm goal + channel posts so the specific "PM plan post visible in UI" test
 # (and the detailed user post-via-browser-form interaction) can observe the real LLM-driven content.
 # This ensures the E2E matches "user would use it: pm goal (CLI), then view/ interact in browser".

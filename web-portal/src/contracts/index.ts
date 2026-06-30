@@ -256,6 +256,8 @@ export type LLMUsageSummary = {
   last_hour?: { calls?: number; tokens_prompt?: number; tokens_completion?: number };
   today?: { calls?: number; tokens_prompt?: number; tokens_completion?: number };
   mtd?: { calls?: number; tokens_prompt?: number; tokens_completion?: number };
+  by_agent?: Record<string, any>;
+  records?: any[]; // for recent time-series bucketing
   models?: Record<string, number>;
   record_count?: number;
 };

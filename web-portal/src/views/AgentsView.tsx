@@ -14,6 +14,7 @@ type AgentCard = {
   pending?: boolean;
   last_activity?: string;
   channel?: string;
+  usage?: any;  // per-agent llm usage from by_agent
 };
 
 type Props = {
@@ -37,16 +38,91 @@ function isSpecialist(name: string): boolean {
 export function AgentsView({ onOpenTrace }: Props) {
   const [agents, setAgents] = useState<AgentCard[]>([]);
   const [usage, setUsage] = useState<any>(null);
+  const [recent, setRecent] = useState<any>(null);
 
   useEffect(() => {
     api.agents().then((d) => setAgents(d.agents || [])).catch(() => {});
     api.llmUsage().then(setUsage).catch(() => {});
+    // Fetch recent for time-series chart (small, client buckets)
+    api.llmUsageRecent(150).then(setRecent).catch(() => {});
   }, []);
 
+  // Attach per-agent usage to cards for display (from by_agent breakdown)
+  const agentsWithUsage = useMemo(() => {
+    if (!usage || !usage.by_agent) return agents;
+    return agents.map(a => ({
+      ...a,
+      usage: usage.by_agent[a.name] || usage.by_agent[a.name.replace(/-main$/, '')] || null,
+    }));
+  }, [agents, usage]);
+
+  // Simple time-bucketed stacked data: last N hours, tokens per model per hour
+  const timeSeries = useMemo(() => {
+    if (!recent?.records?.length) return [];
+    const hoursBack = 8; // compact for main page
+    const now = Date.now();
+    const hourMs = 3600 * 1000;
+    const buckets: any[] = [];
+    const modelSet = new Set<string>();
+
+    // init buckets
+    for (let i = hoursBack - 1; i >= 0; i--) {
+      const start = now - (i + 1) * hourMs;
+      const end = now - i * hourMs;
+      buckets.push({ start, end, label: new Date(end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), byModel: {} as Record<string, number> });
+    }
+
+    for (const rec of recent.records) {
+      const ts = new Date(rec.timestamp || rec.ts).getTime();
+      if (!ts) continue;
+      const tok = (rec.tokens_prompt || 0) + (rec.tokens_completion || 0);
+      const model = rec.model || 'unknown';
+      modelSet.add(model);
+      for (const b of buckets) {
+        if (ts >= b.start && ts < b.end) {
+          b.byModel[model] = (b.byModel[model] || 0) + tok;
+          break;
+        }
+      }
+    }
+
+    // normalize models list stable
+    const models = Array.from(modelSet).sort();
+    return buckets.map(b => ({ ...b, models }));
+  }, [recent]);
+
+  // Precompute SVG elements for the stacked chart
+  const chartElements = useMemo(() => {
+    if (!timeSeries.length) return null;
+    const w = 100;
+    const h = 60;
+    const bw = w / timeSeries.length;
+    const maxTok = Math.max(1, ...timeSeries.map((b: any) => Object.values(b.byModel).reduce((s: number, v: any) => s + (v || 0), 0)));
+    const colors: Record<string, string> = { qwen: '#4a9', llama: '#e67', gemma: '#9c6', unknown: '#888' };
+    return timeSeries.map((b: any, i: number) => {
+      const x = i * bw;
+      let y = h;
+      const els: any[] = [];
+      Object.entries(b.byModel).sort().forEach(([m, tok]: [string, any], mi) => {
+        const ch = Math.max(1, (tok / maxTok) * h);
+        y -= ch;
+        const base = m.split(':')[0].toLowerCase();
+        const col = colors[base] || `hsl(${(mi * 70) % 360}, 55%, 52%)`;
+        els.push(<rect key={m} x={x} y={y} width={bw - 1.5} height={ch} fill={col} opacity="0.82" />);
+      });
+      return (
+        <g key={i}>
+          {els}
+          <title>{b.label}: {Math.round(Object.values(b.byModel).reduce((s: number, v: any) => s + (v || 0), 0))} tokens</title>
+        </g>
+      );
+    });
+  }, [timeSeries]);
+
   const { specialists, court } = useMemo(() => {
-    const spec: AgentCard[] = [];
-    const crt: AgentCard[] = [];
-    for (const a of agents) {
+    const spec: any[] = [];
+    const crt: any[] = [];
+    for (const a of agentsWithUsage) {
       if (isCourtPersona(a.name)) {
         crt.push(a);
       } else if (isSpecialist(a.name)) {
@@ -61,7 +137,7 @@ export function AgentsView({ onOpenTrace }: Props) {
       return aPM - bPM || a.name.localeCompare(b.name);
     });
     return { specialists: spec, court: crt };
-  }, [agents]);
+  }, [agentsWithUsage]);
 
   const renderAgent = (agent: AgentCard) => (
     <li
@@ -78,6 +154,12 @@ export function AgentsView({ onOpenTrace }: Props) {
         {agent.status} • {agent.task}
         {agent.channel ? ` • ${agent.channel}` : ''}
       </span>
+      {agent.usage && (
+        <span className="subtle" style={{ fontSize: '0.75em', display: 'block', color: '#4a9' }}>
+          usage: {agent.usage.calls || 0} calls, {(agent.usage.tokens_total || ((agent.usage.tokens_prompt||0)+(agent.usage.tokens_completion||0)))} tokens
+          {agent.usage.by_model && Object.keys(agent.usage.by_model).length > 0 && ` • model: ${Object.keys(agent.usage.by_model)[0]}`}
+        </span>
+      )}
       {(agent.last_seen_seq != null || agent.cycles_since_turn != null || agent.last_outcome) && (
         <span className="subtle" style={{ fontSize: '0.8em', display: 'block' }}>
           turn: seen={agent.last_seen_seq ?? '-'} cycles={agent.cycles_since_turn ?? '-'} {agent.last_outcome ? `outcome=${agent.last_outcome}` : ''} {agent.pending ? '(pending)' : ''}
@@ -96,6 +178,19 @@ export function AgentsView({ onOpenTrace }: Props) {
         <div data-testid="metrics-summary" style={{ marginBottom: '1rem', fontSize: '0.9em' }}>
           <strong>LLM usage:</strong> grand {usage.grand?.calls || 0} calls, {usage.grand?.tokens_total || 0} tokens
           {' '}(last hour {usage.last_hour?.calls || 0})
+        </div>
+      )}
+
+      {timeSeries.length > 0 && chartElements && (
+        <div style={{ margin: '0 0 8px', fontSize: '0.75em' }} data-testid="llm-timeseries">
+          <div style={{ marginBottom: 2, color: '#666', fontSize: '9px' }}>tokens per model (recent stacked)</div>
+          <svg width="100%" height="58" style={{ display: 'block' }} viewBox="0 0 100 58">
+            {chartElements}
+          </svg>
+          <div style={{ fontSize: '8px', color: '#888', display: 'flex', justifyContent: 'space-between' }}>
+            <span>{timeSeries[0]?.label}</span>
+            <span>{timeSeries[timeSeries.length-1]?.label}</span>
+          </div>
         </div>
       )}
       {agents.length === 0 ? (

@@ -612,13 +612,15 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 
 	case "llm.usage.summary":
 		// Phase 1 fixture support for LLM usage metrics (individual agents page + contracts).
+		// Now includes by_agent for per-agent display on agents list and trace pages.
 		data, _ := json.Marshal(map[string]interface{}{
-			"grand":     map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0},
+			"grand":     map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0, "by_model": map[string]interface{}{}},
 			"last_hour": map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
 			"today":     map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
 			"mtd":       map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
 			"models":    map[string]interface{}{},
 			"record_count": 0,
+			"by_agent":  map[string]interface{}{},
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 

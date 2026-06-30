@@ -151,6 +151,7 @@ func messageMatchesFilter(m map[string]interface{}, filter map[string]interface{
 }
 
 // computeLLMUsageSummary builds the required aggregates (grand total, windows, by model).
+// Also includes by_agent breakdown for per-agent views on individual agent pages and lists.
 // Windows approximated by timestamp parsing (recent records kept hot in llmUsageRecords).
 func computeLLMUsageSummary(records []map[string]interface{}) map[string]interface{} {
 	now := time.Now().UTC()
@@ -159,6 +160,7 @@ func computeLLMUsageSummary(records []map[string]interface{}) map[string]interfa
 	today := map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0}
 	mtd := map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0}
 	modelBreak := map[string]int{}
+	byAgent := map[string]map[string]interface{}{}
 
 	add := func(target map[string]interface{}, p, c int) {
 		target["calls"] = target["calls"].(int) + 1
@@ -185,6 +187,27 @@ func computeLLMUsageSummary(records []map[string]interface{}) map[string]interfa
 		}
 		modelBreak[mdl] += (p + c)
 
+		agentID := "unknown"
+		if a, ok := r["agent_id"].(string); ok && a != "" {
+			agentID = a
+		}
+
+		if _, exists := byAgent[agentID]; !exists {
+			byAgent[agentID] = map[string]interface{}{
+				"calls": 0, "tokens_prompt": 0, "tokens_completion": 0,
+				"by_model": map[string]interface{}{},
+			}
+		}
+		agentGrand := byAgent[agentID]
+		agentModelBreak := agentGrand["by_model"].(map[string]interface{})
+		if _, ok := agentModelBreak[mdl]; !ok {
+			agentModelBreak[mdl] = 0
+		}
+		agentModelBreak[mdl] = agentModelBreak[mdl].(int) + (p + c)
+		add(agentGrand, p, c)
+		agentGrand["tokens_total"] = agentGrand["tokens_prompt"].(int) + agentGrand["tokens_completion"].(int)
+		agentGrand["by_model"] = agentModelBreak
+
 		tsStr, _ := r["timestamp"].(string)
 		t, _ := time.Parse(time.RFC3339, tsStr)
 		if t.IsZero() {
@@ -210,13 +233,20 @@ func computeLLMUsageSummary(records []map[string]interface{}) map[string]interfa
 	grand["by_model"] = mb
 	grand["tokens_total"] = grand["tokens_prompt"].(int) + grand["tokens_completion"].(int)
 
+	// convert by_agent to interface{}
+	byAgentOut := map[string]interface{}{}
+	for k, v := range byAgent {
+		byAgentOut[k] = v
+	}
+
 	return map[string]interface{}{
-		"grand":    grand,
+		"grand":     grand,
 		"last_hour": lastHour,
-		"today":    today,
-		"mtd":      mtd,
-		"models":   mb,
+		"today":     today,
+		"mtd":       mtd,
+		"models":    mb,
 		"record_count": len(records),
+		"by_agent":  byAgentOut,
 	}
 }
 
@@ -1734,7 +1764,19 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = map[string]interface{}{"ok": true}
 		case "llm.usage.summary":
 			// Return aggregates for common windows + breakdowns. Computed on the fly for v1.
-			summary := computeLLMUsageSummary(llmUsageRecords)
+			// Optional agent_id filter for per-agent views (individual agents page / trace).
+			filtered := llmUsageRecords
+			if p, ok := msg.Payload.(map[string]interface{}); ok {
+				if aid, ok := p["agent_id"].(string); ok && aid != "" {
+					filtered = []map[string]interface{}{}
+					for _, rec := range llmUsageRecords {
+						if a, ok := rec["agent_id"].(string); ok && a == aid {
+							filtered = append(filtered, rec)
+						}
+					}
+				}
+			}
+			summary := computeLLMUsageSummary(filtered)
 			response.Command = "llm.usage.summary"
 			response.Payload = summary
 		case "llm.usage.recent":
