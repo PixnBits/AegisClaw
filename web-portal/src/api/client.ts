@@ -126,7 +126,12 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
   activeWork: () => fetchJSON<{ items: unknown[]; count: number }>('/api/active-work'),
-  llmUsage: () => fetchJSON<Record<string, unknown>>('/api/llm-usage'),
+  llmUsage: (agentId?: string) => {
+    const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+    return fetchJSON<Record<string, unknown>>(`/api/llm-usage${qs}`);
+  },
+  llmUsageRecent: (limit = 100) =>
+    fetchJSON<{ records: any[] }>(`/api/llm-usage/recent?limit=${limit}`),
   agentSettings: (id: string) => fetchJSON<{ agent: string; settings?: unknown; soul?: string }>(`/api/agents/${encodeURIComponent(id)}/settings`),
   saveAgentSettings: (id: string, body: { settings?: unknown; soul?: string }) =>
     fetchJSON<{ ok: boolean }>(`/api/agents/${encodeURIComponent(id)}/settings`, {

@@ -17,6 +17,8 @@ func Destination(action string) string {
 		return "store"
 	case strings.HasPrefix(action, "ciso.delegation."):
 		return "store"
+	case strings.HasPrefix(action, "llm."):
+		return "store"
 	case action == "goal.submit", action == "harness.get":
 		return "daemon"
 	case strings.HasPrefix(action, "chat."):

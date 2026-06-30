@@ -594,6 +594,7 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 // channelHint is optional (for "governance" channel visibility).
 // Returns the ID (e.g. "court-persona-ciso").
 func (o *Orchestrator) EnsureCourtPersona(ctx context.Context, persona string, channelHint string) (string, error) {
+	persona = strings.TrimPrefix(strings.TrimSpace(persona), "court-persona-")
 	id := "court-persona-" + persona
 	if st, err := o.GetVMStatus(ctx, id); err == nil && st == sandbox.StatusRunning {
 		// Update channel if provided (for roster)
@@ -621,8 +622,16 @@ func (o *Orchestrator) EnsureCourtPersona(ctx context.Context, persona string, c
 // sdlc-coder, tester, general, etc.). Supports channelHint for attachment (used for
 // roster, @mentions, per-channel accounting).
 // For memory-backed we use the parallel paired path.
+// Court personas are delegated to EnsureCourtPersona to keep canonical IDs
+// (avoids polluting vm list with "court-persona-foo-main" agent fallbacks).
 // Returns the agent ID.
 func (o *Orchestrator) EnsureRoleAgent(ctx context.Context, roleType string, channelHint string) (string, error) {
+	// Court personas (short like "ciso" or full "court-persona-ciso") must use the
+	// court path so ID stays "court-persona-xxx" (no channel suffix) and type is correct.
+	if persona := normalizeToCourtPersona(roleType); persona != "" {
+		return o.EnsureCourtPersona(ctx, persona, channelHint)
+	}
+
 	// For memory-backed roles we still use the (now parallel) paired path for now.
 	// A future role-specific table can decide binary/image + whether paired.
 	if roleType == "agent" || roleType == "" {
@@ -774,6 +783,28 @@ var courtPersonas = []string{
 	"tester",
 	"efficiency",
 	"user-advocate",
+}
+
+// normalizeToCourtPersona returns the short persona name if roleType refers to a court
+// persona (e.g. "ciso", "court-persona-ciso", "security-architect"). Returns "" otherwise.
+// This routes mis-directed EnsureRoleAgent calls for court roles to the proper path.
+func normalizeToCourtPersona(roleType string) string {
+	if roleType == "" {
+		return ""
+	}
+	rt := strings.TrimSpace(roleType)
+	if strings.HasPrefix(rt, "court-persona-") {
+		p := strings.TrimPrefix(rt, "court-persona-")
+		for _, c := range courtPersonas {
+			if c == p {
+				return p
+			}
+		}
+	}
+	// Do not auto-map bare shorts like "tester", "architect" here — they can be
+	// on-demand specialist roles. Only full "court-persona-*" prefixes (as used
+	// in roster/setup) are routed to avoid creating "tester-main" etc for court.
+	return ""
 }
 
 // StartCourtSystem launches the real Court infrastructure as Firecracker microVMs:

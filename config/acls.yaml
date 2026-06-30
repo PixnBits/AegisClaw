@@ -233,11 +233,15 @@ rules:
   commands:
     - secrets.push
     - secrets.update
+    - llm.*
+    - llm.usage.*
 - source: network-boundary
   destination: store
   commands:
     - secrets.response
     - secrets.*
+    - llm.*
+    - llm.usage.*
 
 # Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
 - source: court-scribe
@@ -776,6 +780,8 @@ rules:
   destination: store
   commands:
     - permission.grant
+    - llm.*
+    - llm.usage.*
     - permission.revoke
     - permission.list
     - permission.panel

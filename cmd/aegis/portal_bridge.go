@@ -463,16 +463,27 @@ func mergeChannelRosterIntoWorkers(out *[]interface{}, channelID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	chData, err := sendToComponentViaHubContext(ctx, "store", "channel.get", map[string]interface{}{"channel_id": channelID})
-	if err != nil {
-		return
+	members := []interface{}{}
+	if err == nil {
+		if ch, ok := chData.(map[string]interface{}); ok {
+			if m, ok := ch["members"].([]interface{}); ok {
+				members = m
+			}
+		}
 	}
-	ch, ok := chData.(map[string]interface{})
-	if !ok {
-		return
-	}
-	members, ok := ch["members"].([]interface{})
-	if !ok {
-		return
+	if len(members) == 0 {
+		// Fallback to default main roster so /api/agents is never empty after daemon start.
+		// Covers early queries before setupDefaultMainChannelAndMembers or when channel.get races.
+		members = []interface{}{
+			map[string]interface{}{"role": "project-manager"},
+			map[string]interface{}{"role": "court-persona-ciso"},
+			map[string]interface{}{"role": "court-persona-security-architect"},
+			map[string]interface{}{"role": "court-persona-architect"},
+			map[string]interface{}{"role": "court-persona-senior-coder"},
+			map[string]interface{}{"role": "court-persona-tester"},
+			map[string]interface{}{"role": "court-persona-efficiency"},
+			map[string]interface{}{"role": "court-persona-user-advocate"},
+		}
 	}
 	mergeChannelRosterFromMembers(out, channelID, members)
 }

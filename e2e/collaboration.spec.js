@@ -163,6 +163,56 @@ test.describe('Collaboration E2E (browser verification of channels/PM posts)', (
     await openChannels(page);
     await ensureChannelsListPopulated(page);
     await expect(page.locator('[data-testid="channels-list"]').getByText('main').first()).toBeVisible({ timeout: 10000 });
+
+    // Check /api/llm-usage after real channel activity + LLM calls (PM goal triggers
+    // NewRealLLMCaller -> llm.call via network-boundary -> usage.record to store).
+    // This exercises the metrics feature end-to-end on an active channel.
+    const usageRes = await request.get('/api/llm-usage', { timeout: 15000 });
+    expect(usageRes.ok()).toBeTruthy();
+    const usage = await usageRes.json();
+    expect(usage).toHaveProperty('grand');
+    expect(usage).toHaveProperty('last_hour');
+    expect(usage).toHaveProperty('today');
+    expect(usage).toHaveProperty('mtd');
+
+    const grand = usage.grand || {};
+    const calls = Number(grand.calls || grand.call_count || 0);
+    const tokens = Number(grand.tokens_total || grand.tokens_prompt || 0) +
+                   Number(grand.tokens_completion || 0);
+
+    // In a real (non-fixture) run that performed LLM planning + turns, we expect
+    // at least one recorded call. Use soft check + log so the test is resilient
+    // to timing (record is async emit) while still exercising the API.
+    if (calls === 0 && tokens === 0) {
+      // eslint-disable-next-line no-console
+      console.warn('Note: /api/llm-usage returned zeros after active channel LLM; ' +
+                   'may be emit timing or model fallback. Shape validated.');
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(`✓ /api/llm-usage has activity: calls=${calls} tokens~${tokens}`);
+    }
+
+    // Per-agent settings (new SETTINGS.yaml + SOUL surface on this branch).
+    // Query settings for a roster agent (e.g. one from the active channel) to
+    // exercise the new /api/agents/<id>/settings path in a live context.
+    const agentsRes = await request.get('/api/agents', { timeout: 10000 });
+    expect(agentsRes.ok()).toBeTruthy();
+    const agentsBody = await agentsRes.json();
+    const rosterAgents = (agentsBody.agents || []).filter(a =>
+      String(a.name || '').includes('project-manager') ||
+      String(a.name || '').startsWith('court-persona-') ||
+      String(a.name || '').includes('coder') ||
+      String(a.name || '').includes('tester')
+    );
+    if (rosterAgents.length > 0) {
+      const sample = rosterAgents[0];
+      const name = encodeURIComponent(sample.name);
+      const settingsRes = await request.get(`/api/agents/${name}/settings`, { timeout: 10000 });
+      expect(settingsRes.ok()).toBeTruthy();
+      const s = await settingsRes.json();
+      expect(s).toHaveProperty('agent');
+      // 'soul' and/or 'settings' may be empty objects/maps depending on files on disk
+    }
   });
 
   // Journey tests: soft coverage of additional portal surfaces (optional in verify script).

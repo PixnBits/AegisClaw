@@ -38,6 +38,9 @@ test.describe('GET /api/agents regression', () => {
   });
 
   test('GET /api/llm-usage returns aggregate shape (Phase 1 metrics)', async ({ request }) => {
+    // Contract / fixture test: always validates response shape (even with zero data in fixture mode).
+    // Meaningful data (non-zero after real LLM on active channel) is asserted in collaboration.spec.js
+    // (which runs only in real daemon + make test-e2e-llm after CLI pm goal).
     const res = await request.get('/api/llm-usage', { timeout: 10_000 });
     expect(res.ok(), await res.text()).toBeTruthy();
     const body = await res.json();

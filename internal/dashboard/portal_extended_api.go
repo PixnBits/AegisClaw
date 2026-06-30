@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ func (s *Server) registerExtendedPortalRoutes() {
 	s.mux.HandleFunc("/api/security/posture", s.handleAPISecurityPosture)
 	s.mux.HandleFunc("/api/settings/ciso-delegation", s.handleAPICisoDelegation)
 	s.mux.HandleFunc("/api/llm-usage", s.handleAPILLMUsage)
+	s.mux.HandleFunc("/api/llm-usage/recent", s.handleAPILLMUsageRecent)
 }
 
 func (s *Server) handleAPIActiveWork(w http.ResponseWriter, r *http.Request) {
@@ -533,8 +535,9 @@ func (s *Server) handleAPIProposalReviews(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(out) //nolint:errcheck
 }
 
-// handleAPILLMUsage exposes LLM usage aggregates (grand / last-hour / today / MTD + model breakdown).
-// Data comes from store (recorded at network-boundary). For Phase 1 basic exposure.
+// handleAPILLMUsage exposes LLM usage aggregates (grand / last-hour / today / MTD + model breakdown + by_agent).
+// Supports ?agent_id=xxx to scope to a specific agent (for trace/agent detail pages).
+// Data comes from store (recorded at network-boundary). Per spec for individual agents page.
 func (s *Server) handleAPILLMUsage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -542,7 +545,14 @@ func (s *Server) handleAPILLMUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
 	defer cancel()
-	data, err := s.fetchRaw(ctx, "llm.usage.summary", nil)
+
+	agentID := r.URL.Query().Get("agent_id")
+	payload := map[string]interface{}{}
+	if agentID != "" {
+		payload["agent_id"] = agentID
+	}
+
+	data, err := s.fetchRaw(ctx, "llm.usage.summary", payload)
 	if err != nil {
 		// Graceful fallback for fixtures / early phase: empty but valid shape
 		data = map[string]interface{}{
@@ -552,10 +562,45 @@ func (s *Server) handleAPILLMUsage(w http.ResponseWriter, r *http.Request) {
 			"mtd":       map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
 			"models":    map[string]interface{}{},
 			"record_count": 0,
+			"by_agent":  map[string]interface{}{},
+		}
+	}
+	if agentID != "" {
+		if m, ok := data.(map[string]interface{}); ok {
+			m["agent_id"] = agentID
+			data = m
+		} else {
+			// if somehow not map, wrap
+			data = map[string]interface{}{
+				"agent_id": agentID,
+			}
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data) //nolint:errcheck
+}
+
+// handleAPILLMUsageRecent returns raw recent records for client-side bucketing / charts.
+// Useful for time-series on agents page or detail.
+func (s *Server) handleAPILLMUsageRecent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+	defer cancel()
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	data, err := s.fetchRaw(ctx, "llm.usage.recent", map[string]interface{}{"limit": limit})
+	if err != nil {
+		data = []interface{}{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"records": data, "limit": limit}) //nolint:errcheck
 }
 
 // handleAPIAgentSettings supports GET (current SOUL + SETTINGS) and POST save for per-agent config.

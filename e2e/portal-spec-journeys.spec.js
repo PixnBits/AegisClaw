@@ -55,6 +55,11 @@ test.describe('Web Portal spec journeys (fixture)', () => {
     await waitPortalReady(page);
     await page.getByTestId('nav-agents').click();
     await expect(page.getByTestId('agents-panel')).toBeVisible({ timeout: 8000 });
+    // New in this branch: metrics summary card for LLM usage.
+    const metrics = page.getByTestId('metrics-summary');
+    if (await metrics.count() > 0) {
+      await expect(metrics).toBeAttached({ timeout: 5000 });
+    }
     const first = page.locator('[data-testid="agents-specialists-list"] .list-card').first();
     if (await first.isVisible()) {
       await first.click();

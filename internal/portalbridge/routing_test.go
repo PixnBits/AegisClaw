@@ -15,8 +15,18 @@ func TestDestination_PermissionsRouteToStore(t *testing.T) {
 		"ciso.delegation.get",
 		"ciso.delegation.set",
 		"audit.list",
+		"llm.usage.summary",
+		"llm.usage.record",
+		"llm.usage.recent",
 	}
 	for _, action := range storeActions {
+		if got := Destination(action); got != "store" {
+			t.Errorf("Destination(%q)=%q want store", action, got)
+		}
+	}
+
+	// llm.* queries/records must reach store (not daemon local fallback which returns empty).
+	for _, action := range []string{"llm.usage.summary", "llm.usage.record", "llm.usage.recent"} {
 		if got := Destination(action); got != "store" {
 			t.Errorf("Destination(%q)=%q want store", action, got)
 		}
