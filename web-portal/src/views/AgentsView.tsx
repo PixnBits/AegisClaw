@@ -56,23 +56,60 @@ export function AgentsView({ onOpenTrace }: Props) {
     }));
   }, [agents, usage]);
 
-  // Simple time-bucketed stacked data: last N hours, tokens per model per hour
+  // Dynamic time span + bucket size based on actual data availability (how long metrics have been collected / system running for LLM use).
+  // Starts fine-grained when just starting (few records), grows to last ~24h with coarser buckets as more data arrives.
   const timeSeries = useMemo(() => {
     if (!recent?.records?.length) return [];
-    const hoursBack = 8; // compact for main page
+    const records = recent.records.filter((r: any) => r.timestamp);
+    if (!records.length) return [];
+
     const now = Date.now();
-    const hourMs = 3600 * 1000;
+    let minTs = Infinity;
+    let maxTs = 0;
+    for (const rec of records) {
+      const t = new Date(rec.timestamp || rec.ts).getTime();
+      if (t && t < minTs) minTs = t;
+      if (t && t > maxTs) maxTs = t;
+    }
+    if (!isFinite(minTs)) minTs = now;
+    if (maxTs === 0) maxTs = now;
+
+    const dataSpanMs = Math.max(1, maxTs - minTs);
+    // Cap display to last 24h worth, but use actual span if shorter (helps early users)
+    const displaySpanMs = Math.min(24 * 3600 * 1000, dataSpanMs);
+
+    // Choose bucket size based on span
+    let bucketMs = 3600 * 1000; // default 1h
+    if (displaySpanMs < 3600 * 1000) {
+      bucketMs = 5 * 60 * 1000; // 5 min
+    } else if (displaySpanMs < 6 * 3600 * 1000) {
+      bucketMs = 15 * 60 * 1000; // 15 min
+    } else if (displaySpanMs < 24 * 3600 * 1000) {
+      bucketMs = 3600 * 1000; // 1h
+    } else {
+      bucketMs = 6 * 3600 * 1000; // 6h
+    }
+
+    const numBuckets = Math.max(2, Math.ceil(displaySpanMs / bucketMs));
     const buckets: any[] = [];
     const modelSet = new Set<string>();
 
-    // init buckets
-    for (let i = hoursBack - 1; i >= 0; i--) {
-      const start = now - (i + 1) * hourMs;
-      const end = now - i * hourMs;
-      buckets.push({ start, end, label: new Date(end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), byModel: {} as Record<string, number> });
+    // Build buckets backward from maxTs (or now)
+    let currentEnd = maxTs;
+    for (let i = 0; i < numBuckets; i++) {
+      const start = currentEnd - bucketMs;
+      const end = currentEnd;
+      const labelTime = new Date(end);
+      buckets.unshift({
+        start,
+        end,
+        label: labelTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        byModel: {} as Record<string, number>,
+      });
+      currentEnd = start;
     }
 
-    for (const rec of recent.records) {
+    for (const rec of records) {
       const ts = new Date(rec.timestamp || rec.ts).getTime();
       if (!ts) continue;
       const tok = (rec.tokens_prompt || 0) + (rec.tokens_completion || 0);
@@ -86,9 +123,10 @@ export function AgentsView({ onOpenTrace }: Props) {
       }
     }
 
-    // normalize models list stable
     const models = Array.from(modelSet).sort();
-    return buckets.map(b => ({ ...b, models }));
+    // Update labels to reflect actual span
+    const hours = Math.round(displaySpanMs / 3600000);
+    return buckets.map(b => ({ ...b, models, hours }));
   }, [recent]);
 
   // Precompute SVG elements for the stacked chart
@@ -183,7 +221,9 @@ export function AgentsView({ onOpenTrace }: Props) {
 
       {timeSeries.length > 0 && chartElements && (
         <div style={{ margin: '0 0 8px', fontSize: '0.75em' }} data-testid="llm-timeseries">
-          <div style={{ marginBottom: 2, color: '#666', fontSize: '9px' }}>tokens per model (recent stacked)</div>
+          <div style={{ marginBottom: 2, color: '#666', fontSize: '9px' }}>
+            tokens per model (last ~{timeSeries[0]?.hours || '?'}h{timeSeries[0]?.hours && timeSeries[0].hours < 24 ? '' : ' (capped)'}, stacked)
+          </div>
           <svg width="100%" height="58" style={{ display: 'block' }} viewBox="0 0 100 58">
             {chartElements}
           </svg>
