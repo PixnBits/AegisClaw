@@ -78,16 +78,17 @@ export function AgentsView({ onOpenTrace }: Props) {
     // Cap display to last 24h worth, but use actual span if shorter (helps early users)
     const displaySpanMs = Math.min(24 * 3600 * 1000, dataSpanMs);
 
-    // Choose bucket size based on span
-    let bucketMs = 3600 * 1000; // default 1h
+    // Choose bucket size based on span.
+    // For ≥24h we use 1-hour buckets (still useful for overview).
+    // Past ~72h we could consider 6h buckets, but for now we keep display
+    // capped at 24h with 1h resolution.
+    let bucketMs = 3600 * 1000; // 1h default for >= ~6h
     if (displaySpanMs < 3600 * 1000) {
       bucketMs = 5 * 60 * 1000; // 5 min
     } else if (displaySpanMs < 6 * 3600 * 1000) {
       bucketMs = 15 * 60 * 1000; // 15 min
-    } else if (displaySpanMs < 24 * 3600 * 1000) {
-      bucketMs = 3600 * 1000; // 1h
     } else {
-      bucketMs = 6 * 3600 * 1000; // 6h
+      bucketMs = 3600 * 1000; // 1h (covers 6h–24h and the >=24h cap)
     }
 
     const numBuckets = Math.max(2, Math.ceil(displaySpanMs / bucketMs));
@@ -222,7 +223,7 @@ export function AgentsView({ onOpenTrace }: Props) {
       {timeSeries.length > 0 && chartElements && (
         <div style={{ margin: '0 0 8px', fontSize: '0.75em' }} data-testid="llm-timeseries">
           <div style={{ marginBottom: 2, color: '#666', fontSize: '9px' }}>
-            tokens per model (last ~{timeSeries[0]?.hours || '?'}h{timeSeries[0]?.hours && timeSeries[0].hours < 24 ? '' : ' (capped)'}, stacked)
+            tokens per model (last ~{timeSeries[0]?.hours || '?'}h, 1h buckets when ≥6h, stacked)
           </div>
           <svg width="100%" height="58" style={{ display: 'block' }} viewBox="0 0 100 58">
             {chartElements}

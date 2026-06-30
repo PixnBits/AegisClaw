@@ -25,7 +25,7 @@ func (m *extendedMockClient) Call(_ context.Context, action string, _ json.RawMe
 		return &APIResponse{Success: true, Data: json.RawMessage(`{"ok":true}`)}, nil
 	case "llm.usage.summary":
 		// Phase 1 contract: return shape with required windows + model breakdown + by_agent for per-agent
-		return &APIResponse{Success: true, Data: json.RawMessage(`{"grand":{"calls":42,"tokens_prompt":1200,"tokens_completion":800,"tokens_total":2000,"by_model":{"qwen":2000}},"last_hour":{"calls":5,"tokens_prompt":100,"tokens_completion":80},"today":{"calls":20,"tokens_prompt":600,"tokens_completion":400},"mtd":{"calls":42,"tokens_prompt":1200,"tokens_completion":800},"models":{"qwen":2000},"record_count":42,"by_agent":{"coder-main":{"calls":30,"tokens_prompt":900,"tokens_completion":600,"tokens_total":1500,"by_model":{"qwen":1500}}}}`), nil
+		return &APIResponse{Success: true, Data: json.RawMessage(`{"grand":{"calls":42,"tokens_prompt":1200,"tokens_completion":800,"tokens_total":2000,"by_model":{"qwen":2000}},"last_hour":{"calls":5,"tokens_prompt":100,"tokens_completion":80},"today":{"calls":20,"tokens_prompt":600,"tokens_completion":400},"mtd":{"calls":42,"tokens_prompt":1200,"tokens_completion":800},"models":{"qwen":2000},"record_count":42,"by_agent":{"coder-main":{"calls":30,"tokens_prompt":900,"tokens_completion":600,"tokens_total":1500,"by_model":{"qwen":1500}}}}`)} , nil
 	case "llm.usage.record":
 		return &APIResponse{Success: true, Data: json.RawMessage(`{"ok":true}`)}, nil
 	case "agent.settings.get", "agent.soul.get":
