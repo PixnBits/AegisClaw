@@ -40,12 +40,13 @@ var (
 - An incident or suspected sandbox escape / key leak needs an immediate posture call.
 
 PASS when any of these apply AND you were not @mentioned:
-- Implementation, code style, tests, UX/copy, CSS, performance, scheduling, standups, or status chatter with no new security decision.
+- Implementation, code style, tests, UX/copy, CSS, performance, scheduling, standups, social plans, or status chatter with no new security decision.
 - Other specialists (Security Architect, Architect, Coder, Tester, Efficiency, User Advocate, PM) are already covering the thread.
 - You would only agree, thank, recap, restate, encourage, or keep the discussion going.
 - The same risk was already stated in prior context and nothing new changed.
 - The thread is cycling, off-track, or asking open questions that are not yours to answer.
 - You are uncertain and have no new, concrete risk to add.
+- Birthday parties, celebrations, or other off-topic human requests with no security fact.
 ` + channelDecisionClose + `
 Examples:
 New messages: "Tester: I'll add unit tests for the parser." / "Senior Coder: renaming the helper."
@@ -65,6 +66,9 @@ No CISO issue in a local CSS token refactor. Do not add a third-party font CDN.
 New messages: "@CISO do you want a coverage floor as a security gate?"
 SPEAK
 No. Test coverage is a quality bar, not a CISO control. Do not turn coverage percentage into a security gate.
+
+New messages: "User: I would like to plan a birthday party for a seven year old."
+PASS
 `
 
 	securityArchitectChannelInstructions = channelDecisionPreamble(
@@ -133,7 +137,8 @@ PASS
 - Missing tests for a behavior change, live network/IdP in CI, fixtures that contain real secrets.
 - Dropping assertions or browsers to hide flakes, especially if the assertion was a security check.
 
-PASS on CSS tokens, RAM tuning, branding, and policy debates owned by CISO/Architect.
+PASS on CSS tokens, RAM tuning, branding, social/off-topic requests (birthday parties), and policy debates owned by CISO/Architect.
+Never post that there is no issue for your role — that is PASS.
 ` + channelDecisionClose + `
 Examples:
 New messages: "User: drop Firefox from visual polish so CI stays green."
@@ -141,6 +146,9 @@ SPEAK
 Don't drop a browser to hide a flake. Raise the snapshot threshold with UX sign-off, or fix the race.
 
 New messages: "PM: standup, no new goals today."
+PASS
+
+New messages: "User: I would like to plan a birthday party for a seven year old."
 PASS
 `
 

@@ -357,7 +357,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	if anchorText != "" {
 		prompt += "\n\nRelevant prior context (anchors):\n" + anchorText
 	}
-	prompt += "\n\nAlways output PASS or SPEAK as the first line. PASS is the default. SPEAK only if you have a new concrete progress update from your role, you are @mentioned, or a question is aimed at you. If SPEAK, write 1-3 sentences after the first line. If PASS, output only PASS."
+	prompt += "\n\nAlways output PASS or SPEAK as the first line. PASS is the default. SPEAK only if you have a new concrete progress update from your role, you are @mentioned, or a question is aimed at you. PASS on social/off-topic requests (birthday parties) and when you would only say there is no issue for your role. If SPEAK, write 1-3 sentences after the first line. If PASS, output only PASS."
 
 	llmReply, err := realLLM(ctx, prompt)
 	if err != nil {

@@ -102,6 +102,10 @@ func TestCISOChannelPromptIsDecisionFirstNotVote(t *testing.T) {
 	if !strings.Contains(p, "default") && !strings.Contains(strings.ToLower(p), "pass is the default") {
 		t.Fatalf("CISO channel prompt should state PASS is the default: %s", p)
 	}
+	tester := getChannelPersonaPrompt("tester")
+	if !strings.Contains(tester, "Never post that there is no issue for your role") {
+		t.Fatal("Tester channel prompt must treat 'no issue for my role' as PASS")
+	}
 	proposal := getPersonaPrompt("ciso")
 	if !strings.Contains(proposal, "You are the") {
 		t.Fatal("proposal prompt still required")
