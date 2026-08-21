@@ -282,16 +282,15 @@ func TestCISOChannelConversationsLive(t *testing.T) {
 				}
 				batchText := formatCisoMsgs(batch)
 				anchorText := formatCisoAnchors(anchors, prev-len(anchors))
-				expectReply, expectWhy := cisoOracle(batchText, anchorText)
 				cp := cp
-				cp.ExpectReply = expectReply
-				if expectReply && (strings.HasPrefix(cp.Form, "PASS") || cp.Form == "") {
-					cp.Form = "SPEAK — " + expectWhy
-					cp.Reason = expectWhy
-				}
-				if !expectReply {
-					cp.Form = "PASS — " + expectWhy
-					cp.Reason = expectWhy
+				expectWhy := cp.Reason
+				if collab.IsMentioned("court-persona-ciso", batchText) {
+					cp.ExpectReply = true
+					expectWhy = "direct @CISO mention"
+					if strings.HasPrefix(cp.Form, "PASS") || cp.Form == "" {
+						cp.Form = "SPEAK — direct @CISO mention"
+						cp.Reason = expectWhy
+					}
 				}
 				raw, err := callOllamaGenerate(model, buildChannelTurnPrompt(
 					"ciso",
@@ -345,16 +344,6 @@ func formatCisoAnchors(msgs []cisoMsg, start int) string {
 		maps = append(maps, map[string]interface{}{"from": m.From, "content": m.Content, "seq": start + i + 1})
 	}
 	return collab.FormatAnchorContext(maps)
-}
-
-func cisoOracle(batchText, anchorText string) (expectReply bool, why string) {
-	if collab.IsMentioned("court-persona-ciso", batchText) {
-		return true, "direct @CISO mention"
-	}
-	if ok, hits := cisoNewMaterialRisk(batchText, anchorText); ok {
-		return true, "new risk (" + strings.Join(hits, ", ") + ")"
-	}
-	return false, "no mention and no first-seen CISO risk"
 }
 
 func evaluateCISOCheckpoint(model string, c cisoConversation, cp cisoCheckpoint, raw, content string, skip bool) (bool, string) {

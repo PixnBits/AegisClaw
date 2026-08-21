@@ -85,34 +85,44 @@ func stripTrailingControlLines(s string) string {
 	return s
 }
 
-// NormalizeChannelLLMReply interprets raw LLM output for channel.post.
-// Returns skip=true when the agent should not post. Otherwise returns cleaned text
-// with standalone control lines removed.
-//
-// Models are trained to always produce a response, so silence is expressed as an
-// action token (PASS / NO_REPLY) rather than "do not respond". SPEAK on the first
-// line marks a real channel post; the token itself is never posted.
-func NormalizeChannelLLMReply(raw string) (content string, skip bool) {
+// ChannelDecision is how an LLM channel turn was classified.
+type ChannelDecision string
+
+const (
+	ChannelDecisionEmpty   ChannelDecision = "empty"
+	ChannelDecisionPass    ChannelDecision = "pass"
+	ChannelDecisionSpeak   ChannelDecision = "speak"
+	ChannelDecisionMissing ChannelDecision = "missing_token"
+)
+
+// ClassifyChannelLLMReply interprets raw LLM output for channel.post.
+// A real post requires an explicit SPEAK token on the first line. Missing the
+// decision token is treated as PASS so bare prose cannot leak into the channel.
+func ClassifyChannelLLMReply(raw string) (content string, decision ChannelDecision) {
 	s := StripThinkTags(strings.TrimSpace(raw))
 	if s == "" {
-		return "", true
+		return "", ChannelDecisionEmpty
 	}
 	firstLine, rest, _ := strings.Cut(s, "\n")
 	tok := normalizeDecisionLine(firstLine)
 	if isPassToken(tok) {
-		return "", true
+		return "", ChannelDecisionPass
 	}
 	if isSpeakToken(tok) {
 		body := inlineAfterSpeak(strings.TrimSpace(firstLine), rest)
 		body = stripTrailingControlLines(body)
 		if body == "" {
-			return "", true
+			return "", ChannelDecisionPass
 		}
-		return body, false
+		return body, ChannelDecisionSpeak
 	}
-	s = stripTrailingControlLines(s)
-	if s == "" {
-		return "", true
-	}
-	return s, false
+	return "", ChannelDecisionMissing
+}
+
+// NormalizeChannelLLMReply interprets raw LLM output for channel.post.
+// Returns skip=true when the agent should not post. Otherwise returns cleaned text
+// with the SPEAK control line removed.
+func NormalizeChannelLLMReply(raw string) (content string, skip bool) {
+	content, decision := ClassifyChannelLLMReply(raw)
+	return content, decision != ChannelDecisionSpeak
 }

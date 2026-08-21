@@ -6,11 +6,6 @@ import (
 	"AegisClaw/internal/collab"
 )
 
-type topicKW struct {
-	phrase string
-	family string
-}
-
 // channelDecisionPreamble is shared by every Court persona. Silence is modeled as
 // the action PASS because models are trained to always produce tokens.
 func channelDecisionPreamble(role, mentionHint string) string {
@@ -228,16 +223,10 @@ func buildChannelTurnPrompt(persona, uniqueSource, chID, batchText, anchorText s
 		b.WriteString(anchorText)
 	}
 	mentioned := collab.IsMentioned(uniqueSource, batchText) || collab.IsMentioned("court-persona-"+persona, batchText)
-	newTopic, hits := personaNewMaterialTopic(persona, batchText, anchorText)
-	switch {
-	case mentioned:
+	if mentioned {
 		b.WriteString("\n\nYou were directly @mentioned in the new messages. First line MUST be SPEAK. If there is no issue in your role, SPEAK with one sentence that there is no issue for your role, then stop.")
-	case newTopic:
-		b.WriteString("\n\nThe NEW messages introduce a first-seen topic in your role (")
-		b.WriteString(strings.Join(hits, ", "))
-		b.WriteString("). First line MUST be SPEAK with a short point from your role. Do not PASS.")
-	default:
-		b.WriteString("\n\nYou were not @mentioned and the new messages do not introduce a first-seen topic in your role. First line MUST be PASS.")
+	} else {
+		b.WriteString("\n\nYou were not @mentioned. First line must be PASS or SPEAK. Default to PASS unless the new messages contain a new item in YOUR role per the rules above. Do not keep the discussion going.")
 	}
 	return b.String()
 }
@@ -248,129 +237,4 @@ func buildChannelActivityPrompt(persona, userQuestion string) string {
 		"\n\nA message was posted in a collaboration channel to you as \"" + display + "\":\n" +
 		userQuestion +
 		"\n\nFirst line must be PASS or SPEAK. Do NOT use VOTE format."
-}
-
-var personaTopicKeywords = map[string][]topicKW{
-	"ciso": {
-		{"secret", "secrets"}, {"password", "secrets"}, {"credential", "secrets"},
-		{"api key", "secrets"}, {"pat", "secrets"}, {"ghp_", "secrets"}, {"sk-live", "secrets"},
-		{"client_secret", "secrets"}, {"client secret", "secrets"}, {".env", "secrets"},
-		{"bot token", "secrets"}, {"jwt", "secrets"},
-		{"localstorage", "browser-storage"}, {"local storage", "browser-storage"},
-		{"pii", "pii"}, {"gdpr", "pii"}, {"hubspot", "pii"}, {"email+ip", "pii"},
-		{"0.0.0.0", "bind"}, {"bind-all", "bind"}, {"port-forward", "bind"},
-		{"port forward", "bind"}, {"router forward", "bind"},
-		{"chmod 777", "perms"}, {"wildcard", "perms"}, {"tool.*", "perms"},
-		{"shared memory", "isolation"}, {"group brain", "isolation"},
-		{"rfc1918", "scan"}, {"lan-scanning", "scan"}, {"scanner", "scan"},
-		{"sandbox escape", "incident"}, {"vsock", "incident"}, {"uncontained", "incident"},
-		{"skip court", "court-bypass"}, {"disable court", "court-bypass"},
-		{"without court", "court-bypass"}, {"bypass court", "court-bypass"},
-		{"soc2", "compliance"}, {"cosign", "compliance"},
-		{"encrypt", "encryption"}, {"at rest", "encryption"},
-	},
-	"security-architect": {
-		{"sandbox", "isolation"}, {"vsock", "isolation"}, {"shared memory", "isolation"},
-		{"memory vm", "isolation"}, {"privilege", "isolation"}, {"escape", "isolation"},
-		{"allowlist", "network"}, {"network boundary", "network"}, {"0.0.0.0", "network"},
-		{"bind-all", "network"}, {"rfc1918", "network"}, {"egress", "network"},
-		{"wildcard", "perms"}, {"tool.*", "perms"},
-	},
-	"architect": {
-		{"shared memory", "composition"}, {"memory vm", "composition"}, {"group brain", "composition"},
-		{"module", "design"}, {"coupling", "design"}, {"sequence diagram", "design"},
-		{"ownership", "design"}, {"trust boundary", "design"},
-		{"new component", "design"}, {"split the", "design"},
-	},
-	"senior-coder": {
-		{"hardcoded", "impl-secret"}, {".env", "impl-secret"}, {"localstorage", "impl-secret"},
-		{"client_secret", "impl-secret"}, {"hardcoded key", "impl-secret"},
-		{"race", "correctness"}, {"panic", "correctness"}, {"swallow", "correctness"},
-		{"nil pointer", "correctness"},
-	},
-	"tester": {
-		{"coverage", "tests"}, {"flake", "tests"}, {"snapshot", "tests"},
-		{"playwright", "tests"}, {"fixture", "tests"}, {"assertion", "tests"},
-		{"live idp", "tests"}, {"drop firefox", "tests"}, {"skip the test", "tests"},
-	},
-	"efficiency": {
-		{"ram", "resources"}, {"mib", "resources"}, {"pre-warm", "resources"},
-		{"pool slot", "resources"}, {"boot", "resources"}, {"latency", "resources"},
-		{"polling", "resources"}, {"websocket vm", "resources"}, {"llm call", "resources"},
-	},
-	"user-advocate": {
-		{"aria", "a11y"}, {"a11y", "a11y"}, {"screen reader", "a11y"},
-		{"empty state", "ux"}, {"empty-state", "ux"}, {"copy", "ux"},
-		{"tooltip", "ux"}, {"banner", "ux"}, {"passphrase", "ux"},
-	},
-}
-
-func containsTopicKeyword(lower, kw string) bool {
-	kw = strings.TrimSpace(kw)
-	if kw == "" {
-		return false
-	}
-	if len(kw) <= 4 && !strings.ContainsAny(kw, "._") {
-		for i := 0; i <= len(lower)-len(kw); i++ {
-			if lower[i:i+len(kw)] != kw {
-				continue
-			}
-			leftOK := i == 0 || !isASCIIAlnum(lower[i-1]) || isASCIIDigit(lower[i-1])
-			rightOK := i+len(kw) == len(lower) || !isASCIIAlnum(lower[i+len(kw)])
-			if leftOK && rightOK {
-				return true
-			}
-		}
-		return false
-	}
-	return strings.Contains(lower, kw)
-}
-
-func isASCIIAlnum(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
-}
-
-func isASCIIDigit(b byte) bool {
-	return b >= '0' && b <= '9'
-}
-
-func personaTopicHits(persona, text string) []string {
-	kws := personaTopicKeywords[persona]
-	if len(kws) == 0 {
-		return nil
-	}
-	lower := strings.ToLower(text)
-	var hits []string
-	seen := map[string]bool{}
-	for _, kw := range kws {
-		if containsTopicKeyword(lower, kw.phrase) && !seen[kw.family] {
-			hits = append(hits, kw.family)
-			seen[kw.family] = true
-		}
-	}
-	return hits
-}
-
-// personaNewMaterialTopic reports topic families present in the new batch but not in anchors.
-func personaNewMaterialTopic(persona, batchText, anchorText string) (bool, []string) {
-	hits := personaTopicHits(persona, batchText)
-	if len(hits) == 0 {
-		return false, nil
-	}
-	prior := map[string]bool{}
-	for _, p := range personaTopicHits(persona, anchorText) {
-		prior[p] = true
-	}
-	var fresh []string
-	for _, h := range hits {
-		if !prior[h] {
-			fresh = append(fresh, h)
-		}
-	}
-	return len(fresh) > 0, fresh
-}
-
-// cisoNewMaterialRisk keeps the CISO live-test oracle name stable.
-func cisoNewMaterialRisk(batchText, anchorText string) (bool, []string) {
-	return personaNewMaterialTopic("ciso", batchText, anchorText)
 }

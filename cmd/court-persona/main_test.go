@@ -138,64 +138,12 @@ func TestAllCourtChannelPromptsUseSpeakPass(t *testing.T) {
 		if !strings.Contains(mention, "You were directly @mentioned") {
 			t.Errorf("%s mentioned turn must force SPEAK", p)
 		}
-		// UX copy is not a first-seen topic for most roles; user-advocate may SPEAK on "copy"/"empty-state".
-		if p != "user-advocate" && !strings.Contains(quiet, "First line MUST be PASS") {
-			t.Errorf("%s quiet UX turn must force PASS, got: %s", p, quiet)
+		if strings.Contains(quiet, "You were directly @mentioned") {
+			t.Errorf("%s unmentioned UX turn must not force SPEAK", p)
 		}
-		if p == "user-advocate" && !strings.Contains(quiet, "First line MUST be SPEAK") {
-			t.Errorf("user-advocate should SPEAK on empty-state copy, got: %s", quiet)
+		if !strings.Contains(quiet, "Default to PASS") {
+			t.Errorf("%s unmentioned turn should default to PASS, got: %s", p, quiet)
 		}
-	}
-}
-
-func TestPersonaTopicOracle(t *testing.T) {
-	cases := []struct {
-		persona string
-		batch   string
-		anchors string
-		want    bool
-	}{
-		{"security-architect", "- coder: two agents share one Memory VM socket", "", true},
-		{"security-architect", "- ux: tooltip padding is unchanged", "", false},
-		{"architect", "- user: can every agent share one Memory VM as a group brain?", "", true},
-		{"architect", "- tester: I'll regenerate Playwright snapshots.", "", false},
-		{"senior-coder", "- coder: encrypt localStorage with a hardcoded key", "", true},
-		{"senior-coder", "- ux: checkbox label should say Keep me signed in.", "", false},
-		{"tester", "- user: drop Firefox from visual polish so CI stays green.", "", true},
-		{"tester", "- pm: standup, no new goals today.", "", false},
-		{"efficiency", "- eff: cut Tester to 192MiB after a soak", "", true},
-		{"efficiency", "- ux: tooltip padding is 1px off.", "", false},
-		{"user-advocate", "- ux: empty state says No activity", "", true},
-		{"user-advocate", "- secarch: cid=3 is probably the hub bridge.", "", false},
-	}
-	for _, tc := range cases {
-		ok, hits := personaNewMaterialTopic(tc.persona, tc.batch, tc.anchors)
-		if ok != tc.want {
-			t.Errorf("%s batch=%q wantSpeak=%v got %v hits=%v", tc.persona, tc.batch, tc.want, ok, hits)
-		}
-	}
-}
-
-func TestCISONewMaterialRiskOracle(t *testing.T) {
-	ok, hits := cisoNewMaterialRisk("- coder: put GOOGLE_CLIENT_SECRET in .env", "")
-	if !ok {
-		t.Fatalf("new .env secret must be a CISO risk, hits=%v", hits)
-	}
-	ok, _ = cisoNewMaterialRisk("- coder: put GOOGLE_CLIENT_SECRET in .env", "- user: never commit .env secrets")
-	if ok {
-		t.Fatal("same .env risk already in anchors should not be new")
-	}
-	ok, _ = cisoNewMaterialRisk("- tester: snapshot path is fine", "")
-	if ok {
-		t.Fatal("path/snapshot chatter must not match PAT/secret keywords")
-	}
-	p := buildChannelTurnPrompt("ciso", "court-persona-ciso", "ops", "- user: I pasted sk-live-123 in the channel", "")
-	if !strings.Contains(p, "First line MUST be SPEAK") {
-		t.Fatalf("new secret paste must force SPEAK, got: %s", p)
-	}
-	quiet := buildChannelTurnPrompt("ciso", "court-persona-ciso", "ux", "- ux: the empty-state copy feels cold", "")
-	if !strings.Contains(quiet, "First line MUST be PASS") {
-		t.Fatalf("copy-only turn must force PASS, got: %s", quiet)
 	}
 }
 

@@ -373,10 +373,10 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 		})
 		return
 	}
-	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
-	if skip {
-		log.Printf("agent %s: channel.turn chose not to reply in %s", sourceID, chID)
-		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s reason=no_reply", chID)
+	trimmed, decision := collab.ClassifyChannelLLMReply(llmReply)
+	if decision != collab.ChannelDecisionSpeak {
+		log.Printf("agent %s: channel.turn chose not to reply in %s (%s)", sourceID, chID, decision)
+		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s decision=%s", chID, decision)
 		// Report NO_REPLY explicitly so UI can show "NO_REPLY" (not error) per spec §8.4.
 		_, _ = client.Send(ctx, hubclient.Message{
 			Source:      sourceID,

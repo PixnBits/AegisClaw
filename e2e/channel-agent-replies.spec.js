@@ -49,7 +49,7 @@ test.describe('Channel agent reply pipeline (regression)', () => {
         AGENT_FROM.test(String(m.from || '')) &&
         String(m.content || '').trim().length > 0 &&
         !String(m.content || '').match(/^I'm the .+\. I (evaluate|assess|review|coordinate)/i) &&
-        !String(m.content || '').trim().toUpperCase().startsWith('NO_REPLY'),
+        !/^(NO_REPLY|PASS|SILENT|SKIP)\b/i.test(String(m.content || '').trim()),
     );
     expect(agentReplies.length, 'agent replies in store').toBeGreaterThanOrEqual(MIN_REPLIES);
     const courtReply = agentReplies.find((m) => String(m.from || '').startsWith('court-persona-'));

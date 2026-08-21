@@ -26,29 +26,52 @@ def is_agent_from(frm: str) -> bool:
     return bool(AGENT_FROM_RE.match(normalize_from(str(frm or "").strip())))
 
 
+def _decision_token(line: str) -> str:
+    s = line.strip().strip("`*_ \t").strip()
+    upper = s.upper()
+    for prefix in ("DECISION:", "ACTION:"):
+        if upper.startswith(prefix):
+            upper = upper[len(prefix) :].strip()
+    return upper.rstrip(".!:").strip()
+
+
+def _is_pass_token(tok: str) -> bool:
+    if tok in {"PASS", "NO_REPLY", "NOREPLY", "SILENT", "SKIP"}:
+        return True
+    return tok.startswith("PASS:") or tok.startswith("PASS ") or tok.startswith("NO_REPLY:") or tok.startswith(
+        "NO_REPLY "
+    )
+
+
+def _is_speak_token(tok: str) -> bool:
+    if tok in {"SPEAK", "REPLY"}:
+        return True
+    return tok.startswith("SPEAK:") or tok.startswith("SPEAK ") or tok.startswith("REPLY:") or tok.startswith("REPLY ")
+
+
 def normalize_channel_llm_reply(content: str) -> tuple[str, bool]:
-    """Mirror collab.NormalizeChannelLLMReply for E2E checkers."""
-    text = usable_content(content).strip()
+    """Mirror collab.NormalizeChannelLLMReply for E2E checkers.
+
+    Bare prose without a SPEAK/PASS first-line token is treated as PASS (skip).
+    """
+    text = re.sub(r"(?is)<think>.*?</think>", "", usable_content(content)).strip()
     if not text:
         return "", True
-    if text.upper() == "NO_REPLY":
+    first_line, _, rest = text.partition("\n")
+    tok = _decision_token(first_line)
+    if _is_pass_token(tok):
         return "", True
-    first_line = text.split("\n", 1)[0].strip()
-    if first_line.upper() == "NO_REPLY":
-        return "", True
-    while True:
-        text = text.strip()
-        if "\n" in text:
-            head, last_line = text.rsplit("\n", 1)
-        else:
-            head, last_line = "", text
-        if last_line.strip().upper() == "NO_REPLY":
-            text = head.strip()
-            if not text:
-                return "", True
-            continue
-        break
-    return text, False
+    if _is_speak_token(tok):
+        body = rest.strip()
+        for prefix in ("SPEAK:", "SPEAK ", "REPLY:", "REPLY "):
+            if tok.startswith(prefix.rstrip()) or first_line.upper().lstrip("`*_ ").upper().startswith(prefix):
+                raw_first = first_line.strip().strip("`*_ ")
+                if raw_first.upper().startswith(prefix):
+                    inline = raw_first[len(prefix) :].strip()
+                    body = (inline + "\n" + rest).strip()
+                break
+        return (body, False) if body else ("", True)
+    return "", True
 
 
 def is_no_reply_content(content: str) -> bool:

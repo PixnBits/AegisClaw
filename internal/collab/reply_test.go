@@ -13,10 +13,9 @@ func TestNormalizeChannelLLMReply(t *testing.T) {
 		{"exact", "NO_REPLY", "", true},
 		{"exact case", "no_reply", "", true},
 		{"first line only", "NO_REPLY\n\nExplanation here.", "", true},
-		{"trailing line", "Dear team,\n\nPlease collaborate.\n\nNO_REPLY", "Dear team,\n\nPlease collaborate.", false},
-		{"trailing only whitespace", "Hello world\n\n  NO_REPLY  \n", "Hello world", false},
-		{"prose only", "We should sync daily.", "We should sync daily.", false},
-		{"multiple trailing", "Plan A\nNO_REPLY\nNO_REPLY", "Plan A", false},
+		{"trailing line missing speak", "Dear team,\n\nPlease collaborate.\n\nNO_REPLY", "", true},
+		{"prose only missing token", "We should sync daily.", "", true},
+		{"multiple trailing missing speak", "Plan A\nNO_REPLY\nNO_REPLY", "", true},
 		{"pass exact", "PASS", "", true},
 		{"pass first line", "PASS\nI have nothing to add about CSS.", "", true},
 		{"pass markdown", "**PASS**", "", true},
@@ -27,6 +26,7 @@ func TestNormalizeChannelLLMReply(t *testing.T) {
 		{"think then pass", "<think>should I talk?</think>\nPASS", "", true},
 		{"think then speak", "<think>risk is real</think>\nSPEAK\nBlock the egress until Court reviews it.", "Block the egress until Court reviews it.", false},
 		{"silent token", "SILENT", "", true},
+		{"missing token is pass", "Secrets in .env are bad.", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

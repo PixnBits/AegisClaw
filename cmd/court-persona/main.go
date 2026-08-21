@@ -231,11 +231,12 @@ func llmChannelReply(persona string, hubClient hubclient.Client, prompt string) 
 		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "ch=? err=%v", err)
 		return ""
 	}
-	trimmed, skip := collab.NormalizeChannelLLMReply(text)
-	if skip {
-		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "reason=no_reply")
+	trimmed, decision := collab.ClassifyChannelLLMReply(text)
+	if decision != collab.ChannelDecisionSpeak {
+		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "decision=%s", decision)
 		return ""
 	}
+	collab.Tracef("court-persona-"+persona, "channel.reply.speak", "len=%d", len(trimmed))
 	return trimmed
 }
 
@@ -345,10 +346,13 @@ func processChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSourc
 
 	batchText := collab.FormatTurnMessages(turn.NewMessages)
 	anchorText := collab.FormatAnchorContext(anchorMsgs)
+	mentioned := collab.IsMentioned(uniqueSource, batchText) || collab.IsMentioned("court-persona-"+persona, batchText)
 	prompt := buildChannelTurnPrompt(persona, uniqueSource, chID, batchText, anchorText)
 
 	reply := llmChannelReply(persona, hcl, prompt)
-	if strings.TrimSpace(reply) == "" {
+	posted := strings.TrimSpace(reply) != ""
+	collab.Tracef("court-persona-"+persona, "channel.turn.decision", "ch=%s mention=%v posted=%v", chID, mentioned, posted)
+	if !posted {
 		return
 	}
 	if err := postChannelIntro(hcl, uniqueSource, chID, reply); err != nil {
