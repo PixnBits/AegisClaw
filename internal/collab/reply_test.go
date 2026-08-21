@@ -4,9 +4,9 @@ import "testing"
 
 func TestNormalizeChannelLLMReply(t *testing.T) {
 	tests := []struct {
-		name    string
-		raw     string
-		want    string
+		name     string
+		raw      string
+		want     string
 		wantSkip bool
 	}{
 		{"empty", "", "", true},
@@ -17,6 +17,16 @@ func TestNormalizeChannelLLMReply(t *testing.T) {
 		{"trailing only whitespace", "Hello world\n\n  NO_REPLY  \n", "Hello world", false},
 		{"prose only", "We should sync daily.", "We should sync daily.", false},
 		{"multiple trailing", "Plan A\nNO_REPLY\nNO_REPLY", "Plan A", false},
+		{"pass exact", "PASS", "", true},
+		{"pass first line", "PASS\nI have nothing to add about CSS.", "", true},
+		{"pass markdown", "**PASS**", "", true},
+		{"pass decision prefix", "DECISION: PASS", "", true},
+		{"speak then body", "SPEAK\nDo not put the PAT in the prompt.", "Do not put the PAT in the prompt.", false},
+		{"speak inline", "SPEAK: Rotate the leaked key and use Secrets VM.", "Rotate the leaked key and use Secrets VM.", false},
+		{"speak empty", "SPEAK", "", true},
+		{"think then pass", "<think>should I talk?</think>\nPASS", "", true},
+		{"think then speak", "<think>risk is real</think>\nSPEAK\nBlock the egress until Court reviews it.", "Block the egress until Court reviews it.", false},
+		{"silent token", "SILENT", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
