@@ -15,11 +15,11 @@ import (
 
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
-	"AegisClaw/internal/channelfacilitator"
-	"AegisClaw/internal/collab"
 	"AegisClaw/internal/agent/progress"
 	agentSkills "AegisClaw/internal/agent/skills"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/channelfacilitator"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
@@ -300,7 +300,7 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		ready := err == nil
 		_ = client.Reply(context.Background(), hubclient.Message{
 			Source: client.AssignedID(), Destination: msg.Source, Command: "response",
-			Payload: map[string]interface{}{"ready": ready},
+			Payload:   map[string]interface{}{"ready": ready},
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		})
 		return true
@@ -357,7 +357,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	if anchorText != "" {
 		prompt += "\n\nRelevant prior context (anchors):\n" + anchorText
 	}
-	prompt += "\n\nReply in 2-4 sentences with a concrete progress update or status from your role. If no reply is needed, respond with exactly: NO_REPLY"
+	prompt += "\n\nAlways output PASS or SPEAK as the first line. PASS is the default. SPEAK only if you have a new concrete progress update from your role, you are @mentioned, or a question is aimed at you. If SPEAK, write 1-3 sentences after the first line. If PASS, output only PASS."
 
 	llmReply, err := realLLM(ctx, prompt)
 	if err != nil {
@@ -368,7 +368,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 			Source:      sourceID,
 			Destination: channelfacilitator.ComponentID,
 			Command:     channelfacilitator.CmdTurnResult,
-			Payload: map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "error", "error": err.Error()},
+			Payload:     map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "error", "error": err.Error()},
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		})
 		return
@@ -566,14 +566,33 @@ func formatAvailableTools(idx *agentSkills.AgentSkillIndex) string {
 
 type loadedWorkspaceAdapter struct{}
 
-func (loadedWorkspaceAdapter) GetSOUL() string   { if loadedWorkspace == nil { return "" }; return loadedWorkspace.SOUL }
-func (loadedWorkspaceAdapter) GetAGENTS() string { if loadedWorkspace == nil { return "" }; return loadedWorkspace.AGENTS }
-func (loadedWorkspaceAdapter) GetTOOLS() string  { if loadedWorkspace == nil { return "" }; return loadedWorkspace.TOOLS }
-func (loadedWorkspaceAdapter) GetSKILLS() string { if loadedWorkspace == nil { return "" }; return loadedWorkspace.SKILLS }
+func (loadedWorkspaceAdapter) GetSOUL() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	return loadedWorkspace.SOUL
+}
+func (loadedWorkspaceAdapter) GetAGENTS() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	return loadedWorkspace.AGENTS
+}
+func (loadedWorkspaceAdapter) GetTOOLS() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	return loadedWorkspace.TOOLS
+}
+func (loadedWorkspaceAdapter) GetSKILLS() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	return loadedWorkspace.SKILLS
+}
 
 // handleToolCommand and getString now delegate to the moved implementation.
 var (
 	handleToolCommand = agentSkills.HandleToolCommand
 	getString         = agentSkills.GetString
 )
-
