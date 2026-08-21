@@ -143,45 +143,236 @@ func getBuildVersion() string {
 	return "unknown"
 }
 
-func getPersonaPrompt(persona string) string {
+func workspaceCustomPrefix() string {
 	// 7.6: Prepend user workspace customizations (SOUL + AGENTS) if present.
-	// This allows custom instructions to influence how the 7 personas review proposals,
-	// consistent with the Agent 6-step integration and agent-customization.md.
-	custom := ""
-	if loadedWorkspace != nil {
-		if loadedWorkspace.SOUL != "" {
-			custom += "Core values and soul for this system: " + loadedWorkspace.SOUL + ". "
-		}
-		if loadedWorkspace.AGENTS != "" {
-			custom += "Custom agent/Court instructions: " + loadedWorkspace.AGENTS + ". "
-		}
+	if loadedWorkspace == nil {
+		return ""
 	}
+	custom := ""
+	if loadedWorkspace.SOUL != "" {
+		custom += "Core values and soul for this system: " + loadedWorkspace.SOUL + ". "
+	}
+	if loadedWorkspace.AGENTS != "" {
+		custom += "Custom agent/Court instructions: " + loadedWorkspace.AGENTS + ". "
+	}
+	return custom
+}
 
-	// Shared system context — makes the 7 Court personas aware of the full AegisClaw capabilities
-	// so they can give maximally useful, architecture-respecting feedback in proposals and channels.
-	systemContext := "You operate inside AegisClaw's paranoid-isolated architecture. Untrusted components (including agents and skills) run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with strict ACLs and ed25519 signing. LLM calls route through Network Boundary for policy, auditing and secret isolation. Persistent state (proposals, channel last_seen_seq, skill registry, Merkle audit logs) is owned by Store VM. Per-agent Memory VM holds context. Skills/tools are discovered semantically via tool.search (natural language query, permission-scoped) after Court-approved proposals and Builder VM implementation. Collaboration uses turn-based channel.turn messages with relevance_anchors; agents use channel.get_relevant_since and channel.get_messages on Store for context. Round-robin scheduling with mention boosts and fairness passes applies. Reply only when you add value (exactly NO_REPLY otherwise). PM orchestrates via ensure.role and channel plans, escalating formal proposals to Court Scribe. Most changes require proposals + unanimous Approve from non-abstaining Court personas. Web portal provides real-time STOMP and #agents page observability (turn state, outcomes). Workspace AGENTS.md and SOUL.md custom instructions are prepended to prompts — respect them. Never expose secrets in reasoning or posts. Abstain on uncertainty rather than guessing. Stay strictly in character."
+// courtProposalSystemContext is shared Court context for formal proposal reviews (VOTE path).
+const courtProposalSystemContext = "You operate inside AegisClaw's paranoid-isolated architecture. Untrusted components (including agents and skills) run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with strict ACLs and ed25519 signing. LLM calls route through Network Boundary for policy, auditing and secret isolation. Persistent state (proposals, channel last_seen_seq, skill registry, Merkle audit logs) is owned by Store VM. Per-agent Memory VM holds context. Skills/tools are discovered semantically via tool.search (natural language query, permission-scoped) after Court-approved proposals and Builder VM implementation. Collaboration uses turn-based channel.turn messages with relevance_anchors. PM orchestrates via ensure.role and channel plans, escalating formal proposals to Court Scribe. Most changes require proposals + unanimous Approve from non-abstaining Court personas. Never expose secrets in reasoning or posts. Abstain on uncertainty rather than guessing. Stay strictly in character."
 
+// cisoChannelInstructions is the CISO-only channel turn prompt.
+// LLMs are trained to always produce a token sequence, so silence is modeled as the
+// action PASS (not "do not respond"). SPEAK is the exception.
+const cisoChannelInstructions = `You are the Chief Information Security Officer (CISO) sitting in an AegisClaw Slack-style channel.
+
+Your professional job is selective governance, not conversation. You are not a facilitator, not a project manager, and not a rubber-stamp participant. Most turns you take no action in the channel.
+
+Always produce output. The first line MUST be exactly one of these two action tokens:
+PASS
+SPEAK
+
+PASS is the default and is correct professional behavior. SPEAK is exceptional.
+
+You MUST SPEAK if you are directly @mentioned or a question is aimed at the CISO / "security officer" / "compliance lead", even when the answer is that there is no CISO issue. In that case write one short sentence (e.g. "No CISO issue in this CSS/copy change.") and stop.
+
+Otherwise SPEAK only if at least one of these is true of the NEW messages (not of old recap):
+- A new material risk appears: secrets/credentials/tokens/keys, PII, audit/compliance (GDPR, SOC2, SBOM), encryption, privilege/scopes, isolation/sandbox weakening, network egress or bind-all interfaces, third-party integrations, or skipping Court/governance.
+- Someone proposes deploying, merging, or enabling a change that expands attack surface or stores secrets unsafely, and no Court proposal covers it yet.
+- An incident or suspected sandbox escape / key leak needs an immediate posture call.
+
+PASS when any of these apply AND you were not @mentioned:
+- Implementation, code style, tests, UX/copy, CSS, performance, scheduling, standups, or status chatter with no new security decision.
+- Other specialists (Security Architect, Architect, Coder, Tester, Efficiency, User Advocate, PM) are already covering the thread.
+- You would only agree, thank, recap, restate, encourage, or keep the discussion going.
+- The same risk was already stated in prior context and nothing new changed.
+- The thread is cycling, off-track, or asking open questions that are not yours to answer.
+- You are uncertain and have no new, concrete risk to add.
+
+If SPEAK: after the first line write 1-3 short sentences. State the risk and the required control (or, on a mention with no risk, state that there is no CISO issue). Do not use VOTE format. Do not ask a question unless a security decision is blocked without an answer. Do not invite more discussion. Do not recap the thread.
+
+If PASS: output only PASS.
+
+Examples:
+New messages: "Tester: I'll add unit tests for the parser." / "Senior Coder: renaming the helper."
+PASS
+
+New messages: "@CISO can we store the GitHub PAT in the agent prompt for convenience?"
+SPEAK
+No. Secrets must never go in prompts, channel text, or env files. Put the PAT in the Secrets VM and grant a scoped Network Boundary fetch after a Court proposal.
+
+New messages: "User Advocate: the empty-state copy feels cold." / "Efficiency: we can drop one pre-warm VM."
+PASS
+
+New messages: "@CISO any security concern with the CSS token refactor?"
+SPEAK
+No CISO issue in a local CSS token refactor. Do not add a third-party font CDN.
+
+New messages: "@CISO do you want a coverage floor as a security gate?"
+SPEAK
+No. Test coverage is a quality bar, not a CISO control. Do not turn coverage percentage into a security gate.
+`
+
+func getPersonaPrompt(persona string) string {
+	custom := workspaceCustomPrefix()
 	base := ""
 	switch persona {
 	case "ciso":
-		base = systemContext + " You are the Chief Information Security Officer. Evaluate the proposal for security risks, compliance, secret handling, isolation boundaries, attack surface, and business/governance impact. Respond ONLY with a single line starting with VOTE: Approve|Reject|Abstain followed by | REASONING: ... | SPECIFIC_FEEDBACK: bullet list or none. Never guess — Abstain on uncertainty. For channel activity or turns: Reply in 2-4 sentences from your CISO perspective or exactly NO_REPLY if you have nothing valuable to add. Do NOT use VOTE format in channels."
+		base = courtProposalSystemContext + " You are the Chief Information Security Officer. Evaluate the proposal for security risks, compliance, secret handling, isolation boundaries, attack surface, and business/governance impact. Respond ONLY with a single line starting with VOTE: Approve|Reject|Abstain followed by | REASONING: ... | SPECIFIC_FEEDBACK: bullet list or none. Never guess — Abstain on uncertainty. This prompt is for formal proposals only, not channel chatter."
 	case "security-architect":
-		base = systemContext + " You are the Security Architect. Assess technical security design, sandbox escapes, privilege escalation, network boundary policy, and implementation of isolation controls. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... Abstain rather than speculate. For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the Security Architect. Assess technical security design, sandbox escapes, privilege escalation, network boundary policy, and implementation of isolation controls. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... Abstain rather than speculate."
 	case "architect":
-		base = systemContext + " You are the System Architect. Review system design, modularity, long-term maintainability, composition of sandboxes and boundaries, and alignment with overall architecture. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the System Architect. Review system design, modularity, long-term maintainability, composition of sandboxes and boundaries, and alignment with overall architecture. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	case "senior-coder":
-		base = systemContext + " You are the Senior Coder. Evaluate code quality, readability, implementation standards, correctness, and how changes interact with the isolated runtime, hub mediation, and tool discovery mechanisms. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the Senior Coder. Evaluate code quality, readability, implementation standards, correctness, and how changes interact with the isolated runtime, hub mediation, and tool discovery mechanisms. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	case "tester":
-		base = systemContext + " You are the Tester. Assess testing strategy, coverage, edge cases, reliability of isolation boundaries, and validation of governance flows or turn-based collaboration. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the Tester. Assess testing strategy, coverage, edge cases, reliability of isolation boundaries, and validation of governance flows or turn-based collaboration. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	case "efficiency":
-		base = systemContext + " You are the Efficiency Expert. Review performance, resource usage (microVMs, hub, LLM calls), cost, latency of channels/turns/proposals, and optimisation opportunities within the architecture. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the Efficiency Expert. Review performance, resource usage (microVMs, hub, LLM calls), cost, latency of channels/turns/proposals, and optimisation opportunities within the architecture. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	case "user-advocate":
-		base = systemContext + " You are the User Advocate. Consider usability, UX in web portal and channels, human impact of governance friction or turn delays, accessibility, and how the system feels for collaborators. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the User Advocate. Consider usability, UX in web portal and channels, human impact of governance friction or turn delays, accessibility, and how the system feels for collaborators. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	default:
-		base = systemContext + " Evaluate the proposal or channel activity from your specialized perspective. Respond ONLY with VOTE: Approve|Reject|Abstain | REASONING: detailed | SPECIFIC_FEEDBACK: actionable bullets or none. For channels: Reply in 2-4 sentences or exactly NO_REPLY if nothing valuable to add. Do NOT use VOTE format in channels."
+		base = courtProposalSystemContext + " Evaluate the proposal from your specialized perspective. Respond ONLY with VOTE: Approve|Reject|Abstain | REASONING: detailed | SPECIFIC_FEEDBACK: actionable bullets or none."
 	}
 
 	return custom + base
+}
+
+func getChannelPersonaPrompt(persona string) string {
+	custom := workspaceCustomPrefix()
+	if persona == "ciso" {
+		return custom + cisoChannelInstructions
+	}
+	display := collab.DisplayName("court-persona-" + persona)
+	return custom + "You are the " + display + " in an AegisClaw collaboration channel. " +
+		"Stay in character. Never expose secrets. Do NOT use VOTE format in channels. " +
+		"Always output an action on the first line: PASS or SPEAK. " +
+		"PASS (also accepted: NO_REPLY) if you would only recap, agree, or keep chatter going. " +
+		"SPEAK only if you add a new point from your role, you are @mentioned, or a question is aimed at you. " +
+		"If SPEAK, write 2-4 sentences after the first line. If PASS, output only PASS."
+}
+
+// buildChannelTurnPrompt is the production prompt used for channel.turn (and tests).
+func buildChannelTurnPrompt(persona, uniqueSource, chID, batchText, anchorText string) string {
+	display := collab.DisplayName(uniqueSource)
+	var b strings.Builder
+	b.WriteString(getChannelPersonaPrompt(persona))
+	b.WriteString("\n\nYou received a batched channel turn in #")
+	b.WriteString(chID)
+	b.WriteString(" as ")
+	b.WriteString(display)
+	b.WriteString(".\nNew messages since your last turn:\n")
+	b.WriteString(batchText)
+	if strings.TrimSpace(anchorText) != "" {
+		b.WriteString("\n\nRelevant prior context (from get_relevant_since anchors):\n")
+		b.WriteString(anchorText)
+	}
+	mentioned := collab.IsMentioned(uniqueSource, batchText) || collab.IsMentioned("court-persona-"+persona, batchText)
+	newRisk, riskHits := cisoNewMaterialRisk(batchText, anchorText)
+	switch {
+	case mentioned:
+		b.WriteString("\n\nYou were directly @mentioned in the new messages. First line MUST be SPEAK. If there is no material risk, SPEAK with one sentence that there is no issue for your role, then stop.")
+	case persona == "ciso" && newRisk:
+		b.WriteString("\n\nThe NEW messages introduce a first-seen CISO risk (")
+		b.WriteString(strings.Join(riskHits, ", "))
+		b.WriteString("). First line MUST be SPEAK with a short posture (Court / Secrets VM / halt / forbid). Do not PASS.")
+	case persona == "ciso":
+		b.WriteString("\n\nYou were not @mentioned and the new messages do not introduce a first-seen CISO risk. First line MUST be PASS.")
+	default:
+		b.WriteString("\n\nFirst line must be PASS or SPEAK. You were not @mentioned. Default to PASS unless the new messages contain a new item in your role that others have not already covered.")
+	}
+	return b.String()
+}
+
+// cisoRiskKeywords maps a high-signal phrase to a risk family. Families let
+// recap of the same issue (PAT vs .env secret) count as one risk, while a new
+// family (localStorage tokens after an .env debate) is still SPEAK.
+var cisoRiskKeywords = []struct {
+	phrase string
+	family string
+}{
+	{"secret", "secrets"}, {"password", "secrets"}, {"credential", "secrets"},
+	{"api key", "secrets"}, {"pat", "secrets"}, {"ghp_", "secrets"}, {"sk-live", "secrets"},
+	{"client_secret", "secrets"}, {"client secret", "secrets"}, {".env", "secrets"},
+	{"bot token", "secrets"}, {"jwt", "secrets"},
+	{"localstorage", "browser-storage"}, {"local storage", "browser-storage"},
+	{"pii", "pii"}, {"gdpr", "pii"}, {"hubspot", "pii"}, {"email+ip", "pii"},
+	{"0.0.0.0", "bind"}, {"bind-all", "bind"}, {"port-forward", "bind"},
+	{"port forward", "bind"}, {"router forward", "bind"},
+	{"chmod 777", "perms"}, {" 777", "perms"},
+	{"wildcard", "perms"}, {"tool.*", "perms"},
+	{"shared memory", "isolation"}, {"group brain", "isolation"},
+	{"rfc1918", "scan"}, {"lan-scanning", "scan"}, {"scanner", "scan"},
+	{"sandbox escape", "incident"}, {"vsock", "incident"}, {"uncontained", "incident"},
+	{"skip court", "court-bypass"}, {"disable court", "court-bypass"},
+	{"without court", "court-bypass"}, {"bypass court", "court-bypass"},
+	{"soc2", "compliance"}, {"cosign", "compliance"},
+	{"encrypt", "encryption"}, {"at rest", "encryption"},
+}
+
+func containsCISORiskKeyword(lower, kw string) bool {
+	kw = strings.TrimSpace(kw)
+	if kw == "" {
+		return false
+	}
+	if len(kw) <= 4 && !strings.ContainsAny(kw, "._") {
+		for i := 0; i <= len(lower)-len(kw); i++ {
+			if lower[i:i+len(kw)] != kw {
+				continue
+			}
+			leftOK := i == 0 || !isASCIIAlnum(lower[i-1])
+			rightOK := i+len(kw) == len(lower) || !isASCIIAlnum(lower[i+len(kw)])
+			if leftOK && rightOK {
+				return true
+			}
+		}
+		return false
+	}
+	return strings.Contains(lower, kw)
+}
+
+func isASCIIAlnum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+func cisoRiskHits(text string) []string {
+	lower := strings.ToLower(text)
+	var hits []string
+	seen := map[string]bool{}
+	for _, kw := range cisoRiskKeywords {
+		if containsCISORiskKeyword(lower, kw.phrase) && !seen[kw.family] {
+			hits = append(hits, kw.family)
+			seen[kw.family] = true
+		}
+	}
+	return hits
+}
+
+// cisoNewMaterialRisk reports risk phrases present in the new batch but not in anchors.
+func cisoNewMaterialRisk(batchText, anchorText string) (bool, []string) {
+	hits := cisoRiskHits(batchText)
+	if len(hits) == 0 {
+		return false, nil
+	}
+	prior := map[string]bool{}
+	for _, p := range cisoRiskHits(anchorText) {
+		prior[p] = true
+	}
+	var fresh []string
+	for _, h := range hits {
+		if !prior[h] {
+			fresh = append(fresh, h)
+		}
+	}
+	return len(fresh) > 0, fresh
+}
+
+func buildChannelActivityPrompt(persona, userQuestion string) string {
+	display := collab.DisplayName("court-persona-" + persona)
+	return getChannelPersonaPrompt(persona) +
+		"\n\nA message was posted in a collaboration channel to you as \"" + display + "\":\n" +
+		userQuestion +
+		"\n\nFirst line must be PASS or SPEAK. Do NOT use VOTE format."
 }
 
 // analyzeProposal is the core review function.
@@ -246,11 +437,7 @@ func llmChannelReply(persona string, hubClient hubclient.Client, prompt string) 
 
 // generateChannelReply produces a short contextual reply via LLM (no canned fallback text).
 func generateChannelReply(persona, userQuestion string, hubClient hubclient.Client) string {
-	display := collab.DisplayName("court-persona-" + persona)
-	prompt := getPersonaPrompt(persona) + "\n\nA user asked in a collaboration channel:\n" + userQuestion +
-		"\n\nReply in 2-4 sentences addressing their message from your role as \"" + display + "\". " +
-		"If no reply is needed, respond with exactly: NO_REPLY. " +
-		"Do NOT use VOTE format or proposal review structure."
+	prompt := buildChannelActivityPrompt(persona, userQuestion)
 	return llmChannelReply(persona, hubClient, prompt)
 }
 
@@ -354,15 +541,7 @@ func processChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSourc
 
 	batchText := collab.FormatTurnMessages(turn.NewMessages)
 	anchorText := collab.FormatAnchorContext(anchorMsgs)
-	display := collab.DisplayName(uniqueSource)
-	prompt := "You are the " + display + " persona in channel " + chID + ". You received a batched channel turn.\n" +
-		"New messages since your last turn:\n" + batchText
-	if anchorText != "" {
-		prompt += "\n\nRelevant prior context (from get_relevant_since anchors):\n" + anchorText
-	}
-	prompt += "\n\nReply in 2-4 sentences addressing the user's message from your role. " +
-		"If you are directly @mentioned or asked a question, you must reply. " +
-		"If genuinely nothing to add, respond with exactly: NO_REPLY. Do NOT use VOTE format."
+	prompt := buildChannelTurnPrompt(persona, uniqueSource, chID, batchText, anchorText)
 
 	reply := llmChannelReply(persona, hcl, prompt)
 	if strings.TrimSpace(reply) == "" {

@@ -49,11 +49,13 @@ func (h *turnTestHub) Send(_ context.Context, msg hubclient.Message) (hubclient.
 	}
 }
 
-func (h *turnTestHub) Close() error                                       { return nil }
-func (h *turnTestHub) AssignedID() string                                 { return h.assignedID }
-func (h *turnTestHub) IsVsock() bool                                      { return false }
-func (h *turnTestHub) Receive(context.Context) (hubclient.Message, error) { return hubclient.Message{}, nil }
-func (h *turnTestHub) Reply(context.Context, hubclient.Message) error     { return nil }
+func (h *turnTestHub) Close() error       { return nil }
+func (h *turnTestHub) AssignedID() string { return h.assignedID }
+func (h *turnTestHub) IsVsock() bool      { return false }
+func (h *turnTestHub) Receive(context.Context) (hubclient.Message, error) {
+	return hubclient.Message{}, nil
+}
+func (h *turnTestHub) Reply(context.Context, hubclient.Message) error { return nil }
 func (h *turnTestHub) TryReceive(context.Context, time.Duration) (hubclient.Message, bool, error) {
 	return hubclient.Message{}, false, nil
 }
@@ -63,7 +65,7 @@ func TestProcessChannelTurnUsesDirectTurnPrompt(t *testing.T) {
 	// not generateChannelReply (which double-wraps with VOTE proposal review format).
 	hub := &turnTestHub{assignedID: "court-persona-senior-coder"}
 	msg := hubclient.Message{
-		Source: "store",
+		Source:  "store",
 		Command: "channel.turn",
 		Payload: map[string]interface{}{
 			"channel_id": "main",
@@ -86,6 +88,57 @@ func TestProcessChannelTurnUsesDirectTurnPrompt(t *testing.T) {
 	}
 	if strings.Contains(hub.llmPrompt, "Proposal description:") {
 		t.Fatalf("turn prompt must not use generateChannelReply proposal wrapper: %s", hub.llmPrompt)
+	}
+}
+
+func TestCISOChannelPromptIsDecisionFirstNotVote(t *testing.T) {
+	p := getChannelPersonaPrompt("ciso")
+	if !strings.Contains(p, "PASS") || !strings.Contains(p, "SPEAK") {
+		t.Fatalf("CISO channel prompt must teach PASS/SPEAK actions, got: %s", p)
+	}
+	if strings.Contains(p, "VOTE:") {
+		t.Fatalf("CISO channel prompt must not mix Court VOTE format: %s", p)
+	}
+	if !strings.Contains(p, "default") && !strings.Contains(strings.ToLower(p), "pass is the default") {
+		t.Fatalf("CISO channel prompt should state PASS is the default: %s", p)
+	}
+	proposal := getPersonaPrompt("ciso")
+	if !strings.Contains(proposal, "You are the") {
+		t.Fatal("proposal prompt still required")
+	}
+	turn := buildChannelTurnPrompt("ciso", "court-persona-ciso", "main", "- user: hello", "")
+	if strings.Contains(turn, "VOTE:") {
+		t.Fatalf("turn prompt must not include VOTE: %s", turn)
+	}
+	if !strings.Contains(turn, "New messages since your last turn") {
+		t.Fatalf("turn prompt missing batch: %s", turn)
+	}
+	mentioned := buildChannelTurnPrompt("ciso", "court-persona-ciso", "main", "- user: @CISO any concern with this CSS?", "")
+	if !strings.Contains(mentioned, "You were directly @mentioned") {
+		t.Fatalf("mentioned turn must force SPEAK, got: %s", mentioned)
+	}
+}
+
+func TestCISONewMaterialRiskOracle(t *testing.T) {
+	ok, hits := cisoNewMaterialRisk("- coder: put GOOGLE_CLIENT_SECRET in .env", "")
+	if !ok {
+		t.Fatalf("new .env secret must be a CISO risk, hits=%v", hits)
+	}
+	ok, _ = cisoNewMaterialRisk("- coder: put GOOGLE_CLIENT_SECRET in .env", "- user: never commit .env secrets")
+	if ok {
+		t.Fatal("same .env risk already in anchors should not be new")
+	}
+	ok, _ = cisoNewMaterialRisk("- tester: snapshot path is fine", "")
+	if ok {
+		t.Fatal("path/snapshot chatter must not match PAT/secret keywords")
+	}
+	p := buildChannelTurnPrompt("ciso", "court-persona-ciso", "ops", "- user: I pasted sk-live-123 in the channel", "")
+	if !strings.Contains(p, "First line MUST be SPEAK") {
+		t.Fatalf("new secret paste must force SPEAK, got: %s", p)
+	}
+	quiet := buildChannelTurnPrompt("ciso", "court-persona-ciso", "ux", "- ux: the empty-state copy feels cold", "")
+	if !strings.Contains(quiet, "First line MUST be PASS") {
+		t.Fatalf("copy-only turn must force PASS, got: %s", quiet)
 	}
 }
 
