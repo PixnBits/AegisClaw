@@ -88,9 +88,14 @@ func getPMPrompt() string {
 
 	// Shared system context for the Project Manager — mirrors the Court personas so the orchestrator
 	// understands the full architecture and can delegate, monitor, and escalate effectively.
-	systemContext := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with ACLs and signing. LLM calls go through Network Boundary. Persistent state lives in Store VM; per-agent context in Memory VM. Skills/tools are discovered via tool.search after Court review and Builder VM implementation. Collaboration uses turn-based channel.turn with relevance_anchors and Store context tools (get_relevant_since / get_messages). Use NO_REPLY when a reply adds no value. You orchestrate via ensure.role, channel plans, and monitoring; escalate meaningful changes as formal proposals to Court Scribe for the 7 personas to review. Most changes require unanimous Court Approve. Web portal shows real-time updates and #agents observability. Respect prepended workspace AGENTS.md / SOUL.md custom instructions. Never expose secrets. Abstain or escalate on uncertainty."
+	systemContext := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with ACLs and signing. LLM calls go through Network Boundary. Persistent state lives in Store VM; per-agent context in Memory VM. Skills/tools are discovered via tool.search after Court review and Builder VM implementation. Collaboration uses turn-based channel.turn with relevance_anchors and Store context tools (get_relevant_since / get_messages). You orchestrate via ensure.role, channel plans, and monitoring; escalate meaningful changes as formal proposals to Court Scribe for the 7 personas to review. Most changes require unanimous Court Approve. Web portal shows real-time updates and #agents observability. Respect prepended workspace AGENTS.md / SOUL.md custom instructions. Never expose secrets. Abstain or escalate on uncertainty."
 
-	base := systemContext + " You receive user goals or channel activity. Break them into plans (tasks, required roles like Coder/Tester/Court, suggested channels). Decide which agents/roles to spin up or invite to which channels using EnsureRoleAgent. Delegate via channel posts or @mentions. Monitor, synthesize, and escalate to Court via formal proposals when changes are needed. Stay in character as the intelligent orchestrator. Respond with structured plans or actions. For channel activity or turns: Reply in 2-4 sentences as the Project Manager or exactly NO_REPLY if nothing valuable to add."
+	base := systemContext + ` You receive user goals or channel activity. Break them into plans (tasks, required roles like Coder/Tester/Court, suggested channels). Decide which agents/roles to spin up or invite to which channels using EnsureRoleAgent. Delegate via channel posts or @mentions. Monitor, synthesize, and escalate to Court via formal proposals when changes are needed. Stay in character as the intelligent orchestrator.
+
+For channel activity or turns: always produce output. First line MUST be PASS or SPEAK. PASS is the default. SPEAK is exceptional.
+You MUST SPEAK if you are @mentioned as Project Manager, if a human posted a new goal that needs a plan or owners, if work is blocked, or if a change needs Court escalation that nobody has started.
+PASS when specialists are debating CSS, tests, implementation, or recapping; when you would only agree, thank, or keep the discussion going; when a plan and owners already exist.
+If SPEAK: 1-3 short sentences (owners, next step, or Court escalate). Do not recap. If PASS: output only PASS.`
 
 	return custom + base
 }
@@ -325,7 +330,7 @@ func pmProcessChannelActivity(hcl hubclient.Client, msg hubclient.Message, uniqu
 
 	// Inline on hubclient connection — see court-persona processChannelActivity (no goroutine).
 	prompt := getPMPrompt() + "\n\nA user asked in channel " + chID + ":\n" + userContent +
-		"\n\nReply in 2-4 sentences as the Project Manager. If the message does not need your reply, respond with exactly: NO_REPLY"
+		"\n\nFirst line must be PASS or SPEAK. If you are @mentioned or a new goal needs owners, SPEAK. Otherwise PASS."
 	llmReply, err := realLLM(context.Background(), prompt)
 	if err != nil {
 		log.Printf("PM: channel reply LLM failed (not posting canned text): %v", err)
@@ -404,8 +409,13 @@ func pmProcessChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSou
 		}
 	}
 
-	prompt := getPMPrompt() + "\n\nChannel turn in " + chID + ":\n" + batchText +
-		"\n\nReply in 2-4 sentences as the Project Manager. If no reply is needed, respond with exactly: NO_REPLY"
+	mentioned := collab.IsMentioned(uniqueSource, batchText) || collab.IsMentioned("project-manager", batchText)
+	prompt := getPMPrompt() + "\n\nChannel turn in " + chID + ":\n" + batchText
+	if mentioned {
+		prompt += "\n\nYou were directly @mentioned. First line MUST be SPEAK. One sentence is enough if no new plan is needed."
+	} else {
+		prompt += "\n\nYou were not @mentioned. First line MUST be PASS unless a new goal needs owners, work is blocked, or Court escalation is missing. If SPEAK, 1-3 sentences. If PASS, output only PASS."
+	}
 	llmReply, err := realLLM(context.Background(), prompt)
 	if err != nil {
 		collab.Tracef("project-manager", "channel.turn.reply.skip", "ch=%s err=%v", chID, err)

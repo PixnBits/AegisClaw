@@ -54,7 +54,7 @@ When working on this project as an LLM agent:
 - Boot timing and observability (`AEGIS_BOOT_TIMING`)
 - Security boundaries (ACL enforcement, signed Hub messages, memory isolation)
 - Failure and recovery paths (chaos testing)
-- CISO channel verbosity: SPEAK only on material risk / direct @mention, PASS otherwise (`make test-ciso-live`)
+- Court channel verbosity: SPEAK only on role-relevant new topics / direct @mention, PASS otherwise (`make test-ciso-live`)
 
 ## Continuous Improvement
 

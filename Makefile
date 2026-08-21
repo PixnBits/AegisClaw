@@ -259,7 +259,7 @@ test:
 # Hits the real Ollama endpoint + AEGIS_DEFAULT_MODEL (or qwen3-coder:30b).
 # Does not require the daemon. Optional: AEGIS_CISO_LIVE_IDS=oauth2-login,css-theme-refactor
 test-ciso-live:
-	AEGIS_LIVE_LLM=1 go test -v -count=1 -timeout 2h ./cmd/court-persona -run TestCISOChannelConversationsLive
+	AEGIS_LIVE_LLM=1 go test -v -count=1 -timeout 2h ./cmd/court-persona -run "TestCISOChannelConversationsLive|TestCourtPersonaChannelSpeakPassLive"
 
 
 # Run daemon integration tests
