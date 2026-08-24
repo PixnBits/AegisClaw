@@ -39,6 +39,18 @@ func TestShouldDeliverActivityToAgents(t *testing.T) {
 	}
 }
 
+func TestPosterIsRole(t *testing.T) {
+	if !PosterIsRole("project-manager-party-v2", "project-manager") {
+		t.Fatal("PM instance must match project-manager role")
+	}
+	if PosterIsRole("project-manager-party-v2", "coder") {
+		t.Fatal("PM instance must not match coder")
+	}
+	if !PosterIsRole("coder-tune-css-6", "coder") {
+		t.Fatal("coder instance must match coder role")
+	}
+}
+
 func TestShouldNotRespondToSelf(t *testing.T) {
 	ok, _ := ShouldRespondToActivity("court-persona-ciso", "court-persona-ciso", "hello")
 	if ok {

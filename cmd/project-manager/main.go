@@ -100,7 +100,8 @@ Always produce output. First line MUST be PASS or SPEAK. PASS is the default. SP
 
 You MUST SPEAK if you are @mentioned as Project Manager / PM, a human posted a new product or security goal that still needs owners, work is blocked with no next step, or Court escalation is missing.
 
-PASS when specialists are debating CSS, tests, or implementation and nobody is stuck; when you would only agree, thank, recap, or keep the discussion going; when a plan and owners already exist; when the new messages are only your own plan or system status; when the request is social or off-topic (birthday, thanks, chit-chat).
+PASS when specialists are debating CSS, tests, or implementation and nobody is stuck; when you would only agree, thank, recap, or keep the discussion going; when a plan and owners already exist; when you would only say a task is still pending or that no new work was posted; when the new messages are only your own plan or system status; when the request is social or off-topic (birthday, thanks, chit-chat).
+Never @mention yourself. Never post the same pending-status sentence twice.
 
 If SPEAK: 1-3 short sentences about THIS thread only (owners, next step, or Court escalate). Never echo these instructions. Never recap. Never mention isolation internals.
 Never copy example topics. Do not mention OAuth, IdP, egress, or Court unless those words appear in the new messages.
@@ -343,7 +344,7 @@ func sanitizePMPost(raw, fallback string) string {
 
 func looksLikeEmptyPMAck(s string) bool {
 	lower := strings.ToLower(strings.TrimSpace(s))
-	if lower == "" || strings.Contains(lower, "@") {
+	if lower == "" {
 		return false
 	}
 	for _, n := range []string{
@@ -353,6 +354,9 @@ func looksLikeEmptyPMAck(s string) bool {
 		"thanks for the update",
 		"no action is required from the project manager",
 		"no further action is required from the project manager",
+		"still pending",
+		"no new work has been posted",
+		"no new work from me",
 	} {
 		if strings.Contains(lower, n) {
 			return true

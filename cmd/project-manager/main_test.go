@@ -166,6 +166,9 @@ func TestSanitizePMChannelReplyDropsEmptyAck(t *testing.T) {
 	if _, skip := sanitizePMChannelReply("SPEAK\nThanks for the update — no new plan needed at this time."); !skip {
 		t.Fatal("thanks-for-the-update ack must not post")
 	}
+	if _, skip := sanitizePMChannelReply("SPEAK\n@ProjectManager - the login padding task is still pending; Coder and Tester own it, but no new work has been posted."); !skip {
+		t.Fatal("repeating still-pending recap must not post")
+	}
 	content, skip := sanitizePMChannelReply("SPEAK\nYes — Coder and Tester still own the 2px padding.")
 	if skip || !strings.Contains(content, "Coder") {
 		t.Fatalf("real @mention reply must post, got skip=%v content=%q", skip, content)

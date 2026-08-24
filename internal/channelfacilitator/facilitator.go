@@ -143,6 +143,10 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 		if rec == "" {
 			continue
 		}
+		if collab.PosterIsRole(from, rec) {
+			collab.Tracef(ComponentID, "turn.skip", "ch=%s recipient=%s reason=self_post", chID, rec)
+			continue
+		}
 		recSince := 0
 		for _, m := range members {
 			if channeldata.MemberRole(m) == rec {
@@ -172,13 +176,13 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 			recNewMsgs[i] = m
 		}
 		recTurn := map[string]interface{}{
-			"channel_id":         chID,
-			"recipient":          rec,
-			"since_seq":          recSince,
-			"new_messages":       recNewMsgs,
-			"relevance_anchors":  recAnchors,
-			"mention_boosts":     mentionBoosts,
-			"generated_at":       time.Now().UTC().Format(time.RFC3339),
+			"channel_id":        chID,
+			"recipient":         rec,
+			"since_seq":         recSince,
+			"new_messages":      recNewMsgs,
+			"relevance_anchors": recAnchors,
+			"mention_boosts":    mentionBoosts,
+			"generated_at":      time.Now().UTC().Format(time.RFC3339),
 		}
 		collab.Tracef(ComponentID, "turn.deliver", "ch=%s recipient=%s since=%d new=%d anchors=%v", chID, rec, recSince, len(recBatch), recAnchors)
 

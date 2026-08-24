@@ -29,6 +29,26 @@ func IsSelfPost(memberSourceID, from string) bool {
 	return false
 }
 
+// PosterIsRole reports whether a channel post `from` field is this member role
+// (e.g. from=project-manager-party-v2, role=project-manager).
+func PosterIsRole(from, role string) bool {
+	from = strings.ToLower(strings.TrimSpace(from))
+	role = strings.ToLower(strings.TrimSpace(role))
+	if from == "" || role == "" {
+		return false
+	}
+	if from == role {
+		return true
+	}
+	if strings.HasPrefix(from, role+"-") {
+		return true
+	}
+	if role == "project-manager" && strings.HasPrefix(from, "project-manager") {
+		return true
+	}
+	return false
+}
+
 // PayloadContentString extracts channel message text from channel.activity payloads.
 // Store may persist content as a string or nested map after portal/relay paths.
 func PayloadContentString(v interface{}) string {
