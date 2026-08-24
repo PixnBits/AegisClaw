@@ -196,16 +196,8 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 				"last_activity": now,
 				"pending":       false,
 			})
-			_, _ = f.hub.Send(ctx, hubclient.Message{
-				Destination: "store",
-				Command:     "channel.post",
-				Payload: map[string]interface{}{
-					"channel_id": chID,
-					"from":       "system",
-					"content":    fmt.Sprintf("[turn error] delivery to %s failed: %v", rec, err),
-				},
-				Timestamp: now,
-			})
+			// Do not channel.post hub ERR_DESTINATION_NOT_FOUND — it is a boot/register
+			// race, not something personas should discuss. Traces + member last_error remain.
 			continue
 		}
 		// update last_seen for this rec (cycles normalized in final pass)

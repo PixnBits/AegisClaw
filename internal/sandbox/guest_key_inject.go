@@ -57,7 +57,18 @@ func injectVMKeyIntoRootfs(rootfsPath, hostKeyPath string) error {
 }
 
 func needsPerVMRootfs(vmID string) bool {
-	return strings.HasPrefix(vmID, "agent-") || strings.HasPrefix(vmID, "memory-")
+	if strings.HasPrefix(vmID, "agent-") || strings.HasPrefix(vmID, "memory-") {
+		return true
+	}
+	// On-demand collab roles (coder-*, tester-*, …) fall back to agent.img. They must
+	// not share the template with each other or with pooled agent VMs — a second
+	// Firecracker using the same .img fails to register (ERR_DESTINATION_NOT_FOUND).
+	for _, p := range []string{"coder-", "tester-", "architect-", "ciso-"} {
+		if strings.HasPrefix(vmID, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareVMRootfs returns a rootfs path for this VM. Paired agent/memory VMs get a

@@ -63,6 +63,9 @@ func TestTurnDestinations(t *testing.T) {
 	if got := turnDestinations("coder", "chX"); len(got) == 0 || got[0] != "coder-chX" {
 		t.Fatalf("coder dest: %v", got)
 	}
+	if got := turnDestinations("tester", "tune-css-7"); len(got) < 1 || got[0] != "tester-tune-css-7" {
+		t.Fatalf("tester dest: %v", got)
+	}
 	if got := turnDestinations("project-manager", "chY"); len(got) == 0 || got[0] != "project-manager-chY" {
 		t.Fatalf("pm dest: %v", got)
 	}
