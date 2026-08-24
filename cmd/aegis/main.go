@@ -527,6 +527,9 @@ func daemonChildEnv() []string {
 	if v := os.Getenv("AEGIS_DEFAULT_MODEL"); v != "" {
 		env = setEnvPair(env, "AEGIS_DEFAULT_MODEL", v)
 	}
+	if v := os.Getenv("AEGIS_PM_MODEL"); v != "" {
+		env = setEnvPair(env, "AEGIS_PM_MODEL", v)
+	}
 	return env
 }
 
@@ -1171,13 +1174,13 @@ func computeHealthSnapshot(orch *runtime.Orchestrator) map[string]interface{} {
 
 	courtCount := 0
 	coreCourts := map[string]bool{
-		"ciso": true,
+		"ciso":               true,
 		"security-architect": true,
-		"architect": true,
-		"senior-coder": true,
-		"tester": true,
-		"efficiency": true,
-		"user-advocate": true,
+		"architect":          true,
+		"senior-coder":       true,
+		"tester":             true,
+		"efficiency":         true,
+		"user-advocate":      true,
 	}
 	if orch != nil {
 		if vms, err := orch.ListVMs(context.Background()); err == nil {
@@ -1298,13 +1301,13 @@ func statusDaemon(cmd *cobra.Command, args []string) {
 	base := computeHealthSnapshot(nil)
 	courtCount := 0
 	coreCourts := map[string]bool{
-		"ciso": true,
+		"ciso":               true,
 		"security-architect": true,
-		"architect": true,
-		"senior-coder": true,
-		"tester": true,
-		"efficiency": true,
-		"user-advocate": true,
+		"architect":          true,
+		"senior-coder":       true,
+		"tester":             true,
+		"efficiency":         true,
+		"user-advocate":      true,
 	}
 	if vmsResp, err := sendSocketRequest("vm.list", nil, false); err == nil && vmsResp.OK && vmsResp.Data != nil {
 		if arr, ok := vmsResp.Data.([]interface{}); ok {
@@ -2056,16 +2059,16 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		// Structured path - strict validation
 		allowedOps := map[string]bool{
 			"vm.list": true, "vm list": true,
-			"vm.logs": true,
-			"vm.boot_metrics": true,
-			"health.status": true,
-			"channel.fanout": true,
+			"vm.logs":                  true,
+			"vm.boot_metrics":          true,
+			"health.status":            true,
+			"channel.fanout":           true,
 			"orchestrator.ensure_role": true,
-			"stop":    true,
-			"restart": true,
-			"status":  true,
-			"doctor":  true,
-			"ping":    true,
+			"stop":                     true,
+			"restart":                  true,
+			"status":                   true,
+			"doctor":                   true,
+			"ping":                     true,
 		}
 		if !allowedOps[req.Op] {
 			logrus.Warnf("unauthorized socket op: %s", req.Op)
@@ -4857,9 +4860,9 @@ func startBaseInfrastructure() error {
 	if err := orchestrator.StartVM(context.Background(), "web-portal", "web-portal", "web-portal.img"); err != nil {
 		return fmt.Errorf("failed to start real Firecracker microVM for web-portal: %w (thin fallback is forbidden)", err)
 	}
-		logrus.Info("Started real Firecracker microVM for web-portal")
-		startGuestHubBridge("web-portal")
-		logrus.Info("WEB_PORTAL_STARTED: web-portal VM launched (will be reached only via daemon reverse proxy)")
+	logrus.Info("Started real Firecracker microVM for web-portal")
+	startGuestHubBridge("web-portal")
+	logrus.Info("WEB_PORTAL_STARTED: web-portal VM launched (will be reached only via daemon reverse proxy)")
 	if orchestrator != nil {
 		orchestrator.Bus().PublishJSON("web_portal.started", map[string]interface{}{
 			"id": "web-portal",

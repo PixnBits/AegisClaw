@@ -131,6 +131,12 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 			}
 		}
 	}
+	for _, r := range collectFailedRoles(members) {
+		rn := collab.NormalizeMemberRole(r)
+		if !containsRole(recipients, rn) && len(recipients) < 3 {
+			recipients = append(recipients, rn)
+		}
+	}
 	if len(recipients) == 0 {
 		recipients = []string{recipient}
 	}
@@ -154,12 +160,21 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 		_ = f.ensureRole(ctx, rec, chID)
 	}
 
-	deliveredAny := false
+	type pendingTurn struct {
+		rec     string
+		recMax  int
+		recTurn map[string]interface{}
+	}
+	var pending []pendingTurn
 	for _, rec := range dests {
 		recSince := 0
 		for _, m := range members {
 			if channeldata.MemberRole(m) == rec {
 				recSince = channeldata.MemberLastSeenSeq(m)
+				if destNotFound(memberLastError(m)) {
+					// Prior boot miss advanced last_seen on a ghost ACK; resend the batch.
+					recSince = 0
+				}
 				break
 			}
 		}
@@ -194,38 +209,70 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 			"generated_at":      time.Now().UTC().Format(time.RFC3339),
 		}
 		collab.Tracef(ComponentID, "turn.deliver", "ch=%s recipient=%s since=%d new=%d anchors=%v", chID, rec, recSince, len(recBatch), recAnchors)
+		pending = append(pending, pendingTurn{rec: rec, recMax: recMax, recTurn: recTurn})
+	}
 
+	type turnResult struct {
+		rec    string
+		recMax int
+		err    error
+	}
+	results := make(chan turnResult, len(pending))
+	for _, p := range pending {
+		p := p
+		go func() {
+			results <- turnResult{rec: p.rec, recMax: p.recMax, err: f.deliverTurn(context.Background(), chID, p.rec, p.recTurn)}
+		}()
+	}
+	deliveredRoles := make([]string, 0, len(pending))
+	deliveredAny := false
+	for i := 0; i < len(pending); i++ {
+		r := <-results
 		now := time.Now().UTC().Format(time.RFC3339)
-		if err := f.deliverTurn(ctx, chID, rec, recTurn); err != nil {
-			collab.Tracef(ComponentID, "turn.error", "ch=%s recipient=%s err=%v", chID, rec, err)
-			_ = f.updateMemberState(ctx, chID, rec, map[string]interface{}{
+		if r.err != nil {
+			collab.Tracef(ComponentID, "turn.error", "ch=%s recipient=%s err=%v", chID, r.rec, r.err)
+			_ = f.updateMemberState(context.Background(), chID, r.rec, map[string]interface{}{
 				"last_outcome":  "error",
-				"last_error":    err.Error(),
+				"last_error":    r.err.Error(),
 				"last_activity": now,
 				"pending":       false,
 			})
 			// Do not channel.post hub ERR_DESTINATION_NOT_FOUND — it is a boot/register
 			// race, not something personas should discuss. Traces + member last_error remain.
+			if destNotFound(r.err.Error()) {
+				var recTurn map[string]interface{}
+				var recMax int
+				for _, p := range pending {
+					if p.rec == r.rec {
+						recTurn = p.recTurn
+						recMax = p.recMax
+						break
+					}
+				}
+				if recTurn != nil {
+					f.retryDestNotFound(chID, r.rec, recMax, recTurn, newRR, mentionBoostsUsed(members, r.rec, content))
+				}
+			}
 			continue
 		}
-		// update last_seen for this rec (cycles normalized in final pass)
 		for _, m := range members {
 			role := channeldata.MemberRole(m)
-			if role == rec {
-				m["last_seen_seq"] = recMax
+			if role == r.rec {
+				m["last_seen_seq"] = r.recMax
 				m["cycles_since_turn"] = 0
 			}
 		}
-		_ = f.updateMemberState(ctx, chID, rec, map[string]interface{}{
-			"last_seen_seq":       recMax,
+		_ = f.updateMemberState(context.Background(), chID, r.rec, map[string]interface{}{
+			"last_seen_seq":       r.recMax,
 			"cycles_since_turn":   0,
 			"round_robin_index":   newRR,
-			"mention_boosts_left": mentionBoostsUsed(members, rec, content),
+			"mention_boosts_left": mentionBoostsUsed(members, r.rec, content),
 			"last_outcome":        "delivered",
 			"last_error":          "",
 			"last_activity":       now,
 			"pending":             true,
 		})
+		deliveredRoles = append(deliveredRoles, r.rec)
 		deliveredAny = true
 	}
 	// Single cycle update pass for the schedule (non-recipients +1 once, even on multi).
@@ -248,7 +295,7 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 		isPlanLike := strings.Contains(lowerContent, "plan") || strings.Contains(lowerContent, "##") || strings.Contains(lowerContent, "goal") || strings.Contains(lowerContent, "task 1")
 		isSignificant := collab.IsHumanPoster(from) || (strings.Contains(strings.ToLower(from), "project-manager") && isPlanLike)
 		if isSignificant {
-			statusContent := fmt.Sprintf("status: turns delivered to %v (rr=%d) — batch complete, no more pending turns this cycle", recipients, newRR)
+			statusContent := fmt.Sprintf("status: turns delivered to %v (rr=%d) — batch complete, no more pending turns this cycle", deliveredRoles, newRR)
 			_, _ = f.hub.Send(ctx, hubclient.Message{
 				Destination: "store",
 				Command:     "channel.post",
@@ -339,10 +386,15 @@ func (f *Facilitator) ensureRole(ctx context.Context, role, chID string) error {
 func (f *Facilitator) deliverTurn(ctx context.Context, chID, role string, turn map[string]interface{}) error {
 	dests := turnDestinations(role, chID)
 	var lastErr error
+	// Independent of the inbound RPC ctx so a 30s parent cannot cut the boot wait.
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
+		if ctx.Err() != nil && ctx != context.Background() {
+			// inbound cancelled; keep retrying on a fresh clock
+			ctx = context.Background()
+		}
 		for _, dest := range dests {
-			sendCtx, cancel := rpcTimeout(ctx)
+			sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			resp, err := f.hub.Send(sendCtx, hubclient.Message{
 				Destination: dest,
 				Command:     CmdTurn,
@@ -366,6 +418,39 @@ func (f *Facilitator) deliverTurn(ctx context.Context, chID, role string, turn m
 		return lastErr
 	}
 	return fmt.Errorf("no destination for role %q on channel %q", role, chID)
+}
+
+func (f *Facilitator) retryDestNotFound(chID, rec string, recMax int, recTurn map[string]interface{}, newRR, boosts int) {
+	go func() {
+		for attempt := 1; attempt <= 3; attempt++ {
+			time.Sleep(20 * time.Second)
+			_ = f.ensureRole(context.Background(), rec, chID)
+			err := f.deliverTurn(context.Background(), chID, rec, recTurn)
+			now := time.Now().UTC().Format(time.RFC3339)
+			if err != nil {
+				collab.Tracef(ComponentID, "turn.retry.error", "ch=%s recipient=%s attempt=%d err=%v", chID, rec, attempt, err)
+				_ = f.updateMemberState(context.Background(), chID, rec, map[string]interface{}{
+					"last_outcome":  "error",
+					"last_error":    err.Error(),
+					"last_activity": now,
+					"pending":       false,
+				})
+				continue
+			}
+			collab.Tracef(ComponentID, "turn.retry.ok", "ch=%s recipient=%s attempt=%d", chID, rec, attempt)
+			_ = f.updateMemberState(context.Background(), chID, rec, map[string]interface{}{
+				"last_seen_seq":       recMax,
+				"cycles_since_turn":   0,
+				"round_robin_index":   newRR,
+				"mention_boosts_left": boosts,
+				"last_outcome":        "delivered",
+				"last_error":          "",
+				"last_activity":       now,
+				"pending":             true,
+			})
+			return
+		}
+	}()
 }
 
 func turnDestinations(role, chID string) []string {
@@ -411,6 +496,32 @@ func collectMentionedRoles(members []map[string]interface{}, content string) []s
 		}
 		if collab.IsMentioned(r, content) || strings.Contains(lower, "@"+strings.ToLower(r)) {
 			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func destNotFound(s string) bool {
+	return strings.Contains(s, "ERR_DESTINATION_NOT_FOUND")
+}
+
+func memberLastError(m map[string]interface{}) string {
+	if m == nil {
+		return ""
+	}
+	if s, ok := m["last_error"].(string); ok {
+		return s
+	}
+	return ""
+}
+
+func collectFailedRoles(members []map[string]interface{}) []string {
+	var out []string
+	for _, m := range members {
+		if destNotFound(memberLastError(m)) {
+			if r := channeldata.MemberRole(m); r != "" {
+				out = append(out, r)
+			}
 		}
 	}
 	return out

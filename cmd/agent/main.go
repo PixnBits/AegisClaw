@@ -346,7 +346,88 @@ func mentionedProseIfDropped(raw string) string {
 	if strings.HasPrefix(first, "PASS:") || strings.HasPrefix(first, "PASS ") {
 		return ""
 	}
+	if looksLikeInternalDump(s) {
+		return ""
+	}
 	return s
+}
+
+func looksLikeInternalDump(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return false
+	}
+	lower := strings.ToLower(t)
+	needles := []string{
+		`"intent"`, `"tool_calls"`, `"requires_proposal"`, `"observation"`,
+		"## request analysis", "identified risks", "required skills/tools",
+		"autonomy implications", "discord_monitor", "let me analyze this step-by-step",
+	}
+	for _, n := range needles {
+		if strings.Contains(lower, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func askForWorkTarget(roleLabel string) string {
+	return "I can take this as " + roleLabel + " — @ProjectManager, which repo and path? I have not changed any code yet."
+}
+
+func asksForWorkTarget(s string) bool {
+	lower := strings.ToLower(s)
+	needles := []string{
+		"which repo", "which path", "which codebase", "where is the code",
+		"where does the code", "what repo", "what path", "what codebase",
+		"where the code lives", "repo and path",
+	}
+	for _, n := range needles {
+		if strings.Contains(lower, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func batchNamesWorkTarget(batch, anchors string) bool {
+	t := strings.ToLower(batch + "\n" + anchors)
+	needles := []string{
+		"http://", "https://", "github.com", "gitlab.com", "bitbucket.org",
+		".css", ".scss", ".go", ".ts", ".tsx", ".js", ".jsx", ".html", ".vue",
+		"src/", "pkg/", "cmd/", "web-portal/", "repository", "codebase",
+		".git",
+	}
+	for _, n := range needles {
+		if strings.Contains(t, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeProgressClaim(s string) bool {
+	if asksForWorkTarget(s) {
+		return false
+	}
+	lower := strings.ToLower(s)
+	claims := []string{
+		"i'll adjust", "i will adjust", "i'll bump", "i will bump",
+		"i'll fix", "i will fix", "i'll change", "i will change",
+		"i'll tweak", "i will tweak", "i'll update", "i will update",
+		"i'll implement", "i will implement", "i'll make the",
+		"i've changed", "i have changed", "i've updated", "i have updated",
+		"i've fixed", "i have fixed", "i've made the", "i have made the",
+		"the change is done", "padding is done", "tests pass",
+		"snapshots green", "pushed the", "committed the",
+		"already changed", "already fixed", "already updated",
+	}
+	for _, c := range claims {
+		if strings.Contains(lower, c) {
+			return true
+		}
+	}
+	return false
 }
 
 func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
@@ -382,8 +463,9 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	}
 	mentioned := collab.IsMentioned(sourceID, batchText) || collab.IsMentioned(turn.Recipient, batchText)
 	prompt += "\n\nAlways output PASS or SPEAK as the first line. PASS is the default. SPEAK only if you have a new concrete progress update from your role, you are @mentioned, or a question is aimed at you. PASS on social/off-topic requests (birthday parties) and when you would only say there is no issue for your role. If SPEAK, write 1-3 sentences after the first line. If PASS, output only PASS."
+	prompt += " Never claim you already changed code, ran tests, or finished the task unless this turn includes a real file path or repo you used. If you were assigned work but the codebase or path is missing, ask @ProjectManager for it. Do not invent progress."
 	if mentioned {
-		prompt += "\n\nYou were directly @mentioned. First line MUST be SPEAK. One short sentence owning the assignment is enough. Do not recap the thread."
+		prompt += "\n\nYou were directly @mentioned. First line MUST be SPEAK. If the assignment does not name a repo or file path, ask @ProjectManager where the code lives. Do not recap. Do not say the change is done."
 	}
 
 	llmReply, err := realLLM(ctx, prompt)
@@ -406,7 +488,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 			trimmed = body
 			decision = collab.ChannelDecisionSpeak
 			collab.Tracef(sourceID, "channel.turn.mention.prose", "ch=%s len=%d", chID, len(trimmed))
-		} else if retry, rerr := realLLM(ctx, prompt+"\n\nRETRY: You were @mentioned. PASS is not allowed. First line MUST be SPEAK followed by one sentence owning the assignment."); rerr == nil {
+		} else if retry, rerr := realLLM(ctx, prompt+"\n\nRETRY: You were @mentioned. PASS is not allowed. First line MUST be SPEAK. Ask @ProjectManager for the repo and path if they were not given. Do not claim the work is done."); rerr == nil {
 			trimmed, decision = collab.ClassifyChannelLLMReply(retry)
 			if decision != collab.ChannelDecisionSpeak {
 				if body := mentionedProseIfDropped(retry); body != "" {
@@ -416,10 +498,23 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 			}
 		}
 		if decision != collab.ChannelDecisionSpeak {
-			trimmed = "I'll take that from the " + roleLabel + " side."
+			trimmed = askForWorkTarget(roleLabel)
 			decision = collab.ChannelDecisionSpeak
 			collab.Tracef(sourceID, "channel.turn.mention.fallback", "ch=%s", chID)
 		}
+	}
+	if decision == collab.ChannelDecisionSpeak && looksLikeInternalDump(trimmed) {
+		if mentioned {
+			trimmed = askForWorkTarget(roleLabel)
+			collab.Tracef(sourceID, "channel.turn.dump.rewrite", "ch=%s", chID)
+		} else {
+			decision = collab.ChannelDecisionPass
+			collab.Tracef(sourceID, "channel.turn.dump.drop", "ch=%s", chID)
+		}
+	}
+	if decision == collab.ChannelDecisionSpeak && looksLikeProgressClaim(trimmed) && !batchNamesWorkTarget(batchText, anchorText) {
+		trimmed = askForWorkTarget(roleLabel)
+		collab.Tracef(sourceID, "channel.turn.honesty.rewrite", "ch=%s", chID)
 	}
 	if decision != collab.ChannelDecisionSpeak {
 		log.Printf("agent %s: channel.turn chose not to reply in %s (%s)", sourceID, chID, decision)

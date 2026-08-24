@@ -172,7 +172,7 @@ func TestPMChannelConversationFixtures(t *testing.T) {
 
 func TestPMPlanPromptForbidsEcho(t *testing.T) {
 	p := getPMPlanPrompt()
-	for _, needle := range []string{"Output ONLY the plan", "Never repeat", "Do not invite Court"} {
+	for _, needle := range []string{"Output ONLY the plan", "Never repeat", "Assign only the roles"} {
 		if !strings.Contains(p, needle) {
 			t.Errorf("plan prompt missing %q", needle)
 		}
@@ -248,7 +248,7 @@ func TestPMChannelConversationsLive(t *testing.T) {
 	if os.Getenv("AEGIS_LIVE_LLM") != "1" && os.Getenv("AEGIS_PM_LIVE") != "1" {
 		t.Skip("set AEGIS_LIVE_LLM=1 to run PM live Ollama tests")
 	}
-	model := bootargs.DefaultModel(agent.DefaultLLMModel)
+	model := bootargs.PMModel(agent.DefaultPMModel)
 	if err := pmOllamaReady(model); err != nil {
 		t.Fatalf("Ollama not ready: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestPMPlanGenerationLive(t *testing.T) {
 	if os.Getenv("AEGIS_LIVE_LLM") != "1" && os.Getenv("AEGIS_PM_LIVE") != "1" {
 		t.Skip("set AEGIS_LIVE_LLM=1 to run PM live Ollama tests")
 	}
-	model := bootargs.DefaultModel(agent.DefaultLLMModel)
+	model := bootargs.PMModel(agent.DefaultPMModel)
 	if err := pmOllamaReady(model); err != nil {
 		t.Fatalf("Ollama not ready: %v", err)
 	}

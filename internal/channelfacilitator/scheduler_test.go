@@ -58,6 +58,21 @@ func TestFacilitatorActorSkeleton(t *testing.T) {
 	<-a1.mu
 }
 
+func TestCollectFailedRoles(t *testing.T) {
+	members := []map[string]interface{}{
+		{"role": "coder", "last_error": ""},
+		{"role": "tester", "last_error": "hub error delivering turn to tester-css-r1: ERR_DESTINATION_NOT_FOUND"},
+		{"role": "ciso", "last_error": "timeout"},
+	}
+	got := collectFailedRoles(members)
+	if len(got) != 1 || got[0] != "tester" {
+		t.Fatalf("collectFailedRoles() = %v, want [tester]", got)
+	}
+	if !destNotFound("hub error delivering turn to tester-x: ERR_DESTINATION_NOT_FOUND") {
+		t.Fatal("destNotFound should match hub wrapper errors")
+	}
+}
+
 func TestTurnDestinations(t *testing.T) {
 	// Part of wiring: ensure correct hub destinations for turn delivery per role/channel.
 	if got := turnDestinations("coder", "chX"); len(got) == 0 || got[0] != "coder-chX" {

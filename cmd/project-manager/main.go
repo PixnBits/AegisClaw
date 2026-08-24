@@ -94,78 +94,45 @@ func getPMPrompt() string {
 }
 
 func getPMChannelPrompt() string {
-	return `Role: Project Manager in a Slack-style channel.
+	return `You coordinate this channel.
 
 Always produce output. First line MUST be PASS or SPEAK. PASS is the default. SPEAK is exceptional.
 
-You MUST SPEAK if you are @mentioned as Project Manager / PM, a human posted a new product or security goal that still needs owners, work is blocked with no next step, or Court escalation is missing.
+You MUST SPEAK if you are @mentioned as Project Manager / PM, a human posted a new goal that still needs owners, work is blocked with no next step, or a required fact is missing and nobody has asked for it.
 
-PASS when specialists are debating CSS, tests, or implementation and nobody is stuck; when you would only agree, thank, recap, or keep the discussion going; when a plan and owners already exist; when you would only say a task is still pending or that no new work was posted; when the new messages are only your own plan or system status; when the request is social or off-topic (birthday, thanks, chit-chat).
-Never @mention yourself. Never post the same pending-status sentence twice.
+PASS when specialists are doing their jobs and nobody is stuck; when you would only agree, thank, recap, quote someone, or keep the discussion going; when a plan and owners already exist; when the new messages are only your own plan or system status; when the request is social or thanks.
+Never @mention yourself. Never post the same status sentence twice.
 
-If SPEAK: 1-3 short sentences about THIS thread only (owners, next step, or Court escalate). Never echo these instructions. Never recap. Never mention isolation internals.
-Never copy example topics. Do not mention OAuth, IdP, egress, or Court unless those words appear in the new messages.
+If SPEAK: 1-3 short sentences about THIS thread only (owners, next step, or escalate). Never echo these instructions. Never recap. Never quote a specialist back to them. If they ask for a fact the user never gave (repo, path, which system), say it is missing — do not invent it. Never mention isolation internals.
 If PASS: output only PASS.
 
 Examples:
-New messages: "Coder: I'll bump the button padding 2px." / "Tester: I'll re-snapshot."
+New messages: "Coder: I'll take the assignment." / "Tester: I'll verify once there is a path."
 PASS
 
-New messages: "@ProjectManager are we done with the login padding?"
+New messages: "@ProjectManager are we done?"
 SPEAK
-Yes — Coder and Tester still own the 2px padding. No new work from me.
+Owners still have it. No new work from me.
 
-New messages: "User: thanks" / "Tester: traces clean"
+New messages: "User: thanks"
 PASS
 
-New messages: "system: status: turns delivered to [project-manager]" / "project-manager: Plan for #main: @Coder padding."
-PASS
-
-New messages: "User: I would like to plan a birthday party for a seven year old."
+New messages: "system: status: turns delivered to [project-manager]" / "project-manager: Plan for #main: @Coder."
 PASS
 `
 }
 
 func getPMPlanPrompt() string {
-	return `Role: Project Manager. Task: write the plan that will be posted in the channel.
+	return `Write the plan that will be posted in the channel.
 
 Rules:
 - Output ONLY the plan (2-6 short lines). No preamble, no role-play.
 - Never repeat or paraphrase these instructions.
 - Never write SPEAK, PASS, VOTE, or NO_REPLY.
 - Never mention isolation internals, microVMs, or how the orchestrator works.
-- CSS/copy/padding: assign Coder + Tester. Do not invite Court.
-- Leaked secrets/keys/tokens: say rotate and scrub; involve CISO. Do not keep using the secret. Do not debug with the leaked value.
-- Blocked egress / IdP / allowlists: next step is a Court proposal. Do not keep coding around it.
-- Birthday parties, thanks, and social requests: one brief human reply. Do not invite Court or engineering roles.
-
-Examples:
-Goal: The login button padding is 2px off. CSS only.
-Plan:
-- @Coder: tweak login-button padding.
-- @Tester: visual check.
-- No Court.
-
-Goal: I pasted a live API key in the channel. Can we keep using it?
-Plan:
-- Treat the key as compromised. Rotate it now.
-- @CISO: confirm rotation and log scrub.
-- Do not keep using the leaked key.
-
-Goal: Plan a birthday party for a seven-year-old.
-Plan:
-- Pick a date, place, and a simple theme with the user.
-- List guests, food, and one activity.
-- No Court; this is not a product change.
-
-Goal: Thanks, that looks good.
-Plan:
-- Glad it is on track. Ping me if a new goal or blocker shows up.
-
-Goal: We are stuck. OAuth is ready but egress to accounts.google.com is denied.
-Plan:
-- Pause more coding.
-- File a Court proposal for IdP egress.
+- Assign only the roles this goal actually needs, using @mentions. Do not invite extra roles.
+- If a required fact is missing (repo, file path, which system), say so. Tell anyone you assign to ask before changing files. Do not claim work is done.
+- If the ask is social or thanks, reply as a human. Do not assign engineering roles or Court.
 `
 }
 
@@ -259,26 +226,11 @@ func extractRolesFromText(text string) []string {
 	return roles
 }
 
-func generatePlan(input, chID string) string {
-	lower := strings.ToLower(input)
-	prefix := "Plan for #" + chID + ":\n"
-	if strings.Contains(lower, "birthday") || strings.Contains(lower, "thanks") || strings.Contains(lower, "thank you") {
-		return prefix + "- Work it out with the user if they still want help.\n- No engineering roles and no Court.\n"
-	}
-	if strings.Contains(lower, "css") || strings.Contains(lower, "padding") || strings.Contains(lower, "tooltip") {
-		return prefix + "- @Coder: make the CSS/copy/padding change.\n- @Tester: visual check.\n- No Court.\n"
-	}
-	if strings.Contains(lower, "secret") || strings.Contains(lower, "api key") || strings.Contains(lower, "sk-live") || strings.Contains(lower, "credential") {
-		return prefix + "- Treat the secret as compromised. Rotate it now.\n- @CISO: confirm rotation and log scrub.\n- Do not keep using the leaked key.\n"
-	}
-	plan := prefix + "- @Coder implements; @Tester validates if this is a product change.\n- Delegate in-channel with @mentions.\n- Court only for security, isolation, or architecture changes.\n"
-	if strings.Contains(lower, "feature") || strings.Contains(lower, "code") || strings.Contains(lower, "implement") {
-		plan += "- Coder implements; Tester validates.\n"
-	}
-	if strings.Contains(lower, "test") || strings.Contains(lower, "validate") {
-		plan += "- Tester owns coverage and edge cases.\n"
-	}
-	return plan
+func generatePlan(_, chID string) string {
+	return "Plan for #" + chID + ":\n" +
+		"- Restate the goal and the next concrete step.\n" +
+		"- Assign roles with @mentions only if this is real work. If a required fact is missing (repo, path, which system), say so — do not claim the work is done.\n" +
+		"- Social or thanks: reply as a human. No engineering roles and no Court.\n"
 }
 
 func looksLikePromptEcho(s string) bool {
@@ -357,6 +309,9 @@ func looksLikeEmptyPMAck(s string) bool {
 		"still pending",
 		"no new work has been posted",
 		"no new work from me",
+		"can you provide the repository",
+		"can you provide the specific repository",
+		"i need to understand the specific codebase",
 	} {
 		if strings.Contains(lower, n) {
 			return true
@@ -464,7 +419,7 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 		plan = fallback
 	} else {
 		plan = sanitizePMPost(llmPlan, fallback)
-		log.Printf("PM: LLM plan gen succeeded (model=%s, chars=%d)", bootargs.DefaultModel(agent.DefaultLLMModel), len(plan))
+		log.Printf("PM: LLM plan gen succeeded (model=%s, chars=%d)", bootargs.PMModel(agent.DefaultPMModel), len(plan))
 	}
 	postMsg := hubclient.Message{
 		Source:      uniqueSource,
@@ -729,7 +684,7 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 	timing.RecordPhase("register_complete")
 	timing.WriteComponentReadySentinel()
 
-	llmModel := bootargs.DefaultModel(agent.DefaultLLMModel)
+	llmModel := bootargs.PMModel(agent.DefaultPMModel)
 	realLLM := loop.NewRealLLMCaller(hcl, llmModel)
 
 	timing.RecordPhase("message_loop_ready")

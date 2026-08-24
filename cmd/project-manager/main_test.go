@@ -47,11 +47,14 @@ func TestExtractRolesFromTextDoesNotSpawnCourtOnNoCourt(t *testing.T) {
 	if len(css) != 2 || css[0] != "coder" || css[1] != "tester" {
 		t.Fatalf("CSS No Court plan should ensure coder+tester only, got %v", css)
 	}
-	if roles := extractRolesFromText(generatePlan("The login button padding is 2px off. CSS only.", "main")); len(roles) != 2 {
-		t.Fatalf("CSS fallback must not ensure CISO/Court, got %v", roles)
-	}
-	if roles := extractRolesFromText(generatePlan("I would like to plan a birthday party for a seven year old.", "main")); len(roles) != 0 {
-		t.Fatalf("birthday must not ensure engineering roles, got %v", roles)
+	for _, goal := range []string{
+		"The login button padding is 2px off. CSS only.",
+		"I would like to plan a birthday party for a seven year old.",
+		"OAuth callback is ready but egress to accounts.google.com is denied.",
+	} {
+		if roles := extractRolesFromText(generatePlan(goal, "main")); len(roles) != 0 {
+			t.Fatalf("keyword fallback must not assign roles for %q, got %v", goal, roles)
+		}
 	}
 	secret := extractRolesFromText("- Treat the key as compromised. Rotate it now.\n- @CISO: confirm rotation and log scrub.")
 	if len(secret) != 1 || secret[0] != "ciso" {
@@ -169,6 +172,9 @@ func TestSanitizePMChannelReplyDropsEmptyAck(t *testing.T) {
 	if _, skip := sanitizePMChannelReply("SPEAK\n@ProjectManager - the login padding task is still pending; Coder and Tester own it, but no new work has been posted."); !skip {
 		t.Fatal("repeating still-pending recap must not post")
 	}
+	if _, skip := sanitizePMChannelReply("SPEAK\n@ciso-egress-r2 I need to understand the specific codebase or file paths. @ProjectManager, can you provide the repository or file locations?"); !skip {
+		t.Fatal("quoting a specialist path-ask back at them must not post")
+	}
 	content, skip := sanitizePMChannelReply("SPEAK\nYes — Coder and Tester still own the 2px padding.")
 	if skip || !strings.Contains(content, "Coder") {
 		t.Fatalf("real @mention reply must post, got skip=%v content=%q", skip, content)
@@ -267,16 +273,21 @@ func TestPMDoesNotPostMonitoringOnPeerChannelPost(t *testing.T) {
 	}
 }
 
-func TestGeneratePlanDoesNotInviteCourtForCSSOrBirthday(t *testing.T) {
+func TestGeneratePlanIsTopicAgnostic(t *testing.T) {
 	css := generatePlan("The login button padding is 2px off. Please tweak CSS only.", "main")
-	if !strings.Contains(css, "@Coder") || !strings.Contains(css, "No Court") {
-		t.Fatalf("CSS fallback plan: %s", css)
+	bday := generatePlan("I would like to plan a birthday party for a to-be seven year old boy.", "main")
+	egress := generatePlan("We are stuck. OAuth callback is ready but egress to accounts.google.com is denied.", "main")
+	if css != bday || css != egress {
+		t.Fatalf("fallback must not switchboard on topic, css=%q bday=%q egress=%q", css, bday, egress)
 	}
-	if strings.Contains(css, "You are the Project Manager") {
+	if strings.Contains(css, "You are the Project Manager") || strings.Contains(css, "PASS") {
 		t.Fatalf("fallback must not dump system prompt: %s", css)
 	}
-	bday := generatePlan("I would like to plan a birthday party for a to-be seven year old boy.", "main")
-	if strings.Contains(strings.ToLower(bday), "@coder") || strings.Contains(strings.ToLower(bday), "@ciso") {
-		t.Fatalf("birthday fallback must not assign engineering roles: %s", bday)
+	if !strings.Contains(css, "main") {
+		t.Fatalf("plan should mention the channel, got: %s", css)
+	}
+	lower := strings.ToLower(css)
+	if strings.Contains(lower, "@coder") || strings.Contains(lower, "@ciso") || strings.Contains(lower, "@tester") {
+		t.Fatalf("generic fallback must not assign roles, got: %s", css)
 	}
 }
