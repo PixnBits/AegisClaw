@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestMentionedProseIfDropped(t *testing.T) {
+	if got := mentionedProseIfDropped("PASS"); got != "" {
+		t.Fatalf("PASS must stay silent, got %q", got)
+	}
+	if got := mentionedProseIfDropped("I'll bump the button padding 2px."); got == "" {
+		t.Fatal("bare assignment ack must post when @mentioned")
+	}
+}
+
 func TestAgentSkillIndex_ListSkills(t *testing.T) {
 	idx := NewAgentSkillIndex()
 	skills := idx.ListSkills()

@@ -184,8 +184,12 @@ func PrewarmPooledRootfsCopies(stateDir, templateRootfs string, count int, prefi
 	created := 0
 	for i := 0; i < count; i++ {
 		dst := filepath.Join(stateDir, fmt.Sprintf("%s-pooled-%d.rootfs.img", prefix, i))
-		if _, err := os.Stat(dst); err == nil {
-			continue // already have one
+		if st, err := os.Stat(dst); err == nil {
+			tmpl, terr := os.Stat(templateRootfs)
+			if terr == nil && !tmpl.ModTime().After(st.ModTime()) {
+				continue // existing copy is at least as new as the template
+			}
+			_ = os.Remove(dst)
 		}
 		if err := copyFileFast(templateRootfs, dst); err != nil {
 			logrus.Warnf("Prewarm pooled copy %d failed: %v", i, err)

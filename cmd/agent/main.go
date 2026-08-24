@@ -329,6 +329,26 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 	return true
 }
 
+// mentionedProseIfDropped keeps a mention reply that forgot the SPEAK token.
+// PASS-only output stays silent.
+func mentionedProseIfDropped(raw string) string {
+	s := collab.StripThinkTags(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	first := strings.ToUpper(strings.TrimSpace(strings.Split(s, "\n")[0]))
+	first = strings.Trim(first, "`*_ ")
+	first = strings.TrimRight(first, ".!:")
+	switch first {
+	case "PASS", "NO_REPLY", "NOREPLY", "SILENT", "SKIP":
+		return ""
+	}
+	if strings.HasPrefix(first, "PASS:") || strings.HasPrefix(first, "PASS ") {
+		return ""
+	}
+	return s
+}
+
 func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
 	sourceID := client.AssignedID()
 	turn, ok := collab.ParseTurnPayload(msg.Payload)
@@ -351,13 +371,20 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	batchText := collab.FormatTurnMessages(turn.NewMessages)
 	anchorText := collab.FormatAnchorContext(anchorMsgs)
 	roleLabel := collab.AgentRoleLabel(sourceID)
+	if roleLabel == "Agent" {
+		roleLabel = collab.AgentRoleLabel(turn.Recipient)
+	}
 	prompt := customInstructionsPrefix() +
 		"\n\nYou are the " + roleLabel + " in channel " + chID + ". You received a batched channel turn.\n" +
 		"New messages since your last turn:\n" + batchText
 	if anchorText != "" {
 		prompt += "\n\nRelevant prior context (anchors):\n" + anchorText
 	}
+	mentioned := collab.IsMentioned(sourceID, batchText) || collab.IsMentioned(turn.Recipient, batchText)
 	prompt += "\n\nAlways output PASS or SPEAK as the first line. PASS is the default. SPEAK only if you have a new concrete progress update from your role, you are @mentioned, or a question is aimed at you. PASS on social/off-topic requests (birthday parties) and when you would only say there is no issue for your role. If SPEAK, write 1-3 sentences after the first line. If PASS, output only PASS."
+	if mentioned {
+		prompt += "\n\nYou were directly @mentioned. First line MUST be SPEAK. One short sentence owning the assignment is enough. Do not recap the thread."
+	}
 
 	llmReply, err := realLLM(ctx, prompt)
 	if err != nil {
@@ -374,9 +401,29 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 		return
 	}
 	trimmed, decision := collab.ClassifyChannelLLMReply(llmReply)
+	if decision != collab.ChannelDecisionSpeak && mentioned {
+		if body := mentionedProseIfDropped(llmReply); body != "" {
+			trimmed = body
+			decision = collab.ChannelDecisionSpeak
+			collab.Tracef(sourceID, "channel.turn.mention.prose", "ch=%s len=%d", chID, len(trimmed))
+		} else if retry, rerr := realLLM(ctx, prompt+"\n\nRETRY: You were @mentioned. PASS is not allowed. First line MUST be SPEAK followed by one sentence owning the assignment."); rerr == nil {
+			trimmed, decision = collab.ClassifyChannelLLMReply(retry)
+			if decision != collab.ChannelDecisionSpeak {
+				if body := mentionedProseIfDropped(retry); body != "" {
+					trimmed = body
+					decision = collab.ChannelDecisionSpeak
+				}
+			}
+		}
+		if decision != collab.ChannelDecisionSpeak {
+			trimmed = "I'll take that from the " + roleLabel + " side."
+			decision = collab.ChannelDecisionSpeak
+			collab.Tracef(sourceID, "channel.turn.mention.fallback", "ch=%s", chID)
+		}
+	}
 	if decision != collab.ChannelDecisionSpeak {
 		log.Printf("agent %s: channel.turn chose not to reply in %s (%s)", sourceID, chID, decision)
-		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s decision=%s", chID, decision)
+		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s decision=%s mention=%v", chID, decision, mentioned)
 		// Report NO_REPLY explicitly so UI can show "NO_REPLY" (not error) per spec §8.4.
 		_, _ = client.Send(ctx, hubclient.Message{
 			Source:      sourceID,

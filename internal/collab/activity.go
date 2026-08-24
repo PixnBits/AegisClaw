@@ -6,12 +6,12 @@ import "strings"
 type ResponseReason string
 
 const (
-	ReasonSelfPost     ResponseReason = "self_post"
-	ReasonDelivered    ResponseReason = "delivered" // activity delivered; agent decides whether/how to reply
-	ReasonBroadcast    ResponseReason = "broadcast" // hint for agent prompts only (not a system gate)
-	ReasonMention      ResponseReason = "mention"     // hint for agent prompts only (not a system gate)
-	ReasonUserMonitor  ResponseReason = "user_monitor"
-	ReasonNoMatch      ResponseReason = "no_match"
+	ReasonSelfPost    ResponseReason = "self_post"
+	ReasonDelivered   ResponseReason = "delivered" // activity delivered; agent decides whether/how to reply
+	ReasonBroadcast   ResponseReason = "broadcast" // hint for agent prompts only (not a system gate)
+	ReasonMention     ResponseReason = "mention"   // hint for agent prompts only (not a system gate)
+	ReasonUserMonitor ResponseReason = "user_monitor"
+	ReasonNoMatch     ResponseReason = "no_match"
 )
 
 // IsSelfPost reports whether the activity was authored by the receiving member.
@@ -103,6 +103,14 @@ func IsMentioned(memberSourceID, content string) bool {
 	}
 	if memberSourceID == "project-manager" || strings.HasPrefix(memberSourceID, "project-manager") {
 		candidates = append(candidates, "@projectmanager", "@project-manager", "@project manager", "project manager")
+	}
+	switch AgentRoleLabel(memberSourceID) {
+	case "Senior Coder":
+		candidates = append(candidates, "@coder", "@senior coder", "@senior-coder", "@seniorcoder")
+	case "Tester":
+		candidates = append(candidates, "@tester")
+	case "Architect":
+		candidates = append(candidates, "@architect")
 	}
 	for _, c := range candidates {
 		if c != "" && strings.Contains(lower, c) {

@@ -46,6 +46,22 @@ func TestShouldNotRespondToSelf(t *testing.T) {
 	}
 }
 
+func TestIsMentionedOnDemandCoderAndTester(t *testing.T) {
+	plan := "Plan for #tune-css-1:\n- @Coder: make the CSS/copy/padding change.\n- @Tester: visual check.\n- No Court."
+	if !IsMentioned("coder", plan) {
+		t.Fatal("turn recipient role coder must match @Coder in a PM plan")
+	}
+	if !IsMentioned("coder-tune-css-1", plan) {
+		t.Fatal("on-demand coder must match @Coder in a PM plan")
+	}
+	if !IsMentioned("tester-tune-css-1", plan) {
+		t.Fatal("on-demand tester must match @Tester in a PM plan")
+	}
+	if IsMentioned("coder-tune-css-1", "User: birthday party, no engineering.") {
+		t.Fatal("coder must not count as mentioned without @Coder")
+	}
+}
+
 func TestActivityHints(t *testing.T) {
 	b, m := ActivityHints("court-persona-ciso", "hey @court-persona-ciso")
 	if !m {
