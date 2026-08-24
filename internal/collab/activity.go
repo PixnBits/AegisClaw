@@ -108,7 +108,6 @@ func IsMentioned(memberSourceID, content string) bool {
 	lower := strings.ToLower(content)
 	candidates := []string{
 		"@" + strings.ToLower(memberSourceID),
-		strings.ToLower(memberSourceID),
 	}
 	if slug := PersonaSlugFromSource(memberSourceID); slug != "" {
 		candidates = append(candidates,

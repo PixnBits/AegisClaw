@@ -136,8 +136,7 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 	}
 	allMsgs := channeldata.MessagesSlice(chMap)
 
-	// Deliver (possibly to multiple for fairness/multi) and update state for each.
-	deliveredAny := false
+	var dests []string
 	for _, rec := range recipients {
 		rec = collab.NormalizeMemberRole(rec)
 		if rec == "" {
@@ -147,6 +146,16 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 			collab.Tracef(ComponentID, "turn.skip", "ch=%s recipient=%s reason=self_post", chID, rec)
 			continue
 		}
+		dests = append(dests, rec)
+	}
+	// Start every assigned VM before waiting on hub Register. Sequential
+	// ensure+deliver meant tester did not even boot until coder finished.
+	for _, rec := range dests {
+		_ = f.ensureRole(ctx, rec, chID)
+	}
+
+	deliveredAny := false
+	for _, rec := range dests {
 		recSince := 0
 		for _, m := range members {
 			if channeldata.MemberRole(m) == rec {
@@ -186,7 +195,6 @@ func (f *Facilitator) processUpdate(ctx context.Context, chID string, update map
 		}
 		collab.Tracef(ComponentID, "turn.deliver", "ch=%s recipient=%s since=%d new=%d anchors=%v", chID, rec, recSince, len(recBatch), recAnchors)
 
-		_ = f.ensureRole(ctx, rec, chID)
 		now := time.Now().UTC().Format(time.RFC3339)
 		if err := f.deliverTurn(ctx, chID, rec, recTurn); err != nil {
 			collab.Tracef(ComponentID, "turn.error", "ch=%s recipient=%s err=%v", chID, rec, err)

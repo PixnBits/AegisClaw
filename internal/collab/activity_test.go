@@ -58,6 +58,16 @@ func TestShouldNotRespondToSelf(t *testing.T) {
 	}
 }
 
+func TestIsMentionedDoesNotMatchOwnFromLine(t *testing.T) {
+	batch := "- project-manager-tune-css-10: Plan for #tune-css-10:\n- @Coder: tweak padding.\n- coder-tune-css-10: I'll adjust the login button padding."
+	if IsMentioned("project-manager", batch) || IsMentioned("project-manager-tune-css-10", batch) {
+		t.Fatal("from: project-manager-* in the batch must not count as @ProjectManager")
+	}
+	if !IsMentioned("project-manager", "- user: @ProjectManager are we done?") {
+		t.Fatal("explicit @ProjectManager must still match")
+	}
+}
+
 func TestIsMentionedOnDemandCoderAndTester(t *testing.T) {
 	plan := "Plan for #tune-css-1:\n- @Coder: make the CSS/copy/padding change.\n- @Tester: visual check.\n- No Court."
 	if !IsMentioned("coder", plan) {

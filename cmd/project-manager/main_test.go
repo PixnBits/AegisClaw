@@ -200,6 +200,30 @@ func TestPMTurnSkipsOwnPlanAndSystemStatus(t *testing.T) {
 	}
 }
 
+func TestPMSpecialistProgressDoesNotCallLLM(t *testing.T) {
+	hub := &pmTestHub{}
+	llm := func(context.Context, string) (string, error) {
+		t.Fatal("PM must not recap specialist progress")
+		return "SPEAK\n@Coder owns padding.", nil
+	}
+	msg := hubclient.Message{
+		Source:  "store",
+		Command: "channel.turn",
+		Payload: map[string]interface{}{
+			"channel_id": "tune-css-9",
+			"since_seq":  3,
+			"new_messages": []interface{}{
+				map[string]interface{}{"from": "coder-tune-css-9", "content": "I'll adjust the login button padding to fix the 2px offset issue."},
+			},
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	pmProcessChannelTurn(hub, msg, "project-manager-tune-css-9", llm)
+	if len(hub.posts) != 0 {
+		t.Fatalf("specialist ack must not produce a PM recap, got %v", hub.posts)
+	}
+}
+
 func TestPMSpecialistTurnPASSDoesNotPost(t *testing.T) {
 	hub := &pmTestHub{}
 	llm := func(_ context.Context, _ string) (string, error) {

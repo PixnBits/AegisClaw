@@ -386,6 +386,27 @@ func pmTurnFrom(m map[string]interface{}) string {
 
 // pmBatchIsSelfOrSystem reports batches that must not produce a follow-up PM post
 // (own plan, system status lines, empty). Mentions and other posters still go to the LLM.
+func pmBatchHasHuman(msgs []map[string]interface{}) bool {
+	for _, m := range msgs {
+		if collab.IsHumanPoster(pmTurnFrom(m)) {
+			return true
+		}
+	}
+	return false
+}
+
+func pmBatchLooksBlocked(msgs []map[string]interface{}) bool {
+	for _, m := range msgs {
+		lower := strings.ToLower(collab.PayloadContentString(m["content"]))
+		for _, n := range []string{"stuck", "blocked", "cannot proceed", "denied", "need a court", "need court"} {
+			if strings.Contains(lower, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func pmBatchIsSelfOrSystem(uniqueSource string, msgs []map[string]interface{}) bool {
 	if len(msgs) == 0 {
 		return true
@@ -623,6 +644,10 @@ func pmProcessChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSou
 	}
 
 	mentioned := collab.IsMentioned(uniqueSource, batchText) || collab.IsMentioned("project-manager", batchText)
+	if !mentioned && !pmBatchHasHuman(turn.NewMessages) && !pmBatchLooksBlocked(turn.NewMessages) {
+		collab.Tracef("project-manager", "channel.turn.skip", "ch=%s reason=specialist_progress", chID)
+		return
+	}
 	prompt := getPMChannelPrompt() + "\n\nChannel turn in " + chID + ":\n" + batchText
 	if mentioned {
 		prompt += "\n\nYou were directly @mentioned. First line MUST be SPEAK. One sentence is enough if no new plan is needed."
