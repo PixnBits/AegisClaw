@@ -276,3 +276,48 @@ func TestVerifyWireSignatureSurvivesPayloadRoundTrip(t *testing.T) {
 		t.Fatal("verifySignature should fail after interface{} payload round-trip (regression guard)")
 	}
 }
+
+func TestDeliverPendingRPC_DoesNotStealUnrelatedPush(t *testing.T) {
+	requester := "project-manager-diag"
+	waitCh := registerPendingRPC(requester, "network-boundary", "llm.call")
+	defer clearPendingRPC(requester)
+
+	turn := Message{
+		Source:      "channel-facilitator-out-1",
+		Destination: requester,
+		Command:     "channel.turn",
+	}
+	if deliverPendingRPC(turn) {
+		t.Fatal("channel.turn must not complete an in-flight llm.call waiter")
+	}
+
+	reply := Message{
+		Source:      "network-boundary",
+		Destination: requester,
+		Command:     "llm.call.response",
+		Payload:     map[string]string{"response": "ok"},
+	}
+	if !deliverPendingRPC(reply) {
+		t.Fatal("llm.call.response from network-boundary should complete the waiter")
+	}
+	select {
+	case got := <-waitCh:
+		if got.Command != "llm.call.response" {
+			t.Fatalf("waiter got %s", got.Command)
+		}
+	default:
+		t.Fatal("waiter did not receive llm.call.response")
+	}
+}
+
+func TestIsOneWayHubReply_LLMResponse(t *testing.T) {
+	if !isOneWayHubReply("llm.call.response") {
+		t.Fatal("llm.call.response must be forwarded as a reply, not a new RPC")
+	}
+	if isOneWayHubReply("channel.turn") {
+		t.Fatal("channel.turn is a push RPC, not a one-way reply")
+	}
+	if !isOneWayHubReply("channel.posted") {
+		t.Fatal("channel.posted is a store RPC reply")
+	}
+}

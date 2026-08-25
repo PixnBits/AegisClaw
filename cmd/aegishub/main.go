@@ -29,11 +29,20 @@ var registeredMutex sync.RWMutex
 var tempConnCounter int = 0
 var tempConnMutex sync.Mutex
 
+type pendingWaiter struct {
+	dest    string
+	command string
+	ch      chan Message
+}
+
 // pendingRPC correlates synchronous hub RPC replies (daemon ephemeral → agent/store).
+// Waiters are keyed by requester ID and only complete on a reply from the callee
+// (source == dest). A channel.turn destined at the requester must not complete
+// an in-flight llm.call (that race dropped guest Ollama responses).
 var pendingRPC = struct {
 	sync.Mutex
-	ch map[string]chan Message
-}{ch: make(map[string]chan Message)}
+	ch map[string]*pendingWaiter
+}{ch: make(map[string]*pendingWaiter)}
 
 func isEphemeralHubClient(id string) bool {
 	return id == "aegis-daemon-temp" ||
@@ -42,12 +51,16 @@ func isEphemeralHubClient(id string) bool {
 		strings.HasPrefix(id, "aegis-cli-internal") // CLI hub RPC (one reader loop per process)
 }
 
-func registerPendingRPC(requesterID string) chan Message {
-	ch := make(chan Message, 1)
+func registerPendingRPC(requesterID, dest, command string) chan Message {
+	w := &pendingWaiter{
+		dest:    dest,
+		command: command,
+		ch:      make(chan Message, 1),
+	}
 	pendingRPC.Lock()
-	pendingRPC.ch[requesterID] = ch
+	pendingRPC.ch[requesterID] = w
 	pendingRPC.Unlock()
-	return ch
+	return w.ch
 }
 
 func clearPendingRPC(requesterID string) {
@@ -56,15 +69,21 @@ func clearPendingRPC(requesterID string) {
 	pendingRPC.Unlock()
 }
 
-func deliverPendingRPC(destID string, msg Message) bool {
+func deliverPendingRPC(msg Message) bool {
 	pendingRPC.Lock()
-	ch, ok := pendingRPC.ch[destID]
+	w, ok := pendingRPC.ch[msg.Destination]
 	pendingRPC.Unlock()
-	if !ok {
+	if !ok || w == nil {
+		return false
+	}
+	if w.dest != "" && msg.Source != w.dest && msg.Source != "hub" {
+		return false
+	}
+	if hubclient.IsUnsolicitedCommand(msg.Command) {
 		return false
 	}
 	select {
-	case ch <- msg:
+	case w.ch <- msg:
 		return true
 	default:
 		return false
@@ -571,7 +590,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			// Correlate replies (store channel.*, memory.*, PM response, etc.) with in-flight
 			// hub RPC waiters. Without this, a store reply is mistaken for a new outbound RPC
 			// from store and the original caller (aegis-cli-internal, daemon-internal) hangs.
-			if deliverPendingRPC(msg.Destination, msg) {
+			if deliverPendingRPC(msg) {
 				continue
 			}
 			// One-way replies (agent poll/chat responses) vs synchronous RPC (memory.get_context, llm.call).
@@ -621,10 +640,23 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 // isOneWayHubReply reports commands that are fire-and-forget replies on the wire (hubclient.Reply),
 // not request/response RPC pairs (hubclient.Send).
 func isOneWayHubReply(command string) bool {
+	if hubclient.IsUnsolicitedCommand(command) {
+		return false
+	}
 	if command == "response" || command == "ack" {
 		return true
 	}
-	// Destination component replies like memory.response are inbound to the caller, not outbound from it.
+	// Callee RPC replies. Without this, llm.call.response is treated as a new
+	// outbound RPC from network-boundary and blocks that guest's hub loop.
+	if strings.HasSuffix(command, ".response") {
+		return true
+	}
+	switch command {
+	case "channel.posted", "channel.data", "channel.created", "channel.joined",
+		"channel.archived", "channel.list", "channel.member_added",
+		"memory.context", "memory.response":
+		return true
+	}
 	return false
 }
 
@@ -663,7 +695,7 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 	}
 
 	debugLog("hub", fmt.Sprintf("RPC %s -> %s command %s (awaiting reply)", msg.Source, msg.Destination, msg.Command))
-	waitCh := registerPendingRPC(requesterID)
+	waitCh := registerPendingRPC(requesterID, msg.Destination, msg.Command)
 	defer clearPendingRPC(requesterID)
 
 	destComponent.Encoders.Mutex.Lock()
@@ -703,7 +735,7 @@ func forwardReplyToRequester(msg Message) {
 	if !exists || destComponent.Encoders == nil {
 		return
 	}
-	if deliverPendingRPC(msg.Destination, msg) {
+	if deliverPendingRPC(msg) {
 		// Ephemeral daemon RPC consumed the reply; ack the sender so hubclient.Send
 		// decode does not block and steal the next inbound RPC (e.g. chat.message).
 		registeredMutex.RLock()

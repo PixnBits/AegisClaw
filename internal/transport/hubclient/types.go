@@ -47,6 +47,7 @@ import (
 //   - cmd/aegishub/main.go:34
 //   - cmd/agent/main.go:20
 //   - cmd/memory/main.go:22
+//
 // Any change requires coordinated updates and spec revision.
 //
 // All messages after the initial "register" MUST carry a valid Ed25519 signature
@@ -102,18 +103,18 @@ const (
 // The client maps raw "error" responses to these for fail-closed handling by callers.
 // Callers (agent steps, memory, etc.) must treat any of these as hard failures (no fallback).
 var (
-	ErrInvalidHandshake   = errors.New("ERR_INVALID_HANDSHAKE")
-	ErrInvalidPayload     = errors.New("ERR_INVALID_PAYLOAD")
-	ErrMissingPublicKey   = errors.New("ERR_MISSING_PUBLIC_KEY")
-	ErrInvalidPublicKey   = errors.New("ERR_INVALID_PUBLIC_KEY")
-	ErrDuplicateComponent = errors.New("ERR_DUPLICATE_COMPONENT")
-	ErrUnauthorized       = errors.New("ERR_UNAUTHORIZED")
-	ErrSignatureRequired  = errors.New("ERR_SIGNATURE_REQUIRED")
-	ErrInvalidSignature   = errors.New("ERR_INVALID_SIGNATURE")
-	ErrACLViolation         = errors.New("ERR_ACL_VIOLATION")
-	ErrDestinationNotFound  = errors.New("ERR_DESTINATION_NOT_FOUND")
-	ErrRPCTimeout           = errors.New("ERR_RPC_TIMEOUT")
-	ErrUnknown              = errors.New("ERR_UNKNOWN")
+	ErrInvalidHandshake    = errors.New("ERR_INVALID_HANDSHAKE")
+	ErrInvalidPayload      = errors.New("ERR_INVALID_PAYLOAD")
+	ErrMissingPublicKey    = errors.New("ERR_MISSING_PUBLIC_KEY")
+	ErrInvalidPublicKey    = errors.New("ERR_INVALID_PUBLIC_KEY")
+	ErrDuplicateComponent  = errors.New("ERR_DUPLICATE_COMPONENT")
+	ErrUnauthorized        = errors.New("ERR_UNAUTHORIZED")
+	ErrSignatureRequired   = errors.New("ERR_SIGNATURE_REQUIRED")
+	ErrInvalidSignature    = errors.New("ERR_INVALID_SIGNATURE")
+	ErrACLViolation        = errors.New("ERR_ACL_VIOLATION")
+	ErrDestinationNotFound = errors.New("ERR_DESTINATION_NOT_FOUND")
+	ErrRPCTimeout          = errors.New("ERR_RPC_TIMEOUT")
+	ErrUnknown             = errors.New("ERR_UNKNOWN")
 )
 
 // RegisterResponse is returned after a successful "register" handshake (aegishub.md §Handshake Sequence).
@@ -141,7 +142,9 @@ type Client interface {
 	// After Register succeeds, all further Send calls will use the AssignedID as Source if not already set.
 	Register(ctx context.Context, componentID string, pub ed25519.PublicKey, version string) (*RegisterResponse, error)
 
-	// Send sends one signed message and blocks until a response or error is received (or ctx done).
+	// Send sends one signed message and blocks until a matching RPC reply or error
+	// is received (or ctx done). Unsolicited inbound frames (channel.turn, user.goal,
+	// …) are queued for Receive instead of being returned as the reply.
 	// The caller populates Source (usually the AssignedID), Destination, Command, Payload, Timestamp.
 	// This method fills in the Signature using the private key captured at Dial time.
 	// Returns the hub's reply (which may itself be an error response — check Command == "error").
@@ -181,8 +184,9 @@ type Client interface {
 type dialer func() (net.Conn, error)
 
 // client is the concrete implementation of Client.
-// It is not safe for concurrent Send from multiple goroutines unless externally synchronized
-// (callers such as the agent loop are expected to be single-threaded per turn or use their own locking).
+// Send is serialized internally. Nested Send from a Receive handler is supported:
+// unsolicited inbound frames are queued for Receive instead of being returned as
+// the RPC reply (see ensurePump).
 type client struct {
 	conn       net.Conn
 	enc        *json.Encoder
@@ -191,6 +195,18 @@ type client struct {
 	priv       ed25519.PrivateKey // captured at Dial; caller MUST zero their original copy immediately after Dial
 	assignedID string
 	isVsock    bool
+
+	mu       sync.Mutex
+	cond     *sync.Cond
+	inbox    []Message
+	rpcCmd   string
+	rpcCh    chan Message
+	readErr  error
+	closed   bool
+	pumpOnce sync.Once
+	sendMu   sync.Mutex
+	dead     chan struct{}
+	deadOnce sync.Once
 }
 
 // signMessage signs the message in place using the same canonical logic as cmd/agent/main.go:68
@@ -237,6 +253,53 @@ func mapHubError(errStr string) error {
 		}
 		return ErrUnknown
 	}
+}
+
+// IsUnsolicitedCommand reports hub pushes that must never complete hubclient.Send.
+// Nested llm.call from a long-lived Receive loop (PM, Court, agent) races with
+// channel.turn / user.goal delivered on the same connection.
+func IsUnsolicitedCommand(command string) bool {
+	switch command {
+	case "channel.turn", "channel.activity", "channel.member_notify",
+		"channel.updated", "channel.relay_activity",
+		"user.goal", "user.turn", "chat.message",
+		"version", "get-version",
+		"permission.snapshot", "permission.granted", "permission.revoked", "visibility.set":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsRPCReply reports whether msg can complete an in-flight Send for requestCommand.
+func IsRPCReply(requestCommand string, msg Message) bool {
+	if msg.Command == "ack" || IsUnsolicitedCommand(msg.Command) {
+		return false
+	}
+	if requestCommand == "" {
+		return true
+	}
+	if msg.Command == "error" || msg.Command == "response" {
+		return true
+	}
+	if msg.Command == requestCommand+".response" {
+		return true
+	}
+	switch requestCommand {
+	case "memory.get_context":
+		return msg.Command == "memory.context" || msg.Command == "memory.response"
+	case "channel.post":
+		return msg.Command == "channel.posted"
+	case "channel.get":
+		return msg.Command == "channel.data"
+	case "channel.get_relevant_since":
+		return msg.Command == "channel.get_relevant_since.data"
+	case "channel.add_member":
+		return msg.Command == "channel.member_added" || msg.Command == "channel.joined"
+	}
+	// Store/memory often echo a related command (channel.posted, channel.created, …)
+	// rather than "{cmd}.response". Any non-push frame is the legacy Send contract.
+	return true
 }
 
 // DialUnix creates a new Client connected to AegisHub over a Unix domain socket (dev / host components).
@@ -332,7 +395,9 @@ func newClientFromConn(conn net.Conn, priv ed25519.PrivateKey, isVsock bool) (Cl
 		dec:     json.NewDecoder(conn),
 		priv:    make([]byte, ed25519.PrivateKeySize),
 		isVsock: isVsock,
+		dead:    make(chan struct{}),
 	}
+	c.cond = sync.NewCond(&c.mu)
 	copy(c.priv, priv)
 	return c, nil
 }
@@ -412,7 +477,7 @@ func (c *client) Register(ctx context.Context, componentID string, pub ed25519.P
 }
 
 // Send implements Client.Send. It signs the message (unless it is a register, which should not come here)
-// and performs a request/reply exchange.
+// and performs a request/reply exchange. Unsolicited inbound frames are queued for Receive.
 func (c *client) Send(ctx context.Context, msg Message) (Message, error) {
 	if c.assignedID == "" {
 		// Enforce that Register happened first (paranoid, matches hub handshake requirement)
@@ -422,24 +487,40 @@ func (c *client) Send(ctx context.Context, msg Message) (Message, error) {
 		return Message{}, errors.New("hubclient: client closed or key material cleared")
 	}
 
-	// Ensure the message is signed with our captured private key
-	signMessage(&msg, c.priv)
+	c.ensurePump()
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 
+	rpcCh := make(chan Message, 1)
+	c.mu.Lock()
+	if c.closed || c.readErr != nil {
+		err := c.readErr
+		c.mu.Unlock()
+		if err == nil {
+			err = errors.New("hubclient: connection closed")
+		}
+		return Message{}, err
+	}
+	c.rpcCmd = msg.Command
+	c.rpcCh = rpcCh
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.rpcCh = nil
+		c.rpcCmd = ""
+		c.mu.Unlock()
+	}()
+
+	signMessage(&msg, c.priv)
 	if err := c.sendRaw(ctx, msg); err != nil {
 		return Message{}, err
 	}
 
-	for {
-		var resp Message
-		if err := c.decodeWithCtx(ctx, &resp); err != nil {
-			return Message{}, err
+	select {
+	case resp, ok := <-rpcCh:
+		if !ok {
+			return Message{}, errors.New("hubclient: connection closed")
 		}
-
-		// Hub ack after a one-way Reply was delivered; not the RPC response we are waiting for.
-		if resp.Command == "ack" {
-			continue
-		}
-
 		if resp.Command == "error" {
 			if p, ok := resp.Payload.(map[string]interface{}); ok {
 				if es, ok := p["error"].(string); ok {
@@ -451,8 +532,17 @@ func (c *client) Send(ctx context.Context, msg Message) (Message, error) {
 			}
 			return resp, ErrUnknown
 		}
-
 		return resp, nil
+	case <-c.dead:
+		c.mu.Lock()
+		err := c.readErr
+		c.mu.Unlock()
+		if err == nil {
+			err = errors.New("hubclient: connection closed")
+		}
+		return Message{}, err
+	case <-ctx.Done():
+		return Message{}, ctx.Err()
 	}
 }
 
@@ -504,17 +594,122 @@ func (c *client) decodeWithCtx(ctx context.Context, v interface{}) error {
 	}
 }
 
+func (c *client) ensurePump() {
+	if c.cond == nil {
+		c.mu.Lock()
+		if c.cond == nil {
+			c.cond = sync.NewCond(&c.mu)
+		}
+		if c.dead == nil {
+			c.dead = make(chan struct{})
+		}
+		c.mu.Unlock()
+	}
+	c.pumpOnce.Do(func() {
+		go c.readPump()
+	})
+}
+
+func (c *client) markDead(err error) {
+	c.mu.Lock()
+	if c.readErr == nil {
+		c.readErr = err
+	}
+	c.closed = true
+	if c.cond != nil {
+		c.cond.Broadcast()
+	}
+	c.mu.Unlock()
+	c.deadOnce.Do(func() {
+		if c.dead != nil {
+			close(c.dead)
+		}
+	})
+}
+
+func (c *client) dispatch(msg Message) {
+	if msg.Command == "ack" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rpcCh != nil && IsRPCReply(c.rpcCmd, msg) {
+		select {
+		case c.rpcCh <- msg:
+			return
+		default:
+		}
+	}
+	c.inbox = append(c.inbox, msg)
+	if c.cond != nil {
+		c.cond.Broadcast()
+	}
+}
+
+func (c *client) readPump() {
+	for {
+		var msg Message
+		c.decMu.Lock()
+		err := c.dec.Decode(&msg)
+		c.decMu.Unlock()
+		if err != nil {
+			c.markDead(err)
+			return
+		}
+		c.dispatch(msg)
+	}
+}
+
+func (c *client) popInboxLocked() (Message, bool) {
+	if len(c.inbox) == 0 {
+		return Message{}, false
+	}
+	msg := c.inbox[0]
+	c.inbox = c.inbox[1:]
+	return msg, true
+}
+
 // Receive implements Client.Receive for long-lived components.
 func (c *client) Receive(ctx context.Context) (Message, error) {
 	if c.conn == nil {
 		return Message{}, errors.New("hubclient: connection closed")
 	}
+	c.ensurePump()
 
-	var msg Message
-	if err := c.decodeWithCtx(ctx, &msg); err != nil {
-		return Message{}, err
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.mu.Lock()
+			if c.cond != nil {
+				c.cond.Broadcast()
+			}
+			c.mu.Unlock()
+		case <-stop:
+		}
+	}()
+
+	c.mu.Lock()
+	for {
+		if msg, ok := c.popInboxLocked(); ok {
+			c.mu.Unlock()
+			return msg, nil
+		}
+		if c.readErr != nil || c.closed {
+			err := c.readErr
+			c.mu.Unlock()
+			if err == nil {
+				err = errors.New("hubclient: connection closed")
+			}
+			return Message{}, err
+		}
+		if ctx.Err() != nil {
+			c.mu.Unlock()
+			return Message{}, ctx.Err()
+		}
+		c.cond.Wait()
 	}
-	return msg, nil
 }
 
 func (c *client) TryReceive(ctx context.Context, timeout time.Duration) (Message, bool, error) {
@@ -524,18 +719,11 @@ func (c *client) TryReceive(ctx context.Context, timeout time.Duration) (Message
 	if timeout <= 0 {
 		timeout = 50 * time.Millisecond
 	}
-	deadline := time.Now().Add(timeout)
-	if err := c.conn.SetReadDeadline(deadline); err != nil {
-		return Message{}, false, err
-	}
-	defer c.conn.SetReadDeadline(time.Time{}) //nolint:errcheck
-
-	var msg Message
-	c.decMu.Lock()
-	err := c.dec.Decode(&msg)
-	c.decMu.Unlock()
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	msg, err := c.Receive(waitCtx)
 	if err != nil {
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return Message{}, false, nil
 		}
 		return Message{}, false, err
@@ -546,10 +734,15 @@ func (c *client) TryReceive(ctx context.Context, timeout time.Duration) (Message
 // Close implements Client.Close. It also attempts best-effort zeroization of the private key material
 // held by the client (defense in depth).
 func (c *client) Close() error {
-	if c.conn != nil {
-		_ = c.conn.Close()
-		c.conn = nil
+	c.mu.Lock()
+	c.closed = true
+	conn := c.conn
+	c.conn = nil
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
 	}
+	c.markDead(errors.New("hubclient: connection closed"))
 	// Zero the captured private key bytes
 	for i := range c.priv {
 		c.priv[i] = 0

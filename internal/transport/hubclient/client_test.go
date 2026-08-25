@@ -213,6 +213,122 @@ func TestVsockDial_GracefulFailure_NoRealListener(t *testing.T) {
 	ZeroPrivateKey(priv)
 }
 
+func TestIsRPCReply_UnsolicitedNeverMatches(t *testing.T) {
+	if IsRPCReply("llm.call", Message{Command: "channel.turn"}) {
+		t.Fatal("channel.turn must not complete llm.call")
+	}
+	if IsRPCReply("llm.call", Message{Command: "user.goal"}) {
+		t.Fatal("user.goal must not complete llm.call")
+	}
+	if !IsRPCReply("llm.call", Message{Command: "llm.call.response"}) {
+		t.Fatal("llm.call.response should complete llm.call")
+	}
+	if !IsRPCReply("memory.get_context", Message{Command: "memory.context"}) {
+		t.Fatal("memory.context should complete memory.get_context")
+	}
+	if !IsRPCReply("channel.post", Message{Command: "channel.posted"}) {
+		t.Fatal("channel.posted should complete channel.post")
+	}
+	if IsRPCReply("channel.post", Message{Command: "ack"}) {
+		t.Fatal("ack is not an RPC reply")
+	}
+}
+
+func TestSend_InboxesUnsolicitedWhileAwaitingRPC(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientConn, hubConn := net.Pipe()
+	c, err := newClientFromConn(clientConn, priv, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	defer hubConn.Close()
+
+	go func() {
+		hubDec := json.NewDecoder(hubConn)
+		hubEnc := json.NewEncoder(hubConn)
+
+		var reg Message
+		if err := hubDec.Decode(&reg); err != nil {
+			t.Logf("hub sim decode reg: %v", err)
+			return
+		}
+		_ = hubEnc.Encode(map[string]interface{}{
+			"status":      "registered",
+			"assigned_id": "pm-test",
+			"acls":        []interface{}{},
+		})
+
+		var call Message
+		if err := hubDec.Decode(&call); err != nil {
+			t.Logf("hub sim decode call: %v", err)
+			return
+		}
+		if call.Command != "llm.call" {
+			t.Logf("hub sim unexpected command %s", call.Command)
+			return
+		}
+		// Unsolicited turn arrives before the RPC reply — this is the guest-LLM race.
+		_ = hubEnc.Encode(Message{
+			Source:      "channel-facilitator",
+			Destination: "pm-test",
+			Command:     "channel.turn",
+			Payload:     map[string]string{"channel_id": "diag"},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
+		_ = hubEnc.Encode(Message{
+			Source:      "network-boundary",
+			Destination: "pm-test",
+			Command:     "llm.call.response",
+			Payload:     map[string]string{"response": "plan ok"},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if _, err := c.Register(ctx, "pm-test", pub, "test"); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	gotTurn := make(chan Message, 1)
+	go func() {
+		m, err := c.Receive(ctx)
+		if err != nil {
+			t.Logf("Receive: %v", err)
+			return
+		}
+		gotTurn <- m
+	}()
+
+	reply, err := c.Send(ctx, Message{
+		Source:      c.AssignedID(),
+		Destination: "network-boundary",
+		Command:     "llm.call",
+		Payload:     map[string]string{"prompt": "ping"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if reply.Command != "llm.call.response" {
+		t.Fatalf("Send returned %q, want llm.call.response (unsolicited turn stole the RPC)", reply.Command)
+	}
+
+	select {
+	case m := <-gotTurn:
+		if m.Command != "channel.turn" {
+			t.Fatalf("Receive got %q, want channel.turn", m.Command)
+		}
+	case <-ctx.Done():
+		t.Fatal("Receive did not observe inboxed channel.turn")
+	}
+}
+
 func TestZeroPrivateKey(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	original := make([]byte, len(priv))
