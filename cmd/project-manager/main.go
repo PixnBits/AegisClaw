@@ -420,17 +420,9 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 	}
 	fallback := generatePlan(goal, chID)
 	planPrompt := getPMPlanPrompt() + "\n\nUser goal: " + goal + "\n\nChannel: " + chID + "\n\nPlan:"
-	var llmPlan string
-	var err error
-	for attempt := 1; attempt <= 2; attempt++ {
-		llmPlan, err = realLLM(context.Background(), planPrompt)
-		if err == nil && strings.TrimSpace(llmPlan) != "" {
-			break
-		}
-		log.Printf("PM: LLM plan gen attempt %d failed (%v)", attempt, err)
-	}
+	llmPlan, err := realLLM(context.Background(), planPrompt)
 	if err != nil || strings.TrimSpace(llmPlan) == "" {
-		log.Printf("PM: LLM plan gen failed, using honest fallback")
+		log.Printf("PM: LLM plan gen failed (%v), using honest fallback", err)
 		plan = fallback
 	} else {
 		plan = sanitizePMPost(llmPlan, fallback)
@@ -706,6 +698,20 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 
 	llmModel := bootargs.PMModel(agent.DefaultPMModel)
 	realLLM := loop.NewRealLLMCaller(hcl, llmModel)
+	if llmModel != agent.DefaultLLMModel {
+		// Guest vsock/Ollama may fail a second model while the system default
+		// (already used by Court) still works. Retry is logged, not silent.
+		fallbackCaller := loop.NewRealLLMCaller(hcl, agent.DefaultLLMModel)
+		primary := realLLM
+		realLLM = func(ctx context.Context, prompt string) (string, error) {
+			text, err := primary(ctx, prompt)
+			if err == nil && strings.TrimSpace(text) != "" {
+				return text, nil
+			}
+			log.Printf("PM: model %s failed (%v); retrying %s", llmModel, err, agent.DefaultLLMModel)
+			return fallbackCaller(ctx, prompt)
+		}
+	}
 
 	timing.RecordPhase("message_loop_ready")
 
