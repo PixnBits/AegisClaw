@@ -24,6 +24,12 @@ func TestLooksLikeProgressClaim(t *testing.T) {
 	if looksLikeProgressClaim("I can take this as Coder — @ProjectManager, which repo and path? I have not changed any code yet.") {
 		t.Fatal("asking for repo/path must not count as a progress claim")
 	}
+	if got := askForWorkTarget("CISO"); strings.Contains(strings.ToLower(got), "which repo") {
+		t.Fatalf("advisory CISO fallback must not demand a repo, got %q", got)
+	}
+	if got := askForWorkTarget("Coder"); !strings.Contains(strings.ToLower(got), "which repo") {
+		t.Fatalf("coder fallback must still ask for a path, got %q", got)
+	}
 	if batchNamesWorkTarget("from: user: The login button padding is 2px off. CSS only.", "") {
 		t.Fatal("CSS goal with no path must not look like a work target")
 	}

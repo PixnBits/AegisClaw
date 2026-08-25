@@ -172,7 +172,7 @@ func TestPMChannelConversationFixtures(t *testing.T) {
 
 func TestPMPlanPromptForbidsEcho(t *testing.T) {
 	p := getPMPlanPrompt()
-	for _, needle := range []string{"Output ONLY the plan", "Never repeat", "Assign only the roles"} {
+	for _, needle := range []string{"Output ONLY the plan", "Never repeat", "Assign only the roles", "@Coder", "@CISO"} {
 		if !strings.Contains(p, needle) {
 			t.Errorf("plan prompt missing %q", needle)
 		}

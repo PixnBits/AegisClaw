@@ -290,4 +290,18 @@ func TestGeneratePlanIsTopicAgnostic(t *testing.T) {
 	if strings.Contains(lower, "@coder") || strings.Contains(lower, "@ciso") || strings.Contains(lower, "@tester") {
 		t.Fatalf("generic fallback must not assign roles, got: %s", css)
 	}
+	if strings.Contains(lower, "restate the goal") {
+		t.Fatalf("fallback must not post instruction text as a plan: %s", css)
+	}
+}
+
+func TestLooksLikePromptEchoKeepsRealPlans(t *testing.T) {
+	good := "@Coder tweak the login button padding. Ask which repo and path first. @Tester visual check. No Court."
+	if looksLikePromptEcho(good) {
+		t.Fatalf("real plan must not count as echo: %s", good)
+	}
+	dump := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes."
+	if !looksLikePromptEcho(dump) {
+		t.Fatal("architecture dump must still count as echo")
+	}
 }

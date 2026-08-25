@@ -372,7 +372,12 @@ func looksLikeInternalDump(s string) bool {
 }
 
 func askForWorkTarget(roleLabel string) string {
-	return "I can take this as " + roleLabel + " — @ProjectManager, which repo and path? I have not changed any code yet."
+	switch roleLabel {
+	case "CISO", "Architect":
+		return "I can take this as " + roleLabel + ". I have not changed any code. If this is advice-only I can proceed from the channel text."
+	default:
+		return "I can take this as " + roleLabel + " — @ProjectManager, which repo and path? I have not changed any code yet."
+	}
 }
 
 func asksForWorkTarget(s string) bool {
@@ -463,7 +468,7 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	}
 	mentioned := collab.IsMentioned(sourceID, batchText) || collab.IsMentioned(turn.Recipient, batchText)
 	prompt += "\n\nAlways output PASS or SPEAK as the first line. PASS is the default. SPEAK only if you have a new concrete progress update from your role, you are @mentioned, or a question is aimed at you. PASS on social/off-topic requests (birthday parties) and when you would only say there is no issue for your role. If SPEAK, write 1-3 sentences after the first line. If PASS, output only PASS."
-	prompt += " Never claim you already changed code, ran tests, or finished the task unless this turn includes a real file path or repo you used. If you were assigned work but the codebase or path is missing, ask @ProjectManager for it. Do not invent progress."
+	prompt += " Never claim you already changed code, ran tests, or finished the task unless this turn includes a real file path or repo you used. If you would change files and the path is missing, ask @ProjectManager for it. If you were asked for advice or review rather than a file change, advise from the channel text — do not demand a repo. Do not invent progress."
 	if mentioned {
 		prompt += "\n\nYou were directly @mentioned. First line MUST be SPEAK. If the assignment does not name a repo or file path, ask @ProjectManager where the code lives. Do not recap. Do not say the change is done."
 	}
