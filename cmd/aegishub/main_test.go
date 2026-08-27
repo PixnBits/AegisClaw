@@ -321,3 +321,55 @@ func TestIsOneWayHubReply_LLMResponse(t *testing.T) {
 		t.Fatal("channel.posted is a store RPC reply")
 	}
 }
+
+func TestForwardHubRPC_ChannelTurnDoesNotWaitForDestReply(t *testing.T) {
+	destClient, destHub := net.Pipe()
+	defer destClient.Close()
+	defer destHub.Close()
+	encoders := &ComponentEncoders{
+		Encoder: json.NewEncoder(destHub),
+		Decoder: json.NewDecoder(destHub),
+	}
+	registeredMutex.Lock()
+	registered["pm-busy"] = &RegisteredComponent{ID: "pm-busy", Encoders: encoders}
+	registeredMutex.Unlock()
+	defer func() {
+		registeredMutex.Lock()
+		delete(registered, "pm-busy")
+		registeredMutex.Unlock()
+	}()
+
+	// Guest still reads the turn; it just does not Reply while inside llm.call.
+	go func() {
+		dec := json.NewDecoder(destClient)
+		var got Message
+		_ = dec.Decode(&got)
+	}()
+
+	start := time.Now()
+	reply := forwardHubRPC("channel-facilitator-out-test", Message{
+		Source:      "channel-facilitator-out-test",
+		Destination: "pm-busy",
+		Command:     "channel.turn",
+		Payload:     map[string]string{"channel_id": "p5-css"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	})
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("channel.turn wait %s; push must return without dest Reply", elapsed)
+	}
+	if reply.Command == "error" {
+		t.Fatalf("channel.turn push error: %v", reply.Payload)
+	}
+	if reply.Command != "response" {
+		t.Fatalf("channel.turn push command %q, want response", reply.Command)
+	}
+}
+
+func TestIsOneWayHubPush(t *testing.T) {
+	if !isOneWayHubPush("channel.turn") {
+		t.Fatal("channel.turn must be a one-way push")
+	}
+	if isOneWayHubPush("llm.call") {
+		t.Fatal("llm.call is a blocking RPC")
+	}
+}

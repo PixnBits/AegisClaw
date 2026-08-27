@@ -393,7 +393,7 @@ func (f *Facilitator) deliverTurn(ctx context.Context, chID, role string, turn m
 			// inbound cancelled; keep retrying on a fresh clock
 			ctx = context.Background()
 		}
-		for _, dest := range dests {
+		for i, dest := range dests {
 			sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			resp, err := f.hub.Send(sendCtx, hubclient.Message{
 				Destination: dest,
@@ -410,6 +410,11 @@ func (f *Facilitator) deliverTurn(ctx context.Context, chID, role string, turn m
 				lastErr = err
 			} else {
 				lastErr = fmt.Errorf("hub error delivering turn to %s: %v", dest, resp.Payload)
+			}
+			// Alias dests (bare "project-manager") are only for a true miss.
+			// A timeout while the real dest is inside llm.call is not DEST_NOT_FOUND.
+			if i+1 < len(dests) && !turnDestMiss(err, resp) {
+				break
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -503,6 +508,16 @@ func collectMentionedRoles(members []map[string]interface{}, content string) []s
 
 func destNotFound(s string) bool {
 	return strings.Contains(s, "ERR_DESTINATION_NOT_FOUND")
+}
+
+func turnDestMiss(err error, resp hubclient.Message) bool {
+	if err != nil {
+		return destNotFound(err.Error())
+	}
+	if resp.Command == "error" {
+		return destNotFound(fmt.Sprint(resp.Payload))
+	}
+	return false
 }
 
 func memberLastError(m map[string]interface{}) string {

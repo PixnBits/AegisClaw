@@ -639,6 +639,19 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 
 // isOneWayHubReply reports commands that are fire-and-forget replies on the wire (hubclient.Reply),
 // not request/response RPC pairs (hubclient.Send).
+// isOneWayHubPush reports dest-bound commands that must not wait for the dest
+// to Reply. channel.turn is inboxed by the guest while it is inside llm.call;
+// blocking the facilitator RPC for that Reply made deliverTurn time out and
+// fall through to the unregistered "project-manager" alias (ERR_DESTINATION_NOT_FOUND).
+func isOneWayHubPush(command string) bool {
+	switch command {
+	case "channel.turn", "channel.activity", "channel.member_notify":
+		return true
+	default:
+		return false
+	}
+}
+
 func isOneWayHubReply(command string) bool {
 	if hubclient.IsUnsolicitedCommand(command) {
 		return false
@@ -692,6 +705,23 @@ func forwardHubRPC(requesterID string, msg Message) Message {
 	if !exists || destComponent.Encoders == nil {
 		debugLog("hub", fmt.Sprintf("RPC %s -> %s: ERR_DESTINATION_NOT_FOUND (registered=%d)", msg.Source, msg.Destination, len(registered)))
 		return Message{Command: "error", Payload: "ERR_DESTINATION_NOT_FOUND"}
+	}
+
+	if isOneWayHubPush(msg.Command) {
+		debugLog("hub", fmt.Sprintf("push %s -> %s command %s", msg.Source, msg.Destination, msg.Command))
+		destComponent.Encoders.Mutex.Lock()
+		err := destComponent.Encoders.Encoder.Encode(msg)
+		destComponent.Encoders.Mutex.Unlock()
+		if err != nil {
+			return Message{Command: "error", Payload: err.Error()}
+		}
+		return Message{
+			Source:      "hub",
+			Destination: requesterID,
+			Command:     "response",
+			Payload:     map[string]string{"status": "accepted"},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		}
 	}
 
 	debugLog("hub", fmt.Sprintf("RPC %s -> %s command %s (awaiting reply)", msg.Source, msg.Destination, msg.Command))

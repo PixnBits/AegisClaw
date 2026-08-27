@@ -1,6 +1,11 @@
 package channelfacilitator
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"AegisClaw/internal/transport/hubclient"
+)
 
 func TestDedupeMemberRoles(t *testing.T) {
 	members := []map[string]interface{}{
@@ -86,5 +91,17 @@ func TestTurnDestinations(t *testing.T) {
 	}
 	if got := turnDestinations("court-persona-ciso", ""); len(got) == 0 || got[0] != "court-persona-ciso" {
 		t.Fatalf("court dest: %v", got)
+	}
+}
+
+func TestTurnDestMiss_OnlyTrueDestNotFound(t *testing.T) {
+	if turnDestMiss(context.DeadlineExceeded, hubclient.Message{}) {
+		t.Fatal("timeout while dest is in llm.call is not a dest miss")
+	}
+	if !turnDestMiss(hubclient.ErrDestinationNotFound, hubclient.Message{}) {
+		t.Fatal("ERR_DESTINATION_NOT_FOUND is a dest miss")
+	}
+	if !turnDestMiss(nil, hubclient.Message{Command: "error", Payload: "ERR_DESTINATION_NOT_FOUND"}) {
+		t.Fatal("error payload DEST_NOT_FOUND is a dest miss")
 	}
 }
