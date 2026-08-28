@@ -7,6 +7,8 @@ This document describes how to run, write, and maintain tests for AegisClaw. It 
 | Type              | Command                        | Requires Daemon? | Purpose                                      | Notes |
 |-------------------|--------------------------------|------------------|----------------------------------------------|-------|
 | Unit              | `make test` or `go test ./...` | No               | Fast, isolated logic                         | Run on every change |
+| CISO live LLM     | `make test-ciso-live`          | No (Ollama only) | 25 CISO channel conversations vs real model  | Set `AEGIS_LIVE_LLM=1`; optional `AEGIS_CISO_LIVE_IDS` |
+| PM live LLM       | `make test-pm-live`            | No (Ollama only) | PM plan regurgitation + channel SPEAK/PASS   | Set `AEGIS_LIVE_LLM=1` |
 | Integration       | `make test-integration`        | Sometimes        | Daemon lifecycle, CLI, components            | Uses `-tags=integration` |
 | E2E / Browser     | `make test-e2e` or `npm test`  | No (default)     | Web Portal UI + public REST contract         | Playwright (see below) |
 | Smoke             | `make smoke`                   | Yes (`sudo ./bin/aegis start`) | Post-start sanity (CLI + portal reachability) | Quick health check |

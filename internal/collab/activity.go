@@ -6,12 +6,12 @@ import "strings"
 type ResponseReason string
 
 const (
-	ReasonSelfPost     ResponseReason = "self_post"
-	ReasonDelivered    ResponseReason = "delivered" // activity delivered; agent decides whether/how to reply
-	ReasonBroadcast    ResponseReason = "broadcast" // hint for agent prompts only (not a system gate)
-	ReasonMention      ResponseReason = "mention"     // hint for agent prompts only (not a system gate)
-	ReasonUserMonitor  ResponseReason = "user_monitor"
-	ReasonNoMatch      ResponseReason = "no_match"
+	ReasonSelfPost    ResponseReason = "self_post"
+	ReasonDelivered   ResponseReason = "delivered" // activity delivered; agent decides whether/how to reply
+	ReasonBroadcast   ResponseReason = "broadcast" // hint for agent prompts only (not a system gate)
+	ReasonMention     ResponseReason = "mention"   // hint for agent prompts only (not a system gate)
+	ReasonUserMonitor ResponseReason = "user_monitor"
+	ReasonNoMatch     ResponseReason = "no_match"
 )
 
 // IsSelfPost reports whether the activity was authored by the receiving member.
@@ -25,6 +25,26 @@ func IsSelfPost(memberSourceID, from string) bool {
 	}
 	if memberSourceID == "project-manager" || strings.HasPrefix(memberSourceID, "project-manager-") {
 		return strings.HasPrefix(from, "project-manager")
+	}
+	return false
+}
+
+// PosterIsRole reports whether a channel post `from` field is this member role
+// (e.g. from=project-manager-party-v2, role=project-manager).
+func PosterIsRole(from, role string) bool {
+	from = strings.ToLower(strings.TrimSpace(from))
+	role = strings.ToLower(strings.TrimSpace(role))
+	if from == "" || role == "" {
+		return false
+	}
+	if from == role {
+		return true
+	}
+	if strings.HasPrefix(from, role+"-") {
+		return true
+	}
+	if role == "project-manager" && strings.HasPrefix(from, "project-manager") {
+		return true
 	}
 	return false
 }
@@ -88,7 +108,6 @@ func IsMentioned(memberSourceID, content string) bool {
 	lower := strings.ToLower(content)
 	candidates := []string{
 		"@" + strings.ToLower(memberSourceID),
-		strings.ToLower(memberSourceID),
 	}
 	if slug := PersonaSlugFromSource(memberSourceID); slug != "" {
 		candidates = append(candidates,
@@ -103,6 +122,14 @@ func IsMentioned(memberSourceID, content string) bool {
 	}
 	if memberSourceID == "project-manager" || strings.HasPrefix(memberSourceID, "project-manager") {
 		candidates = append(candidates, "@projectmanager", "@project-manager", "@project manager", "project manager")
+	}
+	switch AgentRoleLabel(memberSourceID) {
+	case "Senior Coder":
+		candidates = append(candidates, "@coder", "@senior coder", "@senior-coder", "@seniorcoder")
+	case "Tester":
+		candidates = append(candidates, "@tester")
+	case "Architect":
+		candidates = append(candidates, "@architect")
 	}
 	for _, c := range candidates {
 		if c != "" && strings.Contains(lower, c) {

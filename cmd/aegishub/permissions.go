@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	permSnapMu       sync.RWMutex
-	permSnapshots    = make(map[string]permissions.Snapshot) // componentID -> snapshot
-	permBootstrap    = permissions.DefaultBootstrap()       // fallback when snapshot fetch fails
+	permSnapMu    sync.RWMutex
+	permSnapshots = make(map[string]permissions.Snapshot) // componentID -> snapshot
+	permBootstrap = permissions.DefaultBootstrap()        // fallback when snapshot fetch fails
 )
 
 // fetchPermissionSnapshotFromStore synchronously requests permission.snapshot from Store via Hub RPC.
@@ -70,7 +70,7 @@ func hubStoreRPC(msg Message) Message {
 	}
 
 	waitID := fmt.Sprintf("hub-perm-fetch-%d", time.Now().UnixNano())
-	waitCh := registerPendingRPC(waitID)
+	waitCh := registerPendingRPC(waitID, "store", msg.Command)
 	defer clearPendingRPC(waitID)
 
 	msg.Source = waitID

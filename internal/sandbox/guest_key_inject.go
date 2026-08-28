@@ -57,7 +57,18 @@ func injectVMKeyIntoRootfs(rootfsPath, hostKeyPath string) error {
 }
 
 func needsPerVMRootfs(vmID string) bool {
-	return strings.HasPrefix(vmID, "agent-") || strings.HasPrefix(vmID, "memory-")
+	if strings.HasPrefix(vmID, "agent-") || strings.HasPrefix(vmID, "memory-") {
+		return true
+	}
+	// On-demand collab roles (coder-*, tester-*, …) fall back to agent.img. They must
+	// not share the template with each other or with pooled agent VMs — a second
+	// Firecracker using the same .img fails to register (ERR_DESTINATION_NOT_FOUND).
+	for _, p := range []string{"coder-", "tester-", "architect-", "ciso-"} {
+		if strings.HasPrefix(vmID, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareVMRootfs returns a rootfs path for this VM. Paired agent/memory VMs get a
@@ -184,8 +195,12 @@ func PrewarmPooledRootfsCopies(stateDir, templateRootfs string, count int, prefi
 	created := 0
 	for i := 0; i < count; i++ {
 		dst := filepath.Join(stateDir, fmt.Sprintf("%s-pooled-%d.rootfs.img", prefix, i))
-		if _, err := os.Stat(dst); err == nil {
-			continue // already have one
+		if st, err := os.Stat(dst); err == nil {
+			tmpl, terr := os.Stat(templateRootfs)
+			if terr == nil && !tmpl.ModTime().After(st.ModTime()) {
+				continue // existing copy is at least as new as the template
+			}
+			_ = os.Remove(dst)
 		}
 		if err := copyFileFast(templateRootfs, dst); err != nil {
 			logrus.Warnf("Prewarm pooled copy %d failed: %v", i, err)

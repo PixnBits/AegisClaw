@@ -5,7 +5,7 @@ CREATE_FIRECRACKER_ROOTFS_SCRIPT := $(CURDIR)/scripts/create-firecracker-rootfs.
 ENSURE_AEGIS_DIR_SCRIPT := $(CURDIR)/scripts/ensure-aegis-dir.sh
 AEGIS_BIN := $(CURDIR)/bin/aegis
 
-.PHONY: build build-binaries build-web-portal build-microvms clean clean-microvms test test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-turn-based test-e2e-roster test-e2e-portal-channel test-e2e-channel-replies test-e2e-channel-trace test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
+.PHONY: build build-binaries build-web-portal build-microvms clean clean-microvms test test-ciso-live test-pm-live test-integration test-e2e test-e2e-contract test-e2e-llm test-e2e-llm-isolated test-e2e-turn-based test-e2e-roster test-e2e-portal-channel test-e2e-channel-replies test-e2e-channel-trace test-e2e-portal-api test-tcb test-chaos sbom smoke help doctor setup boot-metrics
 
 # Default target
 all: build
@@ -254,6 +254,19 @@ e2e-clean:
 # Run unit tests
 test:
 	go test ./...
+
+# Live Ollama tests for CISO channel verbosity (25 conversations × ~40 messages).
+# Hits the real Ollama endpoint + AEGIS_DEFAULT_MODEL (or qwen3-coder:30b).
+# Does not require the daemon. Optional: AEGIS_CISO_LIVE_IDS=oauth2-login,css-theme-refactor
+test-ciso-live:
+	AEGIS_LIVE_LLM=1 go test -v -count=1 -timeout 2h ./cmd/court-persona -run "TestCISOChannelConversationsLive|TestCourtPersonaChannelSpeakPassLive"
+
+# Live Ollama tests for Project Manager plan + channel verbosity.
+# Hits the real Ollama endpoint + AEGIS_DEFAULT_MODEL (or qwen3-coder:30b).
+# Does not require the daemon. Catches prompt regurgitation and SPEAK/PASS misses.
+test-pm-live:
+	AEGIS_LIVE_LLM=1 go test -v -count=1 -timeout 30m ./cmd/project-manager -run "TestPMPlanGenerationLive|TestPMChannelConversationsLive"
+
 
 # Run daemon integration tests
 test-integration:

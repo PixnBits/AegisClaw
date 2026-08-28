@@ -143,54 +143,49 @@ func getBuildVersion() string {
 	return "unknown"
 }
 
-func getPersonaPrompt(persona string) string {
+func workspaceCustomPrefix() string {
 	// 7.6: Prepend user workspace customizations (SOUL + AGENTS) if present.
-	// This allows custom instructions to influence how the 7 personas review proposals,
-	// consistent with the Agent 6-step integration and agent-customization.md.
-	custom := ""
-	if loadedWorkspace != nil {
-		if loadedWorkspace.SOUL != "" {
-			custom += "Core values and soul for this system: " + loadedWorkspace.SOUL + ". "
-		}
-		if loadedWorkspace.AGENTS != "" {
-			custom += "Custom agent/Court instructions: " + loadedWorkspace.AGENTS + ". "
-		}
+	if loadedWorkspace == nil {
+		return ""
 	}
+	custom := ""
+	if loadedWorkspace.SOUL != "" {
+		custom += "Core values and soul for this system: " + loadedWorkspace.SOUL + ". "
+	}
+	if loadedWorkspace.AGENTS != "" {
+		custom += "Custom agent/Court instructions: " + loadedWorkspace.AGENTS + ". "
+	}
+	return custom
+}
 
-	// Shared system context — makes the 7 Court personas aware of the full AegisClaw capabilities
-	// so they can give maximally useful, architecture-respecting feedback in proposals and channels.
-	systemContext := "You operate inside AegisClaw's paranoid-isolated architecture. Untrusted components (including agents and skills) run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with strict ACLs and ed25519 signing. LLM calls route through Network Boundary for policy, auditing and secret isolation. Persistent state (proposals, channel last_seen_seq, skill registry, Merkle audit logs) is owned by Store VM. Per-agent Memory VM holds context. Skills/tools are discovered semantically via tool.search (natural language query, permission-scoped) after Court-approved proposals and Builder VM implementation. Collaboration uses turn-based channel.turn messages with relevance_anchors; agents use channel.get_relevant_since and channel.get_messages on Store for context. Round-robin scheduling with mention boosts and fairness passes applies. Reply only when you add value (exactly NO_REPLY otherwise). PM orchestrates via ensure.role and channel plans, escalating formal proposals to Court Scribe. Most changes require proposals + unanimous Approve from non-abstaining Court personas. Web portal provides real-time STOMP and #agents page observability (turn state, outcomes). Workspace AGENTS.md and SOUL.md custom instructions are prepended to prompts — respect them. Never expose secrets in reasoning or posts. Abstain on uncertainty rather than guessing. Stay strictly in character."
+// courtProposalSystemContext is shared Court context for formal proposal reviews (VOTE path).
+const courtProposalSystemContext = "You operate inside AegisClaw's paranoid-isolated architecture. Untrusted components (including agents and skills) run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with strict ACLs and ed25519 signing. LLM calls route through Network Boundary for policy, auditing and secret isolation. Persistent state (proposals, channel last_seen_seq, skill registry, Merkle audit logs) is owned by Store VM. Per-agent Memory VM holds context. Skills/tools are discovered semantically via tool.search (natural language query, permission-scoped) after Court-approved proposals and Builder VM implementation. Collaboration uses turn-based channel.turn messages with relevance_anchors. PM orchestrates via ensure.role and channel plans, escalating formal proposals to Court Scribe. Most changes require proposals + unanimous Approve from non-abstaining Court personas. Never expose secrets in reasoning or posts. Abstain on uncertainty rather than guessing. Stay strictly in character."
 
+func getPersonaPrompt(persona string) string {
+	custom := workspaceCustomPrefix()
 	base := ""
 	switch persona {
 	case "ciso":
-		base = systemContext + " You are the Chief Information Security Officer. Evaluate the proposal for security risks, compliance, secret handling, isolation boundaries, attack surface, and business/governance impact. Respond ONLY with a single line starting with VOTE: Approve|Reject|Abstain followed by | REASONING: ... | SPECIFIC_FEEDBACK: bullet list or none. Never guess — Abstain on uncertainty. For channel activity or turns: Reply in 2-4 sentences from your CISO perspective or exactly NO_REPLY if you have nothing valuable to add. Do NOT use VOTE format in channels."
+		base = courtProposalSystemContext + " You are the Chief Information Security Officer. Evaluate the proposal for security risks, compliance, secret handling, isolation boundaries, attack surface, and business/governance impact. Respond ONLY with a single line starting with VOTE: Approve|Reject|Abstain followed by | REASONING: ... | SPECIFIC_FEEDBACK: bullet list or none. Never guess — Abstain on uncertainty. This prompt is for formal proposals only, not channel chatter."
 	case "security-architect":
-		base = systemContext + " You are the Security Architect. Assess technical security design, sandbox escapes, privilege escalation, network boundary policy, and implementation of isolation controls. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... Abstain rather than speculate. For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the Security Architect. Assess technical security design, sandbox escapes, privilege escalation, network boundary policy, and implementation of isolation controls. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... Abstain rather than speculate."
 	case "architect":
-		base = systemContext + " You are the System Architect. Review system design, modularity, long-term maintainability, composition of sandboxes and boundaries, and alignment with overall architecture. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the System Architect. Review system design, modularity, long-term maintainability, composition of sandboxes and boundaries, and alignment with overall architecture. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	case "senior-coder":
-		base = systemContext + " You are the Senior Coder. Evaluate code quality, readability, implementation standards, correctness, and how changes interact with the isolated runtime, hub mediation, and tool discovery mechanisms. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the Senior Coder. Evaluate code quality, readability, implementation standards, correctness, and how changes interact with the isolated runtime, hub mediation, and tool discovery mechanisms. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	case "tester":
-		base = systemContext + " You are the Tester. Assess testing strategy, coverage, edge cases, reliability of isolation boundaries, and validation of governance flows or turn-based collaboration. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the Tester. Assess testing strategy, coverage, edge cases, reliability of isolation boundaries, and validation of governance flows or turn-based collaboration. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	case "efficiency":
-		base = systemContext + " You are the Efficiency Expert. Review performance, resource usage (microVMs, hub, LLM calls), cost, latency of channels/turns/proposals, and optimisation opportunities within the architecture. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the Efficiency Expert. Review performance, resource usage (microVMs, hub, LLM calls), cost, latency of channels/turns/proposals, and optimisation opportunities within the architecture. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	case "user-advocate":
-		base = systemContext + " You are the User Advocate. Consider usability, UX in web portal and channels, human impact of governance friction or turn delays, accessibility, and how the system feels for collaborators. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: .... For channels: Reply in 2-4 sentences or exactly NO_REPLY. Do NOT use VOTE format."
+		base = courtProposalSystemContext + " You are the User Advocate. Consider usability, UX in web portal and channels, human impact of governance friction or turn delays, accessibility, and how the system feels for collaborators. Respond ONLY with VOTE: ... | REASONING: ... | SPECIFIC_FEEDBACK: ...."
 	default:
-		base = systemContext + " Evaluate the proposal or channel activity from your specialized perspective. Respond ONLY with VOTE: Approve|Reject|Abstain | REASONING: detailed | SPECIFIC_FEEDBACK: actionable bullets or none. For channels: Reply in 2-4 sentences or exactly NO_REPLY if nothing valuable to add. Do NOT use VOTE format in channels."
+		base = courtProposalSystemContext + " Evaluate the proposal from your specialized perspective. Respond ONLY with VOTE: Approve|Reject|Abstain | REASONING: detailed | SPECIFIC_FEEDBACK: actionable bullets or none."
 	}
 
 	return custom + base
 }
 
-// analyzeProposal is the core review function.
-// In production run (with hubClient) it performs a real "llm.call" via network-boundary
-// using the persona prompt + proposal description (pulled from Store per spec), then
-// strictly parses the structured response.
-// Unit tests continue to exercise prompts + basic analysis without requiring a live LLM
-// (test double path clearly marked; never used in the prod Court execution path inside the binary).
-// SPEC: governance-court.md §Output Format Requirements + §Implementation Guidance (strict format, Abstain encouraged).
 func analyzeProposal(persona, proposalDesc string, hubClient hubclient.Client) (string, string) {
 	prompt := getPersonaPrompt(persona) + "\n\nProposal description:\n" + proposalDesc + "\n\nRespond in the exact VOTE|REASONING|SPECIFIC_FEEDBACK format. Abstain on insufficient context."
 
@@ -236,21 +231,18 @@ func llmChannelReply(persona string, hubClient hubclient.Client, prompt string) 
 		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "ch=? err=%v", err)
 		return ""
 	}
-	trimmed, skip := collab.NormalizeChannelLLMReply(text)
-	if skip {
-		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "reason=no_reply")
+	trimmed, decision := collab.ClassifyChannelLLMReply(text)
+	if decision != collab.ChannelDecisionSpeak {
+		collab.Tracef("court-persona-"+persona, "channel.reply.skip", "decision=%s", decision)
 		return ""
 	}
+	collab.Tracef("court-persona-"+persona, "channel.reply.speak", "len=%d", len(trimmed))
 	return trimmed
 }
 
 // generateChannelReply produces a short contextual reply via LLM (no canned fallback text).
 func generateChannelReply(persona, userQuestion string, hubClient hubclient.Client) string {
-	display := collab.DisplayName("court-persona-" + persona)
-	prompt := getPersonaPrompt(persona) + "\n\nA user asked in a collaboration channel:\n" + userQuestion +
-		"\n\nReply in 2-4 sentences addressing their message from your role as \"" + display + "\". " +
-		"If no reply is needed, respond with exactly: NO_REPLY. " +
-		"Do NOT use VOTE format or proposal review structure."
+	prompt := buildChannelActivityPrompt(persona, userQuestion)
 	return llmChannelReply(persona, hubClient, prompt)
 }
 
@@ -354,18 +346,13 @@ func processChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSourc
 
 	batchText := collab.FormatTurnMessages(turn.NewMessages)
 	anchorText := collab.FormatAnchorContext(anchorMsgs)
-	display := collab.DisplayName(uniqueSource)
-	prompt := "You are the " + display + " persona in channel " + chID + ". You received a batched channel turn.\n" +
-		"New messages since your last turn:\n" + batchText
-	if anchorText != "" {
-		prompt += "\n\nRelevant prior context (from get_relevant_since anchors):\n" + anchorText
-	}
-	prompt += "\n\nReply in 2-4 sentences addressing the user's message from your role. " +
-		"If you are directly @mentioned or asked a question, you must reply. " +
-		"If genuinely nothing to add, respond with exactly: NO_REPLY. Do NOT use VOTE format."
+	mentioned := collab.IsMentioned(uniqueSource, batchText) || collab.IsMentioned("court-persona-"+persona, batchText)
+	prompt := buildChannelTurnPrompt(persona, uniqueSource, chID, batchText, anchorText)
 
 	reply := llmChannelReply(persona, hcl, prompt)
-	if strings.TrimSpace(reply) == "" {
+	posted := strings.TrimSpace(reply) != ""
+	collab.Tracef("court-persona-"+persona, "channel.turn.decision", "ch=%s mention=%v posted=%v", chID, mentioned, posted)
+	if !posted {
 		return
 	}
 	if err := postChannelIntro(hcl, uniqueSource, chID, reply); err != nil {

@@ -15,11 +15,11 @@ import (
 
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/agent/loop"
-	"AegisClaw/internal/channelfacilitator"
-	"AegisClaw/internal/collab"
 	"AegisClaw/internal/agent/progress"
 	agentSkills "AegisClaw/internal/agent/skills"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/channelfacilitator"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
@@ -300,7 +300,7 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		ready := err == nil
 		_ = client.Reply(context.Background(), hubclient.Message{
 			Source: client.AssignedID(), Destination: msg.Source, Command: "response",
-			Payload: map[string]interface{}{"ready": ready},
+			Payload:   map[string]interface{}{"ready": ready},
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		})
 		return true
@@ -329,6 +329,112 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 	return true
 }
 
+// mentionedProseIfDropped keeps a mention reply that forgot the SPEAK token.
+// PASS-only output stays silent.
+func mentionedProseIfDropped(raw string) string {
+	s := collab.StripThinkTags(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	first := strings.ToUpper(strings.TrimSpace(strings.Split(s, "\n")[0]))
+	first = strings.Trim(first, "`*_ ")
+	first = strings.TrimRight(first, ".!:")
+	switch first {
+	case "PASS", "NO_REPLY", "NOREPLY", "SILENT", "SKIP":
+		return ""
+	}
+	if strings.HasPrefix(first, "PASS:") || strings.HasPrefix(first, "PASS ") {
+		return ""
+	}
+	if looksLikeInternalDump(s) {
+		return ""
+	}
+	return s
+}
+
+func looksLikeInternalDump(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return false
+	}
+	lower := strings.ToLower(t)
+	needles := []string{
+		`"intent"`, `"tool_calls"`, `"requires_proposal"`, `"observation"`,
+		"## request analysis", "identified risks", "required skills/tools",
+		"autonomy implications", "discord_monitor", "let me analyze this step-by-step",
+	}
+	for _, n := range needles {
+		if strings.Contains(lower, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func askForWorkTarget(roleLabel string) string {
+	switch roleLabel {
+	case "CISO", "Architect":
+		return "I can take this as " + roleLabel + ". I have not changed any code. If this is advice-only I can proceed from the channel text."
+	default:
+		return "I can take this as " + roleLabel + " — @ProjectManager, which repo and path? I have not changed any code yet."
+	}
+}
+
+func asksForWorkTarget(s string) bool {
+	lower := strings.ToLower(s)
+	needles := []string{
+		"which repo", "which path", "which codebase", "where is the code",
+		"where does the code", "what repo", "what path", "what codebase",
+		"where the code lives", "repo and path",
+	}
+	for _, n := range needles {
+		if strings.Contains(lower, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func batchNamesWorkTarget(batch, anchors string) bool {
+	t := strings.ToLower(batch + "\n" + anchors)
+	needles := []string{
+		"http://", "https://", "github.com", "gitlab.com", "bitbucket.org",
+		".css", ".scss", ".go", ".ts", ".tsx", ".js", ".jsx", ".html", ".vue",
+		"src/", "pkg/", "cmd/", "web-portal/", "repository", "codebase",
+		".git",
+	}
+	for _, n := range needles {
+		if strings.Contains(t, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeProgressClaim(s string) bool {
+	if asksForWorkTarget(s) {
+		return false
+	}
+	lower := strings.ToLower(s)
+	claims := []string{
+		"i'll adjust", "i will adjust", "i'll bump", "i will bump",
+		"i'll fix", "i will fix", "i'll change", "i will change",
+		"i'll tweak", "i will tweak", "i'll update", "i will update",
+		"i'll implement", "i will implement", "i'll make the",
+		"i've changed", "i have changed", "i've updated", "i have updated",
+		"i've fixed", "i have fixed", "i've made the", "i have made the",
+		"the change is done", "padding is done", "tests pass",
+		"snapshots green", "pushed the", "committed the",
+		"already changed", "already fixed", "already updated",
+	}
+	for _, c := range claims {
+		if strings.Contains(lower, c) {
+			return true
+		}
+	}
+	return false
+}
+
 func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
 	sourceID := client.AssignedID()
 	turn, ok := collab.ParseTurnPayload(msg.Payload)
@@ -351,13 +457,21 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 	batchText := collab.FormatTurnMessages(turn.NewMessages)
 	anchorText := collab.FormatAnchorContext(anchorMsgs)
 	roleLabel := collab.AgentRoleLabel(sourceID)
+	if roleLabel == "Agent" {
+		roleLabel = collab.AgentRoleLabel(turn.Recipient)
+	}
 	prompt := customInstructionsPrefix() +
 		"\n\nYou are the " + roleLabel + " in channel " + chID + ". You received a batched channel turn.\n" +
 		"New messages since your last turn:\n" + batchText
 	if anchorText != "" {
 		prompt += "\n\nRelevant prior context (anchors):\n" + anchorText
 	}
-	prompt += "\n\nReply in 2-4 sentences with a concrete progress update or status from your role. If no reply is needed, respond with exactly: NO_REPLY"
+	mentioned := collab.IsMentioned(sourceID, batchText) || collab.IsMentioned(turn.Recipient, batchText)
+	prompt += "\n\nAlways output PASS or SPEAK as the first line. PASS is the default. SPEAK only if you have a new concrete progress update from your role, you are @mentioned, or a question is aimed at you. PASS on social/off-topic requests (birthday parties) and when you would only say there is no issue for your role. If SPEAK, write 1-3 sentences after the first line. If PASS, output only PASS."
+	prompt += " Never claim you already changed code, ran tests, or finished the task unless this turn includes a real file path or repo you used. If you would change files and the path is missing, ask @ProjectManager for it. If you were asked for advice or review rather than a file change, advise from the channel text — do not demand a repo. Do not invent progress."
+	if mentioned {
+		prompt += "\n\nYou were directly @mentioned. First line MUST be SPEAK. If the assignment does not name a repo or file path, ask @ProjectManager where the code lives. Do not recap. Do not say the change is done."
+	}
 
 	llmReply, err := realLLM(ctx, prompt)
 	if err != nil {
@@ -368,15 +482,48 @@ func processAgentChannelTurn(client hubclient.Client, msg hubclient.Message, rea
 			Source:      sourceID,
 			Destination: channelfacilitator.ComponentID,
 			Command:     channelfacilitator.CmdTurnResult,
-			Payload: map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "error", "error": err.Error()},
+			Payload:     map[string]interface{}{"channel_id": chID, "recipient": turn.Recipient, "from": sourceID, "outcome": "error", "error": err.Error()},
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		})
 		return
 	}
-	trimmed, skip := collab.NormalizeChannelLLMReply(llmReply)
-	if skip {
-		log.Printf("agent %s: channel.turn chose not to reply in %s", sourceID, chID)
-		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s reason=no_reply", chID)
+	trimmed, decision := collab.ClassifyChannelLLMReply(llmReply)
+	if decision != collab.ChannelDecisionSpeak && mentioned {
+		if body := mentionedProseIfDropped(llmReply); body != "" {
+			trimmed = body
+			decision = collab.ChannelDecisionSpeak
+			collab.Tracef(sourceID, "channel.turn.mention.prose", "ch=%s len=%d", chID, len(trimmed))
+		} else if retry, rerr := realLLM(ctx, prompt+"\n\nRETRY: You were @mentioned. PASS is not allowed. First line MUST be SPEAK. Ask @ProjectManager for the repo and path if they were not given. Do not claim the work is done."); rerr == nil {
+			trimmed, decision = collab.ClassifyChannelLLMReply(retry)
+			if decision != collab.ChannelDecisionSpeak {
+				if body := mentionedProseIfDropped(retry); body != "" {
+					trimmed = body
+					decision = collab.ChannelDecisionSpeak
+				}
+			}
+		}
+		if decision != collab.ChannelDecisionSpeak {
+			trimmed = askForWorkTarget(roleLabel)
+			decision = collab.ChannelDecisionSpeak
+			collab.Tracef(sourceID, "channel.turn.mention.fallback", "ch=%s", chID)
+		}
+	}
+	if decision == collab.ChannelDecisionSpeak && looksLikeInternalDump(trimmed) {
+		if mentioned {
+			trimmed = askForWorkTarget(roleLabel)
+			collab.Tracef(sourceID, "channel.turn.dump.rewrite", "ch=%s", chID)
+		} else {
+			decision = collab.ChannelDecisionPass
+			collab.Tracef(sourceID, "channel.turn.dump.drop", "ch=%s", chID)
+		}
+	}
+	if decision == collab.ChannelDecisionSpeak && looksLikeProgressClaim(trimmed) && !batchNamesWorkTarget(batchText, anchorText) {
+		trimmed = askForWorkTarget(roleLabel)
+		collab.Tracef(sourceID, "channel.turn.honesty.rewrite", "ch=%s", chID)
+	}
+	if decision != collab.ChannelDecisionSpeak {
+		log.Printf("agent %s: channel.turn chose not to reply in %s (%s)", sourceID, chID, decision)
+		collab.Tracef(sourceID, "channel.turn.reply.skip", "ch=%s decision=%s mention=%v", chID, decision, mentioned)
 		// Report NO_REPLY explicitly so UI can show "NO_REPLY" (not error) per spec §8.4.
 		_, _ = client.Send(ctx, hubclient.Message{
 			Source:      sourceID,
@@ -566,14 +713,33 @@ func formatAvailableTools(idx *agentSkills.AgentSkillIndex) string {
 
 type loadedWorkspaceAdapter struct{}
 
-func (loadedWorkspaceAdapter) GetSOUL() string   { if loadedWorkspace == nil { return "" }; return loadedWorkspace.SOUL }
-func (loadedWorkspaceAdapter) GetAGENTS() string { if loadedWorkspace == nil { return "" }; return loadedWorkspace.AGENTS }
-func (loadedWorkspaceAdapter) GetTOOLS() string  { if loadedWorkspace == nil { return "" }; return loadedWorkspace.TOOLS }
-func (loadedWorkspaceAdapter) GetSKILLS() string { if loadedWorkspace == nil { return "" }; return loadedWorkspace.SKILLS }
+func (loadedWorkspaceAdapter) GetSOUL() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	return loadedWorkspace.SOUL
+}
+func (loadedWorkspaceAdapter) GetAGENTS() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	return loadedWorkspace.AGENTS
+}
+func (loadedWorkspaceAdapter) GetTOOLS() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	return loadedWorkspace.TOOLS
+}
+func (loadedWorkspaceAdapter) GetSKILLS() string {
+	if loadedWorkspace == nil {
+		return ""
+	}
+	return loadedWorkspace.SKILLS
+}
 
 // handleToolCommand and getString now delegate to the moved implementation.
 var (
 	handleToolCommand = agentSkills.HandleToolCommand
 	getString         = agentSkills.GetString
 )
-

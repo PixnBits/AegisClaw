@@ -27,18 +27,19 @@ import (
 
 // Orchestrator manages the lifecycle of all sandboxes.
 type Orchestrator struct {
-	config          *config.Config
-	backend         sandbox.Backend
-	secMgr          *security.Manager
-	bus             *eventbus.Bus // 7.2: in-process EventBus for lifecycle + background signals
-	mu              sync.RWMutex
-	vms             map[string]*VMLifecycle
-	startTime       int64
-	aux             map[string]*AuxComponent // auxiliary host-managed base components (hub, store, net-boundary, web-portal) for unified lifecycle/watchdog
-	timingEnabled   bool                     // captured at New() from AEGIS_BOOT_TIMING so all StartVM (early Court + later agents) get consistent cmdline flag for boot metrics
-	collabTraceEnabled bool                  // captured at New() from AEGIS_COLLAB_TRACE for guest cmdline + host tracing
-	defaultLLMModel string                   // captured at New() from AEGIS_DEFAULT_MODEL for guest llm.call model tag
-	pregenKeys      []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
+	config             *config.Config
+	backend            sandbox.Backend
+	secMgr             *security.Manager
+	bus                *eventbus.Bus // 7.2: in-process EventBus for lifecycle + background signals
+	mu                 sync.RWMutex
+	vms                map[string]*VMLifecycle
+	startTime          int64
+	aux                map[string]*AuxComponent // auxiliary host-managed base components (hub, store, net-boundary, web-portal) for unified lifecycle/watchdog
+	timingEnabled      bool                     // captured at New() from AEGIS_BOOT_TIMING so all StartVM (early Court + later agents) get consistent cmdline flag for boot metrics
+	collabTraceEnabled bool                     // captured at New() from AEGIS_COLLAB_TRACE for guest cmdline + host tracing
+	defaultLLMModel    string                   // captured at New() from AEGIS_DEFAULT_MODEL for guest llm.call model tag
+	defaultPMModel     string                   // captured at New() from AEGIS_PM_MODEL (else defaultLLMModel, else DefaultPMModel)
+	pregenKeys         []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
 }
 
 type vmKeyPair struct {
@@ -110,6 +111,13 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		o.defaultLLMModel = v
 	} else {
 		o.defaultLLMModel = agent.DefaultLLMModel
+	}
+	if v := strings.TrimSpace(os.Getenv("AEGIS_PM_MODEL")); v != "" {
+		o.defaultPMModel = v
+	} else if strings.TrimSpace(os.Getenv("AEGIS_DEFAULT_MODEL")) != "" {
+		o.defaultPMModel = o.defaultLLMModel
+	} else {
+		o.defaultPMModel = agent.DefaultPMModel
 	}
 
 	// Pre-generate a small ring of VM keypairs at New() (collab model <1s tactic).
@@ -346,8 +354,14 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	if o.collabTraceEnabled {
 		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs + " aegis.collab_trace=1")
 	}
+	guestModel := o.defaultLLMModel
+	if isProjectManagerVM(vmType, id) {
+		guestModel = o.defaultPMModel
+		vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
+			" aegis.pm_model=" + o.defaultPMModel)
+	}
 	vmConfig.ExtraBootArgs = strings.TrimSpace(vmConfig.ExtraBootArgs +
-		" aegis.default_model=" + o.defaultLLMModel)
+		" aegis.default_model=" + guestModel)
 
 	phases["backend_start_entry"] = time.Now().UnixNano()
 	if err := o.backend.Start(ctx, vmConfig); err != nil {
@@ -544,9 +558,9 @@ func writeJSONMetrics(stateDir, id string, phases map[string]int64) {
 	}
 	path := filepath.Join(stateDir, "boot-metrics-"+id+".json")
 	out := map[string]interface{}{
-		"id":      id,
+		"id":        id,
 		"phases_ns": phases,
-		"written": time.Now().UnixNano(),
+		"written":   time.Now().UnixNano(),
 	}
 	if t0, ok := phases["startvm_entry"]; ok {
 		durs := map[string]int64{}
@@ -670,7 +684,7 @@ func (o *Orchestrator) EnsureRoleAgent(ctx context.Context, roleType string, cha
 		if err2 := o.StartVM(ctx, "agent", id, "agent.img"); err2 != nil {
 			return "", fmt.Errorf("role %s start failed (original: %v; agent fallback: %w)", roleType, err, err2)
 		}
-	} 
+	}
 	if channelHint != "" {
 		o.mu.Lock()
 		if lc, ok := o.vms[id]; ok {
@@ -701,11 +715,11 @@ func (o *Orchestrator) ReleaseIdle(ctx context.Context, id string) error {
 //     memory access).
 //
 // The method:
-//   1. Starts the Memory VM first (so the agent can discover it on registration).
-//   2. Starts the Agent VM with the same session-derived ID namespace.
-//   3. Uses the existing per-VM key distribution (ephemeral 0600 file).
-//   4. Allocates distinct vsock resources.
-//   5. Publishes the usual vm.started events.
+//  1. Starts the Memory VM first (so the agent can discover it on registration).
+//  2. Starts the Agent VM with the same session-derived ID namespace.
+//  3. Uses the existing per-VM key distribution (ephemeral 0600 file).
+//  4. Allocates distinct vsock resources.
+//  5. Publishes the usual vm.started events.
 //
 // For the thin agent binary (cmd/agent) the launched guest will receive its
 // private key via the standard AEGIS_VM_PRIVATE_KEY_PATH mechanism and can
@@ -952,8 +966,8 @@ func (o *Orchestrator) TCBHealthReport() map[string]interface{} {
 	runtime.ReadMemStats(&m)
 	allocMB := float64(m.Alloc) / 1024 / 1024
 	report["memory"] = map[string]interface{}{
-		"alloc_mb":    fmt.Sprintf("%.2f", allocMB),
-		"target_mb":   20,
+		"alloc_mb":      fmt.Sprintf("%.2f", allocMB),
+		"target_mb":     20,
 		"within_target": allocMB < 20,
 	}
 
@@ -977,6 +991,10 @@ var initShippingComponents = map[string]bool{
 	"court-persona":    true,
 }
 
+func isProjectManagerVM(vmType, id string) bool {
+	return vmType == "project-manager" || strings.HasPrefix(id, "project-manager")
+}
+
 // componentShipsInit reports whether the given VM (by type or id) is built from
 // an image that contains a bootable /init wrapper.
 func componentShipsInit(vmType, id string) bool {
@@ -989,12 +1007,12 @@ func componentShipsInit(vmType, id string) bool {
 // criticalTypes defines the component types that the watchdog considers
 // essential to the system (per host-daemon.md:Responsibilities).
 var criticalTypes = map[string]bool{
-	"hub":               true,
-	"store":             true,
-	"network-boundary":  true,
-	"web-portal":        true,
-	"court-scribe":      true,
-	"court-persona":     true,
+	"hub":              true,
+	"store":            true,
+	"network-boundary": true,
+	"web-portal":       true,
+	"court-scribe":     true,
+	"court-persona":    true,
 }
 
 // StartCriticalWatchdog launches a minimal background health monitor for
@@ -1098,11 +1116,11 @@ func mustJSON(v interface{}) json.RawMessage {
 // This keeps the TCB change minimal while satisfying "daemon starts the base set" (web-portal-vm.md, user-journeys/01, host-daemon.md bootstrap).
 
 type AuxComponent struct {
-	ID         string
-	Type       string
-	Cmd        *exec.Cmd // may be nil for pure VM-tracked aux in future
-	RestartFn  func() error
-	StartedAt  time.Time
+	ID        string
+	Type      string
+	Cmd       *exec.Cmd // may be nil for pure VM-tracked aux in future
+	RestartFn func() error
+	StartedAt time.Time
 }
 
 func (o *Orchestrator) RegisterAuxComponent(typ, id string, cmd *exec.Cmd, restartFn func() error) {

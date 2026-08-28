@@ -92,7 +92,8 @@ func VMPrivateKeyPath() string {
 }
 
 // DefaultModel returns the LLM model name for guest components (project-manager, agents).
-// Host daemon injects aegis.default_model= on the kernel cmdline from AEGIS_DEFAULT_MODEL.
+// Host daemon injects aegis.default_model= on the kernel cmdline from AEGIS_DEFAULT_MODEL
+// (or AEGIS_PM_MODEL for project-manager VMs).
 func DefaultModel(fallback string) string {
 	if v := os.Getenv("AEGIS_DEFAULT_MODEL"); v != "" {
 		return v
@@ -101,6 +102,18 @@ func DefaultModel(fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// PMModel is the model the Project Manager should call. AEGIS_PM_MODEL wins,
+// then the injected/global default, then fallback (typically DefaultPMModel).
+func PMModel(fallback string) string {
+	if v := os.Getenv("AEGIS_PM_MODEL"); v != "" {
+		return v
+	}
+	if v := parseCmdlineKV("aegis.pm_model="); v != "" {
+		return v
+	}
+	return DefaultModel(fallback)
 }
 
 // BootTimingEnabled returns whether detailed boot-time instrumentation should

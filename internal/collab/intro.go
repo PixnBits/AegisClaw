@@ -68,6 +68,8 @@ func AgentRoleLabel(sourceID string) string {
 		return "Tester"
 	case strings.HasPrefix(lower, "architect"):
 		return "Architect"
+	case strings.HasPrefix(lower, "ciso"):
+		return "CISO"
 	default:
 		return "Agent"
 	}

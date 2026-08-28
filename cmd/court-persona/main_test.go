@@ -49,11 +49,13 @@ func (h *turnTestHub) Send(_ context.Context, msg hubclient.Message) (hubclient.
 	}
 }
 
-func (h *turnTestHub) Close() error                                       { return nil }
-func (h *turnTestHub) AssignedID() string                                 { return h.assignedID }
-func (h *turnTestHub) IsVsock() bool                                      { return false }
-func (h *turnTestHub) Receive(context.Context) (hubclient.Message, error) { return hubclient.Message{}, nil }
-func (h *turnTestHub) Reply(context.Context, hubclient.Message) error     { return nil }
+func (h *turnTestHub) Close() error       { return nil }
+func (h *turnTestHub) AssignedID() string { return h.assignedID }
+func (h *turnTestHub) IsVsock() bool      { return false }
+func (h *turnTestHub) Receive(context.Context) (hubclient.Message, error) {
+	return hubclient.Message{}, nil
+}
+func (h *turnTestHub) Reply(context.Context, hubclient.Message) error { return nil }
 func (h *turnTestHub) TryReceive(context.Context, time.Duration) (hubclient.Message, bool, error) {
 	return hubclient.Message{}, false, nil
 }
@@ -63,7 +65,7 @@ func TestProcessChannelTurnUsesDirectTurnPrompt(t *testing.T) {
 	// not generateChannelReply (which double-wraps with VOTE proposal review format).
 	hub := &turnTestHub{assignedID: "court-persona-senior-coder"}
 	msg := hubclient.Message{
-		Source: "store",
+		Source:  "store",
 		Command: "channel.turn",
 		Payload: map[string]interface{}{
 			"channel_id": "main",
@@ -86,6 +88,66 @@ func TestProcessChannelTurnUsesDirectTurnPrompt(t *testing.T) {
 	}
 	if strings.Contains(hub.llmPrompt, "Proposal description:") {
 		t.Fatalf("turn prompt must not use generateChannelReply proposal wrapper: %s", hub.llmPrompt)
+	}
+}
+
+func TestCISOChannelPromptIsDecisionFirstNotVote(t *testing.T) {
+	p := getChannelPersonaPrompt("ciso")
+	if !strings.Contains(p, "PASS") || !strings.Contains(p, "SPEAK") {
+		t.Fatalf("CISO channel prompt must teach PASS/SPEAK actions, got: %s", p)
+	}
+	if strings.Contains(p, "VOTE:") {
+		t.Fatalf("CISO channel prompt must not mix Court VOTE format: %s", p)
+	}
+	if !strings.Contains(p, "default") && !strings.Contains(strings.ToLower(p), "pass is the default") {
+		t.Fatalf("CISO channel prompt should state PASS is the default: %s", p)
+	}
+	tester := getChannelPersonaPrompt("tester")
+	if !strings.Contains(tester, "Never post that there is no issue for your role") {
+		t.Fatal("Tester channel prompt must treat 'no issue for my role' as PASS")
+	}
+	proposal := getPersonaPrompt("ciso")
+	if !strings.Contains(proposal, "You are the") {
+		t.Fatal("proposal prompt still required")
+	}
+	turn := buildChannelTurnPrompt("ciso", "court-persona-ciso", "main", "- user: hello", "")
+	if strings.Contains(turn, "VOTE:") {
+		t.Fatalf("turn prompt must not include VOTE: %s", turn)
+	}
+	if !strings.Contains(turn, "New messages since your last turn") {
+		t.Fatalf("turn prompt missing batch: %s", turn)
+	}
+	mentioned := buildChannelTurnPrompt("ciso", "court-persona-ciso", "main", "- user: @CISO any concern with this CSS?", "")
+	if !strings.Contains(mentioned, "You were directly @mentioned") {
+		t.Fatalf("mentioned turn must force SPEAK, got: %s", mentioned)
+	}
+}
+
+func TestAllCourtChannelPromptsUseSpeakPass(t *testing.T) {
+	personas := []string{"ciso", "security-architect", "architect", "senior-coder", "tester", "efficiency", "user-advocate"}
+	for _, p := range personas {
+		prompt := getChannelPersonaPrompt(p)
+		if !strings.Contains(prompt, "PASS") || !strings.Contains(prompt, "SPEAK") {
+			t.Errorf("%s channel prompt missing PASS/SPEAK", p)
+		}
+		if strings.Contains(prompt, "VOTE:") {
+			t.Errorf("%s channel prompt must not mix Court VOTE format", p)
+		}
+		if !strings.Contains(strings.ToLower(prompt), "pass is the default") {
+			t.Errorf("%s channel prompt should state PASS is the default", p)
+		}
+		src := "court-persona-" + p
+		quiet := buildChannelTurnPrompt(p, src, "main", "- ux: the empty-state copy feels cold", "")
+		mention := buildChannelTurnPrompt(p, src, "main", "- user: @"+p+" any concern with this CSS?", "")
+		if !strings.Contains(mention, "You were directly @mentioned") {
+			t.Errorf("%s mentioned turn must force SPEAK", p)
+		}
+		if strings.Contains(quiet, "You were directly @mentioned") {
+			t.Errorf("%s unmentioned UX turn must not force SPEAK", p)
+		}
+		if !strings.Contains(quiet, "Default to PASS") {
+			t.Errorf("%s unmentioned turn should default to PASS, got: %s", p, quiet)
+		}
 	}
 }
 

@@ -22,8 +22,8 @@ import (
 	"context"
 	"strings"
 
-	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/agent/skills"
+	"AegisClaw/internal/transport/hubclient"
 )
 
 // TurnContext carries everything a single 6-step turn needs.
@@ -97,6 +97,11 @@ type MemoryClient interface {
 // DefaultLLMModel is the fallback model when AEGIS_DEFAULT_MODEL is not set.
 const DefaultLLMModel = "qwen3-coder:30b"
 
+// DefaultPMModel is the fallback for Project Manager planning when neither
+// AEGIS_PM_MODEL nor AEGIS_DEFAULT_MODEL is set. Coding models tend to echo
+// the plan prompt; a general model is the actual PM.
+const DefaultPMModel = "llama3.3:latest"
+
 // IsScopeRevoked is the central fail-closed governance check for the Agent Runtime.
 // It must be called before any privileged action (tool execution, scope expansion,
 // background work, etc.).
@@ -105,9 +110,9 @@ const DefaultLLMModel = "qwen3-coder:30b"
 // real Court decisions via hub), the action is denied.
 //
 // SPEC: agent-runtime.md §Event subscription for court feedback
-//       + §Responsibilities (respect Court decisions immediately)
-//       security-model.md (fail-closed on every privileged operation)
-//       governance-court.md §Court Process (decisions revoke scopes or terminate)
+//   - §Responsibilities (respect Court decisions immediately)
+//     security-model.md (fail-closed on every privileged operation)
+//     governance-court.md §Court Process (decisions revoke scopes or terminate)
 func IsScopeRevoked(tc *TurnContext, scope string) bool {
 	if tc == nil || scope == "" {
 		return false

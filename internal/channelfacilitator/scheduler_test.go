@@ -1,6 +1,11 @@
 package channelfacilitator
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"AegisClaw/internal/transport/hubclient"
+)
 
 func TestDedupeMemberRoles(t *testing.T) {
 	members := []map[string]interface{}{
@@ -58,15 +63,45 @@ func TestFacilitatorActorSkeleton(t *testing.T) {
 	<-a1.mu
 }
 
+func TestCollectFailedRoles(t *testing.T) {
+	members := []map[string]interface{}{
+		{"role": "coder", "last_error": ""},
+		{"role": "tester", "last_error": "hub error delivering turn to tester-css-r1: ERR_DESTINATION_NOT_FOUND"},
+		{"role": "ciso", "last_error": "timeout"},
+	}
+	got := collectFailedRoles(members)
+	if len(got) != 1 || got[0] != "tester" {
+		t.Fatalf("collectFailedRoles() = %v, want [tester]", got)
+	}
+	if !destNotFound("hub error delivering turn to tester-x: ERR_DESTINATION_NOT_FOUND") {
+		t.Fatal("destNotFound should match hub wrapper errors")
+	}
+}
+
 func TestTurnDestinations(t *testing.T) {
 	// Part of wiring: ensure correct hub destinations for turn delivery per role/channel.
 	if got := turnDestinations("coder", "chX"); len(got) == 0 || got[0] != "coder-chX" {
 		t.Fatalf("coder dest: %v", got)
+	}
+	if got := turnDestinations("tester", "tune-css-7"); len(got) < 1 || got[0] != "tester-tune-css-7" {
+		t.Fatalf("tester dest: %v", got)
 	}
 	if got := turnDestinations("project-manager", "chY"); len(got) == 0 || got[0] != "project-manager-chY" {
 		t.Fatalf("pm dest: %v", got)
 	}
 	if got := turnDestinations("court-persona-ciso", ""); len(got) == 0 || got[0] != "court-persona-ciso" {
 		t.Fatalf("court dest: %v", got)
+	}
+}
+
+func TestTurnDestMiss_OnlyTrueDestNotFound(t *testing.T) {
+	if turnDestMiss(context.DeadlineExceeded, hubclient.Message{}) {
+		t.Fatal("timeout while dest is in llm.call is not a dest miss")
+	}
+	if !turnDestMiss(hubclient.ErrDestinationNotFound, hubclient.Message{}) {
+		t.Fatal("ERR_DESTINATION_NOT_FOUND is a dest miss")
+	}
+	if !turnDestMiss(nil, hubclient.Message{Command: "error", Payload: "ERR_DESTINATION_NOT_FOUND"}) {
+		t.Fatal("error payload DEST_NOT_FOUND is a dest miss")
 	}
 }

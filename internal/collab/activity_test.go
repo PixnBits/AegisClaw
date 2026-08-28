@@ -39,10 +39,48 @@ func TestShouldDeliverActivityToAgents(t *testing.T) {
 	}
 }
 
+func TestPosterIsRole(t *testing.T) {
+	if !PosterIsRole("project-manager-party-v2", "project-manager") {
+		t.Fatal("PM instance must match project-manager role")
+	}
+	if PosterIsRole("project-manager-party-v2", "coder") {
+		t.Fatal("PM instance must not match coder")
+	}
+	if !PosterIsRole("coder-tune-css-6", "coder") {
+		t.Fatal("coder instance must match coder role")
+	}
+}
+
 func TestShouldNotRespondToSelf(t *testing.T) {
 	ok, _ := ShouldRespondToActivity("court-persona-ciso", "court-persona-ciso", "hello")
 	if ok {
 		t.Fatal("should ignore self post")
+	}
+}
+
+func TestIsMentionedDoesNotMatchOwnFromLine(t *testing.T) {
+	batch := "- project-manager-tune-css-10: Plan for #tune-css-10:\n- @Coder: tweak padding.\n- coder-tune-css-10: I'll adjust the login button padding."
+	if IsMentioned("project-manager", batch) || IsMentioned("project-manager-tune-css-10", batch) {
+		t.Fatal("from: project-manager-* in the batch must not count as @ProjectManager")
+	}
+	if !IsMentioned("project-manager", "- user: @ProjectManager are we done?") {
+		t.Fatal("explicit @ProjectManager must still match")
+	}
+}
+
+func TestIsMentionedOnDemandCoderAndTester(t *testing.T) {
+	plan := "Plan for #tune-css-1:\n- @Coder: make the CSS/copy/padding change.\n- @Tester: visual check.\n- No Court."
+	if !IsMentioned("coder", plan) {
+		t.Fatal("turn recipient role coder must match @Coder in a PM plan")
+	}
+	if !IsMentioned("coder-tune-css-1", plan) {
+		t.Fatal("on-demand coder must match @Coder in a PM plan")
+	}
+	if !IsMentioned("tester-tune-css-1", plan) {
+		t.Fatal("on-demand tester must match @Tester in a PM plan")
+	}
+	if IsMentioned("coder-tune-css-1", "User: birthday party, no engineering.") {
+		t.Fatal("coder must not count as mentioned without @Coder")
 	}
 }
 
