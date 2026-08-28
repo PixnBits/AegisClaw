@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"AegisClaw/internal/agent"
@@ -166,6 +167,28 @@ func extractChannelFromPayload(payload interface{}, def string) string {
 		}
 	}
 	return ch
+}
+
+// plannedHumanGoals keys are channel + normalized human text. One LLM plan post
+// per distinct goal, whether it arrived as user.goal or as a channel.turn
+// containing the same user message (CLI/portal post both).
+var plannedHumanGoals sync.Map
+
+func normalizeHumanGoal(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
+}
+
+func claimHumanGoal(chID, goal string) bool {
+	g := normalizeHumanGoal(goal)
+	if chID == "" || g == "" {
+		return true
+	}
+	_, loaded := plannedHumanGoals.LoadOrStore(chID+"\x00"+g, struct{}{})
+	return !loaded
+}
+
+func resetPlannedHumanGoals() {
+	plannedHumanGoals = sync.Map{}
 }
 
 func hasRoleWord(lower, word string) bool {
@@ -417,6 +440,10 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 	var plan string
 	if goal == "" {
 		goal = payloadStr
+	}
+	if !claimHumanGoal(chID, goal) {
+		log.Printf("PM: skip duplicate plan ch=%s goal=%q", chID, truncateForLog(goal, 80))
+		return
 	}
 	fallback := generatePlan(goal, chID)
 	planPrompt := getPMPlanPrompt() + "\n\nUser goal: " + goal + "\n\nChannel: " + chID + "\n\nPlan:"

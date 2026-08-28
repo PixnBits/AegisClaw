@@ -2800,41 +2800,16 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		}
 	}
 	fmt.Printf("Ensured project-manager for channel %s\n", chID)
-	// Post the original goal as a user message in the channel for context (alongside PM's plan).
+	_ = ensureResp
+	// Post the goal as a user message. Facilitator channel.turn is the single
+	// planning trigger (issue #87). Do not also send user.goal — that caused a
+	// second PM plan for the same human text.
 	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
 		"channel_id": chID,
 		"from":       "user",
 		"content":    goalText,
 	})
-	// Each ensured PM registers on the hub as its VM id (bootargs.ComponentID), e.g.
-	// project-manager-plan-demo-e2e-llm. user.goal must target that id when multiple PMs
-	// are running (isolation E2E, other channels); the legacy alias "project-manager" would
-	// collide and route to whichever PM re-registered last.
-	roleTarget := "project-manager"
-	if ensureResp != nil {
-		if m, ok := ensureResp.(map[string]interface{}); ok {
-			if id, ok := m["id"].(string); ok && strings.TrimSpace(id) != "" {
-				roleTarget = id
-			}
-		}
-	}
-	// Brief wait for on-demand PM boot + guest hub bridge registration (E2E retries if still early).
-	time.Sleep(3 * time.Second)
-	// 2. Send the goal (PM will build plan using getPMPrompt, post to channel, ensure roles)
-	goalPayload := map[string]interface{}{
-		"goal":    goalText,
-		"channel": chID,
-	}
-	goalCtx, goalCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer goalCancel()
-	_, err = sendToComponentViaHubContext(goalCtx, roleTarget, "user.goal", goalPayload)
-	if err != nil {
-		fmt.Printf("pm goal error: %v\n", err)
-		fmt.Printf("(ensure succeeded; channel poll / E2E may still observe async PM post)\n")
-		return
-	}
-	fmt.Printf("Sent goal to %s for channel %s\n", roleTarget, chID)
-	// Give PM time to process, post plan, ensure roles (short wait)
+	fmt.Printf("Posted goal to channel %s (PM plans via channel.turn)\n", chID)
 	time.Sleep(15 * time.Second)
 	// 3. Inspect the channel to see the plan post (and any role activity).
 	// Small retry tolerates transient hub/store latency right after on-demand role launches

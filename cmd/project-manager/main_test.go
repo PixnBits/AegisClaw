@@ -123,6 +123,7 @@ func (h *pmTestHub) TryReceive(context.Context, time.Duration) (hubclient.Messag
 }
 
 func TestPMHumanChannelTurnUsesPlanPromptNotSystemDump(t *testing.T) {
+	resetPlannedHumanGoals()
 	hub := &pmTestHub{}
 	var prompt string
 	llm := func(_ context.Context, p string) (string, error) {
@@ -303,5 +304,87 @@ func TestLooksLikePromptEchoKeepsRealPlans(t *testing.T) {
 	dump := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes."
 	if !looksLikePromptEcho(dump) {
 		t.Fatal("architecture dump must still count as echo")
+	}
+}
+
+func humanTurn(chID, content string) hubclient.Message {
+	return hubclient.Message{
+		Source:  "store",
+		Command: "channel.turn",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"since_seq":  0,
+			"new_messages": []interface{}{
+				map[string]interface{}{"from": "user", "content": content},
+			},
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func userGoalMsg(chID, content string) hubclient.Message {
+	return hubclient.Message{
+		Source:  "aegis-cli-internal",
+		Command: "user.goal",
+		Payload: map[string]interface{}{
+			"channel":    chID,
+			"channel_id": chID,
+			"goal":       content,
+			"content":    content,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func TestPMPlansOnceWhenUserGoalThenHumanTurn(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	calls := 0
+	llm := func(context.Context, string) (string, error) {
+		calls++
+		return "@Coder take the assignment. Ask for the repo if missing.", nil
+	}
+	goal := "Ship a small docs fix in the existing repo."
+	pmProcessPlanningMessage(hub, userGoalMsg("once-a", goal), "project-manager-once-a", llm)
+	pmProcessChannelTurn(hub, humanTurn("once-a", goal), "project-manager-once-a", llm)
+	if calls != 1 {
+		t.Fatalf("expected one LLM plan, got %d", calls)
+	}
+	if len(hub.posts) != 1 {
+		t.Fatalf("expected one plan post, got %d %v", len(hub.posts), hub.posts)
+	}
+}
+
+func TestPMPlansOnceWhenHumanTurnThenUserGoal(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	calls := 0
+	llm := func(context.Context, string) (string, error) {
+		calls++
+		return "@Tester verify once there is a path.", nil
+	}
+	goal := "Confirm the health endpoint still returns 200."
+	pmProcessChannelTurn(hub, humanTurn("once-b", goal), "project-manager-once-b", llm)
+	pmProcessPlanningMessage(hub, userGoalMsg("once-b", goal), "project-manager-once-b", llm)
+	if calls != 1 {
+		t.Fatalf("expected one LLM plan, got %d", calls)
+	}
+	if len(hub.posts) != 1 {
+		t.Fatalf("expected one plan post, got %d %v", len(hub.posts), hub.posts)
+	}
+}
+
+func TestPMPlansAgainForDifferentHumanGoal(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	calls := 0
+	llm := func(context.Context, string) (string, error) {
+		calls++
+		return "Plan next step.", nil
+	}
+	pmProcessPlanningMessage(hub, userGoalMsg("once-c", "First distinct goal about logs."), "project-manager-once-c", llm)
+	pmProcessChannelTurn(hub, humanTurn("once-c", "Second distinct goal about metrics."), "project-manager-once-c", llm)
+	if calls != 2 || len(hub.posts) != 2 {
+		t.Fatalf("different goals must each plan, calls=%d posts=%d", calls, len(hub.posts))
 	}
 }

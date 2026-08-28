@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -85,36 +84,16 @@ func portalKickoffPMGoal(chID, goalText string) {
 		"role":    "project-manager",
 		"channel": chID,
 	}
-	roleTarget := "project-manager"
 	if sockResp, sockErr := sendSocketRequestWithTimeout("orchestrator.ensure_role", map[string]string{
 		"role":    "project-manager",
 		"channel": chID,
-	}, false, 90*time.Second); sockErr == nil && sockResp.OK && sockResp.Data != nil {
-		if idMap, ok := sockResp.Data.(map[string]interface{}); ok {
-			if id, ok := idMap["id"].(string); ok && strings.TrimSpace(id) != "" {
-				roleTarget = id
-			}
+	}, false, 90*time.Second); sockErr != nil || !sockResp.OK {
+		if _, err := sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", ensurePayload, 30*time.Second); err != nil {
+			logrus.Warnf("portal goal.submit: ensure PM for %s: %v", chID, err)
 		}
-	} else if ensureResp, err := sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", ensurePayload, 30*time.Second); err == nil {
-		if idMap, ok := ensureResp.(map[string]interface{}); ok {
-			if id, ok := idMap["id"].(string); ok && strings.TrimSpace(id) != "" {
-				roleTarget = id
-			}
-		}
-	} else {
-		logrus.Warnf("portal goal.submit: ensure PM for %s: %v", chID, err)
 	}
-
-	time.Sleep(2 * time.Second)
-	goalPayload := map[string]interface{}{
-		"goal":    goalText,
-		"channel": chID,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	if _, err := sendToComponentViaHubContext(ctx, roleTarget, "user.goal", goalPayload); err != nil {
-		logrus.Warnf("portal goal.submit: user.goal to %s: %v", roleTarget, err)
-	}
+	// Planning is channel.turn from the user post above (issue #87). Do not also
+	// send user.goal or the PM posts two plans for the same human text.
 }
 
 func portalHarnessGet(payload interface{}) (map[string]interface{}, error) {
