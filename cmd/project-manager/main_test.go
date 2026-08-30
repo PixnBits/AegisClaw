@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -87,8 +88,9 @@ func TestExtractGoalFromPayload(t *testing.T) {
 }
 
 type pmTestHub struct {
-	posts []string
-	roles []string
+	posts     []string
+	roles     []string
+	failPosts int
 }
 
 func (h *pmTestHub) Register(context.Context, string, ed25519.PublicKey, string) (*hubclient.RegisterResponse, error) {
@@ -98,6 +100,10 @@ func (h *pmTestHub) Send(_ context.Context, msg hubclient.Message) (hubclient.Me
 	p, _ := msg.Payload.(map[string]interface{})
 	switch msg.Command {
 	case "channel.post":
+		if h.failPosts > 0 {
+			h.failPosts--
+			return hubclient.Message{}, errors.New("channel.post failed")
+		}
 		if c, ok := p["content"].(string); ok {
 			h.posts = append(h.posts, c)
 		}
@@ -123,6 +129,7 @@ func (h *pmTestHub) TryReceive(context.Context, time.Duration) (hubclient.Messag
 }
 
 func TestPMHumanChannelTurnUsesPlanPromptNotSystemDump(t *testing.T) {
+	resetPlannedHumanGoals()
 	hub := &pmTestHub{}
 	var prompt string
 	llm := func(_ context.Context, p string) (string, error) {
@@ -303,5 +310,185 @@ func TestLooksLikePromptEchoKeepsRealPlans(t *testing.T) {
 	dump := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes."
 	if !looksLikePromptEcho(dump) {
 		t.Fatal("architecture dump must still count as echo")
+	}
+}
+
+func humanTurn(chID, content string) hubclient.Message {
+	return hubclient.Message{
+		Source:  "store",
+		Command: "channel.turn",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"since_seq":  0,
+			"new_messages": []interface{}{
+				map[string]interface{}{"from": "user", "content": content},
+			},
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func userGoalMsg(chID, content string) hubclient.Message {
+	return hubclient.Message{
+		Source:  "aegis-cli-internal",
+		Command: "user.goal",
+		Payload: map[string]interface{}{
+			"channel":    chID,
+			"channel_id": chID,
+			"goal":       content,
+			"content":    content,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func TestPMPlansOnceWhenUserGoalThenHumanTurn(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	var prompts []string
+	llm := func(_ context.Context, p string) (string, error) {
+		prompts = append(prompts, p)
+		if strings.Contains(p, "Output ONLY the plan") {
+			return "@Coder take the assignment. Ask for the repo if missing.", nil
+		}
+		return "PASS", nil
+	}
+	goal := "Ship a small docs fix in the existing repo."
+	pmProcessPlanningMessage(hub, userGoalMsg("once-a", goal), "project-manager-once-a", llm)
+	pmProcessChannelTurn(hub, humanTurn("once-a", goal), "project-manager-once-a", llm)
+	if len(hub.posts) != 1 {
+		t.Fatalf("expected one plan post, got %d %v", len(hub.posts), hub.posts)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("claimed human turn should fall through to channel LLM, prompts=%d", len(prompts))
+	}
+	if !strings.Contains(prompts[0], "Output ONLY the plan") {
+		t.Fatalf("first call must be plan prompt, got %s", prompts[0])
+	}
+	if !strings.Contains(prompts[1], "PASS or SPEAK") && !strings.Contains(prompts[1], "PASS") {
+		t.Fatalf("second call must be channel prompt, got %s", prompts[1])
+	}
+	if strings.Contains(prompts[1], "Output ONLY the plan") {
+		t.Fatal("already-claimed human turn must not use the plan prompt")
+	}
+}
+
+func TestPMPlansOnceWhenHumanTurnThenUserGoal(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	calls := 0
+	llm := func(context.Context, string) (string, error) {
+		calls++
+		return "@Tester verify once there is a path.", nil
+	}
+	goal := "Confirm the health endpoint still returns 200."
+	pmProcessChannelTurn(hub, humanTurn("once-b", goal), "project-manager-once-b", llm)
+	pmProcessPlanningMessage(hub, userGoalMsg("once-b", goal), "project-manager-once-b", llm)
+	if calls != 1 {
+		t.Fatalf("expected one LLM plan, got %d", calls)
+	}
+	if len(hub.posts) != 1 {
+		t.Fatalf("expected one plan post, got %d %v", len(hub.posts), hub.posts)
+	}
+}
+
+func TestPMPlansAgainForDifferentHumanGoal(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	calls := 0
+	llm := func(context.Context, string) (string, error) {
+		calls++
+		return "Plan next step.", nil
+	}
+	pmProcessPlanningMessage(hub, userGoalMsg("once-c", "First distinct goal about logs."), "project-manager-once-c", llm)
+	pmProcessChannelTurn(hub, humanTurn("once-c", "Second distinct goal about metrics."), "project-manager-once-c", llm)
+	if calls != 2 || len(hub.posts) != 2 {
+		t.Fatalf("different goals must each plan, calls=%d posts=%d", calls, len(hub.posts))
+	}
+}
+
+func TestClaimHumanGoalFailsClosedOnEmpty(t *testing.T) {
+	resetPlannedHumanGoals()
+	if claimHumanGoal("", "a goal") {
+		t.Fatal("empty channel must fail closed")
+	}
+	if claimHumanGoal("ch", "") {
+		t.Fatal("empty goal must fail closed")
+	}
+	if claimHumanGoal("ch", "   ") {
+		t.Fatal("whitespace goal must fail closed")
+	}
+}
+
+func TestPMFallbackThenSameTextPlansAgain(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	calls := 0
+	llm := func(context.Context, string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", errors.New("llm down")
+		}
+		return "@Coder take the next step. Ask for the repo if missing.", nil
+	}
+	goal := "Add a health check to the existing service."
+	pmProcessPlanningMessage(hub, userGoalMsg("once-fb", goal), "project-manager-once-fb", llm)
+	if len(hub.posts) != 1 {
+		t.Fatalf("fallback should post, got %d", len(hub.posts))
+	}
+	if !strings.Contains(hub.posts[0], "Could not draft a plan") {
+		t.Fatalf("expected honest fallback, got %q", hub.posts[0])
+	}
+	pmProcessPlanningMessage(hub, userGoalMsg("once-fb", goal), "project-manager-once-fb", llm)
+	if calls != 2 || len(hub.posts) != 2 {
+		t.Fatalf("resend after fallback must plan again, calls=%d posts=%d", calls, len(hub.posts))
+	}
+}
+
+func TestPMPostErrorThenSameTextPlansAgain(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{failPosts: 1}
+	calls := 0
+	llm := func(context.Context, string) (string, error) {
+		calls++
+		return "@Tester verify once there is a path.", nil
+	}
+	goal := "Check the existing deploy script still runs."
+	pmProcessPlanningMessage(hub, userGoalMsg("once-pe", goal), "project-manager-once-pe", llm)
+	if len(hub.posts) != 0 {
+		t.Fatalf("failed post must not record a plan, got %v", hub.posts)
+	}
+	pmProcessPlanningMessage(hub, userGoalMsg("once-pe", goal), "project-manager-once-pe", llm)
+	if calls != 2 || len(hub.posts) != 1 {
+		t.Fatalf("resend after post error must plan again, calls=%d posts=%d", calls, len(hub.posts))
+	}
+}
+
+func TestClaimedHumanTurnFallsThroughToChannelPrompt(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	var prompts []string
+	llm := func(_ context.Context, p string) (string, error) {
+		prompts = append(prompts, p)
+		if strings.Contains(p, "Output ONLY the plan") {
+			return "Plan: owners still have it.", nil
+		}
+		return "PASS", nil
+	}
+	goal := "Document the existing retry budget in the README."
+	pmProcessChannelTurn(hub, humanTurn("once-ft", goal), "project-manager-once-ft", llm)
+	pmProcessChannelTurn(hub, humanTurn("once-ft", goal), "project-manager-once-ft", llm)
+	if len(hub.posts) != 1 {
+		t.Fatalf("no second plan post, got %d %v", len(hub.posts), hub.posts)
+	}
+	if len(prompts) < 2 {
+		t.Fatal("second human turn must call the channel prompt LLM")
+	}
+	last := prompts[len(prompts)-1]
+	if strings.Contains(last, "Output ONLY the plan") {
+		t.Fatal("already-claimed turn must not use the plan prompt")
+	}
+	if !strings.Contains(last, "PASS") && !strings.Contains(last, "SPEAK") {
+		t.Fatalf("channel prompt missing PASS/SPEAK, got %s", last)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"AegisClaw/internal/agent"
@@ -166,6 +167,68 @@ func extractChannelFromPayload(payload interface{}, def string) string {
 		}
 	}
 	return ch
+}
+
+// plannedHumanGoals is process-local (not durable). A PM restart may plan the
+// same text again. Values: goalInflight while LLM/post is running, goalPosted
+// after a successful non-fallback channel.post. Fallback and send errors delete
+// the key so the same text may plan once more ("Please resend the goal.").
+const (
+	goalInflight = "inflight"
+	goalPosted   = "posted"
+)
+
+var plannedHumanGoals sync.Map
+
+func normalizeHumanGoal(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
+}
+
+func humanGoalKey(chID, goal string) (string, bool) {
+	g := normalizeHumanGoal(goal)
+	if chID == "" || g == "" {
+		return "", false
+	}
+	return chID + "\x00" + g, true
+}
+
+func claimHumanGoal(chID, goal string) bool {
+	key, ok := humanGoalKey(chID, goal)
+	if !ok {
+		log.Printf("PM: skip plan empty channel or goal ch=%q", chID)
+		return false
+	}
+	_, loaded := plannedHumanGoals.LoadOrStore(key, goalInflight)
+	return !loaded
+}
+
+func humanGoalIsPosted(chID, goal string) bool {
+	key, ok := humanGoalKey(chID, goal)
+	if !ok {
+		return false
+	}
+	v, loaded := plannedHumanGoals.Load(key)
+	return loaded && v == goalPosted
+}
+
+func markHumanGoalPosted(chID, goal string) {
+	key, ok := humanGoalKey(chID, goal)
+	if !ok {
+		return
+	}
+	plannedHumanGoals.Store(key, goalPosted)
+}
+
+func releaseHumanGoal(chID, goal string) {
+	key, ok := humanGoalKey(chID, goal)
+	if !ok {
+		return
+	}
+	plannedHumanGoals.Delete(key)
+}
+
+func resetPlannedHumanGoals() {
+	plannedHumanGoals = sync.Map{}
 }
 
 func hasRoleWord(lower, word string) bool {
@@ -390,9 +453,9 @@ func pmBatchIsSelfOrSystem(uniqueSource string, msgs []map[string]interface{}) b
 	return true
 }
 
-// pmProcessPlanningMessage runs LLM planning, channel.post, and ensure.role delegation.
-// Must not run synchronously inside the Receive loop for hub RPC-delivered user.goal
-// (see user.goal case: immediate Reply + goroutine).
+// pmProcessPlanningMessage runs LLM planning, channel.post, and ensure.role.
+// user.goal Replies first then calls this on the Receive goroutine (no extra
+// background goroutine — nested Send shares the hubclient decoder).
 func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqueSource string, realLLM agent.LLMCallFunc) {
 	payloadStr := fmt.Sprintf("%v", msg.Payload)
 	goal := extractGoalFromPayload(msg.Payload)
@@ -418,12 +481,18 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 	if goal == "" {
 		goal = payloadStr
 	}
+	if !claimHumanGoal(chID, goal) {
+		log.Printf("PM: skip duplicate plan ch=%s goal=%q", chID, truncateForLog(goal, 80))
+		return
+	}
 	fallback := generatePlan(goal, chID)
 	planPrompt := getPMPlanPrompt() + "\n\nUser goal: " + goal + "\n\nChannel: " + chID + "\n\nPlan:"
 	llmPlan, err := realLLM(context.Background(), planPrompt)
+	usedFallback := false
 	if err != nil || strings.TrimSpace(llmPlan) == "" {
 		log.Printf("PM: LLM plan gen failed (%v), using honest fallback", err)
 		plan = fallback
+		usedFallback = true
 	} else {
 		plan = sanitizePMPost(llmPlan, fallback)
 		needle, echoed := promptEchoNeedle(llmPlan)
@@ -431,6 +500,9 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 			bootargs.PMModel(agent.DefaultPMModel), len(llmPlan), len(plan), plan == fallback, needle, truncateForLog(llmPlan, 400))
 		if echoed && plan == fallback {
 			log.Printf("PM: sanitizer dropped raw plan as echo")
+		}
+		if plan == fallback {
+			usedFallback = true
 		}
 	}
 	postMsg := hubclient.Message{
@@ -446,8 +518,14 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 	}
 	if _, err := hcl.Send(context.Background(), postMsg); err != nil {
 		log.Printf("pm: channel.post to store failed (ACL?): %v", err)
+		releaseHumanGoal(chID, goal)
+		return
+	}
+	fmt.Printf("PM: posted plan to channel %s\n", chID)
+	if usedFallback {
+		releaseHumanGoal(chID, goal)
 	} else {
-		fmt.Printf("PM: posted plan to channel %s\n", chID)
+		markHumanGoalPosted(chID, goal)
 	}
 
 	rolesToEnsure := extractRolesFromText(plan)
@@ -585,29 +663,39 @@ func pmProcessChannelTurn(hcl hubclient.Client, msg hubclient.Message, uniqueSou
 		collab.Tracef("project-manager", "channel.turn.skip", "ch=%s reason=self_or_system", chID)
 		return
 	}
-	// Human goal / plan trigger: run full planning path when turn includes user content.
+	// First distinct human text in this channel: planning. Already-posted
+	// human text falls through to the SPEAK/PASS channel prompt (not silence).
+	planned := false
 	for _, m := range turn.NewMessages {
 		from := ""
 		if s, ok := m["from"].(string); ok {
 			from = s
 		}
 		content := collab.PayloadContentString(m["content"])
-		if collab.IsHumanPoster(from) && content != "" {
-			planMsg := hubclient.Message{
-				Source:      msg.Source,
-				Destination: uniqueSource,
-				Command:     "user.goal",
-				Payload: map[string]interface{}{
-					"channel":    chID,
-					"channel_id": chID,
-					"content":    content,
-					"goal":       content,
-				},
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-			}
-			pmProcessPlanningMessage(hcl, planMsg, uniqueSource, realLLM)
-			return
+		if !collab.IsHumanPoster(from) || content == "" {
+			continue
 		}
+		if humanGoalIsPosted(chID, content) {
+			continue
+		}
+		planMsg := hubclient.Message{
+			Source:      msg.Source,
+			Destination: uniqueSource,
+			Command:     "user.goal",
+			Payload: map[string]interface{}{
+				"channel":    chID,
+				"channel_id": chID,
+				"content":    content,
+				"goal":       content,
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}
+		pmProcessPlanningMessage(hcl, planMsg, uniqueSource, realLLM)
+		planned = true
+		break
+	}
+	if planned {
+		return
 	}
 
 	mentioned := collab.IsMentioned(uniqueSource, batchText) || collab.IsMentioned("project-manager", batchText)

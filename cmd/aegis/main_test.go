@@ -479,8 +479,8 @@ func TestBuildMinimalProposal(t *testing.T) {
 // No daemon, no tags, no live I/O — pure unit coverage for the assertion logic.
 func TestSkillsProposeJSONOK(t *testing.T) {
 	type row struct {
-		name string
-		out  string
+		name   string
+		out    string
 		wantID string
 		wantOK bool
 	}
@@ -639,4 +639,59 @@ func TestRunSkillsProposeDrivesSendTo(t *testing.T) {
 		t.Logf("Store side-effect verified via proposal.get for %s: %v", gotID, getResp)
 	}
 	resetInternalHubClientsForTest()
+}
+
+func TestEnsureRoleIDFromResp(t *testing.T) {
+	if got := ensureRoleIDFromResp(map[string]interface{}{"id": "project-manager-v88-css", "role": "project-manager"}); got != "project-manager-v88-css" {
+		t.Fatalf("got %q", got)
+	}
+	if ensureRoleIDFromResp(nil) != "" || ensureRoleIDFromResp("x") != "" {
+		t.Fatal("invalid resp must be empty")
+	}
+}
+
+func TestVMListContainsID(t *testing.T) {
+	data := []interface{}{
+		map[string]interface{}{"ID": "project-manager-v88c-css", "Type": "project-manager"},
+	}
+	if !vmListContainsID(data, "project-manager-v88c-css") {
+		t.Fatal("expected ID match")
+	}
+	if vmListContainsID(data, "missing") {
+		t.Fatal("missing id")
+	}
+}
+
+func TestChannelHasProjectManagerPost(t *testing.T) {
+	userOnly := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"from": "user", "content": "hi"},
+		},
+	}
+	if channelHasProjectManagerPost(userOnly) {
+		t.Fatal("user-only channel is not a PM plan")
+	}
+	withPM := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"from": "user", "content": "hi"},
+			map[string]interface{}{"from": "project-manager-v88-css", "content": "Plan: @Coder."},
+		},
+		"members": []interface{}{
+			map[string]interface{}{"role": "project-manager", "last_error": ""},
+		},
+	}
+	if !channelHasProjectManagerPost(withPM) {
+		t.Fatal("expected PM post")
+	}
+	if channelProjectManagerLastError(withPM) != "" {
+		t.Fatal("empty last_error")
+	}
+	errCh := map[string]interface{}{
+		"members": []interface{}{
+			map[string]interface{}{"role": "project-manager", "last_error": "ERR_DESTINATION_NOT_FOUND"},
+		},
+	}
+	if channelProjectManagerLastError(errCh) != "ERR_DESTINATION_NOT_FOUND" {
+		t.Fatal("expected dest error")
+	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -73,48 +72,38 @@ func portalKickoffPMGoal(chID, goalText string) {
 		_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": chID})
 	}
 
-	// Post the original goal from the Home page (or CLI) as a user message in the channel.
-	// This provides context alongside the PM's structured plan (both are useful).
+	ensurePayload := map[string]interface{}{
+		"role":    "project-manager",
+		"channel": chID,
+	}
+	var ensureResp interface{}
+	if sockResp, sockErr := sendSocketRequestWithTimeout("orchestrator.ensure_role", map[string]string{
+		"role":    "project-manager",
+		"channel": chID,
+	}, false, 90*time.Second); sockErr == nil && sockResp.OK && sockResp.Data != nil {
+		ensureResp = sockResp.Data
+	} else if resp, err := sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", ensurePayload, 30*time.Second); err == nil {
+		ensureResp = resp
+	} else {
+		logrus.Warnf("portal goal.submit: ensure PM for %s: %v", chID, err)
+		return
+	}
+	pmID := ensureRoleIDFromResp(ensureResp)
+	if pmID == "" {
+		logrus.Warnf("portal goal.submit: missing guest id for %s", chID)
+		return
+	}
+	if err := waitForHubComponent(pmID, 45*time.Second); err != nil {
+		logrus.Warnf("portal goal.submit: %v", err)
+		return
+	}
+	// Post only after the PM id is on the hub so channel.turn has a dest.
+	// Do not send user.goal (#87).
 	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
 		"channel_id": chID,
 		"from":       "user",
 		"content":    goalText,
 	})
-
-	ensurePayload := map[string]interface{}{
-		"role":    "project-manager",
-		"channel": chID,
-	}
-	roleTarget := "project-manager"
-	if sockResp, sockErr := sendSocketRequestWithTimeout("orchestrator.ensure_role", map[string]string{
-		"role":    "project-manager",
-		"channel": chID,
-	}, false, 90*time.Second); sockErr == nil && sockResp.OK && sockResp.Data != nil {
-		if idMap, ok := sockResp.Data.(map[string]interface{}); ok {
-			if id, ok := idMap["id"].(string); ok && strings.TrimSpace(id) != "" {
-				roleTarget = id
-			}
-		}
-	} else if ensureResp, err := sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", ensurePayload, 30*time.Second); err == nil {
-		if idMap, ok := ensureResp.(map[string]interface{}); ok {
-			if id, ok := idMap["id"].(string); ok && strings.TrimSpace(id) != "" {
-				roleTarget = id
-			}
-		}
-	} else {
-		logrus.Warnf("portal goal.submit: ensure PM for %s: %v", chID, err)
-	}
-
-	time.Sleep(2 * time.Second)
-	goalPayload := map[string]interface{}{
-		"goal":    goalText,
-		"channel": chID,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	if _, err := sendToComponentViaHubContext(ctx, roleTarget, "user.goal", goalPayload); err != nil {
-		logrus.Warnf("portal goal.submit: user.goal to %s: %v", roleTarget, err)
-	}
 }
 
 func portalHarnessGet(payload interface{}) (map[string]interface{}, error) {
