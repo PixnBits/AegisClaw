@@ -2747,6 +2747,136 @@ func runChannelPost(cmd *cobra.Command, args []string) {
 	fmt.Printf("Posted to channel %s: %+v\n", chID, data)
 }
 
+func ensureRoleIDFromResp(ensureResp interface{}) string {
+	m, ok := ensureResp.(map[string]interface{})
+	if !ok || m == nil {
+		return ""
+	}
+	id, _ := m["id"].(string)
+	return strings.TrimSpace(id)
+}
+
+func waitForHubComponent(id string, maxWait time.Duration) error {
+	if id == "" {
+		return fmt.Errorf("empty component id")
+	}
+	deadline := time.Now().Add(maxWait)
+	var last error
+	for time.Now().Before(deadline) {
+		resp, err := sendSocketRequestWithTimeout("vm.list", map[string]string{}, true, 3*time.Second)
+		if err != nil {
+			last = err
+		} else if !resp.OK {
+			last = fmt.Errorf("%s", resp.Error)
+		} else if vmListContainsID(resp.Data, id) {
+			return nil
+		} else {
+			last = fmt.Errorf("%s not in vm list", id)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if last == nil {
+		last = fmt.Errorf("timeout")
+	}
+	return fmt.Errorf("wait for VM %s: %w", id, last)
+}
+
+func vmListContainsID(data interface{}, id string) bool {
+	arr, ok := data.([]interface{})
+	if !ok {
+		return false
+	}
+	for _, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, k := range []string{"ID", "id", "Id"} {
+			if s, _ := m[k].(string); s == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func channelHasProjectManagerPost(chData interface{}) bool {
+	m, ok := chData.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	raw, ok := m["messages"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, item := range raw {
+		mm, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		from, _ := mm["from"].(string)
+		if strings.Contains(strings.ToLower(from), "project-manager") {
+			return true
+		}
+	}
+	return false
+}
+
+func channelProjectManagerLastError(chData interface{}) string {
+	m, ok := chData.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	raw, ok := m["members"].([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, item := range raw {
+		mm, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role, _ := mm["role"].(string)
+		if collab.NormalizeMemberRole(role) != "project-manager" {
+			continue
+		}
+		errStr, _ := mm["last_error"].(string)
+		return errStr
+	}
+	return ""
+}
+
+func pollChannelForPMPlan(chID string, budget time.Duration) (interface{}, error) {
+	deadline := time.Now().Add(budget)
+	var last interface{}
+	var lastErr error
+	for time.Now().Before(deadline) {
+		data, err := sendToComponentViaHub("store", "channel.get", map[string]string{"channel_id": chID})
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		last = data
+		lastErr = nil
+		if channelHasProjectManagerPost(data) {
+			return data, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if last != nil {
+		memErr := channelProjectManagerLastError(last)
+		if memErr != "" {
+			return last, fmt.Errorf("no PM plan on %s after %s (last_error=%s)", chID, budget, memErr)
+		}
+		return last, fmt.Errorf("no PM plan on %s after %s", chID, budget)
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no PM plan on %s after %s", chID, budget)
+}
+
 func runPMGoal(cmd *cobra.Command, args []string) {
 	if len(args) < 1 {
 		fmt.Println("usage: aegis pm goal <text...> [--channel <id>]")
@@ -2799,35 +2929,27 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 			return
 		}
 	}
-	fmt.Printf("Ensured project-manager for channel %s\n", chID)
-	_ = ensureResp
-	// Post the goal as a user message. Facilitator channel.turn is the single
-	// planning trigger (issue #87). Do not also send user.goal — that caused a
-	// second PM plan for the same human text.
+	pmID := ensureRoleIDFromResp(ensureResp)
+	if pmID == "" {
+		fmt.Printf("pm ensure error: missing guest id\n")
+		return
+	}
+	fmt.Printf("Ensured project-manager as %s for channel %s\n", pmID, chID)
+	if err := waitForHubComponent(pmID, 45*time.Second); err != nil {
+		fmt.Printf("%v\n", err)
+		return
+	}
+	// Post after the guest is registered so channel.turn has a dest. Do not also
+	// send user.goal (#87). Facilitator channel.turn is the single plan trigger.
 	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
 		"channel_id": chID,
 		"from":       "user",
 		"content":    goalText,
 	})
 	fmt.Printf("Posted goal to channel %s (PM plans via channel.turn)\n", chID)
-	time.Sleep(15 * time.Second)
-	// 3. Inspect the channel to see the plan post (and any role activity).
-	// Small retry tolerates transient hub/store latency right after on-demand role launches
-	// (role registration churn + store add_member). Mirrors the ensure retry above and the
-	// E2E script's post-trigger poll. Makes `aegis pm goal` output the plan more reliably
-	// for manual use (the E2E script is the authoritative long-poll verifier).
-	var data interface{}
-	for attempt := 0; attempt < 3; attempt++ {
-		data, err = sendToComponentViaHub("store", "channel.get", map[string]string{"channel_id": chID})
-		if err == nil {
-			break
-		}
-		if attempt < 2 {
-			time.Sleep(time.Duration(2+attempt) * time.Second)
-		}
-	}
+	data, err := pollChannelForPMPlan(chID, 90*time.Second)
 	if err != nil {
-		fmt.Printf("channel get error: %v\n", err)
+		fmt.Printf("pm goal error: %v\n", err)
 		return
 	}
 	if jsonOutput {
@@ -3074,7 +3196,7 @@ See docs/specs/user-journeys/08-multi-agent-team-workflows.md and teams-multi-ag
 	}
 	pmGoalCmd := &cobra.Command{
 		Use:   "goal <text...>",
-		Short: "Send a goal to the Project Manager (triggers plan using custom prompt, channel.post, ensure roles)",
+		Short: "Ensure the Project Manager on a channel, post the goal as a user message, and wait for a plan",
 		Args:  cobra.MinimumNArgs(1),
 		Run:   runPMGoal,
 	}

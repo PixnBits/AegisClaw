@@ -72,28 +72,38 @@ func portalKickoffPMGoal(chID, goalText string) {
 		_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": chID})
 	}
 
-	// Post the original goal from the Home page (or CLI) as a user message in the channel.
-	// This provides context alongside the PM's structured plan (both are useful).
+	ensurePayload := map[string]interface{}{
+		"role":    "project-manager",
+		"channel": chID,
+	}
+	var ensureResp interface{}
+	if sockResp, sockErr := sendSocketRequestWithTimeout("orchestrator.ensure_role", map[string]string{
+		"role":    "project-manager",
+		"channel": chID,
+	}, false, 90*time.Second); sockErr == nil && sockResp.OK && sockResp.Data != nil {
+		ensureResp = sockResp.Data
+	} else if resp, err := sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", ensurePayload, 30*time.Second); err == nil {
+		ensureResp = resp
+	} else {
+		logrus.Warnf("portal goal.submit: ensure PM for %s: %v", chID, err)
+		return
+	}
+	pmID := ensureRoleIDFromResp(ensureResp)
+	if pmID == "" {
+		logrus.Warnf("portal goal.submit: missing guest id for %s", chID)
+		return
+	}
+	if err := waitForHubComponent(pmID, 45*time.Second); err != nil {
+		logrus.Warnf("portal goal.submit: %v", err)
+		return
+	}
+	// Post only after the PM id is on the hub so channel.turn has a dest.
+	// Do not send user.goal (#87).
 	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
 		"channel_id": chID,
 		"from":       "user",
 		"content":    goalText,
 	})
-
-	ensurePayload := map[string]interface{}{
-		"role":    "project-manager",
-		"channel": chID,
-	}
-	if sockResp, sockErr := sendSocketRequestWithTimeout("orchestrator.ensure_role", map[string]string{
-		"role":    "project-manager",
-		"channel": chID,
-	}, false, 90*time.Second); sockErr != nil || !sockResp.OK {
-		if _, err := sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", ensurePayload, 30*time.Second); err != nil {
-			logrus.Warnf("portal goal.submit: ensure PM for %s: %v", chID, err)
-		}
-	}
-	// Planning is channel.turn from the user post above (issue #87). Do not also
-	// send user.goal or the PM posts two plans for the same human text.
 }
 
 func portalHarnessGet(payload interface{}) (map[string]interface{}, error) {
