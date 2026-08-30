@@ -100,7 +100,7 @@ const DefaultLLMModel = "qwen3-coder:30b"
 // DefaultPMModel is the fallback for Project Manager planning when neither
 // AEGIS_PM_MODEL nor AEGIS_DEFAULT_MODEL is set. Coding models tend to echo
 // the plan prompt; a general model is the actual PM.
-const DefaultPMModel = "llama3.3:latest"
+const DefaultPMModel = "qwen3.6:35b"
 
 // IsScopeRevoked is the central fail-closed governance check for the Agent Runtime.
 // It must be called before any privileged action (tool execution, scope expansion,
