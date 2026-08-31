@@ -43,6 +43,7 @@ YOURUSER ALL=(ALL) NOPASSWD: /bin/rm /tmp/aegis
 #   AEGIS_BOOT_TIMING     — guest BOOT_TIMING phases + boot-metrics (dev profiling)
 #   AEGIS_COLLAB_TRACE    — channel fan-out/STOMP trace logs (dev debugging only)
 #   AEGIS_DEFAULT_MODEL   — Ollama model tag injected to guest VMs (e.g. llama3.2:3b)
+#   AEGIS_PM_MODEL        — Project Manager Ollama tag (aegis.pm_model); not the agent default
 #   AEGIS_HUB_SOCKET      — isolated E2E / custom hub socket path
 #   AEGIS_STATE_DIR       — isolated E2E daemon state directory
-Defaults! /path/to/AegisClaw/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
+Defaults! /path/to/AegisClaw/bin/aegis env_keep += "AEGIS_BOOT_TIMING AEGIS_COLLAB_TRACE AEGIS_DEFAULT_MODEL AEGIS_PM_MODEL AEGIS_HUB_SOCKET AEGIS_STATE_DIR"
