@@ -33,6 +33,28 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "go build store: %v\n%s\n", err, out)
 		os.Exit(1)
 	}
+	modRoot := wd
+	for i := 0; i < 6; i++ {
+		if _, err := os.Stat(filepath.Join(modRoot, "go.mod")); err == nil {
+			break
+		}
+		parent := filepath.Dir(modRoot)
+		if parent == modRoot {
+			break
+		}
+		modRoot = parent
+	}
+	helperBin := filepath.Join(dir, "git-remote-hub")
+	hcmd := exec.Command("go", "build", "-o", helperBin, "./cmd/git-remote-hub")
+	hcmd.Dir = modRoot
+	if out, err := hcmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "go build git-remote-hub: %v\n%s\n", err, out)
+		os.Exit(1)
+	}
+	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
+		fmt.Fprintf(os.Stderr, "set PATH: %v\n", err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
