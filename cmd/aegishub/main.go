@@ -479,7 +479,7 @@ func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 		}
 		return tenant, nil
 	}
-	if os.Getenv("AEGIS_GIT_ALLOW_UNIX") != "1" {
+	if !unixGitAllowed() {
 		return "", fmt.Errorf("ERR_UNKNOWN_PEER")
 	}
 	tenant := lookupPeerTenant(verifiedPub)
@@ -577,7 +577,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	if regMsg.Source == "git-remote-hub" {
 		// Possession of AEGIS_HUB_PRIVKEY: dummy/empty never count, even in AEGIS_DEV_MODE.
 		// vsock: lease[CID] pub must equal verified pub, then tenant=identities[pub].
-		// unix: only with AEGIS_GIT_ALLOW_UNIX=1, lookup(verified pub). Never payload.tenant.
+		// unix: production always ERR_UNKNOWN_PEER (no Serve). Sit hubBin: -tags testunixgit. Never payload.tenant.
 		if !verifyGitRegisterSignature(raw, regMsg, pubKey) {
 			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			return
