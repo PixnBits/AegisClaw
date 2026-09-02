@@ -37,7 +37,6 @@ func StoreLease(cid uint32, pub string) {
 		return
 	}
 	lease.Store(cid, pub)
-	closed.Delete(cid)
 }
 
 // StoreLeaseIfAbsentOrSame is handshake CAS fill: if lease empty, Store
@@ -66,7 +65,6 @@ func StoreLeaseCAS(cid uint32, pub string) bool {
 	}
 	actual, loaded := lease.LoadOrStore(cid, pub)
 	if !loaded {
-		closed.Delete(cid)
 		return true
 	}
 	existing, _ := actual.(string)
