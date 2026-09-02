@@ -10,10 +10,15 @@ import (
 	"testing"
 )
 
-func TestFirecrackerStopWipesBuilderLeftoverRootfs(t *testing.T) {
+// TestBuilderFirecrackerStopUnlinksPrivateRootfs is the Builder SIT for the
+// Firecracker path without KVM/live guest boot: prepareVMRootfs must claim a
+// private copy, Stop (after a registered VM) must unlink that copy, and the
+// shared template must not contain the plant. Named-file allowlist wipes in
+// StopVM are the miss; unlink of vmID.rootfs.img after guest unmount is the sit.
+func TestBuilderFirecrackerStopUnlinksPrivateRootfs(t *testing.T) {
 	stateDir := t.TempDir()
 	templateDir := t.TempDir()
-	template := filepath.Join(templateDir, "shared-rootfs-template.img")
+	template := filepath.Join(templateDir, "builder.img")
 	templateBytes := []byte("TEMPLATE-UNPOISONED-ROOTFS-BYTES")
 	if err := os.WriteFile(template, templateBytes, 0644); err != nil {
 		t.Fatal(err)
@@ -32,22 +37,10 @@ func TestFirecrackerStopWipesBuilderLeftoverRootfs(t *testing.T) {
 		t.Fatalf("private builder-sit-1.rootfs.img missing after prepareVMRootfs: %v", err)
 	}
 
-	// Plant leftover git/creds ON the private image (bytes stand in for guest
-	// files inside the image) and as siblings Stop must remove.
+	// Plant leftover git/creds INSIDE the private image (bytes in the img file
+	// stand in for guest files). Do not mount a live guest; no KVM.
 	poison := []byte("https://builder:tok@example.test\n")
 	if err := os.WriteFile(wantPrivate, poison, 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{".git-credentials", ".netrc", "id_rsa", "id_ed25519"} {
-		if err := os.WriteFile(filepath.Join(stateDir, name), poison, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	work := filepath.Join(stateDir, "builder-work")
-	if err := os.MkdirAll(work, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, "secret"), poison, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,7 +50,7 @@ func TestFirecrackerStopWipesBuilderLeftoverRootfs(t *testing.T) {
 		config: VMConfig{
 			ID:         vmID,
 			Image:      "builder.img",
-			RootfsPath: template, // shared template — Stop must not delete/truncate it
+			RootfsPath: template,
 		},
 		sockPath: filepath.Join(stateDir, "fc-"+vmID+".sock"),
 	}
@@ -68,17 +61,15 @@ func TestFirecrackerStopWipesBuilderLeftoverRootfs(t *testing.T) {
 	}
 
 	if _, err := os.Stat(wantPrivate); !os.IsNotExist(err) {
-		t.Fatalf("private rootfs.img must be gone after Stop, stat err=%v", err)
-	}
-	for _, name := range []string{".git-credentials", ".netrc", "id_rsa", "id_ed25519", "builder-work"} {
-		if _, err := os.Stat(filepath.Join(stateDir, name)); !os.IsNotExist(err) {
-			t.Fatalf("planted leftover %s must be gone after Stop, stat err=%v", name, err)
-		}
+		t.Fatalf("private rootfs.img must be unlinked after Stop, stat err=%v", err)
 	}
 
 	got, err := os.ReadFile(template)
 	if err != nil {
 		t.Fatalf("shared template must still exist: %v", err)
+	}
+	if bytes.Contains(got, poison) {
+		t.Fatal("shared template must not contain the plant")
 	}
 	if !bytes.Equal(got, templateBytes) {
 		t.Fatalf("shared template poisoned or truncated: got %q want %q", got, templateBytes)

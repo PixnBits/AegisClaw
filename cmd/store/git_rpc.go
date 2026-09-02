@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -229,4 +231,32 @@ func wipeBuilderLeftovers() {
 		_ = os.Remove(name)
 	}
 	_ = os.RemoveAll("builder-work")
+}
+
+func builderStopID(raw interface{}) string {
+	p := payloadMap(raw)
+	if id := payloadString(p, "id", "builder_id", "vm_id"); id != "" {
+		return id
+	}
+	return "builder"
+}
+
+// requestOrchestratorStopVM asks the host daemon to StopVM the Builder.
+// Store-cwd wipe (wipeBuilderLeftovers / T11) stays in addition, not instead.
+// The daemon unlinks the private Firecracker rootfs only after backend.Stop
+// (guest unmounted); this must not wipe/unlink the img before Stop (EBUSY).
+func requestOrchestratorStopVM(encoder *json.Encoder, priv ed25519.PrivateKey, ts string, raw interface{}) {
+	if encoder == nil {
+		return
+	}
+	id := builderStopID(raw)
+	msg := Message{
+		Source:      "store",
+		Destination: "daemon-orchestrator",
+		Command:     "orchestrator.stop_vm",
+		Payload:     map[string]interface{}{"id": id, "builder_id": id},
+		Timestamp:   ts,
+	}
+	signMessage(&msg, priv)
+	_ = encoder.Encode(msg)
 }

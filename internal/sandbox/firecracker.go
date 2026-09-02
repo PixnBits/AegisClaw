@@ -337,9 +337,6 @@ func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
 		if privateRootfs != "" {
 			_ = os.Remove(privateRootfs)
 		}
-		if isBuilderIDOrType(vmID) || isBuilderIDOrType(vm.config.Image) || isBuilderIDOrType(vm.config.RootfsPath) {
-			wipeBuilderHostLeftovers(stateDir)
-		}
 	}
 	if vm.sockPath != "" {
 		_ = os.Remove(vm.sockPath)
@@ -353,19 +350,6 @@ func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
 
 	logrus.Infof("VM %s stopped", vmID)
 	return nil
-}
-
-// wipeBuilderHostLeftovers removes leftover host-side Builder git creds next to the
-// private per-VM rootfs image (under the Firecracker state dir). It must not be
-// pointed at Store cwd or the AegisClaw worktree.
-func wipeBuilderHostLeftovers(stateDir string) {
-	if stateDir == "" || stateDir == "." {
-		return
-	}
-	for _, name := range []string{".git-credentials", ".netrc", "id_rsa", "id_ed25519"} {
-		_ = os.Remove(filepath.Join(stateDir, name))
-	}
-	_ = os.RemoveAll(filepath.Join(stateDir, "builder-work"))
 }
 
 // Status returns the current status of a VM.

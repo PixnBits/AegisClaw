@@ -5633,6 +5633,35 @@ func startOrchestratorCommandReceiver() {
 				}
 				continue
 			}
+			if msg.Command == "orchestrator.stop_vm" || msg.Command == "vm.stop" {
+				payload, _ := msg.Payload.(map[string]interface{})
+				id, _ := payload["id"].(string)
+				if id == "" {
+					id, _ = payload["builder_id"].(string)
+				}
+				if id == "" {
+					id, _ = payload["vm_id"].(string)
+				}
+				resp := map[string]interface{}{"id": id, "status": "stopped"}
+				if id == "" {
+					resp["error"] = "missing vm id"
+					resp["status"] = "error"
+				} else if orchestrator == nil {
+					resp["error"] = "orchestrator unavailable"
+					resp["status"] = "error"
+				} else if err := orchestrator.StopVM(context.Background(), id); err != nil {
+					resp["error"] = err.Error()
+					resp["status"] = "error"
+				}
+				_ = client.Reply(context.Background(), hubclient.Message{
+					Source:      requesterID,
+					Destination: msg.Source,
+					Command:     "response",
+					Payload:     resp,
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				})
+				continue
+			}
 			if msg.Command == "ensure.role" || msg.Command == "orchestrator.ensure_role" {
 				payload, _ := msg.Payload.(map[string]interface{})
 				role, _ := payload["role"].(string)

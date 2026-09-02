@@ -279,6 +279,8 @@ func claimPooledRootfs(stateDir, vmID, templateRootfs string) (string, bool) {
 	pfx := "agent"
 	if strings.HasPrefix(vmID, "memory-") {
 		pfx = "memory"
+	} else if isBuilderIDOrType(vmID) {
+		pfx = "builder"
 	}
 	pattern := filepath.Join(stateDir, pfx+"-pooled-*.rootfs.img")
 	matches, _ := filepath.Glob(pattern)

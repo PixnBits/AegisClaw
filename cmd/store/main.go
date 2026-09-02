@@ -1027,6 +1027,7 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Command, response.Payload = handlePRRollbackRPC(msg.Payload, prs)
 		case "builder.destroy", "builder.destroyed", "destroy.builder", "builder.wipe", "vm.destroy", "sandbox.destroy":
 			wipeBuilderLeftovers()
+			requestOrchestratorStopVM(encoder, priv, response.Timestamp, msg.Payload)
 			response.Command = "builder.destroyed"
 			response.Payload = "ok"
 		case "pr.create":
