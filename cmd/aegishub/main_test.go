@@ -661,7 +661,7 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 		t.Fatalf("after helper close, same CID+A must still be tenant-a (file leftover OK): tenant=%q err=%v", got, err)
 	}
 
-	daemonUnleaseCID(cid)
+	unleaseCID(cid)
 	got, err = tenantForGit(pubAStr, addr)
 	if err == nil || got != "" {
 		t.Fatalf("after daemonUnleaseCID, leftover file same pub must deny: tenant=%q err=%v", got, err)
@@ -708,5 +708,157 @@ func TestGitConnectUnixDeniedWithoutAllowUnix(t *testing.T) {
 	}
 	if strings.Contains(low, "deny store git socket") {
 		t.Fatalf("unix without ALLOW_UNIX must not reach Store: %q", got)
+	}
+}
+
+func gitConnectVsock(t *testing.T, addr net.Addr, priv ed25519.PrivateKey, pub, url string) string {
+	t.Helper()
+	hub, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleConnection(&remoteAddrConn{Conn: hub, remote: addr}, &sync.Map{})
+	}()
+	reg := signGitRegister(priv, map[string]string{
+		"public_key": pub,
+		"version":    "git-remote-hub",
+	})
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(client).Encode(reg); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(client)
+	reply, err := br.ReadString('\n')
+	out := reply
+	if err != nil {
+		out += err.Error()
+	}
+	_, _ = fmt.Fprintf(client, "git-connect git-upload-pack %s\n", url)
+	line, err2 := br.ReadString('\n')
+	out += line
+	if err2 != nil {
+		out += err2.Error()
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("git-connect handleConnection did not return")
+	}
+	return out
+}
+
+func gitConnectServed(got string) bool {
+	low := strings.ToLower(got)
+	if strings.Contains(low, "err_unknown_peer") {
+		return false
+	}
+	if strings.Contains(got, `"status":"registered"`) {
+		return true
+	}
+	trim := strings.TrimSpace(got)
+	return trim == "ok" || strings.HasSuffix(trim, "\nok") || strings.Contains(low, "deny store git socket")
+}
+
+func startVMVsockSession(t *testing.T, addr net.Addr, pub string) (net.Conn, <-chan struct{}) {
+	t.Helper()
+	hub, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleConnection(&remoteAddrConn{Conn: hub, remote: addr}, &sync.Map{})
+	}()
+	reg := Message{
+		Source:      "guest-vm",
+		Destination: "hub",
+		Command:     "register",
+		Payload:     map[string]string{"public_key": pub, "version": "1"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(client).Encode(reg); err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(client).Decode(&resp); err != nil {
+		t.Fatalf("VM register decode: %v", err)
+	}
+	if e, ok := resp["error"]; ok {
+		t.Fatalf("VM register error: %v", e)
+	}
+	_ = client.SetDeadline(time.Time{})
+	return client, done
+}
+
+func TestVMSessionCIDLease(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+
+	pubA, privA, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, privB, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAStr := base64.StdEncoding.EncodeToString(pubA)
+	pubBStr := base64.StdEncoding.EncodeToString(pubB)
+	dir := t.TempDir()
+	identPath := filepath.Join(dir, "git-identities.json")
+	cidPath := filepath.Join(dir, "cid-keys.json")
+	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a", pubBStr: "tenant-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cidJSON, err := json.Marshal(map[string]string{"42": pubAStr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cidPath, cidJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
+	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
+
+	addr := &vsock.Addr{ContextID: 42, Port: 9999}
+	vmClient, vmDone := startVMVsockSession(t, addr, pubAStr)
+
+	gotA := gitConnectVsock(t, addr, privA, pubAStr, "hub::vsock/tenant-a/skill")
+	if !gitConnectServed(gotA) {
+		t.Fatalf("VM session CID→A; git-connect A want Serve, got %q", gotA)
+	}
+	gotB := gitConnectVsock(t, addr, privB, pubBStr, "hub::vsock/tenant-b/skill")
+	if gitConnectServed(gotB) || !strings.Contains(gotB, "ERR_UNKNOWN_PEER") {
+		t.Fatalf("git-connect B on CID leased to A want ERR_UNKNOWN_PEER, got %q", gotB)
+	}
+	if strings.Contains(strings.ToLower(gotB), "not your tenant") {
+		t.Fatalf("CID mismatch must not be tenancy needle: %q", gotB)
+	}
+
+	gotA2 := gitConnectVsock(t, addr, privA, pubAStr, "hub::vsock/tenant-a/skill")
+	if !gitConnectServed(gotA2) {
+		t.Fatalf("git-connect close must not unlease; second git-connect A got %q", gotA2)
+	}
+
+	_ = vmClient.Close()
+	select {
+	case <-vmDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("VM session handleConnection did not return")
+	}
+	left, err := os.ReadFile(cidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(left), pubAStr) {
+		t.Fatalf("leftover file must still contain same pub: %s", left)
+	}
+	got, err := tenantForGit(pubAStr, addr)
+	if err == nil || got != "" {
+		t.Fatalf("VM session close; leftover file same pub must deny: tenant=%q err=%v", got, err)
 	}
 }

@@ -495,15 +495,23 @@ func forgetVsockTenant(conn net.Conn) {
 	_ = conn
 }
 
-// daemonUnleaseCID is VM death: drop the in-memory lease and poison leftover
-// file rows for the same CID+pub until the daemon overwrites with a new pub
-// or removes the row. Git-connect close must not call this.
-func daemonUnleaseCID(cid uint32) {
+func storeCIDLease(cid uint32, pub string) {
+	pub = strings.TrimSpace(pub)
+	if pub == "" {
+		return
+	}
+	cidLease.Store(cid, pub)
+	cidClosed.Delete(cid)
+}
+
+func unleaseCID(cid uint32) {
 	if v, ok := cidLease.Load(cid); ok {
 		cidClosed.Store(cid, v)
 	}
 	cidLease.Delete(cid)
 }
+
+func daemonUnleaseCID(cid uint32) { unleaseCID(cid) }
 
 func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKey) bool {
 	if msg.Signature == "" || msg.Signature == "dummy" {
@@ -596,6 +604,12 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 		hubgit.Serve(&gitConn{Conn: conn, r: br}, tenant, strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
 		return
+	}
+
+	// VM Hub vsock session: lease CID→verified pub; unlease only when THIS conn closes.
+	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
+		storeCIDLease(a.ContextID, pubKeyStr)
+		defer unleaseCID(a.ContextID)
 	}
 
 	// Extract version from payload if available
