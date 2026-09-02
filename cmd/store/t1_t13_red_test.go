@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -12,6 +13,31 @@ import (
 	"time"
 )
 
+var storeBin string
+
+func TestMain(m *testing.M) {
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getwd: %v\n", err)
+		os.Exit(1)
+	}
+	dir, err := os.MkdirTemp("", "aegis-store-t1t13-bin-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mkdir: %v\n", err)
+		os.Exit(1)
+	}
+	storeBin = filepath.Join(dir, "store")
+	cmd := exec.Command("go", "build", "-o", storeBin, ".")
+	cmd.Dir = wd
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "go build store: %v\n%s\n", err, out)
+		os.Exit(1)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 // T1-T13 drive live runStore over a fake Hub unix socket.
 // They must FAIL on the current JSON-dashboard / stub-git Store.
 // Unknown command is not a deny. No t.Skip. No t.Parallel.
@@ -19,8 +45,9 @@ import (
 const rpcTimeout = 3 * time.Second
 
 var (
-	packageCWD  string
-	gitWorktree string
+	packageCWD     string
+	gitWorktree    string
+	liveStoreConns []net.Conn
 )
 
 func init() {
@@ -85,51 +112,50 @@ type liveHub struct {
 	enc  *json.Encoder
 	dec  *json.Decoder
 	cwd  string
+	cmd  *exec.Cmd
 }
 
 func startLiveHub(t *testing.T) *liveHub {
 	t.Helper()
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "hub.sock")
+	if !filepath.IsAbs(sock) || len(sock) <= 2 {
+		t.Fatalf("unix socket path must be absolute and longer than ~/ (got %q)", sock)
 	}
-	sock := filepath.Join(cwd, "hub.sock")
-	_ = os.Remove(sock)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen fake hub: %v", err)
 	}
-	origSock := hubSocket
-	hubSocket = sock
-	t.Setenv("AEGIS_HUB_SOCKET", sock)
+	cmd := exec.Command(storeBin)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+sock)
+	cmd.Stderr = io.Discard
+	cmd.Stdout = io.Discard
+	if err := cmd.Start(); err != nil {
+		_ = ln.Close()
+		t.Fatalf("start store: %v", err)
+	}
+	h := &liveHub{t: t, ln: ln, cwd: dir, cmd: cmd}
 	t.Cleanup(func() {
-		hubSocket = origSock
+		if h.cmd != nil && h.cmd.Process != nil {
+			_ = h.cmd.Process.Kill()
+			_, _ = h.cmd.Process.Wait()
+		}
+		if h.conn != nil {
+			_ = h.conn.Close()
+		}
 		_ = ln.Close()
 	})
-
-	go runStore(nil, nil)
-
-	type acc struct {
-		c   net.Conn
-		err error
+	if ul, ok := ln.(*net.UnixListener); ok {
+		_ = ul.SetDeadline(time.Now().Add(10 * time.Second))
 	}
-	ch := make(chan acc, 1)
-	go func() {
-		c, err := ln.Accept()
-		ch <- acc{c, err}
-	}()
-	var conn net.Conn
-	select {
-	case a := <-ch:
-		if a.err != nil {
-			t.Fatalf("accept store dial: %v", a.err)
-		}
-		conn = a.c
-	case <-time.After(8 * time.Second):
-		t.Fatal("timeout waiting for runStore to dial fake hub unix socket")
+	conn, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("accept store dial (listener was up first): %v", err)
 	}
-
-	h := &liveHub{t: t, ln: ln, conn: conn, enc: json.NewEncoder(conn), dec: json.NewDecoder(conn), cwd: cwd}
+	h.conn = conn
+	h.enc = json.NewEncoder(conn)
+	h.dec = json.NewDecoder(conn)
 	h.handshake()
 	return h
 }
@@ -174,10 +200,8 @@ func (h *liveHub) rpc(source, command string, payload interface{}) Message {
 
 func withLiveStore(t *testing.T, fn func(h *liveHub)) {
 	t.Helper()
-	withTempDir(t, func() {
-		h := startLiveHub(t)
-		fn(h)
-	})
+	h := startLiveHub(t)
+	fn(h)
 }
 
 func listGitRepos(root string) []string {
@@ -335,11 +359,11 @@ func TestT2_CourtSkipMustNotExist(t *testing.T) {
 
 func TestT3_CrossTenantFetchMustFail(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		before := listGitRepos(".")
+		before := listGitRepos(h.cwd)
 		aResp := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		afterA := listGitRepos(".")
+		afterA := listGitRepos(h.cwd)
 		bResp := h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
-		afterB := listGitRepos(".")
+		afterB := listGitRepos(h.cwd)
 		pathsA := addedPaths(before, afterA)
 		pathsB := addedPaths(afterA, afterB)
 		allA := absRepos(afterA)
@@ -414,53 +438,27 @@ func TestT6_CoderHasNoGit(t *testing.T) {
 
 func TestT7_RealGitClonePush(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		repos := absRepos(listGitRepos("."))
-		if len(repos) == 0 {
-			t.Fatal("T7: git.clone created no on-disk repo to probe with real git")
-		}
-		localBare := false
-		pushAcceptedLocal := false
-		for _, repo := range repos {
-			if gitDirLooksBare(repo) || strings.Contains(repo, string(filepath.Separator)+"repos"+string(filepath.Separator)) {
-				localBare = true
-			}
-			cfg, _ := exec.Command("git", "-C", repo, "config", "--get", "core.bare").Output()
-			if strings.TrimSpace(string(cfg)) == "true" {
-				localBare = true
-			}
-			work := filepath.Join(h.cwd, "t7-work")
-			_ = os.RemoveAll(work)
-			clone := exec.Command("git", "clone", repo, work)
-			clone.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-			if out, err := clone.CombinedOutput(); err != nil {
-				t.Logf("T7: git clone of Store path %s failed: %s (%v)", repo, out, err)
-				continue
-			}
-			if err := os.WriteFile(filepath.Join(work, "t7.txt"), []byte("t7\n"), 0644); err != nil {
-				t.Fatalf("write probe: %v", err)
-			}
-			_ = exec.Command("git", "-C", work, "add", "t7.txt").Run()
-			commit := exec.Command("git", "-C", work, "-c", "user.name=tester", "-c", "user.email=tester@example.test", "commit", "-m", "t7")
-			commit.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-			_ = commit.Run()
-			push := exec.Command("git", "-C", work, "push", "origin", "HEAD:refs/heads/t7")
-			push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-			if out, err := push.CombinedOutput(); err == nil {
-				pushAcceptedLocal = true
-				t.Logf("T7: local push to %s succeeded: %s", repo, out)
-			} else {
-				t.Logf("T7: local push to %s failed: %s (%v)", repo, out, err)
-			}
-		}
-		stub := h.rpc("builder", "git.push", map[string]interface{}{
+		cloned := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		want := "t7-round-trip-commit"
+		pushed := h.rpc("builder", "git.push", map[string]interface{}{
 			"repo":   "skill",
 			"tenant": "tenant-a",
+			"ref":    "refs/heads/main",
+			"commit": want,
 		})
-		stubPush := stub.Command == "git.pushed" || stub.Command == "ok" || strings.Contains(payloadText(stub), "ok")
-		if localBare || stubPush || pushAcceptedLocal {
-			t.Fatalf("T7: Store git is local git init --bare + stub push, not a real Hub-backed accepting remote (localBare=%v stubPush=%v localAccept=%v stub cmd=%q payload=%v repos=%v)", localBare, stubPush, pushAcceptedLocal, stub.Command, stub.Payload, repos)
+		stubPush := pushed.Command == "git.pushed" || pushed.Command == "ok" || strings.Contains(payloadText(pushed), "ok")
+		if stubPush {
+			t.Fatal("T7: stub git.pushed is not a commit round-trip through Store git.push / git.clone RPCs")
 		}
+		cloned2 := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		remote := strings.TrimSpace(fmt.Sprint(cloned2.Payload))
+		if remote == "" || strings.EqualFold(remote, "ok") {
+			t.Fatalf("T7: git.clone RPC did not return a cloneable Store remote (clone1 cmd=%q payload=%v clone2 cmd=%q payload=%v)", cloned.Command, cloned.Payload, cloned2.Command, cloned2.Payload)
+		}
+		if strings.HasPrefix(remote, "/") || strings.HasPrefix(remote, "file:") || strings.Contains(remote, "/repos/") {
+			t.Fatalf("T7: Store remote %q is the local init --bare path; round-trip must go through Store git.push / git.clone RPCs, not git push into repos/skill", remote)
+		}
+		t.Fatal("T7: commit did not round-trip through Store git.push / git.clone RPCs")
 	})
 }
 
@@ -497,7 +495,7 @@ func TestT9_NewSkillAlwaysStoreRepo(t *testing.T) {
 			"repo":   "newskill",
 			"tenant": "tenant-a",
 		})
-		repos := absRepos(listGitRepos("."))
+		repos := absRepos(listGitRepos(h.cwd))
 		if len(repos) == 0 {
 			t.Fatal("T9: creating a skill/project did not allocate a Store git repo")
 		}
@@ -582,7 +580,7 @@ func TestT11_DestroyedBuilderLeavesNoState(t *testing.T) {
 				handled = true
 			}
 		}
-		leftoverGit := absRepos(listGitRepos("."))
+		leftoverGit := absRepos(listGitRepos(h.cwd))
 		var leftoverCreds []string
 		for _, name := range []string{".git-credentials", ".netrc", "id_rsa", "id_ed25519"} {
 			if _, err := os.Stat(filepath.Join(h.cwd, name)); err == nil {
@@ -647,7 +645,7 @@ func TestT12_ForcePushHistoryDeleteFakeCourtFail(t *testing.T) {
 func TestT13_HubVsockOnlyNoHostGitDaemonNoSkillDotGit(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
 		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		repos := absRepos(listGitRepos("."))
+		repos := absRepos(listGitRepos(h.cwd))
 		usedLocalBare := false
 		usedFileOrTCP := false
 		for _, repo := range repos {
