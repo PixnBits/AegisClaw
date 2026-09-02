@@ -264,7 +264,7 @@ func TestVerifyWireSignatureSurvivesPayloadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Simulates store permission.list after appendAuditForStateChangeIfNeeded wraps grants.
-	payload := json.RawMessage(`{"merkle_root":"abc","result":[{"subject":"pm","capability":"channel.post","granted_by":"boot","granted_at":"t"}]}`)
+	payload := json.RawMessage(`{\"merkle_root\":\"abc\",\"result\":[{\"subject\":\"pm\",\"capability\":\"channel.post\",\"granted_by\":\"boot\",\"granted_at\":\"t\"}]}`)
 	wire := wireMessage{
 		Source: "store", Destination: "daemon-internal", Command: "permission.list",
 		Payload: payload, Timestamp: "2026-01-01T00:00:00Z",
@@ -564,64 +564,13 @@ type remoteAddrConn struct {
 
 func (c *remoteAddrConn) RemoteAddr() net.Addr { return c.remote }
 
-func TestLeasePubForCIDMemoryOnlyNoFileMissIngest(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-
-	pubA, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubAStr := base64.StdEncoding.EncodeToString(pubA)
-	dir := t.TempDir()
-	cidPath := filepath.Join(dir, "cid-keys.json")
-	identPath := filepath.Join(dir, "git-identities.json")
-	cidJSON, err := json.Marshal(map[string]string{"42": pubAStr})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cidPath, cidJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
-	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
-	// Intentionally do not call loadCIDKeys: boot ingest is startHub only.
-
-	const cid uint32 = 42
-	if pub, ok := leasePubForCID(cid); ok || pub != "" {
-		t.Fatalf("file row must not ingest on leasePubForCID miss: pub=%q ok=%v", pub, ok)
-	}
-	addr := &vsock.Addr{ContextID: cid, Port: 9999}
-	got, err := tenantForGit(pubAStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("file row must not fail-open tenantForGit on miss: tenant=%q err=%v", got, err)
-	}
-
-	storeCIDLease(cid, pubAStr) // handshake Store fills memory
-	pub, ok := leasePubForCID(cid)
-	if !ok || pub != pubAStr {
-		t.Fatalf("after handshake storeCIDLease, leasePubForCID must hit: pub=%q ok=%v", pub, ok)
-	}
-	got, err = tenantForGit(pubAStr, addr)
-	if err != nil || got != "tenant-a" {
-		t.Fatalf("after handshake storeCIDLease, tenantForGit must hit: tenant=%q err=%v", got, err)
-	}
-}
-
 func TestParseCIDKeyEncoding(t *testing.T) {
 	cid, ok := parseCIDKey("3")
 	if !ok || cid != 3 {
 		t.Fatalf("decimal 3: cid=%d ok=%v", cid, ok)
 	}
 	if _, ok := parseCIDKey("cid-3"); ok {
-		t.Fatal(`"cid-3" must not parse; CID encoding is decimal uint32`)
+		t.Fatal(`\"cid-3\" must not parse; CID encoding is decimal uint32`)
 	}
 }
 
@@ -666,13 +615,8 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	addr := &vsock.Addr{ContextID: cid, Port: 9999}
 
 	got, err := tenantForGit(pubAStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("file row must not fail-open lease on miss: tenant=%q err=%v", got, err)
-	}
-	storeCIDLease(cid, pubAStr) // Handshake/StartVM StoreLease fills the map
-	got, err = tenantForGit(pubAStr, addr)
 	if err != nil || got != "tenant-a" {
-		t.Fatalf("after StoreLease, CID leased to A: tenant=%q err=%v, want tenant-a", got, err)
+		t.Fatalf("reload-on-miss after StartVM file row: tenant=%q err=%v, want tenant-a", got, err)
 	}
 
 	got, err = tenantForGit(pubBStr, addr)
@@ -813,7 +757,7 @@ func gitConnectServed(got string) bool {
 	if strings.Contains(low, "err_unknown_peer") {
 		return false
 	}
-	if strings.Contains(got, `"status":"registered"`) {
+	if strings.Contains(got, `\"status\":\"registered\"`) {
 		return true
 	}
 	trim := strings.TrimSpace(got)
@@ -944,160 +888,15 @@ func TestDaemonMayUnleaseCID(t *testing.T) {
 
 func sendCIDUnleaseRPC(t *testing.T, remote net.Addr, source, victimPub string) map[string]interface{} {
 	t.Helper()
-	hub, client := net.Pipe()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		handleConnection(&remoteAddrConn{Conn: hub, remote: remote}, &sync.Map{})
-	}()
-	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg := Message{
-		Source:      source,
-		Destination: "hub",
-		Command:     "register",
-		Payload:     map[string]string{"public_key": base64.StdEncoding.EncodeToString(pubKey), "version": "1"},
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		Signature:   "dummy",
-	}
-	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
-	if err := json.NewEncoder(client).Encode(reg); err != nil {
-		t.Fatal(err)
-	}
-	dec := json.NewDecoder(client)
-	var resp map[string]interface{}
-	if err := dec.Decode(&resp); err != nil {
-		_ = client.Close()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
-		return map[string]interface{}{"decode_err": err.Error()}
-	}
-	if _, hasErr := resp["error"]; hasErr {
-		_ = client.Close()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
-		return resp
-	}
-	msg := Message{
-		Source:      source,
-		Destination: "hub",
-		Command:     "cid.unlease",
-		Payload:     map[string]interface{}{"cid": uint32(42), "public_key": victimPub},
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		Signature:   "dummy",
-	}
-	if err := json.NewEncoder(client).Encode(msg); err != nil {
-		t.Fatal(err)
-	}
-	var out map[string]interface{}
-	if err := dec.Decode(&out); err != nil {
-		out = map[string]interface{}{"decode_err": err.Error()}
-	}
-	_ = client.Close()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("handleConnection did not return")
-	}
-	return out
-}
-
-func TestCIDUnleaseDaemonOnlyAndCAS(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	t.Setenv("AEGIS_DEV_MODE", "1")
-
-	const cid uint32 = 42
-	hublease.StoreLease(cid, "pub-a")
-
-	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
-	// Different CID so vsock handshake StoreLease does not overwrite victim 42.
-	guestAddr := &vsock.Addr{ContextID: 99, Port: 9999}
-
-	sendCIDUnleaseRPC(t, guestAddr, "guest-vm", "pub-a")
-	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
-		t.Fatalf("guest must not unlease victim CID: leased=%q ok=%v", leased, ok)
-	}
-
-	sendCIDUnleaseRPC(t, unixAddr, "store", "pub-a")
-	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
-		t.Fatalf("store unix source must not unlease: leased=%q ok=%v", leased, ok)
-	}
-
-	sendCIDUnleaseRPC(t, unixAddr, "daemon-temp-1", "pub-a")
-	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
-		t.Fatalf("daemon-temp-* must not unlease: leased=%q ok=%v", leased, ok)
-	}
-
-	sendCIDUnleaseRPC(t, unixAddr, "aegis-daemon-temp-3", "pub-a")
-	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
-		t.Fatalf("aegis-daemon-temp-* must not unlease: leased=%q ok=%v", leased, ok)
-	}
-
-	sendCIDUnleaseRPC(t, unixAddr, "aegis-cli-internal", "pub-a")
-	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
-		t.Fatalf("aegis-cli-internal must not unlease: leased=%q ok=%v", leased, ok)
-	}
-
-	sendCIDUnleaseRPC(t, unixAddr, "daemon", "pub-b")
-	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
-		t.Fatalf("CAS mismatch must not unlease: leased=%q ok=%v", leased, ok)
-	}
-
-	got := sendCIDUnleaseRPC(t, unixAddr, "daemon", "pub-a")
-	if _, ok := hublease.LoadLease(cid); ok {
-		t.Fatalf("daemon CAS unlease must drop lease; reply=%#v", got)
-	}
-}
-
-func TestCIDUnleaseDaemonRPCDeletesFileRow(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	t.Setenv("AEGIS_DEV_MODE", "1")
-	dir := t.TempDir()
-	cidPath := filepath.Join(dir, "cid-keys.json")
-	if err := os.WriteFile(cidPath, []byte(`{"42":"pub-a","7":"keep"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
-	loadCIDKeys()
-	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
-	got := sendCIDUnleaseRPC(t, unixAddr, "daemon", "pub-a")
-	if _, ok := hublease.LoadLease(42); ok {
-		t.Fatalf("StopVM-shaped daemon RPC must unlease; reply=%#v", got)
-	}
-	b, err := os.ReadFile(cidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var m map[string]string
-	if err := json.Unmarshal(b, &m); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := m["42"]; ok {
-		t.Fatalf("file row must be gone after daemon cid.unlease: %s", b)
-	}
-	if m["7"] != "keep" {
-		t.Fatalf("other CID rows must remain: %s", b)
-	}
-
-	hublease.Reset()
-	loadCIDKeys()
-	if _, ok := hublease.LoadLease(42); ok {
-		t.Fatal("leftover file after CAS+file delete must not re-lease on Hub restart/load")
-	}
-	if got, ok := hublease.LoadLease(7); !ok || got != "keep" {
-		t.Fatalf("other CID must still load after restart: got %q ok=%v", got, ok)
-	}
+	return sendCIDCommandRPC(t, remote, source, "cid.unlease", victimPub)
 }
 
 func sendCIDLeaseRPC(t *testing.T, remote net.Addr, source, pub string) map[string]interface{} {
+	t.Helper()
+	return sendCIDCommandRPC(t, remote, source, "cid.lease", pub)
+}
+
+func sendCIDCommandRPC(t *testing.T, remote net.Addr, source, command, pub string) map[string]interface{} {
 	t.Helper()
 	hub, client := net.Pipe()
 	done := make(chan struct{})
@@ -1142,8 +941,8 @@ func sendCIDLeaseRPC(t *testing.T, remote net.Addr, source, pub string) map[stri
 	msg := Message{
 		Source:      source,
 		Destination: "hub",
-		Command:     "cid.lease",
-		Payload:     map[string]interface{}{"cid": uint32(7), "public_key": pub},
+		Command:     command,
+		Payload:     map[string]interface{}{"cid": uint32(42), "public_key": pub},
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		Signature:   "dummy",
 	}
@@ -1163,29 +962,290 @@ func sendCIDLeaseRPC(t *testing.T, remote net.Addr, source, pub string) map[stri
 	return out
 }
 
-func TestCIDLeaseDaemonOnly(t *testing.T) {
+func TestCIDUnleaseDaemonOnlyAndCAS(t *testing.T) {
 	resetCIDLeases()
 	t.Cleanup(resetCIDLeases)
 	t.Setenv("AEGIS_DEV_MODE", "1")
 
+	const cid uint32 = 42
+	hublease.StoreLease(cid, "pub-a")
+
+	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
+	// Guest vsock must not cid.unlease even after register (handshake does not Store).
+	guestAddr := &vsock.Addr{ContextID: 99, Port: 9999}
+
+	sendCIDUnleaseRPC(t, guestAddr, "guest-vm", "pub-a")
+	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
+		t.Fatalf("guest must not unlease victim CID: leased=%q ok=%v", leased, ok)
+	}
+
+	sendCIDUnleaseRPC(t, unixAddr, "store", "pub-a")
+	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
+		t.Fatalf("store unix source must not unlease: leased=%q ok=%v", leased, ok)
+	}
+
+	sendCIDUnleaseRPC(t, unixAddr, "daemon-temp-1", "pub-a")
+	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
+		t.Fatalf("daemon-temp-* must not unlease: leased=%q ok=%v", leased, ok)
+	}
+
+	sendCIDUnleaseRPC(t, unixAddr, "aegis-cli-internal", "pub-a")
+	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
+		t.Fatalf("aegis-cli-internal must not unlease: leased=%q ok=%v", leased, ok)
+	}
+
+	sendCIDUnleaseRPC(t, unixAddr, "daemon", "pub-b")
+	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
+		t.Fatalf("CAS mismatch must not unlease: leased=%q ok=%v", leased, ok)
+	}
+
+	got := sendCIDUnleaseRPC(t, unixAddr, "daemon", "pub-a")
+	if _, ok := hublease.LoadLease(cid); ok {
+		t.Fatalf("daemon CAS unlease must drop lease; reply=%#v", got)
+	}
+}
+
+func TestCIDUnleaseDaemonRPCDeletesFileRow(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	t.Setenv("AEGIS_DEV_MODE", "1")
+	dir := t.TempDir()
+	cidPath := filepath.Join(dir, "cid-keys.json")
+	if err := os.WriteFile(cidPath, []byte(`{\"42\":\"pub-a\",\"7\":\"keep\"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
+	loadCIDKeys()
+	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
+	got := sendCIDUnleaseRPC(t, unixAddr, "daemon", "pub-a")
+	if _, ok := hublease.LoadLease(42); ok {
+		t.Fatalf("StopVM-shaped daemon RPC must unlease; reply=%#v", got)
+	}
+	b, err := os.ReadFile(cidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["42"]; ok {
+		t.Fatalf("file row must be gone after daemon cid.unlease: %s", b)
+	}
+	if m["7"] != "keep" {
+		t.Fatalf("other CID rows must remain: %s", b)
+	}
+}
+
+func TestGuestVsockRegisterDoesNotStoreOrUnpoison(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	t.Setenv("AEGIS_DEV_MODE", "1")
+
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAStr := base64.StdEncoding.EncodeToString(pubA)
+	addr := &vsock.Addr{ContextID: 42, Port: 9999}
+
+	client, done := startVMVsockSession(t, addr, pubAStr)
+	if _, ok := hublease.LoadLease(42); ok {
+		t.Fatal("guest vsock register must not Store a CID lease")
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("VM session handleConnection did not return")
+	}
+
+	hublease.StoreLease(42, pubAStr)
+	if !hublease.UnleaseCID(42, pubAStr) {
+		t.Fatal("setup unlease")
+	}
+	client, done = startVMVsockSession(t, addr, pubAStr)
+	if _, ok := hublease.LoadLease(42); ok {
+		t.Fatal("guest vsock register must not unpoison a closed CID")
+	}
+	closed, ok := hublease.ClosedPub(42)
+	if !ok || closed != pubAStr {
+		t.Fatalf("handshake must not ClearClosed: closed=%q ok=%v", closed, ok)
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("VM session handleConnection did not return")
+	}
+}
+
+func TestHandshakeConfirmMismatchDoesNotOverwrite(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	t.Setenv("AEGIS_DEV_MODE", "1")
+
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAStr := base64.StdEncoding.EncodeToString(pubA)
+	pubBStr := base64.StdEncoding.EncodeToString(pubB)
+	hublease.StoreLease(42, pubAStr)
+	addr := &vsock.Addr{ContextID: 42, Port: 9999}
+	client, done := startVMVsockSession(t, addr, pubBStr)
+	leased, ok := hublease.LoadLease(42)
+	if !ok || leased != pubAStr {
+		t.Fatalf("handshake mismatch must not overwrite lease: leased=%q ok=%v", leased, ok)
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("VM session handleConnection did not return")
+	}
+}
+
+func TestCIDLeaseDaemonOnlyAndCAS(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	t.Setenv("AEGIS_DEV_MODE", "1")
+
+	const cid uint32 = 42
 	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
 	guestAddr := &vsock.Addr{ContextID: 99, Port: 9999}
 
-	sendCIDLeaseRPC(t, guestAddr, "guest-vm", "pub-a")
-	if _, ok := hublease.LoadLease(7); ok {
-		t.Fatal("guest must not cid.lease")
-	}
-	sendCIDLeaseRPC(t, unixAddr, "store", "pub-a")
-	if _, ok := hublease.LoadLease(7); ok {
-		t.Fatal("store must not cid.lease")
-	}
-	sendCIDLeaseRPC(t, unixAddr, "daemon-temp-1", "pub-a")
-	if _, ok := hublease.LoadLease(7); ok {
-		t.Fatal("daemon-temp glob must not cid.lease")
-	}
 	got := sendCIDLeaseRPC(t, unixAddr, "daemon", "pub-a")
-	leased, ok := hublease.LoadLease(7)
+	leased, ok := hublease.LoadLease(cid)
 	if !ok || leased != "pub-a" {
-		t.Fatalf("daemon cid.lease must Store: leased=%q ok=%v reply=%#v", leased, ok, got)
+		t.Fatalf("daemon cid.lease must fill empty lease; reply=%#v leased=%q ok=%v", got, leased, ok)
+	}
+
+	sendCIDLeaseRPC(t, guestAddr, "guest-vm", "pub-b")
+	leased, ok = hublease.LoadLease(cid)
+	if !ok || leased != "pub-a" {
+		t.Fatalf("guest must not cid.lease: leased=%q ok=%v", leased, ok)
+	}
+
+	sendCIDLeaseRPC(t, unixAddr, "store", "pub-b")
+	leased, ok = hublease.LoadLease(cid)
+	if !ok || leased != "pub-a" {
+		t.Fatalf("store must not cid.lease: leased=%q ok=%v", leased, ok)
+	}
+
+	sendCIDLeaseRPC(t, unixAddr, "daemon-temp-1", "pub-b")
+	leased, ok = hublease.LoadLease(cid)
+	if !ok || leased != "pub-a" {
+		t.Fatalf("daemon-temp-* must not cid.lease: leased=%q ok=%v", leased, ok)
+	}
+
+	sendCIDLeaseRPC(t, unixAddr, "git-remote-hub", "pub-b")
+	leased, ok = hublease.LoadLease(cid)
+	if !ok || leased != "pub-a" {
+		t.Fatalf("git-remote-hub must not cid.lease: leased=%q ok=%v", leased, ok)
+	}
+
+	got = sendCIDLeaseRPC(t, unixAddr, "daemon", "pub-b")
+	leased, ok = hublease.LoadLease(cid)
+	if !ok || leased != "pub-a" {
+		t.Fatalf("CAS mismatch must not overwrite; reply=%#v leased=%q ok=%v", got, leased, ok)
+	}
+
+	got = sendCIDLeaseRPC(t, unixAddr, "daemon", "pub-a")
+	leased, ok = hublease.LoadLease(cid)
+	if !ok || leased != "pub-a" {
+		t.Fatalf("same-pub cid.lease must remain; reply=%#v leased=%q ok=%v", got, leased, ok)
+	}
+}
+
+func TestGuestCannotCIDLeaseEmpty(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	t.Setenv("AEGIS_DEV_MODE", "1")
+	guestAddr := &vsock.Addr{ContextID: 42, Port: 9999}
+	sendCIDLeaseRPC(t, guestAddr, "guest-vm", "pub-a")
+	if leased, ok := hublease.LoadLease(42); ok {
+		t.Fatalf("guest cid.lease must not fill empty lease: leased=%q", leased)
+	}
+}
+
+func TestReloadOnMissIngestsLiveFileRow(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAStr := base64.StdEncoding.EncodeToString(pubA)
+	dir := t.TempDir()
+	identPath := filepath.Join(dir, "git-identities.json")
+	cidPath := filepath.Join(dir, "cid-keys.json")
+	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cidJSON, err := json.Marshal(map[string]string{"42": pubAStr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cidPath, cidJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
+	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
+
+	addr := &vsock.Addr{ContextID: 42, Port: 9999}
+	if _, ok := hublease.LoadLease(42); ok {
+		t.Fatal("setup: memory must be empty before miss reload")
+	}
+	got, err := tenantForGit(pubAStr, addr)
+	if err != nil || got != "tenant-a" {
+		t.Fatalf("reload-on-miss must ingest live file row: tenant=%q err=%v", got, err)
+	}
+	leased, ok := hublease.LoadLease(42)
+	if !ok || leased != pubAStr {
+		t.Fatalf("after miss ingest: leased=%q ok=%v", leased, ok)
+	}
+}
+
+func TestHandshakeDoesNotIngestFileRow(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	t.Setenv("AEGIS_DEV_MODE", "1")
+
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAStr := base64.StdEncoding.EncodeToString(pubA)
+	dir := t.TempDir()
+	cidPath := filepath.Join(dir, "cid-keys.json")
+	cidJSON, err := json.Marshal(map[string]string{"42": pubAStr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cidPath, cidJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
+
+	addr := &vsock.Addr{ContextID: 42, Port: 9999}
+	client, done := startVMVsockSession(t, addr, pubAStr)
+	if _, ok := hublease.LoadLease(42); ok {
+		t.Fatal("handshake confirm must not Store/ingest even when the file has a live row")
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("VM session handleConnection did not return")
 	}
 }
