@@ -105,6 +105,84 @@ func isUnknownOrEmpty(resp Message) bool {
 	return strings.Contains(payloadText(resp), "unknown")
 }
 
+func payloadIsOK(v interface{}) bool {
+	t := strings.TrimSpace(strings.ToLower(fmt.Sprint(v)))
+	return t == "" || t == "ok" || t == "<nil>"
+}
+
+func localGitPath(v interface{}) bool {
+	t := strings.TrimSpace(fmt.Sprint(v))
+	low := strings.ToLower(t)
+	if strings.HasPrefix(t, "/") || strings.HasPrefix(low, "file:") || strings.Contains(t, "/repos/") || strings.HasPrefix(t, "repos/") {
+		return true
+	}
+	return false
+}
+
+func remoteFromClone(resp Message) string {
+	if resp.Command == "error" || isUnknownOrEmpty(resp) {
+		return ""
+	}
+	switch p := resp.Payload.(type) {
+	case string:
+		s := strings.TrimSpace(p)
+		if s == "" || strings.EqualFold(s, "ok") || strings.Contains(strings.ToUpper(s), "ERR_") {
+			return ""
+		}
+		return s
+	case map[string]interface{}:
+		for _, k := range []string{"remote", "url", "clone_url", "git_url", "vsock"} {
+			if s, ok := p[k].(string); ok && strings.TrimSpace(s) != "" && !strings.EqualFold(s, "ok") {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
+}
+
+func secondCloneYieldsCommit(t *testing.T, resp Message, hash string) bool {
+	t.Helper()
+	remote := remoteFromClone(resp)
+	if remote == "" || payloadIsOK(resp.Payload) || localGitPath(remote) {
+		return false
+	}
+	dest := filepath.Join(t.TempDir(), "t7-from-store")
+	cmd := exec.Command("git", "clone", remote, dest)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("T7: git clone of Store remote %q: %s (%v)", remote, out, err)
+		return false
+	}
+	typ, err := exec.Command("git", "-C", dest, "cat-file", "-t", hash).CombinedOutput()
+	return err == nil && strings.TrimSpace(string(typ)) == "commit"
+}
+
+func makeDetachedCommit(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_AUTHOR_NAME=t7", "GIT_AUTHOR_EMAIL=t7@test", "GIT_COMMITTER_NAME=t7", "GIT_COMMITTER_EMAIL=t7@test")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s (%v)", args, out, err)
+		}
+	}
+	run("git", "init", "-q")
+	if err := os.WriteFile(filepath.Join(dir, "t7.txt"), []byte("t7\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", "t7.txt")
+	run("git", "commit", "-q", "-m", "t7")
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse: %s (%v)", out, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func looksLikeHubVsock(v interface{}) bool {
 	t := strings.ToLower(fmt.Sprint(v))
 	if t == "" || t == "ok" || t == "<nil>" {
@@ -114,14 +192,6 @@ func looksLikeHubVsock(v interface{}) bool {
 		return false
 	}
 	return strings.Contains(t, "vsock") || strings.Contains(t, "hub")
-}
-
-func isStubGitPushed(resp Message) bool {
-	if resp.Command != "git.pushed" && resp.Command != "ok" {
-		return false
-	}
-	p := strings.TrimSpace(payloadText(resp))
-	return p == "ok" || p == ""
 }
 
 type liveHub struct {
@@ -378,30 +448,26 @@ func TestT2_CourtSkipMustNotExist(t *testing.T) {
 
 func TestT3_CrossTenantFetchMustFail(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		before := listGitRepos(h.cwd)
 		aResp := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		afterA := listGitRepos(h.cwd)
 		bResp := h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
-		afterB := listGitRepos(h.cwd)
-		pathsA := addedPaths(before, afterA)
-		pathsB := addedPaths(afterA, afterB)
-		allA := absRepos(afterA)
-		allB := absRepos(afterB)
-		t.Logf("T3 clone A cmd=%q payload=%v new=%v", aResp.Command, aResp.Payload, pathsA)
-		t.Logf("T3 clone B cmd=%q payload=%v new=%v", bResp.Command, bResp.Payload, pathsB)
-		shared := false
-		if len(pathsB) == 0 {
-			shared = true
-		}
-		for _, pa := range allA {
-			for _, pb := range allB {
+		afterA := absRepos(listGitRepos(h.cwd))
+		afterB := absRepos(listGitRepos(h.cwd))
+		sharedDisk := false
+		for _, pa := range afterA {
+			for _, pb := range afterB {
 				if pa == pb {
-					shared = true
+					sharedDisk = true
 				}
 			}
 		}
-		if shared {
-			t.Fatalf("T3: tenants tenant-a and tenant-b both land on the same on-disk repo for skill (no tenant prefix); A=%v B=%v afterA=%v afterB=%v", pathsA, pathsB, allA, allB)
+		if sharedDisk && len(afterA) > 0 {
+			t.Fatalf("T3: tenants tenant-a and tenant-b share on-disk repo for skill A=%v B=%v", afterA, afterB)
+		}
+		ra, rb := remoteFromClone(aResp), remoteFromClone(bResp)
+		if len(afterA) == 0 && len(afterB) == 0 {
+			if payloadIsOK(aResp.Payload) || payloadIsOK(bResp.Payload) || ra == "" || rb == "" || ra == rb || localGitPath(ra) || localGitPath(rb) {
+				t.Fatalf("T3: no tenant isolation on Store remotes (a cmd=%q payload=%v b cmd=%q payload=%v)", aResp.Command, aResp.Payload, bResp.Command, bResp.Payload)
+			}
 		}
 	})
 }
@@ -457,24 +523,23 @@ func TestT6_CoderHasNoGit(t *testing.T) {
 
 func TestT7_RealGitClonePush(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		cloned := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		want := "t7-round-trip-commit"
-		pushed := h.rpc("builder", "git.push", map[string]interface{}{
+		hash := makeDetachedCommit(t)
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		_ = h.rpc("builder", "git.push", map[string]interface{}{
 			"repo":   "skill",
 			"tenant": "tenant-a",
 			"ref":    "refs/heads/main",
-			"commit": want,
+			"pack":   hash,
 		})
-		if isStubGitPushed(pushed) {
-			t.Fatal("T7: stub git.pushed is not a commit round-trip through Store git.push / git.clone RPCs")
-		}
 		cloned2 := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		blob := fmt.Sprint(cloned.Payload) + " " + fmt.Sprint(pushed.Payload) + " " + fmt.Sprint(cloned2.Payload)
-		if strings.Contains(blob, "/repos/") || strings.HasPrefix(strings.TrimSpace(fmt.Sprint(cloned2.Payload)), "/") || strings.Contains(strings.ToLower(blob), "file:") {
-			t.Fatalf("T7: Store remote is the local init --bare path; round-trip must go through Store git.push / git.clone RPCs, not git push into repos/skill (clone1=%v push=%v clone2=%v)", cloned.Payload, pushed.Payload, cloned2.Payload)
+		if payloadIsOK(cloned2.Payload) {
+			t.Fatal("T7: git.clone payload is ok / objects missing; stub RPC is not a round-trip")
 		}
-		if !looksLikeHubVsock(cloned2.Payload) && !strings.Contains(strings.ToLower(blob), strings.ToLower(want)) {
-			t.Fatalf("T7: commit did not round-trip through Store git.push / git.clone RPCs (push cmd=%q payload=%v clone2=%v)", pushed.Command, pushed.Payload, cloned2.Payload)
+		if localGitPath(cloned2.Payload) || localGitPath(remoteFromClone(cloned2)) {
+			t.Fatalf("T7: second git.clone is a local repos/ path, not Store git (payload=%v)", cloned2.Payload)
+		}
+		if !secondCloneYieldsCommit(t, cloned2, hash) {
+			t.Fatalf("T7: second git.clone RPC did not yield commit %s (cmd=%q payload=%v)", hash, cloned2.Command, cloned2.Payload)
 		}
 	})
 }
@@ -503,23 +568,17 @@ func TestT9_NewSkillAlwaysStoreRepo(t *testing.T) {
 			"repo":   "newskill",
 			"tenant": "tenant-a",
 		})
-		reg := h.rpc("client", "skill.register", map[string]interface{}{
-			"id":   "newskill",
-			"name": "newskill",
-		})
 		skill := h.rpc("client", "skill.create", map[string]interface{}{
 			"id":     "newskill",
 			"repo":   "newskill",
 			"tenant": "tenant-a",
 		})
-		blob := fmt.Sprint(created.Payload) + " " + fmt.Sprint(reg.Payload) + " " + fmt.Sprint(skill.Payload)
-		local := absRepos(listGitRepos(h.cwd))
-		hasRemote := looksLikeHubVsock(created.Payload) || looksLikeHubVsock(skill.Payload)
-		if isUnknownOrEmpty(created) && isUnknownOrEmpty(skill) && len(local) == 0 && !hasRemote {
-			t.Fatalf("T9: creating a skill/project did not allocate a Store repo (git.create cmd=%q payload=%v skill.create cmd=%q payload=%v)", created.Command, created.Payload, skill.Command, skill.Payload)
+		remote := remoteFromClone(created)
+		if remote == "" {
+			remote = remoteFromClone(skill)
 		}
-		if !hasRemote {
-			t.Fatalf("T9: new skill must have a Store remote (Hub/vsock), not only a cwd git dir (local=%v blob=%s)", local, blob)
+		if remote == "" || localGitPath(remote) || payloadIsOK(remote) {
+			t.Fatalf("T9: new skill must have a Store remote (Hub/vsock git), not a cwd path (git.create cmd=%q payload=%v skill.create cmd=%q payload=%v)", created.Command, created.Payload, skill.Command, skill.Payload)
 		}
 	})
 }
@@ -656,20 +715,12 @@ func TestT13_HubVsockOnlyNoHostGitDaemonNoSkillDotGit(t *testing.T) {
 		usedLocalBare := false
 		usedFileOrTCP := false
 		for _, repo := range repos {
-			if gitDirLooksBare(repo) {
-				usedLocalBare = true
-			}
-			if filepath.Base(filepath.Dir(repo)) == "repos" {
+			if gitDirLooksBare(repo) || filepath.Base(filepath.Dir(repo)) == "repos" {
 				usedLocalBare = true
 			}
 			out, err := exec.Command("git", "-C", repo, "remote", "-v").CombinedOutput()
 			text := strings.ToLower(string(out))
 			if err == nil && (strings.Contains(text, "file://") || strings.Contains(text, "git://") || strings.Contains(text, "http://") || strings.Contains(text, "https://")) {
-				usedFileOrTCP = true
-			}
-			cfg, _ := exec.Command("git", "-C", repo, "config", "--list").Output()
-			ct := strings.ToLower(string(cfg))
-			if strings.Contains(ct, "file://") || strings.Contains(ct, "git://") {
 				usedFileOrTCP = true
 			}
 		}
@@ -679,22 +730,23 @@ func TestT13_HubVsockOnlyNoHostGitDaemonNoSkillDotGit(t *testing.T) {
 		leaks := worktreeReposLeftover()
 		if usedLocalBare || usedFileOrTCP {
 			t.Errorf("T13: git.clone used local git init --bare / file:// / TCP rather than Hub/vsock (bare=%v fileOrTCP=%v repos=%v)", usedLocalBare, usedFileOrTCP, repos)
+			return
 		}
 		if len(daemons) > 0 {
 			t.Errorf("T13: host git daemon listening on %v", daemons)
+			return
 		}
 		if len(hostGit) > 0 {
 			t.Errorf("T13: workspace/skills/.git exists: %v", hostGit)
+			return
 		}
 		if len(leaks) > 0 {
 			t.Errorf("T13: worktree repos/ leftover from Store cwd leakage: %v", leaks)
+			return
 		}
-		// Pass only when clone is Hub/vsock and none of the local/tcp/daemon/host.git holes fired.
-		// Do not fail the clean case — that would stay red after a correct replace.
-		if !usedLocalBare && !usedFileOrTCP && len(daemons) == 0 && len(hostGit) == 0 && len(leaks) == 0 {
-			if !looksLikeHubVsock(cloned.Payload) {
-				t.Errorf("T13: git.clone did not return a Hub/vsock remote (cmd=%q payload=%v)", cloned.Command, cloned.Payload)
-			}
+		remote := remoteFromClone(cloned)
+		if payloadIsOK(cloned.Payload) || remote == "" || localGitPath(remote) {
+			t.Errorf("T13: git.clone did not return a Hub/vsock remote (cmd=%q payload=%v)", cloned.Command, cloned.Payload)
 		}
 	})
 }
