@@ -680,10 +680,9 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	if err := os.WriteFile(cidPath, over, 0600); err != nil {
 		t.Fatal(err)
 	}
-	hublease.StoreLease(cid, pubBStr)
 	got, err = tenantForGit(pubBStr, addr)
-	if err != nil || got != "tenant-b" {
-		t.Fatalf("overwrite leftover with new pub then StoreLease: tenant=%q err=%v, want tenant-b", got, err)
+	if err == nil || got != "" {
+		t.Fatalf("overwrite leftover with new pub must stay miss (no file ingest): tenant=%q err=%v", got, err)
 	}
 
 	if !unixGitAllowed() {
@@ -1031,7 +1030,9 @@ func TestCIDUnleaseDaemonRPCDeletesFileRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
-	hublease.StoreLease(42, "pub-a")
+	if !hublease.StoreLeaseIfAbsentOrSame(42, "pub-a") {
+		t.Fatal("memory must hold the CID lease for daemon unlease")
+	}
 	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
 	got := sendCIDUnleaseRPC(t, unixAddr, "daemon", "pub-a")
 	if _, ok := hublease.LoadLease(42); ok {
