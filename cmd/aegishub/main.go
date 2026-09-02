@@ -604,6 +604,37 @@ func handleCIDUnlease(msg Message, wire wireMessage, conn net.Conn, connID strin
 	}
 }
 
+func handleCIDLease(msg Message, wire wireMessage, conn net.Conn, connID string) Message {
+	deny := Message{
+		Source:      "hub",
+		Destination: msg.Source,
+		Command:     "error",
+		Payload:     "ERR_UNAUTHORIZED",
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+	if conn != nil {
+		if _, isVsock := conn.RemoteAddr().(*vsock.Addr); isVsock {
+			return deny
+		}
+	}
+	if !daemonMayUnleaseCID(connID, wire, msg) {
+		return deny
+	}
+	cid, pub, ok := parseCIDUnleasePayload(msg.Payload)
+	if !ok {
+		deny.Payload = "ERR_INVALID_PAYLOAD"
+		return deny
+	}
+	hublease.StoreLease(cid, pub)
+	return Message{
+		Source:      "hub",
+		Destination: msg.Source,
+		Command:     "response",
+		Payload:     map[string]interface{}{"status": "ok"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
 func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKey) bool {
 	if msg.Signature == "" || msg.Signature == "dummy" {
 		return false
@@ -816,9 +847,15 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			continue
 		}
 
-		if msg.Destination == "hub" && msg.Command == "cid.unlease" {
+		if msg.Destination == "hub" && (msg.Command == "cid.lease" || msg.Command == "cid.unlease") {
+			var reply Message
+			if msg.Command == "cid.lease" {
+				reply = handleCIDLease(msg, wire, conn, componentID)
+			} else {
+				reply = handleCIDUnlease(msg, wire, conn, componentID)
+			}
 			encoders.Mutex.Lock()
-			_ = encoders.Encoder.Encode(handleCIDUnlease(msg, wire, conn, componentID))
+			_ = encoders.Encoder.Encode(reply)
 			encoders.Mutex.Unlock()
 			continue
 		}
@@ -993,8 +1030,13 @@ func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders, conn n
 			debugLog("hub", fmt.Sprintf("ephemeral RPC %s decode end: %v", requesterID, err))
 			return
 		}
-		if msg.Destination == "hub" && msg.Command == "cid.unlease" {
-			reply := handleCIDUnlease(msg, wire, conn, requesterID)
+		if msg.Destination == "hub" && (msg.Command == "cid.lease" || msg.Command == "cid.unlease") {
+			var reply Message
+			if msg.Command == "cid.lease" {
+				reply = handleCIDLease(msg, wire, conn, requesterID)
+			} else {
+				reply = handleCIDUnlease(msg, wire, conn, requesterID)
+			}
 			encoders.Mutex.Lock()
 			_ = encoders.Encoder.Encode(reply)
 			encoders.Mutex.Unlock()
