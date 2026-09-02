@@ -235,11 +235,15 @@ func resetInternalHubClientsForTest() {
 
 var fanoutHubClientSeq uint64
 
-// sendDaemonCIDUnlease sends cid.unlease {cid, public_key} on the persistent
-// daemon Hub unix connection (assigned_id=="daemon"). Handshake CAS-fills;
-// cid.lease is not a fill. Hub is another process; in-process hublease from
+// sendDaemonCIDLease / sendDaemonCIDUnlease send cid.lease / cid.unlease
+// {cid, public_key} on the persistent daemon Hub unix connection
+// (assigned_id=="daemon"). Hub is another process; in-process hublease from
 // the orchestrator does not update Hub. Do not register a fresh daemon-temp-*
 // client (anyone can claim those sources). Guests/git-remote-hub cannot.
+func sendDaemonCIDLease(cid uint32, publicKey string) {
+	sendDaemonCIDCommand("cid.lease", cid, publicKey)
+}
+
 func sendDaemonCIDUnlease(cid uint32, expectedPub string) {
 	sendDaemonCIDCommand("cid.unlease", cid, expectedPub)
 }
@@ -861,7 +865,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if err != nil {
 		logrus.Fatalf("failed to create orchestrator: %v", err)
 	}
-	// Fill is guest vsock handshake StoreLeaseIfAbsentOrSame, not cid.lease.
 	orchestrator.NotifyHubCIDUnlease = sendDaemonCIDUnlease
 
 	logrus.Infof("daemon starting on platform %s with sandbox type %s",

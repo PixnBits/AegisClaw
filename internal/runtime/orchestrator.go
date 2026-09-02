@@ -41,9 +41,6 @@ type Orchestrator struct {
 	defaultLLMModel    string                   // captured at New() from AEGIS_DEFAULT_MODEL for guest llm.call model tag
 	defaultPMModel     string                   // captured at New() from AEGIS_PM_MODEL (else defaultLLMModel, else DefaultPMModel)
 	pregenKeys         []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
-	// NotifyHubCIDLease is unused as fill. Guest vsock handshake after
-	// verify+lookupPeerTenant CAS-fills Hub memory. Tests may leave this nil.
-	NotifyHubCIDLease func(cid uint32, publicKey string)
 	// NotifyHubCIDUnlease is invoked from StopVM after capturing guest CID
 	// (NetworkConfig.VsockPort) AND that VM's pub, after delete(o.vms).
 	// Hub is another process -- package-local hublease.UnleaseCID in the daemon
@@ -409,10 +406,9 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	o.secMgr.RegisterVM(id, vmConfig.PublicKey)
 
 	// Daemon/boot writes AEGIS_GIT_CID_KEYS (CID decimal → pubkey). git-connect never writes it.
-	// Hub memory fill is guest vsock handshake StoreLeaseIfAbsentOrSame, not cid.lease.
+	// Hub fill is guest vsock handshake StoreLeaseIfAbsentOrSame, not a StartVM cid.lease RPC.
 	if vmConfig.NetworkConfig != nil && vmConfig.NetworkConfig.VsockPort > 0 {
-		cid := vmConfig.NetworkConfig.VsockPort
-		writeGitCIDKey(o.config.StateDir, cid, vmConfig.PublicKey)
+		writeGitCIDKey(o.config.StateDir, vmConfig.NetworkConfig.VsockPort, vmConfig.PublicKey)
 	}
 
 	// 7.2: Publish lifecycle event (in-process + will be forwarded via Hub for cross-VM audit)
@@ -1026,9 +1022,21 @@ func (o *Orchestrator) GetWebPortalGuestCID() (uint32, bool) {
 	return cid, true
 }
 
-// Shutdown gracefully shuts down all VMs.
+// Shutdown gracefully shuts down all VMs. StopVM first so NotifyHubCIDUnlease
+// runs; backend.Cleanup must not skip CAS-unlease.
 func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	logrus.Info("Shutting down orchestrator")
+	o.mu.RLock()
+	ids := make([]string, 0, len(o.vms))
+	for id := range o.vms {
+		ids = append(ids, id)
+	}
+	o.mu.RUnlock()
+	for _, id := range ids {
+		if err := o.StopVM(ctx, id); err != nil {
+			logrus.Warnf("Shutdown StopVM %s: %v", id, err)
+		}
+	}
 	return o.backend.Cleanup(ctx)
 }
 

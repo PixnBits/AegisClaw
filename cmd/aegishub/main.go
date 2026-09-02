@@ -437,8 +437,8 @@ func loadCIDKeys() {
 }
 
 func leasePubForCID(cid uint32) (string, bool) {
-	// Memory only. Handshake CASFillLease is fill. Do not ingest
-	// AEGIS_GIT_CID_KEYS on miss (file is StopVM bookkeeping).
+	// Memory only. Do not reload AEGIS_GIT_CID_KEYS on miss (file fail-open).
+	// Guest vsock handshake CAS-fills after verified rostered register.
 	return hublease.LoadLease(cid)
 }
 
@@ -479,8 +479,12 @@ func forgetVsockTenant(conn net.Conn) {
 }
 
 func storeCIDLease(cid uint32, pub string) {
-	hublease.CASFillLease(cid, pub)
+	hublease.StoreLeaseIfAbsentOrSame(cid, pub)
 }
+
+// confirmCIDLease is vsock handshake after the guest presented a public key.
+// Guest must not pick git identity for a CID: never Store, overwrite, or ClearClosed.
+// If lease[CID] != verifiedPub (mismatch or empty), git-connect later ERR_UNKNOWN_PEER.
 
 // daemonUnleaseCID is in-process CAS unlease for tests (VM destroy). Production
 // StopVM sends daemon-only Hub command cid.unlease. Git-connect/guest hangup
@@ -578,9 +582,12 @@ func handleCIDUnlease(msg Message, wire wireMessage, conn net.Conn, connID strin
 		deny.Payload = "ERR_INVALID_PAYLOAD"
 		return deny
 	}
+	_, live := hublease.LoadLease(cid)
 	unleased := hublease.UnleaseCID(cid, pub)
-	if path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS")); path != "" {
-		hublease.DeleteCIDKeyIf(path, cid, pub)
+	if unleased || !live {
+		if path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS")); path != "" {
+			hublease.DeleteCIDKeyIf(path, cid, pub)
+		}
 	}
 	if !unleased {
 		return Message{
@@ -598,46 +605,6 @@ func handleCIDUnlease(msg Message, wire wireMessage, conn net.Conn, connID strin
 		Payload:     map[string]interface{}{"status": "ok"},
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	}
-}
-
-func handleCIDLease(msg Message, wire wireMessage, conn net.Conn, connID string) Message {
-	deny := Message{
-		Source:      "hub",
-		Destination: msg.Source,
-		Command:     "error",
-		Payload:     "ERR_UNAUTHORIZED",
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-	}
-	if conn != nil {
-		if _, isVsock := conn.RemoteAddr().(*vsock.Addr); isVsock {
-			return deny
-		}
-	}
-	if !daemonMayUnleaseCID(connID, wire, msg) {
-		return deny
-	}
-	cid, pub, ok := parseCIDUnleasePayload(msg.Payload)
-	if !ok {
-		deny.Payload = "ERR_INVALID_PAYLOAD"
-		return deny
-	}
-	// cid.lease must not fill git-connect memory. Handshake CASFillLease is fill.
-	_ = cid
-	_ = pub
-	return Message{
-		Source:      "hub",
-		Destination: msg.Source,
-		Command:     "response",
-		Payload:     map[string]interface{}{"status": "noop"},
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-	}
-}
-
-func handleCIDLeaseCommand(msg Message, wire wireMessage, conn net.Conn, connID string) Message {
-	if msg.Command == "cid.lease" {
-		return handleCIDLease(msg, wire, conn, connID)
-	}
-	return handleCIDUnlease(msg, wire, conn, connID)
 }
 
 func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKey) bool {
@@ -734,13 +701,12 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		return
 	}
 
-	// Guest vsock handshake CAS-fills CID lease after possession (signature)
-	// and roster (identities[pub]). Unsigned/unrostered skip Store only.
-	// git-remote-hub already returned (check lease, do not Store).
-	// Never StoreLease/ClearClosed. Do not defer unlease on hangup.
+	// Occupant fill: handshake is the ONLY Store. File is StopVM bookkeeping.
+	// Possession then roster then CAS empty-or-same. Never ClearClosed.
+	// Unsigned/unrostered must not Store (unrostered would DoS-bind the CID).
 	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
 		if verifyGitRegisterSignature(raw, regMsg, pubKey) && lookupPeerTenant(pubKeyStr) != "" {
-			hublease.CASFillLease(a.ContextID, pubKeyStr)
+			hublease.StoreLeaseIfAbsentOrSame(a.ContextID, pubKeyStr)
 		}
 	}
 
@@ -855,9 +821,9 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			continue
 		}
 
-		if msg.Destination == "hub" && (msg.Command == "cid.unlease" || msg.Command == "cid.lease") {
+		if msg.Destination == "hub" && msg.Command == "cid.unlease" {
 			encoders.Mutex.Lock()
-			_ = encoders.Encoder.Encode(handleCIDLeaseCommand(msg, wire, conn, componentID))
+			_ = encoders.Encoder.Encode(handleCIDUnlease(msg, wire, conn, componentID))
 			encoders.Mutex.Unlock()
 			continue
 		}
@@ -1032,8 +998,8 @@ func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders, conn n
 			debugLog("hub", fmt.Sprintf("ephemeral RPC %s decode end: %v", requesterID, err))
 			return
 		}
-		if msg.Destination == "hub" && (msg.Command == "cid.unlease" || msg.Command == "cid.lease") {
-			reply := handleCIDLeaseCommand(msg, wire, conn, requesterID)
+		if msg.Destination == "hub" && msg.Command == "cid.unlease" {
+			reply := handleCIDUnlease(msg, wire, conn, requesterID)
 			encoders.Mutex.Lock()
 			_ = encoders.Encoder.Encode(reply)
 			encoders.Mutex.Unlock()
