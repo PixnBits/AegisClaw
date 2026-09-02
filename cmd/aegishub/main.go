@@ -479,7 +479,7 @@ func forgetVsockTenant(conn net.Conn) {
 }
 
 func storeCIDLease(cid uint32, pub string) {
-	hublease.StoreLeaseIfAbsentOrSame(cid, pub)
+	hublease.CASFillLease(cid, pub)
 }
 
 // daemonUnleaseCID is in-process CAS unlease for tests (VM destroy). Production
@@ -740,7 +740,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	// Never StoreLease/ClearClosed. Do not defer unlease on hangup.
 	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
 		if verifyGitRegisterSignature(raw, regMsg, pubKey) && lookupPeerTenant(pubKeyStr) != "" {
-			hublease.StoreLeaseIfAbsentOrSame(a.ContextID, pubKeyStr)
+			hublease.CASFillLease(a.ContextID, pubKeyStr)
 		}
 	}
 
