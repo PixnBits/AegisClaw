@@ -28,7 +28,7 @@ func TestUnleaseCIDPoisonsSamePub(t *testing.T) {
 	}
 }
 
-func TestStoreLeaseClearsPoison(t *testing.T) {
+func TestStoreLeaseDoesNotClearPoison(t *testing.T) {
 	Reset()
 	t.Cleanup(Reset)
 	const cid uint32 = 9
@@ -39,8 +39,9 @@ func TestStoreLeaseClearsPoison(t *testing.T) {
 	if !ok || got != "pub-a" {
 		t.Fatalf("re-lease after UnleaseCID: got %q ok=%v", got, ok)
 	}
-	if closed, ok := ClosedPub(cid); ok {
-		t.Fatalf("StoreLease must clear poison, still %q", closed)
+	closed, ok := ClosedPub(cid)
+	if !ok || closed != "pub-a" {
+		t.Fatalf("StoreLease must not ClearClosed; poison got %q ok=%v", closed, ok)
 	}
 }
 
@@ -143,8 +144,9 @@ func TestStoreLeaseCASUnpoisonsEmpty(t *testing.T) {
 	if !ok || got != "pub-a" {
 		t.Fatalf("re-lease: got %q ok=%v", got, ok)
 	}
-	if closed, ok := ClosedPub(cid); ok {
-		t.Fatalf("StoreLeaseCAS on empty must clear poison, still %q", closed)
+	closed, ok := ClosedPub(cid)
+	if !ok || closed != "pub-a" {
+		t.Fatalf("StoreLeaseCAS must not ClearClosed, still %q ok=%v", closed, ok)
 	}
 }
 

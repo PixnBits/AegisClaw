@@ -45,7 +45,7 @@ func StoreLease(cid uint32, pub string) {
 // do not overwrite. Poison is written only by UnleaseCID.
 func StoreLeaseIfAbsentOrSame(cid uint32, pub string) bool {
 	pub = strings.TrimSpace(pub)
-	if pub == "" {
+	if cid == 0 || pub == "" {
 		return false
 	}
 	actual, loaded := lease.LoadOrStore(cid, pub)
@@ -58,7 +58,7 @@ func StoreLeaseIfAbsentOrSame(cid uint32, pub string) bool {
 
 // StoreLeaseCAS stores pub for cid only if the lease is empty or already holds
 // the same pub. Does not overwrite a different pub. Handshake must not call this;
-// daemon cid.lease is the writer.
+// Daemon cid.lease is not fill. Handshake CASFillLease is occupancy.
 func StoreLeaseCAS(cid uint32, pub string) bool {
 	pub = strings.TrimSpace(pub)
 	if pub == "" {
@@ -71,6 +71,10 @@ func StoreLeaseCAS(cid uint32, pub string) bool {
 	}
 	existing, _ := actual.(string)
 	return strings.TrimSpace(existing) == pub
+}
+
+func CASFillLease(cid uint32, pub string) bool {
+	return StoreLeaseIfAbsentOrSame(cid, pub)
 }
 
 func LoadLease(cid uint32) (string, bool) {
