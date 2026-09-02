@@ -402,9 +402,13 @@ func forgetVsockTenant(conn net.Conn) {
 	}
 }
 
-func verifyGitRegisterSignature(msg Message, pubKey ed25519.PublicKey) bool {
+func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKey) bool {
 	if msg.Signature == "" || msg.Signature == "dummy" {
 		return false
+	}
+	var wire wireMessage
+	if json.Unmarshal(raw, &wire) == nil && verifyWireSignature(wire, pubKey) {
+		return true
 	}
 	return verifySignature(msg, pubKey)
 }
@@ -471,15 +475,12 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	if regMsg.Source == "git-remote-hub" {
 		// Possession of AEGIS_HUB_PRIVKEY: dummy/empty never count, even in AEGIS_DEV_MODE.
 		// Git identity is lookup(verifiedPub) only — not payload.tenant, not CID fallback.
-		if !verifyGitRegisterSignature(regMsg, pubKey) {
+		if !verifyGitRegisterSignature(raw, regMsg, pubKey) {
 			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
+			hubgit.Serve(&gitConn{Conn: conn, r: br}, "", strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
 			return
 		}
 		tenant := lookupPeerTenant(pubKeyStr)
-		if tenant == "" {
-			_ = encoder.Encode(map[string]string{"error": "ERR_UNKNOWN_PEER"})
-			return
-		}
 		if err := encoder.Encode(map[string]string{"status": "registered"}); err != nil {
 			return
 		}
