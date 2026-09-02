@@ -1216,7 +1216,7 @@ func TestReloadOnMissIngestsLiveFileRow(t *testing.T) {
 		t.Fatalf("miss must not ingest live file row: tenant=%q err=%v", got, err)
 	}
 	if _, ok := hublease.LoadLease(42); ok {
-		t.Fatal("leasePubForCID miss must not ingest CID keys file")
+		t.Fatal("miss must not ingest CID file")
 	}
 }
 
