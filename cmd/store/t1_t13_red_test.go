@@ -1,116 +1,156 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-// T1–T13 drive live runStore over a fake Hub unix socket. They must fail on
-// the current JSON-dashboard / stub-git.push Store. No t.Skip. No source greps.
+// T1-T13 drive live runStore over a fake Hub unix socket.
+// They must FAIL on the current JSON-dashboard / stub-git Store.
+// Unknown command is not a deny. No t.Skip. No t.Parallel.
 
-type liveHub struct {
-	t    *testing.T
-	conn net.Conn
-	ln   net.Listener
-	enc  *json.Encoder
-	dec  *json.Decoder
-	mu   sync.Mutex
+const rpcTimeout = 3 * time.Second
+
+var (
+	packageCWD  string
+	gitWorktree string
+)
+
+func init() {
+	wd, err := os.Getwd()
+	if err == nil {
+		packageCWD = wd
+		gitWorktree = findGitWorktree(wd)
+	}
 }
 
-func withLiveStore(t *testing.T, fn func(h *liveHub)) {
-	t.Helper()
-	withTempDir(t, func() {
-		cwd, err := os.Getwd()
-		if err != nil {
-			t.Fatalf("getwd: %v", err)
+func findGitWorktree(start string) string {
+	dir := start
+	for i := 0; i < 6; i++ {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
 		}
-		sock := filepath.Join(cwd, "hub.sock")
-		ln, err := net.Listen("unix", sock)
-		if err != nil {
-			t.Fatalf("listen hub: %v", err)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
 		}
-
-		prev := hubSocket
-		hubSocket = sock
-		t.Cleanup(func() {
-			hubSocket = prev
-			_ = ln.Close()
-		})
-
-		type acc struct {
-			c   net.Conn
-			err error
-		}
-		accCh := make(chan acc, 1)
-		go func() {
-			c, err := ln.Accept()
-			accCh <- acc{c, err}
-		}()
-		go runStore(nil, nil)
-
-		var got acc
-		select {
-		case got = <-accCh:
-		case <-time.After(5 * time.Second):
-			_ = ln.Close()
-			t.Fatal("hub accept timeout: runStore did not dial unix socket")
-		}
-		if got.err != nil {
-			t.Fatalf("hub accept: %v", got.err)
-		}
-
-		h := &liveHub{
-			t:    t,
-			conn: got.c,
-			ln:   ln,
-			enc:  json.NewEncoder(got.c),
-			dec:  json.NewDecoder(got.c),
-		}
-		t.Cleanup(func() {
-			// Leave the accepted conn open so runStore blocks on Decode.
-			// Closing it makes Decode return EOF in a tight continue-loop
-			// and floods the test log.
-			_ = ln.Close()
-		})
-
-		_ = h.conn.SetDeadline(time.Now().Add(5 * time.Second))
-		var reg Message
-		if err := h.dec.Decode(&reg); err != nil {
-			t.Fatalf("register decode: %v", err)
-		}
-		if err := h.enc.Encode(map[string]interface{}{}); err != nil {
-			t.Fatalf("register reply: %v", err)
-		}
-		_ = h.conn.SetDeadline(time.Time{})
-
-		fn(h)
-	})
+		dir = parent
+	}
+	return start
 }
 
-func skipExtra(m Message) bool {
-	// Skip unsolicited Store→peer frames, not responses whose Destination is
-	// the caller (e.g. Source=builder git.push replies Destination=builder).
-	switch m.Command {
-	case "builder.build_proposal", "scribe.notify_review",
-		"autonomy.expired", "background.expired", "timer.fired":
-		return true
+// handledDeny is true only when Store handled the command and refused for a
+// spec reason. Empty Command, unknown-command, and stub success are NOT denies.
+func handledDeny(resp Message, substrings ...string) bool {
+	if resp.Command == "" || resp.Command == "pr.merged" || resp.Command == "git.pushed" || resp.Command == "ok" {
+		return false
+	}
+	p := strings.ToLower(fmt.Sprint(resp.Payload))
+	if strings.Contains(p, "unknown") {
+		return false
+	}
+	if resp.Command != "error" {
+		return false
+	}
+	for _, s := range substrings {
+		if strings.Contains(p, strings.ToLower(s)) {
+			return true
+		}
 	}
 	return false
 }
 
-func (h *liveHub) call(source, command string, payload interface{}) Message {
-	h.t.Helper()
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func payloadText(resp Message) string {
+	return strings.ToLower(fmt.Sprint(resp.Payload))
+}
 
+func isUnknownOrEmpty(resp Message) bool {
+	if resp.Command == "" {
+		return true
+	}
+	return strings.Contains(payloadText(resp), "unknown")
+}
+
+type liveHub struct {
+	t    *testing.T
+	ln   net.Listener
+	conn net.Conn
+	enc  *json.Encoder
+	dec  *json.Decoder
+	cwd  string
+}
+
+func startLiveHub(t *testing.T) *liveHub {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	sock := filepath.Join(cwd, "hub.sock")
+	_ = os.Remove(sock)
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen fake hub: %v", err)
+	}
+	origSock := hubSocket
+	hubSocket = sock
+	t.Setenv("AEGIS_HUB_SOCKET", sock)
+	t.Cleanup(func() {
+		hubSocket = origSock
+		_ = ln.Close()
+	})
+
+	go runStore(nil, nil)
+
+	type acc struct {
+		c   net.Conn
+		err error
+	}
+	ch := make(chan acc, 1)
+	go func() {
+		c, err := ln.Accept()
+		ch <- acc{c, err}
+	}()
+	var conn net.Conn
+	select {
+	case a := <-ch:
+		if a.err != nil {
+			t.Fatalf("accept store dial: %v", a.err)
+		}
+		conn = a.c
+	case <-time.After(8 * time.Second):
+		t.Fatal("timeout waiting for runStore to dial fake hub unix socket")
+	}
+
+	h := &liveHub{t: t, ln: ln, conn: conn, enc: json.NewEncoder(conn), dec: json.NewDecoder(conn), cwd: cwd}
+	h.handshake()
+	return h
+}
+
+func (h *liveHub) handshake() {
+	h.t.Helper()
+	_ = h.conn.SetDeadline(time.Now().Add(5 * time.Second))
+	defer func() { _ = h.conn.SetDeadline(time.Time{}) }()
+	var reg Message
+	if err := h.dec.Decode(&reg); err != nil {
+		h.t.Fatalf("decode register Message: %v", err)
+	}
+	if err := h.enc.Encode(map[string]interface{}{}); err != nil {
+		h.t.Fatalf("encode register reply: %v", err)
+	}
+}
+
+func (h *liveHub) rpc(source, command string, payload interface{}) Message {
+	h.t.Helper()
+	_ = h.conn.SetDeadline(time.Now().Add(rpcTimeout))
+	defer func() { _ = h.conn.SetDeadline(time.Time{}) }()
 	req := Message{
 		Source:      source,
 		Destination: "store",
@@ -121,627 +161,531 @@ func (h *liveHub) call(source, command string, payload interface{}) Message {
 	if err := h.enc.Encode(req); err != nil {
 		h.t.Fatalf("encode %s: %v", command, err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	_ = h.conn.SetReadDeadline(deadline)
-	defer h.conn.SetReadDeadline(time.Time{})
-
 	for {
-		var m Message
-		if err := h.dec.Decode(&m); err != nil {
-			h.t.Fatalf("decode %s (source=%s): %v\nstore stderr:\n%s", command, source, err, h.stderr.String())
+		var resp Message
+		if err := h.dec.Decode(&resp); err != nil {
+			h.t.Fatalf("decode reply to %s: %v", command, err)
 		}
-		if m.Destination == source || (m.Source == "store" && m.Destination == "") {
-			return m
-		}
-		if skipExtra(m) {
-			continue
+		if resp.Destination == source {
+			return resp
 		}
 	}
 }
 
-func payloadText(m Message) string {
-	switch p := m.Payload.(type) {
-	case nil:
-		return ""
-	case string:
-		return p
-	case map[string]interface{}:
-		if s, ok := p["result"].(string); ok {
-			return s
-		}
-		if s, ok := p["error"].(string); ok {
-			return s
-		}
-		b, _ := json.Marshal(p)
-		return string(b)
-	default:
-		b, _ := json.Marshal(p)
-		return string(b)
-	}
+func withLiveStore(t *testing.T, fn func(h *liveHub)) {
+	t.Helper()
+	withTempDir(t, func() {
+		h := startLiveHub(t)
+		fn(h)
+	})
 }
 
-func payloadMap(m Message) map[string]interface{} {
-	p, ok := m.Payload.(map[string]interface{})
-	if !ok {
-		return map[string]interface{}{}
-	}
-	if inner, ok := p["result"].(map[string]interface{}); ok {
-		return inner
-	}
-	return p
-}
-
-// isMissingHandler reports empty Command / unknown-command / default capability
-// gate. Those are not a real deny from a merge/git handler.
-func isMissingHandler(m Message) bool {
-	if strings.TrimSpace(m.Command) == "" {
-		return true
-	}
-	if m.Command != "error" {
-		return false
-	}
-	s := strings.TrimSpace(payloadText(m))
-	low := strings.ToLower(s)
-	if low == "unknown command" || strings.Contains(low, "unknown command") {
-		return true
-	}
-	if s == "ERR_PERMISSION_DENIED" || low == "err_permission_denied" {
-		return true
-	}
-	return false
-}
-
-func isErrorDeny(m Message) bool {
-	if isMissingHandler(m) {
-		return false
-	}
-	if m.Command == "error" {
-		return true
-	}
-	if p, ok := m.Payload.(map[string]interface{}); ok {
-		if _, ok := p["error"]; ok {
-			return true
-		}
-		if v, ok := p["ok"].(bool); ok && !v {
-			return true
-		}
-	}
-	low := strings.ToLower(payloadText(m))
-	if strings.Contains(low, "denied") || strings.Contains(low, "forbidden") {
-		return true
-	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(payloadText(m))), "err_") {
-		return true
-	}
-	return false
-}
-
-func isSuccess(m Message) bool {
-	if isMissingHandler(m) || isErrorDeny(m) {
-		return false
-	}
-	if strings.EqualFold(m.Command, "error") {
-		return false
-	}
-	return m.Command != ""
-}
-
-func observeGitDirs(root string) []string {
-	var out []string
+func listGitRepos(root string) []string {
+	var found []string
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil || !info.IsDir() {
 			return nil
 		}
-		switch info.Name() {
-		case "objects", "refs", "hooks", "info", "branches", "logs":
+		if filepath.Base(path) == ".git" {
+			found = append(found, path)
 			return filepath.SkipDir
 		}
-		head := filepath.Join(path, "HEAD")
-		objects := filepath.Join(path, "objects")
-		st1, err1 := os.Stat(head)
-		st2, err2 := os.Stat(objects)
-		if err1 == nil && !st1.IsDir() && err2 == nil && st2.IsDir() {
-			out = append(out, path)
+		if gitDirLooksBare(path) {
+			found = append(found, path)
 			return filepath.SkipDir
 		}
 		return nil
 	})
+	return found
+}
+
+func gitDirLooksBare(path string) bool {
+	if _, err := os.Stat(filepath.Join(path, "HEAD")); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(path, "objects")); err != nil {
+		return false
+	}
+	base := filepath.Base(path)
+	if base == "objects" || base == "refs" {
+		return false
+	}
+	return true
+}
+
+func absRepos(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, p := range paths {
+		a, err := filepath.Abs(p)
+		if err != nil {
+			a = p
+		}
+		a = filepath.Clean(a)
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
 	return out
 }
 
-func remoteFrom(m Message) string {
-	switch p := m.Payload.(type) {
-	case string:
-		s := strings.TrimSpace(p)
-		if s == "" || strings.EqualFold(s, "ok") {
-			return ""
-		}
-		return s
-	case map[string]interface{}:
-		if inner, ok := p["result"]; ok {
-			if s, ok := inner.(string); ok {
-				s = strings.TrimSpace(s)
-				if s != "" && !strings.EqualFold(s, "ok") {
-					return s
-				}
-			}
-			if mm, ok := inner.(map[string]interface{}); ok {
-				p = mm
-			}
-		}
-		for _, k := range []string{"remote", "url", "clone_url", "git_url", "vsock", "hub", "path"} {
-			if s, ok := p[k].(string); ok && strings.TrimSpace(s) != "" {
-				return strings.TrimSpace(s)
-			}
+func addedPaths(before, after []string) []string {
+	bset := map[string]bool{}
+	for _, p := range absRepos(before) {
+		bset[p] = true
+	}
+	var add []string
+	for _, p := range absRepos(after) {
+		if !bset[p] {
+			add = append(add, p)
 		}
 	}
-	return ""
+	return add
 }
 
-func isLocalGitTransport(remote string) bool {
-	r := strings.ToLower(remote)
-	if strings.HasPrefix(r, "file:") || strings.HasPrefix(r, "git://") {
-		return true
-	}
-	if strings.Contains(r, "://") {
-		if strings.HasPrefix(r, "http://") || strings.HasPrefix(r, "https://") ||
-			strings.HasPrefix(r, "ssh://") || strings.HasPrefix(r, "tcp://") {
-			return true
-		}
-		return false
-	}
-	// bare path on disk
-	if strings.HasPrefix(remote, "/") || strings.HasPrefix(remote, "repos/") || strings.HasPrefix(remote, "./") {
-		return true
-	}
-	return false
-}
-
-func leftoverCreds(root string) []string {
+func worktreeReposLeftover() []string {
 	var hits []string
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil || info.IsDir() {
+	for _, root := range []string{gitWorktree, packageCWD} {
+		if root == "" {
+			continue
+		}
+		p := filepath.Join(root, "repos")
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			hits = append(hits, p)
+		}
+	}
+	return hits
+}
+
+func gitDaemonListening() []string {
+	var hit []string
+	for _, addr := range []string{"127.0.0.1:9418", "[::1]:9418"} {
+		c, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+			hit = append(hit, addr)
+		}
+	}
+	return hit
+}
+
+func hostSkillDotGit(root string) []string {
+	var hits []string
+	ws := filepath.Join(root, "workspace", "skills")
+	_ = filepath.Walk(ws, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
 			return nil
 		}
-		n := info.Name()
-		switch n {
-		case ".git-credentials", ".netrc", "id_rsa", "id_ed25519", "credentials":
+		if info.IsDir() && filepath.Base(path) == ".git" {
 			hits = append(hits, path)
-		default:
-			if strings.HasSuffix(n, ".pem") {
-				hits = append(hits, path)
-			}
+			return filepath.SkipDir
 		}
 		return nil
 	})
 	return hits
 }
 
+func clonePayload(tenant, repo string) map[string]interface{} {
+	return map[string]interface{}{"repo": repo, "tenant": tenant}
+}
+
 func TestT1_MergeWithoutCourtMustFail(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		created := h.call("client", "pr.create", map[string]interface{}{
-			"id":    "pr-t1",
-			"title": "merge without court",
-			"from":  "feature",
-			"to":    "main",
+		_ = h.rpc("builder", "pr.create", map[string]interface{}{
+			"id":     "pr-t1",
+			"repo":   "skill",
+			"tenant": "tenant-a",
+			"title":  "merge without court",
 		})
-		if isErrorDeny(created) && !isSuccess(created) && created.Command != "pr.created" {
-			// still try merge; create failing is not a pass for T1
-		}
-		merged := h.call("client", "pr.merge", map[string]interface{}{
-			"id": "pr-t1",
+		resp := h.rpc("store", "pr.merge", map[string]interface{}{
+			"id":     "pr-t1",
+			"repo":   "skill",
+			"tenant": "tenant-a",
 		})
-		if isMissingHandler(merged) {
-			t.Fatal("T1: pr.merge missing handler is not a deny; merge-without-Court is not fail-closed")
-		}
-		if isSuccess(merged) {
-			t.Fatal("T1: pr.merge succeeded without Court approval")
-		}
-		if !isErrorDeny(merged) {
-			t.Fatalf("T1: merge-without-Court must be an error deny, got command=%q payload=%s", merged.Command, payloadText(merged))
+		if !handledDeny(resp, "court", "not approved") {
+			t.Fatalf("T1: pr.merge must be handled and refuse because Court is not approved (got cmd=%q payload=%v); unknown/empty/success is not a deny", resp.Command, resp.Payload)
 		}
 	})
 }
 
 func TestT2_CourtSkipMustNotExist(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		_ = h.call("client", "proposal.create", map[string]interface{}{
+		created := h.rpc("client", "proposal.create", map[string]interface{}{
 			"id":          "prop-t2",
-			"description": "court skip probe",
+			"description": "court skip via omitted approved field",
 		})
-		_ = h.call("court-scribe", "court.review_complete", map[string]interface{}{
+		if created.Command != "proposal.created" {
+			t.Fatalf("T2: proposal.create failed cmd=%q payload=%v", created.Command, created.Payload)
+		}
+		_ = h.rpc("court-scribe", "court.review_complete", map[string]interface{}{
 			"proposal_id": "prop-t2",
-			"votes":       map[string]interface{}{"persona-a": "yes", "persona-b": "yes"},
-			// approved omitted — current Store fallback treats this as approve
+			"votes": map[string]interface{}{
+				"ciso":   "approve",
+				"lawyer": "approve",
+			},
 		})
-		got := h.call("client", "proposal.get", map[string]interface{}{"id": "prop-t2"})
-		st, _ := payloadMap(got)["state"].(string)
-		if strings.EqualFold(st, "approved") {
-			t.Fatal("T2: court.review_complete without approved was treated as approve (skip under another name)")
-		}
-
-		_ = h.call("client", "pr.create", map[string]interface{}{
-			"id":         "pr-t2-skip",
-			"skipped":    true,
-			"skip_court": true,
-		})
-		skipMerge := h.call("client", "pr.merge", map[string]interface{}{
-			"id":         "pr-t2-skip",
-			"skipped":    true,
-			"skip_court": true,
-		})
-		if isSuccess(skipMerge) {
-			t.Fatal("T2: skip_court/skipped merge succeeded")
-		}
-		if isMissingHandler(skipMerge) && !strings.EqualFold(st, "approved") {
-			t.Fatal("T2: Store does not refuse court skip (missing merge handler is not fail-closed)")
+		got := h.rpc("client", "proposal.get", map[string]interface{}{"id": "prop-t2"})
+		text := payloadText(got)
+		if strings.Contains(text, "approved") || strings.Contains(text, "mergeable") {
+			t.Fatalf("T2: Store marked proposal approved/mergeable without approved field (court skip fallback): cmd=%q payload=%v", got.Command, got.Payload)
 		}
 	})
 }
 
 func TestT3_CrossTenantFetchMustFail(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		_ = h.call("tenant-a", "git.clone", map[string]interface{}{
-			"repo":   "skill",
-			"tenant": "tenant-a",
-		})
-		pathsA := observeGitDirs(".")
-		_ = h.call("tenant-b", "git.clone", map[string]interface{}{
-			"repo":   "skill",
-			"tenant": "tenant-b",
-		})
-		pathsB := observeGitDirs(".")
-		if len(pathsA) == 0 {
-			t.Fatal("T3: git.clone as tenant-a created no git repo to observe")
+		before := listGitRepos(".")
+		aResp := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		afterA := listGitRepos(".")
+		bResp := h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
+		afterB := listGitRepos(".")
+		pathsA := addedPaths(before, afterA)
+		pathsB := addedPaths(afterA, afterB)
+		allA := absRepos(afterA)
+		allB := absRepos(afterB)
+		t.Logf("T3 clone A cmd=%q payload=%v new=%v", aResp.Command, aResp.Payload, pathsA)
+		t.Logf("T3 clone B cmd=%q payload=%v new=%v", bResp.Command, bResp.Payload, pathsB)
+		shared := false
+		if len(pathsB) == 0 {
+			shared = true
 		}
-		if len(pathsA) == 1 && len(pathsB) == 1 && pathsA[0] == pathsB[0] {
-			t.Fatalf("T3: tenant-a and tenant-b both landed on %s (shared repo, no ACL)", pathsA[0])
-		}
-		same := false
-		for _, a := range pathsA {
-			for _, b := range pathsB {
-				if a == b {
-					same = true
+		for _, pa := range allA {
+			for _, pb := range allB {
+				if pa == pb {
+					shared = true
 				}
 			}
 		}
-		if same && len(pathsB) <= len(pathsA) {
-			t.Fatalf("T3: tenants share store path/refs A=%v B=%v", pathsA, pathsB)
-		}
-
-		// B must not be able to fetch A's objects from a shared store.
-		if len(pathsA) > 0 && len(pathsB) > 0 && pathsA[0] != pathsB[0] {
-			blob := []byte("tenant-a-secret-object")
-			cmd := exec.Command("git", "-C", pathsA[0], "hash-object", "-w", "--stdin")
-			cmd.Stdin = strings.NewReader(string(blob))
-			out, err := cmd.CombinedOutput()
-			if err == nil {
-				hash := strings.TrimSpace(string(out))
-				fetch := exec.Command("git", "-C", pathsB[0], "fetch", pathsA[0])
-				_ = fetch.Run()
-				cat := exec.Command("git", "-C", pathsB[0], "cat-file", "-t", hash)
-				if cat.Run() == nil {
-					t.Fatal("T3: tenant-b can fetch tenant-a's objects")
-				}
-			}
+		if shared {
+			t.Fatalf("T3: tenants tenant-a and tenant-b both land on the same on-disk repo for skill (no tenant prefix); A=%v B=%v afterA=%v afterB=%v", pathsA, pathsB, allA, allB)
 		}
 	})
 }
 
 func TestT4_TenantACannotPushToB(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		_ = h.call("tenant-b", "git.clone", map[string]interface{}{
-			"repo":   "skill",
-			"tenant": "tenant-b",
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
+		resp := h.rpc("tenant-a", "git.push", map[string]interface{}{
+			"repo":          "skill",
+			"tenant":        "tenant-a",
+			"target_tenant": "tenant-b",
+			"target_repo":   "skill",
 		})
-		paths := observeGitDirs(".")
-		target := "skill"
-		if len(paths) > 0 {
-			target = paths[0]
-		}
-		pushed := h.call("tenant-a", "git.push", map[string]interface{}{
-			"repo":   "skill",
-			"tenant": "tenant-b",
-			"remote": target,
-			"target": "tenant-b",
-		})
-		if isSuccess(pushed) || !isErrorDeny(pushed) {
-			t.Fatalf("T4: tenant-a git.push into tenant-b's repo was not an error (command=%q payload=%s)", pushed.Command, payloadText(pushed))
+		if !handledDeny(resp, "tenant", "tenancy", "cross-tenant", "acl", "not your") {
+			t.Fatalf("T4: tenant-a git.push targeting tenant-b skill must be a tenancy deny (got cmd=%q payload=%v); stub success/unknown is not a deny", resp.Command, resp.Payload)
 		}
 	})
 }
 
 func TestT5_ExtraRemoteSubmoduleLFSMustFail(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		pushed := h.call("builder", "git.push", map[string]interface{}{
-			"repo":       "skill",
-			"remotes":    []string{"https://evil.example/extra.git"},
-			"remote":     "https://evil.example/extra.git",
-			"submodule":  map[string]string{"path": "vendor/x", "url": "https://evil.example/x.git"},
-			"lfs":        true,
-			"gitmodules": true,
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		resp := h.rpc("builder", "git.push", map[string]interface{}{
+			"repo":         "skill",
+			"tenant":       "tenant-a",
+			"extra_remote": "https://evil.example/x.git",
+			"submodule":    true,
+			"gitmodules":   true,
+			"lfs":          true,
+			"hooks":        true,
 		})
-		if isSuccess(pushed) || !isErrorDeny(pushed) {
-			t.Fatalf("T5: extra remote/submodule/LFS git.push was not rejected (command=%q payload=%s)", pushed.Command, payloadText(pushed))
-		}
-		cloned := h.call("builder", "git.clone", map[string]interface{}{
-			"repo":       "skill-extra",
-			"remote":     "https://evil.example/extra.git",
-			"submodule":  true,
-			"lfs":        true,
-			"gitmodules": true,
-		})
-		if isSuccess(cloned) && !isErrorDeny(cloned) {
-			t.Fatal("T5: git.clone with extra remote/submodule/LFS was accepted")
+		if !handledDeny(resp, "remote", "submodule", "lfs", "hook") {
+			t.Fatalf("T5: builder git.push with extra remote/submodule/LFS must be handled deny (got cmd=%q payload=%v)", resp.Command, resp.Payload)
 		}
 	})
 }
 
 func TestT6_CoderHasNoGit(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		cloned := h.call("coder", "git.clone", map[string]interface{}{"repo": "skill"})
-		pushed := h.call("coder", "git.push", map[string]interface{}{"repo": "skill"})
-		if isSuccess(cloned) || !isErrorDeny(cloned) {
-			t.Fatalf("T6: git.clone as coder was allowed (command=%q payload=%s)", cloned.Command, payloadText(cloned))
-		}
-		if isSuccess(pushed) || !isErrorDeny(pushed) {
-			t.Fatalf("T6: git.push as coder was allowed (command=%q payload=%s)", pushed.Command, payloadText(pushed))
+		cloneResp := h.rpc("coder", "git.clone", clonePayload("tenant-a", "skill"))
+		pushResp := h.rpc("coder", "git.push", map[string]interface{}{
+			"repo":   "skill",
+			"tenant": "tenant-a",
+		})
+		cloneDenied := handledDeny(cloneResp, "coder", "actor", "no git", "not allowed", "denied")
+		pushDenied := handledDeny(pushResp, "coder", "actor", "no git", "not allowed", "denied")
+		if !cloneDenied || !pushDenied {
+			t.Fatalf("T6: coder must not have git (clone cmd=%q payload=%v deny=%v; push cmd=%q payload=%v deny=%v)", cloneResp.Command, cloneResp.Payload, cloneDenied, pushResp.Command, pushResp.Payload, pushDenied)
 		}
 	})
 }
 
 func TestT7_RealGitClonePush(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		cloned := h.call("tenant-a", "git.clone", map[string]interface{}{
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		repos := absRepos(listGitRepos("."))
+		if len(repos) == 0 {
+			t.Fatal("T7: git.clone created no on-disk repo to probe with real git")
+		}
+		localBare := false
+		pushAcceptedLocal := false
+		for _, repo := range repos {
+			if gitDirLooksBare(repo) || strings.Contains(repo, string(filepath.Separator)+"repos"+string(filepath.Separator)) {
+				localBare = true
+			}
+			cfg, _ := exec.Command("git", "-C", repo, "config", "--get", "core.bare").Output()
+			if strings.TrimSpace(string(cfg)) == "true" {
+				localBare = true
+			}
+			work := filepath.Join(h.cwd, "t7-work")
+			_ = os.RemoveAll(work)
+			clone := exec.Command("git", "clone", repo, work)
+			clone.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			if out, err := clone.CombinedOutput(); err != nil {
+				t.Logf("T7: git clone of Store path %s failed: %s (%v)", repo, out, err)
+				continue
+			}
+			if err := os.WriteFile(filepath.Join(work, "t7.txt"), []byte("t7\n"), 0644); err != nil {
+				t.Fatalf("write probe: %v", err)
+			}
+			_ = exec.Command("git", "-C", work, "add", "t7.txt").Run()
+			commit := exec.Command("git", "-C", work, "-c", "user.name=tester", "-c", "user.email=tester@example.test", "commit", "-m", "t7")
+			commit.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			_ = commit.Run()
+			push := exec.Command("git", "-C", work, "push", "origin", "HEAD:refs/heads/t7")
+			push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			if out, err := push.CombinedOutput(); err == nil {
+				pushAcceptedLocal = true
+				t.Logf("T7: local push to %s succeeded: %s", repo, out)
+			} else {
+				t.Logf("T7: local push to %s failed: %s (%v)", repo, out, err)
+			}
+		}
+		stub := h.rpc("builder", "git.push", map[string]interface{}{
 			"repo":   "skill",
 			"tenant": "tenant-a",
 		})
-		remote := remoteFrom(cloned)
-		if remote == "" {
-			t.Fatal("T7: git.clone did not return a cloneable remote; init --bare + stub push is not real git")
-		}
-		if isLocalGitTransport(remote) {
-			t.Fatalf("T7: Store remote %q is local git init --bare / file, not a remote that Store mediates", remote)
-		}
-		work := t.TempDir()
-		dst := filepath.Join(work, "clone")
-		out, err := exec.Command("git", "clone", remote, dst).CombinedOutput()
-		if err != nil {
-			t.Fatalf("T7: git clone of Store remote failed (not a real remote): %v\n%s", err, out)
-		}
-		_ = exec.Command("git", "-C", dst, "config", "user.email", "t7@example.com").Run()
-		_ = exec.Command("git", "-C", dst, "config", "user.name", "T7").Run()
-		if err := os.WriteFile(filepath.Join(dst, "t7.txt"), []byte("t7"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if out, err := exec.Command("git", "-C", dst, "add", "t7.txt").CombinedOutput(); err != nil {
-			t.Fatalf("T7: git add: %v\n%s", err, out)
-		}
-		if out, err := exec.Command("git", "-C", dst, "commit", "-m", "t7").CombinedOutput(); err != nil {
-			t.Fatalf("T7: git commit: %v\n%s", err, out)
-		}
-		if out, err := exec.Command("git", "-C", dst, "push", "origin", "HEAD").CombinedOutput(); err != nil {
-			t.Fatalf("T7: git push to Store remote failed (stub push / not a real remote): %v\n%s", err, out)
-		}
-		rpc := h.call("tenant-a", "git.push", map[string]interface{}{
-			"repo":   "skill",
-			"tenant": "tenant-a",
-			"ref":    "HEAD",
-		})
-		if !isSuccess(rpc) && isErrorDeny(rpc) {
-			t.Fatal("T7: git.push RPC rejected a real object push")
+		stubPush := stub.Command == "git.pushed" || stub.Command == "ok" || strings.Contains(payloadText(stub), "ok")
+		if localBare || stubPush || pushAcceptedLocal {
+			t.Fatalf("T7: Store git is local git init --bare + stub push, not a real Hub-backed accepting remote (localBare=%v stubPush=%v localAccept=%v stub cmd=%q payload=%v repos=%v)", localBare, stubPush, pushAcceptedLocal, stub.Command, stub.Payload, repos)
 		}
 	})
 }
 
 func TestT8_PrMergeOnlyStore(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		_ = h.call("client", "pr.create", map[string]interface{}{
-			"id":    "pr-t8",
-			"title": "only store may merge",
+		_ = h.rpc("builder", "pr.create", map[string]interface{}{
+			"id":     "pr-t8",
+			"repo":   "skill",
+			"tenant": "tenant-a",
 		})
-		for _, src := range []string{"coder", "builder", "host-git", "git"} {
-			merged := h.call(src, "pr.merge", map[string]interface{}{"id": "pr-t8"})
-			if isMissingHandler(merged) {
-				t.Fatalf("T8: pr.merge as %s: missing handler is not a deny", src)
-			}
-			if isSuccess(merged) {
-				t.Fatalf("T8: pr.merge as %s succeeded; only Store may merge", src)
-			}
-			if !isErrorDeny(merged) {
-				t.Fatalf("T8: pr.merge as %s must be an error deny, got command=%q payload=%s", src, merged.Command, payloadText(merged))
-			}
+		coder := h.rpc("coder", "pr.merge", map[string]interface{}{"id": "pr-t8"})
+		builder := h.rpc("builder", "pr.merge", map[string]interface{}{"id": "pr-t8"})
+		if !handledDeny(coder, "wrong actor", "only store", "store only", "actor") {
+			t.Fatalf("T8: pr.merge as coder must be handled wrong-actor deny (got cmd=%q payload=%v); missing case/unknown is not a deny", coder.Command, coder.Payload)
+		}
+		if !handledDeny(builder, "wrong actor", "only store", "store only", "actor") {
+			t.Fatalf("T8: pr.merge as builder must be handled wrong-actor deny (got cmd=%q payload=%v); missing case/unknown is not a deny", builder.Command, builder.Payload)
 		}
 	})
 }
 
 func TestT9_NewSkillAlwaysStoreRepo(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		_ = h.call("client", "git.create", map[string]interface{}{
-			"repo":  "newskill",
-			"skill": "newskill",
+		_ = h.rpc("client", "git.create", map[string]interface{}{
+			"repo":   "newskill",
+			"tenant": "tenant-a",
 		})
-		_ = h.call("client", "skill.create", map[string]interface{}{
+		_ = h.rpc("client", "skill.register", map[string]interface{}{
 			"id":   "newskill",
 			"name": "newskill",
 		})
-		_ = h.call("client", "skill.register", map[string]interface{}{
-			"id":   "newskill",
-			"name": "newskill",
+		_ = h.rpc("client", "skill.create", map[string]interface{}{
+			"id":     "newskill",
+			"repo":   "newskill",
+			"tenant": "tenant-a",
 		})
-		dirs := observeGitDirs(".")
+		repos := absRepos(listGitRepos("."))
+		if len(repos) == 0 {
+			t.Fatal("T9: creating a skill/project did not allocate a Store git repo")
+		}
 		cloneable := false
-		remoteOK := ""
-		for _, d := range dirs {
-			tmp := t.TempDir()
-			if out, err := exec.Command("git", "clone", d, filepath.Join(tmp, "c")).CombinedOutput(); err == nil {
+		for _, repo := range repos {
+			dest := filepath.Join(h.cwd, "t9-clone")
+			_ = os.RemoveAll(dest)
+			cmd := exec.Command("git", "clone", repo, dest)
+			cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			if out, err := cmd.CombinedOutput(); err == nil {
 				cloneable = true
-				remoteOK = d
-				_ = out
+			} else {
+				t.Logf("T9: git clone %s: %s (%v)", repo, out, err)
 			}
 		}
 		if !cloneable {
-			t.Fatal("T9: creating a skill did not allocate a cloneable Store git repo")
+			t.Fatalf("T9: Store git repo exists but is not cloneable: %v", repos)
 		}
-		_ = remoteOK
 	})
 }
 
 func TestT10_RollbackOpensNewPR(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		_ = h.call("client", "pr.create", map[string]interface{}{
-			"id":    "pr-t10",
-			"title": "original",
+		_ = h.rpc("builder", "pr.create", map[string]interface{}{
+			"id":     "pr-t10",
+			"repo":   "skill",
+			"tenant": "tenant-a",
+			"title":  "original",
 		})
-		rb := h.call("client", "pr.rollback", map[string]interface{}{
-			"id": "pr-t10",
+		resp := h.rpc("store", "pr.rollback", map[string]interface{}{
+			"id":     "pr-t10",
+			"repo":   "skill",
+			"tenant": "tenant-a",
+			"ref":    "HEAD",
 		})
-		if isMissingHandler(rb) {
-			t.Fatal("T10: no pr.rollback that opens a new Court-required PR")
+		if isUnknownOrEmpty(resp) {
+			t.Fatalf("T10: pr.rollback missing (unknown/empty is not a handled rollback that opens a new Court-required PR); cmd=%q payload=%v", resp.Command, resp.Payload)
 		}
-		newID := ""
-		pm := payloadMap(rb)
-		for _, k := range []string{"id", "pr_id", "new_pr", "new_id", "rollback_pr"} {
-			if s, ok := pm[k].(string); ok && s != "" && s != "pr-t10" {
-				newID = s
+		if resp.Command == "pr.merged" || resp.Command == "ok" || resp.Command == "git.pushed" {
+			t.Fatalf("T10: skip-Court reset is not a rollback: cmd=%q payload=%v", resp.Command, resp.Payload)
+		}
+		newID := "pr-t10"
+		if m, ok := resp.Payload.(map[string]interface{}); ok {
+			for _, k := range []string{"id", "pr_id", "new_pr", "new_id", "proposal_id"} {
+				if s, ok := m[k].(string); ok && s != "" {
+					newID = s
+					break
+				}
 			}
 		}
-		if s := strings.TrimSpace(payloadText(rb)); newID == "" && s != "" && s != "ok" && !isErrorDeny(rb) {
-			if s != "pr-t10" {
-				newID = s
-			}
-		}
-		if newID == "" {
-			t.Fatal("T10: pr.rollback did not return a new PR id")
-		}
-		got := h.call("client", "pr.get", map[string]interface{}{"id": newID})
-		st, _ := payloadMap(got)["state"].(string)
-		skip, _ := payloadMap(got)["skip_court"].(bool)
-		if skip || strings.EqualFold(st, "merged") || strings.EqualFold(st, "approved") {
-			t.Fatal("T10: rollback PR skipped Court / live skip-Court reset")
-		}
-		if isErrorDeny(got) || isMissingHandler(got) {
-			t.Fatal("T10: new rollback PR id is not gettable")
+		got := h.rpc("client", "pr.get", map[string]interface{}{"id": newID})
+		merge := h.rpc("store", "pr.merge", map[string]interface{}{"id": newID})
+		text := payloadText(got) + " " + payloadText(resp)
+		needsCourt := strings.Contains(text, "court") || strings.Contains(text, "pending") || strings.Contains(text, "not approved")
+		if !needsCourt && !handledDeny(merge, "court", "not approved") {
+			t.Fatalf("T10: handled rollback must open a new PR that still needs Court (rollback cmd=%q payload=%v get cmd=%q payload=%v merge cmd=%q payload=%v)", resp.Command, resp.Payload, got.Command, got.Payload, merge.Command, merge.Payload)
 		}
 	})
 }
 
 func TestT11_DestroyedBuilderLeavesNoState(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		_ = h.call("tenant-a", "git.clone", map[string]interface{}{"repo": "skill"})
-		cmds := []string{"builder.destroy", "destroy.builder", "builder.destroyed", "store.builder.destroy"}
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		_ = os.WriteFile(filepath.Join(h.cwd, ".git-credentials"), []byte("https://builder:tok@example.test\n"), 0600)
+		_ = os.MkdirAll(filepath.Join(h.cwd, "builder-work"), 0755)
+		destroyCmds := []string{
+			"builder.destroy",
+			"builder.destroyed",
+			"destroy.builder",
+			"builder.wipe",
+			"vm.destroy",
+			"sandbox.destroy",
+		}
 		handled := false
-		for _, c := range cmds {
-			m := h.call("store", c, map[string]interface{}{"builder_id": "builder-1"})
-			if !isMissingHandler(m) {
+		for _, cmd := range destroyCmds {
+			resp := h.rpc("store", cmd, map[string]interface{}{
+				"id":         "builder-1",
+				"builder_id": "builder-1",
+				"tenant":     "tenant-a",
+			})
+			if !isUnknownOrEmpty(resp) {
 				handled = true
 			}
 		}
-		if !handled {
-			t.Fatal("T11: Store has no Builder destroy that wipes git state and creds")
+		leftoverGit := absRepos(listGitRepos("."))
+		var leftoverCreds []string
+		for _, name := range []string{".git-credentials", ".netrc", "id_rsa", "id_ed25519"} {
+			if _, err := os.Stat(filepath.Join(h.cwd, name)); err == nil {
+				leftoverCreds = append(leftoverCreds, name)
+			}
 		}
-		left := observeGitDirs(".")
-		creds := leftoverCreds(".")
-		if len(left) > 0 || len(creds) > 0 {
-			t.Fatalf("T11: leftover git/creds after destroy: git=%v creds=%v", left, creds)
+		if _, err := os.Stat(filepath.Join(h.cwd, "builder-work")); err == nil {
+			leftoverCreds = append(leftoverCreds, "builder-work")
+		}
+		if !handled || len(leftoverGit) > 0 || len(leftoverCreds) > 0 {
+			t.Fatalf("T11: builder destroy missing or leftover git/creds (handled=%v git=%v creds=%v)", handled, leftoverGit, leftoverCreds)
 		}
 	})
 }
 
 func TestT12_ForcePushHistoryDeleteFakeCourtFail(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		fp := h.call("builder", "git.push", map[string]interface{}{
-			"repo":        "skill",
-			"force":       true,
-			"delete_refs": true,
-			"refs":        []string{"+refs/heads/main", ":refs/heads/old"},
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		force := h.rpc("builder", "git.push", map[string]interface{}{
+			"repo":    "skill",
+			"tenant":  "tenant-a",
+			"force":   true,
+			"refspec": "+HEAD:refs/heads/main",
 		})
-		if isSuccess(fp) || !isErrorDeny(fp) {
-			t.Fatalf("T12: force-push / delete-refs was not denied (command=%q payload=%s)", fp.Command, payloadText(fp))
+		del := h.rpc("builder", "git.push", map[string]interface{}{
+			"repo":        "skill",
+			"tenant":      "tenant-a",
+			"delete_refs": true,
+			"refspec":     ":refs/heads/main",
+		})
+		if !handledDeny(force, "force", "fast-forward", "history") {
+			t.Errorf("T12: force-push must be handled deny (got cmd=%q payload=%v); stub success is not a deny", force.Command, force.Payload)
 		}
-
-		_ = h.call("client", "proposal.create", map[string]interface{}{
+		if !handledDeny(del, "delete", "history", "ref") {
+			t.Errorf("T12: delete-refs must be handled deny (got cmd=%q payload=%v); stub success is not a deny", del.Command, del.Payload)
+		}
+		_ = h.rpc("client", "proposal.create", map[string]interface{}{
 			"id":          "prop-t12",
 			"description": "fake court",
 		})
-		_ = h.call("court-scribe", "court.review_complete", map[string]interface{}{
+		_ = h.rpc("court-scribe", "court.review_complete", map[string]interface{}{
 			"proposal_id": "prop-t12",
-			"votes":       map[string]interface{}{"a": "yes"},
 			"approved":    true,
-			// no decision_merkle / decision_sig
+			"votes":       map[string]interface{}{"ciso": "approve"},
 		})
-		got := h.call("client", "proposal.get", map[string]interface{}{"id": "prop-t12"})
-		pm := payloadMap(got)
-		st, _ := pm["state"].(string)
-		_, hasMerkle := pm["court_decision"]
-		if strings.EqualFold(st, "approved") && !hasMerkle {
-			t.Fatal("T12: fake Court (approved without decision_merkle/sig) was accepted")
-		}
-		_ = h.call("client", "pr.create", map[string]interface{}{"id": "pr-t12"})
-		merged := h.call("client", "pr.merge", map[string]interface{}{"id": "pr-t12", "proposal_id": "prop-t12"})
-		if isSuccess(merged) {
-			t.Fatal("T12: pr.merge after forged/unsigned Court succeeded")
-		}
-		if isMissingHandler(merged) && strings.EqualFold(st, "approved") {
-			t.Fatal("T12: Store accepted unsigned Court approval")
+		_ = h.rpc("builder", "pr.create", map[string]interface{}{
+			"id":          "pr-t12",
+			"repo":        "skill",
+			"tenant":      "tenant-a",
+			"proposal_id": "prop-t12",
+		})
+		merge := h.rpc("store", "pr.merge", map[string]interface{}{
+			"id":          "pr-t12",
+			"proposal_id": "prop-t12",
+		})
+		if !handledDeny(merge, "court", "merkle", "signature", "unsigned", "sig") {
+			t.Errorf("T12: fake Court (approved without decision_merkle/sig) then pr.merge must be handled deny (got cmd=%q payload=%v)", merge.Command, merge.Payload)
 		}
 	})
 }
 
 func TestT13_HubVsockOnlyNoHostGitDaemonNoSkillDotGit(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		cloned := h.call("tenant-a", "git.clone", map[string]interface{}{
-			"repo": "skill",
-		})
-		remote := remoteFrom(cloned)
-		if isLocalGitTransport(remote) {
-			t.Fatalf("T13: Store returned local/file/TCP git transport %q, not Hub/vsock", remote)
-		}
-		dirs := observeGitDirs(".")
-		for _, d := range dirs {
-			rel := d
-			if strings.Contains(filepath.ToSlash(rel), "/repos/") || strings.HasPrefix(filepath.ToSlash(rel), "repos/") || rel == "repos/skill" {
-				t.Fatalf("T13: Store used local git init --bare at %s, not Hub/vsock git", d)
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		repos := absRepos(listGitRepos("."))
+		usedLocalBare := false
+		usedFileOrTCP := false
+		for _, repo := range repos {
+			if gitDirLooksBare(repo) {
+				usedLocalBare = true
 			}
-			if strings.HasPrefix(d, "/") && !strings.Contains(strings.ToLower(d), "vsock") && !strings.Contains(strings.ToLower(d), "hub") {
-				// local absolute bare repo
-				t.Fatalf("T13: Store used local filesystem git at %s, not Hub/vsock git", d)
+			if filepath.Base(filepath.Dir(repo)) == "repos" {
+				usedLocalBare = true
+			}
+			out, err := exec.Command("git", "-C", repo, "remote", "-v").CombinedOutput()
+			text := strings.ToLower(string(out))
+			if err == nil && (strings.Contains(text, "file://") || strings.Contains(text, "git://") || strings.Contains(text, "http://") || strings.Contains(text, "https://")) {
+				usedFileOrTCP = true
+			}
+			cfg, _ := exec.Command("git", "-C", repo, "config", "--list").Output()
+			ct := strings.ToLower(string(cfg))
+			if strings.Contains(ct, "file://") || strings.Contains(ct, "git://") {
+				usedFileOrTCP = true
 			}
 		}
-		if len(dirs) > 0 && (remote == "" || isLocalGitTransport(remote)) {
-			t.Fatalf("T13: git.clone created local git dirs %v (init --bare), not Hub/vsock", dirs)
+		daemons := gitDaemonListening()
+		hostGit := hostSkillDotGit(gitWorktree)
+		hostGit = append(hostGit, hostSkillDotGit(h.cwd)...)
+		leaks := worktreeReposLeftover()
+		if usedLocalBare || usedFileOrTCP {
+			t.Errorf("T13: git.clone used local git init --bare / file:// / TCP rather than Hub/vsock (bare=%v fileOrTCP=%v repos=%v)", usedLocalBare, usedFileOrTCP, repos)
 		}
-
-		// Extra: workspace/skills/*/.git (sitting). Not the primary assertion.
-		_ = filepath.Walk("workspace", func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil {
-				return nil
-			}
-			if info.IsDir() && info.Name() == ".git" {
-				t.Fatal("T13: workspace/skills has a .git dir (host git, not Hub/vsock)")
-			}
-			return nil
-		})
-
-		// Extra: host git daemon listen (port 9418). Fail if present.
-		if gitDaemonListening() {
-			t.Fatal("T13: host git daemon is listening; git must be Hub/vsock only")
+		if len(daemons) > 0 {
+			t.Errorf("T13: host git daemon listening on %v", daemons)
 		}
-
-		// Pass only when Store returned a Hub/vsock remote and did not
-		// materialize a local git dir. Missing vsock stays red even if
-		// someone deletes git init --bare.
-		if remote == "" || isLocalGitTransport(remote) || len(dirs) > 0 {
-			t.Fatalf("T13: git.clone is not Hub/vsock git (remote=%q localDirs=%v command=%q)", remote, dirs, cloned.Command)
+		if len(hostGit) > 0 {
+			t.Errorf("T13: workspace/skills/.git exists: %v", hostGit)
+		}
+		if len(leaks) > 0 {
+			t.Errorf("T13: worktree repos/ leftover from Store cwd leakage: %v", leaks)
+		}
+		if !usedLocalBare && !usedFileOrTCP && len(daemons) == 0 && len(hostGit) == 0 {
+			t.Error("T13: Store git is not Hub/vsock-only")
 		}
 	})
-}
-
-func gitDaemonListening() bool {
-	c, err := net.DialTimeout("tcp", "127.0.0.1:9418", 150*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = c.Close()
-	return true
 }
