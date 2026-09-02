@@ -450,25 +450,45 @@ func TestT3_CrossTenantFetchMustFail(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
 		aResp := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
 		bResp := h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
-		afterA := absRepos(listGitRepos(h.cwd))
-		afterB := absRepos(listGitRepos(h.cwd))
+		ra, rb := remoteFromClone(aResp), remoteFromClone(bResp)
+		cross := h.rpc("builder", "git.clone", map[string]interface{}{
+			"repo":        "skill",
+			"tenant":      "tenant-b",
+			"from_tenant": "tenant-a",
+			"remote":      ra,
+			"target":      ra,
+		})
 		sharedDisk := false
-		for _, pa := range afterA {
-			for _, pb := range afterB {
-				if pa == pb {
+		after := absRepos(listGitRepos(h.cwd))
+		if len(after) == 1 {
+			sharedDisk = true
+		}
+		for i := range after {
+			for j := range after {
+				if i != j && after[i] == after[j] {
 					sharedDisk = true
 				}
 			}
 		}
-		if sharedDisk && len(afterA) > 0 {
-			t.Fatalf("T3: tenants tenant-a and tenant-b share on-disk repo for skill A=%v B=%v", afterA, afterB)
+		bFetchedA := false
+		if ra != "" && rb != "" && ra == rb {
+			bFetchedA = true
 		}
-		ra, rb := remoteFromClone(aResp), remoteFromClone(bResp)
-		if len(afterA) == 0 && len(afterB) == 0 {
-			if payloadIsOK(aResp.Payload) || payloadIsOK(bResp.Payload) || ra == "" || rb == "" || ra == rb || localGitPath(ra) || localGitPath(rb) {
-				t.Fatalf("T3: no tenant isolation on Store remotes (a cmd=%q payload=%v b cmd=%q payload=%v)", aResp.Command, aResp.Payload, bResp.Command, bResp.Payload)
+		if ra != "" && !handledDeny(cross, "tenant", "acl", "tenancy", "not your") {
+			if cross.Command == "git.cloned" || payloadIsOK(cross.Payload) || remoteFromClone(cross) != "" {
+				bFetchedA = true
 			}
 		}
+		if sharedDisk || bFetchedA {
+			t.Fatalf("T3: tenant-b clone/fetch of skill on tenant-a's remote succeeded (sharedDisk=%v a=%q b=%q cross cmd=%q payload=%v)", sharedDisk, ra, rb, cross.Command, cross.Payload)
+		}
+		if ra != "" && rb != "" && ra != rb {
+			return
+		}
+		if handledDeny(cross, "tenant", "acl", "tenancy", "not your") {
+			return
+		}
+		t.Fatalf("T3: no tenancy deny and remotes are not distinct (a cmd=%q payload=%v b cmd=%q payload=%v)", aResp.Command, aResp.Payload, bResp.Command, bResp.Payload)
 	})
 }
 
@@ -513,8 +533,8 @@ func TestT6_CoderHasNoGit(t *testing.T) {
 			"repo":   "skill",
 			"tenant": "tenant-a",
 		})
-		cloneDenied := handledDeny(cloneResp, "coder", "actor", "no git", "not allowed", "denied")
-		pushDenied := handledDeny(pushResp, "coder", "actor", "no git", "not allowed", "denied")
+		cloneDenied := handledDeny(cloneResp, "coder", "actor", "no git")
+		pushDenied := handledDeny(pushResp, "coder", "actor", "no git")
 		if !cloneDenied || !pushDenied {
 			t.Fatalf("T6: coder must not have git (clone cmd=%q payload=%v deny=%v; push cmd=%q payload=%v deny=%v)", cloneResp.Command, cloneResp.Payload, cloneDenied, pushResp.Command, pushResp.Payload, pushDenied)
 		}
