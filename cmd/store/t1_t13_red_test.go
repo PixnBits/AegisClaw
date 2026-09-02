@@ -158,9 +158,9 @@ func secondCloneYieldsCommit(t *testing.T, resp Message, hash string) bool {
 	return err == nil && strings.TrimSpace(string(typ)) == "commit"
 }
 
-func makeDetachedCommit(t *testing.T) string {
+func makeDetachedCommit(t *testing.T) (dir, hash string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir = t.TempDir()
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command(args[0], args[1:]...)
@@ -180,15 +180,7 @@ func makeDetachedCommit(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("rev-parse: %s (%v)", out, err)
 	}
-	return strings.TrimSpace(string(out))
-}
-
-func isStubGitPushed(resp Message) bool {
-	if resp.Command != "git.pushed" && resp.Command != "ok" {
-		return false
-	}
-	p := strings.TrimSpace(payloadText(resp))
-	return p == "ok" || p == ""
+	return dir, strings.TrimSpace(string(out))
 }
 
 func looksLikeHubVsock(v interface{}) bool {
@@ -541,23 +533,24 @@ func TestT6_CoderHasNoGit(t *testing.T) {
 
 func TestT7_RealGitClonePush(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
-		hash := makeDetachedCommit(t)
-		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		pushed := h.rpc("builder", "git.push", map[string]interface{}{
-			"repo":   "skill",
-			"tenant": "tenant-a",
-			"ref":    "refs/heads/main",
-			"pack":   hash,
-		})
-		if isStubGitPushed(pushed) {
-			t.Fatal("T7: stub git.pushed is not a commit round-trip through Store git")
+		dir, hash := makeDetachedCommit(t)
+		cloned := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
+		remote := remoteFromClone(cloned)
+		if remote == "" || payloadIsOK(cloned.Payload) || localGitPath(remote) || localGitPath(cloned.Payload) {
+			t.Fatalf("T7: git.clone did not return a Store remote to push real objects into (cmd=%q payload=%v); JSON pack: is not a pass", cloned.Command, cloned.Payload)
+		}
+		push := exec.Command("git", "push", remote, "HEAD:refs/heads/main")
+		push.Dir = dir
+		push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		if out, err := push.CombinedOutput(); err != nil {
+			t.Fatalf("T7: git -C detached push %q HEAD:refs/heads/main failed: %s (%v); objects never left the tempdir", remote, out, err)
 		}
 		cloned2 := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
 		if localGitPath(cloned2.Payload) || localGitPath(remoteFromClone(cloned2)) {
 			t.Fatalf("T7: second git.clone is a local repos/ path, not Store git (payload=%v)", cloned2.Payload)
 		}
 		if !secondCloneYieldsCommit(t, cloned2, hash) {
-			t.Fatalf("T7: git clone of Store remote plus cat-file did not yield commit %s (cmd=%q payload=%v); JSON Contains(want) is not a pass", hash, cloned2.Command, cloned2.Payload)
+			t.Fatalf("T7: git clone of Store remote plus cat-file did not yield commit %s (cmd=%q payload=%v)", hash, cloned2.Command, cloned2.Payload)
 		}
 	})
 }
