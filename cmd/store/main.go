@@ -11,18 +11,18 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
-	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/channeldata"
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/chatstore"
 	"AegisClaw/internal/collab"
-	"AegisClaw/internal/channelfacilitator"
+	"AegisClaw/internal/storegit"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 
@@ -53,6 +53,25 @@ type Message struct {
 }
 
 var hubSocket = "~/.aegis/hub.sock"
+
+var gitStoreOnce sync.Once
+var gitStoreInst *storegit.Store
+
+func defaultGitStore() *storegit.Store {
+	gitStoreOnce.Do(func() {
+		root := os.Getenv("AEGIS_STORE_GIT_ROOT")
+		if root == "" {
+			root = "store-git"
+		}
+		s, err := storegit.Open(root)
+		if err != nil {
+			log.Printf("storegit open: %v", err)
+			s, _ = storegit.Open(os.TempDir())
+		}
+		gitStoreInst = s
+	})
+	return gitStoreInst
+}
 
 // revocations holds active Court enforcement actions (revoked scopes, terminations).
 // In a fuller Store VM this would be durable + queryable (store-vm.md).
@@ -1012,22 +1031,62 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Payload = enforcement
 		case "git.clone":
 			payload := msg.Payload.(map[string]interface{})
-			repo := payload["repo"].(string)
-			path := "repos/" + repo
-			os.MkdirAll("repos", 0755)
-			cmd := exec.Command("git", "init", "--bare", path)
-			err := cmd.Run()
-			if err != nil {
+			tenant, _ := payload["tenant"].(string)
+			repo, _ := payload["repo"].(string)
+			dest, _ := payload["dest"].(string)
+			if err := defaultGitStore().Clone(msg.Source, tenant, repo, dest); err != nil {
 				response.Command = "error"
 				response.Payload = err.Error()
 			} else {
 				response.Command = "git.cloned"
 				response.Payload = "ok"
 			}
+		case "git.create":
+			payload := msg.Payload.(map[string]interface{})
+			tenant, _ := payload["tenant"].(string)
+			repo, _ := payload["repo"].(string)
+			if _, err := defaultGitStore().CreateRepo(tenant, repo); err != nil {
+				response.Command = "error"
+				response.Payload = err.Error()
+			} else {
+				response.Command = "git.created"
+				response.Payload = "ok"
+			}
 		case "git.push":
-			// For push, assume it's handled by git, stub success
-			response.Command = "git.pushed"
-			response.Payload = "ok"
+			payload, _ := msg.Payload.(map[string]interface{})
+			if payload == nil {
+				response.Command = "error"
+				response.Payload = "ERR_BAD_PAYLOAD"
+				break
+			}
+			tenant, _ := payload["tenant"].(string)
+			repo, _ := payload["repo"].(string)
+			work, _ := payload["worktree"].(string)
+			ref, _ := payload["refspec"].(string)
+			toTenant, _ := payload["to_tenant"].(string)
+			var err error
+			if toTenant != "" && toTenant != tenant {
+				err = defaultGitStore().PushToTenant(msg.Source, tenant, toTenant, repo, work, ref)
+			} else {
+				err = defaultGitStore().Push(msg.Source, tenant, repo, work, ref)
+			}
+			if err != nil {
+				response.Command = "error"
+				response.Payload = err.Error()
+			} else {
+				response.Command = "git.pushed"
+				response.Payload = "ok"
+			}
+		case "pr.merge":
+			payload, _ := msg.Payload.(map[string]interface{})
+			id, _ := payload["id"].(string)
+			if err := defaultGitStore().Merge(msg.Source, id); err != nil {
+				response.Command = "error"
+				response.Payload = err.Error()
+			} else {
+				response.Command = "pr.merged"
+				response.Payload = "ok"
+			}
 		case "pr.create":
 			payload := msg.Payload.(map[string]interface{})
 			id := payload["id"].(string)
@@ -1143,8 +1202,8 @@ func runStore(cmd *cobra.Command, args []string) {
 						"from":    payload["from"],
 						"to":      payload["to"], // role or "broadcast"
 						"content": payload["content"],
-				}
-				t["messages"] = append(msgs, msgEntry)
+					}
+					t["messages"] = append(msgs, msgEntry)
 				}
 				teams[teamID] = t
 				saveToFile("teams.json", teams)
@@ -1194,9 +1253,13 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.get":
 			payload := msg.Payload.(map[string]interface{})
 			id := ""
-			if v, ok := payload["id"].(string); ok { id = v }
+			if v, ok := payload["id"].(string); ok {
+				id = v
+			}
 			if id == "" {
-				if v, ok := payload["channel_id"].(string); ok { id = v }
+				if v, ok := payload["channel_id"].(string); ok {
+					id = v
+				}
 			}
 			if ch, ok := channels[id].(map[string]interface{}); ok {
 				prepareChannelRecord(ch)
@@ -1267,8 +1330,14 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.archive":
 			payload := msg.Payload.(map[string]interface{})
 			chID := ""
-			if v, ok := payload["id"].(string); ok { chID = v }
-			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			if v, ok := payload["id"].(string); ok {
+				chID = v
+			}
+			if chID == "" {
+				if v, ok := payload["channel_id"].(string); ok {
+					chID = v
+				}
+			}
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
 				ch["archived"] = true
 				ch["archived_at"] = response.Timestamp
@@ -1281,8 +1350,14 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.add_member":
 			payload := msg.Payload.(map[string]interface{})
 			chID := ""
-			if v, ok := payload["id"].(string); ok { chID = v }
-			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			if v, ok := payload["id"].(string); ok {
+				chID = v
+			}
+			if chID == "" {
+				if v, ok := payload["channel_id"].(string); ok {
+					chID = v
+				}
+			}
 			role := ""
 			if v, ok := payload["role"].(string); ok {
 				role = collab.NormalizeMemberRole(v)
@@ -1318,10 +1393,18 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.remove_member":
 			payload := msg.Payload.(map[string]interface{})
 			chID := ""
-			if v, ok := payload["id"].(string); ok { chID = v }
-			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			if v, ok := payload["id"].(string); ok {
+				chID = v
+			}
+			if chID == "" {
+				if v, ok := payload["channel_id"].(string); ok {
+					chID = v
+				}
+			}
 			roleToRemove := ""
-			if v, ok := payload["role"].(string); ok { roleToRemove = v }
+			if v, ok := payload["role"].(string); ok {
+				roleToRemove = v
+			}
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
 				members := []interface{}{}
 				if m, ok := ch["members"].([]interface{}); ok {
@@ -1486,10 +1569,10 @@ func runStore(cmd *cobra.Command, args []string) {
 			}
 			response.Command = channelfacilitator.CmdGetRelevantSince + ".data"
 			response.Payload = map[string]interface{}{
-				"channel_id":  chID,
-				"since_seq":   sinceSeq,
+				"channel_id":   chID,
+				"since_seq":    sinceSeq,
 				"new_messages": batch,
-				"anchors":     anchors,
+				"anchors":      anchors,
 			}
 
 		// default PM in create if missing
