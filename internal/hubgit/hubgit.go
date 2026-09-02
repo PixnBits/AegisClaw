@@ -13,7 +13,7 @@ import (
 // Serve reads one `git-connect <service> <url>` line from c, compares
 // sessionTenant to the URL tenant, and on match splices git pack to
 // storeGitSock using the session tenant (not the URL, not helper env).
-// Missing session or mismatch writes "deny tenancy acl: not your tenant"
+// Empty session writes "deny no git identity"; mismatch writes "deny tenancy acl: not your tenant"
 // and returns without dialing Store.
 func Serve(c net.Conn, sessionTenant, storeGitSock string) {
 	defer c.Close()
@@ -35,7 +35,11 @@ func Serve(c net.Conn, sessionTenant, storeGitSock string) {
 		return
 	}
 	target, repo, parsed := storegit.ParseURL(url)
-	if strings.TrimSpace(sessionTenant) == "" || !parsed || sessionTenant != target {
+	if strings.TrimSpace(sessionTenant) == "" {
+		_, _ = fmt.Fprintf(c, "deny no git identity\n")
+		return
+	}
+	if !parsed || sessionTenant != target {
 		_, _ = fmt.Fprintf(c, "deny tenancy acl: not your tenant\n")
 		return
 	}

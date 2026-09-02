@@ -418,8 +418,29 @@ func lookupPeerTenant(pub string) string {
 	return strings.TrimSpace(m[pub])
 }
 
+func forgetVsockTenant(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	addr := conn.RemoteAddr()
+	if addr == nil {
+		return
+	}
+	if a, ok := addr.(*vsock.Addr); ok {
+		cidTenant.Delete(a.ContextID)
+	}
+}
+
+func verifyGitRegisterSignature(msg Message, pubKey ed25519.PublicKey) bool {
+	if msg.Signature == "" || msg.Signature == "dummy" {
+		return false
+	}
+	return verifySignature(msg, pubKey)
+}
+
 func handleConnection(conn net.Conn, conns *sync.Map) {
 	defer conn.Close()
+	defer forgetVsockTenant(conn)
 	br := bufio.NewReader(conn)
 	encoder := json.NewEncoder(conn)
 
@@ -437,6 +458,10 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		if es != "EOF" && es != "unexpected EOF" && err != io.EOF && err != io.ErrUnexpectedEOF {
 			log.Printf("Failed to decode register message: %v (remote=%v local=%v)", err, conn.RemoteAddr(), conn.LocalAddr())
 		}
+		return
+	}
+	if strings.HasPrefix(strings.TrimSpace(string(raw)), "git-connect") {
+		_, _ = fmt.Fprintf(conn, "deny no git identity\n")
 		return
 	}
 	var regMsg Message
@@ -473,12 +498,14 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	pubKey := ed25519.PublicKey(pubKeyBytes)
 
 	if regMsg.Source == "git-remote-hub" {
+		if !verifyGitRegisterSignature(regMsg, pubKey) {
+			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
+			return
+		}
 		tenant := lookupPeerTenant(pubKeyStr)
 		if tenant == "" {
-			tenant = gitSessionTenant(conn)
-		}
-		if t, ok := payloadMap["tenant"].(string); ok {
-			rememberVsockTenant(conn, t)
+			_ = encoder.Encode(map[string]string{"error": "ERR_UNKNOWN_PEER"})
+			return
 		}
 		if err := encoder.Encode(map[string]string{"status": "registered"}); err != nil {
 			return
@@ -529,11 +556,6 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	debugLog("hub", fmt.Sprintf("Registered component %s (hub id %s) version %s", regMsg.Source, componentID, version))
 
 	conns.Store(componentID, conn)
-	if payloadMap != nil {
-		if t, ok := payloadMap["tenant"].(string); ok {
-			rememberVsockTenant(conn, t)
-		}
-	}
 
 	// Cleanup when connection closes
 	defer func(id string) {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 // git-remote-hub speaks git's remote-helper protocol and relays
@@ -66,6 +67,17 @@ func main() {
 	}
 }
 
+// hubMessage matches cmd/aegishub Message JSON tags/field order so
+// json.Marshal of an unsigned copy is the same bytes verifySignature checks.
+type hubMessage struct {
+	Source      string      `json:"source"`
+	Destination string      `json:"destination"`
+	Command     string      `json:"command"`
+	Payload     interface{} `json:"payload"`
+	Timestamp   string      `json:"timestamp"`
+	Signature   string      `json:"signature"`
+}
+
 func connectHub(hubSock, service, url string, buffered *bufio.Reader) error {
 	priv, err := parsePrivKey(os.Getenv("AEGIS_HUB_PRIVKEY"))
 	if err != nil {
@@ -78,15 +90,21 @@ func connectHub(hubSock, service, url string, buffered *bufio.Reader) error {
 	defer conn.Close()
 
 	pub := priv.Public().(ed25519.PublicKey)
-	reg := map[string]interface{}{
-		"source":      "git-remote-hub",
-		"destination": "hub",
-		"command":     "register",
-		"payload": map[string]interface{}{
+	reg := hubMessage{
+		Source:      "git-remote-hub",
+		Destination: "hub",
+		Command:     "register",
+		Payload: map[string]string{
 			"public_key": base64.StdEncoding.EncodeToString(pub),
 			"version":    "git-remote-hub",
 		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
+	body, err := json.Marshal(reg)
+	if err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+	reg.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body))
 	br := bufio.NewReader(conn)
 	if err := json.NewEncoder(conn).Encode(reg); err != nil {
 		return fmt.Errorf("register: %w", err)

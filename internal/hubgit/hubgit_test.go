@@ -103,8 +103,11 @@ func mustDeny(t *testing.T, c net.Conn) {
 	t.Helper()
 	_, _ = fmt.Fprintf(c, "git-connect git-upload-pack hub::vsock/tenant-a/skill\n")
 	line := readLine(t, c)
-	if !strings.Contains(line, "not your tenant") {
-		t.Fatalf("want tenancy deny, got %q", line)
+	if strings.Contains(line, "not your tenant") {
+		t.Fatalf("empty session must not use tenancy needle, got %q", line)
+	}
+	if !strings.Contains(line, "no git identity") {
+		t.Fatalf("want no git identity deny, got %q", line)
 	}
 }
 

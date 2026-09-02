@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -371,5 +374,165 @@ func TestIsOneWayHubPush(t *testing.T) {
 	}
 	if isOneWayHubPush("llm.call") {
 		t.Fatal("llm.call is a blocking RPC")
+	}
+}
+
+func startGitHub(t *testing.T, identities map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "aegishub.sock")
+	identPath := filepath.Join(dir, "git-identities.json")
+	b, err := json.Marshal(identities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identPath, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	hubBinary := buildTestBinary(t, "./cmd/aegishub", "aegishub-git-test")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	aclPath := filepath.Join(filepath.Clean(filepath.Join(wd, "..", "..")), "config", "acls.yaml")
+	cmd := exec.Command(hubBinary, "start")
+	cmd.Env = append(os.Environ(),
+		"AEGIS_HUB_SOCKET="+sock,
+		"AEGIS_GIT_IDENTITIES="+identPath,
+		"AEGIS_DEV_MODE=1",
+		"AEGIS_ACL_FILE="+aclPath,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start hub: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	var dialErr error
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("unix", sock, 50*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+			return sock
+		}
+		dialErr = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("hub not accepting: %v", dialErr)
+	return sock
+}
+
+func signGitRegister(priv ed25519.PrivateKey, payload map[string]string) Message {
+	msg := Message{
+		Source:      "git-remote-hub",
+		Destination: "hub",
+		Command:     "register",
+		Payload:     payload,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+	body, _ := json.Marshal(msg)
+	msg.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body))
+	return msg
+}
+
+func gitConnectAfterRegister(t *testing.T, sock string, reg Message, url string) string {
+	t.Helper()
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(conn).Encode(reg); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	reply, err := br.ReadString('\n')
+	out := reply
+	if err != nil {
+		out += err.Error()
+	}
+	_, _ = fmt.Fprintf(conn, "git-connect git-upload-pack %s\n", url)
+	line, err2 := br.ReadString('\n')
+	out += line
+	if err2 != nil {
+		out += err2.Error()
+	}
+	return out
+}
+
+func TestGitConnectUnknownKeyIgnoresPayloadTenant(t *testing.T) {
+	_, aPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unkPub, unkPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := startGitHub(t, map[string]string{
+		base64.StdEncoding.EncodeToString(aPriv.Public().(ed25519.PublicKey)): "tenant-a",
+	})
+	reg := signGitRegister(unkPriv, map[string]string{
+		"public_key": base64.StdEncoding.EncodeToString(unkPub),
+		"version":    "git-remote-hub",
+		"tenant":     "tenant-a",
+	})
+	got := gitConnectAfterRegister(t, sock, reg, "hub::vsock/tenant-a/skill")
+	low := strings.ToLower(got)
+	if strings.Contains(low, "not your tenant") {
+		t.Fatalf("unknown peer deny must not be tenancy needle: %q", got)
+	}
+	if strings.TrimSpace(got) == "ok" || strings.HasSuffix(strings.TrimSpace(got), "\nok") {
+		t.Fatalf("unknown key + payload.tenant must not git-connect: %q", got)
+	}
+	if strings.Contains(low, "deny store git socket") {
+		t.Fatalf("payload.tenant must not grant a session that reaches Store: %q", got)
+	}
+}
+
+func TestGitConnectUnsignedCannotClaimRosteredKey(t *testing.T) {
+	aPub, aPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := startGitHub(t, map[string]string{
+		base64.StdEncoding.EncodeToString(aPub): "tenant-a",
+	})
+	payload := map[string]string{
+		"public_key": base64.StdEncoding.EncodeToString(aPub),
+		"version":    "git-remote-hub",
+	}
+	cases := []struct {
+		name string
+		reg  Message
+	}{
+		{"empty", Message{Source: "git-remote-hub", Destination: "hub", Command: "register", Payload: payload, Timestamp: time.Now().UTC().Format(time.RFC3339)}},
+		{"dummy", Message{Source: "git-remote-hub", Destination: "hub", Command: "register", Payload: payload, Timestamp: time.Now().UTC().Format(time.RFC3339), Signature: "dummy"}},
+		{"wrong-key", signGitRegister(otherPriv, payload)},
+	}
+	_ = aPriv
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := gitConnectAfterRegister(t, sock, tc.reg, "hub::vsock/tenant-a/skill")
+			low := strings.ToLower(got)
+			if strings.Contains(low, "not your tenant") {
+				t.Fatalf("unverified key deny must not be tenancy needle: %q", got)
+			}
+			if strings.TrimSpace(got) == "ok" || strings.Contains(low, "\"status\":\"registered\"") && strings.Contains(low, "\nok") {
+				t.Fatalf("claimed rostered pubkey without privkey must not get git identity: %q", got)
+			}
+			if strings.Contains(low, "deny store git socket") {
+				t.Fatalf("unverified register must not reach Store: %q", got)
+			}
+		})
 	}
 }
