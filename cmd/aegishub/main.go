@@ -420,20 +420,28 @@ func lookupPeerTenant(pub string) string {
 
 func handleConnection(conn net.Conn, conns *sync.Map) {
 	defer conn.Close()
-	decoder := json.NewDecoder(conn)
+	br := bufio.NewReader(conn)
 	encoder := json.NewEncoder(conn)
 
-	// First message must be register.
+	// First message must be register, line-oriented so git-remote-hub can
+	// follow with a plaintext git-connect line. json.Decoder.Buffered() leaves
+	// the trailing newline (or worse, swallows git-connect) and Hub closes
+	// before the helper writes the service line.
 	// Note: the readiness probe in startManagedHub does a Dial + immediate Close()
 	// (no data) to test if the socket is accepting. That produces a clean EOF here
-	// on the first Decode and is expected / harmless (not a real client register
+	// on the first read and is expected / harmless (not a real client register
 	// failure). We log at debug or only for non-EOF errors to keep startup logs clean.
-	var regMsg Message
-	if err := decoder.Decode(&regMsg); err != nil {
+	raw, err := br.ReadBytes('\n')
+	if err != nil {
 		es := err.Error()
 		if es != "EOF" && es != "unexpected EOF" && err != io.EOF && err != io.ErrUnexpectedEOF {
 			log.Printf("Failed to decode register message: %v (remote=%v local=%v)", err, conn.RemoteAddr(), conn.LocalAddr())
 		}
+		return
+	}
+	var regMsg Message
+	if err := json.Unmarshal(raw, &regMsg); err != nil {
+		log.Printf("Failed to decode register message: %v (remote=%v local=%v)", err, conn.RemoteAddr(), conn.LocalAddr())
 		return
 	}
 	if regMsg.Destination != "hub" || regMsg.Command != "register" {
@@ -463,6 +471,21 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		return
 	}
 	pubKey := ed25519.PublicKey(pubKeyBytes)
+
+	if regMsg.Source == "git-remote-hub" {
+		tenant := lookupPeerTenant(pubKeyStr)
+		if tenant == "" {
+			tenant = gitSessionTenant(conn)
+		}
+		if t, ok := payloadMap["tenant"].(string); ok {
+			rememberVsockTenant(conn, t)
+		}
+		if err := encoder.Encode(map[string]string{"status": "registered"}); err != nil {
+			return
+		}
+		hubgit.Serve(&gitConn{Conn: conn, r: br}, tenant, strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
+		return
+	}
 
 	// Extract version from payload if available
 	version := "unknown"
@@ -495,6 +518,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 	}
 
+	decoder := json.NewDecoder(br)
 	encoders := &ComponentEncoders{
 		Encoder: encoder,
 		Decoder: decoder,
@@ -529,16 +553,6 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	encoders.Mutex.Lock()
 	encoders.Encoder.Encode(response)
 	encoders.Mutex.Unlock()
-
-	if regMsg.Source == "git-remote-hub" {
-		tenant := lookupPeerTenant(pubKeyStr)
-		if tenant == "" {
-			tenant = gitSessionTenant(conn)
-		}
-		rest := bufio.NewReader(io.MultiReader(decoder.Buffered(), conn))
-		hubgit.Serve(&gitConn{Conn: conn, r: rest}, tenant, strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
-		return
-	}
 
 	// Push permission + visibility snapshot to agent-like microVMs (permissions-model.md §Enforcement flow step 1).
 	if shouldReceivePermissionSnapshot(componentID) {

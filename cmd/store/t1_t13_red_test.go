@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -17,11 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"AegisClaw/internal/hubgit"
 	"AegisClaw/internal/storegit"
 )
 
 var storeBin string
+var hubBin string
+var repoRoot string
 
 func TestMain(m *testing.M) {
 	wd, err := os.Getwd()
@@ -52,11 +52,19 @@ func TestMain(m *testing.M) {
 		}
 		modRoot = parent
 	}
+	repoRoot = modRoot
 	helperBin := filepath.Join(dir, "git-remote-hub")
 	hcmd := exec.Command("go", "build", "-o", helperBin, "./cmd/git-remote-hub")
 	hcmd.Dir = modRoot
 	if out, err := hcmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "go build git-remote-hub: %v\n%s\n", err, out)
+		os.Exit(1)
+	}
+	hubBin = filepath.Join(dir, "aegishub")
+	hubBuild := exec.Command("go", "build", "-o", hubBin, "./cmd/aegishub")
+	hubBuild.Dir = modRoot
+	if out, err := hubBuild.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "go build aegishub: %v\n%s\n", err, out)
 		os.Exit(1)
 	}
 	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
@@ -231,19 +239,14 @@ type liveHub struct {
 	dec        *json.Decoder
 	cwd        string
 	cmd        *exec.Cmd
+	hubCmd     *exec.Cmd
 	hubSock    string
+	aegisSock  string
 	gitSock    string
 	mu         sync.Mutex
 	peerTenant map[string]string
 	tenantPriv map[string]ed25519.PrivateKey
 }
-
-type prefixConn struct {
-	net.Conn
-	r io.Reader
-}
-
-func (p prefixConn) Read(b []byte) (int, error) { return p.r.Read(b) }
 
 func startLiveHub(t *testing.T) *liveHub {
 	t.Helper()
@@ -257,6 +260,27 @@ func startLiveHub(t *testing.T) *liveHub {
 		t.Fatalf("listen fake hub: %v", err)
 	}
 	gitSock := filepath.Join(dir, ".hub-private-git")
+	aegisSock := filepath.Join(dir, "aegishub.sock")
+	if aegisSock == sock {
+		t.Fatalf("shipped Hub socket must differ from fake hub.sock")
+	}
+	h := &liveHub{t: t, ln: ln, cwd: dir, hubSock: sock, aegisSock: aegisSock, gitSock: gitSock, peerTenant: map[string]string{}, tenantPriv: map[string]ed25519.PrivateKey{}}
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("identity key: %v", err)
+		}
+		h.peerTenant[base64.StdEncoding.EncodeToString(pub)] = tenant
+		h.tenantPriv[tenant] = priv
+	}
+	identPath := filepath.Join(dir, "git-identities.json")
+	identJSON, err := json.Marshal(h.peerTenant)
+	if err != nil {
+		t.Fatalf("marshal git identities: %v", err)
+	}
+	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
+		t.Fatalf("write git identities: %v", err)
+	}
 	cmd := exec.Command(storeBin)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+sock, "AEGIS_STORE_GIT_SOCKET="+gitSock)
@@ -266,16 +290,48 @@ func startLiveHub(t *testing.T) *liveHub {
 		_ = ln.Close()
 		t.Fatalf("start store: %v", err)
 	}
-	h := &liveHub{t: t, ln: ln, cwd: dir, cmd: cmd, hubSock: sock, gitSock: gitSock, peerTenant: map[string]string{}, tenantPriv: map[string]ed25519.PrivateKey{}}
-	for _, tenant := range []string{"tenant-a", "tenant-b"} {
-		pub, priv, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatalf("identity key: %v", err)
+	h.cmd = cmd
+	aclFile := filepath.Join(repoRoot, "config", "acls.yaml")
+	hubCmd := exec.Command(hubBin, "start")
+	hubCmd.Dir = dir
+	hubCmd.Env = append(os.Environ(),
+		"AEGIS_HUB_SOCKET="+aegisSock,
+		"AEGIS_STORE_GIT_SOCKET="+gitSock,
+		"AEGIS_GIT_IDENTITIES="+identPath,
+		"AEGIS_DEV_MODE=1",
+		"AEGIS_ACL_FILE="+aclFile,
+	)
+	hubCmd.Stderr = io.Discard
+	hubCmd.Stdout = io.Discard
+	if err := hubCmd.Start(); err != nil {
+		if h.cmd.Process != nil {
+			_ = h.cmd.Process.Kill()
+			_, _ = h.cmd.Process.Wait()
 		}
-		h.peerTenant[base64.StdEncoding.EncodeToString(pub)] = tenant
-		h.tenantPriv[tenant] = priv
+		_ = ln.Close()
+		t.Fatalf("start aegishub: %v", err)
+	}
+	h.hubCmd = hubCmd
+	deadline := time.Now().Add(5 * time.Second)
+	var dialErr error
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("unix", aegisSock, 50*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+			dialErr = nil
+			break
+		}
+		dialErr = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	if dialErr != nil {
+		t.Fatalf("aegishub.sock not accepting after 5s: %v", dialErr)
 	}
 	t.Cleanup(func() {
+		if h.hubCmd != nil && h.hubCmd.Process != nil {
+			_ = h.hubCmd.Process.Kill()
+			_, _ = h.hubCmd.Process.Wait()
+		}
 		if h.cmd != nil && h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
 			_, _ = h.cmd.Process.Wait()
@@ -299,41 +355,7 @@ func startLiveHub(t *testing.T) *liveHub {
 	h.enc = json.NewEncoder(conn)
 	h.dec = json.NewDecoder(conn)
 	h.handshake()
-	go h.acceptGit()
 	return h
-}
-
-func (h *liveHub) acceptGit() {
-	for {
-		c, err := h.ln.Accept()
-		if err != nil {
-			return
-		}
-		go h.handleGitHelper(c)
-	}
-}
-
-func (h *liveHub) handleGitHelper(c net.Conn) {
-	br := bufio.NewReader(c)
-	raw, err := br.ReadBytes('\n')
-	if err != nil {
-		_ = c.Close()
-		return
-	}
-	var reg Message
-	if err := json.Unmarshal(raw, &reg); err != nil {
-		_ = c.Close()
-		return
-	}
-	pub := ""
-	if m, ok := reg.Payload.(map[string]interface{}); ok {
-		pub, _ = m["public_key"].(string)
-	}
-	h.mu.Lock()
-	tenant := h.peerTenant[pub]
-	h.mu.Unlock()
-	_ = json.NewEncoder(c).Encode(map[string]string{"status": "registered"})
-	hubgit.Serve(prefixConn{Conn: c, r: br}, tenant, h.gitSock)
 }
 
 func (h *liveHub) gitAs(tenant string, cmd *exec.Cmd) ([]byte, error) {
@@ -346,12 +368,12 @@ func (h *liveHub) gitAs(tenant string, cmd *exec.Cmd) ([]byte, error) {
 	}
 	var env []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_TENANT=") || strings.HasPrefix(e, "AEGIS_HUB_PRIVKEY=") {
+		if strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_TENANT=") || strings.HasPrefix(e, "AEGIS_HUB_PRIVKEY=") || strings.HasPrefix(e, "AEGIS_HUB_SOCKET=") {
 			continue
 		}
 		env = append(env, e)
 	}
-	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "AEGIS_HUB_SOCKET="+h.hubSock, "AEGIS_HUB_PRIVKEY="+base64.StdEncoding.EncodeToString(priv))
+	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "AEGIS_HUB_SOCKET="+h.aegisSock, "AEGIS_HUB_PRIVKEY="+base64.StdEncoding.EncodeToString(priv))
 	return cmd.CombinedOutput()
 }
 
