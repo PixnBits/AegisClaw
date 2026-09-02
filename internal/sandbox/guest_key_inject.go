@@ -56,7 +56,24 @@ func injectVMKeyIntoRootfs(rootfsPath, hostKeyPath string) error {
 	return nil
 }
 
+// isBuilderIDOrType reports whether s is the Builder VM id, a builder-* id,
+// or a builder image/type (including "builder.img" / path/to/builder.img).
+func isBuilderIDOrType(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	base := strings.TrimSuffix(filepath.Base(s), ".img")
+	return base == "builder" || strings.HasPrefix(base, "builder-")
+}
+
 func needsPerVMRootfs(vmID string) bool {
+	// Builder must never share the template rootfs: guest leftover git/creds
+	// survive Firecracker.Stop if they were written onto the shared image
+	// (Stop only deletes <vmID>.rootfs.img, not RootfsPath).
+	if isBuilderIDOrType(vmID) {
+		return true
+	}
 	if strings.HasPrefix(vmID, "agent-") || strings.HasPrefix(vmID, "memory-") {
 		return true
 	}
@@ -71,13 +88,21 @@ func needsPerVMRootfs(vmID string) bool {
 	return false
 }
 
-// prepareVMRootfs returns a rootfs path for this VM. Paired agent/memory VMs get a
-// private copy so injecting /run/aegis/vmkey does not clobber the shared template image.
+func vmNeedsPrivateRootfs(id, image, rootfsPath string) bool {
+	return needsPerVMRootfs(id) || needsPerVMRootfs(image) || needsPerVMRootfs(rootfsPath)
+}
+
+// prepareVMRootfs returns a rootfs path for this VM. Paired agent/memory VMs and
+// Builder get a private copy so injecting keys or guest leftover git/creds cannot
+// clobber the shared template image.
 func prepareVMRootfs(stateDir, vmID, templateRootfs, hostKeyPath string) string {
 	rootfsPath := templateRootfs
-	if !needsPerVMRootfs(vmID) || hostKeyPath == "" {
+	if !vmNeedsPrivateRootfs(vmID, "", templateRootfs) {
 		return rootfsPath
 	}
+
+	dst := filepath.Join(stateDir, vmID+".rootfs.img")
+	builder := isBuilderIDOrType(vmID) || isBuilderIDOrType(templateRootfs)
 
 	// Collaboration <1s path: try to claim a pre-warmed pooled copy first (see PrewarmPooledRootfsCopies).
 	// This avoids paying the full 512MB io.Copy on every per-session agent/memory launch.
@@ -85,14 +110,31 @@ func prepareVMRootfs(stateDir, vmID, templateRootfs, hostKeyPath string) string 
 	if claimed {
 		rootfsPath = claimedPath
 	} else {
-		dst := filepath.Join(stateDir, vmID+".rootfs.img")
 		_ = os.Remove(dst)
 		if err := copyFile(templateRootfs, dst); err != nil {
+			if builder {
+				// Fail closed: never write leftover onto the shared Builder template.
+				logrus.Warnf("VM %s: builder rootfs copy failed (%v); refusing shared template", vmID, err)
+				return dst
+			}
 			logrus.Warnf("VM %s: rootfs copy failed (%v), using shared image for key inject", vmID, err)
 		} else {
 			rootfsPath = dst
 			logrus.Infof("VM %s: no pooled copy was available; fell back to full copy (pre-warm may still be running or this is first use)", vmID)
 		}
+	}
+
+	// Never mutate the shared template (key inject or otherwise).
+	if rootfsPath == templateRootfs {
+		if builder {
+			logrus.Warnf("VM %s: refusing to use shared builder template %s", vmID, templateRootfs)
+			return dst
+		}
+		return rootfsPath
+	}
+
+	if hostKeyPath == "" {
+		return rootfsPath
 	}
 
 	if err := injectVMKeyIntoRootfs(rootfsPath, hostKeyPath); err != nil {
