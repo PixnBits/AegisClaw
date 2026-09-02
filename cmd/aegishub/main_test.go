@@ -1096,3 +1096,96 @@ func TestCIDUnleaseDaemonRPCDeletesFileRow(t *testing.T) {
 		t.Fatalf("other CID must still load after restart: got %q ok=%v", got, ok)
 	}
 }
+
+func sendCIDLeaseRPC(t *testing.T, remote net.Addr, source, pub string) map[string]interface{} {
+	t.Helper()
+	hub, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleConnection(&remoteAddrConn{Conn: hub, remote: remote}, &sync.Map{})
+	}()
+	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := Message{
+		Source:      source,
+		Destination: "hub",
+		Command:     "register",
+		Payload:     map[string]string{"public_key": base64.StdEncoding.EncodeToString(pubKey), "version": "1"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		Signature:   "dummy",
+	}
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(client).Encode(reg); err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(client)
+	var resp map[string]interface{}
+	if err := dec.Decode(&resp); err != nil {
+		_ = client.Close()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+		return map[string]interface{}{"decode_err": err.Error()}
+	}
+	if _, hasErr := resp["error"]; hasErr {
+		_ = client.Close()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+		return resp
+	}
+	msg := Message{
+		Source:      source,
+		Destination: "hub",
+		Command:     "cid.lease",
+		Payload:     map[string]interface{}{"cid": uint32(7), "public_key": pub},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		Signature:   "dummy",
+	}
+	if err := json.NewEncoder(client).Encode(msg); err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]interface{}
+	if err := dec.Decode(&out); err != nil {
+		out = map[string]interface{}{"decode_err": err.Error()}
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handleConnection did not return")
+	}
+	return out
+}
+
+func TestCIDLeaseDaemonOnly(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	t.Setenv("AEGIS_DEV_MODE", "1")
+
+	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
+	guestAddr := &vsock.Addr{ContextID: 99, Port: 9999}
+
+	sendCIDLeaseRPC(t, guestAddr, "guest-vm", "pub-a")
+	if _, ok := hublease.LoadLease(7); ok {
+		t.Fatal("guest must not cid.lease")
+	}
+	sendCIDLeaseRPC(t, unixAddr, "store", "pub-a")
+	if _, ok := hublease.LoadLease(7); ok {
+		t.Fatal("store must not cid.lease")
+	}
+	sendCIDLeaseRPC(t, unixAddr, "daemon-temp-1", "pub-a")
+	if _, ok := hublease.LoadLease(7); ok {
+		t.Fatal("daemon-temp glob must not cid.lease")
+	}
+	got := sendCIDLeaseRPC(t, unixAddr, "daemon", "pub-a")
+	leased, ok := hublease.LoadLease(7)
+	if !ok || leased != "pub-a" {
+		t.Fatalf("daemon cid.lease must Store: leased=%q ok=%v reply=%#v", leased, ok, got)
+	}
+}
