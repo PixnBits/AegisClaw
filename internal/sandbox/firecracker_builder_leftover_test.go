@@ -10,12 +10,7 @@ import (
 	"testing"
 )
 
-// TestBuilderFirecrackerStopUnlinksPrivateRootfs is the Builder SIT for the
-// Firecracker path without KVM/live guest boot: prepareVMRootfs must claim a
-// private copy, Stop (after a registered VM) must unlink that copy, and the
-// shared template must not contain the plant. Named-file allowlist wipes in
-// StopVM are the miss; unlink of vmID.rootfs.img after guest unmount is the sit.
-func TestBuilderFirecrackerStopUnlinksPrivateRootfs(t *testing.T) {
+func TestFirecrackerStopWipesBuilderLeftoverRootfs(t *testing.T) {
 	stateDir := t.TempDir()
 	templateDir := t.TempDir()
 	template := filepath.Join(templateDir, "builder.img")
