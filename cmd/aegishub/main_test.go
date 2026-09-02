@@ -554,6 +554,7 @@ func TestGitConnectUnsignedCannotClaimRosteredKey(t *testing.T) {
 
 func resetCIDLeases() {
 	cidLease = sync.Map{}
+	cidClosed = sync.Map{}
 }
 
 type remoteAddrConn struct {
@@ -620,8 +621,8 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	}
 
 	got, err = tenantForGit(pubBStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("CID leased to A + B's key must not Serve: tenant=%q err=%v", got, err)
+	if err == nil || got != "" || err.Error() != "ERR_UNKNOWN_PEER" {
+		t.Fatalf("CID leased to A + B's key: tenant=%q err=%v, want ERR_UNKNOWN_PEER", got, err)
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
 		t.Fatalf("CID key mismatch must not be tenancy needle: %v", err)
@@ -645,8 +646,8 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
 		t.Fatalf("identity miss must not be tenancy needle: %v", err)
 	}
-
 	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
+
 	left, err := os.ReadFile(cidPath)
 	if err != nil {
 		t.Fatal(err)
@@ -656,14 +657,35 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	}
 	forgetVsockTenant(&remoteAddrConn{remote: addr})
 	got, err = tenantForGit(pubAStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("after close, reused CID without new lease must deny (leftover file): tenant=%q err=%v", got, err)
+	if err != nil || got != "tenant-a" {
+		t.Fatalf("after helper close, same CID+A must still be tenant-a (file leftover OK): tenant=%q err=%v", got, err)
 	}
-	if strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
-		t.Fatalf("post-close leftover file deny must not be tenancy needle: %v", err)
+
+	daemonUnleaseCID(cid)
+	got, err = tenantForGit(pubAStr, addr)
+	if err == nil || got != "" {
+		t.Fatalf("after daemonUnleaseCID, leftover file same pub must deny: tenant=%q err=%v", got, err)
+	}
+
+	over, err := json.Marshal(map[string]string{"42": pubBStr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cidPath, over, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loadCIDKeys()
+	got, err = tenantForGit(pubBStr, addr)
+	if err != nil || got != "tenant-b" {
+		t.Fatalf("overwrite leftover with new pub then load: tenant=%q err=%v, want tenant-b", got, err)
+	}
+
+	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
+	got, err = tenantForGit(pubAStr, unixAddr)
+	if err == nil || got != "" {
+		t.Fatalf("unix without AEGIS_GIT_ALLOW_UNIX=1 must not skip CID: tenant=%q err=%v", got, err)
 	}
 }
-
 func TestGitUnixAllowUnixUsesRoster(t *testing.T) {
 	resetCIDLeases()
 	t.Cleanup(resetCIDLeases)

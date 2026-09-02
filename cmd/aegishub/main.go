@@ -362,12 +362,12 @@ func startVsockListener(conns *sync.Map) {
 	}
 }
 
-// cidLease is the in-memory CID→pubkey map loaded from AEGIS_GIT_CID_KEYS at
+// cidLease is the in-memory CID-to-pubkey map loaded from AEGIS_GIT_CID_KEYS at
 // start (and refreshed for new boot leases). git-connect never writes it.
-// Delete on vsock close; leftover file must not re-lease the same CID+pub.
-// cidLease is loaded from AEGIS_GIT_CID_KEYS at Hub start (or test loadCIDKeys).
-// git-connect / tenantForGit read MEMORY only. Next boot/load overwrites.
-var cidLease sync.Map // uint32 CID → base64 pubkey
+// Helper hangup does not unlease. VM death (daemonUnleaseCID) poisons leftover
+// file rows for the same CID+pub until overwritten with a new pub or removed.
+var cidLease sync.Map  // uint32 CID -> base64 pubkey
+var cidClosed sync.Map // uint32 CID -> pubkey poisoned by daemonUnleaseCID
 
 type gitConn struct {
 	net.Conn
@@ -409,32 +409,49 @@ func lookupPeerTenant(pub string) string {
 }
 
 func loadCIDKeys() {
-	next := sync.Map{}
 	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
-	if path != "" {
-		if b, err := os.ReadFile(path); err == nil {
-			var m map[string]string
-			if json.Unmarshal(b, &m) == nil {
-				for k, pub := range m {
-					cid, ok := parseCIDKey(k)
-					if !ok {
-						continue // reject "cid-3"; decimal uint32 only
-					}
-					pub = strings.TrimSpace(pub)
-					if pub == "" {
-						continue
-					}
-					next.Store(cid, pub)
-				}
-			}
-		}
+	if path == "" {
+		return
 	}
-	cidLease = next
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var m map[string]string
+	if json.Unmarshal(b, &m) != nil {
+		return
+	}
+	for k, pub := range m {
+		cid, ok := parseCIDKey(k)
+		if !ok {
+			continue // reject "cid-3"; decimal uint32 only
+		}
+		pub = strings.TrimSpace(pub)
+		if pub == "" {
+			continue
+		}
+		if _, live := cidLease.Load(cid); live {
+			continue
+		}
+		if closed, ok := cidClosed.Load(cid); ok {
+			if s, _ := closed.(string); s == pub {
+				continue // leftover after VM death -- no re-lease until new pub
+			}
+			cidClosed.Delete(cid) // daemon overwrote leftover with a different pub
+		}
+		cidLease.Store(cid, pub)
+	}
 }
 
 func leasePubForCID(cid uint32) (string, bool) {
-	// MEMORY only. tenantForGit / git-connect must not ReadFile: a leftover
-	// AEGIS_GIT_CID_KEYS row after vsock close would reuse the CID.
+	if v, ok := cidLease.Load(cid); ok {
+		pub, _ := v.(string)
+		pub = strings.TrimSpace(pub)
+		return pub, pub != ""
+	}
+	// Reload file on miss: helper close does not cidClosed, so leftover rows
+	// remain valid until daemonUnleaseCID (VM death) or the row is overwritten.
+	loadCIDKeys()
 	if v, ok := cidLease.Load(cid); ok {
 		pub, _ := v.(string)
 		pub = strings.TrimSpace(pub)
@@ -443,8 +460,6 @@ func leasePubForCID(cid uint32) (string, bool) {
 	return "", false
 }
 
-// tenantForGit is CID-key-roster on vsock (memory lease only). Unix is deny
-// unless Hub env AEGIS_GIT_ALLOW_UNIX=1 (T3 sit only). Never payload.tenant.
 func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 	verifiedPub = strings.TrimSpace(verifiedPub)
 	if verifiedPub == "" {
@@ -474,17 +489,20 @@ func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 	return tenant, nil
 }
 
+// forgetVsockTenant is helper/git-connect hangup. It must not Delete cidLease
+// or cidClosed -- leftover file + same CID+pub remains the owner's lease.
 func forgetVsockTenant(conn net.Conn) {
-	if conn == nil {
-		return
+	_ = conn
+}
+
+// daemonUnleaseCID is VM death: drop the in-memory lease and poison leftover
+// file rows for the same CID+pub until the daemon overwrites with a new pub
+// or removes the row. Git-connect close must not call this.
+func daemonUnleaseCID(cid uint32) {
+	if v, ok := cidLease.Load(cid); ok {
+		cidClosed.Store(cid, v)
 	}
-	addr := conn.RemoteAddr()
-	if addr == nil {
-		return
-	}
-	if a, ok := addr.(*vsock.Addr); ok {
-		cidLease.Delete(a.ContextID)
-	}
+	cidLease.Delete(cid)
 }
 
 func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKey) bool {
@@ -500,7 +518,6 @@ func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKe
 
 func handleConnection(conn net.Conn, conns *sync.Map) {
 	defer conn.Close()
-	defer forgetVsockTenant(conn)
 	br := bufio.NewReader(conn)
 	encoder := json.NewEncoder(conn)
 
