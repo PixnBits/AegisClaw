@@ -293,70 +293,6 @@ func withLiveStore(t *testing.T, fn func(h *liveHub)) {
 	fn(h)
 }
 
-func listGitRepos(root string) []string {
-	var found []string
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil || !info.IsDir() {
-			return nil
-		}
-		if filepath.Base(path) == ".git" {
-			found = append(found, path)
-			return filepath.SkipDir
-		}
-		if gitDirLooksBare(path) {
-			found = append(found, path)
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	return found
-}
-
-func gitDirLooksBare(path string) bool {
-	if _, err := os.Stat(filepath.Join(path, "HEAD")); err != nil {
-		return false
-	}
-	if _, err := os.Stat(filepath.Join(path, "objects")); err != nil {
-		return false
-	}
-	base := filepath.Base(path)
-	if base == "objects" || base == "refs" {
-		return false
-	}
-	return true
-}
-
-func absRepos(paths []string) []string {
-	out := make([]string, 0, len(paths))
-	seen := map[string]bool{}
-	for _, p := range paths {
-		a, err := filepath.Abs(p)
-		if err != nil {
-			a = p
-		}
-		a = filepath.Clean(a)
-		if !seen[a] {
-			seen[a] = true
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-func addedPaths(before, after []string) []string {
-	bset := map[string]bool{}
-	for _, p := range absRepos(before) {
-		bset[p] = true
-	}
-	var add []string
-	for _, p := range absRepos(after) {
-		if !bset[p] {
-			add = append(add, p)
-		}
-	}
-	return add
-}
-
 func worktreeReposLeftover() []string {
 	var hits []string
 	for _, root := range []string{gitWorktree, packageCWD} {
@@ -657,7 +593,8 @@ func TestT11_DestroyedBuilderLeavesNoState(t *testing.T) {
 				handled = true
 			}
 		}
-		leftoverGit := absRepos(listGitRepos(h.cwd))
+		// Tenant remotes on Store disk in cmd.Dir must survive builder.destroy.
+		// T11 is Builder worktree/creds, not listGitRepos(h.cwd).
 		var leftoverCreds []string
 		for _, name := range []string{".git-credentials", ".netrc", "id_rsa", "id_ed25519"} {
 			if _, err := os.Stat(filepath.Join(h.cwd, name)); err == nil {
@@ -667,8 +604,8 @@ func TestT11_DestroyedBuilderLeavesNoState(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(h.cwd, "builder-work")); err == nil {
 			leftoverCreds = append(leftoverCreds, "builder-work")
 		}
-		if !handled || len(leftoverGit) > 0 || len(leftoverCreds) > 0 {
-			t.Fatalf("T11: builder destroy missing or leftover git/creds (handled=%v git=%v creds=%v)", handled, leftoverGit, leftoverCreds)
+		if !handled || len(leftoverCreds) > 0 {
+			t.Fatalf("T11: builder destroy missing or leftover Builder creds/worktree (handled=%v creds=%v)", handled, leftoverCreds)
 		}
 	})
 }
