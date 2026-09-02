@@ -128,6 +128,8 @@ These are acceptance tests for the later Store implementation. Spec is unsigned 
 | T9 | New skill or project | always has a Store repo |
 | T10 | Rollback | opens a **new** PR that needs Court again; live skip-Court reset fails |
 | T11 | Destroyed Builder | no leftover git state, worktree, or credentials |
+| T12 | Force-push, history delete/rewrite, or fake Court approve | fail |
+| T13 | Git over anything except Hub/vsock; host git daemon listens; or `workspace/skills/*/.git` exists | fail |
 
 ## Out of scope (this spec)
 
