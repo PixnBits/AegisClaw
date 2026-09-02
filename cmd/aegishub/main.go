@@ -477,16 +477,24 @@ func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 }
 
 // forgetVsockTenant is helper/git-connect hangup. handleConnection must not
-// defer this. It must not UnleaseCID -- leftover file + same CID+pub remains
-// the owner's lease (reload-on-miss OK).
+// defer this on the git-remote-hub path. It must not UnleaseCID -- leftover
+// file + same CID+pub remains the owner's lease (reload-on-miss OK).
 func forgetVsockTenant(conn net.Conn) {
 	_ = conn
 }
 
-// daemonUnleaseCID is VM death: drop the in-memory lease and poison leftover
-// file rows for the same CID+pub until the daemon overwrites with a new pub
-// or removes the row. Git-connect close must not call this. Tests call this
-// to simulate VM destroy; orchestrator StopVM calls hublease.UnleaseCID.
+func storeCIDLease(cid uint32, pub string) {
+	hublease.StoreLease(cid, pub)
+}
+
+func unleaseCID(cid uint32) {
+	hublease.UnleaseCID(cid)
+}
+
+// daemonUnleaseCID is VM death / VM Hub vsock session close: drop the in-memory
+// lease and poison leftover file rows for the same CID+pub until overwritten
+// with a new pub or removed. Git-connect close must not call this.
+// Production: handleConnection (source != git-remote-hub) and orchestrator StopVM.
 func daemonUnleaseCID(cid uint32) {
 	hublease.UnleaseCID(cid)
 }
@@ -583,6 +591,13 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 		hubgit.Serve(&gitConn{Conn: conn, r: br}, tenant, strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
 		return
+	}
+
+	// VM Hub vsock session: lease CID→verified pub; unlease only when THIS conn closes.
+	// git-remote-hub returned above and must not unlease (ls-remote then clone keep the lease).
+	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
+		storeCIDLease(a.ContextID, pubKeyStr)
+		defer unleaseCID(a.ContextID)
 	}
 
 	// Extract version from payload if available

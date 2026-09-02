@@ -6,9 +6,10 @@ import (
 )
 
 // CID lease is in-memory. git-connect never writes it. Helper/git-connect hangup
-// must not UnleaseCID. VM destroy (orchestrator StopVM / tests) calls UnleaseCID,
-// which poisons leftover AEGIS_GIT_CID_KEYS rows for the same CID+pub until the
-// daemon overwrites with a different pub or removes the row.
+// must not UnleaseCID. Production unleases on VM Hub vsock session close
+// (cmd/aegishub handleConnection, source != git-remote-hub) and on orchestrator
+// StopVM. UnleaseCID poisons leftover AEGIS_GIT_CID_KEYS rows for the same
+// CID+pub until overwritten with a different pub or the row is removed.
 
 var (
 	lease  sync.Map // uint32 CID -> base64 pubkey
@@ -26,6 +27,7 @@ func StoreLease(cid uint32, pub string) {
 		return
 	}
 	lease.Store(cid, pub)
+	closed.Delete(cid)
 }
 
 func LoadLease(cid uint32) (string, bool) {

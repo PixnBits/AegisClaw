@@ -20,3 +20,19 @@ func TestUnleaseCIDPoisonsSamePub(t *testing.T) {
 		t.Fatalf("poison: got %q ok=%v, want pub-a", closed, ok)
 	}
 }
+
+func TestStoreLeaseClearsPoison(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+	const cid uint32 = 9
+	StoreLease(cid, "pub-a")
+	UnleaseCID(cid)
+	StoreLease(cid, "pub-a")
+	got, ok := LoadLease(cid)
+	if !ok || got != "pub-a" {
+		t.Fatalf("re-lease after UnleaseCID: got %q ok=%v", got, ok)
+	}
+	if closed, ok := ClosedPub(cid); ok {
+		t.Fatalf("StoreLease must clear poison, still %q", closed)
+	}
+}

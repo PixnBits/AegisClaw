@@ -418,7 +418,6 @@ func startGitHub(t *testing.T, identities map[string]string) string {
 		if strings.HasPrefix(e, "AEGIS_HUB_SOCKET=") ||
 			strings.HasPrefix(e, "AEGIS_GIT_IDENTITIES=") ||
 			strings.HasPrefix(e, "AEGIS_GIT_CID_KEYS=") ||
-			strings.HasPrefix(e, "AEGIS_GIT_ALLOW_UNIX=") ||
 			strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") {
 			continue
 		}
@@ -681,6 +680,13 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 		t.Fatalf("overwrite leftover with new pub then load: tenant=%q err=%v, want tenant-b", got, err)
 	}
 
+	if !unixGitAllowed() {
+		unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
+		got, err = tenantForGit(pubAStr, unixAddr)
+		if err == nil || got != "" {
+			t.Fatalf("unix git deny must not skip CID: tenant=%q err=%v", got, err)
+		}
+	}
 }
 func TestGitConnectUnixDeniedInProduction(t *testing.T) {
 	aPub, aPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -854,12 +860,7 @@ func TestVMSessionCIDLease(t *testing.T) {
 		t.Fatalf("leftover file must still contain same pub: %s", left)
 	}
 	got, err := tenantForGit(pubAStr, addr)
-	if err != nil || got != "tenant-a" {
-		t.Fatalf("after VM hub session close (no daemonUnlease), same CID+A still tenant-a: tenant=%q err=%v", got, err)
-	}
-	daemonUnleaseCID(42)
-	got, err = tenantForGit(pubAStr, addr)
 	if err == nil || got != "" {
-		t.Fatalf("after daemonUnleaseCID, leftover file same pub must deny: tenant=%q err=%v", got, err)
+		t.Fatalf("VM session close; leftover file same pub must deny: tenant=%q err=%v", got, err)
 	}
 }
