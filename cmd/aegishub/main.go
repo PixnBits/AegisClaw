@@ -443,23 +443,18 @@ func loadCIDKeys() {
 }
 
 func leasePubForCID(cid uint32) (string, bool) {
+	// MEMORY only. tenantForGit / git-connect must not ReadFile: a leftover
+	// AEGIS_GIT_CID_KEYS row after vsock close would reuse the CID.
 	if v, ok := cidLease.Load(cid); ok {
-		s, _ := v.(string)
-		s = strings.TrimSpace(s)
-		return s, s != ""
-	}
-	loadCIDKeys()
-	if v, ok := cidLease.Load(cid); ok {
-		s, _ := v.(string)
-		s = strings.TrimSpace(s)
-		return s, s != ""
+		pub, _ := v.(string)
+		pub = strings.TrimSpace(pub)
+		return pub, pub != ""
 	}
 	return "", false
 }
 
-// tenantForGit is CID→key→roster on vsock. Unix is denied unless
-// AEGIS_GIT_ALLOW_UNIX=1 (tests only), then lookup(verifiedPub) only.
-// git-connect never writes AEGIS_GIT_CID_KEYS.
+// tenantForGit is CID-key-roster on vsock (memory lease only). Unix is deny
+// unless Hub env AEGIS_GIT_ALLOW_UNIX=1 (T3 sit only). Never payload.tenant.
 func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 	verifiedPub = strings.TrimSpace(verifiedPub)
 	if verifiedPub == "" {

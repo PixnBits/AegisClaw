@@ -611,7 +611,6 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	}
 	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
 	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
-	t.Setenv("AEGIS_GIT_ALLOW_UNIX", "")
 	loadCIDKeys()
 
 	addr := &vsock.Addr{ContextID: cid, Port: 9999}
@@ -639,35 +638,65 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 		t.Fatalf("unleased CID must not use roster: tenant=%q err=%v", got, err)
 	}
 
+	t.Setenv("AEGIS_GIT_IDENTITIES", filepath.Join(dir, "missing-identities.json"))
+	got, err = tenantForGit(pubAStr, addr)
+	if err == nil || got != "" {
+		t.Fatalf("identities[pub] miss must not Serve: tenant=%q err=%v", got, err)
+	}
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
+		t.Fatalf("identity miss must not be tenancy needle: %v", err)
+	}
+
+	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
+	left, err := os.ReadFile(cidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(left), pubAStr) {
+		t.Fatalf("file must still contain leftover CID row for A: %s", left)
+	}
 	forgetVsockTenant(&remoteAddrConn{remote: addr})
 	got, err = tenantForGit(pubAStr, addr)
 	if err == nil || got != "" {
 		t.Fatalf("after close, reused CID without new lease must deny (leftover file): tenant=%q err=%v", got, err)
 	}
-
-	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
-	got, err = tenantForGit(pubAStr, unixAddr)
-	if err == nil || got != "" {
-		t.Fatalf("unix without AEGIS_GIT_ALLOW_UNIX=1 must not skip CID: tenant=%q err=%v", got, err)
+	if strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
+		t.Fatalf("post-close leftover file deny must not be tenancy needle: %v", err)
 	}
+}
 
+func TestGitUnixAllowUnixUsesRoster(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAStr := base64.StdEncoding.EncodeToString(pubA)
+	pubBStr := base64.StdEncoding.EncodeToString(pubB)
+	dir := t.TempDir()
+	identPath := filepath.Join(dir, "git-identities.json")
+	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a", pubBStr: "tenant-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
 	t.Setenv("AEGIS_GIT_ALLOW_UNIX", "1")
-	got, err = tenantForGit(pubAStr, unixAddr)
+	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
+	got, err := tenantForGit(pubAStr, unixAddr)
 	if err != nil || got != "tenant-a" {
 		t.Fatalf("unix ALLOW_UNIX pubA: tenant=%q err=%v, want tenant-a", got, err)
 	}
 	got, err = tenantForGit(pubBStr, unixAddr)
 	if err != nil || got != "tenant-b" {
 		t.Fatalf("unix ALLOW_UNIX pubB: tenant=%q err=%v, want tenant-b", got, err)
-	}
-
-	t.Setenv("AEGIS_GIT_IDENTITIES", filepath.Join(dir, "missing-identities.json"))
-	got, err = tenantForGit(pubAStr, unixAddr)
-	if err == nil || got != "" {
-		t.Fatalf("identities[pub] miss must not Serve: tenant=%q err=%v", got, err)
-	}
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
-		t.Fatalf("identity miss must not be tenancy needle: %v", err)
 	}
 }
 
