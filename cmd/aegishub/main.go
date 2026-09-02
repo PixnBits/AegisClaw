@@ -722,7 +722,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	// Unsigned/unrostered must not Store (unrostered would DoS-bind the CID).
 	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
 		if verifyGitRegisterSignature(raw, regMsg, pubKey) && lookupPeerTenant(pubKeyStr) != "" {
-			hublease.StoreLeaseIfAbsentOrSame(a.ContextID, pubKeyStr)
+			storeCIDLease(a.ContextID, pubKeyStr)
 		}
 	}
 
