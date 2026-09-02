@@ -889,7 +889,7 @@ func TestDaemonMayUnleaseCID(t *testing.T) {
 	if !daemonMayUnleaseCID("daemon", wire, dummy) {
 		t.Fatal("assigned_id daemon must allow cid.unlease")
 	}
-	deny := []string{"git-remote-hub", "guest-vm", "agent-1", "aegis-cli-internal", "store", "daemon-internal", "daemon-temp-1", "aegis-daemon-temp"}
+	deny := []string{"git-remote-hub", "guest-vm", "agent-1", "aegis-cli-internal", "store", "daemon-internal", "daemon-temp-1", "aegis-daemon-temp", "aegis-daemon-temp-3"}
 	for _, id := range deny {
 		if daemonMayUnleaseCID(id, wire, dummy) {
 			t.Fatalf("dummy sig must not allow cid.unlease from %q", id)
