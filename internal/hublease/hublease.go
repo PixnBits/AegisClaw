@@ -10,10 +10,9 @@ import (
 )
 
 // CID lease is in-memory. git-connect never writes it. Helper/git-connect hangup
-// and VM guest hangup must not UnleaseCID. Guest vsock handshake StoreLease of
-// verified pub is fill. leasePubForCID reloads AEGIS_GIT_CID_KEYS on miss only
-// for live rows still in the file; StopVM deletes the row so a corpse is not
-// re-ingested.
+// and VM guest hangup must not UnleaseCID. Fill is guest vsock handshake after
+// possession+roster (CASFillLease). Never file-miss ingest, never daemon cid.lease.
+// leasePubForCID is LoadLease only. startHub/handleCIDUnlease must not loadCIDKeys.
 //
 // VM destroy (orchestrator StopVM) sends cid.unlease {cid, public_key} over the
 // persistent daemon Hub connection. CAS: unlease only if lease[cid]==expectedPub
@@ -40,7 +39,8 @@ func StoreLease(cid uint32, pub string) {
 }
 
 // StoreLeaseCAS stores pub for cid only if the lease is empty or already holds
-// the same pub. Does not overwrite a different pub. Handshake fill uses StoreLease.
+// the same pub. Does not overwrite a different pub. Handshake must not call this;
+// daemon cid.lease is the writer.
 func StoreLeaseCAS(cid uint32, pub string) bool {
 	pub = strings.TrimSpace(pub)
 	if pub == "" {
@@ -53,6 +53,35 @@ func StoreLeaseCAS(cid uint32, pub string) bool {
 	}
 	existing, _ := actual.(string)
 	return strings.TrimSpace(existing) == pub
+}
+
+// CASFillLease is handshake fill: store cid->verifiedPub only if the slot is
+// empty or already holds the same pub. Never overwrite a different pub.
+// Never closed.Delete / ClearClosed (that un-poisons StopVM).
+func CASFillLease(cid uint32, pub string) bool {
+	pub = strings.TrimSpace(pub)
+	if cid == 0 || pub == "" {
+		return false
+	}
+	for {
+		v, ok := lease.Load(cid)
+		if !ok {
+			actual, loaded := lease.LoadOrStore(cid, pub)
+			if !loaded {
+				return true
+			}
+			v = actual
+		}
+		cur, _ := v.(string)
+		cur = strings.TrimSpace(cur)
+		if cur == "" {
+			if lease.CompareAndSwap(cid, v, pub) {
+				return true
+			}
+			continue
+		}
+		return cur == pub
+	}
 }
 
 func LoadLease(cid uint32) (string, bool) {

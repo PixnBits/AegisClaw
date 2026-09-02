@@ -147,3 +147,58 @@ func TestStoreLeaseCASUnpoisonsEmpty(t *testing.T) {
 		t.Fatalf("StoreLeaseCAS on empty must clear poison, still %q", closed)
 	}
 }
+
+func TestCASFillLeaseEmptyOrSame(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+	const cid uint32 = 11
+	if CASFillLease(cid, "") || CASFillLease(0, "pub-a") {
+		t.Fatal("empty pub or CID 0 must not fill")
+	}
+	if !CASFillLease(cid, "pub-a") {
+		t.Fatal("empty slot must CAS-fill")
+	}
+	got, ok := LoadLease(cid)
+	if !ok || got != "pub-a" {
+		t.Fatalf("fill: got %q ok=%v", got, ok)
+	}
+	if !CASFillLease(cid, "pub-a") {
+		t.Fatal("same pub must CAS-succeed")
+	}
+	if closed, ok := ClosedPub(cid); ok {
+		t.Fatalf("CAS fill must not touch poison, closed=%q", closed)
+	}
+}
+
+func TestCASFillLeaseNeverOverwritesDifferentPub(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+	const cid uint32 = 12
+	if !CASFillLease(cid, "pub-a") {
+		t.Fatal("first fill")
+	}
+	if CASFillLease(cid, "pub-b") {
+		t.Fatal("second guest different pub must not overwrite")
+	}
+	got, ok := LoadLease(cid)
+	if !ok || got != "pub-a" {
+		t.Fatalf("A must remain: got %q ok=%v", got, ok)
+	}
+}
+
+func TestCASFillLeaseNeverClearsPoison(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+	const cid uint32 = 13
+	StoreLease(cid, "pub-a")
+	if !UnleaseCID(cid, "pub-a") {
+		t.Fatal("unlease")
+	}
+	if !CASFillLease(cid, "pub-a") {
+		t.Fatal("handshake may fill empty slot after StopVM")
+	}
+	closed, ok := ClosedPub(cid)
+	if !ok || closed != "pub-a" {
+		t.Fatalf("handshake CAS fill must not ClearClosed, closed=%q ok=%v", closed, ok)
+	}
+}

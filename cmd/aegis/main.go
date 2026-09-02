@@ -236,17 +236,22 @@ func resetInternalHubClientsForTest() {
 var fanoutHubClientSeq uint64
 
 // sendDaemonCIDUnlease sends cid.unlease {cid, public_key} on the persistent
-// daemon Hub unix connection (assigned_id=="daemon"). Hub is another process;
-// in-process hublease.UnleaseCID from the orchestrator does not update Hub.
-// Do not register a fresh daemon-temp-* client. Guests/git-remote-hub cannot.
+// daemon Hub unix connection (assigned_id=="daemon"). Handshake CAS-fills;
+// cid.lease is not a fill. Hub is another process; in-process hublease from
+// the orchestrator does not update Hub. Do not register a fresh daemon-temp-*
+// client (anyone can claim those sources). Guests/git-remote-hub cannot.
 func sendDaemonCIDUnlease(cid uint32, expectedPub string) {
-	expectedPub = strings.TrimSpace(expectedPub)
-	if cid == 0 || expectedPub == "" {
+	sendDaemonCIDCommand("cid.unlease", cid, expectedPub)
+}
+
+func sendDaemonCIDCommand(command string, cid uint32, pub string) {
+	pub = strings.TrimSpace(pub)
+	if cid == 0 || pub == "" {
 		return
 	}
 	client := snapshotDaemonHubClient()
 	if client == nil {
-		logrus.Warnf("cid.unlease cid=%d: persistent daemon Hub client not ready", cid)
+		logrus.Warnf("%s cid=%d: persistent daemon Hub client not ready", command, cid)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -254,12 +259,12 @@ func sendDaemonCIDUnlease(cid uint32, expectedPub string) {
 	_, err := client.Send(ctx, hubclient.Message{
 		Source:      "daemon",
 		Destination: "hub",
-		Command:     "cid.unlease",
-		Payload:     map[string]interface{}{"cid": cid, "public_key": expectedPub},
+		Command:     command,
+		Payload:     map[string]interface{}{"cid": cid, "public_key": pub},
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		logrus.Warnf("cid.unlease send cid=%d: %v", cid, err)
+		logrus.Warnf("%s send cid=%d: %v", command, cid, err)
 	}
 }
 
@@ -856,6 +861,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if err != nil {
 		logrus.Fatalf("failed to create orchestrator: %v", err)
 	}
+	// Fill is guest vsock handshake CASFillLease, not cid.lease.
 	orchestrator.NotifyHubCIDUnlease = sendDaemonCIDUnlease
 
 	logrus.Infof("daemon starting on platform %s with sandbox type %s",
