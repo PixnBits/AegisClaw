@@ -441,8 +441,8 @@ func leasePubForCID(cid uint32) (string, bool) {
 	if pub, ok := hublease.LoadLease(cid); ok {
 		return pub, true
 	}
-	// Reload file on miss: helper close does not UnleaseCID, so leftover rows
-	// remain valid until daemonUnleaseCID (VM death) or the row is overwritten.
+	// Reload file on miss: StartVM ingest (writeGitCIDKey). Helper close does
+	// not UnleaseCID, so leftover rows remain valid until StopVM cid.unlease.
 	loadCIDKeys()
 	return hublease.LoadLease(cid)
 }
@@ -477,8 +477,8 @@ func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 }
 
 // forgetVsockTenant is helper/git-connect hangup. handleConnection must not
-// defer this on the git-remote-hub path. It must not UnleaseCID -- leftover
-// file + same CID+pub remains the owner's lease (reload-on-miss OK).
+// defer unlease on git-connect OR VM guest hangup. Reconnect must not poison
+// leftover same pub. StopVM cid.unlease (CAS CID+pub) is the only unlease.
 func forgetVsockTenant(conn net.Conn) {
 	_ = conn
 }
@@ -487,16 +487,124 @@ func storeCIDLease(cid uint32, pub string) {
 	hublease.StoreLease(cid, pub)
 }
 
-func unleaseCID(cid uint32) {
-	hublease.UnleaseCID(cid)
+// daemonUnleaseCID is in-process CAS unlease for tests (VM destroy). Production
+// StopVM sends daemon-only Hub command cid.unlease. Git-connect/guest hangup
+// must not call this.
+func daemonUnleaseCID(cid uint32, expectedPub string) {
+	hublease.UnleaseCID(cid, expectedPub)
 }
 
-// daemonUnleaseCID is VM death / VM Hub vsock session close: drop the in-memory
-// lease and poison leftover file rows for the same CID+pub until overwritten
-// with a new pub or removed. Git-connect close must not call this.
-// Production: handleConnection (source != git-remote-hub) and orchestrator StopVM.
-func daemonUnleaseCID(cid uint32) {
-	hublease.UnleaseCID(cid)
+// isPersistentDaemonHubID is assigned_id of the long-lived unix daemon
+// registration. Not daemon-temp-* / aegis-daemon-temp-* glob.
+func isPersistentDaemonHubID(id string) bool {
+	return id == "daemon"
+}
+
+func daemonMayUnleaseCID(assignedID string, wire wireMessage, msg Message) bool {
+	if assignedID == "git-remote-hub" || msg.Source == "git-remote-hub" {
+		return false
+	}
+	if isPersistentDaemonHubID(assignedID) {
+		return true
+	}
+	registeredMutex.RLock()
+	d, ok := registered["daemon"]
+	registeredMutex.RUnlock()
+	if !ok || d == nil || len(d.PublicKey) == 0 {
+		return false
+	}
+	if msg.Signature == "" || msg.Signature == "dummy" {
+		return false
+	}
+	if verifyWireSignature(wire, d.PublicKey) {
+		return true
+	}
+	return verifySignature(msg, d.PublicKey)
+}
+
+func parseCIDUnleasePayload(payload interface{}) (uint32, string, bool) {
+	m, ok := payload.(map[string]interface{})
+	if !ok || m == nil {
+		return 0, "", false
+	}
+	var cid uint32
+	switch v := m["cid"].(type) {
+	case float64:
+		if v <= 0 || v != float64(uint32(v)) {
+			return 0, "", false
+		}
+		cid = uint32(v)
+	case uint32:
+		cid = v
+	case json.Number:
+		u, err := strconv.ParseUint(v.String(), 10, 32)
+		if err != nil || u == 0 {
+			return 0, "", false
+		}
+		cid = uint32(u)
+	case string:
+		u, err := strconv.ParseUint(strings.TrimSpace(v), 10, 32)
+		if err != nil || u == 0 {
+			return 0, "", false
+		}
+		cid = uint32(u)
+	default:
+		return 0, "", false
+	}
+	pub, _ := m["public_key"].(string)
+	if strings.TrimSpace(pub) == "" {
+		pub, _ = m["pub"].(string)
+	}
+	pub = strings.TrimSpace(pub)
+	if cid == 0 || pub == "" {
+		return 0, "", false
+	}
+	return cid, pub, true
+}
+
+func handleCIDUnlease(msg Message, wire wireMessage, conn net.Conn, connID string) Message {
+	deny := Message{
+		Source:      "hub",
+		Destination: msg.Source,
+		Command:     "error",
+		Payload:     "ERR_UNAUTHORIZED",
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+	if conn != nil {
+		if _, isVsock := conn.RemoteAddr().(*vsock.Addr); isVsock {
+			return deny
+		}
+	}
+	if !daemonMayUnleaseCID(connID, wire, msg) {
+		return deny
+	}
+	cid, pub, ok := parseCIDUnleasePayload(msg.Payload)
+	if !ok {
+		deny.Payload = "ERR_INVALID_PAYLOAD"
+		return deny
+	}
+	if _, live := hublease.LoadLease(cid); !live {
+		loadCIDKeys()
+	}
+	if !hublease.UnleaseCID(cid, pub) {
+		return Message{
+			Source:      "hub",
+			Destination: msg.Source,
+			Command:     "response",
+			Payload:     map[string]interface{}{"status": "noop"},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	if path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS")); path != "" {
+		hublease.DeleteCIDKeyIf(path, cid, pub)
+	}
+	return Message{
+		Source:      "hub",
+		Destination: msg.Source,
+		Command:     "response",
+		Payload:     map[string]interface{}{"status": "ok"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
 }
 
 func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKey) bool {
@@ -593,11 +701,11 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		return
 	}
 
-	// VM Hub vsock session: lease CID→verified pub; unlease only when THIS conn closes.
-	// git-remote-hub returned above and must not unlease (ls-remote then clone keep the lease).
+	// VM Hub vsock handshake fills CID→verified pub. Do not defer unlease:
+	// git-connect and guest hangup/reconnect must not poison leftover same pub.
+	// StopVM sends daemon-only cid.unlease (CAS CID+expectedPub).
 	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
 		storeCIDLease(a.ContextID, pubKeyStr)
-		defer unleaseCID(a.ContextID)
 	}
 
 	// Extract version from payload if available
@@ -669,7 +777,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	}
 
 	if isEphemeralHubClient(componentID) {
-		ephemeralHubRPCLoop(componentID, encoders)
+		ephemeralHubRPCLoop(componentID, encoders, conn)
 		return
 	}
 
@@ -708,6 +816,13 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		} else if !verifyWireSignature(wire, regComp.PublicKey) {
 			encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			log.Printf("Audit: invalid signature from %s", msg.Source)
+			continue
+		}
+
+		if msg.Destination == "hub" && msg.Command == "cid.unlease" {
+			encoders.Mutex.Lock()
+			_ = encoders.Encoder.Encode(handleCIDUnlease(msg, wire, conn, componentID))
+			encoders.Mutex.Unlock()
 			continue
 		}
 
@@ -872,14 +987,21 @@ func isOneWayHubReply(command string) bool {
 
 // ephemeralHubRPCLoop serves one-shot daemon hub clients (sendToComponentViaHub).
 // It is the only reader on the connection, avoiding races with hubclient.Send.
-func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders) {
+func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders, conn net.Conn) {
 	for {
 		encoders.Mutex.Lock()
-		msg, _, err := decodeHubFrame(encoders.Decoder)
+		msg, wire, err := decodeHubFrame(encoders.Decoder)
 		encoders.Mutex.Unlock()
 		if err != nil {
 			debugLog("hub", fmt.Sprintf("ephemeral RPC %s decode end: %v", requesterID, err))
 			return
+		}
+		if msg.Destination == "hub" && msg.Command == "cid.unlease" {
+			reply := handleCIDUnlease(msg, wire, conn, requesterID)
+			encoders.Mutex.Lock()
+			_ = encoders.Encoder.Encode(reply)
+			encoders.Mutex.Unlock()
+			continue
 		}
 		if msg.Command != "get-version" && !checkACL(msg.Source, msg.Destination, msg.Command) {
 			reply := Message{Command: "error", Payload: "ERR_ACL_VIOLATION"}

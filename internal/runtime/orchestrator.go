@@ -21,7 +21,6 @@ import (
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/config"
 	"AegisClaw/internal/eventbus"
-	"AegisClaw/internal/hublease"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/security"
 	"AegisClaw/internal/timing"
@@ -42,6 +41,17 @@ type Orchestrator struct {
 	defaultLLMModel    string                   // captured at New() from AEGIS_DEFAULT_MODEL for guest llm.call model tag
 	defaultPMModel     string                   // captured at New() from AEGIS_PM_MODEL (else defaultLLMModel, else DefaultPMModel)
 	pregenKeys         []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
+	// NotifyHubCIDLease is invoked from StartVM after writeGitCIDKey.
+	// Production daemon sends cid.lease {cid, public_key} on the persistent
+	// assigned_id==daemon Hub connection so handshake/StartVM fills Hub memory.
+	// Tests may leave this nil.
+	NotifyHubCIDLease func(cid uint32, publicKey string)
+	// NotifyHubCIDUnlease is invoked from StopVM after capturing guest CID
+	// (NetworkConfig.VsockPort) AND that VM's pub, after delete(o.vms).
+	// Hub is another process -- package-local hublease.UnleaseCID in the daemon
+	// does not unlease Hub memory. Production daemon sends cid.unlease with
+	// CID+expectedPub (CAS). Tests may leave this nil.
+	NotifyHubCIDUnlease func(cid uint32, expectedPub string)
 }
 
 type vmKeyPair struct {
@@ -401,8 +411,13 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	o.secMgr.RegisterVM(id, vmConfig.PublicKey)
 
 	// Daemon/boot writes AEGIS_GIT_CID_KEYS (CID decimal → pubkey). git-connect never writes it.
+	// Then daemon-only Hub RPC cid.lease so Hub Stores without relying on file-miss ingest.
 	if vmConfig.NetworkConfig != nil && vmConfig.NetworkConfig.VsockPort > 0 {
-		writeGitCIDKey(o.config.StateDir, vmConfig.NetworkConfig.VsockPort, vmConfig.PublicKey)
+		cid := vmConfig.NetworkConfig.VsockPort
+		writeGitCIDKey(o.config.StateDir, cid, vmConfig.PublicKey)
+		if o.NotifyHubCIDLease != nil && len(vmConfig.PublicKey) > 0 {
+			o.NotifyHubCIDLease(cid, base64.StdEncoding.EncodeToString(vmConfig.PublicKey))
+		}
 	}
 
 	// 7.2: Publish lifecycle event (in-process + will be forwarded via Hub for cross-VM audit)
@@ -431,12 +446,9 @@ func writeGitCIDKey(stateDir string, cid uint32, pub ed25519.PublicKey) {
 	if len(pub) == 0 {
 		return
 	}
-	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
+	path := gitCIDKeysPath(stateDir)
 	if path == "" {
-		if strings.TrimSpace(stateDir) == "" {
-			return
-		}
-		path = filepath.Join(stateDir, "git-cid-keys.json")
+		return
 	}
 	gitCIDKeysMu.Lock()
 	defer gitCIDKeysMu.Unlock()
@@ -455,6 +467,54 @@ func writeGitCIDKey(stateDir string, cid uint32, pub ed25519.PublicKey) {
 		return
 	}
 	if err := os.WriteFile(path, b, 0600); err != nil {
+		logrus.Warnf("git CID keys write: %v", err)
+	}
+}
+
+func gitCIDKeysPath(stateDir string) string {
+	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
+	if path == "" {
+		if strings.TrimSpace(stateDir) == "" {
+			return ""
+		}
+		path = filepath.Join(stateDir, "git-cid-keys.json")
+	}
+	return path
+}
+
+// deleteGitCIDKey drops the CID row from AEGIS_GIT_CID_KEYS only if it still
+// holds expectedPub (CAS). Blind CID delete would wipe a reused CID's new pub.
+// Memory poison dies on Hub restart; leftover file would re-lease a corpse.
+func deleteGitCIDKey(stateDir string, cid uint32, expectedPub string) {
+	expectedPub = strings.TrimSpace(expectedPub)
+	if cid == 0 || expectedPub == "" {
+		return
+	}
+	path := gitCIDKeysPath(stateDir)
+	if path == "" {
+		return
+	}
+	gitCIDKeysMu.Lock()
+	defer gitCIDKeysMu.Unlock()
+	m := map[string]string{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	if json.Unmarshal(b, &m) != nil {
+		return
+	}
+	key := strconv.FormatUint(uint64(cid), 10)
+	if strings.TrimSpace(m[key]) != expectedPub {
+		return
+	}
+	delete(m, key)
+	out, err := json.Marshal(m)
+	if err != nil {
+		logrus.Warnf("git CID keys marshal: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, out, 0600); err != nil {
 		logrus.Warnf("git CID keys write: %v", err)
 	}
 }
@@ -624,14 +684,30 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 		o.mu.Unlock()
 		return fmt.Errorf("VM %s not running", id)
 	}
+	// Guest CID is NetworkConfig.VsockPort (not Hub vsock port 9999). Capture
+	// CID + this VM's pub BEFORE delete so a late unlease cannot poison a
+	// reused CID (B already got 42).
 	var cid uint32
-	if lc != nil && lc.Config.NetworkConfig != nil {
-		cid = lc.Config.NetworkConfig.VsockPort
+	var expectedPub string
+	if lc != nil {
+		if lc.Config.NetworkConfig != nil {
+			cid = lc.Config.NetworkConfig.VsockPort
+		}
+		if len(lc.Config.PublicKey) > 0 {
+			expectedPub = base64.StdEncoding.EncodeToString(lc.Config.PublicKey)
+		}
 	}
 	delete(o.vms, id)
 	o.mu.Unlock()
 	if cid > 0 {
-		hublease.UnleaseCID(cid)
+		stateDir := ""
+		if o.config != nil {
+			stateDir = o.config.StateDir
+		}
+		deleteGitCIDKey(stateDir, cid, expectedPub)
+		if o.NotifyHubCIDUnlease != nil {
+			o.NotifyHubCIDUnlease(cid, expectedPub)
+		}
 	}
 
 	logrus.Infof("Stopping VM %s", id)
