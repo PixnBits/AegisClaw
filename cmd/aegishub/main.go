@@ -441,8 +441,8 @@ func leasePubForCID(cid uint32) (string, bool) {
 	if pub, ok := hublease.LoadLease(cid); ok {
 		return pub, true
 	}
-	// Reload file on miss: StartVM ingest (writeGitCIDKey). Helper close does
-	// not UnleaseCID, so leftover rows remain valid until StopVM cid.unlease.
+	// Handshake Store is fill. File reload-on-miss only for live rows still
+	// in the file; StopVM must delete the row so a corpse is not re-ingested.
 	loadCIDKeys()
 	return hublease.LoadLease(cid)
 }
@@ -519,7 +519,7 @@ func daemonMayUnleaseCID(assignedID string, wire wireMessage, msg Message) bool 
 	if assignedID == "git-remote-hub" || msg.Source == "git-remote-hub" {
 		return false
 	}
-	if isDaemonCIDUnleaseSource(assignedID) {
+	if isPersistentDaemonHubID(assignedID) {
 		return true
 	}
 	registeredMutex.RLock()
@@ -643,18 +643,9 @@ func handleCIDLease(msg Message, wire wireMessage, conn net.Conn, connID string)
 		deny.Payload = "ERR_INVALID_PAYLOAD"
 		return deny
 	}
-	if _, live := hublease.LoadLease(cid); !live {
-		loadCIDKeys()
-	}
-	if !hublease.StoreLeaseCAS(cid, pub) {
-		return Message{
-			Source:      "hub",
-			Destination: msg.Source,
-			Command:     "response",
-			Payload:     map[string]interface{}{"status": "noop"},
-			Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		}
-	}
+	// cid.lease is not fill. Handshake Store of verified pub is fill.
+	_ = cid
+	_ = pub
 	return Message{
 		Source:      "hub",
 		Destination: msg.Source,
@@ -765,14 +756,13 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		return
 	}
 
-	// Guest vsock register must not pick git identity for a CID.
-	// After the presented public key is decoded, handshake may CONFIRM
-	// lease[CID]==verifiedPub (read-only). Mismatch/empty is not a Store;
-	// git-connect later ERR_UNKNOWN_PEER. Never insert, overwrite, or
-	// ClearClosed from handshake. StartVM daemon cid.lease is the writer.
-	// Do not defer unlease: git-connect and guest hangup must not poison.
+	// Guest vsock handshake (source != git-remote-hub, *vsock.Addr) is fill:
+	// Store cidLease[CID]=verified pub. Dummy/unsigned must not Store.
+	// git-remote-hub returned above and never Stores. Hangup must not unlease.
 	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
-		confirmCIDLease(a.ContextID, pubKeyStr)
+		if verifyGitRegisterSignature(raw, regMsg, pubKey) {
+			hublease.StoreLease(a.ContextID, pubKeyStr)
+		}
 	}
 
 	// Extract version from payload if available

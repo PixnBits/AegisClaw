@@ -10,15 +10,14 @@ import (
 )
 
 // CID lease is in-memory. git-connect never writes it. Helper/git-connect hangup
-// and VM guest hangup must not UnleaseCID. leasePubForCID reloads
-// AEGIS_GIT_CID_KEYS on miss (StartVM ingest via writeGitCIDKey).
-// Vsock handshake never StoreLease / StoreLeaseCAS / ClearClosed.
+// and VM guest hangup must not UnleaseCID. Guest vsock handshake StoreLease of
+// verified pub is fill. leasePubForCID reloads AEGIS_GIT_CID_KEYS on miss only
+// for live rows still in the file; StopVM deletes the row so a corpse is not
+// re-ingested.
 //
-// StartVM (orchestrator) sends cid.lease {cid, public_key} over the persistent
-// daemon Hub connection. CAS: store only if lease empty or already the same pub.
-// VM destroy (orchestrator StopVM) sends cid.unlease {cid, public_key}.
-// CAS: unlease only if lease[cid]==expectedPub else no-op. Hub then deletes
-// that CID row from AEGIS_GIT_CID_KEYS.
+// VM destroy (orchestrator StopVM) sends cid.unlease {cid, public_key} over the
+// persistent daemon Hub connection. CAS: unlease only if lease[cid]==expectedPub
+// else no-op. Hub then deletes that CID row from AEGIS_GIT_CID_KEYS.
 
 var (
 	lease  sync.Map // uint32 CID -> base64 pubkey
@@ -41,8 +40,7 @@ func StoreLease(cid uint32, pub string) {
 }
 
 // StoreLeaseCAS stores pub for cid only if the lease is empty or already holds
-// the same pub. Does not overwrite a different pub. Handshake must not call this;
-// daemon cid.lease is the writer.
+// the same pub. Does not overwrite a different pub. Handshake fill uses StoreLease.
 func StoreLeaseCAS(cid uint32, pub string) bool {
 	pub = strings.TrimSpace(pub)
 	if pub == "" {

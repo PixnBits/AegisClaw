@@ -41,11 +41,6 @@ type Orchestrator struct {
 	defaultLLMModel    string                   // captured at New() from AEGIS_DEFAULT_MODEL for guest llm.call model tag
 	defaultPMModel     string                   // captured at New() from AEGIS_PM_MODEL (else defaultLLMModel, else DefaultPMModel)
 	pregenKeys         []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
-	// NotifyHubCIDLease is invoked from StartVM after writeGitCIDKey.
-	// Production daemon sends cid.lease {cid, public_key} on the persistent
-	// assigned_id==daemon Hub connection so handshake/StartVM fills Hub memory.
-	// Tests may leave this nil.
-	NotifyHubCIDLease func(cid uint32, publicKey string)
 	// NotifyHubCIDUnlease is invoked from StopVM after capturing guest CID
 	// (NetworkConfig.VsockPort) AND that VM's pub, after delete(o.vms).
 	// Hub is another process -- package-local hublease.UnleaseCID in the daemon
@@ -411,13 +406,9 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	o.secMgr.RegisterVM(id, vmConfig.PublicKey)
 
 	// Daemon/boot writes AEGIS_GIT_CID_KEYS (CID decimal → pubkey). git-connect never writes it.
-	// Then daemon-only Hub RPC cid.lease so Hub Stores without relying on file-miss ingest.
+	// Hub fill is guest vsock handshake StoreLease of verified pub, not StartVM cid.lease.
 	if vmConfig.NetworkConfig != nil && vmConfig.NetworkConfig.VsockPort > 0 {
-		cid := vmConfig.NetworkConfig.VsockPort
-		writeGitCIDKey(o.config.StateDir, cid, vmConfig.PublicKey)
-		if o.NotifyHubCIDLease != nil && len(vmConfig.PublicKey) > 0 {
-			o.NotifyHubCIDLease(cid, base64.StdEncoding.EncodeToString(vmConfig.PublicKey))
-		}
+		writeGitCIDKey(o.config.StateDir, vmConfig.NetworkConfig.VsockPort, vmConfig.PublicKey)
 	}
 
 	// 7.2: Publish lifecycle event (in-process + will be forwarded via Hub for cross-VM audit)

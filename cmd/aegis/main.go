@@ -235,27 +235,18 @@ func resetInternalHubClientsForTest() {
 
 var fanoutHubClientSeq uint64
 
-// sendDaemonCIDLease / sendDaemonCIDUnlease send cid.lease / cid.unlease
-// {cid, public_key} on the persistent daemon Hub unix connection
-// (assigned_id=="daemon"). Hub is another process; in-process hublease from
-// the orchestrator does not update Hub. Do not register a fresh daemon-temp-*
-// client (anyone can claim those sources). Guests/git-remote-hub cannot.
-func sendDaemonCIDLease(cid uint32, publicKey string) {
-	sendDaemonCIDCommand("cid.lease", cid, publicKey)
-}
-
+// sendDaemonCIDUnlease sends cid.unlease {cid, public_key} on the persistent
+// daemon Hub unix connection (assigned_id=="daemon"). Hub is another process;
+// in-process hublease.UnleaseCID from the orchestrator does not update Hub.
+// Do not register a fresh daemon-temp-* client. Guests/git-remote-hub cannot.
 func sendDaemonCIDUnlease(cid uint32, expectedPub string) {
-	sendDaemonCIDCommand("cid.unlease", cid, expectedPub)
-}
-
-func sendDaemonCIDCommand(command string, cid uint32, pub string) {
-	pub = strings.TrimSpace(pub)
-	if cid == 0 || pub == "" {
+	expectedPub = strings.TrimSpace(expectedPub)
+	if cid == 0 || expectedPub == "" {
 		return
 	}
 	client := snapshotDaemonHubClient()
 	if client == nil {
-		logrus.Warnf("%s cid=%d: persistent daemon Hub client not ready", command, cid)
+		logrus.Warnf("cid.unlease cid=%d: persistent daemon Hub client not ready", cid)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -263,12 +254,12 @@ func sendDaemonCIDCommand(command string, cid uint32, pub string) {
 	_, err := client.Send(ctx, hubclient.Message{
 		Source:      "daemon",
 		Destination: "hub",
-		Command:     command,
-		Payload:     map[string]interface{}{"cid": cid, "public_key": pub},
+		Command:     "cid.unlease",
+		Payload:     map[string]interface{}{"cid": cid, "public_key": expectedPub},
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		logrus.Warnf("%s send cid=%d: %v", command, cid, err)
+		logrus.Warnf("cid.unlease send cid=%d: %v", cid, err)
 	}
 }
 
@@ -865,7 +856,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if err != nil {
 		logrus.Fatalf("failed to create orchestrator: %v", err)
 	}
-	orchestrator.NotifyHubCIDLease = sendDaemonCIDLease
 	orchestrator.NotifyHubCIDUnlease = sendDaemonCIDUnlease
 
 	logrus.Infof("daemon starting on platform %s with sandbox type %s",
