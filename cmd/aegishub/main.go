@@ -477,10 +477,13 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		// Git identity is lookup(verifiedPub) only — not payload.tenant, not CID fallback.
 		if !verifyGitRegisterSignature(raw, regMsg, pubKey) {
 			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
-			hubgit.Serve(&gitConn{Conn: conn, r: br}, "", strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
 			return
 		}
 		tenant := lookupPeerTenant(pubKeyStr)
+		if tenant == "" {
+			_ = encoder.Encode(map[string]string{"error": "ERR_UNKNOWN_PEER"})
+			return
+		}
 		if err := encoder.Encode(map[string]string{"status": "registered"}); err != nil {
 			return
 		}
