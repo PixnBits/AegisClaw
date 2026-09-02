@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/collab"
+	"AegisClaw/internal/hubgit"
 	"AegisClaw/internal/transport/hubclient" // for HubVsockPort constant (Phase 1.1c vsock support)
 	"github.com/mdlayher/vsock"
 	"github.com/spf13/cobra"
@@ -358,9 +361,52 @@ func startVsockListener(conns *sync.Map) {
 	}
 }
 
+var cidTenant sync.Map
+
+func gitSessionTenant(conn net.Conn) string {
+	addr := conn.RemoteAddr()
+	if addr == nil {
+		return ""
+	}
+	if a, ok := addr.(*vsock.Addr); ok {
+		if v, ok := cidTenant.Load(a.ContextID); ok {
+			if t, ok := v.(string); ok {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+func rememberVsockTenant(conn net.Conn, tenant string) {
+	tenant = strings.TrimSpace(tenant)
+	if tenant == "" {
+		return
+	}
+	addr := conn.RemoteAddr()
+	if addr == nil {
+		return
+	}
+	if a, ok := addr.(*vsock.Addr); ok {
+		cidTenant.Store(a.ContextID, tenant)
+	}
+}
+
+type gitConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (g *gitConn) Read(p []byte) (int, error) { return g.r.Read(p) }
+
 func handleConnection(conn net.Conn, conns *sync.Map) {
+	br := bufio.NewReader(conn)
+	if peek, err := br.Peek(11); err == nil && bytes.Equal(peek, []byte("git-connect")) {
+		hubgit.Serve(&gitConn{Conn: conn, r: br}, gitSessionTenant(conn), strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
+		return
+	}
 	defer conn.Close()
-	decoder := json.NewDecoder(conn)
+	decoder := json.NewDecoder(br)
 	encoder := json.NewEncoder(conn)
 
 	// First message must be register.
@@ -445,6 +491,11 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	debugLog("hub", fmt.Sprintf("Registered component %s (hub id %s) version %s", regMsg.Source, componentID, version))
 
 	conns.Store(componentID, conn)
+	if payloadMap != nil {
+		if t, ok := payloadMap["tenant"].(string); ok {
+			rememberVsockTenant(conn, t)
+		}
+	}
 
 	// Cleanup when connection closes
 	defer func(id string) {

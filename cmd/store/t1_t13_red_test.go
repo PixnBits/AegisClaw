@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"AegisClaw/internal/hubgit"
 	"AegisClaw/internal/storegit"
 )
 
@@ -294,55 +294,10 @@ func (h *liveHub) acceptGit() {
 }
 
 func (h *liveHub) handleGitHelper(c net.Conn) {
-	defer c.Close()
-	br := bufio.NewReader(c)
-	line, err := br.ReadString('\n')
-	if err != nil {
-		return
-	}
-	line = strings.TrimSpace(line)
-	const prefix = "git-connect "
-	if !strings.HasPrefix(line, prefix) {
-		_, _ = fmt.Fprintf(c, "deny unknown git-connect\n")
-		return
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(line, prefix))
-	service, url, ok := strings.Cut(rest, " ")
-	if !ok {
-		_, _ = fmt.Fprintf(c, "deny bad git-connect\n")
-		return
-	}
-	target, repo, parsed := storegit.ParseURL(url)
 	h.mu.Lock()
 	caller := h.gitTenant
 	h.mu.Unlock()
-	if !parsed || caller == "" || caller != target {
-		_, _ = fmt.Fprintf(c, "deny tenancy acl: not your tenant\n")
-		return
-	}
-	storec, err := net.Dial("unix", h.gitSock)
-	if err != nil {
-		_, _ = fmt.Fprintf(c, "deny store git socket\n")
-		return
-	}
-	defer storec.Close()
-	if _, err := fmt.Fprintf(storec, "%s %s %s\n", service, caller, repo); err != nil {
-		return
-	}
-	if _, err := fmt.Fprintf(c, "ok\n"); err != nil {
-		return
-	}
-	errc := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(storec, br)
-		errc <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(c, storec)
-		errc <- struct{}{}
-	}()
-	<-errc
-	<-errc
+	hubgit.Serve(c, caller, h.gitSock)
 }
 
 func (h *liveHub) gitAs(tenant string, cmd *exec.Cmd) ([]byte, error) {
