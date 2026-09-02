@@ -8,7 +8,8 @@ import (
 )
 
 // T1–T13 point at shipped cmd/store. They must fail on the JSON-dashboard /
-// stub-git.push Store. No t.Skip. Passing these means the replace is real.
+// stub-git.push Store. No t.Skip. No new git.push in this commit.
+// Passing these means the replace is real.
 
 func storeMain(t *testing.T) string {
 	t.Helper()
@@ -17,6 +18,28 @@ func storeMain(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func dashboardSrc(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "dashboard", "server.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// twoTenantFixture is the T3/T4 hole in current cmd/store: git.clone uses
+// repos/<repo> with no tenant, so A and B collide. Keep this fixture even
+// while red; do not invent a new git.push to make it pass.
+func twoTenantFixture(t *testing.T) (tenantA, tenantB, repo, pathA, pathB string) {
+	t.Helper()
+	tenantA, tenantB, repo = "tenant-a", "tenant-b", "skill"
+	root := t.TempDir()
+	// Shipped formula in cmd/store git.clone: path := "repos/" + repo
+	pathA = filepath.Join(root, "repos", repo)
+	pathB = filepath.Join(root, "repos", repo)
+	return tenantA, tenantB, repo, pathA, pathB
 }
 
 func TestT1_MergeWithoutCourtMustFail(t *testing.T) {
@@ -31,8 +54,12 @@ func TestT1_MergeWithoutCourtMustFail(t *testing.T) {
 
 func TestT2_CourtSkipMustNotExist(t *testing.T) {
 	src := storeMain(t)
+	dash := dashboardSrc(t)
 	if strings.Contains(src, `"skipped"`) && strings.Contains(strings.ToLower(src), "court") {
 		t.Fatal("T2: court skip still exists in cmd/store")
+	}
+	if strings.Contains(dash, "dashboard.pr") || strings.Contains(dash, `Call(r.Context(), "pr.list"`) {
+		t.Fatal("T2: dashboard.pr is still the PR system of record")
 	}
 	if !strings.Contains(src, "ErrCourtSkip") && !strings.Contains(src, "court skip does not exist") {
 		t.Fatal("T2: Store does not reject court skip (vacuous absence is not fail-closed)")
@@ -40,14 +67,22 @@ func TestT2_CourtSkipMustNotExist(t *testing.T) {
 }
 
 func TestT3_CrossTenantFetchMustFail(t *testing.T) {
+	a, b, repo, pathA, pathB := twoTenantFixture(t)
 	src := storeMain(t)
-	if !strings.Contains(src, "tenant") || strings.Contains(src, `path := "repos/" + repo`) {
+	if pathA == pathB {
+		t.Fatalf("T3 two-tenant fixture: %s and %s both fetch %s at %s (no ACL)", a, b, repo, pathA)
+	}
+	if strings.Contains(src, `path := "repos/" + repo`) {
 		t.Fatal("T3: git.clone is a shared repos/ dir with no tenant ACL")
 	}
 }
 
 func TestT4_TenantACannotPushToB(t *testing.T) {
+	a, b, repo, pathA, pathB := twoTenantFixture(t)
 	src := storeMain(t)
+	if pathA == pathB && strings.Contains(src, "stub success") {
+		t.Fatalf("T4 two-tenant fixture: %s git.push stub-succeeds into %s's %s (%s)", a, b, repo, pathB)
+	}
 	if strings.Contains(src, "For push, assume it's handled by git, stub success") {
 		t.Fatal("T4: git.push stubs success; tenant A can 'push' anywhere")
 	}
@@ -63,7 +98,7 @@ func TestT5_ExtraRemoteSubmoduleLFSMustFail(t *testing.T) {
 func TestT6_CoderHasNoGit(t *testing.T) {
 	src := storeMain(t)
 	if !strings.Contains(src, "coder has no git") && !strings.Contains(src, "ErrCoderGit") && !strings.Contains(src, `ActorCoder`) {
-		t.Fatal("T6: Store does not refuse Coder git")
+		t.Fatal("T6: Store does not refuse Coder git (sitting still required for host tree)")
 	}
 }
 
@@ -99,7 +134,7 @@ func TestT10_RollbackOpensNewPR(t *testing.T) {
 func TestT11_DestroyedBuilderLeavesNoState(t *testing.T) {
 	src := storeMain(t)
 	if !strings.Contains(src, "DestroyBuilder") {
-		t.Fatal("T11: Store has no Builder destroy that wipes git state and creds")
+		t.Fatal("T11: Store has no Builder destroy that wipes git state and creds (sitting still required)")
 	}
 }
 
@@ -116,7 +151,7 @@ func TestT12_ForcePushHistoryDeleteFakeCourtFail(t *testing.T) {
 func TestT13_HubVsockOnlyNoHostGitDaemonNoSkillDotGit(t *testing.T) {
 	src := storeMain(t)
 	if strings.Contains(src, `git", "init", "--bare"`) {
-		t.Fatal("T13: Store git is local git init, not Hub/vsock")
+		t.Fatal("T13: Store git is local git init, not Hub/vsock (sitting still required for daemon/.git)")
 	}
 	ws := filepath.Join("workspace", "skills")
 	if _, err := os.Stat(ws); err == nil {
