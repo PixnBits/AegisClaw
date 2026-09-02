@@ -401,41 +401,6 @@ func lookupPeerTenant(pub string) string {
 	return strings.TrimSpace(m[pub])
 }
 
-func loadCIDKeys() {
-	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
-	if path == "" {
-		return
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var m map[string]string
-	if json.Unmarshal(b, &m) != nil {
-		return
-	}
-	for k, pub := range m {
-		cid, ok := parseCIDKey(k)
-		if !ok {
-			continue // reject "cid-3"; decimal uint32 only
-		}
-		pub = strings.TrimSpace(pub)
-		if pub == "" {
-			continue
-		}
-		if _, live := hublease.LoadLease(cid); live {
-			continue
-		}
-		if closed, ok := hublease.ClosedPub(cid); ok {
-			if closed == pub {
-				continue // leftover after VM death -- no re-lease until new pub
-			}
-			hublease.ClearClosed(cid) // daemon overwrote leftover with a different pub
-		}
-		hublease.StoreLease(cid, pub)
-	}
-}
-
 func leasePubForCID(cid uint32) (string, bool) {
 	// Memory only. Do not reload AEGIS_GIT_CID_KEYS on miss (file fail-open).
 	// Guest vsock handshake CAS-fills after verified rostered register.
