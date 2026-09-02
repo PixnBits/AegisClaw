@@ -106,3 +106,44 @@ func TestDeleteCIDKeyIfCAS(t *testing.T) {
 		t.Fatalf("row 7 must remain: %s", b)
 	}
 }
+
+func TestStoreLeaseCASEmptyOrSame(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+	const cid uint32 = 11
+	if !StoreLeaseCAS(cid, "pub-a") {
+		t.Fatal("empty lease must CAS-store")
+	}
+	got, ok := LoadLease(cid)
+	if !ok || got != "pub-a" {
+		t.Fatalf("after empty CAS: got %q ok=%v", got, ok)
+	}
+	if !StoreLeaseCAS(cid, "pub-a") {
+		t.Fatal("same pub must CAS-succeed")
+	}
+	if StoreLeaseCAS(cid, "pub-b") {
+		t.Fatal("different pub must not overwrite")
+	}
+	got, ok = LoadLease(cid)
+	if !ok || got != "pub-a" {
+		t.Fatalf("mismatch must keep A: got %q ok=%v", got, ok)
+	}
+}
+
+func TestStoreLeaseCASUnpoisonsEmpty(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+	const cid uint32 = 12
+	StoreLease(cid, "pub-a")
+	UnleaseCID(cid, "pub-a")
+	if !StoreLeaseCAS(cid, "pub-a") {
+		t.Fatal("daemon CAS-store of same pub after unlease must succeed")
+	}
+	got, ok := LoadLease(cid)
+	if !ok || got != "pub-a" {
+		t.Fatalf("re-lease: got %q ok=%v", got, ok)
+	}
+	if closed, ok := ClosedPub(cid); ok {
+		t.Fatalf("StoreLeaseCAS on empty must clear poison, still %q", closed)
+	}
+}
