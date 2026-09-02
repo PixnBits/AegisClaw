@@ -18,6 +18,7 @@ import (
 
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/hubgit"
+	"AegisClaw/internal/hublease"
 	"AegisClaw/internal/transport/hubclient" // for HubVsockPort constant (Phase 1.1c vsock support)
 	"github.com/mdlayher/vsock"
 	"github.com/spf13/cobra"
@@ -362,13 +363,6 @@ func startVsockListener(conns *sync.Map) {
 	}
 }
 
-// cidLease is the in-memory CID-to-pubkey map loaded from AEGIS_GIT_CID_KEYS at
-// start (and refreshed for new boot leases). git-connect never writes it.
-// Helper hangup does not unlease. VM death (daemonUnleaseCID) poisons leftover
-// file rows for the same CID+pub until overwritten with a new pub or removed.
-var cidLease sync.Map  // uint32 CID -> base64 pubkey
-var cidClosed sync.Map // uint32 CID -> pubkey poisoned by daemonUnleaseCID
-
 type gitConn struct {
 	net.Conn
 	r *bufio.Reader
@@ -430,34 +424,27 @@ func loadCIDKeys() {
 		if pub == "" {
 			continue
 		}
-		if _, live := cidLease.Load(cid); live {
+		if _, live := hublease.LoadLease(cid); live {
 			continue
 		}
-		if closed, ok := cidClosed.Load(cid); ok {
-			if s, _ := closed.(string); s == pub {
+		if closed, ok := hublease.ClosedPub(cid); ok {
+			if closed == pub {
 				continue // leftover after VM death -- no re-lease until new pub
 			}
-			cidClosed.Delete(cid) // daemon overwrote leftover with a different pub
+			hublease.ClearClosed(cid) // daemon overwrote leftover with a different pub
 		}
-		cidLease.Store(cid, pub)
+		hublease.StoreLease(cid, pub)
 	}
 }
 
 func leasePubForCID(cid uint32) (string, bool) {
-	if v, ok := cidLease.Load(cid); ok {
-		pub, _ := v.(string)
-		pub = strings.TrimSpace(pub)
-		return pub, pub != ""
+	if pub, ok := hublease.LoadLease(cid); ok {
+		return pub, true
 	}
-	// Reload file on miss: helper close does not cidClosed, so leftover rows
+	// Reload file on miss: helper close does not UnleaseCID, so leftover rows
 	// remain valid until daemonUnleaseCID (VM death) or the row is overwritten.
 	loadCIDKeys()
-	if v, ok := cidLease.Load(cid); ok {
-		pub, _ := v.(string)
-		pub = strings.TrimSpace(pub)
-		return pub, pub != ""
-	}
-	return "", false
+	return hublease.LoadLease(cid)
 }
 
 func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
@@ -489,29 +476,20 @@ func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 	return tenant, nil
 }
 
-// forgetVsockTenant is helper/git-connect hangup. It must not Delete cidLease
-// or cidClosed -- leftover file + same CID+pub remains the owner's lease.
+// forgetVsockTenant is helper/git-connect hangup. handleConnection must not
+// defer this. It must not UnleaseCID -- leftover file + same CID+pub remains
+// the owner's lease (reload-on-miss OK).
 func forgetVsockTenant(conn net.Conn) {
 	_ = conn
 }
 
-func storeCIDLease(cid uint32, pub string) {
-	pub = strings.TrimSpace(pub)
-	if pub == "" {
-		return
-	}
-	cidLease.Store(cid, pub)
-	cidClosed.Delete(cid)
+// daemonUnleaseCID is VM death: drop the in-memory lease and poison leftover
+// file rows for the same CID+pub until the daemon overwrites with a new pub
+// or removes the row. Git-connect close must not call this. Tests call this
+// to simulate VM destroy; orchestrator StopVM calls hublease.UnleaseCID.
+func daemonUnleaseCID(cid uint32) {
+	hublease.UnleaseCID(cid)
 }
-
-func unleaseCID(cid uint32) {
-	if v, ok := cidLease.Load(cid); ok {
-		cidClosed.Store(cid, v)
-	}
-	cidLease.Delete(cid)
-}
-
-func daemonUnleaseCID(cid uint32) { unleaseCID(cid) }
 
 func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKey) bool {
 	if msg.Signature == "" || msg.Signature == "dummy" {
@@ -586,6 +564,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		// Possession of AEGIS_HUB_PRIVKEY: dummy/empty never count, even in AEGIS_DEV_MODE.
 		// vsock: lease[CID] pub must equal verified pub, then tenant=identities[pub].
 		// unix: production always ERR_UNKNOWN_PEER (no Serve). Sit hubBin: -tags testunixgit. Never payload.tenant.
+		// No defer forgetVsockTenant; no cidClosed on helper close.
 		if !verifyGitRegisterSignature(raw, regMsg, pubKey) {
 			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			return
@@ -604,12 +583,6 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 		hubgit.Serve(&gitConn{Conn: conn, r: br}, tenant, strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
 		return
-	}
-
-	// VM Hub vsock session: lease CID→verified pub; unlease only when THIS conn closes.
-	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
-		storeCIDLease(a.ContextID, pubKeyStr)
-		defer unleaseCID(a.ContextID)
 	}
 
 	// Extract version from payload if available

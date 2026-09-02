@@ -21,6 +21,7 @@ import (
 	"AegisClaw/internal/agent"
 	"AegisClaw/internal/config"
 	"AegisClaw/internal/eventbus"
+	"AegisClaw/internal/hublease"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/security"
 	"AegisClaw/internal/timing"
@@ -618,13 +619,20 @@ func writeJSONMetrics(stateDir, id string, phases map[string]int64) {
 // StopVM stops a running sandbox VM.
 func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 	o.mu.Lock()
-	_, exists := o.vms[id]
+	lc, exists := o.vms[id]
 	if !exists {
 		o.mu.Unlock()
 		return fmt.Errorf("VM %s not running", id)
 	}
+	var cid uint32
+	if lc != nil && lc.Config.NetworkConfig != nil {
+		cid = lc.Config.NetworkConfig.VsockPort
+	}
 	delete(o.vms, id)
 	o.mu.Unlock()
+	if cid > 0 {
+		hublease.UnleaseCID(cid)
+	}
 
 	logrus.Infof("Stopping VM %s", id)
 

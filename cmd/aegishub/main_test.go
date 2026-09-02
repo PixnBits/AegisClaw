@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"AegisClaw/internal/hublease"
+
 	"github.com/mdlayher/vsock"
 )
 
@@ -553,8 +555,7 @@ func TestGitConnectUnsignedCannotClaimRosteredKey(t *testing.T) {
 }
 
 func resetCIDLeases() {
-	cidLease = sync.Map{}
-	cidClosed = sync.Map{}
+	hublease.Reset()
 }
 
 type remoteAddrConn struct {
@@ -661,7 +662,7 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 		t.Fatalf("after helper close, same CID+A must still be tenant-a (file leftover OK): tenant=%q err=%v", got, err)
 	}
 
-	unleaseCID(cid)
+	daemonUnleaseCID(cid)
 	got, err = tenantForGit(pubAStr, addr)
 	if err == nil || got != "" {
 		t.Fatalf("after daemonUnleaseCID, leftover file same pub must deny: tenant=%q err=%v", got, err)
@@ -680,13 +681,8 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 		t.Fatalf("overwrite leftover with new pub then load: tenant=%q err=%v, want tenant-b", got, err)
 	}
 
-	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
-	got, err = tenantForGit(pubAStr, unixAddr)
-	if err == nil || got != "" {
-		t.Fatalf("unix without AEGIS_GIT_ALLOW_UNIX=1 must not skip CID: tenant=%q err=%v", got, err)
-	}
 }
-func TestGitConnectUnixDeniedWithoutAllowUnix(t *testing.T) {
+func TestGitConnectUnixDeniedInProduction(t *testing.T) {
 	aPub, aPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -701,13 +697,13 @@ func TestGitConnectUnixDeniedWithoutAllowUnix(t *testing.T) {
 	got := gitConnectAfterRegister(t, sock, reg, "hub::vsock/tenant-a/skill")
 	low := strings.ToLower(got)
 	if strings.Contains(low, "not your tenant") {
-		t.Fatalf("unix without ALLOW_UNIX deny must not be tenancy needle: %q", got)
+		t.Fatalf("unix git-connect deny must not be tenancy needle: %q", got)
 	}
 	if strings.TrimSpace(got) == "ok" || strings.HasSuffix(strings.TrimSpace(got), "\nok") {
 		t.Fatalf("stolen privkey + unix must not Serve: %q", got)
 	}
 	if strings.Contains(low, "deny store git socket") {
-		t.Fatalf("unix without ALLOW_UNIX must not reach Store: %q", got)
+		t.Fatalf("unix git-connect must not reach Store: %q", got)
 	}
 }
 
@@ -858,7 +854,12 @@ func TestVMSessionCIDLease(t *testing.T) {
 		t.Fatalf("leftover file must still contain same pub: %s", left)
 	}
 	got, err := tenantForGit(pubAStr, addr)
+	if err != nil || got != "tenant-a" {
+		t.Fatalf("after VM hub session close (no daemonUnlease), same CID+A still tenant-a: tenant=%q err=%v", got, err)
+	}
+	daemonUnleaseCID(42)
+	got, err = tenantForGit(pubAStr, addr)
 	if err == nil || got != "" {
-		t.Fatalf("VM session close; leftover file same pub must deny: tenant=%q err=%v", got, err)
+		t.Fatalf("after daemonUnleaseCID, leftover file same pub must deny: tenant=%q err=%v", got, err)
 	}
 }
