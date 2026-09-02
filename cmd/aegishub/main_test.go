@@ -21,7 +21,21 @@ import (
 // The existing unix-socket roundtrip tests continue to cover the shared handleConnection logic.
 // Vsock-specific integration is exercised when running inside actual microVMs (see AGENTS.md + build-microvms).
 
-const testHubSocketPath = "/tmp/aegishub_test.sock"
+func waitUnixReady(t *testing.T, sock string, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	var dialErr error
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("unix", sock, 50*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+			return
+		}
+		dialErr = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("hub not accepting on %s: %v", sock, dialErr)
+}
 
 func buildTestBinary(t *testing.T, pkgPath, binaryName string) string {
 	t.Helper()
@@ -43,8 +57,7 @@ func buildTestBinary(t *testing.T, pkgPath, binaryName string) string {
 }
 
 func TestHubRoundTrip(t *testing.T) {
-	// Clean up
-	os.Remove(testHubSocketPath)
+	sock := filepath.Join(t.TempDir(), "aegishub.sock")
 
 	// Generate keys for clients
 	pub1, priv1, _ := ed25519.GenerateKey(rand.Reader)
@@ -61,25 +74,24 @@ func TestHubRoundTrip(t *testing.T) {
 	wd, _ := os.Getwd()
 	repoRootForACL := filepath.Clean(filepath.Join(wd, "..", ".."))
 	aclPath := filepath.Join(repoRootForACL, "config", "acls.yaml")
-	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+testHubSocketPath, "AEGIS_DEV_MODE=1", "AEGIS_ACL_FILE="+aclPath)
+	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+sock, "AEGIS_DEV_MODE=1", "AEGIS_ACL_FILE="+aclPath)
 	err := cmd.Start()
 	if err != nil {
 		t.Fatalf("Failed to start hub: %v", err)
 	}
 	defer cmd.Process.Kill()
 
-	// Wait for socket
-	time.Sleep(100 * time.Millisecond)
+	waitUnixReady(t, sock, 5*time.Second)
 
 	// Connect client1
-	conn1, err := net.Dial("unix", testHubSocketPath)
+	conn1, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatalf("Failed to connect client1: %v", err)
 	}
 	defer conn1.Close()
 
 	// Connect client2
-	conn2, err := net.Dial("unix", testHubSocketPath)
+	conn2, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatalf("Failed to connect client2: %v", err)
 	}
@@ -411,18 +423,7 @@ func startGitHub(t *testing.T, identities map[string]string) string {
 			_, _ = cmd.Process.Wait()
 		}
 	})
-	deadline := time.Now().Add(5 * time.Second)
-	var dialErr error
-	for time.Now().Before(deadline) {
-		c, err := net.DialTimeout("unix", sock, 50*time.Millisecond)
-		if err == nil {
-			_ = c.Close()
-			return sock
-		}
-		dialErr = err
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("hub not accepting: %v", dialErr)
+	waitUnixReady(t, sock, 5*time.Second)
 	return sock
 }
 
