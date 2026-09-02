@@ -21,6 +21,11 @@ import (
 	"github.com/mdlayher/vsock"
 )
 
+// NOTE (Phase 1.1c): AegisHub now also listens on vsock port 9999 (when available)
+// for real Firecracker guest microVMs (Agent Runtime + Memory VM).
+// The existing unix-socket roundtrip tests continue to cover the shared handleConnection logic.
+// Vsock-specific integration is exercised when running inside actual microVMs (see AGENTS.md + build-microvms).
+
 func waitUnixReady(t *testing.T, sock string, d time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(d)
