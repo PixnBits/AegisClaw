@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -398,6 +399,11 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	// The private key material lives only in the ephemeral 0600 file (to be consumed by the guest).
 	o.secMgr.RegisterVM(id, vmConfig.PublicKey)
 
+	// Daemon/boot writes AEGIS_GIT_CID_KEYS (CID decimal → pubkey). git-connect never writes it.
+	if vmConfig.NetworkConfig != nil && vmConfig.NetworkConfig.VsockPort > 0 {
+		writeGitCIDKey(o.config.StateDir, vmConfig.NetworkConfig.VsockPort, vmConfig.PublicKey)
+	}
+
 	// 7.2: Publish lifecycle event (in-process + will be forwarded via Hub for cross-VM audit)
 	o.bus.PublishJSON("vm.started", map[string]interface{}{
 		"id":        id,
@@ -414,6 +420,42 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 
 	logrus.Infof("VM %s started successfully (per-VM key distributed + registered)", id)
 	return nil
+}
+
+var gitCIDKeysMu sync.Mutex
+
+// writeGitCIDKey merges cid (decimal uint32 string, never "cid-N") → base64 pubkey
+// into AEGIS_GIT_CID_KEYS. Hub loads this into an in-memory lease at start.
+func writeGitCIDKey(stateDir string, cid uint32, pub ed25519.PublicKey) {
+	if len(pub) == 0 {
+		return
+	}
+	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
+	if path == "" {
+		if strings.TrimSpace(stateDir) == "" {
+			return
+		}
+		path = filepath.Join(stateDir, "git-cid-keys.json")
+	}
+	gitCIDKeysMu.Lock()
+	defer gitCIDKeysMu.Unlock()
+	m := map[string]string{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &m)
+	}
+	m[strconv.FormatUint(uint64(cid), 10)] = base64.StdEncoding.EncodeToString(pub)
+	b, err := json.Marshal(m)
+	if err != nil {
+		logrus.Warnf("git CID keys marshal: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		logrus.Warnf("git CID keys dir: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, b, 0600); err != nil {
+		logrus.Warnf("git CID keys write: %v", err)
+	}
 }
 
 // GetVMConsoleLog returns recent lines from the captured guest serial console

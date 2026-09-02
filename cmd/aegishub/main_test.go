@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -410,7 +411,18 @@ func startGitHub(t *testing.T, identities map[string]string) string {
 	}
 	aclPath := filepath.Join(filepath.Clean(filepath.Join(wd, "..", "..")), "config", "acls.yaml")
 	cmd := exec.Command(hubBinary, "start")
-	cmd.Env = append(os.Environ(),
+	var env []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "AEGIS_HUB_SOCKET=") ||
+			strings.HasPrefix(e, "AEGIS_GIT_IDENTITIES=") ||
+			strings.HasPrefix(e, "AEGIS_GIT_CID_KEYS=") ||
+			strings.HasPrefix(e, "AEGIS_GIT_ALLOW_UNIX=") ||
+			strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = append(env,
 		"AEGIS_HUB_SOCKET="+sock,
 		"AEGIS_GIT_IDENTITIES="+identPath,
 		"AEGIS_DEV_MODE=1",
@@ -540,7 +552,32 @@ func TestGitConnectUnsignedCannotClaimRosteredKey(t *testing.T) {
 	}
 }
 
+func resetCIDLeases() {
+	cidLease = sync.Map{}
+	cidClosed = sync.Map{}
+}
+
+type remoteAddrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *remoteAddrConn) RemoteAddr() net.Addr { return c.remote }
+
+func TestParseCIDKeyEncoding(t *testing.T) {
+	cid, ok := parseCIDKey("3")
+	if !ok || cid != 3 {
+		t.Fatalf("decimal 3: cid=%d ok=%v", cid, ok)
+	}
+	if _, ok := parseCIDKey("cid-3"); ok {
+		t.Fatal(`"cid-3" must not parse; CID encoding is decimal uint32`)
+	}
+}
+
 func TestTenantForGitVsockCIDLease(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+
 	pubA, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -562,7 +599,10 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	const cid uint32 = 42
-	cidJSON, err := json.Marshal(map[string]string{"42": pubAStr})
+	cidJSON, err := json.Marshal(map[string]string{
+		"42":    pubAStr,
+		"cid-3": pubAStr, // must be ignored — only decimal uint32 keys
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,20 +611,27 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	}
 	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
 	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
+	t.Setenv("AEGIS_GIT_ALLOW_UNIX", "")
+	loadCIDKeys()
 
 	addr := &vsock.Addr{ContextID: cid, Port: 9999}
 
 	got, err := tenantForGit(pubAStr, addr)
 	if err != nil || got != "tenant-a" {
-		t.Fatalf("matching CID+pubA: tenant=%q err=%v, want tenant-a", got, err)
+		t.Fatalf("CID leased to A + A's key: tenant=%q err=%v, want tenant-a", got, err)
 	}
 
 	got, err = tenantForGit(pubBStr, addr)
 	if err == nil || got != "" {
-		t.Fatalf("verified pubB on CID leased to pubA must not git-connect tenant-a: tenant=%q err=%v", got, err)
+		t.Fatalf("CID leased to A + B's key must not Serve: tenant=%q err=%v", got, err)
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
 		t.Fatalf("CID key mismatch must not be tenancy needle: %v", err)
+	}
+
+	got, err = tenantForGit(pubAStr, &vsock.Addr{ContextID: 3, Port: 9999})
+	if err == nil || got != "" {
+		t.Fatalf("cid-3 file key must not lease CID 3: tenant=%q err=%v", got, err)
 	}
 
 	got, err = tenantForGit(pubAStr, &vsock.Addr{ContextID: 99, Port: 9999})
@@ -592,20 +639,59 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 		t.Fatalf("unleased CID must not use roster: tenant=%q err=%v", got, err)
 	}
 
-	t.Setenv("AEGIS_GIT_CID_KEYS", "")
+	forgetVsockTenant(&remoteAddrConn{remote: addr})
 	got, err = tenantForGit(pubAStr, addr)
 	if err == nil || got != "" {
-		t.Fatalf("vsock without CID lease must not fall back to pubkey roster: tenant=%q err=%v", got, err)
+		t.Fatalf("after close, reused CID without new lease must deny (leftover file): tenant=%q err=%v", got, err)
 	}
-	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
 
 	unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
 	got, err = tenantForGit(pubAStr, unixAddr)
+	if err == nil || got != "" {
+		t.Fatalf("unix without AEGIS_GIT_ALLOW_UNIX=1 must not skip CID: tenant=%q err=%v", got, err)
+	}
+
+	t.Setenv("AEGIS_GIT_ALLOW_UNIX", "1")
+	got, err = tenantForGit(pubAStr, unixAddr)
 	if err != nil || got != "tenant-a" {
-		t.Fatalf("unix pubA: tenant=%q err=%v, want tenant-a", got, err)
+		t.Fatalf("unix ALLOW_UNIX pubA: tenant=%q err=%v, want tenant-a", got, err)
 	}
 	got, err = tenantForGit(pubBStr, unixAddr)
 	if err != nil || got != "tenant-b" {
-		t.Fatalf("unix pubB: tenant=%q err=%v, want tenant-b", got, err)
+		t.Fatalf("unix ALLOW_UNIX pubB: tenant=%q err=%v, want tenant-b", got, err)
+	}
+
+	t.Setenv("AEGIS_GIT_IDENTITIES", filepath.Join(dir, "missing-identities.json"))
+	got, err = tenantForGit(pubAStr, unixAddr)
+	if err == nil || got != "" {
+		t.Fatalf("identities[pub] miss must not Serve: tenant=%q err=%v", got, err)
+	}
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
+		t.Fatalf("identity miss must not be tenancy needle: %v", err)
+	}
+}
+
+func TestGitConnectUnixDeniedWithoutAllowUnix(t *testing.T) {
+	aPub, aPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := startGitHub(t, map[string]string{
+		base64.StdEncoding.EncodeToString(aPub): "tenant-a",
+	})
+	reg := signGitRegister(aPriv, map[string]string{
+		"public_key": base64.StdEncoding.EncodeToString(aPub),
+		"version":    "git-remote-hub",
+	})
+	got := gitConnectAfterRegister(t, sock, reg, "hub::vsock/tenant-a/skill")
+	low := strings.ToLower(got)
+	if strings.Contains(low, "not your tenant") {
+		t.Fatalf("unix without ALLOW_UNIX deny must not be tenancy needle: %q", got)
+	}
+	if strings.TrimSpace(got) == "ok" || strings.HasSuffix(strings.TrimSpace(got), "\nok") {
+		t.Fatalf("stolen privkey + unix must not Serve: %q", got)
+	}
+	if strings.Contains(low, "deny store git socket") {
+		t.Fatalf("unix without ALLOW_UNIX must not reach Store: %q", got)
 	}
 }

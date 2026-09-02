@@ -5035,9 +5035,22 @@ func startManagedHub(hubSocket string) error {
 		hubBinary = "aegishub"
 	}
 
+	cidKeysPath := filepath.Join(cfg.StateDir, "git-cid-keys.json")
+	if p := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS")); p != "" {
+		cidKeysPath = p
+	} else {
+		_ = os.Setenv("AEGIS_GIT_CID_KEYS", cidKeysPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(cidKeysPath), 0700); err == nil {
+		if _, err := os.Stat(cidKeysPath); os.IsNotExist(err) {
+			_ = os.WriteFile(cidKeysPath, []byte("{}"), 0600)
+		}
+	}
+
 	cmd := exec.Command(hubBinary, "start")
 	cmd.Env = append(os.Environ(),
 		"AEGIS_HUB_SOCKET="+hubSocket,
+		"AEGIS_GIT_CID_KEYS="+cidKeysPath,
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Pdeathsig: syscall.SIGTERM,

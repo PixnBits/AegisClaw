@@ -294,6 +294,7 @@ func decodeHubFrame(dec *json.Decoder) (Message, wireMessage, error) {
 
 func startHub(cmd *cobra.Command, args []string) {
 	loadACL()
+	loadCIDKeys()
 
 	// Hot-reload support per aegishub.md
 	go func() {
@@ -361,7 +362,11 @@ func startVsockListener(conns *sync.Map) {
 	}
 }
 
-var cidTenant sync.Map
+// cidLease is the in-memory CID→pubkey map loaded from AEGIS_GIT_CID_KEYS at
+// start (and refreshed for new boot leases). git-connect never writes it.
+// Delete on vsock close; leftover file must not re-lease the same CID+pub.
+var cidLease sync.Map  // uint32 CID → base64 pubkey
+var cidClosed sync.Map // uint32 CID → pubkey closed with (fail-closed leftover)
 
 type gitConn struct {
 	net.Conn
@@ -369,6 +374,18 @@ type gitConn struct {
 }
 
 func (g *gitConn) Read(p []byte) (int, error) { return g.r.Read(p) }
+
+func parseCIDKey(s string) (uint32, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	u, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(u), true
+}
 
 func lookupPeerTenant(pub string) string {
 	pub = strings.TrimSpace(pub)
@@ -390,44 +407,80 @@ func lookupPeerTenant(pub string) string {
 	return strings.TrimSpace(m[pub])
 }
 
-func loadCidKeys() map[string]string {
+func loadCIDKeys() {
 	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
 	if path == "" {
-		return nil
+		return
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return
 	}
 	var m map[string]string
 	if json.Unmarshal(b, &m) != nil {
-		return nil
+		return
 	}
-	return m
+	for k, pub := range m {
+		cid, ok := parseCIDKey(k)
+		if !ok {
+			continue // reject "cid-3"; decimal uint32 only
+		}
+		pub = strings.TrimSpace(pub)
+		if pub == "" {
+			continue
+		}
+		if _, live := cidLease.Load(cid); live {
+			continue
+		}
+		if closed, ok := cidClosed.Load(cid); ok {
+			if s, _ := closed.(string); s == pub {
+				continue // static file leftover — no new lease
+			}
+			cidClosed.Delete(cid) // next boot overwrote with a different pub
+		}
+		cidLease.Store(cid, pub)
+	}
 }
 
-// tenantForGit is CID->key->roster on vsock, and lookup(verifiedPub) on unix.
-// AEGIS_GIT_CID_KEYS is a boot/daemon lease file (tests write it); never filled
-// from register payload.tenant or helper env.
+func leasePubForCID(cid uint32) (string, bool) {
+	if v, ok := cidLease.Load(cid); ok {
+		s, _ := v.(string)
+		s = strings.TrimSpace(s)
+		return s, s != ""
+	}
+	loadCIDKeys()
+	if v, ok := cidLease.Load(cid); ok {
+		s, _ := v.(string)
+		s = strings.TrimSpace(s)
+		return s, s != ""
+	}
+	return "", false
+}
+
+// tenantForGit is CID→key→roster on vsock. Unix is denied unless
+// AEGIS_GIT_ALLOW_UNIX=1 (tests only), then lookup(verifiedPub) only.
+// git-connect never writes AEGIS_GIT_CID_KEYS.
 func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 	verifiedPub = strings.TrimSpace(verifiedPub)
+	if verifiedPub == "" {
+		return "", fmt.Errorf("ERR_UNKNOWN_PEER")
+	}
 	if a, ok := remoteAddr.(*vsock.Addr); ok {
 		if a == nil {
 			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
 		}
-		cidKeys := loadCidKeys()
-		key := ""
-		if cidKeys != nil {
-			key = strings.TrimSpace(cidKeys[strconv.FormatUint(uint64(a.ContextID), 10)])
-		}
-		if key == "" || key != verifiedPub {
+		leased, ok := leasePubForCID(a.ContextID)
+		if !ok || leased != verifiedPub {
 			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
 		}
-		tenant := lookupPeerTenant(key)
+		tenant := lookupPeerTenant(verifiedPub)
 		if tenant == "" {
 			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
 		}
 		return tenant, nil
+	}
+	if os.Getenv("AEGIS_GIT_ALLOW_UNIX") != "1" {
+		return "", fmt.Errorf("ERR_UNKNOWN_PEER")
 	}
 	tenant := lookupPeerTenant(verifiedPub)
 	if tenant == "" {
@@ -445,7 +498,10 @@ func forgetVsockTenant(conn net.Conn) {
 		return
 	}
 	if a, ok := addr.(*vsock.Addr); ok {
-		cidTenant.Delete(a.ContextID)
+		if v, ok := cidLease.Load(a.ContextID); ok {
+			cidClosed.Store(a.ContextID, v)
+		}
+		cidLease.Delete(a.ContextID)
 	}
 }
 
@@ -521,7 +577,8 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 
 	if regMsg.Source == "git-remote-hub" {
 		// Possession of AEGIS_HUB_PRIVKEY: dummy/empty never count, even in AEGIS_DEV_MODE.
-		// vsock: CID lease -> key -> roster. unix: lookup(verifiedPub). Never payload.tenant / helper env.
+		// vsock: lease[CID] pub must equal verified pub, then tenant=identities[pub].
+		// unix: only with AEGIS_GIT_ALLOW_UNIX=1, lookup(verified pub). Never payload.tenant.
 		if !verifyGitRegisterSignature(raw, regMsg, pubKey) {
 			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			return

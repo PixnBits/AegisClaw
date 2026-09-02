@@ -298,6 +298,7 @@ func startLiveHub(t *testing.T) *liveHub {
 		"AEGIS_HUB_SOCKET="+aegisSock,
 		"AEGIS_STORE_GIT_SOCKET="+gitSock,
 		"AEGIS_GIT_IDENTITIES="+identPath,
+		"AEGIS_GIT_ALLOW_UNIX=1",
 		"AEGIS_DEV_MODE=1",
 		"AEGIS_ACL_FILE="+aclFile,
 	)
@@ -368,7 +369,7 @@ func (h *liveHub) gitAs(tenant string, cmd *exec.Cmd) ([]byte, error) {
 	}
 	var env []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_TENANT=") || strings.HasPrefix(e, "AEGIS_HUB_PRIVKEY=") || strings.HasPrefix(e, "AEGIS_HUB_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_IDENTITIES=") || strings.HasPrefix(e, "AEGIS_GIT_CID_KEYS=") {
+		if strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_TENANT=") || strings.HasPrefix(e, "AEGIS_HUB_PRIVKEY=") || strings.HasPrefix(e, "AEGIS_HUB_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_IDENTITIES=") || strings.HasPrefix(e, "AEGIS_GIT_CID_KEYS=") || strings.HasPrefix(e, "AEGIS_GIT_ALLOW_UNIX=") {
 			continue
 		}
 		env = append(env, e)
