@@ -554,7 +554,6 @@ func TestGitConnectUnsignedCannotClaimRosteredKey(t *testing.T) {
 
 func resetCIDLeases() {
 	cidLease = sync.Map{}
-	cidClosed = sync.Map{}
 }
 
 type remoteAddrConn struct {

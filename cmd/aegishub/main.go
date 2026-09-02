@@ -365,8 +365,9 @@ func startVsockListener(conns *sync.Map) {
 // cidLease is the in-memory CID→pubkey map loaded from AEGIS_GIT_CID_KEYS at
 // start (and refreshed for new boot leases). git-connect never writes it.
 // Delete on vsock close; leftover file must not re-lease the same CID+pub.
-var cidLease sync.Map  // uint32 CID → base64 pubkey
-var cidClosed sync.Map // uint32 CID → pubkey closed with (fail-closed leftover)
+// cidLease is loaded from AEGIS_GIT_CID_KEYS at Hub start (or test loadCIDKeys).
+// git-connect / tenantForGit read MEMORY only. Next boot/load overwrites.
+var cidLease sync.Map // uint32 CID → base64 pubkey
 
 type gitConn struct {
 	net.Conn
@@ -408,38 +409,27 @@ func lookupPeerTenant(pub string) string {
 }
 
 func loadCIDKeys() {
+	next := sync.Map{}
 	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
-	if path == "" {
-		return
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var m map[string]string
-	if json.Unmarshal(b, &m) != nil {
-		return
-	}
-	for k, pub := range m {
-		cid, ok := parseCIDKey(k)
-		if !ok {
-			continue // reject "cid-3"; decimal uint32 only
-		}
-		pub = strings.TrimSpace(pub)
-		if pub == "" {
-			continue
-		}
-		if _, live := cidLease.Load(cid); live {
-			continue
-		}
-		if closed, ok := cidClosed.Load(cid); ok {
-			if s, _ := closed.(string); s == pub {
-				continue // static file leftover — no new lease
+	if path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			var m map[string]string
+			if json.Unmarshal(b, &m) == nil {
+				for k, pub := range m {
+					cid, ok := parseCIDKey(k)
+					if !ok {
+						continue // reject "cid-3"; decimal uint32 only
+					}
+					pub = strings.TrimSpace(pub)
+					if pub == "" {
+						continue
+					}
+					next.Store(cid, pub)
+				}
 			}
-			cidClosed.Delete(cid) // next boot overwrote with a different pub
 		}
-		cidLease.Store(cid, pub)
 	}
+	cidLease = next
 }
 
 func leasePubForCID(cid uint32) (string, bool) {
@@ -493,9 +483,6 @@ func forgetVsockTenant(conn net.Conn) {
 		return
 	}
 	if a, ok := addr.(*vsock.Addr); ok {
-		if v, ok := cidLease.Load(a.ContextID); ok {
-			cidClosed.Store(a.ContextID, v)
-		}
 		cidLease.Delete(a.ContextID)
 	}
 }
