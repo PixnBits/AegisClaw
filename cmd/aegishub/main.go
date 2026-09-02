@@ -479,7 +479,7 @@ func forgetVsockTenant(conn net.Conn) {
 }
 
 func storeCIDLease(cid uint32, pub string) {
-	hublease.CASFillLease(cid, pub)
+	hublease.StoreLeaseIfAbsentOrSame(cid, pub)
 }
 
 // daemonUnleaseCID is in-process CAS unlease for tests (VM destroy). Production
@@ -487,14 +487,6 @@ func storeCIDLease(cid uint32, pub string) {
 // must not call this.
 func daemonUnleaseCID(cid uint32, expectedPub string) {
 	hublease.UnleaseCID(cid, expectedPub)
-}
-
-func isDaemonCIDUnleaseSource(id string) bool {
-	switch id {
-	case "daemon", "aegis-daemon-temp":
-		return true
-	}
-	return strings.HasPrefix(id, "daemon-temp-") || strings.HasPrefix(id, "aegis-daemon-temp-")
 }
 
 // isPersistentDaemonHubID is assigned_id of the long-lived unix daemon
@@ -507,7 +499,7 @@ func daemonMayUnleaseCID(assignedID string, wire wireMessage, msg Message) bool 
 	if assignedID == "git-remote-hub" || msg.Source == "git-remote-hub" {
 		return false
 	}
-	if isDaemonCIDUnleaseSource(assignedID) {
+	if isPersistentDaemonHubID(assignedID) {
 		return true
 	}
 	registeredMutex.RLock()
@@ -748,7 +740,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	// Never StoreLease/ClearClosed. Do not defer unlease on hangup.
 	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
 		if verifyGitRegisterSignature(raw, regMsg, pubKey) && lookupPeerTenant(pubKeyStr) != "" {
-			hublease.CASFillLease(a.ContextID, pubKeyStr)
+			hublease.StoreLeaseIfAbsentOrSame(a.ContextID, pubKeyStr)
 		}
 	}
 

@@ -861,7 +861,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if err != nil {
 		logrus.Fatalf("failed to create orchestrator: %v", err)
 	}
-	// Fill is guest vsock handshake CASFillLease, not cid.lease.
+	// Fill is guest vsock handshake StoreLeaseIfAbsentOrSame, not cid.lease.
 	orchestrator.NotifyHubCIDUnlease = sendDaemonCIDUnlease
 
 	logrus.Infof("daemon starting on platform %s with sandbox type %s",

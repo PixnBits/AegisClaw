@@ -618,7 +618,7 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	if err == nil || got != "" {
 		t.Fatalf("miss without handshake must not ingest file: tenant=%q err=%v", got, err)
 	}
-	if !hublease.CASFillLease(cid, pubAStr) {
+	if !hublease.StoreLeaseIfAbsentOrSame(cid, pubAStr) {
 		t.Fatal("verified handshake CAS fill")
 	}
 	got, err = tenantForGit(pubAStr, addr)
@@ -888,13 +888,8 @@ func TestDaemonMayUnleaseCID(t *testing.T) {
 	var wire wireMessage
 	if !daemonMayUnleaseCID("daemon", wire, dummy) {
 		t.Fatal("assigned_id daemon must allow cid.unlease")
-		for _, id := range []string{"daemon-temp-1", "aegis-daemon-temp", "aegis-daemon-temp-3"} {
-			if !daemonMayUnleaseCID(id, wire, dummy) {
-				t.Fatalf("ephemeral %q must allow cid.unlease", id)
-			}
-		}
 	}
-	deny := []string{"git-remote-hub", "guest-vm", "agent-1", "aegis-cli-internal", "store", "daemon-internal"}
+	deny := []string{"git-remote-hub", "guest-vm", "agent-1", "aegis-cli-internal", "store", "daemon-internal", "daemon-temp-1", "aegis-daemon-temp"}
 	for _, id := range deny {
 		if daemonMayUnleaseCID(id, wire, dummy) {
 			t.Fatalf("dummy sig must not allow cid.unlease from %q", id)
@@ -1001,16 +996,14 @@ func TestCIDUnleaseDaemonOnlyAndCAS(t *testing.T) {
 	}
 
 	sendCIDUnleaseRPC(t, unixAddr, "daemon-temp-1", "pub-a")
-	if _, ok := hublease.LoadLease(cid); ok {
-		t.Fatal("daemon-temp-* must be allowed to cid.unlease")
+	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
+		t.Fatalf("daemon-temp-* must not unlease: leased=%q ok=%v", leased, ok)
 	}
-	hublease.StoreLease(cid, "pub-a")
 
 	sendCIDUnleaseRPC(t, unixAddr, "aegis-daemon-temp-3", "pub-a")
-	if _, ok := hublease.LoadLease(cid); ok {
-		t.Fatal("aegis-daemon-temp-* must be allowed to cid.unlease")
+	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
+		t.Fatalf("aegis-daemon-temp-* must not unlease: leased=%q ok=%v", leased, ok)
 	}
-	hublease.StoreLease(cid, "pub-a")
 
 	sendCIDUnleaseRPC(t, unixAddr, "aegis-cli-internal", "pub-a")
 	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {

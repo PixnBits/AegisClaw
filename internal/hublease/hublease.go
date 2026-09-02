@@ -10,13 +10,12 @@ import (
 )
 
 // CID lease is in-memory. git-connect never writes it. Helper/git-connect hangup
-// and VM guest hangup must not UnleaseCID. Fill is guest vsock handshake after
-// possession+roster (CASFillLease). Never file-miss ingest, never daemon cid.lease.
-// leasePubForCID is LoadLease only. startHub/handleCIDUnlease must not loadCIDKeys.
-//
-// VM destroy (orchestrator StopVM) sends cid.unlease {cid, public_key} over the
-// persistent daemon Hub connection. CAS: unlease only if lease[cid]==expectedPub
-// else no-op. Hub then deletes that CID row from AEGIS_GIT_CID_KEYS.
+// and VM guest hangup must not UnleaseCID. Handshake is the only Store:
+// CASFillLease after vsock possession+roster. NEVER closed.Delete.
+// leasePubForCID is LoadLease only -- no AEGIS_GIT_CID_KEYS ingest.
+// Daemon cid.lease must not fill. StopVM sends cid.unlease {cid, public_key}.
+// CAS: unlease only if lease[cid]==expectedPub else no-op. Hub then deletes
+// that CID row from AEGIS_GIT_CID_KEYS.
 
 var (
 	lease  sync.Map // uint32 CID -> base64 pubkey
@@ -39,8 +38,9 @@ func StoreLease(cid uint32, pub string) {
 }
 
 // StoreLeaseCAS stores pub for cid only if the lease is empty or already holds
-// the same pub. Does not overwrite a different pub. Handshake must not call this;
-// daemon cid.lease is the writer.
+// the same pub. Does not overwrite a different pub. Handshake must call
+// CASFillLease (never closed.Delete). StoreLeaseCAS may ClearClosed on empty
+// insert; it is not the handshake writer.
 func StoreLeaseCAS(cid uint32, pub string) bool {
 	pub = strings.TrimSpace(pub)
 	if pub == "" {
@@ -55,33 +55,24 @@ func StoreLeaseCAS(cid uint32, pub string) bool {
 	return strings.TrimSpace(existing) == pub
 }
 
-// CASFillLease is handshake fill: store cid->verifiedPub only if the slot is
-// empty or already holds the same pub. Never overwrite a different pub.
-// Never closed.Delete / ClearClosed (that un-poisons StopVM).
+// CASFillLease is handshake fill: LoadOrStore; if empty store; if same pub ok;
+// if different pub do not overwrite. NEVER closed.Delete / ClearClosed.
 func CASFillLease(cid uint32, pub string) bool {
 	pub = strings.TrimSpace(pub)
 	if cid == 0 || pub == "" {
 		return false
 	}
-	for {
-		v, ok := lease.Load(cid)
-		if !ok {
-			actual, loaded := lease.LoadOrStore(cid, pub)
-			if !loaded {
-				return true
-			}
-			v = actual
-		}
-		cur, _ := v.(string)
-		cur = strings.TrimSpace(cur)
-		if cur == "" {
-			if lease.CompareAndSwap(cid, v, pub) {
-				return true
-			}
-			continue
-		}
-		return cur == pub
+	actual, loaded := lease.LoadOrStore(cid, pub)
+	if !loaded {
+		return true
 	}
+	cur, _ := actual.(string)
+	return strings.TrimSpace(cur) == pub
+}
+
+// StoreLeaseIfAbsentOrSame is an alias of CASFillLease.
+func StoreLeaseIfAbsentOrSame(cid uint32, pub string) bool {
+	return CASFillLease(cid, pub)
 }
 
 func LoadLease(cid uint32) (string, bool) {
