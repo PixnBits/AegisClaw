@@ -501,6 +501,14 @@ func daemonUnleaseCID(cid uint32, expectedPub string) {
 	hublease.UnleaseCID(cid, expectedPub)
 }
 
+func isDaemonCIDUnleaseSource(id string) bool {
+	switch id {
+	case "daemon", "aegis-daemon-temp":
+		return true
+	}
+	return strings.HasPrefix(id, "daemon-temp-") || strings.HasPrefix(id, "aegis-daemon-temp-")
+}
+
 // isPersistentDaemonHubID is assigned_id of the long-lived unix daemon
 // registration. Not daemon-temp-* / aegis-daemon-temp-* glob.
 func isPersistentDaemonHubID(id string) bool {
@@ -511,7 +519,7 @@ func daemonMayUnleaseCID(assignedID string, wire wireMessage, msg Message) bool 
 	if assignedID == "git-remote-hub" || msg.Source == "git-remote-hub" {
 		return false
 	}
-	if isPersistentDaemonHubID(assignedID) {
+	if isDaemonCIDUnleaseSource(assignedID) {
 		return true
 	}
 	registeredMutex.RLock()
