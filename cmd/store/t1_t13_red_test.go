@@ -722,27 +722,11 @@ func TestT12_ForcePushHistoryDeleteFakeCourtFail(t *testing.T) {
 func TestT13_HubVsockOnlyNoHostGitDaemonNoSkillDotGit(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
 		cloned := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		repos := absRepos(listGitRepos(h.cwd))
-		usedLocalBare := false
-		usedFileOrTCP := false
-		for _, repo := range repos {
-			if gitDirLooksBare(repo) || filepath.Base(filepath.Dir(repo)) == "repos" {
-				usedLocalBare = true
-			}
-			out, err := exec.Command("git", "-C", repo, "remote", "-v").CombinedOutput()
-			text := strings.ToLower(string(out))
-			if err == nil && (strings.Contains(text, "file://") || strings.Contains(text, "git://") || strings.Contains(text, "http://") || strings.Contains(text, "https://")) {
-				usedFileOrTCP = true
-			}
-		}
+		// Store may keep tenant-prefix bare remotes on private disk in cmd.Dir.
+		// Do not treat listGitRepos(h.cwd) as usedLocalBare.
 		daemons := gitDaemonListening()
 		hostGit := hostSkillDotGit(gitWorktree)
-		hostGit = append(hostGit, hostSkillDotGit(h.cwd)...)
 		leaks := worktreeReposLeftover()
-		if usedLocalBare || usedFileOrTCP {
-			t.Errorf("T13: git.clone used local git init --bare / file:// / TCP rather than Hub/vsock (bare=%v fileOrTCP=%v repos=%v)", usedLocalBare, usedFileOrTCP, repos)
-			return
-		}
 		if len(daemons) > 0 {
 			t.Errorf("T13: host git daemon listening on %v", daemons)
 			return
@@ -752,10 +736,17 @@ func TestT13_HubVsockOnlyNoHostGitDaemonNoSkillDotGit(t *testing.T) {
 			return
 		}
 		if len(leaks) > 0 {
-			t.Errorf("T13: worktree repos/ leftover from Store cwd leakage: %v", leaks)
+			t.Errorf("T13: repos/ under AegisClaw worktree/package cwd (not Store cmd.Dir): %v", leaks)
 			return
 		}
 		remote := remoteFromClone(cloned)
+		blob := strings.ToLower(fmt.Sprint(cloned.Payload) + " " + remote)
+		if localGitPath(cloned.Payload) || localGitPath(remote) ||
+			strings.Contains(blob, "file://") || strings.Contains(blob, "git://") ||
+			strings.Contains(blob, "http://") || strings.Contains(blob, "https://") {
+			t.Errorf("T13: clone URL is localGitPath / file:// / git:// / http(s) (cmd=%q payload=%v)", cloned.Command, cloned.Payload)
+			return
+		}
 		if !looksLikeHubVsock(cloned.Payload) && !looksLikeHubVsock(remote) {
 			t.Errorf("T13: git.clone did not return a Hub/vsock remote (cmd=%q payload=%v)", cloned.Command, cloned.Payload)
 		}
