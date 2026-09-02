@@ -438,9 +438,12 @@ func loadCIDKeys() {
 }
 
 func leasePubForCID(cid uint32) (string, bool) {
-	// Memory only. Do not reload AEGIS_GIT_CID_KEYS on miss (file fail-open).
-	// Handshake/StartVM StoreLease fills the map. Reused CID stays empty
-	// until a new Store. StopVM CAS-unlease + file-row delete is VM death.
+	if pub, ok := hublease.LoadLease(cid); ok {
+		return pub, true
+	}
+	// Reload file on miss: StartVM ingest (writeGitCIDKey). Helper close does
+	// not UnleaseCID, so leftover rows remain valid until StopVM cid.unlease.
+	loadCIDKeys()
 	return hublease.LoadLease(cid)
 }
 
@@ -480,8 +483,15 @@ func forgetVsockTenant(conn net.Conn) {
 	_ = conn
 }
 
-func storeCIDLease(cid uint32, pub string) {
-	hublease.StoreLease(cid, pub)
+// confirmCIDLease is vsock handshake after the guest presented a public key.
+// Guest must not pick git identity for a CID: never Store, overwrite, or ClearClosed.
+// If lease[CID] != verifiedPub (mismatch or empty), git-connect later ERR_UNKNOWN_PEER.
+func confirmCIDLease(cid uint32, verifiedPub string) {
+	verifiedPub = strings.TrimSpace(verifiedPub)
+	leased, ok := hublease.LoadLease(cid)
+	if !ok || leased != verifiedPub {
+		return
+	}
 }
 
 // daemonUnleaseCID is in-process CAS unlease for tests (VM destroy). Production
@@ -625,7 +635,18 @@ func handleCIDLease(msg Message, wire wireMessage, conn net.Conn, connID string)
 		deny.Payload = "ERR_INVALID_PAYLOAD"
 		return deny
 	}
-	hublease.StoreLease(cid, pub)
+	if _, live := hublease.LoadLease(cid); !live {
+		loadCIDKeys()
+	}
+	if !hublease.StoreLeaseCAS(cid, pub) {
+		return Message{
+			Source:      "hub",
+			Destination: msg.Source,
+			Command:     "response",
+			Payload:     map[string]interface{}{"status": "noop"},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		}
+	}
 	return Message{
 		Source:      "hub",
 		Destination: msg.Source,
@@ -633,6 +654,13 @@ func handleCIDLease(msg Message, wire wireMessage, conn net.Conn, connID string)
 		Payload:     map[string]interface{}{"status": "ok"},
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+func handleCIDLeaseCommand(msg Message, wire wireMessage, conn net.Conn, connID string) Message {
+	if msg.Command == "cid.lease" {
+		return handleCIDLease(msg, wire, conn, connID)
+	}
+	return handleCIDUnlease(msg, wire, conn, connID)
 }
 
 func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKey) bool {
@@ -729,11 +757,14 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		return
 	}
 
-	// VM Hub vsock handshake fills CID→verified pub. Do not defer unlease:
-	// git-connect and guest hangup/reconnect must not poison leftover same pub.
-	// StopVM sends daemon-only cid.unlease (CAS CID+expectedPub).
+	// Guest vsock register must not pick git identity for a CID.
+	// After the presented public key is decoded, handshake may CONFIRM
+	// lease[CID]==verifiedPub (read-only). Mismatch/empty is not a Store;
+	// git-connect later ERR_UNKNOWN_PEER. Never insert, overwrite, or
+	// ClearClosed from handshake. StartVM daemon cid.lease is the writer.
+	// Do not defer unlease: git-connect and guest hangup must not poison.
 	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
-		storeCIDLease(a.ContextID, pubKeyStr)
+		confirmCIDLease(a.ContextID, pubKeyStr)
 	}
 
 	// Extract version from payload if available
@@ -847,15 +878,9 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			continue
 		}
 
-		if msg.Destination == "hub" && (msg.Command == "cid.lease" || msg.Command == "cid.unlease") {
-			var reply Message
-			if msg.Command == "cid.lease" {
-				reply = handleCIDLease(msg, wire, conn, componentID)
-			} else {
-				reply = handleCIDUnlease(msg, wire, conn, componentID)
-			}
+		if msg.Destination == "hub" && (msg.Command == "cid.unlease" || msg.Command == "cid.lease") {
 			encoders.Mutex.Lock()
-			_ = encoders.Encoder.Encode(reply)
+			_ = encoders.Encoder.Encode(handleCIDLeaseCommand(msg, wire, conn, componentID))
 			encoders.Mutex.Unlock()
 			continue
 		}
@@ -1030,13 +1055,8 @@ func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders, conn n
 			debugLog("hub", fmt.Sprintf("ephemeral RPC %s decode end: %v", requesterID, err))
 			return
 		}
-		if msg.Destination == "hub" && (msg.Command == "cid.lease" || msg.Command == "cid.unlease") {
-			var reply Message
-			if msg.Command == "cid.lease" {
-				reply = handleCIDLease(msg, wire, conn, requesterID)
-			} else {
-				reply = handleCIDUnlease(msg, wire, conn, requesterID)
-			}
+		if msg.Destination == "hub" && (msg.Command == "cid.unlease" || msg.Command == "cid.lease") {
+			reply := handleCIDLeaseCommand(msg, wire, conn, requesterID)
 			encoders.Mutex.Lock()
 			_ = encoders.Encoder.Encode(reply)
 			encoders.Mutex.Unlock()
