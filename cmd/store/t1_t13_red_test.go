@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"AegisClaw/internal/storegit"
 )
 
 var storeBin string
@@ -162,7 +166,7 @@ func remoteFromClone(resp Message) string {
 	return ""
 }
 
-func secondCloneYieldsCommit(t *testing.T, resp Message, hash string) bool {
+func secondCloneYieldsCommit(t *testing.T, h *liveHub, tenant string, resp Message, hash string) bool {
 	t.Helper()
 	remote := remoteFromClone(resp)
 	if remote == "" || payloadIsOK(resp.Payload) || localGitPath(remote) {
@@ -170,8 +174,7 @@ func secondCloneYieldsCommit(t *testing.T, resp Message, hash string) bool {
 	}
 	dest := filepath.Join(t.TempDir(), "t7-from-store")
 	cmd := exec.Command("git", "clone", remote, dest)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
+	out, err := h.gitAs(tenant, cmd)
 	if err != nil {
 		t.Logf("T7: git clone of Store remote %q: %s (%v)", remote, out, err)
 		return false
@@ -217,13 +220,16 @@ func looksLikeHubVsock(v interface{}) bool {
 }
 
 type liveHub struct {
-	t    *testing.T
-	ln   net.Listener
-	conn net.Conn
-	enc  *json.Encoder
-	dec  *json.Decoder
-	cwd  string
-	cmd  *exec.Cmd
+	t         *testing.T
+	ln        net.Listener
+	conn      net.Conn
+	enc       *json.Encoder
+	dec       *json.Decoder
+	cwd       string
+	cmd       *exec.Cmd
+	hubSock   string
+	mu        sync.Mutex
+	gitTenant string
 }
 
 func startLiveHub(t *testing.T) *liveHub {
@@ -246,7 +252,7 @@ func startLiveHub(t *testing.T) *liveHub {
 		_ = ln.Close()
 		t.Fatalf("start store: %v", err)
 	}
-	h := &liveHub{t: t, ln: ln, cwd: dir, cmd: cmd}
+	h := &liveHub{t: t, ln: ln, cwd: dir, cmd: cmd, hubSock: sock}
 	t.Cleanup(func() {
 		if h.cmd != nil && h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
@@ -264,11 +270,92 @@ func startLiveHub(t *testing.T) *liveHub {
 	if err != nil {
 		t.Fatalf("accept store dial (listener was up first): %v", err)
 	}
+	if ul, ok := ln.(*net.UnixListener); ok {
+		_ = ul.SetDeadline(time.Time{})
+	}
 	h.conn = conn
 	h.enc = json.NewEncoder(conn)
 	h.dec = json.NewDecoder(conn)
 	h.handshake()
+	go h.acceptGit()
 	return h
+}
+
+func (h *liveHub) acceptGit() {
+	for {
+		c, err := h.ln.Accept()
+		if err != nil {
+			return
+		}
+		go h.handleGitHelper(c)
+	}
+}
+
+func (h *liveHub) handleGitHelper(c net.Conn) {
+	defer c.Close()
+	br := bufio.NewReader(c)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return
+	}
+	line = strings.TrimSpace(line)
+	const prefix = "git-connect "
+	if !strings.HasPrefix(line, prefix) {
+		_, _ = fmt.Fprintf(c, "deny unknown git-connect\n")
+		return
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	service, url, ok := strings.Cut(rest, " ")
+	if !ok {
+		_, _ = fmt.Fprintf(c, "deny bad git-connect\n")
+		return
+	}
+	target, repo, parsed := storegit.ParseURL(url)
+	h.mu.Lock()
+	caller := h.gitTenant
+	h.mu.Unlock()
+	if !parsed || caller == "" || caller != target {
+		_, _ = fmt.Fprintf(c, "deny tenancy acl: not your tenant\n")
+		return
+	}
+	gitSock := filepath.Join(filepath.Dir(h.hubSock), storegit.SiblingSocketName)
+	storec, err := net.Dial("unix", gitSock)
+	if err != nil {
+		_, _ = fmt.Fprintf(c, "deny store git socket\n")
+		return
+	}
+	defer storec.Close()
+	if _, err := fmt.Fprintf(storec, "%s %s %s\n", service, caller, repo); err != nil {
+		return
+	}
+	if _, err := fmt.Fprintf(c, "ok\n"); err != nil {
+		return
+	}
+	errc := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(storec, br)
+		errc <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(c, storec)
+		errc <- struct{}{}
+	}()
+	<-errc
+	<-errc
+}
+
+func (h *liveHub) gitAs(tenant string, cmd *exec.Cmd) ([]byte, error) {
+	h.t.Helper()
+	h.mu.Lock()
+	h.gitTenant = tenant
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.gitTenant = ""
+		h.mu.Unlock()
+	}()
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "AEGIS_HUB_SOCKET="+h.hubSock)
+	return cmd.CombinedOutput()
 }
 
 func (h *liveHub) handshake() {
@@ -427,49 +514,38 @@ func TestT3_CrossTenantFetchMustFail(t *testing.T) {
 		aResp := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
 		bResp := h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
 		ra, rb := remoteFromClone(aResp), remoteFromClone(bResp)
-		cross := h.rpc("builder", "git.clone", map[string]interface{}{
-			"repo":        "skill",
-			"tenant":      "tenant-b",
-			"from_tenant": "tenant-a",
-			"remote":      ra,
-			"target":      ra,
-		})
-		// Hub/vsock git has no cwd repos/. Fail only if B's clone/fetch of
-		// skill succeeds on A's remote. Pass on a tenancy deny or distinct remotes.
-		bFetchedA := false
-		if ra != "" && rb != "" && ra == rb {
-			bFetchedA = true
+		if ra == "" || rb == "" || localGitPath(ra) || localGitPath(rb) {
+			t.Fatalf("T3: need Hub/vsock remotes for both tenants before a real git fetch (a cmd=%q payload=%v b cmd=%q payload=%v)", aResp.Command, aResp.Payload, bResp.Command, bResp.Payload)
 		}
-		if ra != "" && !handledDeny(cross, "tenant", "acl", "tenancy", "not your") {
-			if cross.Command == "git.cloned" || payloadIsOK(cross.Payload) || remoteFromClone(cross) != "" {
-				bFetchedA = true
-			}
+		dest := filepath.Join(t.TempDir(), "t3-from-a")
+		cmd := exec.Command("git", "clone", ra, dest)
+		out, err := h.gitAs("tenant-b", cmd)
+		if err == nil {
+			t.Fatalf("T3: git clone of tenant-a remote %q as tenant-b succeeded (b remote %q); JSON from_tenant is not this check: %s", ra, rb, out)
 		}
-		if bFetchedA {
-			t.Fatalf("T3: tenant-b clone/fetch of skill on tenant-a's remote succeeded (a=%q b=%q cross cmd=%q payload=%v)", ra, rb, cross.Command, cross.Payload)
+		if !strings.Contains(strings.ToLower(string(out)), "not your tenant") {
+			t.Fatalf("T3: git clone as tenant-b must be a Hub tenancy deny (not a missing helper): %s (%v)", out, err)
 		}
-		if ra != "" && rb != "" && ra != rb {
-			return
-		}
-		if handledDeny(cross, "tenant", "acl", "tenancy", "not your") {
-			return
-		}
-		t.Fatalf("T3: no tenancy deny and remotes are not distinct (a cmd=%q payload=%v b cmd=%q payload=%v)", aResp.Command, aResp.Payload, bResp.Command, bResp.Payload)
 	})
 }
 
 func TestT4_TenantACannotPushToB(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
 		_ = h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		_ = h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
-		resp := h.rpc("tenant-a", "git.push", map[string]interface{}{
-			"repo":          "skill",
-			"tenant":        "tenant-a",
-			"target_tenant": "tenant-b",
-			"target_repo":   "skill",
-		})
-		if !handledDeny(resp, "tenant", "tenancy", "cross-tenant", "acl", "not your") {
-			t.Fatalf("T4: tenant-a git.push targeting tenant-b skill must be a tenancy deny (got cmd=%q payload=%v); stub success/unknown is not a deny", resp.Command, resp.Payload)
+		bResp := h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
+		rb := remoteFromClone(bResp)
+		if rb == "" || localGitPath(rb) {
+			t.Fatalf("T4: tenant-b clone must return a Hub/vsock remote to git push (cmd=%q payload=%v)", bResp.Command, bResp.Payload)
+		}
+		dir, _ := makeDetachedCommit(t)
+		cmd := exec.Command("git", "push", rb, "HEAD:refs/heads/main")
+		cmd.Dir = dir
+		out, err := h.gitAs("tenant-a", cmd)
+		if err == nil {
+			t.Fatalf("T4: git push %q as tenant-a succeeded; JSON target_tenant is not this check: %s", rb, out)
+		}
+		if !strings.Contains(strings.ToLower(string(out)), "not your tenant") {
+			t.Fatalf("T4: git push as tenant-a to tenant-b remote must be a Hub tenancy deny (not a missing helper): %s (%v)", out, err)
 		}
 	})
 }
@@ -517,15 +593,14 @@ func TestT7_RealGitClonePush(t *testing.T) {
 		}
 		push := exec.Command("git", "push", remote, "HEAD:refs/heads/main")
 		push.Dir = dir
-		push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-		if out, err := push.CombinedOutput(); err != nil {
+		if out, err := h.gitAs("tenant-a", push); err != nil {
 			t.Fatalf("T7: git -C detached push %q HEAD:refs/heads/main failed: %s (%v); objects never left the tempdir", remote, out, err)
 		}
 		cloned2 := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
 		if localGitPath(cloned2.Payload) || localGitPath(remoteFromClone(cloned2)) {
 			t.Fatalf("T7: second git.clone is a local repos/ path, not Store git (payload=%v)", cloned2.Payload)
 		}
-		if !secondCloneYieldsCommit(t, cloned2, hash) {
+		if !secondCloneYieldsCommit(t, h, "tenant-a", cloned2, hash) {
 			t.Fatalf("T7: git clone of Store remote plus cat-file did not yield commit %s (cmd=%q payload=%v)", hash, cloned2.Command, cloned2.Payload)
 		}
 	})

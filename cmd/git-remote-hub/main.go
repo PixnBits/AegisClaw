@@ -7,14 +7,12 @@ import (
 	"net"
 	"os"
 	"strings"
-
-	"AegisClaw/internal/storegit"
 )
 
 // git-remote-hub speaks git's remote-helper protocol and relays
-// git-upload-pack / git-receive-pack to Store over a private unix socket.
-// The clone URL (hub::vsock/<tenant>/<repo>) still looks like Hub/vsock;
-// the socket path is never put in the URL.
+// git-upload-pack / git-receive-pack through Hub (AEGIS_HUB_SOCKET).
+// The clone URL (hub::vsock/<tenant>/<repo>) still looks like Hub/vsock.
+// Caller identity is Hub's, not the URL tenant and not a sibling git.sock header.
 func main() {
 	url := ""
 	switch {
@@ -23,9 +21,13 @@ func main() {
 	case len(os.Args) >= 2:
 		url = os.Args[1]
 	}
-	tenant, repo, ok := storegit.ParseURL(url)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "git-remote-hub: cannot parse remote %q\n", url)
+	if strings.TrimSpace(url) == "" {
+		fmt.Fprintf(os.Stderr, "git-remote-hub: missing remote url\n")
+		os.Exit(1)
+	}
+	hubSock := os.Getenv("AEGIS_HUB_SOCKET")
+	if hubSock == "" {
+		fmt.Fprintf(os.Stderr, "git-remote-hub: AEGIS_HUB_SOCKET required (no git.sock)\n")
 		os.Exit(1)
 	}
 
@@ -47,7 +49,7 @@ func main() {
 			fmt.Print("unsupported\n")
 		case strings.HasPrefix(cmd, "connect "):
 			service := strings.TrimSpace(strings.TrimPrefix(cmd, "connect "))
-			if err := connect(service, tenant, repo, in); err != nil {
+			if err := connectHub(hubSock, service, url, in); err != nil {
 				fmt.Fprintf(os.Stderr, "git-remote-hub: %v\n", err)
 				os.Exit(1)
 			}
@@ -61,20 +63,24 @@ func main() {
 	}
 }
 
-func connect(service, tenant, repo string, buffered *bufio.Reader) error {
-	conn, err := dialStore()
+func connectHub(hubSock, service, url string, buffered *bufio.Reader) error {
+	conn, err := net.Dial("unix", hubSock)
 	if err != nil {
-		return err
+		return fmt.Errorf("dial hub: %w", err)
 	}
 	defer conn.Close()
 
-	proto := os.Getenv("GIT_PROTOCOL")
-	header := service + " " + tenant + " " + repo
-	if proto != "" {
-		header += " " + proto
-	}
-	if _, err := fmt.Fprintf(conn, "%s\n", header); err != nil {
+	if _, err := fmt.Fprintf(conn, "git-connect %s %s\n", service, url); err != nil {
 		return err
+	}
+	br := bufio.NewReader(conn)
+	reply, err := br.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("hub reply: %w", err)
+	}
+	reply = strings.TrimSpace(reply)
+	if reply != "ok" {
+		return fmt.Errorf("%s", reply)
 	}
 
 	// Blank line tells git(1) the connection succeeded; then stdin/stdout
@@ -93,7 +99,7 @@ func connect(service, tenant, repo string, buffered *bufio.Reader) error {
 		errCh <- copyErr
 	}()
 	go func() {
-		_, copyErr := io.Copy(os.Stdout, conn)
+		_, copyErr := io.Copy(os.Stdout, br)
 		errCh <- copyErr
 	}()
 	err1 := <-errCh
@@ -102,19 +108,4 @@ func connect(service, tenant, repo string, buffered *bufio.Reader) error {
 		return err1
 	}
 	return err2
-}
-
-func dialStore() (net.Conn, error) {
-	var last error
-	for _, p := range storegit.SocketCandidates("") {
-		c, err := net.Dial("unix", p)
-		if err == nil {
-			return c, nil
-		}
-		last = err
-	}
-	if last == nil {
-		return nil, fmt.Errorf("no store git socket candidates")
-	}
-	return nil, fmt.Errorf("dial store git socket: %w", last)
 }
