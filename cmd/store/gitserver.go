@@ -33,8 +33,12 @@ func (s *storeGitServer) Close() error {
 
 var bareMu sync.Mutex
 
-func startStoreGitServer(hubSock string) (*storeGitServer, error) {
-	paths := storegit.SocketCandidates(hubSock)
+func startStoreGitServer() (*storeGitServer, error) {
+	p := storegit.HubPrivateGitSocket()
+	if p == "" {
+		return nil, fmt.Errorf("AEGIS_STORE_GIT_SOCKET required (no git.sock)")
+	}
+	paths := []string{p}
 	s := &storeGitServer{}
 	var firstErr error
 	for _, p := range paths {

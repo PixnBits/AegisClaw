@@ -228,6 +228,7 @@ type liveHub struct {
 	cwd       string
 	cmd       *exec.Cmd
 	hubSock   string
+	gitSock   string
 	mu        sync.Mutex
 	gitTenant string
 }
@@ -243,16 +244,17 @@ func startLiveHub(t *testing.T) *liveHub {
 	if err != nil {
 		t.Fatalf("listen fake hub: %v", err)
 	}
+	gitSock := filepath.Join(dir, ".hub-private-git")
 	cmd := exec.Command(storeBin)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+sock)
+	cmd.Env = append(os.Environ(), "AEGIS_HUB_SOCKET="+sock, "AEGIS_STORE_GIT_SOCKET="+gitSock)
 	cmd.Stderr = io.Discard
 	cmd.Stdout = io.Discard
 	if err := cmd.Start(); err != nil {
 		_ = ln.Close()
 		t.Fatalf("start store: %v", err)
 	}
-	h := &liveHub{t: t, ln: ln, cwd: dir, cmd: cmd, hubSock: sock}
+	h := &liveHub{t: t, ln: ln, cwd: dir, cmd: cmd, hubSock: sock, gitSock: gitSock}
 	t.Cleanup(func() {
 		if h.cmd != nil && h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
@@ -318,8 +320,7 @@ func (h *liveHub) handleGitHelper(c net.Conn) {
 		_, _ = fmt.Fprintf(c, "deny tenancy acl: not your tenant\n")
 		return
 	}
-	gitSock := filepath.Join(filepath.Dir(h.hubSock), storegit.SiblingSocketName)
-	storec, err := net.Dial("unix", gitSock)
+	storec, err := net.Dial("unix", h.gitSock)
 	if err != nil {
 		_, _ = fmt.Fprintf(c, "deny store git socket\n")
 		return
@@ -354,7 +355,14 @@ func (h *liveHub) gitAs(tenant string, cmd *exec.Cmd) ([]byte, error) {
 		h.gitTenant = ""
 		h.mu.Unlock()
 	}()
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "AEGIS_HUB_SOCKET="+h.hubSock)
+	var env []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_TENANT=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "AEGIS_HUB_SOCKET="+h.hubSock)
 	return cmd.CombinedOutput()
 }
 
@@ -512,16 +520,21 @@ func TestT2_CourtSkipMustNotExist(t *testing.T) {
 func TestT3_CrossTenantFetchMustFail(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
 		aResp := h.rpc("builder", "git.clone", clonePayload("tenant-a", "skill"))
-		bResp := h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
-		ra, rb := remoteFromClone(aResp), remoteFromClone(bResp)
-		if ra == "" || rb == "" || localGitPath(ra) || localGitPath(rb) {
-			t.Fatalf("T3: need Hub/vsock remotes for both tenants before a real git fetch (a cmd=%q payload=%v b cmd=%q payload=%v)", aResp.Command, aResp.Payload, bResp.Command, bResp.Payload)
+		_ = h.rpc("builder", "git.clone", clonePayload("tenant-b", "skill"))
+		ra := remoteFromClone(aResp)
+		if ra == "" || localGitPath(ra) {
+			t.Fatalf("T3: need tenant-a Hub/vsock remote (cmd=%q payload=%v)", aResp.Command, aResp.Payload)
+		}
+		ls := exec.Command("git", "ls-remote", ra)
+		out, err := h.gitAs("tenant-a", ls)
+		if err != nil {
+			t.Fatalf("T3: owner git ls-remote %q must work before the cross-tenant deny (else a dumb git fail greens this): %s (%v)", ra, out, err)
 		}
 		dest := filepath.Join(t.TempDir(), "t3-from-a")
 		cmd := exec.Command("git", "clone", ra, dest)
-		out, err := h.gitAs("tenant-b", cmd)
+		out, err = h.gitAs("tenant-b", cmd)
 		if err == nil {
-			t.Fatalf("T3: git clone of tenant-a remote %q as tenant-b succeeded (b remote %q); JSON from_tenant is not this check: %s", ra, rb, out)
+			t.Fatalf("T3: git clone of tenant-a remote %q as tenant-b succeeded; JSON from_tenant is not this check: %s", ra, out)
 		}
 		if !strings.Contains(strings.ToLower(string(out)), "not your tenant") {
 			t.Fatalf("T3: git clone as tenant-b must be a Hub tenancy deny (not a missing helper): %s (%v)", out, err)
@@ -537,10 +550,17 @@ func TestT4_TenantACannotPushToB(t *testing.T) {
 		if rb == "" || localGitPath(rb) {
 			t.Fatalf("T4: tenant-b clone must return a Hub/vsock remote to git push (cmd=%q payload=%v)", bResp.Command, bResp.Payload)
 		}
+		ownerDir, _ := makeDetachedCommit(t)
+		owner := exec.Command("git", "push", rb, "HEAD:refs/heads/main")
+		owner.Dir = ownerDir
+		out, err := h.gitAs("tenant-b", owner)
+		if err != nil {
+			t.Fatalf("T4: owner git push %q as tenant-b must work before the cross-tenant deny: %s (%v)", rb, out, err)
+		}
 		dir, _ := makeDetachedCommit(t)
 		cmd := exec.Command("git", "push", rb, "HEAD:refs/heads/main")
 		cmd.Dir = dir
-		out, err := h.gitAs("tenant-a", cmd)
+		out, err = h.gitAs("tenant-a", cmd)
 		if err == nil {
 			t.Fatalf("T4: git push %q as tenant-a succeeded; JSON target_tenant is not this check: %s", rb, out)
 		}
@@ -801,6 +821,13 @@ func TestT13_HubVsockOnlyNoHostGitDaemonNoSkillDotGit(t *testing.T) {
 		}
 		if !looksLikeHubVsock(cloned.Payload) && !looksLikeHubVsock(remote) {
 			t.Errorf("T13: git.clone did not return a Hub/vsock remote (cmd=%q payload=%v)", cloned.Command, cloned.Payload)
+		}
+		for _, p := range storegit.PublicGitSockets(h.hubSock) {
+			c, err := net.DialTimeout("unix", p, 250*time.Millisecond)
+			if err == nil {
+				_ = c.Close()
+				t.Errorf("T13: well-known git socket accepts (helper bypass): %s", p)
+			}
 		}
 	})
 }

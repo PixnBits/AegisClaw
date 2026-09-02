@@ -757,7 +757,7 @@ func runStore(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	gitSrv, gitErr := startStoreGitServer(socket)
+	gitSrv, gitErr := startStoreGitServer()
 	if gitErr != nil {
 		log.Printf("store git remote socket: %v", gitErr)
 	} else {

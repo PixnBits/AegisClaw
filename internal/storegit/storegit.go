@@ -60,30 +60,22 @@ func ValidName(s string) bool {
 	return true
 }
 
-// SocketCandidates lists unix sockets the helper should try, in order.
-// The clone URL never contains these paths.
-func SocketCandidates(hubSock string) []string {
-	seen := map[string]bool{}
+// HubPrivateGitSocket is the Store git unix socket. Only Hub may know this
+// path. The helper must not read this env or dial these well-known names.
+func HubPrivateGitSocket() string {
+	return strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET"))
+}
+
+// PublicGitSockets are well-known paths that must not accept (T13).
+func PublicGitSockets(hubSock string) []string {
 	var out []string
-	add := func(p string) {
-		if p == "" {
-			return
-		}
-		p = filepath.Clean(p)
-		if seen[p] {
-			return
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	add(os.Getenv("AEGIS_STORE_GIT_SOCKET"))
 	if hubSock == "" {
 		hubSock = os.Getenv("AEGIS_HUB_SOCKET")
 	}
 	if hubSock != "" {
-		add(filepath.Join(filepath.Dir(hubSock), SiblingSocketName))
+		out = append(out, filepath.Join(filepath.Dir(hubSock), SiblingSocketName))
 	}
-	add(filepath.Join(os.TempDir(), WellKnownSocketName))
+	out = append(out, filepath.Join(os.TempDir(), WellKnownSocketName))
 	return out
 }
 
