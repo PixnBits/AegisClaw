@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -389,6 +390,52 @@ func lookupPeerTenant(pub string) string {
 	return strings.TrimSpace(m[pub])
 }
 
+func loadCidKeys() map[string]string {
+	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
+	if path == "" {
+		return nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var m map[string]string
+	if json.Unmarshal(b, &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// tenantForGit is CID->key->roster on vsock, and lookup(verifiedPub) on unix.
+// AEGIS_GIT_CID_KEYS is a boot/daemon lease file (tests write it); never filled
+// from register payload.tenant or helper env.
+func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
+	verifiedPub = strings.TrimSpace(verifiedPub)
+	if a, ok := remoteAddr.(*vsock.Addr); ok {
+		if a == nil {
+			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
+		}
+		cidKeys := loadCidKeys()
+		key := ""
+		if cidKeys != nil {
+			key = strings.TrimSpace(cidKeys[strconv.FormatUint(uint64(a.ContextID), 10)])
+		}
+		if key == "" || key != verifiedPub {
+			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
+		}
+		tenant := lookupPeerTenant(key)
+		if tenant == "" {
+			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
+		}
+		return tenant, nil
+	}
+	tenant := lookupPeerTenant(verifiedPub)
+	if tenant == "" {
+		return "", fmt.Errorf("ERR_UNKNOWN_PEER")
+	}
+	return tenant, nil
+}
+
 func forgetVsockTenant(conn net.Conn) {
 	if conn == nil {
 		return
@@ -474,14 +521,18 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 
 	if regMsg.Source == "git-remote-hub" {
 		// Possession of AEGIS_HUB_PRIVKEY: dummy/empty never count, even in AEGIS_DEV_MODE.
-		// Git identity is lookup(verifiedPub) only — not payload.tenant, not CID fallback.
+		// vsock: CID lease -> key -> roster. unix: lookup(verifiedPub). Never payload.tenant / helper env.
 		if !verifyGitRegisterSignature(raw, regMsg, pubKey) {
 			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			return
 		}
-		tenant := lookupPeerTenant(pubKeyStr)
-		if tenant == "" {
-			_ = encoder.Encode(map[string]string{"error": "ERR_UNKNOWN_PEER"})
+		tenant, err := tenantForGit(pubKeyStr, conn.RemoteAddr())
+		if err != nil || tenant == "" {
+			code := "ERR_UNKNOWN_PEER"
+			if err != nil {
+				code = err.Error()
+			}
+			_ = encoder.Encode(map[string]string{"error": code})
 			return
 		}
 		if err := encoder.Encode(map[string]string{"status": "registered"}); err != nil {
