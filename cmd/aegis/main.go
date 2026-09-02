@@ -235,14 +235,11 @@ func resetInternalHubClientsForTest() {
 
 var fanoutHubClientSeq uint64
 
-// sendDaemonCIDLease / sendDaemonCIDUnlease send cid.lease / cid.unlease
+// sendDaemonCIDUnlease sends cid.unlease
 // {cid, public_key} on the persistent daemon Hub unix connection
 // (assigned_id=="daemon"). Hub is another process; in-process hublease from
 // the orchestrator does not update Hub. Do not register a fresh daemon-temp-*
 // client (anyone can claim those sources). Guests/git-remote-hub cannot.
-func sendDaemonCIDLease(cid uint32, publicKey string) {
-	sendDaemonCIDCommand("cid.lease", cid, publicKey)
-}
 
 func sendDaemonCIDUnlease(cid uint32, expectedPub string) {
 	sendDaemonCIDCommand("cid.unlease", cid, expectedPub)

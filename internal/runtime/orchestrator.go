@@ -406,7 +406,7 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	o.secMgr.RegisterVM(id, vmConfig.PublicKey)
 
 	// Daemon/boot writes AEGIS_GIT_CID_KEYS (CID decimal → pubkey). git-connect never writes it.
-	// Hub fill is guest vsock handshake StoreLeaseIfAbsentOrSame, not a StartVM cid.lease RPC.
+	// Hub fill is guest vsock handshake CASFillLease, not a StartVM cid.lease RPC.
 	if vmConfig.NetworkConfig != nil && vmConfig.NetworkConfig.VsockPort > 0 {
 		writeGitCIDKey(o.config.StateDir, vmConfig.NetworkConfig.VsockPort, vmConfig.PublicKey)
 	}
