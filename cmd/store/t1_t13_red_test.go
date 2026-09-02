@@ -380,6 +380,25 @@ func TestT1_MergeWithoutCourtMustFail(t *testing.T) {
 	})
 }
 
+func t2MarkedApprovedOrMergeable(got Message) bool {
+	m, ok := got.Payload.(map[string]interface{})
+	if !ok {
+		t := payloadText(got)
+		return strings.Contains(t, "state:approved") || strings.Contains(t, "mergeable")
+	}
+	state := strings.ToLower(strings.TrimSpace(fmt.Sprint(m["state"])))
+	if state == "approved" || strings.Contains(state, "mergeable") {
+		return true
+	}
+	if v, ok := m["approved"].(bool); ok && v {
+		return true
+	}
+	if v, ok := m["mergeable"].(bool); ok && v {
+		return true
+	}
+	return false
+}
+
 func TestT2_CourtSkipMustNotExist(t *testing.T) {
 	withLiveStore(t, func(h *liveHub) {
 		created := h.rpc("client", "proposal.create", map[string]interface{}{
@@ -397,8 +416,7 @@ func TestT2_CourtSkipMustNotExist(t *testing.T) {
 			},
 		})
 		got := h.rpc("client", "proposal.get", map[string]interface{}{"id": "prop-t2"})
-		text := payloadText(got)
-		if strings.Contains(text, "approved") || strings.Contains(text, "mergeable") {
+		if t2MarkedApprovedOrMergeable(got) {
 			t.Fatalf("T2: Store marked proposal approved/mergeable without approved field (court skip fallback): cmd=%q payload=%v", got.Command, got.Payload)
 		}
 	})
