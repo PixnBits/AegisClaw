@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -399,14 +398,29 @@ type gitConn struct {
 
 func (g *gitConn) Read(p []byte) (int, error) { return g.r.Read(p) }
 
-func handleConnection(conn net.Conn, conns *sync.Map) {
-	br := bufio.NewReader(conn)
-	if peek, err := br.Peek(11); err == nil && bytes.Equal(peek, []byte("git-connect")) {
-		hubgit.Serve(&gitConn{Conn: conn, r: br}, gitSessionTenant(conn), strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
-		return
+func lookupPeerTenant(pub string) string {
+	pub = strings.TrimSpace(pub)
+	if pub == "" {
+		return ""
 	}
+	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_IDENTITIES"))
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var m map[string]string
+	if json.Unmarshal(b, &m) != nil {
+		return ""
+	}
+	return strings.TrimSpace(m[pub])
+}
+
+func handleConnection(conn net.Conn, conns *sync.Map) {
 	defer conn.Close()
-	decoder := json.NewDecoder(br)
+	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 
 	// First message must be register.
@@ -515,6 +529,16 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	encoders.Mutex.Lock()
 	encoders.Encoder.Encode(response)
 	encoders.Mutex.Unlock()
+
+	if regMsg.Source == "git-remote-hub" {
+		tenant := lookupPeerTenant(pubKeyStr)
+		if tenant == "" {
+			tenant = gitSessionTenant(conn)
+		}
+		rest := bufio.NewReader(io.MultiReader(decoder.Buffered(), conn))
+		hubgit.Serve(&gitConn{Conn: conn, r: rest}, tenant, strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
+		return
+	}
 
 	// Push permission + visibility snapshot to agent-like microVMs (permissions-model.md §Enforcement flow step 1).
 	if shouldReceivePermissionSnapshot(componentID) {

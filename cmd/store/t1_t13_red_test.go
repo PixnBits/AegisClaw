@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -220,18 +224,26 @@ func looksLikeHubVsock(v interface{}) bool {
 }
 
 type liveHub struct {
-	t         *testing.T
-	ln        net.Listener
-	conn      net.Conn
-	enc       *json.Encoder
-	dec       *json.Decoder
-	cwd       string
-	cmd       *exec.Cmd
-	hubSock   string
-	gitSock   string
-	mu        sync.Mutex
-	gitTenant string
+	t          *testing.T
+	ln         net.Listener
+	conn       net.Conn
+	enc        *json.Encoder
+	dec        *json.Decoder
+	cwd        string
+	cmd        *exec.Cmd
+	hubSock    string
+	gitSock    string
+	mu         sync.Mutex
+	peerTenant map[string]string
+	tenantPriv map[string]ed25519.PrivateKey
 }
+
+type prefixConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (p prefixConn) Read(b []byte) (int, error) { return p.r.Read(b) }
 
 func startLiveHub(t *testing.T) *liveHub {
 	t.Helper()
@@ -254,7 +266,15 @@ func startLiveHub(t *testing.T) *liveHub {
 		_ = ln.Close()
 		t.Fatalf("start store: %v", err)
 	}
-	h := &liveHub{t: t, ln: ln, cwd: dir, cmd: cmd, hubSock: sock, gitSock: gitSock}
+	h := &liveHub{t: t, ln: ln, cwd: dir, cmd: cmd, hubSock: sock, gitSock: gitSock, peerTenant: map[string]string{}, tenantPriv: map[string]ed25519.PrivateKey{}}
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("identity key: %v", err)
+		}
+		h.peerTenant[base64.StdEncoding.EncodeToString(pub)] = tenant
+		h.tenantPriv[tenant] = priv
+	}
 	t.Cleanup(func() {
 		if h.cmd != nil && h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
@@ -294,30 +314,44 @@ func (h *liveHub) acceptGit() {
 }
 
 func (h *liveHub) handleGitHelper(c net.Conn) {
+	br := bufio.NewReader(c)
+	raw, err := br.ReadBytes('\n')
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	var reg Message
+	if err := json.Unmarshal(raw, &reg); err != nil {
+		_ = c.Close()
+		return
+	}
+	pub := ""
+	if m, ok := reg.Payload.(map[string]interface{}); ok {
+		pub, _ = m["public_key"].(string)
+	}
 	h.mu.Lock()
-	caller := h.gitTenant
+	tenant := h.peerTenant[pub]
 	h.mu.Unlock()
-	hubgit.Serve(c, caller, h.gitSock)
+	_ = json.NewEncoder(c).Encode(map[string]string{"status": "registered"})
+	hubgit.Serve(prefixConn{Conn: c, r: br}, tenant, h.gitSock)
 }
 
 func (h *liveHub) gitAs(tenant string, cmd *exec.Cmd) ([]byte, error) {
 	h.t.Helper()
 	h.mu.Lock()
-	h.gitTenant = tenant
+	priv := h.tenantPriv[tenant]
 	h.mu.Unlock()
-	defer func() {
-		h.mu.Lock()
-		h.gitTenant = ""
-		h.mu.Unlock()
-	}()
+	if len(priv) == 0 {
+		return nil, fmt.Errorf("no peer key for %s", tenant)
+	}
 	var env []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_TENANT=") {
+		if strings.HasPrefix(e, "AEGIS_STORE_GIT_SOCKET=") || strings.HasPrefix(e, "AEGIS_GIT_TENANT=") || strings.HasPrefix(e, "AEGIS_HUB_PRIVKEY=") {
 			continue
 		}
 		env = append(env, e)
 	}
-	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "AEGIS_HUB_SOCKET="+h.hubSock)
+	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "AEGIS_HUB_SOCKET="+h.hubSock, "AEGIS_HUB_PRIVKEY="+base64.StdEncoding.EncodeToString(priv))
 	return cmd.CombinedOutput()
 }
 

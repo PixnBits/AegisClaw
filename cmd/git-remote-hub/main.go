@@ -2,6 +2,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -11,8 +14,8 @@ import (
 
 // git-remote-hub speaks git's remote-helper protocol and relays
 // git-upload-pack / git-receive-pack through Hub (AEGIS_HUB_SOCKET).
-// The clone URL (hub::vsock/<tenant>/<repo>) still looks like Hub/vsock.
-// Caller identity is Hub's, not the URL tenant and not a sibling git.sock header.
+// Identity is the Ed25519 peer on this Hub connection (register), not the
+// URL tenant and not a sibling git.sock header.
 func main() {
 	url := ""
 	switch {
@@ -64,27 +67,54 @@ func main() {
 }
 
 func connectHub(hubSock, service, url string, buffered *bufio.Reader) error {
+	priv, err := parsePrivKey(os.Getenv("AEGIS_HUB_PRIVKEY"))
+	if err != nil {
+		return fmt.Errorf("peer identity required: %w", err)
+	}
 	conn, err := net.Dial("unix", hubSock)
 	if err != nil {
 		return fmt.Errorf("dial hub: %w", err)
 	}
 	defer conn.Close()
 
+	pub := priv.Public().(ed25519.PublicKey)
+	reg := map[string]interface{}{
+		"source":      "git-remote-hub",
+		"destination": "hub",
+		"command":     "register",
+		"payload": map[string]interface{}{
+			"public_key": base64.StdEncoding.EncodeToString(pub),
+			"version":    "git-remote-hub",
+		},
+	}
+	br := bufio.NewReader(conn)
+	if err := json.NewEncoder(conn).Encode(reg); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+	raw, err := br.ReadBytes('\n')
+	if err != nil {
+		return fmt.Errorf("register reply: %w", err)
+	}
+	var reply map[string]interface{}
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return fmt.Errorf("register reply %q: %w", raw, err)
+	}
+	if errStr, _ := reply["error"].(string); errStr != "" {
+		return fmt.Errorf("register: %s", errStr)
+	}
+
 	if _, err := fmt.Fprintf(conn, "git-connect %s %s\n", service, url); err != nil {
 		return err
 	}
-	br := bufio.NewReader(conn)
-	reply, err := br.ReadString('\n')
+	line, err := br.ReadString('\n')
 	if err != nil {
 		return fmt.Errorf("hub reply: %w", err)
 	}
-	reply = strings.TrimSpace(reply)
-	if reply != "ok" {
-		return fmt.Errorf("%s", reply)
+	line = strings.TrimSpace(line)
+	if line != "ok" {
+		return fmt.Errorf("hub git-connect %q", line)
 	}
 
-	// Blank line tells git(1) the connection succeeded; then stdin/stdout
-	// is the raw git pack protocol.
 	if _, err := os.Stdout.Write([]byte("\n")); err != nil {
 		return err
 	}
@@ -108,4 +138,19 @@ func connectHub(hubSock, service, url string, buffered *bufio.Reader) error {
 		return err1
 	}
 	return err2
+}
+
+func parsePrivKey(s string) (ed25519.PrivateKey, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("AEGIS_HUB_PRIVKEY empty")
+	}
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("want %d-byte private key, got %d", ed25519.PrivateKeySize, len(raw))
+	}
+	return ed25519.PrivateKey(raw), nil
 }
