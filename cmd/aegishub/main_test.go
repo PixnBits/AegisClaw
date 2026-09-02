@@ -564,6 +564,57 @@ type remoteAddrConn struct {
 
 func (c *remoteAddrConn) RemoteAddr() net.Addr { return c.remote }
 
+func TestLeasePubForCIDMemoryOnlyNoFileMissIngest(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAStr := base64.StdEncoding.EncodeToString(pubA)
+	dir := t.TempDir()
+	cidPath := filepath.Join(dir, "cid-keys.json")
+	identPath := filepath.Join(dir, "git-identities.json")
+	cidJSON, err := json.Marshal(map[string]string{"42": pubAStr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cidPath, cidJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
+	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
+	// Intentionally do not call loadCIDKeys: boot ingest is startHub only.
+
+	const cid uint32 = 42
+	if pub, ok := leasePubForCID(cid); ok || pub != "" {
+		t.Fatalf("file row must not ingest on leasePubForCID miss: pub=%q ok=%v", pub, ok)
+	}
+	addr := &vsock.Addr{ContextID: cid, Port: 9999}
+	got, err := tenantForGit(pubAStr, addr)
+	if err == nil || got != "" {
+		t.Fatalf("file row must not fail-open tenantForGit on miss: tenant=%q err=%v", got, err)
+	}
+
+	storeCIDLease(cid, pubAStr) // handshake Store fills memory
+	pub, ok := leasePubForCID(cid)
+	if !ok || pub != pubAStr {
+		t.Fatalf("after handshake storeCIDLease, leasePubForCID must hit: pub=%q ok=%v", pub, ok)
+	}
+	got, err = tenantForGit(pubAStr, addr)
+	if err != nil || got != "tenant-a" {
+		t.Fatalf("after handshake storeCIDLease, tenantForGit must hit: tenant=%q err=%v", got, err)
+	}
+}
+
 func TestParseCIDKeyEncoding(t *testing.T) {
 	cid, ok := parseCIDKey("3")
 	if !ok || cid != 3 {
@@ -615,8 +666,13 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	addr := &vsock.Addr{ContextID: cid, Port: 9999}
 
 	got, err := tenantForGit(pubAStr, addr)
+	if err == nil || got != "" {
+		t.Fatalf("file row must not fail-open lease on miss: tenant=%q err=%v", got, err)
+	}
+	storeCIDLease(cid, pubAStr) // Handshake/StartVM StoreLease fills the map
+	got, err = tenantForGit(pubAStr, addr)
 	if err != nil || got != "tenant-a" {
-		t.Fatalf("reload-on-miss after StartVM file row: tenant=%q err=%v, want tenant-a", got, err)
+		t.Fatalf("after StoreLease, CID leased to A: tenant=%q err=%v, want tenant-a", got, err)
 	}
 
 	got, err = tenantForGit(pubBStr, addr)
@@ -979,6 +1035,11 @@ func TestCIDUnleaseDaemonOnlyAndCAS(t *testing.T) {
 		t.Fatalf("daemon-temp-* must not unlease: leased=%q ok=%v", leased, ok)
 	}
 
+	sendCIDUnleaseRPC(t, unixAddr, "aegis-daemon-temp-3", "pub-a")
+	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
+		t.Fatalf("aegis-daemon-temp-* must not unlease: leased=%q ok=%v", leased, ok)
+	}
+
 	sendCIDUnleaseRPC(t, unixAddr, "aegis-cli-internal", "pub-a")
 	if leased, ok := hublease.LoadLease(cid); !ok || leased != "pub-a" {
 		t.Fatalf("aegis-cli-internal must not unlease: leased=%q ok=%v", leased, ok)
@@ -1024,5 +1085,14 @@ func TestCIDUnleaseDaemonRPCDeletesFileRow(t *testing.T) {
 	}
 	if m["7"] != "keep" {
 		t.Fatalf("other CID rows must remain: %s", b)
+	}
+
+	hublease.Reset()
+	loadCIDKeys()
+	if _, ok := hublease.LoadLease(42); ok {
+		t.Fatal("leftover file after CAS+file delete must not re-lease on Hub restart/load")
+	}
+	if got, ok := hublease.LoadLease(7); !ok || got != "keep" {
+		t.Fatalf("other CID must still load after restart: got %q ok=%v", got, ok)
 	}
 }

@@ -10,8 +10,9 @@ import (
 )
 
 // CID lease is in-memory. git-connect never writes it. Helper/git-connect hangup
-// and VM guest hangup must not UnleaseCID. leasePubForCID reloads
-// AEGIS_GIT_CID_KEYS on miss (StartVM ingest via writeGitCIDKey).
+// and VM guest hangup must not UnleaseCID. leasePubForCID must not reload
+// AEGIS_GIT_CID_KEYS on miss (file fail-open). Handshake/StartVM StoreLease
+// fills the map; a reused CID stays empty until a new Store.
 //
 // VM destroy (orchestrator StopVM) sends cid.unlease {cid, public_key} over the
 // persistent daemon Hub connection. CAS: unlease only if lease[cid]==expectedPub

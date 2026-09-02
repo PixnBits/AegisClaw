@@ -438,12 +438,9 @@ func loadCIDKeys() {
 }
 
 func leasePubForCID(cid uint32) (string, bool) {
-	if pub, ok := hublease.LoadLease(cid); ok {
-		return pub, true
-	}
-	// Reload file on miss: StartVM ingest (writeGitCIDKey). Helper close does
-	// not UnleaseCID, so leftover rows remain valid until StopVM cid.unlease.
-	loadCIDKeys()
+	// Memory only. Do not reload AEGIS_GIT_CID_KEYS on miss (file fail-open).
+	// Handshake/StartVM StoreLease fills the map. Reused CID stays empty
+	// until a new Store. StopVM CAS-unlease + file-row delete is VM death.
 	return hublease.LoadLease(cid)
 }
 
