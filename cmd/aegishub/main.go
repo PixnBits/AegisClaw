@@ -362,35 +362,6 @@ func startVsockListener(conns *sync.Map) {
 
 var cidTenant sync.Map
 
-func gitSessionTenant(conn net.Conn) string {
-	addr := conn.RemoteAddr()
-	if addr == nil {
-		return ""
-	}
-	if a, ok := addr.(*vsock.Addr); ok {
-		if v, ok := cidTenant.Load(a.ContextID); ok {
-			if t, ok := v.(string); ok {
-				return t
-			}
-		}
-	}
-	return ""
-}
-
-func rememberVsockTenant(conn net.Conn, tenant string) {
-	tenant = strings.TrimSpace(tenant)
-	if tenant == "" {
-		return
-	}
-	addr := conn.RemoteAddr()
-	if addr == nil {
-		return
-	}
-	if a, ok := addr.(*vsock.Addr); ok {
-		cidTenant.Store(a.ContextID, tenant)
-	}
-}
-
 type gitConn struct {
 	net.Conn
 	r *bufio.Reader
@@ -498,6 +469,8 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	pubKey := ed25519.PublicKey(pubKeyBytes)
 
 	if regMsg.Source == "git-remote-hub" {
+		// Possession of AEGIS_HUB_PRIVKEY: dummy/empty never count, even in AEGIS_DEV_MODE.
+		// Git identity is lookup(verifiedPub) only — not payload.tenant, not CID fallback.
 		if !verifyGitRegisterSignature(regMsg, pubKey) {
 			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			return
