@@ -9,16 +9,18 @@ import (
 	"sync"
 )
 
-// CID lease is in-memory. git-connect never writes it. Helper/git-connect hangup
-// and VM guest hangup must not UnleaseCID. leasePubForCID reloads
-// AEGIS_GIT_CID_KEYS on miss (StartVM ingest via writeGitCIDKey).
-// Vsock handshake never StoreLease / StoreLeaseCAS / ClearClosed.
+// CID lease is in-memory only. No file ingest; loadCIDKeys is gone.
 //
-// StartVM (orchestrator) sends cid.lease {cid, public_key} over the persistent
-// daemon Hub connection. CAS: store only if lease empty or already the same pub.
-// VM destroy (orchestrator StopVM) sends cid.unlease {cid, public_key}.
-// CAS: unlease only if lease[cid]==expectedPub else no-op. Hub then deletes
-// that CID row from AEGIS_GIT_CID_KEYS.
+// Only fill: guest vsock handshake after verifyGitRegisterSignature + roster
+// lookup, via CASFillLease / StoreLeaseIfAbsentOrSame (empty-or-same, never
+// ClearClosed, never overwrite a different pub).
+//
+// git-connect never writes the map. Helper/git-connect hangup and VM guest
+// hangup must not UnleaseCID.
+//
+// cid.lease RPC is always ERR_UNAUTHORIZED (not fill).
+// StopVM CAS UnleaseCID (persistent daemon only) deletes the lease if
+// lease[cid]==expectedPub.
 
 var (
 	lease  sync.Map // uint32 CID -> base64 pubkey

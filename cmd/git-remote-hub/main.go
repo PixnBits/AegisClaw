@@ -11,12 +11,19 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"AegisClaw/internal/transport/hubclient"
+
+	"github.com/mdlayher/vsock"
 )
 
 // git-remote-hub speaks git's remote-helper protocol and relays
-// git-upload-pack / git-receive-pack through Hub (AEGIS_HUB_SOCKET).
-// Identity is the Ed25519 peer on this Hub connection (register), not the
-// URL tenant and not a sibling git.sock header.
+// git-upload-pack / git-receive-pack through Hub.
+// Host tests (T1–T13 / testunixgit): AEGIS_HUB_SOCKET unix dial.
+// Firecracker guest: vsock to host CID + HubVsockPort when the env is unset.
+// Dial is independent of the URL tenant; the git-connect line still carries
+// service + url. Identity is the Ed25519 peer on this Hub connection
+// (register), not the URL tenant and not a sibling git.sock header.
 func main() {
 	url := ""
 	switch {
@@ -30,10 +37,6 @@ func main() {
 		os.Exit(1)
 	}
 	hubSock := os.Getenv("AEGIS_HUB_SOCKET")
-	if hubSock == "" {
-		fmt.Fprintf(os.Stderr, "git-remote-hub: AEGIS_HUB_SOCKET required (no git.sock)\n")
-		os.Exit(1)
-	}
 
 	in := bufio.NewReader(os.Stdin)
 	for {
@@ -78,12 +81,47 @@ type hubMessage struct {
 	Signature   string      `json:"signature"`
 }
 
+// hubDialKind is unix when AEGIS_HUB_SOCKET is set (host T1–T13 / testunixgit),
+// else vsock (Firecracker guest). Extracted so tests do not need /dev/vsock.
+type hubDialKind int
+
+const (
+	hubDialUnix hubDialKind = iota
+	hubDialVsock
+)
+
+type hubDialPlan struct {
+	kind      hubDialKind
+	unixSock  string
+	vsockCID  uint32
+	vsockPort uint32
+}
+
+func hubDialPlanFromEnv(hubSock string) hubDialPlan {
+	if s := strings.TrimSpace(hubSock); s != "" {
+		return hubDialPlan{kind: hubDialUnix, unixSock: s}
+	}
+	return hubDialPlan{
+		kind:      hubDialVsock,
+		vsockCID:  hubclient.HostCID,
+		vsockPort: hubclient.HubVsockPort,
+	}
+}
+
+func dialHub(hubSock string) (net.Conn, error) {
+	plan := hubDialPlanFromEnv(hubSock)
+	if plan.kind == hubDialUnix {
+		return net.Dial("unix", plan.unixSock)
+	}
+	return vsock.Dial(plan.vsockCID, plan.vsockPort, nil)
+}
+
 func connectHub(hubSock, service, url string, buffered *bufio.Reader) error {
 	priv, err := parsePrivKey(os.Getenv("AEGIS_HUB_PRIVKEY"))
 	if err != nil {
 		return fmt.Errorf("peer identity required: %w", err)
 	}
-	conn, err := net.Dial("unix", hubSock)
+	conn, err := dialHub(hubSock)
 	if err != nil {
 		return fmt.Errorf("dial hub: %w", err)
 	}
