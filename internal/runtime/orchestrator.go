@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,12 @@ type Orchestrator struct {
 	defaultLLMModel    string                   // captured at New() from AEGIS_DEFAULT_MODEL for guest llm.call model tag
 	defaultPMModel     string                   // captured at New() from AEGIS_PM_MODEL (else defaultLLMModel, else DefaultPMModel)
 	pregenKeys         []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
+	// NotifyHubCIDUnlease is invoked from StopVM after capturing guest CID
+	// (NetworkConfig.VsockPort) AND that VM's pub, after delete(o.vms).
+	// Hub is another process -- package-local hublease.UnleaseCID in the daemon
+	// does not unlease Hub memory. Production daemon sends cid.unlease with
+	// CID+expectedPub (CAS). Tests may leave this nil.
+	NotifyHubCIDUnlease func(cid uint32, expectedPub string)
 }
 
 type vmKeyPair struct {
@@ -398,6 +405,12 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 	// The private key material lives only in the ephemeral 0600 file (to be consumed by the guest).
 	o.secMgr.RegisterVM(id, vmConfig.PublicKey)
 
+	// Daemon/boot writes AEGIS_GIT_CID_KEYS (CID decimal → pubkey). git-connect never writes it.
+	// Hub fill is guest vsock handshake CASFillLease, not a StartVM cid.lease RPC.
+	if vmConfig.NetworkConfig != nil && vmConfig.NetworkConfig.VsockPort > 0 {
+		writeGitCIDKey(o.config.StateDir, vmConfig.NetworkConfig.VsockPort, vmConfig.PublicKey)
+	}
+
 	// 7.2: Publish lifecycle event (in-process + will be forwarded via Hub for cross-VM audit)
 	o.bus.PublishJSON("vm.started", map[string]interface{}{
 		"id":        id,
@@ -414,6 +427,88 @@ func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, im
 
 	logrus.Infof("VM %s started successfully (per-VM key distributed + registered)", id)
 	return nil
+}
+
+var gitCIDKeysMu sync.Mutex
+
+// writeGitCIDKey merges cid (decimal uint32 string, never "cid-N") → base64 pubkey
+// into AEGIS_GIT_CID_KEYS. Hub loads this into an in-memory lease at start.
+func writeGitCIDKey(stateDir string, cid uint32, pub ed25519.PublicKey) {
+	if len(pub) == 0 {
+		return
+	}
+	path := gitCIDKeysPath(stateDir)
+	if path == "" {
+		return
+	}
+	gitCIDKeysMu.Lock()
+	defer gitCIDKeysMu.Unlock()
+	m := map[string]string{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &m)
+	}
+	m[strconv.FormatUint(uint64(cid), 10)] = base64.StdEncoding.EncodeToString(pub)
+	b, err := json.Marshal(m)
+	if err != nil {
+		logrus.Warnf("git CID keys marshal: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		logrus.Warnf("git CID keys dir: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, b, 0600); err != nil {
+		logrus.Warnf("git CID keys write: %v", err)
+	}
+}
+
+func gitCIDKeysPath(stateDir string) string {
+	path := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS"))
+	if path == "" {
+		if strings.TrimSpace(stateDir) == "" {
+			return ""
+		}
+		path = filepath.Join(stateDir, "git-cid-keys.json")
+	}
+	return path
+}
+
+// deleteGitCIDKey drops the CID row from AEGIS_GIT_CID_KEYS only if it still
+// holds expectedPub (CAS). Blind CID delete would wipe a reused CID's new pub.
+// File row is StopVM bookkeeping (not Hub ingest). Leftover file after a Hub
+// restart does not re-lease; handshake CAS-fills only after verify+roster.
+func deleteGitCIDKey(stateDir string, cid uint32, expectedPub string) {
+	expectedPub = strings.TrimSpace(expectedPub)
+	if cid == 0 || expectedPub == "" {
+		return
+	}
+	path := gitCIDKeysPath(stateDir)
+	if path == "" {
+		return
+	}
+	gitCIDKeysMu.Lock()
+	defer gitCIDKeysMu.Unlock()
+	m := map[string]string{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	if json.Unmarshal(b, &m) != nil {
+		return
+	}
+	key := strconv.FormatUint(uint64(cid), 10)
+	if strings.TrimSpace(m[key]) != expectedPub {
+		return
+	}
+	delete(m, key)
+	out, err := json.Marshal(m)
+	if err != nil {
+		logrus.Warnf("git CID keys marshal: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, out, 0600); err != nil {
+		logrus.Warnf("git CID keys write: %v", err)
+	}
 }
 
 // GetVMConsoleLog returns recent lines from the captured guest serial console
@@ -576,19 +671,46 @@ func writeJSONMetrics(stateDir, id string, phases map[string]int64) {
 // StopVM stops a running sandbox VM.
 func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 	o.mu.Lock()
-	_, exists := o.vms[id]
+	lc, exists := o.vms[id]
 	if !exists {
 		o.mu.Unlock()
 		return fmt.Errorf("VM %s not running", id)
+	}
+	// Guest CID is NetworkConfig.VsockPort (not Hub vsock port 9999). Capture
+	// CID + this VM's pub BEFORE delete so a late unlease cannot CAS-drop a
+	// reused CID (B already got 42).
+	var cid uint32
+	var expectedPub string
+	if lc != nil {
+		if lc.Config.NetworkConfig != nil {
+			cid = lc.Config.NetworkConfig.VsockPort
+		}
+		if len(lc.Config.PublicKey) > 0 {
+			expectedPub = base64.StdEncoding.EncodeToString(lc.Config.PublicKey)
+		}
 	}
 	delete(o.vms, id)
 	o.mu.Unlock()
 
 	logrus.Infof("Stopping VM %s", id)
 
+	// Stop the guest before Hub unlease. Unlease-then-stop leaves a live vsock
+	// occupant that can CAS-fill the empty CID (handshake occupancy) and pin
+	// the old pub against the next VM.
 	if err := o.backend.Stop(ctx, id); err != nil {
 		logrus.Errorf("Failed to stop VM %s: %v", id, err)
 		return err
+	}
+
+	if cid > 0 {
+		stateDir := ""
+		if o.config != nil {
+			stateDir = o.config.StateDir
+		}
+		deleteGitCIDKey(stateDir, cid, expectedPub)
+		if o.NotifyHubCIDUnlease != nil {
+			o.NotifyHubCIDUnlease(cid, expectedPub)
+		}
 	}
 
 	// 7.2: Publish stop event
@@ -905,9 +1027,21 @@ func (o *Orchestrator) GetWebPortalGuestCID() (uint32, bool) {
 	return cid, true
 }
 
-// Shutdown gracefully shuts down all VMs.
+// Shutdown gracefully shuts down all VMs. StopVM first so NotifyHubCIDUnlease
+// runs; backend.Cleanup must not skip CAS-unlease.
 func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	logrus.Info("Shutting down orchestrator")
+	o.mu.RLock()
+	ids := make([]string, 0, len(o.vms))
+	for id := range o.vms {
+		ids = append(ids, id)
+	}
+	o.mu.RUnlock()
+	for _, id := range ids {
+		if err := o.StopVM(ctx, id); err != nil {
+			logrus.Warnf("Shutdown StopVM %s: %v", id, err)
+		}
+	}
 	return o.backend.Cleanup(ctx)
 }
 

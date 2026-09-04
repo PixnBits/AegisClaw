@@ -37,8 +37,8 @@ type firecrackerVM struct {
 	cmd            *exec.Cmd
 	startTime      time.Time
 	sockPath       string
-	consoleLogPath string   // Phase 0: path to captured guest serial console
-	consoleFile    *os.File // open handle that Firecracker writes guest console to (closed on Stop)
+	consoleLogPath string           // Phase 0: path to captured guest serial console
+	consoleFile    *os.File         // open handle that Firecracker writes guest console to (closed on Stop)
 	bootPhases     map[string]int64 // populated only when AEGIS_BOOT_TIMING=1 (host sub-phases inside Start)
 }
 
@@ -95,7 +95,7 @@ func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error 
 	// we need it for cmdline hex + rootfs inject below. Stop() cleans up the key file.
 
 	rootfsPath := config.RootfsPath
-	if config.PrivateKeyPath != "" {
+	if vmNeedsPrivateRootfs(config.ID, config.Image, config.RootfsPath) {
 		rootfsPath = prepareVMRootfs(fb.stateDir, config.ID, config.RootfsPath, config.PrivateKeyPath)
 	}
 
@@ -306,13 +306,12 @@ func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
 
 	logrus.Infof("Stopping VM %s", vmID)
 
-	// Try graceful shutdown via API first
-	fb.sendVMAction(vm.sockPath, "InstanceHalt")
-	time.Sleep(2 * time.Second)
-
-	// Force kill if still running
-	if vm.cmd.Process != nil {
-		vm.cmd.Process.Kill()
+	// Try graceful shutdown via API first only when a live Firecracker process exists.
+	// Unit tests register VM state without spawning Firecracker / requiring /dev/kvm.
+	if vm.cmd != nil && vm.cmd.Process != nil {
+		fb.sendVMAction(vm.sockPath, "InstanceHalt")
+		time.Sleep(2 * time.Second)
+		_ = vm.cmd.Process.Kill()
 	}
 
 	// Close the guest console capture file (Firecracker has now exited / been killed).
@@ -320,14 +319,28 @@ func (fb *FirecrackerBackend) Stop(ctx context.Context, vmID string) error {
 		_ = vm.consoleFile.Close()
 	}
 
-	// Clean up all per-VM artifacts (including the vsock UDS that Firecracker creates)
-	stateDir := filepath.Dir(vm.sockPath)
-	_ = os.Remove(vm.sockPath)
-	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".json"))
-	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".log"))
-	_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+"-console.log"))
-	_ = os.Remove(FirecrackerVsockUDSPath(stateDir, vmID))
-	_ = os.Remove(filepath.Join(stateDir, vmID+".rootfs.img"))
+	// Clean up all per-VM artifacts (including the vsock UDS that Firecracker creates).
+	// Use the backend stateDir — never cwd / the AegisClaw worktree / Store cwd.
+	stateDir := fb.stateDir
+	if stateDir == "" && vm.sockPath != "" {
+		stateDir = filepath.Dir(vm.sockPath)
+	}
+	privateRootfs := ""
+	if stateDir != "" && stateDir != "." {
+		privateRootfs = filepath.Join(stateDir, vmID+".rootfs.img")
+		_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".json"))
+		_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+".log"))
+		_ = os.Remove(filepath.Join(stateDir, "fc-"+vmID+"-console.log"))
+		_ = os.Remove(FirecrackerVsockUDSPath(stateDir, vmID))
+		// Private per-VM copy only (stateDir/<vmID>.rootfs.img). NEVER delete or
+		// truncate the shared template at vm.config.RootfsPath.
+		if privateRootfs != "" {
+			_ = os.Remove(privateRootfs)
+		}
+	}
+	if vm.sockPath != "" {
+		_ = os.Remove(vm.sockPath)
+	}
 
 	// 7.5.4: Best-effort cleanup of the ephemeral VM private key file
 	// (defense in depth — the guest should have already shredded it).

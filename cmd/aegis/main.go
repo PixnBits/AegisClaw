@@ -235,6 +235,40 @@ func resetInternalHubClientsForTest() {
 
 var fanoutHubClientSeq uint64
 
+// sendDaemonCIDUnlease sends cid.unlease
+// {cid, public_key} on the persistent daemon Hub unix connection
+// (assigned_id=="daemon"). Hub is another process; in-process hublease from
+// the orchestrator does not update Hub. Do not register a fresh daemon-temp-*
+// client (anyone can claim those sources). Guests/git-remote-hub cannot.
+
+func sendDaemonCIDUnlease(cid uint32, expectedPub string) {
+	sendDaemonCIDCommand("cid.unlease", cid, expectedPub)
+}
+
+func sendDaemonCIDCommand(command string, cid uint32, pub string) {
+	pub = strings.TrimSpace(pub)
+	if cid == 0 || pub == "" {
+		return
+	}
+	client := snapshotDaemonHubClient()
+	if client == nil {
+		logrus.Warnf("%s cid=%d: persistent daemon Hub client not ready", command, cid)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := client.Send(ctx, hubclient.Message{
+		Source:      "daemon",
+		Destination: "hub",
+		Command:     command,
+		Payload:     map[string]interface{}{"cid": cid, "public_key": pub},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		logrus.Warnf("%s send cid=%d: %v", command, cid, err)
+	}
+}
+
 // sendToComponentViaEphemeralHubContext uses a one-shot hub client for parallel fan-out RPCs.
 // The persistent daemon-internal client must not be shared across concurrent channel.activity
 // deliveries (decoder races after ~2 fan-out rounds broke roster E2E).
@@ -828,6 +862,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	if err != nil {
 		logrus.Fatalf("failed to create orchestrator: %v", err)
 	}
+	orchestrator.NotifyHubCIDUnlease = sendDaemonCIDUnlease
 
 	logrus.Infof("daemon starting on platform %s with sandbox type %s",
 		cfg.Platform, cfg.SandboxType)
@@ -5035,9 +5070,22 @@ func startManagedHub(hubSocket string) error {
 		hubBinary = "aegishub"
 	}
 
+	cidKeysPath := filepath.Join(cfg.StateDir, "git-cid-keys.json")
+	if p := strings.TrimSpace(os.Getenv("AEGIS_GIT_CID_KEYS")); p != "" {
+		cidKeysPath = p
+	} else {
+		_ = os.Setenv("AEGIS_GIT_CID_KEYS", cidKeysPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(cidKeysPath), 0700); err == nil {
+		if _, err := os.Stat(cidKeysPath); os.IsNotExist(err) {
+			_ = os.WriteFile(cidKeysPath, []byte("{}"), 0600)
+		}
+	}
+
 	cmd := exec.Command(hubBinary, "start")
 	cmd.Env = append(os.Environ(),
 		"AEGIS_HUB_SOCKET="+hubSocket,
+		"AEGIS_GIT_CID_KEYS="+cidKeysPath,
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Pdeathsig: syscall.SIGTERM,
@@ -5583,6 +5631,35 @@ func startOrchestratorCommandReceiver() {
 						// Agent delivery is turn-based via channel-facilitator (not human-only fan-out).
 					}
 				}
+				continue
+			}
+			if msg.Command == "orchestrator.stop_vm" || msg.Command == "vm.stop" {
+				payload, _ := msg.Payload.(map[string]interface{})
+				id, _ := payload["id"].(string)
+				if id == "" {
+					id, _ = payload["builder_id"].(string)
+				}
+				if id == "" {
+					id, _ = payload["vm_id"].(string)
+				}
+				resp := map[string]interface{}{"id": id, "status": "stopped"}
+				if id == "" {
+					resp["error"] = "missing vm id"
+					resp["status"] = "error"
+				} else if orchestrator == nil {
+					resp["error"] = "orchestrator unavailable"
+					resp["status"] = "error"
+				} else if err := orchestrator.StopVM(context.Background(), id); err != nil {
+					resp["error"] = err.Error()
+					resp["status"] = "error"
+				}
+				_ = client.Reply(context.Background(), hubclient.Message{
+					Source:      requesterID,
+					Destination: msg.Source,
+					Command:     "response",
+					Payload:     resp,
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+				})
 				continue
 			}
 			if msg.Command == "ensure.role" || msg.Command == "orchestrator.ensure_role" {

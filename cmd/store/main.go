@@ -11,18 +11,17 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
-	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/channeldata"
+	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/chatstore"
 	"AegisClaw/internal/collab"
-	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 
@@ -758,6 +757,13 @@ func runStore(cmd *cobra.Command, args []string) {
 		}
 	}()
 
+	gitSrv, gitErr := startStoreGitServer()
+	if gitErr != nil {
+		log.Printf("store git remote socket: %v", gitErr)
+	} else {
+		defer gitSrv.Close()
+	}
+
 	// Store loop
 	for {
 		var msg Message
@@ -934,31 +940,30 @@ func runStore(cmd *cobra.Command, args []string) {
 
 				// Phase 3: Persist the full tamper-evident signed decision from Scribe
 				// (includes decision_merkle + decision_sig per court-scribe.md + governance-court.md)
-				if _, hasMerkle := payload["decision_merkle"]; hasMerkle {
-					p["court_decision"] = payload // the complete signed record
+				if courtDecisionSigned(payload) {
+					p["court_decision"] = payload
 				}
 
-				approved := false
+				// Omitted approved must not mark the proposal approved/mergeable (no Court skip).
+				// approved:true without merkle+sig is not a Court decision (T12).
 				if a, ok := payload["approved"].(bool); ok {
-					approved = a
-				} else {
-					approved = true // fallback for old payloads
-				}
-				if approved {
-					p["state"] = "approved"
-					// Wire to Builder: trigger implementation after Court approval (per builder-vm.md + Phase 4 plan)
-					builderMsg := Message{
-						Source:      "store",
-						Destination: "builder",
-						Command:     "builder.build_proposal",
-						Payload:     map[string]interface{}{"proposal_id": id},
-						Timestamp:   response.Timestamp,
-						Signature:   "",
+					if a {
+						if courtDecisionSigned(payload) {
+							p["state"] = "approved"
+							builderMsg := Message{
+								Source:      "store",
+								Destination: "builder",
+								Command:     "builder.build_proposal",
+								Payload:     map[string]interface{}{"proposal_id": id},
+								Timestamp:   response.Timestamp,
+								Signature:   "",
+							}
+							signMessage(&builderMsg, priv)
+							encoder.Encode(builderMsg)
+						}
+					} else {
+						p["state"] = "rejected"
 					}
-					signMessage(&builderMsg, priv)
-					encoder.Encode(builderMsg)
-				} else {
-					p["state"] = "rejected"
 				}
 				proposals[id] = p
 				saveToFile("proposals.json", proposals)
@@ -1011,22 +1016,21 @@ func runStore(cmd *cobra.Command, args []string) {
 			response.Command = "court.enforcement_recorded"
 			response.Payload = enforcement
 		case "git.clone":
-			payload := msg.Payload.(map[string]interface{})
-			repo := payload["repo"].(string)
-			path := "repos/" + repo
-			os.MkdirAll("repos", 0755)
-			cmd := exec.Command("git", "init", "--bare", path)
-			err := cmd.Run()
-			if err != nil {
-				response.Command = "error"
-				response.Payload = err.Error()
-			} else {
-				response.Command = "git.cloned"
-				response.Payload = "ok"
-			}
+			response.Command, response.Payload = handleGitCloneRPC(msg.Source, msg.Payload)
+		case "git.create":
+			response.Command, response.Payload = handleGitCreateRPC(msg.Source, msg.Payload)
 		case "git.push":
-			// For push, assume it's handled by git, stub success
-			response.Command = "git.pushed"
+			response.Command, response.Payload = handleGitPushRPC(msg.Source, msg.Payload)
+		case "skill.create":
+			response.Command, response.Payload = handleSkillCreateRPC(msg.Source, msg.Payload, skills)
+		case "pr.merge":
+			response.Command, response.Payload = handlePRMergeRPC(msg.Source, msg.Payload, prs, proposals)
+		case "pr.rollback":
+			response.Command, response.Payload = handlePRRollbackRPC(msg.Payload, prs)
+		case "builder.destroy", "builder.destroyed", "destroy.builder", "builder.wipe", "vm.destroy", "sandbox.destroy":
+			wipeBuilderLeftovers()
+			requestOrchestratorStopVM(encoder, priv, response.Timestamp, msg.Payload)
+			response.Command = "builder.destroyed"
 			response.Payload = "ok"
 		case "pr.create":
 			payload := msg.Payload.(map[string]interface{})
@@ -1143,8 +1147,8 @@ func runStore(cmd *cobra.Command, args []string) {
 						"from":    payload["from"],
 						"to":      payload["to"], // role or "broadcast"
 						"content": payload["content"],
-				}
-				t["messages"] = append(msgs, msgEntry)
+					}
+					t["messages"] = append(msgs, msgEntry)
 				}
 				teams[teamID] = t
 				saveToFile("teams.json", teams)
@@ -1194,9 +1198,13 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.get":
 			payload := msg.Payload.(map[string]interface{})
 			id := ""
-			if v, ok := payload["id"].(string); ok { id = v }
+			if v, ok := payload["id"].(string); ok {
+				id = v
+			}
 			if id == "" {
-				if v, ok := payload["channel_id"].(string); ok { id = v }
+				if v, ok := payload["channel_id"].(string); ok {
+					id = v
+				}
 			}
 			if ch, ok := channels[id].(map[string]interface{}); ok {
 				prepareChannelRecord(ch)
@@ -1267,8 +1275,14 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.archive":
 			payload := msg.Payload.(map[string]interface{})
 			chID := ""
-			if v, ok := payload["id"].(string); ok { chID = v }
-			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			if v, ok := payload["id"].(string); ok {
+				chID = v
+			}
+			if chID == "" {
+				if v, ok := payload["channel_id"].(string); ok {
+					chID = v
+				}
+			}
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
 				ch["archived"] = true
 				ch["archived_at"] = response.Timestamp
@@ -1281,8 +1295,14 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.add_member":
 			payload := msg.Payload.(map[string]interface{})
 			chID := ""
-			if v, ok := payload["id"].(string); ok { chID = v }
-			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			if v, ok := payload["id"].(string); ok {
+				chID = v
+			}
+			if chID == "" {
+				if v, ok := payload["channel_id"].(string); ok {
+					chID = v
+				}
+			}
 			role := ""
 			if v, ok := payload["role"].(string); ok {
 				role = collab.NormalizeMemberRole(v)
@@ -1318,10 +1338,18 @@ func runStore(cmd *cobra.Command, args []string) {
 		case "channel.remove_member":
 			payload := msg.Payload.(map[string]interface{})
 			chID := ""
-			if v, ok := payload["id"].(string); ok { chID = v }
-			if chID == "" { if v, ok := payload["channel_id"].(string); ok { chID = v } }
+			if v, ok := payload["id"].(string); ok {
+				chID = v
+			}
+			if chID == "" {
+				if v, ok := payload["channel_id"].(string); ok {
+					chID = v
+				}
+			}
 			roleToRemove := ""
-			if v, ok := payload["role"].(string); ok { roleToRemove = v }
+			if v, ok := payload["role"].(string); ok {
+				roleToRemove = v
+			}
 			if ch, ok := channels[chID].(map[string]interface{}); ok {
 				members := []interface{}{}
 				if m, ok := ch["members"].([]interface{}); ok {
@@ -1486,10 +1514,10 @@ func runStore(cmd *cobra.Command, args []string) {
 			}
 			response.Command = channelfacilitator.CmdGetRelevantSince + ".data"
 			response.Payload = map[string]interface{}{
-				"channel_id":  chID,
-				"since_seq":   sinceSeq,
+				"channel_id":   chID,
+				"since_seq":    sinceSeq,
 				"new_messages": batch,
-				"anchors":     anchors,
+				"anchors":      anchors,
 			}
 
 		// default PM in create if missing
