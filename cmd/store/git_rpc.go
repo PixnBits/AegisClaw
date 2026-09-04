@@ -47,6 +47,18 @@ func coderNoGit() (string, interface{}) {
 	return "error", "coder actor has no git"
 }
 
+func courtDecisionSigned(payload map[string]interface{}) bool {
+	if payload == nil {
+		return false
+	}
+	merkle, hasMerkle := payload["decision_merkle"]
+	if !hasMerkle || merkle == nil || strings.TrimSpace(fmt.Sprint(merkle)) == "" {
+		return false
+	}
+	sig := payloadString(payload, "decision_sig", "sig", "signature")
+	return sig != ""
+}
+
 func tenancyDeny(detail string) (string, interface{}) {
 	return "error", "tenancy acl: not your tenant (" + detail + ")"
 }
@@ -194,12 +206,29 @@ func handlePRMergeRPC(source string, raw interface{}, prs, proposals map[string]
 	if !hasMerkle || sig == "" {
 		return "error", "court decision unsigned: merkle signature required"
 	}
+	tenant := payloadString(p, "tenant")
+	repo := payloadString(p, "repo")
+	sha := payloadString(p, "sha", "commit", "head")
+	if pr != nil {
+		if tenant == "" {
+			tenant = payloadString(pr, "tenant")
+		}
+		if repo == "" {
+			repo = payloadString(pr, "repo")
+		}
+		if sha == "" {
+			sha = payloadString(pr, "sha", "commit", "head")
+		}
+	}
+	if err := fastForwardBareMain(tenant, repo, sha); err != nil {
+		return "error", "merge denied: " + err.Error()
+	}
 	if pr != nil {
 		pr["merged"] = true
 		prs[id] = pr
 		saveToFile("prs.json", prs)
 	}
-	return "pr.merged", map[string]interface{}{"id": id, "proposal_id": propID}
+	return "pr.merged", map[string]interface{}{"id": id, "proposal_id": propID, "sha": sha, "tenant": tenant, "repo": repo}
 }
 
 func handlePRRollbackRPC(raw interface{}, prs map[string]interface{}) (string, interface{}) {

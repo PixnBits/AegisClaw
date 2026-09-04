@@ -940,25 +940,27 @@ func runStore(cmd *cobra.Command, args []string) {
 
 				// Phase 3: Persist the full tamper-evident signed decision from Scribe
 				// (includes decision_merkle + decision_sig per court-scribe.md + governance-court.md)
-				if _, hasMerkle := payload["decision_merkle"]; hasMerkle {
-					p["court_decision"] = payload // the complete signed record
+				if courtDecisionSigned(payload) {
+					p["court_decision"] = payload
 				}
 
 				// Omitted approved must not mark the proposal approved/mergeable (no Court skip).
+				// approved:true without merkle+sig is not a Court decision (T12).
 				if a, ok := payload["approved"].(bool); ok {
 					if a {
-						p["state"] = "approved"
-						// Wire to Builder: trigger implementation after Court approval (per builder-vm.md + Phase 4 plan)
-						builderMsg := Message{
-							Source:      "store",
-							Destination: "builder",
-							Command:     "builder.build_proposal",
-							Payload:     map[string]interface{}{"proposal_id": id},
-							Timestamp:   response.Timestamp,
-							Signature:   "",
+						if courtDecisionSigned(payload) {
+							p["state"] = "approved"
+							builderMsg := Message{
+								Source:      "store",
+								Destination: "builder",
+								Command:     "builder.build_proposal",
+								Payload:     map[string]interface{}{"proposal_id": id},
+								Timestamp:   response.Timestamp,
+								Signature:   "",
+							}
+							signMessage(&builderMsg, priv)
+							encoder.Encode(builderMsg)
 						}
-						signMessage(&builderMsg, priv)
-						encoder.Encode(builderMsg)
 					} else {
 						p["state"] = "rejected"
 					}

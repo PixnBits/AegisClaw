@@ -661,7 +661,6 @@ func TestTenantForGitVsockCIDLease(t *testing.T) {
 	if !strings.Contains(string(left), pubAStr) {
 		t.Fatalf("file must still contain leftover CID row for A: %s", left)
 	}
-	forgetVsockTenant(&remoteAddrConn{remote: addr})
 	got, err = tenantForGit(pubAStr, addr)
 	if err != nil || got != "tenant-a" {
 		t.Fatalf("after helper close, same CID+A must still be tenant-a (handshake fill): tenant=%q err=%v", got, err)
@@ -1083,11 +1082,7 @@ func TestGuestVsockRegisterDoesNotStoreOrUnpoison(t *testing.T) {
 	}
 	client, done = startVMVsockSession(t, addr, nil, pubAStr)
 	if _, ok := hublease.LoadLease(42); ok {
-		t.Fatal("guest vsock register must not unpoison a closed CID")
-	}
-	closed, ok := hublease.ClosedPub(42)
-	if !ok || closed != pubAStr {
-		t.Fatalf("handshake must not ClearClosed: closed=%q ok=%v", closed, ok)
+		t.Fatal("unsigned guest vsock register must not fill the empty CID after unlease")
 	}
 	_ = client.Close()
 	select {
@@ -1365,9 +1360,6 @@ func TestVerifiedRosteredHandshakeCASFills(t *testing.T) {
 	if !ok || got != pubStr {
 		t.Fatalf("verified rostered handshake CAS fill: got %q ok=%v", got, ok)
 	}
-	if closed, ok := hublease.ClosedPub(cid); ok {
-		t.Fatalf("handshake must not ClearClosed, closed=%q", closed)
-	}
 }
 
 func TestSecondGuestDifferentPubDoesNotOverwrite(t *testing.T) {
@@ -1403,7 +1395,7 @@ func TestSecondGuestDifferentPubDoesNotOverwrite(t *testing.T) {
 	}
 }
 
-func TestHandshakeAfterStopVMDoesNotClearClosed(t *testing.T) {
+func TestHandshakeAfterStopVMFillsEmptySlot(t *testing.T) {
 	resetCIDLeases()
 	t.Cleanup(resetCIDLeases)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -1424,12 +1416,12 @@ func TestHandshakeAfterStopVMDoesNotClearClosed(t *testing.T) {
 	const cid uint32 = 42
 	hublease.StoreLease(cid, pubStr)
 	if !hublease.UnleaseCID(cid, pubStr) {
-		t.Fatal("StopVM poison")
+		t.Fatal("StopVM unlease")
 	}
 	addr := &vsock.Addr{ContextID: cid, Port: 9999}
 	guestVsockHandshake(t, addr, signGuestRegister(priv, pubStr))
-	closed, ok := hublease.ClosedPub(cid)
-	if !ok || closed != pubStr {
-		t.Fatalf("after StopVM poison, handshake must not ClearClosed: closed=%q ok=%v", closed, ok)
+	got, ok := hublease.LoadLease(cid)
+	if !ok || got != pubStr {
+		t.Fatalf("verified handshake may occupy empty CID after StopVM: got %q ok=%v", got, ok)
 	}
 }

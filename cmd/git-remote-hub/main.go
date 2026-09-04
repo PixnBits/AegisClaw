@@ -179,8 +179,8 @@ func connectHub(hubSock, service, url string, buffered *bufio.Reader) error {
 	errCh := make(chan error, 2)
 	go func() {
 		_, copyErr := io.Copy(conn, io.MultiReader(buffered, os.Stdin))
-		if uc, ok := conn.(*net.UnixConn); ok {
-			_ = uc.CloseWrite()
+		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
 		}
 		errCh <- copyErr
 	}()

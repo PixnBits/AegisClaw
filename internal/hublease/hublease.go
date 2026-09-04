@@ -9,28 +9,19 @@ import (
 	"sync"
 )
 
-// CID lease is in-memory only. No file ingest; loadCIDKeys is gone.
-//
-// Only fill: guest vsock handshake after verifyGitRegisterSignature + roster
-// lookup, via CASFillLease / StoreLeaseIfAbsentOrSame (empty-or-same, never
-// ClearClosed, never overwrite a different pub).
-//
-// git-connect never writes the map. Helper/git-connect hangup and VM guest
-// hangup must not UnleaseCID.
-//
-// cid.lease RPC is always ERR_UNAUTHORIZED (not fill).
-// StopVM CAS UnleaseCID (persistent daemon only) deletes the lease if
-// lease[cid]==expectedPub.
+// CID lease is in-memory only. Only fill: vsock handshake after verify+roster
+// via CASFillLease (empty-or-same, never overwrite different pub).
+// git-connect never writes. Hangup must not UnleaseCID. cid.lease RPC is
+// ERR_UNAUTHORIZED. StopVM CAS UnleaseCID (persistent daemon) deletes the
+// live lease. No file ingest.
 
 var (
 	lease  sync.Map // uint32 CID -> base64 pubkey
-	closed sync.Map // uint32 CID -> pubkey poisoned by successful CAS UnleaseCID
 	fileMu sync.Mutex
 )
 
 func Reset() {
 	lease = sync.Map{}
-	closed = sync.Map{}
 }
 
 func StoreLease(cid uint32, pub string) {
@@ -41,9 +32,8 @@ func StoreLease(cid uint32, pub string) {
 	lease.Store(cid, pub)
 }
 
-// StoreLeaseIfAbsentOrSame is handshake CAS fill: if lease empty, Store
-// without ClearClosed; if lease==pub, no-op; if lease holds a different pub,
-// do not overwrite. Poison is written only by UnleaseCID.
+// StoreLeaseIfAbsentOrSame is handshake CAS fill: if lease empty, Store;
+// if lease==pub, no-op; if lease holds a different pub, do not overwrite.
 func StoreLeaseIfAbsentOrSame(cid uint32, pub string) bool {
 	pub = strings.TrimSpace(pub)
 	if cid == 0 || pub == "" {
@@ -57,20 +47,9 @@ func StoreLeaseIfAbsentOrSame(cid uint32, pub string) bool {
 	return strings.TrimSpace(cur) == pub
 }
 
-// StoreLeaseCAS stores pub for cid only if the lease is empty or already holds
-// the same pub. Does not overwrite a different pub. Handshake must not call this;
-// Daemon cid.lease is not fill. Handshake CASFillLease is occupancy.
+// StoreLeaseCAS is StoreLeaseIfAbsentOrSame. Daemon cid.lease RPC is not fill.
 func StoreLeaseCAS(cid uint32, pub string) bool {
-	pub = strings.TrimSpace(pub)
-	if pub == "" {
-		return false
-	}
-	actual, loaded := lease.LoadOrStore(cid, pub)
-	if !loaded {
-		return true
-	}
-	existing, _ := actual.(string)
-	return strings.TrimSpace(existing) == pub
+	return StoreLeaseIfAbsentOrSame(cid, pub)
 }
 
 func CASFillLease(cid uint32, pub string) bool {
@@ -85,19 +64,6 @@ func LoadLease(cid uint32) (string, bool) {
 	pub, _ := v.(string)
 	pub = strings.TrimSpace(pub)
 	return pub, pub != ""
-}
-
-func ClosedPub(cid uint32) (string, bool) {
-	v, ok := closed.Load(cid)
-	if !ok {
-		return "", false
-	}
-	pub, _ := v.(string)
-	return pub, true
-}
-
-func ClearClosed(cid uint32) {
-	closed.Delete(cid)
 }
 
 // UnleaseCID is VM death CAS: drop the in-memory lease only if it still holds
@@ -115,7 +81,6 @@ func UnleaseCID(cid uint32, expectedPub string) bool {
 	if strings.TrimSpace(pub) != expectedPub {
 		return false
 	}
-	closed.Store(cid, expectedPub)
 	lease.Delete(cid)
 	return true
 }

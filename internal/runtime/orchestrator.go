@@ -475,7 +475,8 @@ func gitCIDKeysPath(stateDir string) string {
 
 // deleteGitCIDKey drops the CID row from AEGIS_GIT_CID_KEYS only if it still
 // holds expectedPub (CAS). Blind CID delete would wipe a reused CID's new pub.
-// Memory poison dies on Hub restart; leftover file would re-lease a corpse.
+// File row is StopVM bookkeeping (not Hub ingest). Leftover file after a Hub
+// restart does not re-lease; handshake CAS-fills only after verify+roster.
 func deleteGitCIDKey(stateDir string, cid uint32, expectedPub string) {
 	expectedPub = strings.TrimSpace(expectedPub)
 	if cid == 0 || expectedPub == "" {
@@ -676,7 +677,7 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 		return fmt.Errorf("VM %s not running", id)
 	}
 	// Guest CID is NetworkConfig.VsockPort (not Hub vsock port 9999). Capture
-	// CID + this VM's pub BEFORE delete so a late unlease cannot poison a
+	// CID + this VM's pub BEFORE delete so a late unlease cannot CAS-drop a
 	// reused CID (B already got 42).
 	var cid uint32
 	var expectedPub string
@@ -690,6 +691,17 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 	}
 	delete(o.vms, id)
 	o.mu.Unlock()
+
+	logrus.Infof("Stopping VM %s", id)
+
+	// Stop the guest before Hub unlease. Unlease-then-stop leaves a live vsock
+	// occupant that can CAS-fill the empty CID (handshake occupancy) and pin
+	// the old pub against the next VM.
+	if err := o.backend.Stop(ctx, id); err != nil {
+		logrus.Errorf("Failed to stop VM %s: %v", id, err)
+		return err
+	}
+
 	if cid > 0 {
 		stateDir := ""
 		if o.config != nil {
@@ -699,13 +711,6 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 		if o.NotifyHubCIDUnlease != nil {
 			o.NotifyHubCIDUnlease(cid, expectedPub)
 		}
-	}
-
-	logrus.Infof("Stopping VM %s", id)
-
-	if err := o.backend.Stop(ctx, id); err != nil {
-		logrus.Errorf("Failed to stop VM %s: %v", id, err)
-		return err
 	}
 
 	// 7.2: Publish stop event

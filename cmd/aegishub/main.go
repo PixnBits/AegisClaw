@@ -436,13 +436,6 @@ func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 	return tenant, nil
 }
 
-// forgetVsockTenant is helper/git-connect hangup. handleConnection must not
-// defer unlease on git-connect OR VM guest hangup. Reconnect must not poison
-// leftover same pub. StopVM cid.unlease (CAS CID+pub) is the only unlease.
-func forgetVsockTenant(conn net.Conn) {
-	_ = conn
-}
-
 func storeCIDLease(cid uint32, pub string) {
 	hublease.StoreLeaseIfAbsentOrSame(cid, pub)
 }
@@ -661,7 +654,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		// Possession of AEGIS_HUB_PRIVKEY: dummy/empty never count, even in AEGIS_DEV_MODE.
 		// vsock: lease[CID] pub must equal verified pub, then tenant=identities[pub].
 		// unix: production always ERR_UNKNOWN_PEER (no Serve). Sit hubBin: -tags testunixgit. Never payload.tenant.
-		// No defer forgetVsockTenant; no cidClosed on helper close.
+		// Helper/git-connect hangup must not UnleaseCID.
 		if !verifyGitRegisterSignature(raw, regMsg, pubKey) {
 			_ = encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
 			return
@@ -683,7 +676,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	}
 
 	// Occupant fill: handshake is the ONLY Store. File is StopVM bookkeeping.
-	// Possession then roster then CAS empty-or-same. Never ClearClosed.
+	// Possession then roster then CAS empty-or-same.
 	// Unsigned/unrostered must not Store (unrostered would DoS-bind the CID).
 	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
 		if verifyGitRegisterSignature(raw, regMsg, pubKey) && lookupPeerTenant(pubKeyStr) != "" {
