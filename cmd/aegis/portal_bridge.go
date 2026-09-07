@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"AegisClaw/internal/collab"
@@ -22,6 +23,23 @@ import (
 // portalBridgeRPCTimeout bounds Store (and other Hub) work initiated from the web-portal
 // guest bridge so a stuck Store RPC cannot wedge the serial portal-bridge connection.
 const portalBridgeRPCTimeout = 25 * time.Second
+
+var (
+	daemonHubClientMu sync.Mutex
+	daemonHubClient   hubclient.Client
+)
+
+func setDaemonHubClient(c hubclient.Client) {
+	daemonHubClientMu.Lock()
+	daemonHubClient = c
+	daemonHubClientMu.Unlock()
+}
+
+func snapshotDaemonHubClient() hubclient.Client {
+	daemonHubClientMu.Lock()
+	defer daemonHubClientMu.Unlock()
+	return daemonHubClient
+}
 
 // portalBridgeMsg matches the web-portal hub bridge wire format.
 type portalBridgeMsg struct {
@@ -561,6 +579,7 @@ func startDaemonPortalHubReceiver() {
 				time.Sleep(time.Second)
 				continue
 			}
+			setDaemonHubClient(client)
 			logrus.Info("daemon portal hub receiver registered for web-portal presentation actions")
 			for {
 				msg, err := client.Receive(context.Background())
@@ -585,6 +604,7 @@ func startDaemonPortalHubReceiver() {
 				}
 				_ = client.Reply(context.Background(), resp)
 			}
+			setDaemonHubClient(nil)
 			client.Close()
 			time.Sleep(time.Second)
 		}

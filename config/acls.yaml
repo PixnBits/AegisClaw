@@ -387,6 +387,8 @@ rules:
   commands:
     - channel.relay_activity
     - channel.*
+    - orchestrator.stop_vm
+    - vm.stop
 - source: web-portal
   destination: "daemon-orchestrator"
   commands:

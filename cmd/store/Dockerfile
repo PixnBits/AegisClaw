@@ -27,17 +27,19 @@ COPY cmd/store ./cmd/store
 COPY internal ./internal
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /store ./cmd/store
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /git-remote-hub ./cmd/git-remote-hub
 
 # === Runtime stage ===
 FROM alpine:3.18
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata git
 
 RUN addgroup -S aegis && adduser -S -G aegis aegis
 
 WORKDIR /app
 
 COPY --from=builder /store /usr/local/bin/store
+COPY --from=builder /git-remote-hub /usr/local/bin/git-remote-hub
 
 # Minimal init script for Firecracker boot.
 COPY <<'EOF' /init

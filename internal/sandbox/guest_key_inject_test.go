@@ -13,3 +13,15 @@ func TestNeedsPerVMRootfsOnDemandRoles(t *testing.T) {
 		t.Fatal("Court/PM shared images stay shared")
 	}
 }
+
+func TestNeedsPerVMRootfsBuilder(t *testing.T) {
+	if !needsPerVMRootfs("builder-1") {
+		t.Fatal("builder-1 must get a private rootfs")
+	}
+	if !needsPerVMRootfs("builder") {
+		t.Fatal("id/type builder must get a private rootfs")
+	}
+	if needsPerVMRootfs("store") {
+		t.Fatal("store must keep the shared template")
+	}
+}
