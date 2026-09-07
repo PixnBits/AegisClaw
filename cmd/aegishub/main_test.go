@@ -1395,7 +1395,7 @@ func TestSecondGuestDifferentPubDoesNotOverwrite(t *testing.T) {
 	}
 }
 
-func TestHandshakeAfterStopVMFillsEmptySlot(t *testing.T) {
+func TestHandshakeAfterStopVMDoesNotClearClosed(t *testing.T) {
 	resetCIDLeases()
 	t.Cleanup(resetCIDLeases)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -1416,12 +1416,54 @@ func TestHandshakeAfterStopVMFillsEmptySlot(t *testing.T) {
 	const cid uint32 = 42
 	hublease.StoreLease(cid, pubStr)
 	if !hublease.UnleaseCID(cid, pubStr) {
-		t.Fatal("StopVM unlease")
+		t.Fatal("StopVM poison")
 	}
 	addr := &vsock.Addr{ContextID: cid, Port: 9999}
 	guestVsockHandshake(t, addr, signGuestRegister(priv, pubStr))
+	if _, ok := hublease.LoadLease(cid); ok {
+		t.Fatal("same pub after UnleaseCID must not fill")
+	}
+	closed, ok := hublease.ClosedPub(cid)
+	if !ok || closed != pubStr {
+		t.Fatalf("after StopVM poison, handshake must not ClearClosed: closed=%q ok=%v", closed, ok)
+	}
+}
+
+func TestHandshakeAfterStopVMDifferentPubClearsClosed(t *testing.T) {
+	resetCIDLeases()
+	t.Cleanup(resetCIDLeases)
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, privB, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAStr := base64.StdEncoding.EncodeToString(pubA)
+	pubBStr := base64.StdEncoding.EncodeToString(pubB)
+	dir := t.TempDir()
+	identPath := filepath.Join(dir, "git-identities.json")
+	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a", pubBStr: "tenant-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
+	const cid uint32 = 42
+	hublease.StoreLease(cid, pubAStr)
+	if !hublease.UnleaseCID(cid, pubAStr) {
+		t.Fatal("StopVM poison")
+	}
+	addr := &vsock.Addr{ContextID: cid, Port: 9999}
+	guestVsockHandshake(t, addr, signGuestRegister(privB, pubBStr))
 	got, ok := hublease.LoadLease(cid)
-	if !ok || got != pubStr {
-		t.Fatalf("verified handshake may occupy empty CID after StopVM: got %q ok=%v", got, ok)
+	if !ok || got != pubBStr {
+		t.Fatalf("different pub may fill after StopVM: got %q ok=%v", got, ok)
+	}
+	if closed, ok := hublease.ClosedPub(cid); ok {
+		t.Fatalf("different pub fill must ClearClosed, still %q", closed)
 	}
 }

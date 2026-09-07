@@ -9,19 +9,30 @@ import (
 	"sync"
 )
 
-// CID lease is in-memory only. Only fill: vsock handshake after verify+roster
-// via CASFillLease (empty-or-same, never overwrite different pub).
-// git-connect never writes. Hangup must not UnleaseCID. cid.lease RPC is
-// ERR_UNAUTHORIZED. StopVM CAS UnleaseCID (persistent daemon) deletes the
-// live lease. No file ingest.
+// CID lease is in-memory only. No file ingest; loadCIDKeys is gone.
+//
+// Only fill: guest vsock handshake after verifyGitRegisterSignature + roster
+// lookup, via CASFillLease / StoreLeaseIfAbsentOrSame (empty-or-same, never
+// overwrite a different pub). ClosedPub is consulted on fill and LoadLease:
+// same pub as ClosedPub is DENY (dead VM key cannot un-poison); empty slot
+// with a different ClosedPub (or none) Stores and ClearClosed.
+//
+// git-connect never writes the map. Helper/git-connect hangup and VM guest
+// hangup must not UnleaseCID.
+//
+// cid.lease RPC is always ERR_UNAUTHORIZED (not fill).
+// StopVM CAS UnleaseCID (persistent daemon only) writes ClosedPub then
+// deletes the lease if lease[cid]==expectedPub. File row DeleteCIDKeyIf stays.
 
 var (
 	lease  sync.Map // uint32 CID -> base64 pubkey
+	closed sync.Map // uint32 CID -> pubkey poisoned by successful CAS UnleaseCID
 	fileMu sync.Mutex
 )
 
 func Reset() {
 	lease = sync.Map{}
+	closed = sync.Map{}
 }
 
 func StoreLease(cid uint32, pub string) {
@@ -32,15 +43,27 @@ func StoreLease(cid uint32, pub string) {
 	lease.Store(cid, pub)
 }
 
-// StoreLeaseIfAbsentOrSame is handshake CAS fill: if lease empty, Store;
-// if lease==pub, no-op; if lease holds a different pub, do not overwrite.
+// StoreLeaseIfAbsentOrSame is handshake CAS fill:
+//   - if ClosedPub[CID]==pub: DENY — no Store, no ClearClosed
+//   - if slot empty AND pub different from ClosedPub (or ClosedPub absent): Store and ClearClosed
+//   - if lease==pub: no-op success
+//   - if lease holds a different pub: do not overwrite
 func StoreLeaseIfAbsentOrSame(cid uint32, pub string) bool {
 	pub = strings.TrimSpace(pub)
 	if cid == 0 || pub == "" {
 		return false
 	}
+	if dead, ok := ClosedPub(cid); ok && strings.TrimSpace(dead) == pub {
+		return false
+	}
 	actual, loaded := lease.LoadOrStore(cid, pub)
 	if !loaded {
+		// Re-check poison after Store: UnleaseCID may have raced.
+		if dead, ok := ClosedPub(cid); ok && strings.TrimSpace(dead) == pub {
+			lease.Delete(cid)
+			return false
+		}
+		ClearClosed(cid)
 		return true
 	}
 	cur, _ := actual.(string)
@@ -63,11 +86,32 @@ func LoadLease(cid uint32) (string, bool) {
 	}
 	pub, _ := v.(string)
 	pub = strings.TrimSpace(pub)
+	if pub == "" {
+		return "", false
+	}
+	if dead, ok := ClosedPub(cid); ok && strings.TrimSpace(dead) == pub {
+		return "", false
+	}
+	return pub, true
+}
+
+func ClosedPub(cid uint32) (string, bool) {
+	v, ok := closed.Load(cid)
+	if !ok {
+		return "", false
+	}
+	pub, _ := v.(string)
+	pub = strings.TrimSpace(pub)
 	return pub, pub != ""
 }
 
-// UnleaseCID is VM death CAS: drop the in-memory lease only if it still holds
-// expectedPub. Git-connect close and guest hangup must not call this.
+func ClearClosed(cid uint32) {
+	closed.Delete(cid)
+}
+
+// UnleaseCID is VM death CAS: write ClosedPub[CID]=deadPub then drop the
+// in-memory lease only if it still holds expectedPub. Git-connect close and
+// guest hangup must not call this.
 func UnleaseCID(cid uint32, expectedPub string) bool {
 	expectedPub = strings.TrimSpace(expectedPub)
 	if expectedPub == "" {
@@ -81,6 +125,7 @@ func UnleaseCID(cid uint32, expectedPub string) bool {
 	if strings.TrimSpace(pub) != expectedPub {
 		return false
 	}
+	closed.Store(cid, expectedPub)
 	lease.Delete(cid)
 	return true
 }

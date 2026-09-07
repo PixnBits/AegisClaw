@@ -770,14 +770,16 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			collab.Tracef("hub", "route", "src=%s dest=%s cmd=%s", msg.Source, msg.Destination, msg.Command)
 		}
 
-		// Verify signature
+		// Signed Source is a claim. Verify against this connection's registered
+		// componentID, then overwrite msg.Source before ACL/route so a daemon
+		// forging Source=store cannot wrong-actor pass as store (e.g. pr.merge).
 		registeredMutex.RLock()
-		regComp, exists := registered[msg.Source]
+		regComp, exists := registered[componentID]
 		registeredMutex.RUnlock()
 		if !exists {
-			debugLog("hub", fmt.Sprintf("Unauthorized source %s", msg.Source))
+			debugLog("hub", fmt.Sprintf("Unauthorized connection componentID %s (claimed source %s)", componentID, msg.Source))
 			encoder.Encode(map[string]string{"error": "ERR_UNAUTHORIZED"})
-			log.Printf("Audit: unauthorized source %s", msg.Source)
+			log.Printf("Audit: unauthorized connection %s (claimed source %s)", componentID, msg.Source)
 			continue
 		}
 		// Signature is now strictly required for all real traffic (per aegishub.md + security model).
@@ -785,15 +787,16 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		if msg.Signature == "" || msg.Signature == "dummy" {
 			if os.Getenv("AEGIS_DEV_MODE") != "1" {
 				encoder.Encode(map[string]string{"error": "ERR_SIGNATURE_REQUIRED"})
-				log.Printf("Audit: missing or dummy signature from %s (set AEGIS_DEV_MODE=1 to allow during development)", msg.Source)
+				log.Printf("Audit: missing or dummy signature from %s (set AEGIS_DEV_MODE=1 to allow during development)", componentID)
 				continue
 			}
-			log.Printf("DEV MODE: allowing dummy signature from %s", msg.Source)
+			log.Printf("DEV MODE: allowing dummy signature from %s", componentID)
 		} else if !verifyWireSignature(wire, regComp.PublicKey) {
 			encoder.Encode(map[string]string{"error": "ERR_INVALID_SIGNATURE"})
-			log.Printf("Audit: invalid signature from %s", msg.Source)
+			log.Printf("Audit: invalid signature from %s", componentID)
 			continue
 		}
+		msg.Source = componentID
 
 		if msg.Destination == "hub" && (msg.Command == "cid.unlease" || msg.Command == "cid.lease") {
 			encoders.Mutex.Lock()
@@ -972,6 +975,8 @@ func ephemeralHubRPCLoop(requesterID string, encoders *ComponentEncoders, conn n
 			debugLog("hub", fmt.Sprintf("ephemeral RPC %s decode end: %v", requesterID, err))
 			return
 		}
+		// Signed Source is a claim; bind to this connection assigned ID.
+		msg.Source = requesterID
 		if msg.Destination == "hub" && (msg.Command == "cid.unlease" || msg.Command == "cid.lease") {
 			reply := handleCIDLeaseCommand(msg, wire, conn, requesterID)
 			encoders.Mutex.Lock()

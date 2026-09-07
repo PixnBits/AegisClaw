@@ -240,20 +240,21 @@ var fanoutHubClientSeq uint64
 // (assigned_id=="daemon"). Hub is another process; in-process hublease from
 // the orchestrator does not update Hub. Do not register a fresh daemon-temp-*
 // client (anyone can claim those sources). Guests/git-remote-hub cannot.
+// Returns error if Hub client is nil or Send fails — StopVM must fail-closed
+// until Hub ACKs (warn-and-return is the leftover-handshake hole).
 
-func sendDaemonCIDUnlease(cid uint32, expectedPub string) {
-	sendDaemonCIDCommand("cid.unlease", cid, expectedPub)
+func sendDaemonCIDUnlease(cid uint32, expectedPub string) error {
+	return sendDaemonCIDCommand("cid.unlease", cid, expectedPub)
 }
 
-func sendDaemonCIDCommand(command string, cid uint32, pub string) {
+func sendDaemonCIDCommand(command string, cid uint32, pub string) error {
 	pub = strings.TrimSpace(pub)
 	if cid == 0 || pub == "" {
-		return
+		return fmt.Errorf("%s: missing cid or public_key", command)
 	}
 	client := snapshotDaemonHubClient()
 	if client == nil {
-		logrus.Warnf("%s cid=%d: persistent daemon Hub client not ready", command, cid)
-		return
+		return fmt.Errorf("%s cid=%d: persistent daemon Hub client not ready", command, cid)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -265,8 +266,9 @@ func sendDaemonCIDCommand(command string, cid uint32, pub string) {
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		logrus.Warnf("%s send cid=%d: %v", command, cid, err)
+		return fmt.Errorf("%s send cid=%d: %w", command, cid, err)
 	}
+	return nil
 }
 
 // sendToComponentViaEphemeralHubContext uses a one-shot hub client for parallel fan-out RPCs.

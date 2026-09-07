@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestUnleaseCIDDeletesLease(t *testing.T) {
+func TestUnleaseCIDPoisonsSamePub(t *testing.T) {
 	Reset()
 	t.Cleanup(Reset)
 	const cid uint32 = 7
@@ -22,16 +22,20 @@ func TestUnleaseCIDDeletesLease(t *testing.T) {
 	if _, ok := LoadLease(cid); ok {
 		t.Fatal("after UnleaseCID, in-memory lease must be gone")
 	}
-	if !CASFillLease(cid, "pub-a") {
-		t.Fatal("same pub may fill empty slot after UnleaseCID")
+	closed, ok := ClosedPub(cid)
+	if !ok || closed != "pub-a" {
+		t.Fatalf("poison: got %q ok=%v, want pub-a", closed, ok)
 	}
-	got, ok = LoadLease(cid)
-	if !ok || got != "pub-a" {
-		t.Fatalf("refill same pub: got %q ok=%v", got, ok)
+	if CASFillLease(cid, "pub-a") {
+		t.Fatal("same pub after UnleaseCID must not fill")
+	}
+	closed, ok = ClosedPub(cid)
+	if !ok || closed != "pub-a" {
+		t.Fatalf("denied fill must not ClearClosed: got %q ok=%v", closed, ok)
 	}
 }
 
-func TestCASFillLeaseAfterUnleaseFillsEmptySlot(t *testing.T) {
+func TestCASFillLeaseAfterUnleaseDifferentPubClearsClosed(t *testing.T) {
 	Reset()
 	t.Cleanup(Reset)
 	const cid uint32 = 9
@@ -42,12 +46,19 @@ func TestCASFillLeaseAfterUnleaseFillsEmptySlot(t *testing.T) {
 	if _, ok := LoadLease(cid); ok {
 		t.Fatal("git-connect LoadLease after unlease and before handshake must be empty")
 	}
+	closed, ok := ClosedPub(cid)
+	if !ok || closed != "pub-a" {
+		t.Fatalf("poison before refill: got %q ok=%v", closed, ok)
+	}
 	if !CASFillLease(cid, "pub-b") {
-		t.Fatal("new occupant pub may fill because the slot is empty")
+		t.Fatal("different pub may fill empty slot and ClearClosed")
 	}
 	got, ok := LoadLease(cid)
 	if !ok || got != "pub-b" {
 		t.Fatalf("new pub fill: got %q ok=%v", got, ok)
+	}
+	if closed, ok := ClosedPub(cid); ok {
+		t.Fatalf("different pub fill must ClearClosed, still %q", closed)
 	}
 }
 
@@ -63,6 +74,9 @@ func TestUnleaseCIDCASSkipsMismatchedPub(t *testing.T) {
 	got, ok := LoadLease(cid)
 	if !ok || got != "pub-b" {
 		t.Fatalf("B must keep lease: got %q ok=%v", got, ok)
+	}
+	if closed, ok := ClosedPub(cid); ok {
+		t.Fatalf("CAS miss must not poison B, closed=%q", closed)
 	}
 }
 
@@ -134,18 +148,28 @@ func TestStoreLeaseCASEmptyOrSame(t *testing.T) {
 	}
 }
 
-func TestStoreLeaseCASAfterUnleaseFillsEmpty(t *testing.T) {
+func TestStoreLeaseCASSamePubAfterUnleaseDenies(t *testing.T) {
 	Reset()
 	t.Cleanup(Reset)
 	const cid uint32 = 12
 	StoreLease(cid, "pub-a")
 	UnleaseCID(cid, "pub-a")
-	if !StoreLeaseCAS(cid, "pub-a") {
-		t.Fatal("CAS-store of same pub after unlease must succeed because the slot is empty")
+	if StoreLeaseCAS(cid, "pub-a") {
+		t.Fatal("same pub after UnleaseCID must not fill (ClosedPub deny)")
+	}
+	closed, ok := ClosedPub(cid)
+	if !ok || closed != "pub-a" {
+		t.Fatalf("denied CAS must not ClearClosed: got %q ok=%v", closed, ok)
+	}
+	if !StoreLeaseCAS(cid, "pub-b") {
+		t.Fatal("different pub may fill and ClearClosed")
 	}
 	got, ok := LoadLease(cid)
-	if !ok || got != "pub-a" {
+	if !ok || got != "pub-b" {
 		t.Fatalf("re-lease: got %q ok=%v", got, ok)
+	}
+	if closed, ok := ClosedPub(cid); ok {
+		t.Fatalf("different pub fill must ClearClosed, still %q", closed)
 	}
 }
 
@@ -184,7 +208,7 @@ func TestStoreLeaseIfAbsentOrSameNeverOverwritesDifferentPub(t *testing.T) {
 	}
 }
 
-func TestStoreLeaseIfAbsentOrSameFillsAfterUnlease(t *testing.T) {
+func TestStoreLeaseIfAbsentOrSameSamePubAfterUnleaseDenies(t *testing.T) {
 	Reset()
 	t.Cleanup(Reset)
 	const cid uint32 = 13
@@ -195,11 +219,24 @@ func TestStoreLeaseIfAbsentOrSameFillsAfterUnlease(t *testing.T) {
 	if _, ok := LoadLease(cid); ok {
 		t.Fatal("LoadLease after unlease must be empty")
 	}
-	if !StoreLeaseIfAbsentOrSame(cid, "pub-a") {
-		t.Fatal("handshake may fill empty slot after StopVM")
+	if StoreLeaseIfAbsentOrSame(cid, "pub-a") {
+		t.Fatal("same pub after UnleaseCID must not fill")
 	}
-	got, ok := LoadLease(cid)
-	if !ok || got != "pub-a" {
-		t.Fatalf("fill after unlease: got %q ok=%v", got, ok)
+	closed, ok := ClosedPub(cid)
+	if !ok || closed != "pub-a" {
+		t.Fatalf("denied fill must not ClearClosed: got %q ok=%v", closed, ok)
+	}
+}
+
+func TestLoadLeaseDeniesClosedPubMatch(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+	const cid uint32 = 15
+	StoreLease(cid, "pub-a")
+	UnleaseCID(cid, "pub-a")
+	// Unconditional StoreLease must not un-poison via LoadLease.
+	StoreLease(cid, "pub-a")
+	if got, ok := LoadLease(cid); ok {
+		t.Fatalf("LoadLease must DENY when ClosedPub==pub: got %q", got)
 	}
 }

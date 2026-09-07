@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,9 +117,10 @@ func TestStopVMCapturesCIDPubAndDeletesRow(t *testing.T) {
 				},
 			},
 		},
-		NotifyHubCIDUnlease: func(cid uint32, expectedPub string) {
+		NotifyHubCIDUnlease: func(cid uint32, expectedPub string) error {
 			gotCID = cid
 			gotPub = expectedPub
+			return nil
 		},
 	}
 	if err := o.StopVM(context.Background(), "vm-a"); err != nil {
@@ -173,8 +175,9 @@ func TestStopVMUnleasesAfterBackendStop(t *testing.T) {
 				},
 			},
 		},
-		NotifyHubCIDUnlease: func(uint32, string) {
+		NotifyHubCIDUnlease: func(uint32, string) error {
 			order = append(order, "unlease")
+			return nil
 		},
 	}
 	if err := o.StopVM(context.Background(), "vm-a"); err != nil {
@@ -227,4 +230,49 @@ func (stubSandbox) List(context.Context) ([]sandbox.VMInfo, error) { return nil,
 func (stubSandbox) Cleanup(context.Context) error                  { return nil }
 func (stubSandbox) BootPhases(context.Context, string) map[string]int64 {
 	return nil
+}
+
+func TestStopVMErrorsOnUnleaseFailKeepsVM(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "git-cid-keys.json")
+	t.Setenv("AEGIS_GIT_CID_KEYS", path)
+	pub := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	pub[0] = 5
+	writeGitCIDKey(dir, 9, pub)
+
+	o := &Orchestrator{
+		config:  &config.Config{StateDir: dir},
+		backend: stubSandbox{},
+		bus:     eventbus.New(),
+		vms: map[string]*VMLifecycle{
+			"vm-a": {
+				ID: "vm-a",
+				Config: sandbox.VMConfig{
+					PublicKey:     pub,
+					NetworkConfig: &sandbox.NetworkConfig{VsockPort: 9},
+				},
+			},
+		},
+		NotifyHubCIDUnlease: func(uint32, string) error {
+			return fmt.Errorf("hub not ready")
+		},
+	}
+	err := o.StopVM(context.Background(), "vm-a")
+	if err == nil {
+		t.Fatal("StopVM must return error when Hub unlease fails")
+	}
+	if _, ok := o.vms["vm-a"]; !ok {
+		t.Fatal("VM must remain in map until Hub ACKs unlease (CID not reusable)")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["9"]; ok {
+		t.Fatalf("file row must still be deleted on unlease fail: %s", b)
+	}
 }

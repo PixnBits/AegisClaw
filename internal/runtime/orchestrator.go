@@ -42,11 +42,13 @@ type Orchestrator struct {
 	defaultPMModel     string                   // captured at New() from AEGIS_PM_MODEL (else defaultLLMModel, else DefaultPMModel)
 	pregenKeys         []vmKeyPair              // pre-generated Ed25519 keypairs for fast StartVM (saves Generate + write in hot path for <1s)
 	// NotifyHubCIDUnlease is invoked from StopVM after capturing guest CID
-	// (NetworkConfig.VsockPort) AND that VM's pub, after delete(o.vms).
+	// (NetworkConfig.VsockPort) AND that VM's pub, after backend.Stop and
+	// file-row delete, before delete(o.vms). Must return error until Hub ACKs
+	// (fail-closed: do not mark VM stopped / CID reusable on warn-and-return).
 	// Hub is another process -- package-local hublease.UnleaseCID in the daemon
 	// does not unlease Hub memory. Production daemon sends cid.unlease with
 	// CID+expectedPub (CAS). Tests may leave this nil.
-	NotifyHubCIDUnlease func(cid uint32, expectedPub string)
+	NotifyHubCIDUnlease func(cid uint32, expectedPub string) error
 }
 
 type vmKeyPair struct {
@@ -689,7 +691,8 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 			expectedPub = base64.StdEncoding.EncodeToString(lc.Config.PublicKey)
 		}
 	}
-	delete(o.vms, id)
+	// Keep VM in o.vms until Hub ACKs cid.unlease (fail-closed: guest may be
+	// dead but CID is not reusable / VM not marked stopped on unlease failure).
 	o.mu.Unlock()
 
 	logrus.Infof("Stopping VM %s", id)
@@ -709,9 +712,16 @@ func (o *Orchestrator) StopVM(ctx context.Context, id string) error {
 		}
 		deleteGitCIDKey(stateDir, cid, expectedPub)
 		if o.NotifyHubCIDUnlease != nil {
-			o.NotifyHubCIDUnlease(cid, expectedPub)
+			if err := o.NotifyHubCIDUnlease(cid, expectedPub); err != nil {
+				logrus.Errorf("Hub cid.unlease failed for VM %s cid=%d (guest stopped, file row deleted, CID not reusable): %v", id, cid, err)
+				return fmt.Errorf("hub cid.unlease failed for VM %s cid=%d: %w", id, cid, err)
+			}
 		}
 	}
+
+	o.mu.Lock()
+	delete(o.vms, id)
+	o.mu.Unlock()
 
 	// 7.2: Publish stop event
 	o.bus.PublishJSON("vm.stopped", map[string]interface{}{
