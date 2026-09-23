@@ -134,6 +134,7 @@ Rules:
 - You may only @mention these roles: @Coder, @Tester, @CISO, @Architect. To involve Court, write "Court proposal". Do not invent other role titles.
 - Assign only the roles this goal actually needs. Do not invite extra roles.
 - Do not invent repository names or file paths. If the user did not give one, say it is missing. Tell anyone who would change files to ask before editing. Do not claim work is done.
+- Do not invent, punch, or apply network, firewall, or allowlist policy. Isolation and network-boundary changes need a Court proposal first. Do not assign anyone to write or apply a policy Court has not approved.
 - If the ask is social or thanks, reply as a human. Do not assign engineering roles or Court.
 `
 }

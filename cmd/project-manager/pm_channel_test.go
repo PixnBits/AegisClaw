@@ -170,6 +170,22 @@ func TestPMChannelConversationFixtures(t *testing.T) {
 	}
 }
 
+func TestPMPlanPromptNoTopicFewShots(t *testing.T) {
+	p := strings.ToLower(getPMPlanPrompt())
+	// General Court-before-allowlist is required; topic few-shots are forbidden (#90).
+	if !strings.Contains(p, "court proposal") || !strings.Contains(p, "allowlist") {
+		t.Fatal("plan prompt must state Court-before-allowlist generally")
+	}
+	for _, leak := range []string{
+		"css", "padding", "birthday", "seven year", "sk-live", "accounts.google.com",
+		"egress", "oauth callback", "login button",
+	} {
+		if strings.Contains(p, leak) {
+			t.Errorf("plan prompt must not contain topic few-shot %q", leak)
+		}
+	}
+}
+
 func TestPMPlanPromptForbidsEcho(t *testing.T) {
 	p := getPMPlanPrompt()
 	for _, needle := range []string{"Output ONLY the plan", "Never repeat", "Assign only the roles", "@Coder", "@CISO"} {
