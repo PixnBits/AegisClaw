@@ -1,6 +1,8 @@
 # AegisClaw v2
 
-**Status:** Phase 0 - Foundations & Testing Infrastructure
+**Status:** Shelved (2026-09-23) — experiment concluded. See [#94](https://github.com/PixnBits/AegisClaw/issues/94).
+
+> **Archive note.** The core product bet — that Slack-like multi-agent channel collaboration (human turn-taking, SPEAK/PASS, standing PM + specialists + Court in one room) would be more productive than a strong single agent — was closed as falsified. This repository is archived history only; no further product work. Full write-up of the bet, internal evidence, and decision: **[Issue #94 — Experiment conclusion](https://github.com/PixnBits/AegisClaw/issues/94)**.
 
 AegisClaw is a secure, sandboxed AI agent runtime built for safety and reliability. All components run in isolated microVMs (Linux/Firecracker) or Docker Sandboxes (macOS/Windows).
 
