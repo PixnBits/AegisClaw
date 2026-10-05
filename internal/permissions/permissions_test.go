@@ -112,6 +112,12 @@ func TestIsCapabilityCommand(t *testing.T) {
 	if IsCapabilityCommand("channel.activity") {
 		t.Error("channel.activity is collaboration delivery, not capability-gated")
 	}
+	if IsCapabilityCommand("channel.turn_result") {
+		t.Error("channel.turn_result is collaboration delivery, not capability-gated")
+	}
+	if IsCapabilityCommand("channel.add_member") {
+		t.Error("channel.add_member is collaboration delivery, not capability-gated")
+	}
 	if !IsCapabilityCommand("llm.call") {
 		t.Error("llm.call is a capability")
 	}
