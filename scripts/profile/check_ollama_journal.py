@@ -35,8 +35,9 @@ Operator check for one finished run directory (``result.json``):
     python3 scripts/profile/check_ollama_journal.py RUN_DIR
 
 That prints a journalctl command. The window starts a few seconds before
-``started_at`` and ends at ``started_at + wall_s`` plus a short settle
-(the harness waits about 3s after the conclusion before the usage
+``started_at`` and ends at ``started_at`` plus ``total_s`` when that field
+is set (conclusion ``wall_s`` plus drain), otherwise ``wall_s``, plus a
+short settle (the harness waits about 3s after the drain before the usage
 snapshot). Stop there. A later ``score.py --judge`` call is another
 Ollama generate and is not part of this run.
 
@@ -87,9 +88,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Seconds before started_at, and after started_at + wall_s. The tail covers
-# the harness usage settle (~3s) and clock skew. It is not long enough to
-# include a later judge call on purpose; do not widen it into score time.
+# Seconds before started_at, and after started_at + total_s (or wall_s when
+# the result has no total_s). The tail covers the harness usage settle (~3s)
+# and clock skew. It is not long enough to include a later judge call on
+# purpose; do not widen it into score time.
 LEAD_S = 5.0
 SETTLE_S = 15.0
 TOKEN_CACHE_METHOD = "api_prompt_eval_count_full__journal_prompt_eval_new"
@@ -119,19 +121,28 @@ def format_journal_time(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def _window_span_s(result: dict) -> float:
+    """Journal span. total_s includes drain; older results only have wall_s."""
+    raw = result.get("total_s")
+    if raw is None:
+        raw = result.get("wall_s")
+    try:
+        span = float(0 if raw is None else raw)
+    except (TypeError, ValueError):
+        span = 0.0
+    if span < 0 or span != span or span == float("inf"):
+        span = 0.0
+    return span
+
+
 def run_window(result: dict, lead_s: float = LEAD_S, settle_s: float = SETTLE_S):
     raw = result.get("started_at")
     if not raw:
         raise ValueError("result.json has no started_at")
     started = parse_time(str(raw))
-    try:
-        wall_s = float(result.get("wall_s") if result.get("wall_s") is not None else 0)
-    except (TypeError, ValueError):
-        wall_s = 0.0
-    if wall_s < 0 or wall_s != wall_s or wall_s == float("inf"):
-        wall_s = 0.0
+    span = _window_span_s(result)
     start = started - timedelta(seconds=float(lead_s))
-    end = started + timedelta(seconds=wall_s + float(settle_s))
+    end = started + timedelta(seconds=span + float(settle_s))
     return start, end
 
 

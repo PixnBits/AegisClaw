@@ -5,8 +5,18 @@ Conclusion checks run only after min_wait_s since the goal was accepted
 (Sent/Posted goal acceptance in the pm-goal output), in this order: final_marker, quiet,
 quiet_no_reply, then the timeout_s hard cap measured from t0.
 
-final_marker requires a non-PM agent reply after the first PM message and a
-marker on a message at or after that reply. The PM plan alone does not conclude.
+final_marker fires when a later PM message (not the first plan) matches a
+marker, or when a non-clarifying agent reply has followed the first PM and a
+marker matches a PM or non-clarifying agent message at or after that reply.
+An agent reply whose stripped text ends with "?" is clarifying: it does not
+make the marker eligible, and a marker phrase inside it does not conclude.
+
+After that signal (including timeout, and error only once the goal was
+accepted), a drain keeps polling until turn-state has no pending member or is
+unavailable, attributed usage for this channel is unchanged since the last
+observation, and the message signature has been quiet for DRAIN_QUIET_S, or
+until DRAIN_CAP_S. wall_s stops at the signal. drain_s is the drain. total_s
+is wall_s + drain_s and is the journal window.
 
 A turn is one PM or agent message in the collected transcript, whether that
 message was a channel post or a DM chat.message.
@@ -61,6 +71,8 @@ RESULT_KEYS = [
     "llm_calls",
     "journal_llm_calls",
     "wall_s",
+    "drain_s",
+    "total_s",
     "turns",
     "turns_source",
     "messages",
@@ -90,6 +102,9 @@ CLI_TIMEOUT_S = 20
 SEED_TIMEOUT_S = 120
 SHORT_POLL_S = 60
 USAGE_SETTLE_S = 3
+# After the conclusion signal, keep polling until in-flight work is quiet.
+DRAIN_QUIET_S = 15
+DRAIN_CAP_S = 120
 LOG_SLICE_MAX = 64 * 1024 * 1024
 
 
@@ -330,10 +345,27 @@ def _compile_markers(patterns):
     return compiled
 
 
-def _first_agent_reply_index(messages):
-    """Index of the first non-PM agent message after the first PM message.
+def _is_clarifying_question(text) -> bool:
+    """True when stripped text ends with '?'. That is the whole heuristic."""
+    if text is None:
+        return False
+    return str(text).strip().endswith("?")
 
-    None when there is no PM message, or no agent reply after that plan.
+
+def _marker_in_text(text, compiled) -> bool:
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+    for pattern in compiled:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def _first_agent_reply_index(messages):
+    """Index of the first non-clarifying agent message after the first PM.
+
+    None when there is no PM message, or every agent reply so far ends with
+    '?' (clarifying). Those replies do not make final_marker eligible.
     Court senders and facilitator system status posts are not agents.
     The PM's own first message is not a reply.
     """
@@ -347,33 +379,51 @@ def _first_agent_reply_index(messages):
     for index, message in enumerate(messages):
         if index <= first_pm:
             continue
-        if message.get("role") == "agent":
-            return index
+        if message.get("role") != "agent":
+            continue
+        if _is_clarifying_question(message.get("content") or ""):
+            continue
+        return index
     return None
 
 
 def marker_hit(messages, patterns) -> bool:
-    """True only after an agent has replied to the PM plan and a marker matches.
+    """True when a later PM marker matches, or a non-clarifying agent path does.
 
-    final_marker may fire only when there is at least one non-PM agent reply
-    after the first PM message, and a final_markers pattern matches some PM or
-    agent message at or after that first agent reply (the reply itself or a
-    later PM synthesis). The PM's first plan or clarifying ask alone does not
-    match, even when its text contains a marker.
+    A PM message after the first PM (not the opening plan) whose text matches
+    a final_markers pattern fires on its own, even if every agent reply so far
+    is a clarifying question. Otherwise the marker needs a non-clarifying agent
+    reply after the first PM, then a match on a PM or non-clarifying agent
+    message at or after that reply. An agent message that ends with '?' does
+    not match, even when it contains a marker phrase.
     """
     compiled = _compile_markers(patterns)
     if not compiled:
         return False
+    first_pm = None
+    for index, message in enumerate(messages):
+        if message.get("role") == "pm":
+            first_pm = index
+            break
+    if first_pm is None:
+        return False
+    for message in messages[first_pm + 1 :]:
+        if message.get("role") != "pm":
+            continue
+        if _marker_in_text(message.get("content") or "", compiled):
+            return True
     start = _first_agent_reply_index(messages)
     if start is None:
         return False
     for message in messages[start:]:
-        if message.get("role") not in ("pm", "agent"):
+        role = message.get("role")
+        if role not in ("pm", "agent"):
             continue
         text = message.get("content") or ""
-        for pattern in compiled:
-            if pattern.search(text):
-                return True
+        if role == "agent" and _is_clarifying_question(text):
+            continue
+        if _marker_in_text(text, compiled):
+            return True
     return False
 
 
@@ -531,11 +581,13 @@ def account(trace_text: str, window_text: str, attributed, unattributed) -> dict
     }
 
 
-def apply_journal_cache(metrics: dict, started_at, wall_s, *, run_cmd=None) -> dict:
+def apply_journal_cache(metrics: dict, started_at, total_s, *, run_cmd=None) -> dict:
     """Fill cache-adjusted prompt tokens from journalctl. Never raises.
 
-    Live runs only. Journal prompt-eval N is newly evaluated tokens, not the
-    API full-prompt count. Missing journalctl or no timing lines leave
+    The journal window length is total_s (conclusion wall_s plus drain), not
+    wall_s alone, so a call that finishes during drain is counted. Live runs
+    only. Journal prompt-eval N is newly evaluated tokens, not the API
+    full-prompt count. Missing journalctl or no timing lines leave
     tokens_prompt_cache_adjusted null.
     """
     out = dict(metrics)
@@ -543,7 +595,9 @@ def apply_journal_cache(metrics: dict, started_at, wall_s, *, run_cmd=None) -> d
     out["journal_llm_calls"] = None
     out["tokens_cache_method"] = TOKEN_CACHE_METHOD_UNAVAILABLE
     try:
-        stub = {"started_at": started_at, "wall_s": wall_s}
+        # run_window reads total_s when set, else wall_s. Both carry the
+        # drain-inclusive length here; result.json keeps wall_s as conclusion time.
+        stub = {"started_at": started_at, "total_s": total_s, "wall_s": total_s}
         argv = ollama_journal.journalctl_argv(stub)
         if run_cmd is None:
             proc = run_bounded(argv, cwd=None, timeout=60)
@@ -579,6 +633,8 @@ def build_result(
     messages,
     metrics,
     wall_s,
+    drain_s,
+    total_s,
     started_at,
     run_dir,
     error,
@@ -606,6 +662,8 @@ def build_result(
         "llm_calls": int(metrics["llm_calls"]),
         "journal_llm_calls": _opt_int(metrics.get("journal_llm_calls")),
         "wall_s": float(wall_s),
+        "drain_s": float(drain_s),
+        "total_s": float(total_s),
         "turns": int(metrics["turns"]),
         "turns_source": metrics["turns_source"],
         "messages": int(total),
@@ -944,12 +1002,14 @@ def run_dry(args, scenario: dict, scenario_id: str) -> int:
         messages=messages,
         metrics=metrics,
         wall_s=float(wall_s),
+        drain_s=0.0,
+        total_s=float(wall_s),
         started_at=started_at,
         run_dir=run_dir,
         error=_clip(seed_error),
     )
     _publish(out_dir, run_dir, result)
-    print(f"{result['run_id']} {result['completion_signal']} wall_s={result['wall_s']}")
+    _print_result_line(result)
     return 0
 
 
@@ -990,6 +1050,124 @@ def _poll_once(arm: str, channel: str, scenario=None):
         "get_proc": get_proc,
         "dm_messages": len(extra),
     }
+
+
+def _print_result_line(result: dict) -> None:
+    print(
+        f"{result['run_id']} {result['completion_signal']} "
+        f"wall_s={result['wall_s']} drain_s={result['drain_s']} total_s={result['total_s']}"
+    )
+
+
+def _new_attributed_for_channel(previous, current, channel) -> bool:
+    """True when this usage observation should keep the drain open.
+
+    A record whose agent_id contains the channel id and that was not in the
+    previous snapshot is new work. An empty snapshot after a non-empty one is
+    a failed read, not quiet.
+    """
+    prev = [row for row in (previous or []) if isinstance(row, dict)]
+    curr = [row for row in (current or []) if isinstance(row, dict)]
+    if prev and not curr:
+        return True
+    attributed, _unattributed = usage_delta(prev, curr, channel, None, None)
+    return len(attributed) > 0
+
+
+def _drain_ready(turn_available, any_pending, new_attributed, silence_s) -> bool:
+    """True when turn-state, usage, and message quiet all allow the drain to end.
+
+    A missing turn-state does not block. Pending members do.
+    """
+    if turn_available and any_pending:
+        return False
+    if new_attributed:
+        return False
+    return silence_s >= DRAIN_QUIET_S
+
+
+def _drain_after_conclusion(
+    args,
+    channel,
+    scenario,
+    polls_path,
+    t0_mono,
+    messages,
+    last_raw,
+    prev_sig,
+    last_change_mono,
+    transcript_collected,
+):
+    """Poll until in-flight work is quiet or DRAIN_CAP_S elapses.
+
+    Returns messages, last_raw, transcript_collected, drain_s. The caller
+    still does the final transcript poll, USAGE_SETTLE_S, and usage_after.
+    """
+    drain_start = time.monotonic()
+    deadline = drain_start + DRAIN_CAP_S
+    if last_change_mono is None:
+        last_change_mono = drain_start
+    if prev_sig is None:
+        prev_sig = _message_signature(messages)
+    previous_usage = usage_snapshot()
+    poll_s = float(args.poll_s)
+    sleep_s = poll_s if poll_s > 0 else 0.05
+    while True:
+        if time.monotonic() >= deadline:
+            break
+        try:
+            sample = _poll_once(args.arm, channel, scenario)
+        except (OSError, ValueError):
+            sample = {
+                "fetch_ok": False,
+                "messages": None,
+                "raw": "",
+                "turn": None,
+                "dm_messages": 0,
+            }
+        now_mono = time.monotonic()
+        turn_available, any_pending, turn_summary = inspect_turn_state(sample.get("turn"))
+        if sample.get("fetch_ok"):
+            transcript_collected = True
+            messages = sample["messages"] or []
+            last_raw = sample.get("raw") or ""
+            sig = _message_signature(messages)
+            if sig != prev_sig:
+                last_change_mono = now_mono
+                prev_sig = sig
+            total, _agent, _pm, _non_user, senders = message_counts(messages)
+            summary = turn_summary
+        else:
+            total, _agent, _pm, _non_user, senders = message_counts(messages)
+            summary = "channel_get_failed; " + turn_summary
+        poll = {
+            "t_s": round(now_mono - t0_mono, 3),
+            "n_messages": total,
+            "n_senders": senders,
+            "turn_state": summary,
+            "dm_messages": int(sample.get("dm_messages") or 0),
+        }
+        with polls_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(poll, ensure_ascii=False) + "\n")
+        current_usage = usage_snapshot()
+        new_attributed = _new_attributed_for_channel(previous_usage, current_usage, channel)
+        if current_usage or not previous_usage:
+            previous_usage = current_usage
+        now_mono = time.monotonic()
+        if now_mono >= deadline:
+            break
+        if _drain_ready(
+            turn_available,
+            any_pending,
+            new_attributed,
+            silence_seconds(last_change_mono, now_mono),
+        ):
+            break
+        nap = min(sleep_s, max(0.0, deadline - time.monotonic()))
+        if nap > 0:
+            time.sleep(nap)
+    drain_s = round(time.monotonic() - drain_start, 3)
+    return messages, last_raw, transcript_collected, drain_s
 
 
 def _collect_trace(arm: str, channel: str, out_dir: Path, log_offset: int):
@@ -1171,6 +1349,25 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
     else:
         error_text = goal_error or "run ended in error"
 
+    drain_s = 0.0
+    # Timeout always drains. error drains only after the goal was accepted.
+    if signal in {"final_marker", "quiet", "quiet_no_reply", "timeout"} or (
+        signal == "error" and goal_accepted_mono is not None
+    ):
+        messages, last_raw, transcript_collected, drain_s = _drain_after_conclusion(
+            args,
+            channel,
+            scenario,
+            polls_path,
+            t0_mono,
+            messages,
+            last_raw,
+            prev_sig,
+            last_change_mono,
+            transcript_collected,
+        )
+    total_s = round(float(wall_s) + float(drain_s), 3)
+
     try:
         final = _poll_once(args.arm, channel, scenario)
     except (OSError, ValueError):
@@ -1205,7 +1402,7 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
         transcript_collected,
     )
     try:
-        metrics = apply_journal_cache(metrics, started_at, wall_s)
+        metrics = apply_journal_cache(metrics, started_at, total_s)
     except Exception:
         metrics["tokens_prompt_cache_adjusted"] = None
         metrics["journal_llm_calls"] = None
@@ -1224,12 +1421,14 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
         messages=messages,
         metrics=metrics,
         wall_s=float(wall_s),
+        drain_s=float(drain_s),
+        total_s=float(total_s),
         started_at=started_at,
         run_dir=run_dir,
         error=error_text,
     )
     _publish(out_dir, run_dir, result)
-    print(f"{result['run_id']} {result['completion_signal']} wall_s={result['wall_s']}")
+    _print_result_line(result)
     return 0
 
 
@@ -1247,6 +1446,8 @@ def _error_result(args, scenario_id, channel, run_id, started_at, run_dir, messa
         messages=[],
         metrics=_empty_metrics(),
         wall_s=0.0,
+        drain_s=0.0,
+        total_s=0.0,
         started_at=started_at or now_iso(),
         run_dir=run_dir,
         error=str(message),
@@ -1373,6 +1574,8 @@ def _emit_dry_error(args, scenario, scenario_id, exc) -> int:
         messages=[],
         metrics=_empty_metrics(),
         wall_s=0.0,
+        drain_s=0.0,
+        total_s=0.0,
         started_at=started_at,
         run_dir=run_dir,
         error=str(exc),

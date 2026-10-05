@@ -315,6 +315,26 @@ write_profile_env() {
   echo "daemon.sh: wrote $env_file (COLLAB_TRACE=1 DEFAULT_MODEL=$model PM_MODEL=$pm ROOTFS_DIR=$rootfs)"
 }
 
+# keep_alive 60m. A failed prewarm does not fail start.
+prewarm_models() {
+  local model pm name payload
+  model=$(sanitize_env_value "${AEGIS_DEFAULT_MODEL:-qwen3-coder:30b}")
+  pm=$(sanitize_env_value "${AEGIS_PM_MODEL:-qwen3.6:35b}")
+  for name in "$model" "$pm"; do
+    payload=$(printf '{"model":"%s","prompt":"ping","stream":false,"keep_alive":"60m"}' "$name")
+    if curl -sS --max-time 600 -o /dev/null \
+      -H 'Content-Type: application/json' \
+      -X POST \
+      --data "$payload" \
+      http://127.0.0.1:11434/api/generate; then
+      echo "prewarm ${name} ok"
+    else
+      echo "prewarm ${name} fail"
+    fi
+  done
+  return 0
+}
+
 cmd_start() {
   refuse_if_busy
   cd "$build_dir"
@@ -335,6 +355,7 @@ cmd_start() {
     sudo_password_failed "$exact" "$output"
   fi
   wait_ready
+  prewarm_models
 }
 
 cmd_stop() {
