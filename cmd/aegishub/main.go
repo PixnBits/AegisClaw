@@ -732,14 +732,21 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 
 	conns.Store(componentID, conn)
 
-	// Cleanup when connection closes
-	defer func(id string) {
+	// A re-register overwrites registered[id] before this conn's defer runs.
+	// Delete only if this conn still owns the slot.
+	defer func(id string, enc *ComponentEncoders, c net.Conn) {
 		registeredMutex.Lock()
-		delete(registered, id)
+		owns := false
+		if cur, ok := registered[id]; ok && cur != nil && cur.Encoders == enc {
+			delete(registered, id)
+			owns = true
+		}
 		registeredMutex.Unlock()
-		conns.Delete(id)
-		debugLog("hub", fmt.Sprintf("Cleaned up registration for %s", id))
-	}(componentID)
+		conns.CompareAndDelete(id, c)
+		if owns {
+			debugLog("hub", fmt.Sprintf("Cleaned up registration for %s", id))
+		}
+	}(componentID, encoders, conn)
 
 	// Send ACL rules for this component, including the assigned ID
 	response := map[string]interface{}{

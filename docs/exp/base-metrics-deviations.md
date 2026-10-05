@@ -34,3 +34,9 @@ Store replies to `hub-perm-fetch-*` with command `permission.snapshot`, the same
 ## Permissions: turn_result/add_member ACL-only
 
 `IsCapabilityCommand` excludes `channel.turn_result`, `channel.add_member`, `channel.turn`, and `channel.member_turn_update` as ACL-gated collaboration plumbing; they are not capability grants and are not added to `DefaultBootstrap`.
+
+## Hub: older close does not drop a re-registration
+
+Already on this branch. `cmd/aegishub` replaces `registered[id]` when the same component registers again. The previous connection's close used to delete that map entry and the `conns` slot by id alone. If that close ran after the replacement, it removed the new registration. Later frames on the new connection were `ERR_UNAUTHORIZED` (`Audit: unauthorized connection <id>`). Portal reads that use the new connection then failed, so usage APIs returned empty while LLM calls had still happened.
+
+The close path now deletes `registered[id]` only when that entry's encoders are still this connection's, and removes the `conns` entry only when it is still this connection. The connection that still owns the id still clears it when it closes. No ACL change. No guest image change.
