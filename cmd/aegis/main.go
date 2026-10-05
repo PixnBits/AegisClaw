@@ -5715,6 +5715,8 @@ func startOrchestratorCommandReceiver() {
 				// daemon-internal-* from the early receiver path (on auto "main"+Court members and on
 				// every PM-driven ensure.role for coder/tester etc). Source remains stable "daemon-orchestrator"
 				// which has ACL grant to store channel.* .
+				// Empty or omitted channel still spawned the agent above. Skip
+				// add_member so direct-message work is not seated on a channel.
 				if channel != "" {
 					addPayload := map[string]interface{}{"channel_id": channel, "role": role}
 					addMsg := hubclient.Message{

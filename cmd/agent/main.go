@@ -323,6 +323,13 @@ func handleAgentMessage(client hubclient.Client, msg hubclient.Message, skillInd
 		return true
 	}
 
+	// A direct task from the project manager is one LLM call and a hub reply.
+	// Portal chat.message still uses the 6-step loop below. This path must not channel.post.
+	if msg.Command == "chat.message" && isPMDirectTask(msg) {
+		processPMDirectTask(client, msg, realLLM)
+		return true
+	}
+
 	tc := &agent.TurnContext{
 		Input:              msg.Payload,
 		Hub:                client,
@@ -623,6 +630,87 @@ func handleAgentPoll(client hubclient.Client, msg hubclient.Message, skillIndex 
 		})
 	}
 	_ = skillIndex
+}
+
+func isProjectManagerID(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	return id == "project-manager" || strings.HasPrefix(id, "project-manager-")
+}
+
+func isPMDirectTask(msg hubclient.Message) bool {
+	return msg.Command == "chat.message" && isProjectManagerID(msg.Source)
+}
+
+func directTaskFields(payload interface{}) (goal, plan, content string) {
+	p, ok := payload.(map[string]interface{})
+	if !ok {
+		return "", "", strings.TrimSpace(fmt.Sprint(payload))
+	}
+	goal = strings.TrimSpace(collab.PayloadContentString(p["goal"]))
+	plan = strings.TrimSpace(collab.PayloadContentString(p["plan"]))
+	content = strings.TrimSpace(collab.PayloadContentString(p["content"]))
+	if content == "" {
+		content = strings.TrimSpace(collab.PayloadContentString(p["message"]))
+	}
+	return goal, plan, content
+}
+
+func directTaskReply(raw string) string {
+	s := collab.StripThinkTags(strings.TrimSpace(raw))
+	if s == "" || looksLikeInternalDump(s) {
+		return ""
+	}
+	first, rest, _ := strings.Cut(s, "\n")
+	tok := strings.ToUpper(strings.TrimSpace(strings.Trim(first, "`*_ ")))
+	tok = strings.TrimRight(tok, ".!:")
+	switch tok {
+	case "PASS", "NO_REPLY", "NOREPLY", "SILENT", "SKIP":
+		return ""
+	case "SPEAK", "REPLY":
+		s = strings.TrimSpace(rest)
+	}
+	if s == "" || looksLikeInternalDump(s) {
+		return ""
+	}
+	return s
+}
+
+// processPMDirectTask answers a project-manager chat.message. The reply is a
+// hub response to the sender, never a channel.post.
+func processPMDirectTask(client hubclient.Client, msg hubclient.Message, realLLM agent.LLMCallFunc) {
+	sourceID := client.AssignedID()
+	goal, plan, content := directTaskFields(msg.Payload)
+	roleLabel := collab.AgentRoleLabel(sourceID)
+	prompt := customInstructionsPrefix() +
+		"\n\nYou are the " + roleLabel + ". The Project Manager sent you a direct task. Reply to the Project Manager only. Do not post to a channel. Do not mention isolation internals. If a repository or path is required and was not given, ask the Project Manager for it. Do not claim the work is finished.\n\nGoal:\n" + goal + "\n\nPlan:\n" + plan + "\n\nTask:\n" + content
+	collab.Tracef(sourceID, "dm.task.recv", "from=%s", msg.Source)
+
+	reply := "I could not complete this direct task. I have not changed any files."
+	if realLLM != nil {
+		raw, err := realLLM(context.Background(), prompt)
+		if err != nil {
+			log.Printf("agent %s: direct task LLM failed: %v", sourceID, err)
+			collab.Tracef(sourceID, "dm.reply.fail", "err=%v", err)
+		} else if body := directTaskReply(raw); body != "" {
+			reply = body
+		}
+	}
+	dest := msg.Source
+	if dest == "" {
+		dest = "project-manager"
+	}
+	_ = client.Reply(context.Background(), hubclient.Message{
+		Source:      sourceID,
+		Destination: dest,
+		Command:     "response",
+		Payload: map[string]interface{}{
+			"content": reply,
+			"from":    sourceID,
+			"to":      dest,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	collab.Tracef(sourceID, "dm.reply.ok", "to=%s len=%d", dest, len(reply))
 }
 
 func replyChatTurn(client hubclient.Client, msg hubclient.Message, sessionID string, finalResult *agent.StepResult) {

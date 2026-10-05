@@ -258,6 +258,46 @@ func TestCheckACL(t *testing.T) {
 	}
 }
 
+func TestDMNoChannelsACL(t *testing.T) {
+	orig := aclRules
+	origPath := aclFilePath
+	t.Cleanup(func() {
+		aclRules = orig
+		aclFilePath = origPath
+	})
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(filepath.Clean(filepath.Join(wd, "..", "..")), "config", "acls.yaml")
+	t.Setenv("AEGIS_ACL_FILE", path)
+	loadACL()
+	if len(aclRules) == 0 {
+		t.Fatal("config/acls.yaml did not load")
+	}
+	cases := []struct {
+		src, dst, cmd string
+		want          bool
+	}{
+		{"project-manager", "coder", "chat.message", true},
+		{"project-manager-main", "tester", "chat.message", true},
+		{"coder", "project-manager", "chat.message", true},
+		{"tester-main", "project-manager-goal", "chat.message", true},
+		{"architect", "project-manager", "chat.message", true},
+		{"project-manager", "ciso", "chat.message", true},
+		{"agent-session", "project-manager", "chat.message", true},
+		{"project-manager", "court-persona-ciso", "chat.message", false},
+		{"project-manager", "court-persona-architect", "chat.message", false},
+		{"court-persona-ciso", "project-manager", "chat.message", false},
+		{"project-manager", "court-persona-tester", "chat.message", false},
+	}
+	for _, c := range cases {
+		if got := checkACL(c.src, c.dst, c.cmd); got != c.want {
+			t.Errorf("checkACL(%q,%q,%q)=%v want %v", c.src, c.dst, c.cmd, got, c.want)
+		}
+	}
+}
+
 func TestVerifyWireSignatureSurvivesPayloadRoundTrip(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

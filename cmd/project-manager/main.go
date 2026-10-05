@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -89,9 +90,9 @@ func getPMPrompt() string {
 
 	// Shared system context for the Project Manager — mirrors the Court personas so the orchestrator
 	// understands the full architecture and can delegate, monitor, and escalate effectively.
-	systemContext := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with ACLs and signing. LLM calls go through Network Boundary. Persistent state lives in Store VM; per-agent context in Memory VM. Skills/tools are discovered via tool.search after Court review and Builder VM implementation. Collaboration uses turn-based channel.turn with relevance_anchors and Store context tools (get_relevant_since / get_messages). You orchestrate via ensure.role, channel plans, and monitoring; escalate meaningful changes as formal proposals to Court Scribe for the 7 personas to review. Most changes require unanimous Court Approve. Web portal shows real-time updates and #agents observability. Respect prepended workspace AGENTS.md / SOUL.md custom instructions. Never expose secrets. Abstain or escalate on uncertainty."
+	systemContext := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with ACLs and signing. LLM calls go through Network Boundary. Persistent state lives in Store VM; per-agent context in Memory VM. Skills/tools are discovered via tool.search after Court review and Builder VM implementation. Collaboration with specialists is direct: ensure each role, then assign the task by direct message. Do not broadcast plans with channel posts or hand off work with @mentions. One closing message may be posted for the human. Escalate meaningful changes as formal proposals to Court Scribe for the 7 personas to review. Most changes require unanimous Court Approve. Web portal shows real-time updates and #agents observability. Respect prepended workspace AGENTS.md / SOUL.md custom instructions. Never expose secrets. Abstain or escalate on uncertainty."
 
-	return custom + systemContext + " You receive user goals or channel activity. Break them into plans (tasks, required roles like Coder/Tester/Court, suggested channels). Decide which agents/roles to spin up or invite to which channels using EnsureRoleAgent. Delegate via channel posts or @mentions. Monitor, synthesize, and escalate to Court via formal proposals when changes are needed. Stay in character as the intelligent orchestrator."
+	return custom + systemContext + " You receive user goals. Break them into plans (tasks and the roles that goal needs, such as Coder or Tester). Spin those roles up and assign the work by direct message. Do not invite roles onto a channel for the assignment. Monitor the replies, synthesize one final answer, and escalate to Court via formal proposals when changes are needed. Stay in character as the intelligent orchestrator."
 }
 
 func getPMChannelPrompt() string {
@@ -104,7 +105,7 @@ You MUST SPEAK if you are @mentioned as Project Manager / PM, a human posted a n
 PASS when specialists are doing their jobs and nobody is stuck; when you would only agree, thank, recap, quote someone, or keep the discussion going; when a plan and owners already exist; when the new messages are only your own plan or system status; when the request is social or thanks.
 Never @mention yourself. Never post the same status sentence twice.
 
-If SPEAK: 1-3 short sentences about THIS thread only (owners, next step, or escalate). Never echo these instructions. Never recap. Never quote a specialist back to them. If they ask for a fact the user never gave (repo, path, which system), say it is missing — do not invent it. Never mention isolation internals.
+If SPEAK: 1-3 short sentences about THIS thread only (owners, next step, or escalate). Assign work by naming a role the Project Manager will message directly. Do not hand off work with channel @mentions. Never echo these instructions. Never recap. Never quote a specialist back to them. If they ask for a fact the user never gave (repo, path, which system), say it is missing — do not invent it. Never mention isolation internals.
 If PASS: output only PASS.
 
 Examples:
@@ -118,20 +119,20 @@ Owners still have it. No new work from me.
 New messages: "User: thanks"
 PASS
 
-New messages: "system: status: turns delivered to [project-manager]" / "project-manager: Plan for #main: @Coder."
+New messages: "system: status: turns delivered to [project-manager]" / "project-manager: Coder has the task by direct message."
 PASS
 `
 }
 
 func getPMPlanPrompt() string {
-	return `Write the plan that will be posted in the channel.
+	return `Write the plan you will use to assign work by direct message.
 
 Rules:
 - Output ONLY the plan (2-6 short lines). No preamble, no role-play.
 - Never repeat or paraphrase these instructions.
 - Never write SPEAK, PASS, VOTE, or NO_REPLY.
 - Never mention isolation internals, microVMs, or how the orchestrator works.
-- You may only @mention these roles: @Coder, @Tester, @CISO, @Architect. To involve Court, write "Court proposal". Do not invent other role titles.
+- Name only these roles when someone must act: Coder, Tester, CISO, Architect. The Project Manager messages those roles directly. Do not hand off work with channel @mentions. To involve Court, write "Court proposal". Do not invent other role titles.
 - Assign only the roles this goal actually needs. Do not invite extra roles.
 - Do not invent repository names or file paths. If the user did not give one, say it is missing. Tell anyone who would change files to ask before editing. Do not claim work is done.
 - Do not invent, punch, or apply network, firewall, or allowlist policy. Isolation and network-boundary changes need a Court proposal first. Do not assign anyone to write or apply a policy Court has not approved.
@@ -171,9 +172,11 @@ func extractChannelFromPayload(payload interface{}, def string) string {
 }
 
 // plannedHumanGoals is process-local (not durable). A PM restart may plan the
-// same text again. Values: goalInflight while LLM/post is running, goalPosted
-// after a successful non-fallback channel.post. Fallback and send errors delete
-// the key so the same text may plan once more ("Please resend the goal.").
+// same text again. Values: goalInflight while LLM and direct messages are
+// running, goalPosted after a successful non-fallback closing channel.post.
+// Fallback and send errors delete the key so the same text may plan once more
+// ("Please resend the goal."). The closing post is the only channel write:
+// the plan itself when it names no roles, otherwise the synthesis.
 const (
 	goalInflight = "inflight"
 	goalPosted   = "posted"
@@ -454,12 +457,237 @@ func pmBatchIsSelfOrSystem(uniqueSource string, msgs []map[string]interface{}) b
 	return true
 }
 
-// pmProcessPlanningMessage runs LLM planning, then ensure.role (and CISO
-// channel.add_member), then channel.post so those roles are channel members
-// when the facilitator schedules turns for the plan. ensure.role is a
-// request/response; the daemon adds the member before Send returns.
-// user.goal Replies first then calls this on the Receive goroutine (no extra
-// background goroutine — nested Send shares the hubclient decoder).
+// dmReply is one specialist's answer to a direct task.
+type dmReply struct {
+	Role    string
+	AgentID string
+	Content string
+}
+
+// pmPostClosing is the only channel write on the planning path. Intermediate
+// specialist work stays on chat.message.
+func pmPostClosing(hcl hubclient.Client, uniqueSource, chID, content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		content = generatePlan("", chID)
+	}
+	_, err := hcl.Send(context.Background(), hubclient.Message{
+		Source:      uniqueSource,
+		Destination: "store",
+		Command:     "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"from":       uniqueSource,
+			"content":    content,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		log.Printf("pm: closing channel.post failed: %v", err)
+		collab.Tracef("project-manager", "channel.post.fail", "ch=%s err=%v", chID, err)
+		return false
+	}
+	collab.Tracef("project-manager", "channel.post.ok", "ch=%s len=%d closing=1", chID, len(content))
+	fmt.Printf("PM: posted closing synthesis to channel %s\n", chID)
+	return true
+}
+
+// pmEnsureRole starts the role agent without a channel. Omitting channel keeps
+// the orchestrator from calling channel.add_member; an empty channel still spawns.
+func pmEnsureRole(hcl hubclient.Client, uniqueSource, role string) (string, error) {
+	resp, err := hcl.Send(context.Background(), hubclient.Message{
+		Source:      uniqueSource,
+		Destination: "daemon-orchestrator",
+		Command:     "ensure.role",
+		Payload: map[string]interface{}{
+			"role": role,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return "", err
+	}
+	id := ensuredAgentID(resp, role)
+	if id == "" {
+		return "", fmt.Errorf("ensure.role %s: %v", role, resp.Payload)
+	}
+	return id, nil
+}
+
+func ensuredAgentID(resp hubclient.Message, role string) string {
+	if resp.Command == "error" {
+		return ""
+	}
+	if p, ok := resp.Payload.(map[string]interface{}); ok {
+		if errMsg, ok := p["error"].(string); ok && strings.TrimSpace(errMsg) != "" {
+			return ""
+		}
+		if id, ok := p["id"].(string); ok && strings.TrimSpace(id) != "" {
+			return strings.TrimSpace(id)
+		}
+	}
+	return role
+}
+
+func pmSendDirectTask(hcl hubclient.Client, uniqueSource, agentID, role, goal, plan string) (string, error) {
+	// ensure.role returns when the VM is started, not when the guest has
+	// registered. Retry only while the hub still says the agent is missing.
+	deadline := time.Now().Add(30 * time.Second)
+	delay := 250 * time.Millisecond
+	var last error
+	for {
+		text, err := pmSendDirectTaskOnce(hcl, uniqueSource, agentID, role, goal, plan)
+		if err == nil || !errors.Is(err, hubclient.ErrDestinationNotFound) || time.Now().After(deadline) {
+			return text, err
+		}
+		last = err
+		log.Printf("pm: chat.message to %s not registered yet: %v", agentID, err)
+		time.Sleep(delay)
+		if delay < 2*time.Second {
+			delay *= 2
+		}
+		if time.Now().After(deadline) {
+			return "", last
+		}
+	}
+}
+
+func pmSendDirectTaskOnce(hcl hubclient.Client, uniqueSource, agentID, role, goal, plan string) (string, error) {
+	content := "The Project Manager assigned you this work. Reply directly to the Project Manager. Do not post to a channel.\n\nGoal: " + goal + "\n\nPlan:\n" + plan
+	collab.Tracef("project-manager", "dm.task", "role=%s dest=%s", role, agentID)
+	resp, err := hcl.Send(context.Background(), hubclient.Message{
+		Source:      uniqueSource,
+		Destination: agentID,
+		Command:     "chat.message",
+		Payload: map[string]interface{}{
+			"from":     uniqueSource,
+			"reply_to": uniqueSource,
+			"role":     role,
+			"goal":     goal,
+			"plan":     plan,
+			"content":  content,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return "", err
+	}
+	if resp.Command == "error" {
+		return "", fmt.Errorf("chat.message: %v", resp.Payload)
+	}
+	return dmReplyContent(resp), nil
+}
+
+func dmReplyContent(msg hubclient.Message) string {
+	p, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	for _, k := range []string{"content", "text", "message"} {
+		if s := strings.TrimSpace(collab.PayloadContentString(p[k])); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func directSynthesisPrompt(goal, plan string, replies []dmReply) string {
+	var b strings.Builder
+	b.WriteString("Write the final answer for the human who set the goal. Use only the goal, the plan, and the direct replies below. 2-5 short sentences. Do not repeat these instructions. Do not mention isolation internals. Do not use channel @mentions. Do not invent repository names, file paths, or finished work. If a reply is empty, say that role has not replied.\n\n")
+	b.WriteString("Goal:\n")
+	b.WriteString(goal)
+	b.WriteString("\n\nPlan:\n")
+	b.WriteString(plan)
+	b.WriteString("\n\nDirect replies:\n")
+	if len(replies) == 0 {
+		b.WriteString("(none)\n")
+	}
+	for _, r := range replies {
+		fmt.Fprintf(&b, "- %s: %s\n", r.Role, r.Content)
+	}
+	b.WriteString("\nFinal answer:")
+	return b.String()
+}
+
+func synthesisFallback(replies []dmReply, plan string) string {
+	if len(replies) == 0 {
+		return plan
+	}
+	var b strings.Builder
+	for i, r := range replies {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		text := strings.TrimSpace(r.Content)
+		if text == "" {
+			text = "(no reply)"
+		}
+		fmt.Fprintf(&b, "%s: %s", r.Role, text)
+	}
+	return b.String()
+}
+
+func sanitizeSynthesis(raw string, replies []dmReply, plan string) string {
+	s := collab.StripThinkTags(strings.TrimSpace(raw))
+	if s == "" || looksLikePromptEcho(s) {
+		return synthesisFallback(replies, plan)
+	}
+	first, rest, _ := strings.Cut(s, "\n")
+	tok := strings.ToUpper(strings.TrimSpace(strings.Trim(first, "`*_ ")))
+	tok = strings.TrimRight(tok, ".!:")
+	switch tok {
+	case "PASS", "NO_REPLY", "NOREPLY", "SILENT", "SKIP":
+		return synthesisFallback(replies, plan)
+	case "SPEAK", "REPLY":
+		body := strings.TrimSpace(rest)
+		if body == "" || looksLikePromptEcho(body) {
+			return synthesisFallback(replies, plan)
+		}
+		return body
+	}
+	return s
+}
+
+func synthesizeDirectReplies(goal, plan string, replies []dmReply, llm agent.LLMCallFunc) string {
+	fallback := synthesisFallback(replies, plan)
+	if llm == nil {
+		return fallback
+	}
+	raw, err := llm(context.Background(), directSynthesisPrompt(goal, plan, replies))
+	if err != nil || strings.TrimSpace(raw) == "" {
+		log.Printf("PM: synthesis LLM failed (%v), using direct replies", err)
+		return fallback
+	}
+	out := sanitizeSynthesis(raw, replies, plan)
+	if strings.TrimSpace(out) == "" {
+		return fallback
+	}
+	return out
+}
+
+// isSpecialistDMSource reports role agents that answer planning by hub reply.
+// A late chat.message from one of them must not start another plan.
+func isSpecialistDMSource(src string) bool {
+	s := strings.ToLower(strings.TrimSpace(src))
+	if s == "" || strings.HasPrefix(s, "project-manager") {
+		return false
+	}
+	prefixes := []string{
+		"coder", "tester", "architect", "ciso", "researcher",
+		"security-architect", "efficiency", "user-advocate", "agent",
+	}
+	for _, p := range prefixes {
+		if s == p || strings.HasPrefix(s, p+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+// pmProcessPlanningMessage runs LLM planning, ensure.role, and direct tasks.
+// The goal channel gets one closing post only. user.goal replies first, then
+// calls this on the Receive goroutine (no extra background goroutine — nested
+// Send shares the hubclient decoder).
 func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqueSource string, realLLM agent.LLMCallFunc) {
 	payloadStr := fmt.Sprintf("%v", msg.Payload)
 	goal := extractGoalFromPayload(msg.Payload)
@@ -490,7 +718,7 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 		return
 	}
 	fallback := generatePlan(goal, chID)
-	planPrompt := getPMPlanPrompt() + "\n\nUser goal: " + goal + "\n\nChannel: " + chID + "\n\nPlan:"
+	planPrompt := getPMPlanPrompt() + "\n\nUser goal: " + goal + "\n\nPlan:"
 	llmPlan, err := realLLM(context.Background(), planPrompt)
 	usedFallback := false
 	if err != nil || strings.TrimSpace(llmPlan) == "" {
@@ -510,61 +738,50 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 		}
 	}
 	rolesToEnsure := extractRolesFromText(plan)
-	for _, r := range rolesToEnsure {
-		ensureMsg := hubclient.Message{
-			Source:      uniqueSource,
-			Destination: "daemon-orchestrator",
-			Command:     "ensure.role",
-			Payload: map[string]interface{}{
-				"role":    r,
-				"channel": chID,
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
+	// No roles (or an unusable plan): one user-facing post, no specialist round.
+	// Court members are not added on this path.
+	if usedFallback || len(rolesToEnsure) == 0 {
+		if !pmPostClosing(hcl, uniqueSource, chID, plan) {
+			releaseHumanGoal(chID, goal)
+			return
 		}
-		if _, err := hcl.Send(context.Background(), ensureMsg); err != nil {
-			log.Printf("pm: ensure.role for %s failed (ACL or receiver?): %v", r, err)
+		if usedFallback {
+			releaseHumanGoal(chID, goal)
 		} else {
-			fmt.Printf("PM: sent ensure.role for %s in channel %s\n", r, chID)
+			markHumanGoalPosted(chID, goal)
 		}
+		return
 	}
 
-	lowerPlan := strings.ToLower(plan)
-	if strings.Contains(lowerPlan, "ciso") || strings.Contains(lowerPlan, "security") {
-		_, _ = hcl.Send(context.Background(), hubclient.Message{
-			Source:      uniqueSource,
-			Destination: "store",
-			Command:     "channel.add_member",
-			Payload: map[string]interface{}{
-				"channel_id": chID,
-				"role":       "court-persona-ciso",
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
+	var replies []dmReply
+	for _, r := range rolesToEnsure {
+		id, err := pmEnsureRole(hcl, uniqueSource, r)
+		if err != nil {
+			log.Printf("pm: ensure.role for %s failed (ACL or receiver?): %v", r, err)
+			replies = append(replies, dmReply{Role: r, Content: "(not started)"})
+			continue
+		}
+		fmt.Printf("PM: sent ensure.role for %s (channel omitted)\n", r)
+		text, err := pmSendDirectTask(hcl, uniqueSource, id, r, goal, plan)
+		if err != nil {
+			log.Printf("pm: chat.message to %s (%s) failed: %v", id, r, err)
+			replies = append(replies, dmReply{Role: r, AgentID: id, Content: "(no reply)"})
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
+			text = "(no reply)"
+		}
+		fmt.Printf("PM: direct task reply from %s (%s)\n", id, r)
+		replies = append(replies, dmReply{Role: r, AgentID: id, Content: text})
 	}
 
-	postMsg := hubclient.Message{
-		Source:      uniqueSource,
-		Destination: "store",
-		Command:     "channel.post",
-		Payload: map[string]interface{}{
-			"channel_id": chID,
-			"from":       uniqueSource,
-			"content":    plan,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-	if _, err := hcl.Send(context.Background(), postMsg); err != nil {
-		log.Printf("pm: channel.post to store failed (ACL?): %v", err)
+	closing := synthesizeDirectReplies(goal, plan, replies, realLLM)
+	collab.Tracef("project-manager", "dm.closing", "ch=%s replies=%d", chID, len(replies))
+	if !pmPostClosing(hcl, uniqueSource, chID, closing) {
 		releaseHumanGoal(chID, goal)
 		return
 	}
-	fmt.Printf("PM: posted plan to channel %s\n", chID)
-	if usedFallback {
-		releaseHumanGoal(chID, goal)
-	} else {
-		markHumanGoalPosted(chID, goal)
-	}
-
+	markHumanGoalPosted(chID, goal)
 }
 
 // pmProcessChannelActivity handles delivered channel activity; agents decide whether to reply.
@@ -831,14 +1048,18 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 		case "channel.activity", "channel.member_notify":
 			pmProcessChannelActivity(hcl, msg, uniqueSource, realLLM)
 
-		case "user.goal", "channel.post", "chat.message": // chat.message kept for legacy compat during transition; primary is user.goal via CLI `aegis pm goal` or future channel-triggered goals
+		case "user.goal", "channel.post", "chat.message": // chat.message from non-agents stays a legacy goal path; specialist replies are hub responses to planning
+			if msg.Command == "chat.message" && isSpecialistDMSource(msg.Source) {
+				log.Printf("PM: late direct reply from %s ignored (planning already collected the hub response)", msg.Source)
+				break
+			}
 			if msg.Command == "user.goal" {
 				chID := extractChannelFromPayload(msg.Payload, "plan-demo")
 				// Reply immediately so the CLI/hub RPC for user.goal completes without waiting
-				// for LLM + channel.post. Planning must run on this connection without a
-				// background goroutine: nested hcl.Send (llm.call, channel.post) shares the
-				// hubclient decoder with Receive; if Receive runs concurrently it steals
-				// llm.call.response and planning never posts to the channel (E2E empty messages).
+				// for LLM + direct messages. Planning must run on this connection without a
+				// background goroutine: nested hcl.Send (llm.call, chat.message, channel.post)
+				// shares the hubclient decoder with Receive; if Receive runs concurrently it
+				// steals llm.call.response and planning never finishes.
 				_ = hcl.Reply(context.Background(), hubclient.Message{
 					Source:      uniqueSource,
 					Destination: msg.Source,
@@ -846,7 +1067,7 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					Payload: map[string]interface{}{
 						"status":  "accepted",
 						"channel": chID,
-						"note":    "planning async (LLM + ensure.role + channel.post)",
+						"note":    "planning (LLM + direct messages + one closing post)",
 					},
 					Timestamp: time.Now().UTC().Format(time.RFC3339),
 				})

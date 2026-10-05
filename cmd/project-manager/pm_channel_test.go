@@ -188,9 +188,15 @@ func TestPMPlanPromptNoTopicFewShots(t *testing.T) {
 
 func TestPMPlanPromptForbidsEcho(t *testing.T) {
 	p := getPMPlanPrompt()
-	for _, needle := range []string{"Output ONLY the plan", "Never repeat", "Assign only the roles", "@Coder", "@CISO"} {
+	for _, needle := range []string{"Output ONLY the plan", "Never repeat", "Assign only the roles", "direct message", "Coder", "CISO"} {
 		if !strings.Contains(p, needle) {
 			t.Errorf("plan prompt missing %q", needle)
+		}
+	}
+	// DM arm: the plan names roles for direct messages. It must not teach channel @mentions.
+	for _, banned := range []string{"@Coder", "@Tester", "@CISO", "@Architect"} {
+		if strings.Contains(p, banned) {
+			t.Errorf("plan prompt must not assign with channel mention %q", banned)
 		}
 	}
 	for _, leak := range []string{"paranoid-isolated", "You are the Project Manager in AegisClaw", "EnsureRoleAgent", "First line MUST be PASS"} {
@@ -371,7 +377,7 @@ func TestPMPlanGenerationLive(t *testing.T) {
 
 	fail := 0
 	for _, tc := range cases {
-		prompt := getPMPlanPrompt() + "\n\nUser goal: " + tc.goal + "\n\nChannel: main\n\nPlan:"
+		prompt := getPMPlanPrompt() + "\n\nUser goal: " + tc.goal + "\n\nPlan:"
 		raw, err := pmCallOllama(model, prompt)
 		if err != nil {
 			t.Errorf("%s: ollama: %v", tc.id, err)

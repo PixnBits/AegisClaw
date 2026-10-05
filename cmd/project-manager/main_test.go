@@ -11,6 +11,12 @@ import (
 	"AegisClaw/internal/transport/hubclient"
 )
 
+// Planning tests follow the DM arm (docs/exp/dm-no-channels.md): the plan is not
+// broadcast with channel.post. A plan that names roles gets ensure.role with no
+// channel and one chat.message each. The only channel.post is the closing
+// synthesis, or the plan itself when it names no roles. Channel SPEAK/PASS
+// turns are unchanged. Court members are not added.
+
 func TestGeneratePlanDoesNotDumpSystemPrompt(t *testing.T) {
 	plan := generatePlan("tweak CSS padding", "main")
 	if strings.Contains(plan, "You are the Project Manager") || strings.Contains(plan, "PASS") {
@@ -87,10 +93,23 @@ func TestExtractGoalFromPayload(t *testing.T) {
 	}
 }
 
+type pmEnsure struct {
+	role    string
+	payload map[string]interface{}
+}
+
+type pmDM struct {
+	dest    string
+	payload map[string]interface{}
+}
+
 type pmTestHub struct {
 	posts     []string
 	roles     []string
 	sent      []string
+	ensures   []pmEnsure
+	dms       []pmDM
+	members   []string
 	failPosts int
 }
 
@@ -111,9 +130,23 @@ func (h *pmTestHub) Send(_ context.Context, msg hubclient.Message) (hubclient.Me
 		}
 		return hubclient.Message{Command: "channel.posted"}, nil
 	case "ensure.role":
-		if r, ok := p["role"].(string); ok {
-			h.roles = append(h.roles, r)
+		role, _ := p["role"].(string)
+		h.roles = append(h.roles, role)
+		h.ensures = append(h.ensures, pmEnsure{role: role, payload: p})
+		id := role
+		if ch, ok := p["channel"].(string); ok && ch != "" {
+			id = role + "-" + ch
 		}
+		return hubclient.Message{Command: "response", Payload: map[string]interface{}{"id": id}}, nil
+	case "chat.message":
+		h.dms = append(h.dms, pmDM{dest: msg.Destination, payload: p})
+		return hubclient.Message{
+			Command: "response",
+			Payload: map[string]interface{}{"content": "noted by " + msg.Destination},
+		}, nil
+	case "channel.add_member":
+		role, _ := p["role"].(string)
+		h.members = append(h.members, role)
 		return hubclient.Message{Command: "response"}, nil
 	default:
 		return hubclient.Message{Command: "response"}, nil
@@ -358,20 +391,24 @@ func TestPMPlansOnceWhenUserGoalThenHumanTurn(t *testing.T) {
 	goal := "Ship a small docs fix in the existing repo."
 	pmProcessPlanningMessage(hub, userGoalMsg("once-a", goal), "project-manager-once-a", llm)
 	pmProcessChannelTurn(hub, humanTurn("once-a", goal), "project-manager-once-a", llm)
+	// DM arm: plan LLM, synthesis LLM, then the later channel turn. One closing post.
 	if len(hub.posts) != 1 {
-		t.Fatalf("expected one plan post, got %d %v", len(hub.posts), hub.posts)
+		t.Fatalf("expected one closing post, got %d %v", len(hub.posts), hub.posts)
 	}
-	if len(prompts) != 2 {
-		t.Fatalf("claimed human turn should fall through to channel LLM, prompts=%d", len(prompts))
+	if len(prompts) != 3 {
+		t.Fatalf("plan + synthesis + channel, prompts=%d", len(prompts))
 	}
 	if !strings.Contains(prompts[0], "Output ONLY the plan") {
 		t.Fatalf("first call must be plan prompt, got %s", prompts[0])
 	}
-	if !strings.Contains(prompts[1], "PASS or SPEAK") && !strings.Contains(prompts[1], "PASS") {
-		t.Fatalf("second call must be channel prompt, got %s", prompts[1])
+	if !strings.Contains(prompts[1], "Direct replies") {
+		t.Fatalf("second call must synthesize direct replies, got %s", prompts[1])
 	}
-	if strings.Contains(prompts[1], "Output ONLY the plan") {
+	if strings.Contains(prompts[2], "Output ONLY the plan") {
 		t.Fatal("already-claimed human turn must not use the plan prompt")
+	}
+	if !strings.Contains(prompts[2], "PASS or SPEAK") && !strings.Contains(prompts[2], "PASS") {
+		t.Fatalf("third call must be channel prompt, got %s", prompts[2])
 	}
 }
 
@@ -386,11 +423,12 @@ func TestPMPlansOnceWhenHumanTurnThenUserGoal(t *testing.T) {
 	goal := "Confirm the health endpoint still returns 200."
 	pmProcessChannelTurn(hub, humanTurn("once-b", goal), "project-manager-once-b", llm)
 	pmProcessPlanningMessage(hub, userGoalMsg("once-b", goal), "project-manager-once-b", llm)
-	if calls != 1 {
-		t.Fatalf("expected one LLM plan, got %d", calls)
+	// DM arm: the tester assignment adds a synthesis call. The duplicate user.goal must not plan again.
+	if calls != 2 {
+		t.Fatalf("expected plan + synthesis, got %d", calls)
 	}
 	if len(hub.posts) != 1 {
-		t.Fatalf("expected one plan post, got %d %v", len(hub.posts), hub.posts)
+		t.Fatalf("expected one closing post, got %d %v", len(hub.posts), hub.posts)
 	}
 }
 
@@ -442,8 +480,9 @@ func TestPMFallbackThenSameTextPlansAgain(t *testing.T) {
 		t.Fatalf("expected honest fallback, got %q", hub.posts[0])
 	}
 	pmProcessPlanningMessage(hub, userGoalMsg("once-fb", goal), "project-manager-once-fb", llm)
-	if calls != 2 || len(hub.posts) != 2 {
-		t.Fatalf("resend after fallback must plan again, calls=%d posts=%d", calls, len(hub.posts))
+	// DM arm: the resend names Coder, so it is plan LLM + synthesis LLM and one more post.
+	if calls != 3 || len(hub.posts) != 2 {
+		t.Fatalf("resend after fallback must plan again (plan + synthesis), calls=%d posts=%d", calls, len(hub.posts))
 	}
 }
 
@@ -499,7 +538,8 @@ func TestPMPostErrorThenSameTextPlansAgain(t *testing.T) {
 		t.Fatalf("failed post must not record a plan, got %v", hub.posts)
 	}
 	pmProcessPlanningMessage(hub, userGoalMsg("once-pe", goal), "project-manager-once-pe", llm)
-	if calls != 2 || len(hub.posts) != 1 {
+	// DM arm: each episode is plan LLM + synthesis LLM. The first closing post fails.
+	if calls != 4 || len(hub.posts) != 1 {
 		t.Fatalf("resend after post error must plan again, calls=%d posts=%d", calls, len(hub.posts))
 	}
 }
@@ -530,5 +570,105 @@ func TestClaimedHumanTurnFallsThroughToChannelPrompt(t *testing.T) {
 	}
 	if !strings.Contains(last, "PASS") && !strings.Contains(last, "SPEAK") {
 		t.Fatalf("channel prompt missing PASS/SPEAK, got %s", last)
+	}
+}
+
+func TestPMPlanningUsesDirectMessagesNotChannelBroadcast(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	const plan = "Coder will do the work.\nTester will check it."
+	llm := func(_ context.Context, p string) (string, error) {
+		if strings.Contains(p, "Output ONLY the plan") {
+			return plan, nil
+		}
+		if strings.Contains(p, "Direct replies") {
+			return "Coder and Tester have the task. Nothing is finished yet.", nil
+		}
+		t.Fatalf("unexpected prompt: %s", p)
+		return "", nil
+	}
+	const goal = "Update the existing docs page."
+	pmProcessPlanningMessage(hub, userGoalMsg("dm-1", goal), "project-manager", llm)
+
+	if len(hub.members) != 0 {
+		t.Fatalf("planning must not channel.add_member, got %v", hub.members)
+	}
+	if len(hub.posts) != 1 {
+		t.Fatalf("expected one closing post, got %v", hub.posts)
+	}
+	if strings.Contains(hub.posts[0], "Coder will do the work") {
+		t.Fatalf("plan must not be the channel broadcast, got %q", hub.posts[0])
+	}
+	if !strings.Contains(hub.posts[0], "Nothing is finished") {
+		t.Fatalf("closing post = %q", hub.posts[0])
+	}
+	if len(hub.ensures) != 2 || hub.ensures[0].role != "coder" || hub.ensures[1].role != "tester" {
+		t.Fatalf("ensures = %+v", hub.ensures)
+	}
+	for _, e := range hub.ensures {
+		if _, ok := e.payload["channel"]; ok {
+			t.Fatalf("ensure.role must omit channel, payload=%v", e.payload)
+		}
+	}
+	if len(hub.dms) != 2 || hub.dms[0].dest != "coder" || hub.dms[1].dest != "tester" {
+		t.Fatalf("dms = %+v", hub.dms)
+	}
+	for _, dm := range hub.dms {
+		if _, ok := dm.payload["channel"]; ok {
+			t.Fatalf("direct task must not name a channel, payload=%v", dm.payload)
+		}
+		if _, ok := dm.payload["channel_id"]; ok {
+			t.Fatalf("direct task must not name a channel_id, payload=%v", dm.payload)
+		}
+		content, _ := dm.payload["content"].(string)
+		if !strings.Contains(content, goal) || !strings.Contains(strings.ToLower(content), "do not post to a channel") {
+			t.Fatalf("task content = %q", content)
+		}
+		if dm.payload["reply_to"] != "project-manager" {
+			t.Fatalf("reply_to = %v", dm.payload["reply_to"])
+		}
+	}
+}
+
+func TestPMPlanningDoesNotAddCourtMembers(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	llm := func(context.Context, string) (string, error) {
+		return "Security review only. No named owner yet.", nil
+	}
+	pmProcessPlanningMessage(hub, userGoalMsg("court-1", "Check the policy."), "project-manager", llm)
+	if len(hub.members) != 0 {
+		t.Fatalf("security wording must not add Court, got %v", hub.members)
+	}
+	if len(hub.dms) != 0 {
+		t.Fatalf("no roles means no direct tasks, got %+v", hub.dms)
+	}
+	if len(hub.posts) != 1 || !strings.Contains(hub.posts[0], "Security review only") {
+		t.Fatalf("no-role plan should be the single user-facing post, got %v", hub.posts)
+	}
+
+	resetPlannedHumanGoals()
+	hub = &pmTestHub{}
+	llm = func(_ context.Context, p string) (string, error) {
+		if strings.Contains(p, "Output ONLY the plan") {
+			return "CISO should review this security change.", nil
+		}
+		return "CISO has the review. No channel handoff.", nil
+	}
+	pmProcessPlanningMessage(hub, userGoalMsg("court-2", "Review the change."), "project-manager", llm)
+	if len(hub.members) != 0 {
+		t.Fatalf("named CISO must not channel.add_member court, got %v", hub.members)
+	}
+	if len(hub.roles) != 1 || hub.roles[0] != "ciso" {
+		t.Fatalf("roles = %v", hub.roles)
+	}
+	if len(hub.ensures) != 1 {
+		t.Fatalf("ensures = %+v", hub.ensures)
+	}
+	if _, ok := hub.ensures[0].payload["channel"]; ok {
+		t.Fatal("ciso ensure must omit channel")
+	}
+	if len(hub.dms) != 1 || hub.dms[0].dest != "ciso" {
+		t.Fatalf("dms = %+v", hub.dms)
 	}
 }
