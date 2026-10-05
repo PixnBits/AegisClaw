@@ -281,6 +281,7 @@ Exp-only changes are listed in `docs/exp/base-metrics-deviations.md`. They are n
 
 - ACL: `daemon-internal*` and `daemon-internal-*` → store include `llm.*` and `llm.usage.*`. The portal usage API is host-bridged as `daemon-internal`; without that grant, `/api/llm-usage` and `/api/llm-usage/recent` return empty.
 - Hub: `deliverPendingRPC` accepts a `permission.snapshot` reply when the waiter requested that command. Store's RPC reply reuses the unsolicited-push name; without the match, `hub-perm-fetch-*` times out and VMs are pushed snapshot v0.
+- Permissions: `channel.turn_result` and `channel.add_member` are ACL-only (also `channel.turn` and `channel.member_turn_update`). Hub no longer denies them as missing capability grants; `DefaultBootstrap` is unchanged.
 
 ## Known product issues affecting the harness
 

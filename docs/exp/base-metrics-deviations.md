@@ -30,3 +30,7 @@ Hub already pushed `permission.snapshot` to `agent*`, `project-manager*`, and `c
 ## Hub: deliverPendingRPC accepts permission.snapshot RPC replies
 
 Store replies to `hub-perm-fetch-*` with command `permission.snapshot`, the same name as the unsolicited Hub→agent push, so `deliverPendingRPC` delivers that reply only when the waiter requested `permission.snapshot`.
+
+## Permissions: turn_result/add_member ACL-only
+
+`IsCapabilityCommand` excludes `channel.turn_result`, `channel.add_member`, `channel.turn`, and `channel.member_turn_update` as ACL-gated collaboration plumbing; they are not capability grants and are not added to `DefaultBootstrap`.
