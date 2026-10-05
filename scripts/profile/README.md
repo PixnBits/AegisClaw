@@ -275,6 +275,12 @@ Scoring is never on the timed path. `run_matrix.sh --phase all` (the default) st
 
 A human Tester spot-checks the packets listed in `sample_list.md`. The matrix does not ask another model to overrule the judge. Re-run scoring with `--phase score` and the same `--out` (no daemon). `score.py` leaves an existing `score.json` in place unless you call it yourself with `--rescore`; the driver does not pass `--rescore`.
 
+## Deviations from main
+
+Exp-only changes are listed in `docs/exp/base-metrics-deviations.md`. They are not on main.
+
+- ACL: `daemon-internal*` and `daemon-internal-*` → store include `llm.*` and `llm.usage.*`. The portal usage API is host-bridged as `daemon-internal`; without that grant, `/api/llm-usage` and `/api/llm-usage/recent` return empty.
+
 ## Known product issues affecting the harness
 
 validate3 showed store to `hub-perm-fetch-*` ACL denials on `permission.snapshot`, so every microVM got permission snapshot v0 with 0 allowed and 0 visible. Agents then hit ACL denials on `channel.get_relevant_since.data` (Store replies with that command, not `channel.get_relevant_since`). CISO sometimes still posted from the turn payload; e2 Coder and Tester never posted within 300s. Fixed on exp/base-metrics (and arms that merge it) via the ACL changes above: `hub-perm-fetch*` prefix match, Store `channel.*` replies to role agents, and hub `permission.snapshot` pushes to `tester*`, `ciso*`, `architect*`, and `researcher*`. Still broken on main until upstreamed. See `docs/exp/base-metrics-deviations.md`. Product Go code and `permissions.json` are unchanged.

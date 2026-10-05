@@ -22,3 +22,7 @@ Permission snapshot RPC wait ids are `hub-perm-fetch-<nanos>` (`cmd/aegishub/per
 Agents request `channel.get_relevant_since`. Store replies with command `channel.get_relevant_since.data`. Court personas already had `store → court-persona-* : channel.*`. Role agents did not, so live denials were `store -> coder-… : channel.get_relevant_since.data` and `store -> ciso-… : channel.get_relevant_since.data`. Store may now reply with `channel.*` to `agent*`, `coder*`, `tester*`, `ciso*`, `architect*`, `researcher*`, and `project-manager*`. The destination is not `"*"`.
 
 Hub already pushed `permission.snapshot` to `agent*`, `project-manager*`, and `coder*`. The same push now also targets `tester*`, `ciso*`, `architect*`, and `researcher*`.
+
+## ACL: daemon-internal* llm.usage.*
+
+`daemon-internal*` and `daemon-internal-*` may send `llm.*` and `llm.usage.*` to store. No product Go change. Portal usage API is host-bridged as daemon-internal.
