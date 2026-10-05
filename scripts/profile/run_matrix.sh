@@ -666,6 +666,10 @@ main() {
     score_phase
   fi
 
+  # Final marker for unattended watchers (matrix complete, score/summarize attempted).
+  touch "$OUT/DONE" || true
+  log "DONE marker: $OUT/DONE"
+
   log "run_failures=$RUN_FAILURES infra_fail=$INFRA_FAIL"
   if [[ $SCORE_OK == 1 ]]; then
     printf 'sample list: %s\n' "$OUT/sample_list.md" >>"$OUT/matrix.log" || true
