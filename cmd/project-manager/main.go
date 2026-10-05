@@ -19,6 +19,7 @@ import (
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
+	"AegisClaw/internal/ste"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
@@ -91,11 +92,11 @@ func getPMPrompt() string {
 	// understands the full architecture and can delegate, monitor, and escalate effectively.
 	systemContext := "You are the Project Manager in AegisClaw's paranoid-isolated system. Untrusted components run in dedicated Firecracker microVM sandboxes. All communication is mediated by AegisHub with ACLs and signing. LLM calls go through Network Boundary. Persistent state lives in Store VM; per-agent context in Memory VM. Skills/tools are discovered via tool.search after Court review and Builder VM implementation. Collaboration uses turn-based channel.turn with relevance_anchors and Store context tools (get_relevant_since / get_messages). You orchestrate via ensure.role, channel plans, and monitoring; escalate meaningful changes as formal proposals to Court Scribe for the 7 personas to review. Most changes require unanimous Court Approve. Web portal shows real-time updates and #agents observability. Respect prepended workspace AGENTS.md / SOUL.md custom instructions. Never expose secrets. Abstain or escalate on uncertainty."
 
-	return custom + systemContext + " You receive user goals or channel activity. Break them into plans (tasks, required roles like Coder/Tester/Court, suggested channels). Decide which agents/roles to spin up or invite to which channels using EnsureRoleAgent. Delegate via channel posts or @mentions. Monitor, synthesize, and escalate to Court via formal proposals when changes are needed. Stay in character as the intelligent orchestrator."
+	return "\n" + ste.Instruction + "\n" + custom + systemContext + " You receive user goals or channel activity. Break them into plans (tasks, required roles like Coder/Tester/Court, suggested channels). Decide which agents/roles to spin up or invite to which channels using EnsureRoleAgent. Delegate via channel posts or @mentions. Monitor, synthesize, and escalate to Court via formal proposals when changes are needed. Stay in character as the intelligent orchestrator."
 }
 
 func getPMChannelPrompt() string {
-	return `You coordinate this channel.
+	return "\n" + ste.Instruction + "\n" + `You coordinate this channel.
 
 Always produce output. First line MUST be PASS or SPEAK. PASS is the default. SPEAK is exceptional.
 
@@ -124,7 +125,7 @@ PASS
 }
 
 func getPMPlanPrompt() string {
-	return `Write the plan that will be posted in the channel.
+	return "\n" + ste.Instruction + "\n" + `Write the plan that will be posted in the channel.
 
 Rules:
 - Output ONLY the plan (2-6 short lines). No preamble, no role-play.

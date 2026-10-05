@@ -20,6 +20,7 @@ import (
 	"AegisClaw/internal/bootargs"
 	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
+	"AegisClaw/internal/ste"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
@@ -43,10 +44,13 @@ var loadedWorkspace *workspace.Context
 // 7.4 helper: Returns a prefix string containing custom SOUL + AGENTS instructions
 // (if any were loaded). This is prepended to reasoning prompts.
 func customInstructionsPrefix() string {
-	if loadedWorkspace == nil {
-		return ""
-	}
 	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(ste.Instruction)
+	b.WriteString("\n")
+	if loadedWorkspace == nil {
+		return b.String()
+	}
 	if loadedWorkspace.SOUL != "" {
 		b.WriteString("Core values and soul: ")
 		b.WriteString(loadedWorkspace.SOUL)

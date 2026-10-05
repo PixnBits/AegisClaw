@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"AegisClaw/internal/collab"
+	"AegisClaw/internal/ste"
 )
 
 // channelDecisionPreamble is shared by every Court persona. Silence is modeled as
@@ -21,7 +22,7 @@ PASS is the default and is correct professional behavior. SPEAK is exceptional.
 
 You MUST SPEAK if you are directly @mentioned or a question is aimed at ` + mentionHint + `, even when the answer is that there is no issue for your role. In that case write one short sentence and stop.
 
-`
+` + "\n" + ste.Instruction + "\n"
 }
 
 const channelDecisionClose = `
