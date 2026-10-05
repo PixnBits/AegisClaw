@@ -337,6 +337,15 @@ class ScoreRubricTests(unittest.TestCase):
             ("coder-1", "I will wait for the file."),
         )
         self.assertEqual([msg["role"] for msg in messages], ["user", "pm", "agent"])
+        explicit = score.parse_transcript(
+            {
+                "messages": [
+                    {"from": "Ada", "role": "pm", "content": "Plan."},
+                    {"from": "project-manager", "role": "coder", "content": "Which file?"},
+                ]
+            }
+        )
+        self.assertEqual([msg["role"] for msg in explicit], ["pm", "pm"])
         present = {"type": "regex_present", "scope": "pm", "pattern": "stylesheet", "flags": "i"}
         absent = {"type": "regex_absent", "scope": "any_non_user", "pattern": "padding *:", "flags": "i"}
         absent_all = {"type": "regex_absent", "scope": "all", "pattern": "padding *:", "flags": "i"}

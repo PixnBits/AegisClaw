@@ -1,14 +1,23 @@
 {
+  "aliases": {
+    "dm": "A",
+    "ste": "B"
+  },
   "arms": {
     "base": {
       "build_dir": ".",
+      "messaging": "channel",
       "desc": "This tree: channel collaboration path as built in this repository."
     },
     "A": {
-      "build_dir": "../dm-no-channels"
+      "build_dir": "../dm-no-channels",
+      "messaging": "dm",
+      "dm_files": ["scripts/profile/dm-dump/{channel}.json"],
+      "desc": "DM collaboration (Court-out). Final PM synthesis may be one channel post; agent turns may be DMs."
     },
     "B": {
-      "build_dir": "../asd-ste100"
+      "build_dir": "../asd-ste100",
+      "messaging": "channel"
     }
   }
 }

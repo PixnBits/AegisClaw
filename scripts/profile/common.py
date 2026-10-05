@@ -16,6 +16,15 @@ SENDER_KEYS = ("from", "sender", "From", "Sender", "author", "Author")
 CONTENT_KEYS = ("content", "text", "Content", "Text", "body")
 _MESSAGE_LIST_KEYS = ("messages", "Messages")
 _NEST_KEYS = ("channel", "Channel", "data", "payload", "result", "Data", "Payload")
+_HARNESS_ROLES = {"user", "pm", "court", "agent"}
+# Tried only when the arm does not document its own dm_cli / harness_dm.json cli.
+_DEFAULT_DM_CLI = (
+    ["dm", "dump", "--json", "{channel}"],
+    ["chat", "dump", "--json", "{channel}"],
+)
+_DEFAULT_DM_FILE = "scripts/profile/dm-dump/{channel}.json"
+DM_DUMP_TIMEOUT_S = 5
+_MISSING_DM_CMDS: set[tuple] = set()
 
 
 def repo_root() -> Path:
@@ -36,16 +45,47 @@ def load_arms() -> dict:
     return data
 
 
-def arm_build_dir(arm: str) -> Path:
+def canonical_arm(arm: str) -> str:
+    """Arm id as stored in arms.json. Aliases dm and ste resolve to A and B."""
     data = load_arms()
     arms = data.get("arms") if isinstance(data, dict) else None
-    if not isinstance(arms, dict) or arm not in arms:
-        known = sorted(arms) if isinstance(arms, dict) else []
-        raise KeyError(f"unknown arm {arm!r}; known: {known}")
-    spec = arms[arm]
-    if not isinstance(spec, dict) or not isinstance(spec.get("build_dir"), str) or not spec["build_dir"].strip():
-        raise KeyError(f"arm {arm!r} missing build_dir")
-    return (repo_root() / spec["build_dir"]).resolve()
+    if not isinstance(arms, dict):
+        raise KeyError("arms.json missing arms")
+    name = (arm or "").strip()
+    if name in arms:
+        return name
+    aliases = data.get("aliases") if isinstance(data, dict) else None
+    if isinstance(aliases, dict):
+        target = aliases.get(name)
+        if isinstance(target, str) and target in arms:
+            return target
+    known = sorted(list(arms) + [key for key in (aliases or {}) if isinstance(key, str)])
+    raise KeyError(f"unknown arm {name!r}; known: {known}")
+
+
+def arm_spec(arm: str) -> dict:
+    name = canonical_arm(arm)
+    spec = load_arms()["arms"][name]
+    if not isinstance(spec, dict):
+        raise KeyError(f"arm {name!r} spec must be an object")
+    return spec
+
+
+def arm_build_dir(arm: str) -> Path:
+    name = canonical_arm(arm)
+    spec = arm_spec(name)
+    build = spec.get("build_dir")
+    if not isinstance(build, str) or not build.strip():
+        raise KeyError(f"arm {name!r} missing build_dir")
+    return (repo_root() / build).resolve()
+
+
+def arm_messaging(arm: str) -> str:
+    """channel (default) or dm, from the arm spec. Scenario override is the caller's."""
+    raw = arm_spec(arm).get("messaging")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip().lower()
+    return "channel"
 
 
 def load_scenario(path) -> dict:
@@ -71,6 +111,16 @@ def classify_sender(name: str) -> str:
     if n.startswith("court"):
         return "court"
     return "agent"
+
+
+def harness_role(entry: dict, sender: str) -> str:
+    """Prefer an explicit harness role. Other role strings (member roles) do not count."""
+    if isinstance(entry, dict):
+        for key in ("role", "Role"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip().lower() in _HARNESS_ROLES:
+                return value.strip().lower()
+    return classify_sender(sender)
 
 
 def now_iso() -> str:
@@ -263,12 +313,170 @@ def parse_transcript(channel_get_json) -> list:
             {
                 "seq": int(seq),
                 "from": sender,
-                "role": classify_sender(sender),
+                "role": harness_role(entry, sender),
                 "content": _message_content(entry),
                 "ts": _message_ts(entry),
             }
         )
     return parsed
+
+
+def _dm_subst(text: str, channel: str, build: Path) -> str:
+    return (
+        text.replace("{channel}", channel).replace("{build_dir}", str(build))
+    )
+
+
+def _inside_build(path: Path, build: Path) -> bool:
+    try:
+        path.resolve().relative_to(build.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _dm_artifact_path(template: str, channel: str, build: Path):
+    """A documented dump path, or None when it would leave the arm build dir."""
+    if not isinstance(template, str) or not template.strip():
+        return None
+    raw = _dm_subst(template.strip(), channel, build)
+    path = Path(raw)
+    if not path.is_absolute():
+        path = build / path
+    if not _inside_build(path, build):
+        return None
+    return path
+
+
+def _take_dm_cli(doc: dict, clis: list, saw_cli: list) -> None:
+    raw = doc.get("cli")
+    if "cli" not in doc or raw is None:
+        raw = doc.get("dm_cli")
+        if "dm_cli" not in doc or raw is None:
+            return
+    saw_cli.append(True)
+    if not isinstance(raw, list):
+        return
+    if raw and all(isinstance(part, str) for part in raw):
+        clis.append([str(part) for part in raw])
+        return
+    for item in raw:
+        if isinstance(item, list) and item and all(isinstance(part, str) for part in item):
+            clis.append([str(part) for part in item])
+
+
+def _take_dm_files(doc: dict, files: list) -> None:
+    raw = doc.get("files")
+    if raw is None and "dm_files" in doc:
+        raw = doc.get("dm_files")
+    if not isinstance(raw, list):
+        return
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            files.append(item.strip())
+
+
+def dm_sources(spec: dict, build: Path):
+    """(cli argv templates, file templates, cli_was_documented).
+
+    File list always includes the conventional dm-dump path. CLI falls back to
+    dm dump / chat dump only when the arm did not document a cli key.
+    """
+    clis: list = []
+    files: list = []
+    saw_cli: list = []
+    if isinstance(spec, dict):
+        _take_dm_cli(spec, clis, saw_cli)
+        _take_dm_files(spec, files)
+    doc_path = build / "scripts" / "profile" / "harness_dm.json"
+    if doc_path.is_file():
+        try:
+            doc = extract_json(doc_path.read_text(encoding="utf-8"))
+        except OSError:
+            doc = None
+        if isinstance(doc, dict):
+            _take_dm_cli(doc, clis, saw_cli)
+            _take_dm_files(doc, files)
+    if not saw_cli:
+        clis.extend([list(argv) for argv in _DEFAULT_DM_CLI])
+    files.append(_DEFAULT_DM_FILE)
+    unique_cli = []
+    seen_cli = set()
+    for argv in clis:
+        key = tuple(argv)
+        if key in seen_cli:
+            continue
+        seen_cli.add(key)
+        unique_cli.append(argv)
+    unique_files = []
+    seen_files = set()
+    for item in files:
+        if item in seen_files:
+            continue
+        seen_files.add(item)
+        unique_files.append(item)
+    return unique_cli, unique_files, bool(saw_cli)
+
+
+def _cmd_missing(proc) -> bool:
+    text = f"{getattr(proc, 'stderr', '') or ''}\n{getattr(proc, 'stdout', '') or ''}".lower()
+    return "unknown command" in text or "unknown flag" in text
+
+
+def collect_dm_messages(arm, channel, *, run_cmd=None, spec=None, build=None) -> list:
+    """Best-effort DM transcript. Missing commands and bad files yield no rows.
+
+    Does not raise for a dump the product has not shipped. `run_cmd` receives
+    the substituted argv and returns an object with stdout, stderr, timed_out.
+    """
+    name = (arm or "").strip()
+    if spec is None or build is None:
+        name = canonical_arm(arm)
+        if spec is None:
+            spec = arm_spec(name)
+        if build is None:
+            build = arm_build_dir(name)
+    build = Path(build)
+    channel_id = "" if channel is None else str(channel)
+    clis, files, _documented = dm_sources(spec if isinstance(spec, dict) else {}, build)
+    messages = []
+    for template in files:
+        path = _dm_artifact_path(template, channel_id, build)
+        if path is None or not path.is_file():
+            continue
+        try:
+            payload = extract_json(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        messages.extend(parse_transcript(payload))
+    if run_cmd is None:
+        def run_cmd(argv, arm_name=name):
+            return aegis(argv, arm_name, timeout=DM_DUMP_TIMEOUT_S)
+    for template in clis:
+        key = (name, tuple(template))
+        if key in _MISSING_DM_CMDS:
+            continue
+        argv = [_dm_subst(part, channel_id, build) for part in template]
+        try:
+            proc = run_cmd(argv)
+        except FileNotFoundError:
+            _MISSING_DM_CMDS.add(key)
+            continue
+        except (OSError, ValueError):
+            continue
+        if _cmd_missing(proc):
+            _MISSING_DM_CMDS.add(key)
+            continue
+        if getattr(proc, "timed_out", False):
+            continue
+        stdout = getattr(proc, "stdout", "") or ""
+        stderr = getattr(proc, "stderr", "") or ""
+        payload = extract_json(stdout)
+        parsed = parse_transcript(payload)
+        if not parsed:
+            parsed = parse_transcript(extract_json(stdout + "\n" + stderr))
+        messages.extend(parsed)
+    return messages
 
 
 def http_get_json(url, timeout=10):

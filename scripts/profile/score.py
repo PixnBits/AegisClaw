@@ -43,6 +43,7 @@ SCORE_KEYS = [
 SKIP_PARTS = {".gocache", ".gomodcache", "scratch"}
 SENDER_KEYS = ("from", "From", "sender", "Sender")
 CONTENT_KEYS = ("content", "Content", "text", "Text")
+_HARNESS_ROLES = {"user", "pm", "court", "agent"}
 FILE_MARK_RE = re.compile(
     r"^(?://[ \t]*file:[ \t]*(.+)|<!--[ \t]*file:[ \t]*(.+?)[ \t]*-->)[ \t]*$",
     re.IGNORECASE,
@@ -65,6 +66,16 @@ def classify_sender(name: str) -> str:
     if n.startswith("court"):
         return "court"
     return "agent"
+
+
+def harness_role(item: dict, sender: str) -> str:
+    """Same rule as common.harness_role. Explicit user|pm|court|agent wins."""
+    if isinstance(item, dict):
+        for key in ("role", "Role"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip().lower() in _HARNESS_ROLES:
+                return value.strip().lower()
+    return classify_sender(sender)
 
 
 def _first(item: dict, keys: tuple[str, ...]):
@@ -137,7 +148,7 @@ def parse_transcript(payload) -> list[dict]:
             {
                 "seq": seq,
                 "from": sender,
-                "role": classify_sender(sender),
+                "role": harness_role(item, sender),
                 "content": content,
                 "ts": None if ts is None else str(ts),
             }

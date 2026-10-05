@@ -49,7 +49,8 @@ signals a process named aegis or firecracker. After every arm is
 stopped, score and summarize (unless --phase run).
 
   --arms           Comma-separated arm ids, in run order. Required unless
-                   --phase score.
+                   --phase score. Aliases: dm is A, ste is B
+                   (base,dm,ste is base,A,B).
   --scenarios      all (default) or comma-separated scenario ids.
   --n              Repeats per scenario (default 3). Cells are n1..nN.
   --out            Artifact root. Default:
@@ -361,7 +362,16 @@ parse_arms() {
     if [[ ! $part =~ ^[A-Za-z0-9_-]+$ ]]; then
       die "arm id must match [A-Za-z0-9_-]+ ($part)"
     fi
-    ARM_LIST+=("$part")
+    resolved=$(python3 -c 'import sys
+sys.path.insert(0, sys.argv[1])
+from common import canonical_arm
+try:
+    print(canonical_arm(sys.argv[2]))
+except KeyError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+' "$SCRIPT_DIR" "$part") || die "unknown arm id: $part"
+    ARM_LIST+=("$resolved")
   done
 }
 
@@ -595,6 +605,9 @@ main() {
   trap 'on_exit' EXIT
 
   log "arms=${ARMS:-<none>} scenarios=$SCENARIOS n=$N phase=$PHASE dry_run=$DRY_RUN no_judge=$NO_JUDGE shuffle_seed=${SHUFFLE_SEED:-<none>} out=$OUT"
+  if [[ ${#ARM_LIST[@]} -gt 0 ]]; then
+    log "resolved arms: ${ARM_LIST[*]}"
+  fi
   if [[ $do_run == 1 ]]; then
     log "scenario order: ${SCENARIO_IDS[*]}"
   fi

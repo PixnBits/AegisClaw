@@ -7,6 +7,9 @@ quiet_no_reply, then the timeout_s hard cap measured from t0.
 
 final_marker requires a non-PM agent reply after the first PM message and a
 marker on a message at or after that reply. The PM plan alone does not conclude.
+
+A turn is one PM or agent message in the collected transcript, whether that
+message was a channel post or a DM chat.message.
 """
 
 from __future__ import annotations
@@ -22,9 +25,11 @@ from pathlib import Path
 
 from common import (
     aegis,
+    arm_messaging,
     as_int,
+    canonical_arm,
+    collect_dm_messages,
     extract_json,
-    load_arms,
     load_scenario,
     now_iso,
     parse_transcript,
@@ -198,6 +203,106 @@ def transcript_text(messages) -> str:
     if not lines:
         return ""
     return "\n".join(lines) + "\n"
+
+
+def messaging_mode(arm: str, scenario) -> str:
+    """Scenario messaging overrides the arm. Default is the arm spec, else channel."""
+    if isinstance(scenario, dict):
+        raw = scenario.get("messaging")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+    try:
+        return arm_messaging(arm)
+    except KeyError:
+        return "channel"
+
+
+def _message_identity(message: dict):
+    return (
+        (message.get("role") or "").strip(),
+        (message.get("from") or "").strip(),
+        (message.get("content") or "").strip(),
+    )
+
+
+def _renumber(messages) -> list:
+    out = []
+    for index, message in enumerate(messages, start=1):
+        item = dict(message)
+        item["seq"] = index
+        out.append(item)
+    return out
+
+
+def _dm_insert_at(channel_messages, extras, patterns) -> int:
+    """Where undated DM rows go so a channel synthesis stays after them.
+
+    A lone channel PM is treated as the closing synthesis when the DM side
+    already has a PM (the plan) or the lone PM matches a marker and an agent
+    reply was collected. Otherwise DMs follow the first PM (the channel plan).
+    """
+    pm_indexes = [index for index, message in enumerate(channel_messages) if message.get("role") == "pm"]
+    if not pm_indexes:
+        return len(channel_messages)
+    first_pm = pm_indexes[0]
+    last_pm = pm_indexes[-1]
+    if last_pm != first_pm:
+        return last_pm
+    extras_have_pm = any(message.get("role") == "pm" for message in extras)
+    extras_have_agent = any(message.get("role") == "agent" for message in extras)
+    lone = channel_messages[first_pm]
+    lone_matches = False
+    text = lone.get("content") or ""
+    for pattern in _compile_markers(patterns):
+        if pattern.search(text):
+            lone_matches = True
+            break
+    if extras_have_pm or (lone_matches and extras_have_agent):
+        return first_pm
+    return first_pm + 1
+
+
+def merge_transcripts(channel_messages, extra_messages, patterns=None) -> list:
+    """Channel posts plus DM messages. Same role, sender, and content count once.
+
+    When every kept message has a timestamp, order is that timestamp.
+    Otherwise undated DM messages are inserted with `_dm_insert_at`.
+    """
+    channel_messages = [dict(message) for message in (channel_messages or [])]
+    seen = set()
+    for message in channel_messages:
+        ident = _message_identity(message)
+        if ident != ("", "", ""):
+            seen.add(ident)
+    extras = []
+    for message in extra_messages or []:
+        if not isinstance(message, dict):
+            continue
+        item = dict(message)
+        ident = _message_identity(item)
+        if ident != ("", "", "") and ident in seen:
+            continue
+        if ident != ("", "", ""):
+            seen.add(ident)
+        extras.append(item)
+    if not extras:
+        return _renumber(channel_messages)
+    combined = channel_messages + extras
+    if combined and all(isinstance(message.get("ts"), str) and message.get("ts").strip() for message in combined):
+        decorated = list(enumerate(combined))
+        decorated.sort(key=lambda pair: (pair[1]["ts"], pair[0]))
+        return _renumber([message for _index, message in decorated])
+    insert_at = _dm_insert_at(channel_messages, extras, patterns or [])
+    return _renumber(channel_messages[:insert_at] + extras + channel_messages[insert_at:])
+
+
+def with_transcript_turns(metrics: dict, messages, collected: bool) -> dict:
+    """Count turns from PM and agent transcript messages when a transcript exists."""
+    out = dict(metrics)
+    if collected:
+        out["turns"] = sum(1 for message in messages or [] if message.get("role") in {"pm", "agent"})
+        out["turns_source"] = "transcript"
+    return out
 
 
 def message_counts(messages):
@@ -468,8 +573,8 @@ def build_result(
     }
     if list(obj) != RESULT_KEYS:
         raise HarnessError("result keys drifted from the contract")
-    if obj["turns_source"] not in {"trace", "llm_calls"}:
-        raise HarnessError("turns_source must be trace or llm_calls")
+    if obj["turns_source"] not in {"transcript", "trace", "llm_calls"}:
+        raise HarnessError("turns_source must be transcript, trace, or llm_calls")
     if obj["tokens_cache_method"] != TOKEN_CACHE_METHOD:
         raise HarnessError(
             "tokens_cache_method must be prompt_eval_count_equals_full_prompt_on_host"
@@ -759,7 +864,11 @@ def run_dry(args, scenario: dict, scenario_id: str) -> int:
         "note: retrying after empty plan\n"
     )
     trace = _collab_lines(daemon_slice)
-    metrics = account(trace, daemon_slice, attributed, unattributed)
+    metrics = with_transcript_turns(
+        account(trace, daemon_slice, attributed, unattributed),
+        messages,
+        True,
+    )
     _write_text(run_dir / "daemon_log_slice.txt", daemon_slice)
     _write_text(run_dir / "collab_trace.txt", trace)
     _write_text(run_dir / "pm_goal_stdout.txt", f"Sent goal to channel {channel} (dry-run)\n")
@@ -787,7 +896,7 @@ def run_dry(args, scenario: dict, scenario_id: str) -> int:
     return 0
 
 
-def _poll_once(arm: str, channel: str):
+def _poll_once(arm: str, channel: str, scenario=None):
     get_proc = aegis(["channel", "get", "--json", channel], arm, timeout=CLI_TIMEOUT_S)
     turn_proc = aegis(["channel", "turn-state", "--json", channel], arm, timeout=CLI_TIMEOUT_S)
     parsed = extract_json(get_proc.stdout) if not get_proc.timed_out else None
@@ -800,12 +909,29 @@ def _poll_once(arm: str, channel: str):
         turn_obj = extract_json(turn_proc.stdout)
         if turn_obj is None:
             turn_obj = extract_json((turn_proc.stdout or "") + "\n" + (turn_proc.stderr or ""))
+    extra = []
+    mode = messaging_mode(arm, scenario)
+    if mode == "dm":
+        # A missing dump must not fail the poll. Channel get still stands.
+        try:
+            extra = collect_dm_messages(arm, channel)
+        except Exception:
+            extra = []
+        if messages is None and extra:
+            messages = []
+            fetch_ok = True
+        if messages is not None:
+            _quiet_s, _min_wait_s, _timeout_s, patterns = _conclusion_params(
+                scenario if isinstance(scenario, dict) else {}
+            )
+            messages = merge_transcripts(messages, extra, patterns)
     return {
         "fetch_ok": fetch_ok,
         "messages": messages,
         "raw": get_proc.stdout or "",
         "turn": turn_obj,
         "get_proc": get_proc,
+        "dm_messages": len(extra),
     }
 
 
@@ -900,6 +1026,7 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
 
     hard_deadline = t0_mono + timeout_s
     signal = None
+    transcript_collected = False
     poll_s = float(args.poll_s)
     sleep_s = poll_s if poll_s > 0 else 0.05
 
@@ -918,14 +1045,15 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
             continue
 
         try:
-            sample = _poll_once(args.arm, channel)
+            sample = _poll_once(args.arm, channel, scenario)
         except (OSError, ValueError) as exc:
-            sample = {"fetch_ok": False, "messages": None, "raw": "", "turn": None}
+            sample = {"fetch_ok": False, "messages": None, "raw": "", "turn": None, "dm_messages": 0}
             goal_error = goal_error or f"poll failed: {exc}"
         now_mono = time.monotonic()
         turn_available, any_pending, turn_summary = inspect_turn_state(sample.get("turn"))
         if sample.get("fetch_ok"):
             saw_channel = True
+            transcript_collected = True
             messages = sample["messages"] or []
             last_raw = sample.get("raw") or ""
             sig = _message_signature(messages)
@@ -942,6 +1070,7 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
             "n_messages": total,
             "n_senders": senders,
             "turn_state": summary,
+            "dm_messages": int(sample.get("dm_messages") or 0),
         }
         with polls_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(poll, ensure_ascii=False) + "\n")
@@ -986,13 +1115,16 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
         error_text = goal_error or "run ended in error"
 
     try:
-        final = _poll_once(args.arm, channel)
+        final = _poll_once(args.arm, channel, scenario)
     except (OSError, ValueError):
         final = {"fetch_ok": False, "messages": None, "raw": ""}
     if final.get("fetch_ok"):
+        transcript_collected = True
         messages = final["messages"] or []
         last_raw = final.get("raw") or ""
-    if last_raw.strip():
+    if messaging_mode(args.arm, scenario) == "dm":
+        _write_json(run_dir / "transcript.json", {"messages": messages})
+    elif last_raw.strip():
         _write_text(run_dir / "transcript.json", last_raw if last_raw.endswith("\n") else last_raw + "\n")
     else:
         _write_text(run_dir / "transcript.json", json.dumps({"messages": messages}, indent=2) + "\n")
@@ -1010,7 +1142,11 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
         error_text = error_text or f"trace collection failed: {exc}"
     _write_text(run_dir / "daemon_log_slice.txt", daemon_slice)
     _write_text(run_dir / "collab_trace.txt", trace)
-    metrics = account(trace, window, attributed, unattributed)
+    metrics = with_transcript_turns(
+        account(trace, window, attributed, unattributed),
+        messages,
+        transcript_collected,
+    )
     _write_json(run_dir / "usage_delta.json", _usage_delta_doc(attributed, unattributed, metrics))
     result = build_result(
         arm=args.arm,
@@ -1103,12 +1239,12 @@ def main(argv=None) -> int:
         print(f"run_one: {exc}", file=sys.stderr)
         return 2
     try:
-        known = load_arms().get("arms") or {}
+        args.arm = canonical_arm(args.arm)
+    except KeyError as exc:
+        print(f"run_one: {exc}", file=sys.stderr)
+        return 2
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"run_one: arms.json: {exc}", file=sys.stderr)
-        return 2
-    if not isinstance(known, dict) or args.arm not in known:
-        print(f"run_one: unknown arm {args.arm}", file=sys.stderr)
         return 2
     try:
         scenario = load_scenario(args.scenario)

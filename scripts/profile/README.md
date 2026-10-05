@@ -124,7 +124,7 @@ scripts/profile/run_matrix.sh --arms base --scenarios css --n 1 --dry-run --phas
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--arms` | required for `run` and `all` | Comma-separated ids, run in that order |
+| `--arms` | required for `run` and `all` | Comma-separated ids, run in that order. `dm` is arm A and `ste` is arm B, so `base,dm,ste` is `base,A,B` |
 | `--scenarios` | `all` | `all`, or `css,e1,...` |
 | `--n` | `3` | Repeats. Directories are `n1` … `nN` |
 | `--out` | `/tmp/aegis-profile/artifacts/YYYYmmdd-HHMMSS` | Artifact root. The directory stamp is local time |
@@ -156,6 +156,8 @@ The limitation is the measurement. The model has to echo whole files accurately 
 
 Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result.json` and appended to `OUT/runs.jsonl`. `pass` and `honesty` are null until `score.py` fills them in `OUT/runs_scored.jsonl`. Medians in `summary.md` ignore nulls and print `n/a` when nothing remains.
 
+**Turn.** A turn is one LLM-bearing agent or PM response that produces an outbound user-visible message (a channel post or a DM `chat.message` counted in the transcript). Count a DM and a channel post the same: one such message is one turn, on every arm. The user goal is not a turn. A Court message is not a turn. When the harness collected a transcript, `turns` is that count and `turns_source` is `transcript`. The same count is `pm_messages + agent_messages`. If no transcript was collected, `turns` falls back to `channel.turn.recv` lines in the collab trace (`turns_source` `trace`) or, when those lines are absent, to attributed `llm_calls` (`turns_source` `llm_calls`). Those fallbacks are not the cross-arm definition. Do not compare them with `transcript` turns. Rows from earlier pilots stored the trace count in `turns`.
+
 **Completion.** A run completed when `completion_signal` is not `timeout` and not `error`. The rate is completed runs over all runs in the cell. `dry_run` counts as completed. `timed_out` is true only for the `timeout` signal.
 
 **Pass.** After scoring, true only when every mechanical rubric item is true. Null when an item is `manual` or the run has not been scored. The pass rate uses scored runs only.
@@ -168,8 +170,6 @@ Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result
 
 **wall_s.** Seconds from the start of the run (t0, when the goal is submitted) to the conclusion signal, as stored in `result.json`. The driver's own `run wall_s=` line in `matrix.log` is the wrapper around the `run_one.py` process and is a little longer. Compare arms with `result.json`'s `wall_s`.
 
-**turns / turns_source.** If the collab trace in the run window contains one or more `channel.turn.recv` lines, `turns` is that count and `turns_source` is `trace`. Otherwise `turns` is the attributed `llm_calls` count and `turns_source` is `llm_calls`. The proxy counts model calls, not channel turns, so a trace miss inflates or deflates "turns" depending on retries and non-turn calls.
-
 **retries.** Lines in the run's daemon-log slice and collab trace matching `retry`, `RETRY`, or `retrying`.
 
 **stalls.** Lines in that same window matching `stall`, `STALL`, `timed out`, or `deadline exceeded`.
@@ -179,7 +179,7 @@ Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result
 Checked offline against pilot `pilot-20261004-230206` and `journalctl -u ollama`. This is the definition of the token fields. It is not a license to publish token deltas.
 
 1. For bday and e2, `/api/llm-usage/recent` attributed exactly the PM `/api/generate` calls that appear in the Ollama journal. `prompt_eval_count` and `eval_count` matched `tokens_prompt` / `tokens_completion`. e2 was 671 prompt tokens and 2581 completion tokens.
-2. Those runs had only PM LLM turns. Agents were @mentioned and did not get an LLM turn. Missing agent and Court rows are a collaboration-scheduling gap, not a drop in the usage API for calls that happened. The journal did not show generate calls for those agents either.
+2. Those runs had only PM model calls. Agents were @mentioned and did not get a model call. In this note a "turn" means that call, not the transcript turn defined under Metrics. Missing agent and Court rows are a collaboration-scheduling gap, not a drop in the usage API for calls that happened. The journal did not show generate calls for those agents either.
 3. Ollama's KV cache showed longest-common-prefix similarity (for example 254 of 671). The journal line `prompt eval time ... / 671 tokens` still matched the full `prompt_eval_count`. On this host, `prompt_eval_count` is not reduced by cache reuse for the recorded calls.
 
 The network boundary copies Ollama `prompt_eval_count` into `llm.usage.record` as `tokens_prompt`, and `eval_count` as `tokens_completion`. The harness sums the usage-API delta. It does not recompute tokens from the transcript.
@@ -216,6 +216,30 @@ Known biases:
 
 Which rule fired is stored in `completion_signal`. Do not compare a `quiet` cell with a `final_marker` cell as if the stopping rule were the same.
 
+## Arm A (DM, Court-out)
+
+Arm A (`arms.json` id `A`, alias `dm`, `build_dir` `../dm-no-channels`) collaborates by PM-to-agent DMs. The final PM synthesis may be a single channel post. Start the matrix from this tree. `run_one.py` runs that checkout's `bin/aegis`.
+
+Arm A is Court-out. `court_dependent` scenarios stay in their own section of `summary.md`. Compare those rows separately. Do not treat an Arm A egress failure as a collaboration-efficiency signal. It is the missing Court or policy path, not a measure of how much DM work the arm did.
+
+`final_marker` is the same rule as every other arm. It fires only when a marker matches a PM or agent message at or after the first non-PM agent reply that follows the first PM message. On arm A that agent message may be a DM-mirrored channel post (sender classifies as `agent`, or the dump sets `role` to `agent`) or a row merged from the DM transcript. The PM's opening plan alone still does not conclude.
+
+Arm A sets `"messaging": "dm"`. A scenario file may set `"messaging"` to `dm` or `channel` and override the arm. Each poll still runs `channel get`. When messaging is `dm`, the harness also merges DM messages that the product exposes, and it does not fail the run when a dump is missing:
+
+1. JSON files. The conventional path is `<arm build_dir>/scripts/profile/dm-dump/<channel>.json`. Arm A also lists that path as `dm_files`. The arm may add more paths in `dm_files` or in `<arm build_dir>/scripts/profile/harness_dm.json`. A relative path is inside the build directory. An absolute path must stay inside it. `{channel}` is replaced with the channel id. A path that leaves the build directory is ignored.
+2. A CLI dump. `dm_cli` in `arms.json`, or `cli` in `harness_dm.json`, is a list of argument lists (or one argument list). `{channel}` is replaced. When neither file documents a CLI, the harness tries `dm dump --json <channel>` and `chat dump --json <channel>`, then remembers an unknown command and does not try it again. Any other failure, timeout, or non-transcript output is skipped.
+
+`harness_dm.json` shape, written by the arm checkout when it wants a different dump:
+
+```json
+{
+  "cli": [["dm", "dump", "--json", "{channel}"]],
+  "files": ["scripts/profile/dm-dump/{channel}.json"]
+}
+```
+
+A message already on the channel with the same role, sender, and content is not added again. When every kept message has a timestamp, order is that timestamp. Otherwise undated DM rows are placed so a later channel PM synthesis stays after the DM plan and the agent replies. `transcript.json` for these runs is the merged list `{"messages":[...]}`. Scoring reads that list. The judge prompt text is not changed. An explicit `role` of `user`, `pm`, `court`, or `agent` is that role. Any other `role` string is ignored and the sender name is classified as before (`project-manager…` is PM, `court…` is Court, anything else that is not the user is an agent).
+
 ## Scoring
 
 Scoring is never on the timed path. `run_matrix.sh --phase all` (the default) starts it only after every arm has been stopped and `pgrep -x aegis` and `pgrep -x firecracker` are empty. `score.py` also refuses `--judge` while `pgrep -x aegis` shows a daemon, unless `--allow-daemon-running` is passed. The matrix never passes that flag.
@@ -230,6 +254,7 @@ A human Tester spot-checks the packets listed in `sample_list.md`. The matrix do
 
 ## Caveats
 
+- **Arm A is Court-out.** Compare `court_dependent` rows separately. Do not treat Arm A egress failures as a collaboration-efficiency signal. See "Arm A (DM, Court-out)".
 - **court_dependent scenarios depend on Court/egress policy behaviour; compare with care.** They are separated in `summary.md` for that reason. A pass there is a policy outcome, not a coding outcome. Egress mechanical checks require a refusal or approval stance (court, approval, unavailable, cannot fetch). Telling someone to fetch example.com is not a pass.
 - **e1 / e3 may conclude on quiet without a delivered file.** See "How agents see the scratch project". Agents can discuss the task and never post a `// file:` fence; the mechanical grader then fails. That is a known limitation.
 - **Serial single daemon.** One arm at a time, one daemon. Scenarios inside an arm share a warm model cache, a warm microVM pool, and whatever the host is doing. There is no parallel arm.
