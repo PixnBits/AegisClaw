@@ -1,0 +1,14 @@
+{
+  "arms": {
+    "base": {
+      "build_dir": ".",
+      "desc": "This tree: channel collaboration path as built in this repository."
+    },
+    "A": {
+      "build_dir": "../dm-no-channels"
+    },
+    "B": {
+      "build_dir": "../asd-ste100"
+    }
+  }
+}

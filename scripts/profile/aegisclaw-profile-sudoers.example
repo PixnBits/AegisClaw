@@ -1,0 +1,31 @@
+# Extra worktree sudoers fragment. Needed because sudoers matches exact paths
+# (no wildcards): NOPASSWD for one checkout does not cover another tree.
+#
+# Without these lines, `sudo -n ./bin/aegis start` / `sudo -n ./bin/aegis stop`
+# run from each arm build dir fails with "interactive authentication is required".
+#
+# Trees are under /path/to/AegisClaw-worktrees. Edit YOURUSER and that root first.
+# NOPASSWD on bin/aegis (no subcommand) covers start/stop.
+#
+# Install:
+#   sudo cp scripts/profile/aegisclaw-profile-sudoers.example /etc/sudoers.d/aegisclaw-profile
+#   sudo chmod 440 /etc/sudoers.d/aegisclaw-profile
+#   sudo visudo -c
+
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/base-metrics/bin/aegis
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/base-metrics/scripts/build-microvms-docker.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/base-metrics/scripts/create-firecracker-rootfs.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/base-metrics/scripts/ensure-aegis-dir.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/base-metrics/scripts/clean-firecracker-rootfs.sh
+
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/dm-no-channels/bin/aegis
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/dm-no-channels/scripts/build-microvms-docker.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/dm-no-channels/scripts/create-firecracker-rootfs.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/dm-no-channels/scripts/ensure-aegis-dir.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/dm-no-channels/scripts/clean-firecracker-rootfs.sh
+
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/asd-ste100/bin/aegis
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/asd-ste100/scripts/build-microvms-docker.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/asd-ste100/scripts/create-firecracker-rootfs.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/asd-ste100/scripts/ensure-aegis-dir.sh
+YOURUSER ALL=(ALL) NOPASSWD: /path/to/AegisClaw-worktrees/exp/asd-ste100/scripts/clean-firecracker-rootfs.sh

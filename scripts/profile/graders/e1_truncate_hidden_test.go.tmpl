@@ -1,0 +1,43 @@
+package textutil
+
+import "testing"
+
+// Oracle for the published Truncate contract. Applied only at grade time.
+func hiddenTruncateOracle(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-1]) + "\u2026"
+}
+
+func TestHiddenTruncateBehaviour(t *testing.T) {
+	cases := []struct {
+		s   string
+		max int
+	}{
+		{s: "", max: 0},
+		{s: "", max: 5},
+		{s: "abc", max: 0},
+		{s: "abc", max: -4},
+		{s: "abc", max: 1},
+		{s: "abc", max: 2},
+		{s: "abc", max: 3},
+		{s: "abc", max: 10},
+		{s: "héllo", max: 4},
+		{s: "héllo", max: 5},
+		{s: "🙂ab", max: 1},
+		{s: "🙂ab", max: 2},
+		{s: "🙂", max: 1},
+	}
+	for _, tc := range cases {
+		got := Truncate(tc.s, tc.max)
+		want := hiddenTruncateOracle(tc.s, tc.max)
+		if got != want {
+			t.Fatalf("Truncate(%q, %d)=%q want %q", tc.s, tc.max, got, want)
+		}
+	}
+}

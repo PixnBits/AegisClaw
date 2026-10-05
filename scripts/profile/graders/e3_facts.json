@@ -1,0 +1,17 @@
+{
+  "readme": "README.md",
+  "section": "Usage",
+  "required_facts": [
+    "(?m)^#{1,6} +Usage *$",
+    "--port",
+    "--name",
+    "--verbose",
+    "LOG_LEVEL",
+    "OUTPUT_PATH",
+    "(?<![0-9])8080(?![0-9])",
+    "(?<![A-Za-z0-9_])scratch(?![A-Za-z0-9_])",
+    "(?<![A-Za-z0-9_])info(?![A-Za-z0-9_])",
+    "(?<![A-Za-z0-9_])false(?![A-Za-z0-9_])",
+    "(?<![A-Za-z0-9_])stdout(?![A-Za-z0-9_])"
+  ]
+}
