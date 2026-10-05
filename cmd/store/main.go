@@ -240,13 +240,13 @@ func computeLLMUsageSummary(records []map[string]interface{}) map[string]interfa
 	}
 
 	return map[string]interface{}{
-		"grand":     grand,
-		"last_hour": lastHour,
-		"today":     today,
-		"mtd":       mtd,
-		"models":    mb,
+		"grand":        grand,
+		"last_hour":    lastHour,
+		"today":        today,
+		"mtd":          mtd,
+		"models":       mb,
 		"record_count": len(records),
-		"by_agent":  byAgentOut,
+		"by_agent":     byAgentOut,
 	}
 }
 

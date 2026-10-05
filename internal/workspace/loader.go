@@ -312,14 +312,14 @@ func sanitizeName(n string) string {
 
 // SettingsSchema describes allowed keys/types for validation (draft from spec).
 var SettingsSchema = map[string]string{
-	"model":               "string",
-	"temperature":         "number",
-	"top_p":               "number",
-	"max_tokens":          "int",
-	"autonomy_level":      "int", // 0-2
-	"auto_initiate":       "bool",
-	"enabled_tools":       "[]string",
-	"disabled_skills":     "[]string",
+	"model":                     "string",
+	"temperature":               "number",
+	"top_p":                     "number",
+	"max_tokens":                "int",
+	"autonomy_level":            "int", // 0-2
+	"auto_initiate":             "bool",
+	"enabled_tools":             "[]string",
+	"disabled_skills":           "[]string",
 	"extra_system_instructions": "string",
 }
 
