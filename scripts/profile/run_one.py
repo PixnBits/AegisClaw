@@ -73,6 +73,10 @@ RESULT_KEYS = [
     "tokens_completion",
     "llm_calls",
     "journal_llm_calls",
+    "journal_tokens_prompt_raw",
+    "journal_tokens_completion",
+    "attribution_gap",
+    "attribution_gap_detail",
     "wall_s",
     "drain_s",
     "total_s",
@@ -556,6 +560,10 @@ def _usage_delta_doc(attributed, unattributed, metrics) -> dict:
         "tokens_completion": metrics["tokens_completion"],
         "llm_calls": metrics["llm_calls"],
         "journal_llm_calls": metrics.get("journal_llm_calls"),
+        "journal_tokens_prompt_raw": metrics.get("journal_tokens_prompt_raw"),
+        "journal_tokens_completion": metrics.get("journal_tokens_completion"),
+        "attribution_gap": bool(metrics.get("attribution_gap")),
+        "attribution_gap_detail": metrics.get("attribution_gap_detail"),
         "tokens_unattributed": metrics["tokens_unattributed"],
         "tokens_prompt_unattributed": metrics["tokens_prompt_unattributed"],
         "tokens_completion_unattributed": metrics["tokens_completion_unattributed"],
@@ -587,6 +595,10 @@ def account(trace_text: str, window_text: str, attributed, unattributed) -> dict
         "tokens_completion": completion,
         "llm_calls": len(attributed),
         "journal_llm_calls": None,
+        "journal_tokens_prompt_raw": None,
+        "journal_tokens_completion": None,
+        "attribution_gap": False,
+        "attribution_gap_detail": None,
         "turns": int(turns),
         "turns_source": turns_source,
         "retries": _count_lines(window_lines, RETRY_RE),
@@ -598,21 +610,24 @@ def account(trace_text: str, window_text: str, attributed, unattributed) -> dict
 
 
 def apply_journal_cache(metrics: dict, started_at, total_s, *, run_cmd=None) -> dict:
-    """Fill cache-adjusted prompt tokens from journalctl. Never raises.
+    """Fill journal token fields and attribution_gap. Never raises.
 
     The journal window length is total_s (conclusion wall_s plus drain), not
-    wall_s alone, so a call that finishes during drain is counted. Live runs
-    only. Journal prompt-eval N is newly evaluated tokens, not the API
-    full-prompt count. Missing journalctl or no timing lines leave
-    tokens_prompt_cache_adjusted null.
+    wall_s alone. Live runs only. Prewarm ping calls (prompt_eval <=
+    PREWARM_MAX_PROMPT_EVAL_TOKENS) are excluded. Journal prompt-eval N is
+    newly evaluated tokens; prompt_raw uses task.n_tokens when present.
+    attribution_gap is true when call counts differ or completion absolute
+    delta exceeds COMPLETION_GAP_TOLERANCE.
     """
     out = dict(metrics)
     out["tokens_prompt_cache_adjusted"] = None
     out["journal_llm_calls"] = None
+    out["journal_tokens_prompt_raw"] = None
+    out["journal_tokens_completion"] = None
+    out["attribution_gap"] = False
+    out["attribution_gap_detail"] = None
     out["tokens_cache_method"] = TOKEN_CACHE_METHOD_UNAVAILABLE
     try:
-        # run_window reads total_s when set, else wall_s. Both carry the
-        # drain-inclusive length here; result.json keeps wall_s as conclusion time.
         stub = {"started_at": started_at, "total_s": total_s, "wall_s": total_s}
         argv = ollama_journal.journalctl_argv(stub)
         if run_cmd is None:
@@ -623,16 +638,23 @@ def apply_journal_cache(metrics: dict, started_at, total_s, *, run_cmd=None) -> 
             return out
         text = getattr(proc, "stdout", "") or ""
         start, end = ollama_journal.run_window(stub)
-        rows = ollama_journal.extract_timing(text, start, end)
-        prompt_rows = [row for row in rows if row.get("kind") == "prompt"]
-        if not prompt_rows:
+        calls = ollama_journal.extract_calls(text, start, end)
+        totals = ollama_journal.journal_totals(calls)
+        if totals["calls"] == 0 and totals["prewarm_excluded"] == 0:
             return out
-        out["tokens_prompt_cache_adjusted"] = sum(int(row["tokens"]) for row in prompt_rows)
-        out["journal_llm_calls"] = len(prompt_rows)
+        # Even if only prewarms were present, treat as journal-available with zeros.
+        out["tokens_prompt_cache_adjusted"] = int(totals["prompt_eval"])
+        out["journal_llm_calls"] = int(totals["calls"])
+        out["journal_tokens_prompt_raw"] = int(totals["prompt_raw"])
+        out["journal_tokens_completion"] = int(totals["completion"])
         out["tokens_cache_method"] = TOKEN_CACHE_METHOD
+        gap, detail = ollama_journal.attribution_gap(out, totals)
+        out["attribution_gap"] = bool(gap)
+        out["attribution_gap_detail"] = detail
         return out
     except Exception:
         return out
+
 
 
 def build_result(
@@ -677,6 +699,14 @@ def build_result(
         "tokens_completion": int(metrics["tokens_completion"]),
         "llm_calls": int(metrics["llm_calls"]),
         "journal_llm_calls": _opt_int(metrics.get("journal_llm_calls")),
+        "journal_tokens_prompt_raw": _opt_int(metrics.get("journal_tokens_prompt_raw")),
+        "journal_tokens_completion": _opt_int(metrics.get("journal_tokens_completion")),
+        "attribution_gap": bool(metrics.get("attribution_gap")),
+        "attribution_gap_detail": (
+            None
+            if metrics.get("attribution_gap_detail") in (None, "")
+            else str(metrics.get("attribution_gap_detail"))
+        ),
         "wall_s": float(wall_s),
         "drain_s": float(drain_s),
         "total_s": float(total_s),
@@ -707,13 +737,25 @@ def build_result(
     if obj["tokens_prompt_raw"] != obj["tokens_prompt"]:
         raise HarnessError("tokens_prompt_raw must equal tokens_prompt")
     if obj["tokens_cache_method"] == TOKEN_CACHE_METHOD_UNAVAILABLE:
-        if obj["tokens_prompt_cache_adjusted"] is not None or obj["journal_llm_calls"] is not None:
+        if (
+            obj["tokens_prompt_cache_adjusted"] is not None
+            or obj["journal_llm_calls"] is not None
+            or obj["journal_tokens_prompt_raw"] is not None
+            or obj["journal_tokens_completion"] is not None
+        ):
             raise HarnessError(
-                "journal unavailable must leave cache-adjusted and journal_llm_calls null"
+                "journal unavailable must leave journal token fields null"
             )
-    elif obj["tokens_prompt_cache_adjusted"] is None or obj["journal_llm_calls"] is None:
+        if obj["attribution_gap"] or obj["attribution_gap_detail"] is not None:
+            raise HarnessError("journal unavailable must leave attribution_gap false/null")
+    elif (
+        obj["tokens_prompt_cache_adjusted"] is None
+        or obj["journal_llm_calls"] is None
+        or obj["journal_tokens_prompt_raw"] is None
+        or obj["journal_tokens_completion"] is None
+    ):
         raise HarnessError(
-            "journal method requires cache-adjusted tokens and journal_llm_calls"
+            "journal method requires cache-adjusted, journal calls, and journal token fields"
         )
     if obj["tokens_unattributed"] != (
         obj["tokens_prompt_unattributed"] + obj["tokens_completion_unattributed"]
@@ -733,6 +775,10 @@ def _empty_metrics():
         "tokens_completion": 0,
         "llm_calls": 0,
         "journal_llm_calls": None,
+        "journal_tokens_prompt_raw": None,
+        "journal_tokens_completion": None,
+        "attribution_gap": False,
+        "attribution_gap_detail": None,
         "turns": 0,
         "turns_source": "llm_calls",
         "retries": 0,

@@ -335,6 +335,96 @@ class SummarizeTests(unittest.TestCase):
             self.assertIn(CAVEAT, written)
 
 
+    def test_fmt_med_range(self):
+        self.assertEqual(summarize.fmt_med_range([1, 3, 2]), "2 [1-3]")
+        self.assertEqual(summarize.fmt_med_range([None, 4]), "4 [4-4]")
+        self.assertEqual(summarize.fmt_med_range([None, None]), "n/a")
+
+    def test_results_md_dual_tokens_and_caveats(self):
+        runs = [
+            _run(
+                arm="base",
+                scenario="e2",
+                n=1,
+                run_id="e2-1",
+                tokens_prompt=100,
+                tokens_completion=50,
+                journal_tokens_prompt_raw=100,
+                tokens_prompt_cache_adjusted=90,
+                journal_tokens_completion=50,
+                llm_calls=2,
+                journal_llm_calls=2,
+                attribution_gap=False,
+                agent_messages=1,
+                wall_s=10,
+                turns=3,
+            ),
+            _run(
+                arm="base",
+                scenario="egress",
+                n=1,
+                run_id="eg-1",
+                court_dependent=True,
+                tokens_prompt=80,
+                tokens_completion=40,
+                journal_tokens_prompt_raw=85,
+                tokens_prompt_cache_adjusted=70,
+                journal_tokens_completion=100,
+                llm_calls=3,
+                journal_llm_calls=4,
+                attribution_gap=True,
+                attribution_gap_detail="calls api=3 journal=4",
+                agent_messages=0,
+                wall_s=20,
+                turns=2,
+            ),
+            _run(
+                arm="A",
+                scenario="e1",
+                n=1,
+                run_id="a-e1",
+                tokens_prompt=10,
+                tokens_completion=10,
+                agent_messages=2,
+            ),
+        ]
+        text = summarize.render_results(runs)
+        self.assertIn("## Non-court / chat-capable scenarios", text)
+        self.assertIn("## Court-dependent scenarios", text)
+        self.assertIn("| base | e2 |", text)
+        self.assertIn("| base | egress |", text)
+        before, after = text.split("## Court-dependent scenarios", 1)
+        self.assertIn("| base | e2 |", before)
+        self.assertNotIn("| base | egress |", before)
+        self.assertIn("| base | egress |", after)
+        self.assertIn("## attribution_gap", text)
+        self.assertIn("overall: 1/3", text)
+        self.assertIn("Court is not in arm A", text)
+        self.assertIn("e1/e2/e3 are chat-only", text)
+        self.assertIn("docs/exp/base-metrics-deviations.md", text)
+        self.assertIn("N=3 is thin", text)
+        self.assertIn("qwen3-coder:30b", text)
+        self.assertIn("qwen3.6:35b", text)
+        self.assertIn("150 [150-150]", text)  # API tokens for e2
+        self.assertIn("## Arm totals", text)
+        self.assertIn("## Raw runs", text)
+
+    def test_results_cli_writes_both_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "runs.jsonl"
+            src.write_text(json.dumps(_run(tokens_prompt=1, tokens_completion=1)) + "\n", encoding="utf-8")
+            summary = Path(tmp) / "summary.md"
+            results = Path(tmp) / "results.md"
+            self.assertEqual(
+                summarize.main(["--runs", str(src), "--out", str(summary), "--results", str(results)]),
+                0,
+            )
+            self.assertIn("Profile summary", summary.read_text(encoding="utf-8"))
+            body = results.read_text(encoding="utf-8")
+            self.assertIn("Profile results", body)
+            self.assertIn("Caveats", body)
+
+
 class ScoreRubricTests(unittest.TestCase):
     def test_classify_and_regex_scope(self):
         self.assertEqual(score.classify_sender("court-persona-ciso"), "court")
