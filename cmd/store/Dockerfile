@@ -24,6 +24,7 @@ RUN go mod download
 
 # Store needs substantial internal packages (crypto, events, etc.)
 COPY cmd/store ./cmd/store
+COPY cmd/git-remote-hub ./cmd/git-remote-hub
 COPY internal ./internal
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /store ./cmd/store
