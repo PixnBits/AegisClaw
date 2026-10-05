@@ -69,6 +69,7 @@ allowed when unattributed tokens are present, e.g. Court). A wider
 excerpt, or another process using Ollama in the same seconds, makes the
 journal larger. That is not a dropped usage record.
 
+Prewarm: ``daemon.sh`` POSTs a tiny ``ping`` generate after wait_ready. Those calls have prompt-eval N <= ``PREWARM_MAX_PROMPT_EVAL_TOKENS`` (11) and are excluded from journal totals and attribution_gap. A remaining call-count or completion mismatch (tolerance ``COMPLETION_GAP_TOLERANCE``) is a real gap.\n
 The script does not change ``result.json``.
 
 Exit 0 when the command is only printed, or the excerpt matches.
@@ -94,11 +95,18 @@ from pathlib import Path
 # purpose; do not widen it into score time.
 LEAD_S = 5.0
 SETTLE_S = 15.0
+# daemon.sh prewarm POSTs prompt "ping" (~7-11 prompt-eval tokens). Exclude those.
+PREWARM_MAX_PROMPT_EVAL_TOKENS = 11
+# attribution_gap when |journal_completion - API completion (incl. unattributed)| exceeds this.
+COMPLETION_GAP_TOLERANCE = 5
 TOKEN_CACHE_METHOD = "api_prompt_eval_count_full__journal_prompt_eval_new"
 TOKEN_CACHE_METHOD_UNAVAILABLE = "api_prompt_eval_count_full__journal_unavailable"
 
 _PROMPT_EVAL = re.compile(r"prompt eval time\s*=.*?/\s*(\d+)\s+tokens", re.IGNORECASE)
 _EVAL = re.compile(r"eval time\s*=.*?/\s*(\d+)\s+tokens", re.IGNORECASE)
+_NEW_PROMPT = re.compile(
+    r"new prompt,.*?task\.n_tokens\s*=\s*(\d+)", re.IGNORECASE
+)
 _ISO = re.compile(
     r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
 )
@@ -196,6 +204,86 @@ def extract_timing(text: str, start: datetime | None = None, end: datetime | Non
         if match:
             rows.append({"kind": "completion", "tokens": int(match.group(1))})
     return rows
+
+
+
+def extract_calls(text: str, start: datetime | None = None, end: datetime | None = None) -> list[dict]:
+    """One row per generate call: prompt_raw, prompt_eval, completion, prewarm.
+
+    prompt_eval is newly evaluated (cache-adjusted). prompt_raw is task.n_tokens
+    from the preceding "new prompt" line when present, else prompt_eval.
+    prewarm is True when prompt_eval <= PREWARM_MAX_PROMPT_EVAL_TOKENS (daemon
+    keep_alive ping). Completion is paired to the preceding prompt-eval.
+    """
+    last_raw = None
+    pending_prompt = None
+    calls = []
+    for line in text.splitlines():
+        if start is not None and end is not None and not _line_in_window(line, start, end):
+            continue
+        m_new = _NEW_PROMPT.search(line)
+        if m_new:
+            last_raw = int(m_new.group(1))
+        if re.search(r"prompt eval time", line, re.IGNORECASE):
+            match = _PROMPT_EVAL.search(line)
+            if match:
+                prompt_eval = int(match.group(1))
+                prompt_raw = last_raw if last_raw is not None else prompt_eval
+                pending_prompt = {
+                    "prompt_raw": prompt_raw,
+                    "prompt_eval": prompt_eval,
+                    "completion": 0,
+                    "prewarm": prompt_eval <= PREWARM_MAX_PROMPT_EVAL_TOKENS,
+                }
+                calls.append(pending_prompt)
+                last_raw = None
+            continue
+        if re.search(r"total time", line, re.IGNORECASE):
+            continue
+        match = _EVAL.search(line)
+        if match and pending_prompt is not None:
+            pending_prompt["completion"] = int(match.group(1))
+            pending_prompt = None
+    return calls
+
+
+def without_prewarm(calls: list[dict]) -> list[dict]:
+    return [c for c in calls if not c.get("prewarm")]
+
+
+def journal_totals(calls: list[dict]) -> dict:
+    """Sums over non-prewarm calls. Empty input yields zeros."""
+    kept = without_prewarm(calls)
+    return {
+        "calls": len(kept),
+        "prompt_raw": sum(int(c["prompt_raw"]) for c in kept),
+        "prompt_eval": sum(int(c["prompt_eval"]) for c in kept),
+        "completion": sum(int(c["completion"]) for c in kept),
+        "prewarm_excluded": sum(1 for c in calls if c.get("prewarm")),
+    }
+
+
+def attribution_gap(result: dict, totals: dict | None) -> tuple[bool, str | None]:
+    """Compare API usage to journal totals (prewarm already excluded).
+
+    Gap when call counts differ (tolerance 0) or completion absolute delta
+    exceeds COMPLETION_GAP_TOLERANCE. Prompt is not used for the gap flag.
+    """
+    if totals is None:
+        return False, None
+    expected = expected_totals(result)
+    api_calls = expected["attributed_calls"]
+    api_completion = expected["completion"]
+    j_calls = int(totals["calls"])
+    j_completion = int(totals["completion"])
+    reasons = []
+    if api_calls is not None and j_calls != api_calls:
+        reasons.append(f"calls api={api_calls} journal={j_calls}")
+    if abs(j_completion - api_completion) > COMPLETION_GAP_TOLERANCE:
+        reasons.append(f"completion api={api_completion} journal={j_completion}")
+    if not reasons:
+        return False, None
+    return True, "; ".join(reasons)
 
 
 def expected_totals(result: dict) -> dict:
@@ -361,8 +449,19 @@ def main(argv=None) -> int:
         )
         return 0
     try:
-        rows = extract_timing(text, start, end)
+        calls = extract_calls(text, start, end)
+        kept = without_prewarm(calls)
+        # Build timing rows from non-prewarm calls so operator check matches harness.
+        rows = []
+        for call in kept:
+            rows.append({"kind": "prompt", "tokens": int(call["prompt_eval"])})
+            rows.append({"kind": "completion", "tokens": int(call["completion"])})
         code, report = _report(result, rows)
+        gap, detail = attribution_gap(result, journal_totals(calls))
+        if detail:
+            report = report + f"\nattribution_gap: {detail}"
+        elif calls and not gap:
+            report = report + "\nattribution_gap: false (prewarm excluded)"
     except ValueError as exc:
         print(f"check_ollama_journal: {exc}", file=sys.stderr)
         return 2

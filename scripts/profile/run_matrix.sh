@@ -431,12 +431,14 @@ run_arm() {
   log "==== arm $arm ===="
   if [[ $DRY_RUN == 1 ]]; then
     log "dry-run: not starting daemon for arm $arm"
+    record_rootfs_digests "$arm"
   else
     log "starting daemon for arm $arm"
     run_logged bash "$SCRIPT_DIR/daemon.sh" start "$arm" --out "$OUT"
     if [[ $LAST_RC -ne 0 ]]; then
       log "initial daemon start failed rc=$LAST_RC arm=$arm"
     fi
+    record_rootfs_digests "$arm"
   fi
 
   for sid in "${SCENARIO_IDS[@]}"; do
@@ -490,6 +492,42 @@ run_arm() {
   return 0
 }
 
+
+# Write sha256 of this arm's rootfs *.img into $OUT/rootfs-$arm.sha256.
+# Missing directory is a warning + stub, not a hard failure.
+record_rootfs_digests() {
+  local arm=$1
+  local home_dir rootfs dest count
+  home_dir="${HOME:-}"
+  if [[ -z $home_dir || ! -d $home_dir ]]; then
+    home_dir=$(getent passwd "$(id -un)" | cut -d: -f6)
+  fi
+  case "$arm" in
+    base) rootfs="$home_dir/.aegis/firecracker/rootfs-base" ;;
+    A) rootfs="$home_dir/.aegis/firecracker/rootfs-A" ;;
+    B) rootfs="$home_dir/.aegis/firecracker/rootfs-B" ;;
+    *) rootfs="$home_dir/.aegis/firecracker/rootfs-$arm" ;;
+  esac
+  dest="$OUT/rootfs-${arm}.sha256"
+  if [[ ! -d $rootfs ]]; then
+    log "WARN rootfs dir missing for arm=$arm path=$rootfs; writing stub $dest"
+    printf '# missing rootfs dir: %s\n' "$rootfs" >"$dest"
+    return 0
+  fi
+  count=$(find "$rootfs" -maxdepth 1 -type f -name '*.img' | wc -l | tr -d ' ')
+  if [[ ${count:-0} -eq 0 ]]; then
+    log "WARN no *.img in $rootfs for arm=$arm; writing stub $dest"
+    printf '# no *.img in %s\n' "$rootfs" >"$dest"
+    return 0
+  fi
+  (cd "$rootfs" && sha256sum *.img | LC_ALL=C sort) >"$dest"
+  log "recorded rootfs digests arm=$arm files=$count -> $dest"
+  if [[ -d /tmp/aegis-profile/artifacts ]]; then
+    cp -f "$dest" "/tmp/aegis-profile/artifacts/rootfs-${arm}.sha256" 2>/dev/null || true
+  fi
+  return 0
+}
+
 score_phase() {
   local -a score_cmd
   if ! processes_clear; then
@@ -511,7 +549,8 @@ score_phase() {
   fi
   run_logged python3 "$SCRIPT_DIR/summarize.py" \
     --runs "$OUT/runs_scored.jsonl" \
-    --out "$OUT/summary.md"
+    --out "$OUT/summary.md" \
+    --results "$OUT/results.md"
   if [[ $LAST_RC -ne 0 ]]; then
     log "summarize.py failed rc=$LAST_RC"
     INFRA_FAIL=1
