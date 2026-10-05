@@ -41,6 +41,13 @@ def _result(**overrides):
 
 
 class OllamaJournalTests(unittest.TestCase):
+    def test_window_prefers_total_s_over_conclusion_wall_s(self):
+        start, end = journal.run_window(_result(wall_s=10, total_s=50))
+        self.assertEqual(
+            (end - start).total_seconds(),
+            journal.LEAD_S + 50 + journal.SETTLE_S,
+        )
+
     def test_window_command_stops_before_a_later_judge(self):
         argv = journal.journalctl_argv(_result())
         self.assertEqual(

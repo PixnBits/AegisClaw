@@ -6,6 +6,9 @@
 # runs). This script never calls pkill, never sends SIGKILL, and never signals
 # a process named aegis or firecracker. On INT/TERM it SIGTERMs only the
 # harness child it launched (run_one.py or daemon.sh), then calls daemon.sh stop.
+# Between finished cells in an arm (not the last cell, not --dry-run) it
+# restarts that daemon the same way. Those isolate restarts do not count
+# toward the health-failure restart cap.
 set -euo pipefail
 set -m
 
@@ -43,10 +46,13 @@ Usage: run_matrix.sh --arms base[,A,B] [--scenarios all|id,id] [--n 3]
                       [--no-judge] [--shuffle-seed S]
 
 Run each arm in order: daemon.sh start, then each scenario n=1..N (skip a
-cell that already has result.json), then daemon.sh stop. Daemon stop is only
-that call (sudo -n ./bin/aegis stop). This script never calls pkill and never
-signals a process named aegis or firecracker. After every arm is
-stopped, score and summarize (unless --phase run).
+cell that already has result.json). After each finished cell except the last
+in the arm, and not on --dry-run, restart the daemon (daemon.sh stop, then
+daemon.sh start) so the next run does not share the journal window. That
+isolate restart does not count toward the health restart cap. After the last
+cell, daemon.sh stop. Daemon stop is only that call (sudo -n ./bin/aegis stop).
+This script never calls pkill and never signals a process named aegis or
+firecracker. After every arm is stopped, score and summarize (unless --phase run).
 
   --arms           Comma-separated arm ids, in run order. Required unless
                    --phase score. Aliases: dm is A, ste is B
@@ -246,9 +252,27 @@ daemon_healthy() {
   return 1
 }
 
+# Stop and start between scenario cells. Does not increment ARM_RESTARTS.
+# Health failures keep their own cap of 2; counting isolate restarts there
+# would abort the arm after two scenarios.
+isolate_restart_between_runs() {
+  local arm=$1
+  local stop_mark stop_s start_s total_s
+  stop_mark=$SECONDS
+  CURRENT_ARM=$arm
+  stop_current_arm
+  stop_s=$((SECONDS - stop_mark))
+  CURRENT_ARM=$arm
+  run_logged bash "$SCRIPT_DIR/daemon.sh" start "$arm" --out "$OUT"
+  start_s=$LAST_WALL
+  total_s=$((stop_s + start_s))
+  log "isolate restart arm=${arm} stop_s=${stop_s} start_s=${start_s} total_s=${total_s}"
+  CURRENT_ARM=$arm
+}
+
 # Returns 0 if the arm may run another cell. Returns 1 if the arm must be
 # aborted (health check failed twice). At most 2 restarts per arm; the
-# initial start is not a restart.
+# initial start is not a restart. Isolate restarts between cells are separate.
 ensure_daemon() {
   local arm=$1
   if [[ $DRY_RUN == 1 ]]; then
@@ -451,6 +475,10 @@ run_arm() {
       if [[ $LAST_RC -ne 0 ]]; then
         RUN_FAILURES=$((RUN_FAILURES + 1))
         log "run-level failure (matrix continues) arm=$arm scenario=$sid n=$k rc=$LAST_RC"
+      fi
+      # Not after the last cell: finish_arm stops, and must not start again.
+      if [[ $DRY_RUN == 0 && ! ( $k -eq $N && $sid == "${SCENARIO_IDS[-1]}" ) ]]; then
+        isolate_restart_between_runs "$arm"
       fi
     done
   done

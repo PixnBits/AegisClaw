@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import common
@@ -127,6 +128,8 @@ class ConclusionSignalTests(unittest.TestCase):
             messages=parsed,
             metrics=counted,
             wall_s=1.0,
+            drain_s=0.0,
+            total_s=1.0,
             started_at="2026-10-04T23:02:06Z",
             run_dir="/tmp/run",
             error=None,
@@ -187,6 +190,40 @@ class ConclusionSignalTests(unittest.TestCase):
             "quiet",
         )
 
+    def test_clarifying_agent_question_does_not_fire_marker(self):
+        patterns = ["no further changes", "guest count"]
+        messages = [
+            _msg("pm", "Plan: add the field once you pick a date."),
+            _msg(
+                "agent",
+                "Should the guest count be required before I say no further changes?",
+            ),
+        ]
+        self.assertTrue(run_one._is_clarifying_question("  no further changes?  "))
+        self.assertFalse(run_one._is_clarifying_question("No further changes."))
+        self.assertIsNone(run_one._first_agent_reply_index(messages))
+        self.assertFalse(run_one.marker_hit(messages, patterns))
+        self.assertIsNone(_signal(messages, patterns=patterns, silence_s=0))
+        self.assertEqual(_signal(messages, patterns=patterns, silence_s=90), "quiet")
+        # A later non-clarifying agent reply can still carry the marker.
+        followed = messages + [_msg("agent", "No further changes.")]
+        self.assertEqual(run_one._first_agent_reply_index(followed), 2)
+        self.assertTrue(run_one.marker_hit(followed, patterns))
+        self.assertEqual(_signal(followed, patterns=patterns, silence_s=0), "final_marker")
+
+    def test_later_pm_marker_fires_after_only_clarifying_agent_replies(self):
+        patterns = ["no further changes", "guest count"]
+        messages = [
+            _msg("pm", "Plan: add the field once you pick a date."),
+            _msg(
+                "agent",
+                "Should the guest count be required before I say no further changes?",
+            ),
+            _msg("pm", "No further changes."),
+        ]
+        self.assertTrue(run_one.marker_hit(messages, patterns))
+        self.assertEqual(_signal(messages, patterns=patterns, silence_s=0), "final_marker")
+
 
 def _result(metrics):
     return run_one.build_result(
@@ -202,6 +239,8 @@ def _result(metrics):
         messages=[],
         metrics=metrics,
         wall_s=1.0,
+        drain_s=0.0,
+        total_s=1.0,
         started_at="2026-10-04T23:02:06Z",
         run_dir="/tmp/run",
         error=None,
@@ -256,6 +295,12 @@ class TokenCaptureTests(unittest.TestCase):
         result = _result(run_one._empty_metrics())
         self.assertEqual(result["tokens_prompt"], 0)
         self.assertEqual(result["tokens_prompt_raw"], 0)
+        self.assertEqual(result["drain_s"], 0.0)
+        self.assertEqual(result["total_s"], result["wall_s"])
+        keys = list(result)
+        self.assertLess(keys.index("wall_s"), keys.index("drain_s"))
+        self.assertLess(keys.index("drain_s"), keys.index("total_s"))
+        self.assertLess(keys.index("total_s"), keys.index("turns"))
         self.assertIsNone(result["tokens_prompt_cache_adjusted"])
         self.assertIsNone(result["journal_llm_calls"])
         self.assertEqual(
@@ -524,6 +569,163 @@ class ArmATranscriptTests(unittest.TestCase):
             common.collect_dm_messages("A", "chan", run_cmd=missing, spec={}, build=build)
             self.assertEqual(calls, [])
         common._MISSING_DM_CMDS.clear()
+
+
+class _Args:
+    def __init__(self, poll_s=5):
+        self.arm = "base"
+        self.poll_s = poll_s
+
+
+class DrainTests(unittest.TestCase):
+    def test_constants_and_ready_rule(self):
+        self.assertEqual(run_one.DRAIN_QUIET_S, 15)
+        self.assertEqual(run_one.DRAIN_CAP_S, 120)
+        self.assertFalse(run_one._drain_ready(True, True, False, 15))
+        # Turn-state unavailable does not block, even if a stale pending flag is set.
+        self.assertTrue(run_one._drain_ready(False, True, False, 15))
+        self.assertFalse(run_one._drain_ready(True, False, True, 15))
+        self.assertFalse(run_one._drain_ready(True, False, False, 14.9))
+        self.assertTrue(run_one._drain_ready(True, False, False, 15))
+
+    def test_new_attributed_usage_is_channel_filtered(self):
+        channel = "prof-e2-base-n1-abcdef"
+        previous = [
+            {
+                "agent_id": f"coder-{channel}",
+                "tokens_prompt": 1,
+                "tokens_completion": 1,
+            }
+        ]
+        self.assertFalse(run_one._new_attributed_for_channel(previous, list(previous), channel))
+        added = previous + [
+            {
+                "agent_id": f"coder-{channel}",
+                "tokens_prompt": 2,
+                "tokens_completion": 2,
+            }
+        ]
+        self.assertTrue(run_one._new_attributed_for_channel(previous, added, channel))
+        other = previous + [{"agent_id": "court", "tokens_prompt": 9, "tokens_completion": 9}]
+        self.assertFalse(run_one._new_attributed_for_channel(previous, other, channel))
+        # Empty after a real snapshot is a failed read, not "no new work".
+        self.assertTrue(run_one._new_attributed_for_channel(previous, [], channel))
+        self.assertFalse(run_one._new_attributed_for_channel([], [], channel))
+
+    def _run_drain(self, poll_once, snapshot, last_change, prev_messages, pending_member=False):
+        clock = {"t": 1000.0}
+
+        def monotonic():
+            return clock["t"]
+
+        def sleep(seconds):
+            clock["t"] += float(seconds)
+
+        channel = "prof-e2-base-n1-abcdef"
+        with tempfile.TemporaryDirectory() as tmp:
+            polls_path = Path(tmp) / "polls.jsonl"
+            polls_path.write_text("", encoding="utf-8")
+            with unittest.mock.patch.object(run_one.time, "monotonic", monotonic), unittest.mock.patch.object(
+                run_one.time, "sleep", sleep
+            ), unittest.mock.patch.object(run_one, "_poll_once", poll_once), unittest.mock.patch.object(
+                run_one, "usage_snapshot", snapshot
+            ):
+                _messages, _raw, _collected, drain_s = run_one._drain_after_conclusion(
+                    _Args(),
+                    channel,
+                    None,
+                    polls_path,
+                    0.0,
+                    prev_messages,
+                    "",
+                    run_one._message_signature(prev_messages),
+                    last_change,
+                    True,
+                )
+            text = polls_path.read_text(encoding="utf-8")
+        return drain_s, text
+
+    def test_drain_ends_once_signature_usage_and_turn_state_are_quiet(self):
+        messages = [
+            {"role": "pm", "content": "Plan.", "seq": 1, "from": "pm"},
+            {"role": "agent", "content": "Done. No further changes.", "seq": 2, "from": "agent"},
+        ]
+        channel = "prof-e2-base-n1-abcdef"
+        record = {
+            "agent_id": f"coder-{channel}",
+            "tokens_prompt": 3,
+            "tokens_completion": 4,
+            "timestamp": "2026-10-05T00:00:00Z",
+        }
+
+        def poll_once(arm, channel, scenario=None):
+            return {
+                "fetch_ok": True,
+                "messages": messages,
+                "raw": "{}\n",
+                "turn": {"members": [{"role": "coder", "pending": False}]},
+                "dm_messages": 0,
+            }
+
+        def snapshot():
+            return [dict(record)]
+
+        # Already quiet for longer than DRAIN_QUIET_S: one observation is enough.
+        drain_s, polls = self._run_drain(poll_once, snapshot, 980.0, messages)
+        self.assertEqual(drain_s, 0.0)
+        self.assertIn("pending=0", polls)
+        # Signature just changed: wait out DRAIN_QUIET_S, not the 120s cap.
+        drain_s, _polls = self._run_drain(poll_once, snapshot, 1000.0, messages)
+        self.assertEqual(drain_s, 15.0)
+
+    def test_drain_holds_for_pending_until_the_cap(self):
+        messages = [
+            {"role": "pm", "content": "Plan.", "seq": 1, "from": "pm"},
+            {"role": "agent", "content": "Which file?", "seq": 2, "from": "agent"},
+        ]
+
+        def poll_once(arm, channel, scenario=None):
+            return {
+                "fetch_ok": True,
+                "messages": messages,
+                "raw": "{}\n",
+                "turn": {"members": [{"role": "coder", "pending": True}]},
+                "dm_messages": 0,
+            }
+
+        def snapshot():
+            return []
+
+        drain_s, polls = self._run_drain(poll_once, snapshot, 1000.0, messages)
+        self.assertEqual(drain_s, 120.0)
+        self.assertIn("pending=1", polls)
+
+    def test_drain_resets_quiet_when_the_signature_changes(self):
+        base = [
+            {"role": "pm", "content": "Plan.", "seq": 1, "from": "pm"},
+            {"role": "agent", "content": "Working.", "seq": 2, "from": "agent"},
+        ]
+        changed = base + [
+            {"role": "pm", "content": "No further changes.", "seq": 3, "from": "pm"}
+        ]
+        polls = {"n": 0}
+
+        def poll_once(arm, channel, scenario=None):
+            polls["n"] += 1
+            return {
+                "fetch_ok": True,
+                "messages": changed if polls["n"] >= 2 else base,
+                "raw": "{}\n",
+                "turn": {"members": [{"role": "coder", "pending": False}]},
+                "dm_messages": 0,
+            }
+
+        def snapshot():
+            return []
+
+        drain_s, _text = self._run_drain(poll_once, snapshot, 1000.0, base)
+        # 5s until the new post, then another DRAIN_QUIET_S.
+        self.assertEqual(drain_s, 20.0)
 
 
 if __name__ == "__main__":

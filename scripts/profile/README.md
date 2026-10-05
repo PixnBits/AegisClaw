@@ -79,6 +79,8 @@ The judge runs only in the score phase, after daemons are stopped. It calls loca
 
 `daemon.sh` writes both model tags into `profile.env` on start. The PM tag stays `qwen3.6:35b` so the orchestrator does not copy the coder model onto the PM. Do not point `AEGIS_PM_MODEL` at another tag.
 
+After `wait_ready`, `daemon.sh start` prewarms both tags so a PM call on `qwen3.6:35b` does not leave the agent model cold for the next turn. For each of `AEGIS_DEFAULT_MODEL` (default `qwen3-coder:30b`) and `AEGIS_PM_MODEL` (default `qwen3.6:35b`) it POSTs `http://127.0.0.1:11434/api/generate` with `{"model":"...","prompt":"ping","stream":false,"keep_alive":"60m"}` (`curl -sS --max-time 600`). It logs `prewarm <model> ok` or `prewarm <model> fail`. A prewarm failure does not fail start; the daemon is already ready. See also "Run isolation".
+
 ### `/dev/kvm`
 
 Firecracker needs `/dev/kvm`. The daemon runs as root, so the device node has to exist and be readable by root:
@@ -150,7 +152,7 @@ The goal tells the model to reply with each new or changed file as a fenced code
 
 The limitation is the measurement. The model has to echo whole files accurately inside the channel. A truncated block, a wrong path comment, or a fence the extractor does not recognize fails the grader even when the description was right. There is no compiler in the guest and no second turn driven by `go test` output. Large seeds also consume the same context window as the work.
 
-**e1 / e3 chat-only delivery.** Engineering scenarios may end on `quiet` when agents discuss the work in the channel but never post a `// file:` fence (markdown may use `<!-- file: path -->`). The mechanical grader then fails, because it only sees files inside those fences. `final_marker` does not fire on the PM's opening plan, so a conversation that never delivers a file waits out `quiet` or `timeout`. That is a known product and harness limitation, not a grader bug. e3's markers also include the file fence and the completion phrases (`no further changes`, `grading can start`); they still do not conclude until an agent has replied.
+**e1 / e3 chat-only delivery.** Engineering scenarios may end on `quiet` when agents discuss the work in the channel but never post a `// file:` fence (markdown may use `<!-- file: path -->`). The mechanical grader then fails, because it only sees files inside those fences. `final_marker` does not fire on the PM's opening plan, so a conversation that never delivers a file waits out `quiet` or `timeout` unless a later PM post matches a marker. That is a known product and harness limitation, not a grader bug. e3's markers also include the file fence and the completion phrases (`no further changes`, `grading can start`). An agent reply whose stripped text ends with `?` does not conclude, even when it contains one of those phrases.
 
 ## Metrics
 
@@ -168,7 +170,7 @@ Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result
 
 **Unattributed tokens.** `tokens_unattributed` is the prompt-plus-completion total on delta records whose `agent_id` does not contain this channel id. `tokens_prompt_unattributed` and `tokens_completion_unattributed` are the two sums. Those tokens are not included in `tokens_prompt` or `tokens_completion`. They are other channels, the PM or an agent whose id did not carry the channel id, or traffic that landed in the window without an id. A large unattributed number means the cell's token totals are a lower bound.
 
-**wall_s.** Seconds from the start of the run (t0, when the goal is submitted) to the conclusion signal, as stored in `result.json`. The driver's own `run wall_s=` line in `matrix.log` is the wrapper around the `run_one.py` process and is a little longer. Compare arms with `result.json`'s `wall_s`.
+**wall_s.** Seconds from the start of the run (t0, when the goal is submitted) to the conclusion signal, as stored in `result.json`. It does not include the drain. **drain_s** is seconds spent polling after that signal before the final usage snapshot (0 on a dry-run, a harness error, or an error before the goal was accepted). **total_s** is `wall_s + drain_s`. Compare conclusion time with `wall_s`. Token and journal windows use `total_s`. The driver's own `run wall_s=` line in `matrix.log` is the wrapper around the `run_one.py` process and is a little longer.
 
 **retries.** Lines in the run's daemon-log slice and collab trace matching `retry`, `RETRY`, or `retrying`.
 
@@ -182,10 +184,10 @@ Checked on this host with Ollama 0.33.2 (repeatable) and against the pilot1/pilo
 
 - `tokens_prompt` / `tokens_prompt_raw` are the attributed sum of API `prompt_eval_count`. On Ollama 0.33.2 that count is the **full prompt**, not reduced by KV cache. Sending the same 1469-token prefix twice to `qwen3-coder:30b` returned `prompt_eval_count=1469` both times.
 - `tokens_prompt_cache_adjusted` is the journal **newly evaluated** prompt-token sum: the `N` in `prompt eval time = ... / N tokens`. For that second 1469-token call the journal said `cached n_tokens = 1457` and `prompt eval time = 53.33 ms / 12 tokens`. `qwen3.6:35b` (hybrid/SWA) logs `forcing full prompt re-processing` and the journal N equals the full prompt.
-- After a live run (not `--dry-run`) the harness reads `journalctl -u ollama -o short-iso --since ... --until ... --no-pager` for the run window. On success with timing lines it sets `tokens_prompt_cache_adjusted`, `journal_llm_calls` (number of prompt-eval lines), and `tokens_cache_method` `api_prompt_eval_count_full__journal_prompt_eval_new`. If journalctl is missing or the excerpt has no timing lines, cache-adjusted is null and the method is `api_prompt_eval_count_full__journal_unavailable`. A journal failure does not fail the run.
+- After a live run (not `--dry-run`) the harness reads `journalctl -u ollama -o short-iso --since ... --until ... --no-pager` for the run window. The window length is `total_s` (conclusion `wall_s` plus drain), not `wall_s` alone, so a call that finishes during the drain is counted. On success with timing lines it sets `tokens_prompt_cache_adjusted`, `journal_llm_calls` (number of prompt-eval lines), and `tokens_cache_method` `api_prompt_eval_count_full__journal_prompt_eval_new`. If journalctl is missing or the excerpt has no timing lines, cache-adjusted is null and the method is `api_prompt_eval_count_full__journal_unavailable`. A journal failure does not fail the run.
 - Do not subtract a cache-similarity fraction from `prompt_eval_count`. Do not treat a journal prompt sum below API raw as a dropped record.
 
-**Attribution.** A usage record is attributed when its `agent_id` contains the channel id, and its timestamp (when present) falls in `[started_at, started_at + wall_s]` plus the short settle used for the after-snapshot. `llm_calls` is that attributed record count. Court (and any other record whose `agent_id` does not contain the channel id) is unattributed: `tokens_unattributed`, `tokens_prompt_unattributed`, `tokens_completion_unattributed`. Those tokens are not included in `tokens_prompt` or `tokens_completion`. A large unattributed number means the cell's attributed totals are a lower bound.
+**Attribution.** A usage record is attributed when its `agent_id` contains the channel id, and its timestamp (when present) falls in `[started_at, started_at + total_s]` plus the short settle used for the after-snapshot. `total_s` is conclusion `wall_s` plus drain, so a call that finishes during the drain still counts for this run. `llm_calls` is that attributed record count. Court (and any other record whose `agent_id` does not contain the channel id) is unattributed: `tokens_unattributed`, `tokens_prompt_unattributed`, `tokens_completion_unattributed`. Those tokens are not included in `tokens_prompt` or `tokens_completion`. A large unattributed number means the cell's attributed totals are a lower bound.
 
 **Repeat the verification.** For one finished run directory:
 
@@ -210,16 +212,18 @@ Do not present token deltas as experiment results until the same journal check h
 
 Each poll, and only after `conclusion.min_wait_s` since the goal was accepted, `run_one.py` picks the first match:
 
-1. **final_marker.** A `conclusion.final_markers` regex (case-insensitive) matches a PM or agent message only after at least one non-PM agent reply has followed the first PM message (the plan). The match has to be on a message at or after that first agent reply: the agent's post or a later PM synthesis. The PM's first plan or clarifying question alone does not fire `final_marker`, even when its text matches a marker. Court senders and facilitator `system` status posts are not agents and do not count as the required reply. `quiet` and `timeout` are the fallbacks when the marker never becomes eligible.
+1. **final_marker.** A `conclusion.final_markers` regex (case-insensitive) matches in either of two ways. A PM message after the first PM post (a later PM post, not the opening plan) may match on its own, even when every agent reply so far is only a clarifying question. Otherwise the marker needs a non-clarifying agent reply after the first PM, then a match on a PM or non-clarifying agent message at or after that reply. An agent reply is clarifying when its stripped text ends with `?`. That reply does not make the marker eligible, and a marker phrase inside it does not fire `final_marker`. The PM's first plan still does not count. Court senders and facilitator `system` status posts are not agents and do not count as the required reply. If the only agent replies are clarifying and no later PM post matches, `quiet` and `timeout` are the fallbacks.
 2. **quiet.** At least one non-user message, no new message for `quiet_s` seconds, and turn-state (when the call works) shows no member with `pending=true`. Those seconds are host monotonic time since the poll last observed a change in the message set (count, last sequence, or content). The clock starts when the goal is accepted. Message timestamps are ignored; they do not win over host time.
 3. **quiet_no_reply.** No non-user message for `max(quiet_s * 2, 150)` seconds after the goal was accepted, and turn-state shows nothing pending. This is a real outcome for an off-topic probe that everyone correctly ignores.
 4. **timeout.** `scenario.timeout_s` from t0. `timed_out` is true. The run is still data: `run_one.py` exits 0. It exits non-zero only for a harness error, and it still writes `result.json` with `completion_signal` `error` when it can.
 
-The hard cap bounds cost. The quiet rules end scenarios that have no fixed closing phrase. `quiet_no_reply` keeps "nothing was supposed to happen" distinct from a timeout: nobody non-user has replied and turn-state shows nothing pending. `min_wait_s` stops the harness declaring victory while the PM VM is still booting. The marker rule does not treat the PM's opening plan as a conclusion. A probe that only gets that clarifying ask ends on `quiet` (someone spoke) or `timeout`, not `final_marker`. An agent can still close the work by saying the marker after the plan.
+The hard cap bounds cost. The quiet rules end scenarios that have no fixed closing phrase. `quiet_no_reply` keeps "nothing was supposed to happen" distinct from a timeout: nobody non-user has replied and turn-state shows nothing pending. `min_wait_s` stops the harness declaring victory while the PM VM is still booting. The marker rule does not treat the PM's opening plan as a conclusion. A probe that only gets a clarifying ask (the PM's question, or an agent reply that ends with `?`) ends on `quiet` (someone spoke) or `timeout`, not `final_marker`, unless a later PM post matches a marker. An agent can still close the work by saying the marker in a reply that does not end with `?`.
+
+**Drain.** After the signal is chosen (`final_marker`, `quiet`, `quiet_no_reply`, `timeout`, or `error` once the goal was accepted), the harness keeps polling before the final transcript read and the usage snapshot. Drain ends only when all three are true: turn-state shows no pending member, or turn-state is unavailable (that does not block, so a quiet channel can still finish); no new attributed usage record for this channel since the previous drain observation (`agent_id` contains the channel id); and the message signature is unchanged for `DRAIN_QUIET_S` (15 seconds). The cap is `DRAIN_CAP_S` (120 seconds) from the start of the drain. `wall_s` stops at the conclusion signal. `drain_s` is the time spent draining. `total_s` is `wall_s + drain_s`. The journal window uses `total_s`, so a call that lands during the drain counts for this run. An error before the goal is accepted does not drain (`drain_s` 0, `total_s` equal to `wall_s`).
 
 Known biases:
 
-- An agent message that happens to match a marker ends the run early and under-counts tokens, turns, and wall time. Case-insensitive regexes make that more likely.
+- A non-clarifying agent message that happens to match a marker ends the run early. `wall_s` stops at that signal, so wall time is short; the drain still waits for in-flight usage, and those calls count in `total_s`. An agent reply that ends with `?` does not fire the marker. Case-insensitive regexes make an early match more likely.
 - The PM's second message can match a marker by quoting the goal and end the run while work continues.
 - Turn-state is best-effort. If it is missing, the "nothing pending" check does not block `quiet`, so a slow model between polls can look finished. The poll interval (default 5s) also smears `quiet_s`.
 - `quiet_no_reply` treats a wedged or never-started agent like a correct refusal.
@@ -229,13 +233,19 @@ Known biases:
 
 Which rule fired is stored in `completion_signal`. Do not compare a `quiet` cell with a `final_marker` cell as if the stopping rule were the same.
 
+## Run isolation
+
+No channel close or archive command exists. Between finished scenario cells in one arm, except the last cell and except `--dry-run`, `run_matrix.sh` restarts the daemon: `daemon.sh stop`, then `daemon.sh start`. The log line is `isolate restart arm=... stop_s=... start_s=... total_s=...`. On validate3 that cost was about 36 seconds (ready ~5s + stop ~31s), under a 60 second budget. These restarts are not health-failure restarts and do not increment the per-arm restart cap (2). After the last cell, `finish_arm` stops the daemon and does not start it again.
+
+Usage attribution still keeps a record only when `agent_id` contains that run's channel id. The journal window is `total_s` (conclusion `wall_s` plus drain), so a call captured during drain counts for that run only and not for the next one. The isolate restart runs after that cell's usage snapshot. The next cell's before-snapshot is a fresh store. Arms also prewarm both models with `keep_alive` 60m after the daemon is ready (see "Models") so the gap between the PM's `qwen3.6:35b` turn and the first agent turn is not a cold load.
+
 ## Arm A (DM, Court-out)
 
 Arm A (`arms.json` id `A`, alias `dm`, `build_dir` `../dm-no-channels`) collaborates by PM-to-agent DMs. The final PM synthesis may be a single channel post. Start the matrix from this tree. `run_one.py` runs that checkout's `bin/aegis`.
 
 Arm A is Court-out. `court_dependent` scenarios stay in their own section of `summary.md`. Compare those rows separately. Do not treat an Arm A egress failure as a collaboration-efficiency signal. It is the missing Court or policy path, not a measure of how much DM work the arm did.
 
-`final_marker` is the same rule as every other arm. It fires only when a marker matches a PM or agent message at or after the first non-PM agent reply that follows the first PM message. On arm A that agent message may be a DM-mirrored channel post (sender classifies as `agent`, or the dump sets `role` to `agent`) or a row merged from the DM transcript. The PM's opening plan alone still does not conclude.
+`final_marker` is the same rule as every other arm. It fires when a later PM message matches a marker, or when a marker matches a PM or non-clarifying agent message at or after the first agent reply that does not end with `?`. On arm A that agent message may be a DM-mirrored channel post (sender classifies as `agent`, or the dump sets `role` to `agent`) or a row merged from the DM transcript. The PM's opening plan alone still does not conclude. A clarifying agent question does not.
 
 Arm A sets `"messaging": "dm"`. A scenario file may set `"messaging"` to `dm` or `channel` and override the arm. Each poll still runs `channel get`. When messaging is `dm`, the harness also merges DM messages that the product exposes, and it does not fail the run when a dump is missing:
 
@@ -265,6 +275,10 @@ Scoring is never on the timed path. `run_matrix.sh --phase all` (the default) st
 
 A human Tester spot-checks the packets listed in `sample_list.md`. The matrix does not ask another model to overrule the judge. Re-run scoring with `--phase score` and the same `--out` (no daemon). `score.py` leaves an existing `score.json` in place unless you call it yourself with `--rescore`; the driver does not pass `--rescore`.
 
+## Known product issues affecting the harness
+
+validate3 showed store to `hub-perm-fetch-*` ACL denials on `permission.snapshot`, so every microVM got permission snapshot v0 with 0 allowed and 0 visible. Agents then hit ACL denials on `channel.get_relevant_since.data`. CISO sometimes still posted from the turn payload; e2 Coder and Tester never posted within 300s. This is a product ACL/permissions bug. This harness change does not modify product Go code, ACLs, or `permissions.json`.
+
 ## Caveats
 
 - **Arm A is Court-out.** Compare `court_dependent` rows separately. Do not treat Arm A egress failures as a collaboration-efficiency signal. See "Arm A (DM, Court-out)".
@@ -272,9 +286,9 @@ A human Tester spot-checks the packets listed in `sample_list.md`. The matrix do
 - **e1 / e3 may conclude on quiet without a delivered file.** See "How agents see the scratch project". Agents can discuss the task and never post a `// file:` fence; the mechanical grader then fails. That is a known limitation.
 - **Serial single daemon.** One arm at a time, one daemon. Scenarios inside an arm share a warm model cache, a warm microVM pool, and whatever the host is doing. There is no parallel arm.
 - **Time drift between arms.** Later arms run later. Load, model-server cache, and pool warmth differ even when `--shuffle-seed` gives every arm the same scenario order. `wall_s` across arms is not a same-hour comparison.
-- **In-memory Store usage.** `llm.usage` records live in the Store process. A daemon or Store restart drops them. The after-snapshot then disagrees with the before-snapshot, and token counts for a cell that straddles the restart are wrong. The driver allows at most two restarts per arm and keeps going; it does not repair those cells.
+- **In-memory Store usage.** `llm.usage` records live in the Store process. A daemon or Store restart drops them. The after-snapshot then disagrees with the before-snapshot, and token counts for a cell that straddles the restart are wrong. The driver allows at most two health restarts per arm and keeps going; it does not repair those cells. The between-cell isolate restart (see "Run isolation") runs after that cell's snapshot, so the cell just finished is not split. It does not count toward the two-restart cap. The next cell starts from an empty store.
 - **Recent API cap of 500 records.** The portal clamps `/api/llm-usage/recent` to 500 records (the newest). A run that emits more than 500 records, or a host whose other traffic pushes this run's early records out of the newest 500 before the after-snapshot, under-counts tokens. The Store process also trims its own buffer, but 500 is the cap the harness can see.
-- **Second-level timestamps.** Usage `timestamp` values are UTC RFC3339 with whole seconds. Two calls in the same second are not ordered, and a record stamped on the same second as the window edge can be kept or dropped incorrectly. The after-snapshot waits a few seconds so in-flight calls can land; that does not fix the rounding.
+- **Second-level timestamps.** Usage `timestamp` values are UTC RFC3339 with whole seconds. Two calls in the same second are not ordered, and a record stamped on the same second as the window edge can be kept or dropped incorrectly. The harness drains after the conclusion signal, then waits a few seconds before the after-snapshot, so a call that finishes during the drain can land. That does not fix the rounding.
 
 Token fields are comparable across arms only when both sides kept a live daemon for the whole cell, the 500-record window did not wrap, and unattributed tokens are small. Even then, do not present token deltas as experiment results until a multi-call run (PM, agent, and Court) has been checked as in "Token accounting". The pilots were PM-only because `ensure.role` ran after the plan post.
 
