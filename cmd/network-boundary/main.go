@@ -21,14 +21,13 @@ import (
 	"time"
 
 	"AegisClaw/internal/agent"
-	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/bootargs"
+	"AegisClaw/internal/boundarycrypto"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 
-
-	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/mdlayher/vsock"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -166,8 +165,8 @@ var globalSecretsSymmetricKey []byte
 //   - future audit / metrics paths
 type liveSecretStore struct {
 	sync.RWMutex
-	data      map[string]string // skillID -> secret value
-	lastUpdate time.Time        // last time the store was mutated (for health/reconciliation metrics)
+	data       map[string]string // skillID -> secret value
+	lastUpdate time.Time         // last time the store was mutated (for health/reconciliation metrics)
 }
 
 func newLiveSecretStore() *liveSecretStore {
@@ -277,12 +276,12 @@ func signMessage(msg *Message, priv ed25519.PrivateKey) {
 // - Logs and audits the verification attempt.
 //
 // Real behavior (now partially wired):
-// - When AEGIS_STORE_PUBLIC_KEY (base64 ed25519 public key) is set, we call
-//   the real ed25519.Verify.
-// - The signature covers a (currently minimal) canonical form of the payload.
-// - Future slices will add proper canonicalization, timestamp + nonce replay
-//   protection, and tighter integration with the boundary's registered keypair
-//   or a Store certificate.
+//   - When AEGIS_STORE_PUBLIC_KEY (base64 ed25519 public key) is set, we call
+//     the real ed25519.Verify.
+//   - The signature covers a (currently minimal) canonical form of the payload.
+//   - Future slices will add proper canonicalization, timestamp + nonce replay
+//     protection, and tighter integration with the boundary's registered keypair
+//     or a Store certificate.
 //
 // This is the minimal paranoid requirement before the dynamic secrets channel
 // can be considered trustworthy.
@@ -360,8 +359,6 @@ func verifySecretsUpdateSignature(payload map[string]interface{}) bool {
 	return true
 }
 
-
-
 // nonceCache provides bounded, TTL-based replay protection for signed messages
 // that carry a "nonce" field.
 //
@@ -375,7 +372,6 @@ func verifySecretsUpdateSignature(payload map[string]interface{}) bool {
 //
 // This is deliberately simple for the current phase. A production version
 // could use a more sophisticated structure or external store.
-
 
 func getBuildVersion() string {
 	if info, ok := debug.ReadBuildInfo(); ok {
@@ -878,36 +874,30 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				break
 			}
 
+			started := time.Now()
 			raw, err := callOllamaGenerate(model, prompt, endpoint)
+			var rec map[string]interface{}
 			if err != nil {
 				response.Command = "error"
 				response.Payload = "ollama request failed: " + err.Error()
 				log.Printf("llm.call ollama request failed: %v", err)
-				break
-			}
+				rec = buildLLMUsageRecord(msg.Source, model, nil, false, err.Error(), started)
+			} else {
+				// Parse full Ollama response for usage metrics (prompt_eval_count, eval_count, durations, model).
+				// Always surface clean "response" (text) for existing NewRealLLMCaller / loop callers.
+				text, usage := parseOllamaForLLMCall(raw, model)
 
-			// Parse full Ollama response for usage metrics (prompt_eval_count, eval_count, durations, model).
-			// Always surface clean "response" (text) for existing NewRealLLMCaller / loop callers.
-			text, usage := parseOllamaForLLMCall(raw, model)
-
-			response.Command = "llm.call.response"
-			response.Payload = map[string]interface{}{
-				"response": text,
-				"usage":    usage,
+				response.Command = "llm.call.response"
+				response.Payload = map[string]interface{}{
+					"response": text,
+					"usage":    usage,
+				}
+				log.Printf("LLM plan gen via ollama (%s, %d bytes response, prompt_tokens=%v completion=%v)", model, len(text), usage["prompt_tokens"], usage["completion_tokens"])
+				rec = buildLLMUsageRecord(msg.Source, model, usage, true, "", started)
 			}
-			log.Printf("LLM plan gen via ollama (%s, %d bytes response, prompt_tokens=%v completion=%v)", model, len(text), usage["prompt_tokens"], usage["completion_tokens"])
 
 			// Emit usage record to Store for durable aggregates (outside guest). Uses same signed hub path.
 			// This wires the collection end-to-end for /api/llm-usage and portal.
-			rec := map[string]interface{}{
-				"agent_id":          msg.Source,
-				"timestamp":         time.Now().UTC().Format(time.RFC3339),
-				"model":             usage["model"],
-				"tokens_prompt":     usage["prompt_tokens"],
-				"tokens_completion": usage["completion_tokens"],
-				"duration_ms":       usage["duration_ms"],
-				"success":           usage["success"],
-			}
 			recMsg := Message{
 				Source:      "network-boundary",
 				Destination: "store",
@@ -916,7 +906,10 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			}
 			signMessage(&recMsg, priv)
-			if encErr := encoder.Encode(recMsg); encErr != nil {
+			connMutex.Lock()
+			encErr := encoder.Encode(recMsg)
+			connMutex.Unlock()
+			if encErr != nil {
 				log.Printf("llm.usage.record emit failed: %v", encErr)
 			}
 
@@ -1177,10 +1170,10 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 
 			response.Command = "secrets.response"
 			response.Payload = map[string]interface{}{
-				"status":       "ok",
-				"skills":       skills,
-				"count":        count,
-				"timestamp":    time.Now().Format(time.RFC3339),
+				"status":        "ok",
+				"skills":        skills,
+				"count":         count,
+				"timestamp":     time.Now().Format(time.RFC3339),
 				"signer_pubkey": base64.StdEncoding.EncodeToString(pub), // boundary's public key (sent during registration) so Store can verify the response signature
 			}
 
@@ -1215,11 +1208,11 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 
 			response.Command = "secrets.response"
 			response.Payload = map[string]interface{}{
-				"status":             "ok",
-				"count":              count,
-				"last_update":        lastUpdate.Format(time.RFC3339),
-				"nonce_cache_size":   nonceSize,
-				"timestamp":          time.Now().Format(time.RFC3339),
+				"status":           "ok",
+				"count":            count,
+				"last_update":      lastUpdate.Format(time.RFC3339),
+				"nonce_cache_size": nonceSize,
+				"timestamp":        time.Now().Format(time.RFC3339),
 			}
 
 		default:
@@ -1279,6 +1272,40 @@ func loadAllowedDomains(ollamaHost string) map[string]bool {
 	return allowed
 }
 
+// buildLLMUsageRecord returns the llm.usage.record payload.
+// On success, model and token fields are copied from usage and the seven
+// success-path keys are left unchanged. On failure, token counts are zero,
+// duration_ms is wall time since started, and a non-empty errMsg is stored
+// under "error" truncated to 200 characters.
+func buildLLMUsageRecord(agentID, model string, usage map[string]interface{}, success bool, errMsg string, started time.Time) map[string]interface{} {
+	rec := map[string]interface{}{
+		"agent_id":          agentID,
+		"timestamp":         time.Now().UTC().Format(time.RFC3339),
+		"model":             model,
+		"tokens_prompt":     0,
+		"tokens_completion": 0,
+		"duration_ms":       int(time.Since(started).Milliseconds()),
+		"success":           success,
+	}
+	if success {
+		if usage != nil {
+			rec["model"] = usage["model"]
+			rec["tokens_prompt"] = usage["prompt_tokens"]
+			rec["tokens_completion"] = usage["completion_tokens"]
+			rec["duration_ms"] = usage["duration_ms"]
+		}
+		return rec
+	}
+	if errMsg != "" {
+		r := []rune(errMsg)
+		if len(r) > 200 {
+			errMsg = string(r[:200])
+		}
+		rec["error"] = errMsg
+	}
+	return rec
+}
+
 // parseOllamaForLLMCall extracts the generated text and usage metrics (tokens, duration) from
 // the raw JSON returned by Ollama /api/generate. This is the central point for accurate
 // per-call LLM usage collection (outside any Agent Runtime guest VM). Unit tested.
@@ -1311,7 +1338,9 @@ func parseOllamaForLLMCall(raw, model string) (string, map[string]interface{}) {
 
 // loadSkillAllowlists loads per-skill network access rules from a directory.
 // Expected layout (for now, file-based declarative):
-//   $AEGIS_SKILL_NETWORK_RULES_DIR/<skill-id>.domains   (one domain per line)
+//
+//	$AEGIS_SKILL_NETWORK_RULES_DIR/<skill-id>.domains   (one domain per line)
+//
 // This is the stepping stone toward loading from Store VM per network-access.yaml (spec).
 func loadSkillAllowlists() map[string]map[string]bool {
 	rules := make(map[string]map[string]bool)
@@ -1362,14 +1391,14 @@ func getAllowedForSkill(skillID string, global map[string]bool, skillRules map[s
 // loadSkillSecrets loads per-skill secret material for the 7.1 real secrets path (stub).
 //
 // Supported sources (in priority order for this slice):
-//   1. AEGIS_SKILL_SECRETS_FILE  — single protected file (recommend 0600).
-//      Format: one entry per line "skill-id=the-secret-value"
-//   2. AEGIS_SKILL_SECRETS_DIR   — directory containing per-skill secret files.
-//      Expected layout: $DIR/<skill-id>.secret
-//      Each .secret file contains the raw secret value (single line or trimmed content).
-//      This is the direct parallel to AEGIS_SKILL_NETWORK_RULES_DIR/*.domains.
-//   3. AEGIS_SKILL_SECRETS         — env var (comma / newline / semicolon separated "skill=val").
-//   4. If none configured, returns empty map (caller falls back to internal demo seeds).
+//  1. AEGIS_SKILL_SECRETS_FILE  — single protected file (recommend 0600).
+//     Format: one entry per line "skill-id=the-secret-value"
+//  2. AEGIS_SKILL_SECRETS_DIR   — directory containing per-skill secret files.
+//     Expected layout: $DIR/<skill-id>.secret
+//     Each .secret file contains the raw secret value (single line or trimmed content).
+//     This is the direct parallel to AEGIS_SKILL_NETWORK_RULES_DIR/*.domains.
+//  3. AEGIS_SKILL_SECRETS         — env var (comma / newline / semicolon separated "skill=val").
+//  4. If none configured, returns empty map (caller falls back to internal demo seeds).
 //
 // SPEC REFERENCES (Phase 4):
 //   - secret-management.md §Key Guarantees (Boundary is the sole handler; secrets
@@ -1378,18 +1407,18 @@ func getAllowedForSkill(skillID string, global map[string]bool, skillRules map[s
 //     the production path; legacy file/dir/env loading is deprecated for production).
 //
 // Paranoid / TCB rules (enforced or documented here):
-// - NEVER log actual secret values.
-// - When a secrets file or directory is provided we perform best-effort os.Stat
-//   permission checks per file and emit SECURITY WARNINGs on weak modes.
-// - In strict mode (AEGIS_BOUNDARY_STRICT=1), any declared secrets file or any
-//   .secret file in the directory must be readable and have mode 0600/0400, or
-//   the boundary refuses to start (fail-closed).
-// - Phase 4: These legacy paths are **deprecated** for production. The only
-//   production mechanism is encrypted blobs pushed from the Store VM via
-//   "secrets.push" / "secrets.update" over the Hub. See the secrets.update
-//   handler and injectSecretForHost for the real path.
-// - The Go control plane (this binary) remains the single source of truth for
-//   secrets. Envoy only receives injected headers via the ext_authz gRPC path.
+//   - NEVER log actual secret values.
+//   - When a secrets file or directory is provided we perform best-effort os.Stat
+//     permission checks per file and emit SECURITY WARNINGs on weak modes.
+//   - In strict mode (AEGIS_BOUNDARY_STRICT=1), any declared secrets file or any
+//     .secret file in the directory must be readable and have mode 0600/0400, or
+//     the boundary refuses to start (fail-closed).
+//   - Phase 4: These legacy paths are **deprecated** for production. The only
+//     production mechanism is encrypted blobs pushed from the Store VM via
+//     "secrets.push" / "secrets.update" over the Hub. See the secrets.update
+//     handler and injectSecretForHost for the real path.
+//   - The Go control plane (this binary) remains the single source of truth for
+//     secrets. Envoy only receives injected headers via the ext_authz gRPC path.
 func loadSkillSecrets() map[string]string {
 	secrets := make(map[string]string)
 
@@ -1501,22 +1530,22 @@ func loadSkillSecrets() map[string]string {
 // injectSecretForHost centralizes secret injection for outbound requests.
 //
 // 7.1 real secrets unification:
-// - If a valid skillID + non-empty secrets map is provided, we first look up
-//   a per-skill secret. This is now the primary path for "real" secrets loaded
-//   via loadSkillSecrets (protected file or env).
-// - Only if no per-skill secret is found do we fall back to legacy host-based
-//   special cases (currently only api.github.com via GITHUB_TOKEN env).
-// - This gives the direct Go egress paths (/egress and legacy network.request)
-//   the same per-skill secret material as the Envoy + ExtAuthz path.
+//   - If a valid skillID + non-empty secrets map is provided, we first look up
+//     a per-skill secret. This is now the primary path for "real" secrets loaded
+//     via loadSkillSecrets (protected file or env).
+//   - Only if no per-skill secret is found do we fall back to legacy host-based
+//     special cases (currently only api.github.com via GITHUB_TOKEN env).
+//   - This gives the direct Go egress paths (/egress and legacy network.request)
+//     the same per-skill secret material as the Envoy + ExtAuthz path.
 //
 // Paranoid safety rules (enforced here):
-// - NEVER log the actual secret value (or even its presence beyond a generic log in callers).
-// - Only set Authorization header when we have a real non-empty value.
-// - The allowlist cross-check (getAllowedForSkill + parseAllowedURL) has already
-//   happened in the caller before we reach injection — we do not bypass policy.
-// - Future: when secrets come from Store as encrypted blobs over the Hub,
-//   this function (and the ExtAuthz Check path) will receive already-decrypted
-//   material that the boundary will zeroize after the request is built.
+//   - NEVER log the actual secret value (or even its presence beyond a generic log in callers).
+//   - Only set Authorization header when we have a real non-empty value.
+//   - The allowlist cross-check (getAllowedForSkill + parseAllowedURL) has already
+//     happened in the caller before we reach injection — we do not bypass policy.
+//   - Future: when secrets come from Store as encrypted blobs over the Hub,
+//     this function (and the ExtAuthz Check path) will receive already-decrypted
+//     material that the boundary will zeroize after the request is built.
 func injectSecretForHost(req *http.Request, host string, skillID string, secrets *liveSecretStore) {
 	// Phase 4 (real encrypted path):
 	// This function must only ever receive secrets that came from encrypted
@@ -2129,12 +2158,12 @@ func startExtAuthzServer(globalAllowed map[string]bool, perSkill map[string]map[
 //   - Normalization/surfacing of x-aegis-skill-id header (so query-param clients
 //     and header-based clients are uniform for downstream layers)
 //   - Reverse proxy to local Envoy (TCP :8082) so the request traverses:
-//       * Envoy access_log (with x_aegis_skill_id captured)
-//       * ext_authz gRPC Check (Go control plane: allowlist cross-check + secret
-//         header injection *only* for hosts allowed for that skill)
-//       * Dynamic route config with header matching → per-skill cluster (or global)
-//       * Per-skill rate_limit descriptors + circuit breakers
-//       * Actual outbound via Envoy's high-performance data plane
+//   - Envoy access_log (with x_aegis_skill_id captured)
+//   - ext_authz gRPC Check (Go control plane: allowlist cross-check + secret
+//     header injection *only* for hosts allowed for that skill)
+//   - Dynamic route config with header matching → per-skill cluster (or global)
+//   - Per-skill rate_limit descriptors + circuit breakers
+//   - Actual outbound via Envoy's high-performance data plane
 //   - Fail-closed: if boundaryHealthy=false or Envoy/ext_authz unavailable, traffic is refused.
 //
 // The guest self-identifies with its skill ID (it was told its identity on cmdline).
@@ -2239,12 +2268,12 @@ func startVSockEgressListener() {
 // audit receipts, or other privileged Hub flows will build on this.
 //
 // How to extend this pilot in a future slice:
-// 1. Replace the synthetic payload with a real signed message from the Hub.
-// 2. Use the registered private key (or a dedicated pilot key) for response signing.
-// 3. Add a real "policy.apply" path that the boundary actually acts on.
-// 4. Wire it through the same rate limiter / nonce cache instances used by secrets.
-// 5. Future integration: the EventBus (7.2) can feed signed policy updates here when
-//    autonomy/background grants change (see orchestrator comment on EgressViaBoundary).
+//  1. Replace the synthetic payload with a real signed message from the Hub.
+//  2. Use the registered private key (or a dedicated pilot key) for response signing.
+//  3. Add a real "policy.apply" path that the boundary actually acts on.
+//  4. Wire it through the same rate limiter / nonce cache instances used by secrets.
+//  5. Future integration: the EventBus (7.2) can feed signed policy updates here when
+//     autonomy/background grants change (see orchestrator comment on EgressViaBoundary).
 func pilotDesignSketchReuse(priv ed25519.PrivateKey) {
 	log.Printf("PILOT: design-sketch reuse validation (7.1 Forward-Looking Design Sketch) [pilot v1]")
 
@@ -2286,11 +2315,11 @@ func pilotDesignSketchReuse(priv ed25519.PrivateKey) {
 	// In a real flow the Store would ask "what policy do you currently have?" and
 	// receive a signed, safe metadata-only response.
 	policyReconcile := map[string]interface{}{
-		"status":        "reconcile_ok",
-		"timestamp":     time.Now().UTC().Format(time.RFC3339),
-		"signer_pubkey": "pilot-demo-key",
+		"status":         "reconcile_ok",
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"signer_pubkey":  "pilot-demo-key",
 		"known_policies": []string{"example-skill"},
-		"note":          "stub - real implementation would return actual applied policy metadata",
+		"note":           "stub - real implementation would return actual applied policy metadata",
 	}
 	// Reuse the same signing helper used for secrets.get responses.
 	signMessage(&Message{Payload: policyReconcile, Timestamp: time.Now().Format(time.RFC3339)}, priv)

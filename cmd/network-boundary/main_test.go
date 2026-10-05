@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsDomainAllowed(t *testing.T) {
@@ -147,4 +149,85 @@ func TestParseOllamaForLLMCall_UsageExtraction(t *testing.T) {
 	if u2["success"] != true || u2["model"] != "m" {
 		t.Errorf("bad json: %+v", u2)
 	}
+}
+
+func TestBuildLLMUsageRecord(t *testing.T) {
+	started := time.Now().Add(-2 * time.Second)
+
+	t.Run("success", func(t *testing.T) {
+		usage := map[string]interface{}{
+			"model":             "qwen2.5-coder:7b",
+			"prompt_tokens":     42,
+			"completion_tokens": 17,
+			"duration_ms":       1234,
+			"success":           true,
+		}
+		rec := buildLLMUsageRecord("coder-1", "requested-model", usage, true, "ignored on success", started)
+		if rec["agent_id"] != "coder-1" {
+			t.Errorf("agent_id: %#v", rec["agent_id"])
+		}
+		if rec["model"] != "qwen2.5-coder:7b" {
+			t.Errorf("model: %#v", rec["model"])
+		}
+		if rec["tokens_prompt"] != 42 || rec["tokens_completion"] != 17 {
+			t.Errorf("tokens: %+v", rec)
+		}
+		if rec["duration_ms"] != 1234 {
+			t.Errorf("duration_ms should come from usage, got %#v", rec["duration_ms"])
+		}
+		if rec["success"] != true {
+			t.Errorf("success: %#v", rec["success"])
+		}
+		if _, ok := rec["error"]; ok {
+			t.Errorf("success record must not include error, got %#v", rec["error"])
+		}
+		ts, _ := rec["timestamp"].(string)
+		if _, err := time.Parse(time.RFC3339, ts); err != nil {
+			t.Errorf("timestamp: %v", err)
+		}
+		want := map[string]bool{
+			"agent_id": true, "timestamp": true, "model": true,
+			"tokens_prompt": true, "tokens_completion": true,
+			"duration_ms": true, "success": true,
+		}
+		if len(rec) != len(want) {
+			t.Errorf("success keys = %v", rec)
+		}
+		for k := range rec {
+			if !want[k] {
+				t.Errorf("unexpected success key %q", k)
+			}
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		longErr := strings.Repeat("e", 250)
+		rec := buildLLMUsageRecord("pm", "qwen2.5-coder:7b", nil, false, longErr, started)
+		if rec["agent_id"] != "pm" || rec["model"] != "qwen2.5-coder:7b" {
+			t.Errorf("identity: %+v", rec)
+		}
+		if rec["success"] != false {
+			t.Errorf("success: %#v", rec["success"])
+		}
+		if rec["tokens_prompt"] != 0 || rec["tokens_completion"] != 0 {
+			t.Errorf("tokens: %+v", rec)
+		}
+		d, ok := rec["duration_ms"].(int)
+		if !ok || d < 2000 || d > 30000 {
+			t.Errorf("duration_ms wall time: %#v", rec["duration_ms"])
+		}
+		errMsg, _ := rec["error"].(string)
+		if len([]rune(errMsg)) != 200 || errMsg != strings.Repeat("e", 200) {
+			t.Errorf("error truncated: len=%d %q", len([]rune(errMsg)), errMsg)
+		}
+		ts, _ := rec["timestamp"].(string)
+		if _, err := time.Parse(time.RFC3339, ts); err != nil {
+			t.Errorf("timestamp: %v", err)
+		}
+
+		short := buildLLMUsageRecord("pm", "qwen2.5-coder:7b", nil, false, "dial failed", started)
+		if short["error"] != "dial failed" {
+			t.Errorf("short error: %#v", short["error"])
+		}
+	})
 }
