@@ -22,3 +22,15 @@ Permission snapshot RPC wait ids are `hub-perm-fetch-<nanos>` (`cmd/aegishub/per
 Agents request `channel.get_relevant_since`. Store replies with command `channel.get_relevant_since.data`. Court personas already had `store → court-persona-* : channel.*`. Role agents did not, so live denials were `store -> coder-… : channel.get_relevant_since.data` and `store -> ciso-… : channel.get_relevant_since.data`. Store may now reply with `channel.*` to `agent*`, `coder*`, `tester*`, `ciso*`, `architect*`, `researcher*`, and `project-manager*`. The destination is not `"*"`.
 
 Hub already pushed `permission.snapshot` to `agent*`, `project-manager*`, and `coder*`. The same push now also targets `tester*`, `ciso*`, `architect*`, and `researcher*`.
+
+## ACL: daemon-internal* llm.usage.*
+
+`daemon-internal*` and `daemon-internal-*` may send `llm.*` and `llm.usage.*` to store. No product Go change. Portal usage API is host-bridged as daemon-internal.
+
+## Hub: deliverPendingRPC accepts permission.snapshot RPC replies
+
+Store replies to `hub-perm-fetch-*` with command `permission.snapshot`, the same name as the unsolicited Hub→agent push, so `deliverPendingRPC` delivers that reply only when the waiter requested `permission.snapshot`.
+
+## Permissions: turn_result/add_member ACL-only
+
+`IsCapabilityCommand` excludes `channel.turn_result`, `channel.add_member`, `channel.turn`, and `channel.member_turn_update` as ACL-gated collaboration plumbing; they are not capability grants and are not added to `DefaultBootstrap`.

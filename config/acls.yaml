@@ -724,6 +724,9 @@ rules:
     - ciso.delegation.*
     - tool.registry.discover
     - audit.list
+    # Portal /api/llm-usage* is host-bridged as daemon-internal (exp/base-metrics).
+    - llm.*
+    - llm.usage.*
 - source: "daemon-internal-*"
   destination: store
   commands:
@@ -737,6 +740,9 @@ rules:
     - ciso.delegation.*
     - tool.registry.discover
     - audit.list
+    # Portal /api/llm-usage* is host-bridged as daemon-internal (exp/base-metrics).
+    - llm.*
+    - llm.usage.*
 # Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
 # clients for the commands above (responses may carry the original command name in audit; observed
 # as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).

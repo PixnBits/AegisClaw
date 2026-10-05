@@ -63,6 +63,7 @@ func IsCapabilityCommand(cmd string) bool {
 	switch cmd {
 	case "channel.activity", "channel.member_notify", "channel.updated",
 		"channel.relay_activity", "channel.fanout", "channel.posted",
+		"channel.turn", "channel.turn_result", "channel.member_turn_update", "channel.add_member",
 		"chat.message", "chat.tool_events", "chat.thought_events", "chat.stream_progress",
 		"user.goal", "user.turn",
 		"ensure.role", "orchestrator.ensure_role":
