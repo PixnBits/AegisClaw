@@ -26,3 +26,7 @@ Hub already pushed `permission.snapshot` to `agent*`, `project-manager*`, and `c
 ## ACL: daemon-internal* llm.usage.*
 
 `daemon-internal*` and `daemon-internal-*` may send `llm.*` and `llm.usage.*` to store. No product Go change. Portal usage API is host-bridged as daemon-internal.
+
+## Hub: deliverPendingRPC accepts permission.snapshot RPC replies
+
+Store replies to `hub-perm-fetch-*` with command `permission.snapshot`, the same name as the unsolicited Hub→agent push, so `deliverPendingRPC` delivers that reply only when the waiter requested `permission.snapshot`.

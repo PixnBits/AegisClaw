@@ -280,6 +280,7 @@ A human Tester spot-checks the packets listed in `sample_list.md`. The matrix do
 Exp-only changes are listed in `docs/exp/base-metrics-deviations.md`. They are not on main.
 
 - ACL: `daemon-internal*` and `daemon-internal-*` → store include `llm.*` and `llm.usage.*`. The portal usage API is host-bridged as `daemon-internal`; without that grant, `/api/llm-usage` and `/api/llm-usage/recent` return empty.
+- Hub: `deliverPendingRPC` accepts a `permission.snapshot` reply when the waiter requested that command. Store's RPC reply reuses the unsolicited-push name; without the match, `hub-perm-fetch-*` times out and VMs are pushed snapshot v0.
 
 ## Known product issues affecting the harness
 
