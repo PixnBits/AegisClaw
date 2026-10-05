@@ -18,6 +18,7 @@ import (
 	"AegisClaw/internal/channelfacilitator"
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/eventbus"
+	"AegisClaw/internal/ste"
 	"AegisClaw/internal/timing"
 	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/workspace"
@@ -145,10 +146,11 @@ func getBuildVersion() string {
 
 func workspaceCustomPrefix() string {
 	// 7.6: Prepend user workspace customizations (SOUL + AGENTS) if present.
+	// ASD-STE100 is always included, including when no workspace is loaded.
+	custom := "\n" + ste.Instruction + "\n"
 	if loadedWorkspace == nil {
-		return ""
+		return custom
 	}
-	custom := ""
 	if loadedWorkspace.SOUL != "" {
 		custom += "Core values and soul for this system: " + loadedWorkspace.SOUL + ". "
 	}

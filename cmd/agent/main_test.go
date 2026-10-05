@@ -119,6 +119,16 @@ func TestAgentSkillIndex_SearchTools_Semanticish(t *testing.T) {
 	}
 }
 
+func TestCustomInstructionsPrefixIncludesSTE(t *testing.T) {
+	prev := loadedWorkspace
+	t.Cleanup(func() { loadedWorkspace = prev })
+	loadedWorkspace = nil
+	got := customInstructionsPrefix()
+	if !strings.Contains(got, "ASD-STE100") {
+		t.Fatalf("empty workspace prefix missing ASD-STE100: %q", got)
+	}
+}
+
 func TestAgentSkillIndex_SearchTools_NoResults(t *testing.T) {
 	idx := NewAgentSkillIndex()
 	results := idx.SearchTools("completely unrelated quantum teleportation blockchain", 5)

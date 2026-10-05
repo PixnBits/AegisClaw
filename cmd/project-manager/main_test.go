@@ -536,3 +536,15 @@ func TestClaimedHumanTurnFallsThroughToChannelPrompt(t *testing.T) {
 		t.Fatalf("channel prompt missing PASS/SPEAK, got %s", last)
 	}
 }
+
+func TestSTEInPMPrompts(t *testing.T) {
+	for name, p := range map[string]string{
+		"getPMPrompt":        getPMPrompt(),
+		"getPMPlanPrompt":    getPMPlanPrompt(),
+		"getPMChannelPrompt": getPMChannelPrompt(),
+	} {
+		if !strings.Contains(p, "ASD-STE100") {
+			t.Errorf("%s missing ASD-STE100", name)
+		}
+	}
+}

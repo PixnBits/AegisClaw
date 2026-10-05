@@ -192,6 +192,20 @@ func TestPersonaPromptsAndAnalysis(t *testing.T) {
 	}
 }
 
+func TestSTEInCourtPrompts(t *testing.T) {
+	proposal := getPersonaPrompt("ciso")
+	if !strings.Contains(proposal, "ASD-STE100") {
+		t.Fatalf("getPersonaPrompt(ciso) missing ASD-STE100: %s", proposal)
+	}
+	if !strings.Contains(cisoChannelInstructions, "ASD-STE100") {
+		t.Fatal("cisoChannelInstructions missing ASD-STE100")
+	}
+	pre := channelDecisionPreamble("CISO", "the CISO")
+	if !strings.Contains(pre, "ASD-STE100") {
+		t.Fatalf("channelDecisionPreamble missing ASD-STE100: %s", pre)
+	}
+}
+
 func TestUniqueSource(t *testing.T) {
 	// In run, source becomes "court-persona-" + flag
 	if got := "court-persona-ciso"; !strings.HasPrefix(got, "court-persona-") {
