@@ -454,7 +454,10 @@ func pmBatchIsSelfOrSystem(uniqueSource string, msgs []map[string]interface{}) b
 	return true
 }
 
-// pmProcessPlanningMessage runs LLM planning, channel.post, and ensure.role.
+// pmProcessPlanningMessage runs LLM planning, then ensure.role (and CISO
+// channel.add_member), then channel.post so those roles are channel members
+// when the facilitator schedules turns for the plan. ensure.role is a
+// request/response; the daemon adds the member before Send returns.
 // user.goal Replies first then calls this on the Receive goroutine (no extra
 // background goroutine — nested Send shares the hubclient decoder).
 func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqueSource string, realLLM agent.LLMCallFunc) {
@@ -506,29 +509,6 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 			usedFallback = true
 		}
 	}
-	postMsg := hubclient.Message{
-		Source:      uniqueSource,
-		Destination: "store",
-		Command:     "channel.post",
-		Payload: map[string]interface{}{
-			"channel_id": chID,
-			"from":       uniqueSource,
-			"content":    plan,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-	if _, err := hcl.Send(context.Background(), postMsg); err != nil {
-		log.Printf("pm: channel.post to store failed (ACL?): %v", err)
-		releaseHumanGoal(chID, goal)
-		return
-	}
-	fmt.Printf("PM: posted plan to channel %s\n", chID)
-	if usedFallback {
-		releaseHumanGoal(chID, goal)
-	} else {
-		markHumanGoalPosted(chID, goal)
-	}
-
 	rolesToEnsure := extractRolesFromText(plan)
 	for _, r := range rolesToEnsure {
 		ensureMsg := hubclient.Message{
@@ -560,6 +540,29 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 			},
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		})
+	}
+
+	postMsg := hubclient.Message{
+		Source:      uniqueSource,
+		Destination: "store",
+		Command:     "channel.post",
+		Payload: map[string]interface{}{
+			"channel_id": chID,
+			"from":       uniqueSource,
+			"content":    plan,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	if _, err := hcl.Send(context.Background(), postMsg); err != nil {
+		log.Printf("pm: channel.post to store failed (ACL?): %v", err)
+		releaseHumanGoal(chID, goal)
+		return
+	}
+	fmt.Printf("PM: posted plan to channel %s\n", chID)
+	if usedFallback {
+		releaseHumanGoal(chID, goal)
+	} else {
+		markHumanGoalPosted(chID, goal)
 	}
 
 }
@@ -843,7 +846,7 @@ func runProjectManager(cmd *cobra.Command, args []string) {
 					Payload: map[string]interface{}{
 						"status":  "accepted",
 						"channel": chID,
-						"note":    "planning async (LLM + channel.post + ensure.role)",
+						"note":    "planning async (LLM + ensure.role + channel.post)",
 					},
 					Timestamp: time.Now().UTC().Format(time.RFC3339),
 				})

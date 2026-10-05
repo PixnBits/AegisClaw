@@ -23,6 +23,7 @@ import sys
 import time
 from pathlib import Path
 
+import check_ollama_journal as ollama_journal
 from common import (
     aegis,
     arm_messaging,
@@ -58,6 +59,7 @@ RESULT_KEYS = [
     "tokens_cache_method",
     "tokens_completion",
     "llm_calls",
+    "journal_llm_calls",
     "wall_s",
     "turns",
     "turns_source",
@@ -74,10 +76,11 @@ RESULT_KEYS = [
     "error",
 ]
 
-# Pilot 20261004-230206: prompt_eval_count stayed the full prompt. KV-cache
-# similarity (for example 254/671) did not reduce it. Adjusted is a copy of
-# raw until a call is observed where prompt_eval_count is smaller.
-TOKEN_CACHE_METHOD = "prompt_eval_count_equals_full_prompt_on_host"
+# API prompt_eval_count is the full prompt (Ollama 0.33.2). Journal
+# "prompt eval time ... / N tokens" N is newly evaluated (cache-adjusted).
+TOKEN_CACHE_METHOD = "api_prompt_eval_count_full__journal_prompt_eval_new"
+TOKEN_CACHE_METHOD_UNAVAILABLE = "api_prompt_eval_count_full__journal_unavailable"
+CACHE_METHODS = {TOKEN_CACHE_METHOD, TOKEN_CACHE_METHOD_UNAVAILABLE}
 SIGNALS = {"final_marker", "quiet", "quiet_no_reply", "timeout", "error", "dry_run"}
 RETRY_RE = re.compile(r"retry|RETRY|retrying")
 STALL_RE = re.compile(r"stall|STALL|timed out|deadline exceeded")
@@ -308,7 +311,9 @@ def with_transcript_turns(metrics: dict, messages, collected: bool) -> dict:
 def message_counts(messages):
     agent = sum(1 for message in messages if message.get("role") == "agent")
     pm = sum(1 for message in messages if message.get("role") == "pm")
-    non_user = sum(1 for message in messages if message.get("role") != "user")
+    non_user = sum(
+        1 for message in messages if message.get("role") not in {"user", "system"}
+    )
     senders = len({message.get("from") or "" for message in messages if message.get("from")})
     return len(messages), agent, pm, non_user, senders
 
@@ -329,7 +334,8 @@ def _first_agent_reply_index(messages):
     """Index of the first non-PM agent message after the first PM message.
 
     None when there is no PM message, or no agent reply after that plan.
-    Court senders are not agents. The PM's own first message is not a reply.
+    Court senders and facilitator system status posts are not agents.
+    The PM's own first message is not a reply.
     """
     first_pm = None
     for index, message in enumerate(messages):
@@ -466,8 +472,14 @@ def _unique_lines(text: str):
     return lines
 
 
+def _opt_int(value):
+    if value is None:
+        return None
+    return int(value)
+
+
 def _usage_delta_doc(attributed, unattributed, metrics) -> dict:
-    """Shape of usage_delta.json. Cache-adjusted prompt tokens equal raw."""
+    """Shape of usage_delta.json. Cache-adjusted prompt tokens may be null."""
     return {
         "attributed": attributed,
         "unattributed": unattributed,
@@ -477,6 +489,7 @@ def _usage_delta_doc(attributed, unattributed, metrics) -> dict:
         "tokens_cache_method": metrics["tokens_cache_method"],
         "tokens_completion": metrics["tokens_completion"],
         "llm_calls": metrics["llm_calls"],
+        "journal_llm_calls": metrics.get("journal_llm_calls"),
         "tokens_unattributed": metrics["tokens_unattributed"],
         "tokens_prompt_unattributed": metrics["tokens_prompt_unattributed"],
         "tokens_completion_unattributed": metrics["tokens_completion_unattributed"],
@@ -503,10 +516,11 @@ def account(trace_text: str, window_text: str, attributed, unattributed) -> dict
     return {
         "tokens_prompt": prompt,
         "tokens_prompt_raw": prompt,
-        "tokens_prompt_cache_adjusted": prompt,
-        "tokens_cache_method": TOKEN_CACHE_METHOD,
+        "tokens_prompt_cache_adjusted": None,
+        "tokens_cache_method": TOKEN_CACHE_METHOD_UNAVAILABLE,
         "tokens_completion": completion,
         "llm_calls": len(attributed),
+        "journal_llm_calls": None,
         "turns": int(turns),
         "turns_source": turns_source,
         "retries": _count_lines(window_lines, RETRY_RE),
@@ -515,6 +529,40 @@ def account(trace_text: str, window_text: str, attributed, unattributed) -> dict
         "tokens_prompt_unattributed": un_prompt,
         "tokens_completion_unattributed": un_completion,
     }
+
+
+def apply_journal_cache(metrics: dict, started_at, wall_s, *, run_cmd=None) -> dict:
+    """Fill cache-adjusted prompt tokens from journalctl. Never raises.
+
+    Live runs only. Journal prompt-eval N is newly evaluated tokens, not the
+    API full-prompt count. Missing journalctl or no timing lines leave
+    tokens_prompt_cache_adjusted null.
+    """
+    out = dict(metrics)
+    out["tokens_prompt_cache_adjusted"] = None
+    out["journal_llm_calls"] = None
+    out["tokens_cache_method"] = TOKEN_CACHE_METHOD_UNAVAILABLE
+    try:
+        stub = {"started_at": started_at, "wall_s": wall_s}
+        argv = ollama_journal.journalctl_argv(stub)
+        if run_cmd is None:
+            proc = run_bounded(argv, cwd=None, timeout=60)
+        else:
+            proc = run_cmd(argv)
+        if proc is None or getattr(proc, "timed_out", False) or getattr(proc, "returncode", 1) != 0:
+            return out
+        text = getattr(proc, "stdout", "") or ""
+        start, end = ollama_journal.run_window(stub)
+        rows = ollama_journal.extract_timing(text, start, end)
+        prompt_rows = [row for row in rows if row.get("kind") == "prompt"]
+        if not prompt_rows:
+            return out
+        out["tokens_prompt_cache_adjusted"] = sum(int(row["tokens"]) for row in prompt_rows)
+        out["journal_llm_calls"] = len(prompt_rows)
+        out["tokens_cache_method"] = TOKEN_CACHE_METHOD
+        return out
+    except Exception:
+        return out
 
 
 def build_result(
@@ -552,10 +600,11 @@ def build_result(
         "honesty": None,
         "tokens_prompt": int(metrics["tokens_prompt"]),
         "tokens_prompt_raw": int(metrics["tokens_prompt_raw"]),
-        "tokens_prompt_cache_adjusted": int(metrics["tokens_prompt_cache_adjusted"]),
+        "tokens_prompt_cache_adjusted": _opt_int(metrics.get("tokens_prompt_cache_adjusted")),
         "tokens_cache_method": metrics.get("tokens_cache_method"),
         "tokens_completion": int(metrics["tokens_completion"]),
         "llm_calls": int(metrics["llm_calls"]),
+        "journal_llm_calls": _opt_int(metrics.get("journal_llm_calls")),
         "wall_s": float(wall_s),
         "turns": int(metrics["turns"]),
         "turns_source": metrics["turns_source"],
@@ -575,15 +624,22 @@ def build_result(
         raise HarnessError("result keys drifted from the contract")
     if obj["turns_source"] not in {"transcript", "trace", "llm_calls"}:
         raise HarnessError("turns_source must be transcript, trace, or llm_calls")
-    if obj["tokens_cache_method"] != TOKEN_CACHE_METHOD:
+    if obj["tokens_cache_method"] not in CACHE_METHODS:
         raise HarnessError(
-            "tokens_cache_method must be prompt_eval_count_equals_full_prompt_on_host"
+            "tokens_cache_method must be "
+            "api_prompt_eval_count_full__journal_prompt_eval_new or "
+            "api_prompt_eval_count_full__journal_unavailable"
         )
-    if obj["tokens_prompt_cache_adjusted"] != obj["tokens_prompt_raw"] or (
-        obj["tokens_prompt_raw"] != obj["tokens_prompt"]
-    ):
+    if obj["tokens_prompt_raw"] != obj["tokens_prompt"]:
+        raise HarnessError("tokens_prompt_raw must equal tokens_prompt")
+    if obj["tokens_cache_method"] == TOKEN_CACHE_METHOD_UNAVAILABLE:
+        if obj["tokens_prompt_cache_adjusted"] is not None or obj["journal_llm_calls"] is not None:
+            raise HarnessError(
+                "journal unavailable must leave cache-adjusted and journal_llm_calls null"
+            )
+    elif obj["tokens_prompt_cache_adjusted"] is None or obj["journal_llm_calls"] is None:
         raise HarnessError(
-            "tokens_prompt_cache_adjusted must equal tokens_prompt_raw and tokens_prompt"
+            "journal method requires cache-adjusted tokens and journal_llm_calls"
         )
     if obj["tokens_unattributed"] != (
         obj["tokens_prompt_unattributed"] + obj["tokens_completion_unattributed"]
@@ -598,10 +654,11 @@ def _empty_metrics():
     return {
         "tokens_prompt": 0,
         "tokens_prompt_raw": 0,
-        "tokens_prompt_cache_adjusted": 0,
-        "tokens_cache_method": TOKEN_CACHE_METHOD,
+        "tokens_prompt_cache_adjusted": None,
+        "tokens_cache_method": TOKEN_CACHE_METHOD_UNAVAILABLE,
         "tokens_completion": 0,
         "llm_calls": 0,
+        "journal_llm_calls": None,
         "turns": 0,
         "turns_source": "llm_calls",
         "retries": 0,
@@ -1147,6 +1204,12 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
         messages,
         transcript_collected,
     )
+    try:
+        metrics = apply_journal_cache(metrics, started_at, wall_s)
+    except Exception:
+        metrics["tokens_prompt_cache_adjusted"] = None
+        metrics["journal_llm_calls"] = None
+        metrics["tokens_cache_method"] = TOKEN_CACHE_METHOD_UNAVAILABLE
     _write_json(run_dir / "usage_delta.json", _usage_delta_doc(attributed, unattributed, metrics))
     result = build_result(
         arm=args.arm,

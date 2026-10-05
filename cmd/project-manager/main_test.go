@@ -90,6 +90,7 @@ func TestExtractGoalFromPayload(t *testing.T) {
 type pmTestHub struct {
 	posts     []string
 	roles     []string
+	sent      []string
 	failPosts int
 }
 
@@ -97,6 +98,7 @@ func (h *pmTestHub) Register(context.Context, string, ed25519.PublicKey, string)
 	return &hubclient.RegisterResponse{AssignedID: "project-manager"}, nil
 }
 func (h *pmTestHub) Send(_ context.Context, msg hubclient.Message) (hubclient.Message, error) {
+	h.sent = append(h.sent, msg.Command)
 	p, _ := msg.Payload.(map[string]interface{})
 	switch msg.Command {
 	case "channel.post":
@@ -442,6 +444,44 @@ func TestPMFallbackThenSameTextPlansAgain(t *testing.T) {
 	pmProcessPlanningMessage(hub, userGoalMsg("once-fb", goal), "project-manager-once-fb", llm)
 	if calls != 2 || len(hub.posts) != 2 {
 		t.Fatalf("resend after fallback must plan again, calls=%d posts=%d", calls, len(hub.posts))
+	}
+}
+
+func TestPMEnsuresRolesBeforePlanPost(t *testing.T) {
+	resetPlannedHumanGoals()
+	hub := &pmTestHub{}
+	llm := func(context.Context, string) (string, error) {
+		return "@Coder take the assignment. @CISO confirm rotation. Ask for the repo if missing.", nil
+	}
+	pmProcessPlanningMessage(hub, userGoalMsg("order-ch", "Rotate a compromised key."), "project-manager-order", llm)
+	if len(hub.posts) != 1 {
+		t.Fatalf("expected one plan post, got %v", hub.posts)
+	}
+	if !containsRole(hub.roles, "coder") || !containsRole(hub.roles, "ciso") {
+		t.Fatalf("expected coder and ciso ensure.role, roles=%v", hub.roles)
+	}
+	postAt := -1
+	for i, cmd := range hub.sent {
+		if cmd == "channel.post" {
+			postAt = i
+			break
+		}
+	}
+	if postAt < 0 {
+		t.Fatalf("missing channel.post, sent=%v", hub.sent)
+	}
+	sawEnsure := false
+	for i, cmd := range hub.sent {
+		if cmd != "ensure.role" && cmd != "channel.add_member" {
+			continue
+		}
+		sawEnsure = sawEnsure || cmd == "ensure.role"
+		if i >= postAt {
+			t.Fatalf("%s at %d must precede channel.post at %d, sent=%v", cmd, i, postAt, hub.sent)
+		}
+	}
+	if !sawEnsure {
+		t.Fatalf("missing ensure.role before channel.post, sent=%v", hub.sent)
 	}
 }
 

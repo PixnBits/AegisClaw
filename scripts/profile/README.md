@@ -156,7 +156,7 @@ The limitation is the measurement. The model has to echo whole files accurately 
 
 Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result.json` and appended to `OUT/runs.jsonl`. `pass` and `honesty` are null until `score.py` fills them in `OUT/runs_scored.jsonl`. Medians in `summary.md` ignore nulls and print `n/a` when nothing remains.
 
-**Turn.** A turn is one LLM-bearing agent or PM response that produces an outbound user-visible message (a channel post or a DM `chat.message` counted in the transcript). Count a DM and a channel post the same: one such message is one turn, on every arm. The user goal is not a turn. A Court message is not a turn. When the harness collected a transcript, `turns` is that count and `turns_source` is `transcript`. The same count is `pm_messages + agent_messages`. If no transcript was collected, `turns` falls back to `channel.turn.recv` lines in the collab trace (`turns_source` `trace`) or, when those lines are absent, to attributed `llm_calls` (`turns_source` `llm_calls`). Those fallbacks are not the cross-arm definition. Do not compare them with `transcript` turns. Rows from earlier pilots stored the trace count in `turns`.
+**Turn.** A turn is one LLM-bearing agent or PM response that produces an outbound user-visible message (a channel post or a DM `chat.message` counted in the transcript). Count a DM and a channel post the same: one such message is one turn, on every arm. The user goal is not a turn. A Court message is not a turn. A facilitator `system` status post is not a turn, not an agent message, and not the agent reply that makes `final_marker` eligible. When the harness collected a transcript, `turns` is that count and `turns_source` is `transcript`. The same count is `pm_messages + agent_messages`. If no transcript was collected, `turns` falls back to `channel.turn.recv` lines in the collab trace (`turns_source` `trace`) or, when those lines are absent, to attributed `llm_calls` (`turns_source` `llm_calls`). Those fallbacks are not the cross-arm definition. Do not compare them with `transcript` turns. Rows from earlier pilots stored the trace count in `turns`.
 
 **Completion.** A run completed when `completion_signal` is not `timeout` and not `error`. The rate is completed runs over all runs in the cell. `dry_run` counts as completed. `timed_out` is true only for the `timeout` signal.
 
@@ -164,7 +164,7 @@ Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result
 
 **Honesty.** `mech_honesty` comes from `honesty_check.mechanical`. If the judge ran, `honesty` is the judge's `honest` value; otherwise it is `mech_honesty`. `disagreement` is true when both sides produced a boolean and they differ. `needs_human` is true when pass is null, honesty is null, or they disagreed.
 
-**tokens_prompt / tokens_completion.** Taken from `llm.usage` records, not from the transcript. The harness GETs `http://localhost:8080/api/llm-usage/recent?limit=500` (`{"records":[...]}`) before the goal and again a few seconds after the conclusion. The delta is the multiset difference of the after snapshot minus the before snapshot, restricted to the run window. A record is attributed when its `agent_id` contains the channel id (`prof-<scenario>-<arm>-n<k>-<6 hex>`). `tokens_prompt` and `tokens_completion` are the sums of those fields on attributed records. `llm_calls` is the attributed record count. What those sums mean, and why they are not experiment results yet, is in "Token capture and Ollama caching".
+**tokens_prompt / tokens_completion.** Taken from `llm.usage` records, not from the transcript. The harness GETs `http://localhost:8080/api/llm-usage/recent?limit=500` (`{"records":[...]}`) before the goal and again a few seconds after the conclusion. The delta is the multiset difference of the after snapshot minus the before snapshot, restricted to the run window. A record is attributed when its `agent_id` contains the channel id (`prof-<scenario>-<arm>-n<k>-<6 hex>`). `tokens_prompt` and `tokens_completion` are the sums of those fields on attributed records. `llm_calls` is the attributed record count. What those sums mean (full-prompt API vs journal cache-adjusted) is in "Token accounting".
 
 **Unattributed tokens.** `tokens_unattributed` is the prompt-plus-completion total on delta records whose `agent_id` does not contain this channel id. `tokens_prompt_unattributed` and `tokens_completion_unattributed` are the two sums. Those tokens are not included in `tokens_prompt` or `tokens_completion`. They are other channels, the PM or an agent whose id did not carry the channel id, or traffic that landed in the window without an id. A large unattributed number means the cell's token totals are a lower bound.
 
@@ -174,30 +174,43 @@ Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result
 
 **stalls.** Lines in that same window matching `stall`, `STALL`, `timed out`, or `deadline exceeded`.
 
-## Token capture and Ollama caching
+## Token accounting
 
-Checked offline against pilot `pilot-20261004-230206` and `journalctl -u ollama`. This is the definition of the token fields. It is not a license to publish token deltas.
+Checked on this host with Ollama 0.33.2 (repeatable) and against the pilot1/pilot2 daemon logs. This is the definition of the token fields. It is not a license to publish token deltas.
 
-1. For bday and e2, `/api/llm-usage/recent` attributed exactly the PM `/api/generate` calls that appear in the Ollama journal. `prompt_eval_count` and `eval_count` matched `tokens_prompt` / `tokens_completion`. e2 was 671 prompt tokens and 2581 completion tokens.
-2. Those runs had only PM model calls. Agents were @mentioned and did not get a model call. In this note a "turn" means that call, not the transcript turn defined under Metrics. Missing agent and Court rows are a collaboration-scheduling gap, not a drop in the usage API for calls that happened. The journal did not show generate calls for those agents either.
-3. Ollama's KV cache showed longest-common-prefix similarity (for example 254 of 671). The journal line `prompt eval time ... / 671 tokens` still matched the full `prompt_eval_count`. On this host, `prompt_eval_count` is not reduced by cache reuse for the recorded calls.
+**Raw vs cache-adjusted.** The network boundary copies Ollama `prompt_eval_count` into `llm.usage.record` as `tokens_prompt`, and `eval_count` as `tokens_completion`. The harness sums the usage-API delta. It does not recompute tokens from the transcript.
 
-The network boundary copies Ollama `prompt_eval_count` into `llm.usage.record` as `tokens_prompt`, and `eval_count` as `tokens_completion`. The harness sums the usage-API delta. It does not recompute tokens from the transcript.
+- `tokens_prompt` / `tokens_prompt_raw` are the attributed sum of API `prompt_eval_count`. On Ollama 0.33.2 that count is the **full prompt**, not reduced by KV cache. Sending the same 1469-token prefix twice to `qwen3-coder:30b` returned `prompt_eval_count=1469` both times.
+- `tokens_prompt_cache_adjusted` is the journal **newly evaluated** prompt-token sum: the `N` in `prompt eval time = ... / N tokens`. For that second 1469-token call the journal said `cached n_tokens = 1457` and `prompt eval time = 53.33 ms / 12 tokens`. `qwen3.6:35b` (hybrid/SWA) logs `forcing full prompt re-processing` and the journal N equals the full prompt.
+- After a live run (not `--dry-run`) the harness reads `journalctl -u ollama -o short-iso --since ... --until ... --no-pager` for the run window. On success with timing lines it sets `tokens_prompt_cache_adjusted`, `journal_llm_calls` (number of prompt-eval lines), and `tokens_cache_method` `api_prompt_eval_count_full__journal_prompt_eval_new`. If journalctl is missing or the excerpt has no timing lines, cache-adjusted is null and the method is `api_prompt_eval_count_full__journal_unavailable`. A journal failure does not fail the run.
+- Do not subtract a cache-similarity fraction from `prompt_eval_count`. Do not treat a journal prompt sum below API raw as a dropped record.
 
-- `tokens_prompt_raw` is the sum of `prompt_eval_count` on attributed records (the `tokens_prompt` field on those records). `tokens_prompt` is the same number. Both are written to `result.json` and `usage_delta.json`.
-- `tokens_prompt_cache_adjusted` equals `tokens_prompt_raw`. `tokens_cache_method` is `prompt_eval_count_equals_full_prompt_on_host`, which means the recorded calls on this host still report the full prompt in `prompt_eval_count`.
-- Keep that equality until a call is observed where `prompt_eval_count` is less than the full prompt. Then prefer disabling the cache through Ollama options if that option exists, or read the journal task's `n_tokens`. Do not subtract a cache-similarity fraction from `prompt_eval_count`.
-- `tokens_unattributed`, `tokens_prompt_unattributed`, and `tokens_completion_unattributed` are defined under Metrics. They count records the usage API returned and this channel did not own. They are not evidence that a call was dropped.
+**Attribution.** A usage record is attributed when its `agent_id` contains the channel id, and its timestamp (when present) falls in `[started_at, started_at + wall_s]` plus the short settle used for the after-snapshot. `llm_calls` is that attributed record count. Court (and any other record whose `agent_id` does not contain the channel id) is unattributed: `tokens_unattributed`, `tokens_prompt_unattributed`, `tokens_completion_unattributed`. Those tokens are not included in `tokens_prompt` or `tokens_completion`. A large unattributed number means the cell's attributed totals are a lower bound.
 
-Do not present token deltas as experiment results until the same check has been done on a multi-call run that actually includes a PM turn, an agent turn, and a Court turn. A PM-only match does not license comparing arms on tokens.
+**Repeat the verification.** For one finished run directory:
 
-Operators cross-check one finished run with `scripts/profile/check_ollama_journal.py`. The script prints a `journalctl -u ollama` command for the run window (`started_at` through `wall_s`, with a few seconds of lead and settle so the last generate can flush, and stopping before a later `score.py --judge` call). Given a journal excerpt, it sums `prompt eval time ... / N tokens` and `eval time ... / M tokens` and ignores cache-similarity lines. The script's docstring is the full procedure. It does not change `result.json`.
+```bash
+python3 scripts/profile/check_ollama_journal.py RUN_DIR --run-journalctl
+```
+
+Or save the window and compare:
+
+```bash
+journalctl -u ollama -o short-iso --since '...' --until '...' --no-pager > /tmp/ollama-window.log
+python3 scripts/profile/check_ollama_journal.py RUN_DIR --journal /tmp/ollama-window.log
+```
+
+The script sums journal prompt-eval N as cache-adjusted and journal eval M as completion. It compares completion sum and prompt-eval line count to the result. A journal prompt sum below API raw is a cache hit and is not a failure. The window stops before a later `score.py --judge` generate. The script does not change `result.json`.
+
+**Pilot1/pilot2 single-call runs.** Token capture was correct; agents never ran. In every pilot run the PM posted its plan with `@Coder`/`@CISO`, then sent `ensure.role` **after** `channel.post`. The facilitator scheduled turns for the plan while channel members were only `[project-manager]`, skipped that post as `self_post`, and the Coder/CISO VMs joined about a second later with no further `channel.updated` to trigger a turn. Result: exactly one LLM call (the PM plan) per run. The fix is to send `ensure.role` (and the CISO `channel.add_member` block) **before** the plan `channel.post`, so those roles are members when the facilitator schedules turns for the plan.
+
+Do not present token deltas as experiment results until the same journal check has been done on a multi-call run that actually includes a PM turn, an agent turn, and a Court turn. A PM-only match does not license comparing arms on tokens.
 
 ## Conclusion signal
 
 Each poll, and only after `conclusion.min_wait_s` since the goal was accepted, `run_one.py` picks the first match:
 
-1. **final_marker.** A `conclusion.final_markers` regex (case-insensitive) matches a PM or agent message only after at least one non-PM agent reply has followed the first PM message (the plan). The match has to be on a message at or after that first agent reply: the agent's post or a later PM synthesis. The PM's first plan or clarifying question alone does not fire `final_marker`, even when its text matches a marker. Court senders are not agents and do not count as the required reply. `quiet` and `timeout` are the fallbacks when the marker never becomes eligible.
+1. **final_marker.** A `conclusion.final_markers` regex (case-insensitive) matches a PM or agent message only after at least one non-PM agent reply has followed the first PM message (the plan). The match has to be on a message at or after that first agent reply: the agent's post or a later PM synthesis. The PM's first plan or clarifying question alone does not fire `final_marker`, even when its text matches a marker. Court senders and facilitator `system` status posts are not agents and do not count as the required reply. `quiet` and `timeout` are the fallbacks when the marker never becomes eligible.
 2. **quiet.** At least one non-user message, no new message for `quiet_s` seconds, and turn-state (when the call works) shows no member with `pending=true`. Those seconds are host monotonic time since the poll last observed a change in the message set (count, last sequence, or content). The clock starts when the goal is accepted. Message timestamps are ignored; they do not win over host time.
 3. **quiet_no_reply.** No non-user message for `max(quiet_s * 2, 150)` seconds after the goal was accepted, and turn-state shows nothing pending. This is a real outcome for an off-topic probe that everyone correctly ignores.
 4. **timeout.** `scenario.timeout_s` from t0. `timed_out` is true. The run is still data: `run_one.py` exits 0. It exits non-zero only for a harness error, and it still writes `result.json` with `completion_signal` `error` when it can.
@@ -238,7 +251,7 @@ Arm A sets `"messaging": "dm"`. A scenario file may set `"messaging"` to `dm` or
 }
 ```
 
-A message already on the channel with the same role, sender, and content is not added again. When every kept message has a timestamp, order is that timestamp. Otherwise undated DM rows are placed so a later channel PM synthesis stays after the DM plan and the agent replies. `transcript.json` for these runs is the merged list `{"messages":[...]}`. Scoring reads that list. The judge prompt text is not changed. An explicit `role` of `user`, `pm`, `court`, or `agent` is that role. Any other `role` string is ignored and the sender name is classified as before (`project-manager…` is PM, `court…` is Court, anything else that is not the user is an agent).
+A message already on the channel with the same role, sender, and content is not added again. When every kept message has a timestamp, order is that timestamp. Otherwise undated DM rows are placed so a later channel PM synthesis stays after the DM plan and the agent replies. `transcript.json` for these runs is the merged list `{"messages":[...]}`. Scoring reads that list. The judge prompt text is not changed. An explicit `role` of `user`, `pm`, `court`, `agent`, or `system` is that role. Any other `role` string is ignored and the sender name is classified as before (`project-manager…` is PM, `court…` is Court, sender `system` is the facilitator, anything else that is not the user is an agent).
 
 ## Scoring
 
@@ -263,7 +276,7 @@ A human Tester spot-checks the packets listed in `sample_list.md`. The matrix do
 - **Recent API cap of 500 records.** The portal clamps `/api/llm-usage/recent` to 500 records (the newest). A run that emits more than 500 records, or a host whose other traffic pushes this run's early records out of the newest 500 before the after-snapshot, under-counts tokens. The Store process also trims its own buffer, but 500 is the cap the harness can see.
 - **Second-level timestamps.** Usage `timestamp` values are UTC RFC3339 with whole seconds. Two calls in the same second are not ordered, and a record stamped on the same second as the window edge can be kept or dropped incorrectly. The after-snapshot waits a few seconds so in-flight calls can land; that does not fix the rounding.
 
-Token fields are comparable across arms only when both sides kept a live daemon for the whole cell, the 500-record window did not wrap, and unattributed tokens are small. Even then, do not present token deltas as experiment results until a multi-call run (PM, agent, and Court) has been checked as in "Token capture and Ollama caching". The pilot check was PM-only.
+Token fields are comparable across arms only when both sides kept a live daemon for the whole cell, the 500-record window did not wrap, and unattributed tokens are small. Even then, do not present token deltas as experiment results until a multi-call run (PM, agent, and Court) has been checked as in "Token accounting". The pilots were PM-only because `ensure.role` ran after the plan post.
 
 ## Resumability
 

@@ -86,6 +86,55 @@ class ConclusionSignalTests(unittest.TestCase):
         self.assertFalse(run_one.marker_hit(messages, ["grading can start"]))
         self.assertIsNone(_signal(messages, silence_s=0))
 
+    def test_system_status_after_pm_is_not_an_agent_message_or_turn(self):
+        parsed = common.parse_transcript(
+            {
+                "messages": [
+                    {"from": "user", "content": "Fix the CSS."},
+                    {
+                        "from": "project-manager",
+                        "content": "Plan: @Coder tweak padding. No further changes.",
+                    },
+                    {
+                        "from": "system",
+                        "content": "status: turns delivered to [project-manager]",
+                    },
+                ]
+            }
+        )
+        self.assertEqual(common.classify_sender("system"), "system")
+        self.assertEqual([message["role"] for message in parsed], ["user", "pm", "system"])
+        self.assertFalse(run_one.marker_hit(parsed, ["no further changes"]))
+        self.assertIsNone(_signal(parsed, patterns=["no further changes"], silence_s=0))
+        _total, agent, pm, non_user, _senders = run_one.message_counts(parsed)
+        self.assertEqual(agent, 0)
+        self.assertEqual(pm, 1)
+        self.assertEqual(non_user, 1)
+        counted = run_one.with_transcript_turns(
+            run_one.account("", "", [], []), parsed, True
+        )
+        self.assertEqual(counted["turns"], 1)
+        result = run_one.build_result(
+            arm="base",
+            scenario="css",
+            kind="probe",
+            court_dependent=False,
+            n=1,
+            run_id="r",
+            channel="c",
+            completion_signal="quiet",
+            timed_out=False,
+            messages=parsed,
+            metrics=counted,
+            wall_s=1.0,
+            started_at="2026-10-04T23:02:06Z",
+            run_dir="/tmp/run",
+            error=None,
+        )
+        self.assertEqual(result["agent_messages"], 0)
+        self.assertEqual(result["pm_messages"], 1)
+        self.assertEqual(result["turns"], 1)
+
     def test_min_wait_blocks_final_marker(self):
         messages = [
             _msg("pm", "Plan."),
@@ -175,9 +224,11 @@ class TokenCaptureTests(unittest.TestCase):
         )
         self.assertEqual(metrics["tokens_prompt"], 681)
         self.assertEqual(metrics["tokens_prompt_raw"], 681)
-        self.assertEqual(metrics["tokens_prompt_cache_adjusted"], 681)
-        self.assertEqual(metrics["tokens_cache_method"], run_one.TOKEN_CACHE_METHOD)
+        self.assertIsNone(metrics["tokens_prompt_cache_adjusted"])
+        self.assertEqual(metrics["tokens_cache_method"], run_one.TOKEN_CACHE_METHOD_UNAVAILABLE)
+        self.assertIsNone(metrics["journal_llm_calls"])
         self.assertEqual(metrics["tokens_completion"], 2585)
+        self.assertEqual(metrics["llm_calls"], 2)
         self.assertEqual(metrics["tokens_prompt_unattributed"], 4)
         self.assertEqual(metrics["tokens_completion_unattributed"], 9)
         self.assertEqual(metrics["tokens_unattributed"], 13)
@@ -195,24 +246,79 @@ class TokenCaptureTests(unittest.TestCase):
                 "tokens_completion_unattributed",
             ],
         )
+        self.assertIn("journal_llm_calls", result)
         doc = run_one._usage_delta_doc([], [], metrics)
-        self.assertEqual(doc["tokens_prompt_cache_adjusted"], 681)
+        self.assertIsNone(doc["tokens_prompt_cache_adjusted"])
         self.assertEqual(doc["tokens_prompt_unattributed"], 4)
         self.assertEqual(doc["tokens_completion_unattributed"], 9)
 
-    def test_empty_metrics_keep_the_documented_equality(self):
+    def test_empty_metrics_leave_cache_adjusted_null(self):
         result = _result(run_one._empty_metrics())
         self.assertEqual(result["tokens_prompt"], 0)
         self.assertEqual(result["tokens_prompt_raw"], 0)
-        self.assertEqual(result["tokens_prompt_cache_adjusted"], 0)
-        self.assertEqual(result["tokens_cache_method"], "prompt_eval_count_equals_full_prompt_on_host")
+        self.assertIsNone(result["tokens_prompt_cache_adjusted"])
+        self.assertIsNone(result["journal_llm_calls"])
+        self.assertEqual(
+            result["tokens_cache_method"],
+            "api_prompt_eval_count_full__journal_unavailable",
+        )
         self.assertEqual(result["tokens_unattributed"], 0)
 
-    def test_build_result_rejects_a_cache_discount(self):
-        metrics = run_one.account("", "", [{"tokens_prompt": 671, "tokens_completion": 2581}], [])
-        metrics["tokens_prompt_cache_adjusted"] = 671 - 254
-        with self.assertRaises(run_one.HarnessError):
-            _result(metrics)
+    def test_build_result_allows_journal_cache_adjusted_below_raw(self):
+        metrics = run_one.account("", "", [{"tokens_prompt": 1469, "tokens_completion": 100}], [])
+        metrics["tokens_prompt_cache_adjusted"] = 12
+        metrics["journal_llm_calls"] = 1
+        metrics["tokens_cache_method"] = run_one.TOKEN_CACHE_METHOD
+        result = _result(metrics)
+        self.assertEqual(result["tokens_prompt"], 1469)
+        self.assertEqual(result["tokens_prompt_raw"], 1469)
+        self.assertEqual(result["tokens_prompt_cache_adjusted"], 12)
+        self.assertEqual(result["journal_llm_calls"], 1)
+        self.assertEqual(result["llm_calls"], 1)
+
+    def test_journal_cache_hit_sets_adjusted_from_prompt_eval(self):
+        metrics = run_one.account("", "", [{"tokens_prompt": 1469, "tokens_completion": 100}], [])
+        journal_text = (
+            "2026-10-04T23:02:10Z host ollama[1]: "
+            "prompt eval time = 53.33 ms / 12 tokens (4.44 ms per token)\n"
+            "2026-10-04T23:02:10Z host ollama[1]: cached n_tokens = 1457\n"
+            "2026-10-04T23:02:40Z host ollama[1]: eval time = 100.00 ms / 100 tokens\n"
+        )
+
+        def run_cmd(argv):
+            self.assertIn("journalctl", argv)
+            return common.CmdResult(0, journal_text, "", False)
+
+        out = run_one.apply_journal_cache(
+            metrics, "2026-10-04T23:02:06Z", 120, run_cmd=run_cmd
+        )
+        self.assertEqual(out["tokens_prompt"], 1469)
+        self.assertEqual(out["tokens_prompt_raw"], 1469)
+        self.assertEqual(out["tokens_prompt_cache_adjusted"], 12)
+        self.assertEqual(out["journal_llm_calls"], 1)
+        self.assertEqual(out["tokens_cache_method"], run_one.TOKEN_CACHE_METHOD)
+        self.assertEqual(out["llm_calls"], 1)
+        result = _result(out)
+        self.assertEqual(result["tokens_prompt_cache_adjusted"], 12)
+
+    def test_journal_unavailable_sets_null_and_does_not_raise(self):
+        metrics = run_one.account("", "", [{"tokens_prompt": 10, "tokens_completion": 1}], [])
+
+        def boom(argv):
+            raise FileNotFoundError("journalctl")
+
+        out = run_one.apply_journal_cache(metrics, "2026-10-04T23:02:06Z", 1, run_cmd=boom)
+        self.assertIsNone(out["tokens_prompt_cache_adjusted"])
+        self.assertIsNone(out["journal_llm_calls"])
+        self.assertEqual(out["tokens_cache_method"], run_one.TOKEN_CACHE_METHOD_UNAVAILABLE)
+        self.assertEqual(out["tokens_prompt"], 10)
+
+        def empty(argv):
+            return common.CmdResult(0, "no timing here\n", "", False)
+
+        out = run_one.apply_journal_cache(metrics, "2026-10-04T23:02:06Z", 1, run_cmd=empty)
+        self.assertIsNone(out["tokens_prompt_cache_adjusted"])
+        self.assertEqual(out["tokens_cache_method"], run_one.TOKEN_CACHE_METHOD_UNAVAILABLE)
 
 
 class _Proc:

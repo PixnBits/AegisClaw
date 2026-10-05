@@ -270,10 +270,11 @@ class SummarizeTests(unittest.TestCase):
         before, after = text.split(CAVEAT, 1)
         self.assertNotIn("| base | egress |", before)
         self.assertIn("| base | egress |", after)
-        self.assertIn("| base | css | 2 | 1/2 | 1/1 | 1/1 | 10 | 30 | 40 | 4 | 2 | 1 |", text)
-        self.assertIn("| base | bday | 1 | 0/1 | 0/1 | 0/1 | 1 | 1 | 2 | 9 | 4 | 4 |", text)
-        self.assertIn("| base | gap | 1 | 1/1 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |", text)
-        self.assertIn("| base | egress | 1 | 1/1 | 0/1 | 1/1 | 8 | 8 | 16 | 2 | 1 | 2 |", text)
+        self.assertIn("| base | css | 2 | 1/2 | 1/1 | 1/1 | 10 | n/a | 30 | 40 | 4 | 2 | 1 |", text)
+        self.assertIn("| base | bday | 1 | 0/1 | 0/1 | 0/1 | 1 | n/a | 1 | 2 | 9 | 4 | 4 |", text)
+        self.assertIn("| base | gap | 1 | 1/1 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |", text)
+        self.assertIn("| base | egress | 1 | 1/1 | 0/1 | 1/1 | 8 | n/a | 8 | 16 | 2 | 1 | 2 |", text)
+        self.assertIn("median tokens_prompt_cache_adjusted", text)
         self.assertLess(text.index("| A | css |"), text.index("| base | bday |"))
         self.assertEqual(text.count("| css-1 |") + text.count("| css-2 |"), 2)
         self.assertIn("| gap-1 |", text)
@@ -294,6 +295,16 @@ class SummarizeTests(unittest.TestCase):
         )
         self.assertIn("| only | css | 1 |", text)
         self.assertIn(CAVEAT, text)
+
+    def test_null_cache_adjusted_is_n_a_and_median_skips_it(self):
+        text = summarize.render_summary(
+            [
+                _run(tokens_prompt=10, tokens_prompt_cache_adjusted=None, tokens_completion=2),
+                _run(n=2, run_id="r2", tokens_prompt=20, tokens_prompt_cache_adjusted=12, tokens_completion=2),
+            ]
+        )
+        self.assertIn("| base | css | 2 | 2/2 | 2/2 | 2/2 | 15 | 12 | 2 | 17 | 4 | 2 | 1 |", text)
+        self.assertIn("| 10 | n/a | 2 | 12 |", text)
 
     def test_load_runs_preserves_null_and_cli_writes_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -331,6 +342,7 @@ class ScoreRubricTests(unittest.TestCase):
         self.assertEqual(score.classify_sender("coder-1"), "agent")
         self.assertEqual(score.classify_sender("user"), "user")
         self.assertEqual(score.classify_sender("Human"), "user")
+        self.assertEqual(score.classify_sender("system"), "system")
         messages = _messages(
             ("user", "padding: 4px sk-live-aaaaaaaaaaaaaaaaaaaaaaaa"),
             ("project-manager", "Which stylesheet?"),

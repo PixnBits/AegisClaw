@@ -31,6 +31,7 @@ def _result(**overrides):
         "tokens_prompt_raw": 671,
         "tokens_prompt_cache_adjusted": 671,
         "tokens_completion": 2581,
+        "llm_calls": 1,
         "tokens_unattributed": 0,
         "tokens_prompt_unattributed": 0,
         "tokens_completion_unattributed": 0,
@@ -87,12 +88,17 @@ class OllamaJournalTests(unittest.TestCase):
 
     def test_method_string_matches_the_harness(self):
         self.assertEqual(journal.TOKEN_CACHE_METHOD, run_one.TOKEN_CACHE_METHOD)
+        self.assertEqual(
+            journal.TOKEN_CACHE_METHOD_UNAVAILABLE,
+            run_one.TOKEN_CACHE_METHOD_UNAVAILABLE,
+        )
         text = Path(journal.__file__).read_text(encoding="utf-8")
         self.assertIn("journalctl -u ollama", text)
         self.assertIn("prompt eval time", text)
         self.assertIn(run_one.TOKEN_CACHE_METHOD, text)
+        self.assertIn(run_one.TOKEN_CACHE_METHOD_UNAVAILABLE, text)
 
-    def test_cli_matches_a_saved_journal_and_rejects_a_discount(self):
+    def test_cli_matches_a_saved_journal_and_does_not_fail_on_prompt_below_raw(self):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
             (run / "result.json").write_text(json.dumps(_result()), encoding="utf-8")
@@ -102,16 +108,68 @@ class OllamaJournalTests(unittest.TestCase):
             with redirect_stdout(stdout):
                 code = journal.main([str(run), "--journal", str(excerpt)])
             self.assertEqual(code, 0)
-            self.assertIn("prompt: match", stdout.getvalue())
+            self.assertIn("completion: match", stdout.getvalue())
+            self.assertIn("call count: match", stdout.getvalue())
             self.assertIn("journalctl -u ollama", stdout.getvalue())
 
+            cache_hit = (
+                "2026-10-04T23:02:10Z host ollama[1]: "
+                "prompt eval time = 53.33 ms / 12 tokens (4.44 ms per token)\n"
+                "2026-10-04T23:02:10Z host ollama[1]: cached n_tokens = 1457\n"
+                "2026-10-04T23:02:40Z host ollama[1]: eval time = 9400.00 ms / 2581 tokens\n"
+            )
+            excerpt.write_text(cache_hit, encoding="utf-8")
             (run / "result.json").write_text(
-                json.dumps(_result(tokens_prompt_raw=671 - 254, tokens_prompt=671 - 254)),
+                json.dumps(_result(tokens_prompt_raw=1469, tokens_prompt=1469)),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(StringIO()):
+                code = journal.main([str(run), "--journal", str(excerpt)])
+            self.assertEqual(code, 0)
+            self.assertIn("cache-adjusted below raw", stdout.getvalue())
+
+    def test_cli_fails_on_completion_or_call_count_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            excerpt = run / "journal.txt"
+            excerpt.write_text(WINDOW_JOURNAL, encoding="utf-8")
+            (run / "result.json").write_text(
+                json.dumps(_result(tokens_completion=1)),
                 encoding="utf-8",
             )
             with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
-                code = journal.main([str(run), "--journal", str(excerpt)])
-            self.assertEqual(code, 1)
+                self.assertEqual(journal.main([str(run), "--journal", str(excerpt)]), 1)
+            (run / "result.json").write_text(
+                json.dumps(_result(llm_calls=9)),
+                encoding="utf-8",
+            )
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(journal.main([str(run), "--journal", str(excerpt)]), 1)
+
+    def test_cache_hit_prompt_sum_is_reported_not_failed(self):
+        start, end = journal.run_window(_result(started_at="2026-10-04T23:02:06Z"))
+        text = (
+            "2026-10-04T23:02:10Z host ollama[1]: "
+            "prompt eval time = 53.33 ms / 12 tokens (4.44 ms per token)\n"
+            "2026-10-04T23:02:10Z host ollama[1]: cached n_tokens = 1457\n"
+            "2026-10-04T23:02:40Z host ollama[1]: eval time = 100.00 ms / 100 tokens\n"
+        )
+        rows = journal.extract_timing(text, start, end)
+        compared = journal.compare_totals(
+            _result(
+                tokens_prompt=1469,
+                tokens_prompt_raw=1469,
+                tokens_completion=100,
+                llm_calls=1,
+            ),
+            rows,
+        )
+        self.assertEqual(compared["journal_prompt_tokens"], 12)
+        self.assertTrue(compared["prompt_lt_raw"])
+        self.assertFalse(compared["prompt_match"])
+        self.assertTrue(compared["completion_match"])
+        self.assertTrue(compared["calls_match"])
 
     def test_cli_without_excerpt_only_prints_the_command(self):
         with tempfile.TemporaryDirectory() as tmp:

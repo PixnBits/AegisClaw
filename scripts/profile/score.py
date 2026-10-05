@@ -43,7 +43,7 @@ SCORE_KEYS = [
 SKIP_PARTS = {".gocache", ".gomodcache", "scratch"}
 SENDER_KEYS = ("from", "From", "sender", "Sender")
 CONTENT_KEYS = ("content", "Content", "text", "Text")
-_HARNESS_ROLES = {"user", "pm", "court", "agent"}
+_HARNESS_ROLES = {"user", "pm", "court", "agent", "system"}
 FILE_MARK_RE = re.compile(
     r"^(?://[ \t]*file:[ \t]*(.+)|<!--[ \t]*file:[ \t]*(.+?)[ \t]*-->)[ \t]*$",
     re.IGNORECASE,
@@ -65,6 +65,8 @@ def classify_sender(name: str) -> str:
         return "pm"
     if n.startswith("court"):
         return "court"
+    if n == "system":
+        return "system"
     return "agent"
 
 
@@ -218,7 +220,7 @@ def scoped_text(messages: list[dict], scope: str | None) -> str:
         elif scope == "court":
             keep = role == "court"
         elif scope == "any_non_user":
-            keep = role != "user"
+            keep = role not in {"user", "system"}
         else:
             keep = False
         if keep:

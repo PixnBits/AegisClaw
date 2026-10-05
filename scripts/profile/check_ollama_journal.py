@@ -5,20 +5,25 @@ Ollama writes prompt-eval and generation timing to the host journal, not
 to the Aegis daemon log. The network boundary copies ``prompt_eval_count``
 into ``llm.usage.record`` as ``tokens_prompt`` and ``eval_count`` as
 ``tokens_completion``. The harness sums attributed records into
-``tokens_prompt_raw``.
+``tokens_prompt`` / ``tokens_prompt_raw``.
 
-On the host checked with pilot ``pilot-20261004-230206``, a KV-cache
-longest-common-prefix note (for example 254/671) did not reduce that
-count. The journal line
+On Ollama 0.33.2 those two numbers are not the same thing:
 
-    prompt eval time = ... / 671 tokens
+- API ``prompt_eval_count`` is the **full prompt**. Sending the same
+  1469-token prefix twice to ``qwen3-coder:30b`` returned
+  ``prompt_eval_count=1469`` both times.
+- Journal ``prompt eval time = ... / N tokens`` N is **newly evaluated**
+  (cache-adjusted). The second call logged ``cached n_tokens = 1457`` and
+  ``prompt eval time = 53.33 ms / 12 tokens``.
+- ``qwen3.6:35b`` (hybrid/SWA) logs ``forcing full prompt re-processing``
+  and the journal N equals the full prompt.
 
-still matched the full ``prompt_eval_count``, and the eval line matched
-``eval_count`` (``tokens_completion``). ``tokens_cache_method`` is
-``prompt_eval_count_equals_full_prompt_on_host`` while that holds. If a
-later call shows ``prompt_eval_count`` below the full prompt, prefer
-disabling the cache with Ollama options when that option exists, or read
-the journal task's ``n_tokens``. Do not subtract the cache fraction.
+``tokens_cache_method`` is
+``api_prompt_eval_count_full__journal_prompt_eval_new`` when the harness
+read those journal lines, or
+``api_prompt_eval_count_full__journal_unavailable`` when it could not.
+Do not subtract a cache-similarity fraction from ``prompt_eval_count``.
+Do not treat a journal prompt sum below API raw as a dropped record.
 
 Until a run that actually called the PM, an agent, and Court has been
 checked the same way, do not treat token deltas as experiment results.
@@ -47,23 +52,27 @@ Or let the script run journalctl (it needs permission to read the unit):
 
 Inside the window, count only these lines:
 
-- ``prompt eval time = ... / N tokens`` — N is ``prompt_eval_count`` for
-  that call. Sum of N is the full-prompt total.
+- ``prompt eval time = ... / N tokens`` — N is newly evaluated tokens
+  for that call (cache-adjusted). Sum of N is reported as cache-adjusted
+  prompt tokens. Number of these lines is the journal call count.
 - ``eval time = ... / M tokens`` on a line that is not ``prompt eval time``
-  and not ``total time`` — M is ``eval_count``.
+  and not ``total time`` — M is ``eval_count``. Sum of M is compared to
+  ``tokens_completion + tokens_completion_unattributed``.
 
 Ignore cache similarity (``cached``, ``n_tokens``, or a fraction such as
-254/671). Those lines are not extra calls. The journal sum should equal
-``tokens_prompt_raw + tokens_prompt_unattributed`` and
-``tokens_completion + tokens_completion_unattributed`` when the window
-has no other Ollama traffic. A wider excerpt, or another process using
-Ollama in the same seconds, makes the journal sum larger. That is not a
-dropped usage record.
+1457/1469). Those lines are not extra calls. A journal prompt sum below
+API ``tokens_prompt_raw + tokens_prompt_unattributed`` is a cache hit, not
+a mismatch. Completion sum and prompt-eval line count are what have to
+match the result (call count vs ``llm_calls``; extra journal calls are
+allowed when unattributed tokens are present, e.g. Court). A wider
+excerpt, or another process using Ollama in the same seconds, makes the
+journal larger. That is not a dropped usage record.
 
 The script does not change ``result.json``.
 
 Exit 0 when the command is only printed, or the excerpt matches.
-Exit 1 when the excerpt's sums disagree with the result.
+Exit 1 when the excerpt's completion sum or call count disagrees with
+the result. A journal prompt sum below raw does not fail.
 Exit 2 when the run dir, journalctl, or the excerpt is unusable (no
 timing lines).
 """
@@ -83,7 +92,8 @@ from pathlib import Path
 # include a later judge call on purpose; do not widen it into score time.
 LEAD_S = 5.0
 SETTLE_S = 15.0
-TOKEN_CACHE_METHOD = "prompt_eval_count_equals_full_prompt_on_host"
+TOKEN_CACHE_METHOD = "api_prompt_eval_count_full__journal_prompt_eval_new"
+TOKEN_CACHE_METHOD_UNAVAILABLE = "api_prompt_eval_count_full__journal_unavailable"
 
 _PROMPT_EVAL = re.compile(r"prompt eval time\s*=.*?/\s*(\d+)\s+tokens", re.IGNORECASE)
 _EVAL = re.compile(r"eval time\s*=.*?/\s*(\d+)\s+tokens", re.IGNORECASE)
@@ -155,8 +165,10 @@ def _line_in_window(line: str, start: datetime, end: datetime) -> bool:
 def extract_timing(text: str, start: datetime | None = None, end: datetime | None = None) -> list[dict]:
     """Sum only prompt-eval and eval timing lines.
 
-    Cache similarity and ``n_tokens`` notes are ignored. ``total time``
-    lines are ignored so they are not counted as completion tokens.
+    Prompt-eval N is newly evaluated (cache-adjusted), not API
+    ``prompt_eval_count``. Cache similarity and ``n_tokens`` notes are
+    ignored. ``total time`` lines are ignored so they are not counted as
+    completion tokens.
     """
     rows = []
     for line in text.splitlines():
@@ -185,27 +197,52 @@ def expected_totals(result: dict) -> dict:
     split = prompt_u is not None or completion_u is not None
     prompt_extra = int(prompt_u or 0)
     completion_extra = int(completion_u or 0)
+    calls = result.get("llm_calls")
+    try:
+        attributed_calls = None if calls is None else int(calls)
+    except (TypeError, ValueError):
+        attributed_calls = None
+    unattr = 0
+    try:
+        unattr = int(result.get("tokens_unattributed") or 0)
+    except (TypeError, ValueError):
+        unattr = 0
     return {
         "prompt": int(raw) + prompt_extra,
         "completion": int(completion) + completion_extra,
         "includes_unattributed": split,
+        "attributed_calls": attributed_calls,
+        "unattributed_tokens": unattr,
     }
+
+
+def _calls_match(journal_calls: int, expected: dict) -> bool:
+    attributed = expected["attributed_calls"]
+    if attributed is None:
+        return True
+    if expected["unattributed_tokens"] > 0:
+        return journal_calls >= attributed
+    return journal_calls == attributed
 
 
 def compare_totals(result: dict, rows: list[dict]) -> dict:
     expected = expected_totals(result)
     prompt = sum(row["tokens"] for row in rows if row["kind"] == "prompt")
     completion = sum(row["tokens"] for row in rows if row["kind"] == "completion")
+    prompt_calls = sum(1 for row in rows if row["kind"] == "prompt")
     return {
         "journal_prompt_tokens": prompt,
         "journal_completion_tokens": completion,
-        "journal_prompt_calls": sum(1 for row in rows if row["kind"] == "prompt"),
+        "journal_prompt_calls": prompt_calls,
         "journal_completion_calls": sum(1 for row in rows if row["kind"] == "completion"),
         "expected_prompt": expected["prompt"],
         "expected_completion": expected["completion"],
+        "expected_calls": expected["attributed_calls"],
         "includes_unattributed": expected["includes_unattributed"],
         "prompt_match": prompt == expected["prompt"],
         "completion_match": completion == expected["completion"],
+        "calls_match": _calls_match(prompt_calls, expected),
+        "prompt_lt_raw": prompt < expected["prompt"],
     }
 
 
@@ -228,15 +265,26 @@ def _report(result: dict, rows: list[dict]) -> tuple[int, str]:
         if compared["includes_unattributed"]
         else "tokens_prompt_raw only (result has no unattributed split)"
     )
+    if compared["prompt_match"]:
+        prompt_note = "match"
+    elif compared["prompt_lt_raw"]:
+        prompt_note = "cache-adjusted below raw (not a failure)"
+    else:
+        prompt_note = "above raw (other traffic? not a failure by itself)"
+    expected_calls = compared["expected_calls"]
+    calls_note = "match" if compared["calls_match"] else "differ"
     lines = [
-        f"prompt eval lines: {compared['journal_prompt_calls']} tokens: {compared['journal_prompt_tokens']}",
+        f"prompt eval lines: {compared['journal_prompt_calls']} "
+        f"cache-adjusted tokens: {compared['journal_prompt_tokens']}",
         f"eval lines: {compared['journal_completion_calls']} tokens: {compared['journal_completion_tokens']}",
         f"result prompt ({scope}): {compared['expected_prompt']}",
         f"result completion: {compared['expected_completion']}",
-        f"prompt: {'match' if compared['prompt_match'] else 'differ'}",
+        f"result llm_calls (attributed): {expected_calls if expected_calls is not None else 'n/a'}",
+        f"prompt (cache-adjusted vs API raw): {prompt_note}",
         f"completion: {'match' if compared['completion_match'] else 'differ'}",
+        f"call count: {calls_note}",
     ]
-    code = 0 if compared["prompt_match"] and compared["completion_match"] else 1
+    code = 0 if compared["completion_match"] and compared["calls_match"] else 1
     return code, "\n".join(lines)
 
 
@@ -310,9 +358,11 @@ def main(argv=None) -> int:
     print(report)
     if code == 1:
         print(
-            "differ: other Ollama traffic in the window, or prompt_eval_count "
-            "no longer equal to the full prompt. Cache similarity is not a discount. "
-            f"tokens_cache_method on new runs is {TOKEN_CACHE_METHOD}.",
+            "differ: journal completion sum or prompt-eval call count disagrees "
+            "with the result. A journal prompt sum below API raw is a cache hit, "
+            "not a failure. "
+            f"tokens_cache_method on new runs is {TOKEN_CACHE_METHOD} or "
+            f"{TOKEN_CACHE_METHOD_UNAVAILABLE}.",
             file=sys.stderr,
         )
     return code

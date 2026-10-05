@@ -16,7 +16,7 @@ SENDER_KEYS = ("from", "sender", "From", "Sender", "author", "Author")
 CONTENT_KEYS = ("content", "text", "Content", "Text", "body")
 _MESSAGE_LIST_KEYS = ("messages", "Messages")
 _NEST_KEYS = ("channel", "Channel", "data", "payload", "result", "Data", "Payload")
-_HARNESS_ROLES = {"user", "pm", "court", "agent"}
+_HARNESS_ROLES = {"user", "pm", "court", "agent", "system"}
 # Tried only when the arm does not document its own dm_cli / harness_dm.json cli.
 _DEFAULT_DM_CLI = (
     ["dm", "dump", "--json", "{channel}"],
@@ -102,7 +102,11 @@ def load_scenario(path) -> dict:
 
 
 def classify_sender(name: str) -> str:
-    """user | pm | court | agent. Court names start with 'court'; PM starts with 'project-manager'."""
+    """user | pm | court | agent | system.
+
+    Court names start with 'court'; PM starts with 'project-manager'.
+    Facilitator status posts use sender 'system' and are none of the others.
+    """
     n = (name or "").strip().lower()
     if n in {"user", "human"}:
         return "user"
@@ -110,6 +114,8 @@ def classify_sender(name: str) -> str:
         return "pm"
     if n.startswith("court"):
         return "court"
+    if n == "system":
+        return "system"
     return "agent"
 
 
