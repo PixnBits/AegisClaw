@@ -797,6 +797,8 @@ func (o *Orchestrator) EnsureRoleAgent(ctx context.Context, roleType string, cha
 		return agtID, err
 	}
 	// Generic role (PM, sdlc-*, future court on-demand via EnsureCourtPersona).
+	// Empty channelHint is valid: the id is the bare role and the VM still starts.
+	// Do not invent a channel id. Callers that omit channel also skip add_member.
 	id := roleType + "-" + channelHint
 	if channelHint == "" {
 		id = roleType

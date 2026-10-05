@@ -537,6 +537,81 @@ rules:
     - ensure.role
     - orchestrator.*
 
+# exp/dm-no-channels: PM assigns specialist work by chat.message, and role agents
+# may answer the same way. Court is out of this arm — no project-manager* → court-persona-*.
+- source: "project-manager*"
+  destination: "coder*"
+  commands:
+    - chat.message
+- source: "coder*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+- source: "project-manager*"
+  destination: "tester*"
+  commands:
+    - chat.message
+- source: "tester*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+- source: "project-manager*"
+  destination: "architect*"
+  commands:
+    - chat.message
+- source: "architect*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+- source: "project-manager*"
+  destination: "ciso*"
+  commands:
+    - chat.message
+- source: "ciso*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+- source: "project-manager*"
+  destination: "researcher*"
+  commands:
+    - chat.message
+- source: "researcher*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+- source: "project-manager*"
+  destination: "agent*"
+  commands:
+    - chat.message
+- source: "agent*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+- source: "project-manager*"
+  destination: "security-architect*"
+  commands:
+    - chat.message
+- source: "security-architect*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+- source: "project-manager*"
+  destination: "efficiency*"
+  commands:
+    - chat.message
+- source: "efficiency*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+- source: "project-manager*"
+  destination: "user-advocate*"
+  commands:
+    - chat.message
+- source: "user-advocate*"
+  destination: "project-manager*"
+  commands:
+    - chat.message
+
 # daemon-orchestrator (the receiver started early in daemon) needs to do channel.* to store
 # for the E2E auto-default "main" channel + Court members setup (best-effort, idempotent).
 # This prevents ACL violations and "temp" spam from the auto go func during startup.

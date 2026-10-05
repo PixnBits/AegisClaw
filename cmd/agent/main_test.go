@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"crypto/ed25519"
 	"strings"
 	"testing"
+	"time"
+
+	"AegisClaw/internal/transport/hubclient"
 )
 
 func TestMentionedProseIfDropped(t *testing.T) {
@@ -58,6 +63,111 @@ func TestLooksLikeInternalDump(t *testing.T) {
 	md := "## Request Analysis\nThe user is asking for the repository.\n## Required Skills/Tools\n1. **discord_monitor**"
 	if !looksLikeInternalDump(md) {
 		t.Fatal("markdown skill-planner dump must not be posted")
+	}
+}
+
+type agentTestHub struct {
+	id      string
+	sends   []hubclient.Message
+	replies []hubclient.Message
+}
+
+func (h *agentTestHub) Register(context.Context, string, ed25519.PublicKey, string) (*hubclient.RegisterResponse, error) {
+	return &hubclient.RegisterResponse{AssignedID: h.id}, nil
+}
+func (h *agentTestHub) Send(_ context.Context, msg hubclient.Message) (hubclient.Message, error) {
+	h.sends = append(h.sends, msg)
+	return hubclient.Message{Command: "response"}, nil
+}
+func (h *agentTestHub) Reply(_ context.Context, msg hubclient.Message) error {
+	h.replies = append(h.replies, msg)
+	return nil
+}
+func (h *agentTestHub) Close() error       { return nil }
+func (h *agentTestHub) AssignedID() string { return h.id }
+func (h *agentTestHub) IsVsock() bool      { return false }
+func (h *agentTestHub) Receive(context.Context) (hubclient.Message, error) {
+	return hubclient.Message{}, nil
+}
+func (h *agentTestHub) TryReceive(context.Context, time.Duration) (hubclient.Message, bool, error) {
+	return hubclient.Message{}, false, nil
+}
+
+func TestPortalChatIsNotPMDirectTask(t *testing.T) {
+	msg := hubclient.Message{
+		Source:  "web-portal",
+		Command: "chat.message",
+		Payload: map[string]interface{}{"content": "hi", "from": "project-manager"},
+	}
+	if isPMDirectTask(msg) {
+		t.Fatal("portal chat must stay on the normal turn loop even if payload names the PM")
+	}
+	if !isPMDirectTask(hubclient.Message{Source: "project-manager-main", Command: "chat.message"}) {
+		t.Fatal("project-manager source must be a direct task")
+	}
+}
+
+func TestPMDirectTaskRepliesToPMNotChannel(t *testing.T) {
+	hub := &agentTestHub{id: "coder"}
+	msg := hubclient.Message{
+		Source:      "project-manager",
+		Destination: "coder",
+		Command:     "chat.message",
+		Payload: map[string]interface{}{
+			"from":     "project-manager",
+			"reply_to": "project-manager",
+			"goal":     "Fix the docs.",
+			"plan":     "Coder updates the docs.",
+			"content":  "Reply to the Project Manager.",
+		},
+	}
+	llm := func(_ context.Context, p string) (string, error) {
+		if !strings.Contains(p, "Fix the docs.") || !strings.Contains(p, "Do not post to a channel") {
+			t.Fatalf("prompt missing task: %s", p)
+		}
+		return "I can update the docs once I have the path.", nil
+	}
+	if !handleAgentMessage(hub, msg, nil, llm) {
+		t.Fatal("handler should keep running")
+	}
+	if len(hub.sends) != 0 {
+		t.Fatalf("DM path must not Send (no channel.post), got %+v", hub.sends)
+	}
+	if len(hub.replies) != 1 {
+		t.Fatalf("expected one hub reply, got %d", len(hub.replies))
+	}
+	got := hub.replies[0]
+	if got.Destination != "project-manager" || got.Command != "response" {
+		t.Fatalf("reply = %+v", got)
+	}
+	p, _ := got.Payload.(map[string]interface{})
+	content, _ := p["content"].(string)
+	if !strings.Contains(content, "path") {
+		t.Fatalf("content = %q", content)
+	}
+}
+
+func TestPMDirectTaskDropsInternalDump(t *testing.T) {
+	hub := &agentTestHub{id: "tester"}
+	msg := hubclient.Message{
+		Source:  "project-manager",
+		Command: "chat.message",
+		Payload: map[string]interface{}{"goal": "Look at this.", "content": "Review."},
+	}
+	llm := func(context.Context, string) (string, error) {
+		return `{"intent":"request_information","tool_calls":[]}`, nil
+	}
+	processPMDirectTask(hub, msg, llm)
+	if len(hub.sends) != 0 {
+		t.Fatal("dump path must not channel.post")
+	}
+	if len(hub.replies) != 1 {
+		t.Fatalf("replies = %d", len(hub.replies))
+	}
+	p := hub.replies[0].Payload.(map[string]interface{})
+	content, _ := p["content"].(string)
+	if strings.Contains(content, "intent") || content == "" {
+		t.Fatalf("dump must not be the reply, got %q", content)
 	}
 }
 
