@@ -8,8 +8,11 @@ quiet_no_reply, then the timeout_s hard cap measured from t0.
 final_marker fires when a later PM message (not the first plan) matches a
 marker, or when a non-clarifying agent reply has followed the first PM and a
 marker matches a PM or non-clarifying agent message at or after that reply.
-An agent reply whose stripped text ends with "?" is clarifying: it does not
-make the marker eligible, and a marker phrase inside it does not conclude.
+An agent reply is clarifying when its stripped text contains "?" and has no
+concrete deliverable marker: a markdown fence opener (three backticks) or the
+substring "// file:". A clarifying reply does not make the marker eligible,
+and a marker phrase inside it does not conclude. A later PM post that matches
+a marker still can.
 
 After that signal (including timeout, and error only once the goal was
 accepted), a drain keeps polling until turn-state has no pending member or is
@@ -346,10 +349,21 @@ def _compile_markers(patterns):
 
 
 def _is_clarifying_question(text) -> bool:
-    """True when stripped text ends with '?'. That is the whole heuristic."""
+    """True when stripped text contains '?' and no deliverable marker.
+
+    A clarifying reply asks for missing info. Deliverable markers are
+    case-sensitive: a markdown fence opener (three backticks) or the
+    substring '// file:'. The '?' check uses the stripped text. None or
+    empty text is False.
+    """
     if text is None:
         return False
-    return str(text).strip().endswith("?")
+    stripped = str(text).strip()
+    if "?" not in stripped:
+        return False
+    if "```" in stripped or "// file:" in stripped:
+        return False
+    return True
 
 
 def _marker_in_text(text, compiled) -> bool:
@@ -364,8 +378,9 @@ def _marker_in_text(text, compiled) -> bool:
 def _first_agent_reply_index(messages):
     """Index of the first non-clarifying agent message after the first PM.
 
-    None when there is no PM message, or every agent reply so far ends with
-    '?' (clarifying). Those replies do not make final_marker eligible.
+    None when there is no PM message, or every agent reply so far is
+    clarifying (stripped text contains '?' and no deliverable marker).
+    Those replies do not make final_marker eligible.
     Court senders and facilitator system status posts are not agents.
     The PM's own first message is not a reply.
     """
@@ -394,7 +409,8 @@ def marker_hit(messages, patterns) -> bool:
     a final_markers pattern fires on its own, even if every agent reply so far
     is a clarifying question. Otherwise the marker needs a non-clarifying agent
     reply after the first PM, then a match on a PM or non-clarifying agent
-    message at or after that reply. An agent message that ends with '?' does
+    message at or after that reply. An agent message that is clarifying
+    (stripped text contains '?' and has no code fence or '// file:') does
     not match, even when it contains a marker phrase.
     """
     compiled = _compile_markers(patterns)

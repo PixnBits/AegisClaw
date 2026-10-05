@@ -201,6 +201,41 @@ class ConclusionSignalTests(unittest.TestCase):
         ]
         self.assertTrue(run_one._is_clarifying_question("  no further changes?  "))
         self.assertFalse(run_one._is_clarifying_question("No further changes."))
+        self.assertFalse(run_one._is_clarifying_question(None))
+        self.assertFalse(run_one._is_clarifying_question(""))
+        self.assertTrue(
+            run_one._is_clarifying_question(
+                "Should the guest count be required? I will wait before coding."
+            )
+        )
+        self.assertFalse(
+            run_one._is_clarifying_question(
+                "Is the guest count required?\n```\npackage main\n```"
+            )
+        )
+        self.assertFalse(
+            run_one._is_clarifying_question(
+                "Does this match?\n// file: main.go\npackage main\n"
+            )
+        )
+        # A '?' inside a deliverable is not clarifying, so the marker can fire.
+        fenced = messages[:1] + [
+            _msg("agent", "No further changes?\n```\npackage main\n```"),
+        ]
+        self.assertTrue(run_one.marker_hit(fenced, patterns))
+        filed = messages[:1] + [
+            _msg("agent", "No further changes?\n// file: main.go\npackage main\n"),
+        ]
+        self.assertTrue(run_one.marker_hit(filed, patterns))
+        middle = messages[:1] + [
+            _msg(
+                "agent",
+                "Should the guest count be required? I will not say no further changes yet.",
+            ),
+        ]
+        self.assertTrue(run_one._is_clarifying_question(middle[1]["content"]))
+        self.assertIsNone(run_one._first_agent_reply_index(middle))
+        self.assertFalse(run_one.marker_hit(middle, patterns))
         self.assertIsNone(run_one._first_agent_reply_index(messages))
         self.assertFalse(run_one.marker_hit(messages, patterns))
         self.assertIsNone(_signal(messages, patterns=patterns, silence_s=0))
