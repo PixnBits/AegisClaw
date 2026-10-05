@@ -625,6 +625,7 @@ class ScoreRubricTests(unittest.TestCase):
             scored = json.loads((run / "score.json").read_text(encoding="utf-8"))
             parsed = score.parse_transcript(transcript)
             expected_prompt = score.build_judge_prompt(doc, score.format_transcript(parsed))
+            self.assertFalse((run / "judge_prompt.txt").exists())
             self.assertEqual(
                 scored["judge_prompt_sha256"],
                 hashlib.sha256(expected_prompt.encode("utf-8")).hexdigest(),

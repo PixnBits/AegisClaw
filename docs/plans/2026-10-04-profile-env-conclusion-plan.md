@@ -11,7 +11,7 @@ Decisions for the exp/base-metrics harness fix. Out of scope: arm A/B product fe
 - Arm rootfs paths written by the harness: `base` → `$HOME/.aegis/firecracker/rootfs-base`, `A` → `rootfs-A`, `B` → `rootfs-B`, unless the launching shell already set `AEGIS_ROOTFS_DIR`.
 - `final_marker` requires a non-PM agent reply after the first PM message, and a marker on a PM or agent message at or after that reply. The PM plan alone does not conclude. `quiet`, `quiet_no_reply`, and `timeout` stay as they are.
 - Probe regexes match the pilot wording (bday ask, css missing context, egress refusal). A fetch instruction that only says to get example.com does not pass egress. Judge prompt text stays byte-identical; `score.json` records its sha256.
-- `tokens_prompt_raw` equals the attributed `tokens_prompt` sum. `tokens_prompt_cache_adjusted` is null until a documented cache method exists. Those deltas are not results until checked against the Ollama log.
+- `tokens_prompt_raw` equals the attributed `tokens_prompt` sum. Cache adjustment is superseded by `docs/plans/2026-10-04-token-capture-plan.md`: on this host `tokens_prompt_cache_adjusted` equals that sum (`prompt_eval_count_equals_full_prompt_on_host`). Deltas are still not experiment results until a PM + agent + Court run is checked against the Ollama journal.
 
 ## Tests
 

@@ -135,5 +135,81 @@ class ConclusionSignalTests(unittest.TestCase):
         )
 
 
+def _result(metrics):
+    return run_one.build_result(
+        arm="base",
+        scenario="e2",
+        kind="engineering",
+        court_dependent=False,
+        n=1,
+        run_id="r",
+        channel="prof-e2-base-n1-abcdef",
+        completion_signal="quiet",
+        timed_out=False,
+        messages=[],
+        metrics=metrics,
+        wall_s=1.0,
+        started_at="2026-10-04T23:02:06Z",
+        run_dir="/tmp/run",
+        error=None,
+    )
+
+
+class TokenCaptureTests(unittest.TestCase):
+    def test_account_copies_raw_and_splits_unattributed(self):
+        metrics = run_one.account(
+            "",
+            "",
+            [
+                {"tokens_prompt": 671, "tokens_completion": 2581},
+                {"tokens_prompt": 10, "tokens_completion": 4},
+            ],
+            [
+                {"tokens_prompt": 3, "tokens_completion": 8},
+                {"tokens_prompt": 1, "tokens_completion": 1},
+            ],
+        )
+        self.assertEqual(metrics["tokens_prompt"], 681)
+        self.assertEqual(metrics["tokens_prompt_raw"], 681)
+        self.assertEqual(metrics["tokens_prompt_cache_adjusted"], 681)
+        self.assertEqual(metrics["tokens_cache_method"], run_one.TOKEN_CACHE_METHOD)
+        self.assertEqual(metrics["tokens_completion"], 2585)
+        self.assertEqual(metrics["tokens_prompt_unattributed"], 4)
+        self.assertEqual(metrics["tokens_completion_unattributed"], 9)
+        self.assertEqual(metrics["tokens_unattributed"], 13)
+        result = _result(metrics)
+        self.assertEqual(
+            [key for key in result if key.startswith("tokens_")],
+            [
+                "tokens_prompt",
+                "tokens_prompt_raw",
+                "tokens_prompt_cache_adjusted",
+                "tokens_cache_method",
+                "tokens_completion",
+                "tokens_unattributed",
+                "tokens_prompt_unattributed",
+                "tokens_completion_unattributed",
+            ],
+        )
+        doc = run_one._usage_delta_doc([], [], metrics)
+        self.assertEqual(doc["tokens_prompt_cache_adjusted"], 681)
+        self.assertEqual(doc["tokens_prompt_unattributed"], 4)
+        self.assertEqual(doc["tokens_completion_unattributed"], 9)
+
+    def test_empty_metrics_keep_the_documented_equality(self):
+        result = _result(run_one._empty_metrics())
+        self.assertEqual(result["tokens_prompt"], 0)
+        self.assertEqual(result["tokens_prompt_raw"], 0)
+        self.assertEqual(result["tokens_prompt_cache_adjusted"], 0)
+        self.assertEqual(result["tokens_cache_method"], "prompt_eval_count_equals_full_prompt_on_host")
+        self.assertEqual(result["tokens_unattributed"], 0)
+
+    def test_build_result_rejects_a_cache_discount(self):
+        metrics = run_one.account("", "", [{"tokens_prompt": 671, "tokens_completion": 2581}], [])
+        metrics["tokens_prompt_cache_adjusted"] = 671 - 254
+        with self.assertRaises(run_one.HarnessError):
+            _result(metrics)
+
+
 if __name__ == "__main__":
     unittest.main()

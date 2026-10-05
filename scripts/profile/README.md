@@ -162,11 +162,9 @@ Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result
 
 **Honesty.** `mech_honesty` comes from `honesty_check.mechanical`. If the judge ran, `honesty` is the judge's `honest` value; otherwise it is `mech_honesty`. `disagreement` is true when both sides produced a boolean and they differ. `needs_human` is true when pass is null, honesty is null, or they disagreed.
 
-**tokens_prompt / tokens_completion.** Taken from `llm.usage` records, not from the transcript. The harness GETs `http://localhost:8080/api/llm-usage/recent?limit=500` (`{"records":[...]}`) before the goal and again a few seconds after the conclusion. The delta is the multiset difference of the after snapshot minus the before snapshot, restricted to the run window. A record is attributed when its `agent_id` contains the channel id (`prof-<scenario>-<arm>-n<k>-<6 hex>`). `tokens_prompt` and `tokens_completion` are the sums of those fields on attributed records. `llm_calls` is the attributed record count.
+**tokens_prompt / tokens_completion.** Taken from `llm.usage` records, not from the transcript. The harness GETs `http://localhost:8080/api/llm-usage/recent?limit=500` (`{"records":[...]}`) before the goal and again a few seconds after the conclusion. The delta is the multiset difference of the after snapshot minus the before snapshot, restricted to the run window. A record is attributed when its `agent_id` contains the channel id (`prof-<scenario>-<arm>-n<k>-<6 hex>`). `tokens_prompt` and `tokens_completion` are the sums of those fields on attributed records. `llm_calls` is the attributed record count. What those sums mean, and why they are not experiment results yet, is in "Token capture and Ollama caching".
 
-**tokens_prompt_raw / tokens_prompt_cache_adjusted.** `result.json` and `usage_delta.json` include these optional fields. `tokens_prompt_raw` is the same sum as `tokens_prompt`. `tokens_prompt_cache_adjusted` is null. There is no documented cache-adjustment method yet, and the harness does not invent one. Token deltas are not results until they have been checked against the Ollama log. Do not treat `tokens_prompt`, `tokens_prompt_raw`, or `tokens_prompt_cache_adjusted` as a verified measurement before that check.
-
-**Unattributed tokens.** `tokens_unattributed` is the prompt-plus-completion total on delta records whose `agent_id` does not contain this channel id. Those tokens are not included in `tokens_prompt` or `tokens_completion`. They are other channels, the PM or an agent whose id did not carry the channel id, or traffic that landed in the window without an id. A large unattributed number means the cell's token totals are a lower bound.
+**Unattributed tokens.** `tokens_unattributed` is the prompt-plus-completion total on delta records whose `agent_id` does not contain this channel id. `tokens_prompt_unattributed` and `tokens_completion_unattributed` are the two sums. Those tokens are not included in `tokens_prompt` or `tokens_completion`. They are other channels, the PM or an agent whose id did not carry the channel id, or traffic that landed in the window without an id. A large unattributed number means the cell's token totals are a lower bound.
 
 **wall_s.** Seconds from the start of the run (t0, when the goal is submitted) to the conclusion signal, as stored in `result.json`. The driver's own `run wall_s=` line in `matrix.log` is the wrapper around the `run_one.py` process and is a little longer. Compare arms with `result.json`'s `wall_s`.
 
@@ -175,6 +173,25 @@ Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result
 **retries.** Lines in the run's daemon-log slice and collab trace matching `retry`, `RETRY`, or `retrying`.
 
 **stalls.** Lines in that same window matching `stall`, `STALL`, `timed out`, or `deadline exceeded`.
+
+## Token capture and Ollama caching
+
+Checked offline against pilot `pilot-20261004-230206` and `journalctl -u ollama`. This is the definition of the token fields. It is not a license to publish token deltas.
+
+1. For bday and e2, `/api/llm-usage/recent` attributed exactly the PM `/api/generate` calls that appear in the Ollama journal. `prompt_eval_count` and `eval_count` matched `tokens_prompt` / `tokens_completion`. e2 was 671 prompt tokens and 2581 completion tokens.
+2. Those runs had only PM LLM turns. Agents were @mentioned and did not get an LLM turn. Missing agent and Court rows are a collaboration-scheduling gap, not a drop in the usage API for calls that happened. The journal did not show generate calls for those agents either.
+3. Ollama's KV cache showed longest-common-prefix similarity (for example 254 of 671). The journal line `prompt eval time ... / 671 tokens` still matched the full `prompt_eval_count`. On this host, `prompt_eval_count` is not reduced by cache reuse for the recorded calls.
+
+The network boundary copies Ollama `prompt_eval_count` into `llm.usage.record` as `tokens_prompt`, and `eval_count` as `tokens_completion`. The harness sums the usage-API delta. It does not recompute tokens from the transcript.
+
+- `tokens_prompt_raw` is the sum of `prompt_eval_count` on attributed records (the `tokens_prompt` field on those records). `tokens_prompt` is the same number. Both are written to `result.json` and `usage_delta.json`.
+- `tokens_prompt_cache_adjusted` equals `tokens_prompt_raw`. `tokens_cache_method` is `prompt_eval_count_equals_full_prompt_on_host`, which means the recorded calls on this host still report the full prompt in `prompt_eval_count`.
+- Keep that equality until a call is observed where `prompt_eval_count` is less than the full prompt. Then prefer disabling the cache through Ollama options if that option exists, or read the journal task's `n_tokens`. Do not subtract a cache-similarity fraction from `prompt_eval_count`.
+- `tokens_unattributed`, `tokens_prompt_unattributed`, and `tokens_completion_unattributed` are defined under Metrics. They count records the usage API returned and this channel did not own. They are not evidence that a call was dropped.
+
+Do not present token deltas as experiment results until the same check has been done on a multi-call run that actually includes a PM turn, an agent turn, and a Court turn. A PM-only match does not license comparing arms on tokens.
+
+Operators cross-check one finished run with `scripts/profile/check_ollama_journal.py`. The script prints a `journalctl -u ollama` command for the run window (`started_at` through `wall_s`, with a few seconds of lead and settle so the last generate can flush, and stopping before a later `score.py --judge` call). Given a journal excerpt, it sums `prompt eval time ... / N tokens` and `eval time ... / M tokens` and ignores cache-similarity lines. The script's docstring is the full procedure. It does not change `result.json`.
 
 ## Conclusion signal
 
@@ -221,7 +238,7 @@ A human Tester spot-checks the packets listed in `sample_list.md`. The matrix do
 - **Recent API cap of 500 records.** The portal clamps `/api/llm-usage/recent` to 500 records (the newest). A run that emits more than 500 records, or a host whose other traffic pushes this run's early records out of the newest 500 before the after-snapshot, under-counts tokens. The Store process also trims its own buffer, but 500 is the cap the harness can see.
 - **Second-level timestamps.** Usage `timestamp` values are UTC RFC3339 with whole seconds. Two calls in the same second are not ordered, and a record stamped on the same second as the window edge can be kept or dropped incorrectly. The after-snapshot waits a few seconds so in-flight calls can land; that does not fix the rounding.
 
-Token fields are comparable across arms only when both sides kept a live daemon for the whole cell, the 500-record window did not wrap, and unattributed tokens are small.
+Token fields are comparable across arms only when both sides kept a live daemon for the whole cell, the 500-record window did not wrap, and unattributed tokens are small. Even then, do not present token deltas as experiment results until a multi-call run (PM, agent, and Court) has been checked as in "Token capture and Ollama caching". The pilot check was PM-only.
 
 ## Resumability
 

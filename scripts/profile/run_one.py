@@ -50,6 +50,7 @@ RESULT_KEYS = [
     "tokens_prompt",
     "tokens_prompt_raw",
     "tokens_prompt_cache_adjusted",
+    "tokens_cache_method",
     "tokens_completion",
     "llm_calls",
     "wall_s",
@@ -61,11 +62,17 @@ RESULT_KEYS = [
     "retries",
     "stalls",
     "tokens_unattributed",
+    "tokens_prompt_unattributed",
+    "tokens_completion_unattributed",
     "started_at",
     "run_dir",
     "error",
 ]
 
+# Pilot 20261004-230206: prompt_eval_count stayed the full prompt. KV-cache
+# similarity (for example 254/671) did not reduce it. Adjusted is a copy of
+# raw until a call is observed where prompt_eval_count is smaller.
+TOKEN_CACHE_METHOD = "prompt_eval_count_equals_full_prompt_on_host"
 SIGNALS = {"final_marker", "quiet", "quiet_no_reply", "timeout", "error", "dry_run"}
 RETRY_RE = re.compile(r"retry|RETRY|retrying")
 STALL_RE = re.compile(r"stall|STALL|timed out|deadline exceeded")
@@ -355,16 +362,19 @@ def _unique_lines(text: str):
 
 
 def _usage_delta_doc(attributed, unattributed, metrics) -> dict:
-    """Shape of usage_delta.json. Cache-adjusted prompt tokens stay null."""
+    """Shape of usage_delta.json. Cache-adjusted prompt tokens equal raw."""
     return {
         "attributed": attributed,
         "unattributed": unattributed,
         "tokens_prompt": metrics["tokens_prompt"],
         "tokens_prompt_raw": metrics["tokens_prompt_raw"],
-        "tokens_prompt_cache_adjusted": metrics.get("tokens_prompt_cache_adjusted"),
+        "tokens_prompt_cache_adjusted": metrics["tokens_prompt_cache_adjusted"],
+        "tokens_cache_method": metrics["tokens_cache_method"],
         "tokens_completion": metrics["tokens_completion"],
         "llm_calls": metrics["llm_calls"],
         "tokens_unattributed": metrics["tokens_unattributed"],
+        "tokens_prompt_unattributed": metrics["tokens_prompt_unattributed"],
+        "tokens_completion_unattributed": metrics["tokens_completion_unattributed"],
     }
 
 
@@ -382,22 +392,23 @@ def account(trace_text: str, window_text: str, attributed, unattributed) -> dict
         turns_source = "llm_calls"
     window_lines = "\n".join(_unique_lines(window_text))
     prompt = sum(as_int(record.get("tokens_prompt")) for record in attributed)
-    # tokens_prompt_raw is that same sum. tokens_prompt_cache_adjusted stays
-    # null: there is no documented cache-adjustment method yet.
+    completion = sum(as_int(record.get("tokens_completion")) for record in attributed)
+    un_prompt = sum(as_int(record.get("tokens_prompt")) for record in unattributed)
+    un_completion = sum(as_int(record.get("tokens_completion")) for record in unattributed)
     return {
         "tokens_prompt": prompt,
         "tokens_prompt_raw": prompt,
-        "tokens_prompt_cache_adjusted": None,
-        "tokens_completion": sum(as_int(record.get("tokens_completion")) for record in attributed),
+        "tokens_prompt_cache_adjusted": prompt,
+        "tokens_cache_method": TOKEN_CACHE_METHOD,
+        "tokens_completion": completion,
         "llm_calls": len(attributed),
         "turns": int(turns),
         "turns_source": turns_source,
         "retries": _count_lines(window_lines, RETRY_RE),
         "stalls": _count_lines(window_lines, STALL_RE),
-        "tokens_unattributed": sum(
-            as_int(record.get("tokens_prompt")) + as_int(record.get("tokens_completion"))
-            for record in unattributed
-        ),
+        "tokens_unattributed": un_prompt + un_completion,
+        "tokens_prompt_unattributed": un_prompt,
+        "tokens_completion_unattributed": un_completion,
     }
 
 
@@ -436,7 +447,8 @@ def build_result(
         "honesty": None,
         "tokens_prompt": int(metrics["tokens_prompt"]),
         "tokens_prompt_raw": int(metrics["tokens_prompt_raw"]),
-        "tokens_prompt_cache_adjusted": metrics.get("tokens_prompt_cache_adjusted"),
+        "tokens_prompt_cache_adjusted": int(metrics["tokens_prompt_cache_adjusted"]),
+        "tokens_cache_method": metrics.get("tokens_cache_method"),
         "tokens_completion": int(metrics["tokens_completion"]),
         "llm_calls": int(metrics["llm_calls"]),
         "wall_s": float(wall_s),
@@ -448,6 +460,8 @@ def build_result(
         "retries": int(metrics["retries"]),
         "stalls": int(metrics["stalls"]),
         "tokens_unattributed": int(metrics["tokens_unattributed"]),
+        "tokens_prompt_unattributed": int(metrics["tokens_prompt_unattributed"]),
+        "tokens_completion_unattributed": int(metrics["tokens_completion_unattributed"]),
         "started_at": started_at,
         "run_dir": str(run_dir),
         "error": _clip(error),
@@ -456,6 +470,22 @@ def build_result(
         raise HarnessError("result keys drifted from the contract")
     if obj["turns_source"] not in {"trace", "llm_calls"}:
         raise HarnessError("turns_source must be trace or llm_calls")
+    if obj["tokens_cache_method"] != TOKEN_CACHE_METHOD:
+        raise HarnessError(
+            "tokens_cache_method must be prompt_eval_count_equals_full_prompt_on_host"
+        )
+    if obj["tokens_prompt_cache_adjusted"] != obj["tokens_prompt_raw"] or (
+        obj["tokens_prompt_raw"] != obj["tokens_prompt"]
+    ):
+        raise HarnessError(
+            "tokens_prompt_cache_adjusted must equal tokens_prompt_raw and tokens_prompt"
+        )
+    if obj["tokens_unattributed"] != (
+        obj["tokens_prompt_unattributed"] + obj["tokens_completion_unattributed"]
+    ):
+        raise HarnessError(
+            "tokens_unattributed must equal prompt plus completion unattributed"
+        )
     return obj
 
 
@@ -463,7 +493,8 @@ def _empty_metrics():
     return {
         "tokens_prompt": 0,
         "tokens_prompt_raw": 0,
-        "tokens_prompt_cache_adjusted": None,
+        "tokens_prompt_cache_adjusted": 0,
+        "tokens_cache_method": TOKEN_CACHE_METHOD,
         "tokens_completion": 0,
         "llm_calls": 0,
         "turns": 0,
@@ -471,6 +502,8 @@ def _empty_metrics():
         "retries": 0,
         "stalls": 0,
         "tokens_unattributed": 0,
+        "tokens_prompt_unattributed": 0,
+        "tokens_completion_unattributed": 0,
     }
 
 
