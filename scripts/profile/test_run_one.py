@@ -338,6 +338,10 @@ class TokenCaptureTests(unittest.TestCase):
         self.assertLess(keys.index("total_s"), keys.index("turns"))
         self.assertIsNone(result["tokens_prompt_cache_adjusted"])
         self.assertIsNone(result["journal_llm_calls"])
+        self.assertIsNone(result["journal_tokens_prompt_raw"])
+        self.assertIsNone(result["journal_tokens_completion"])
+        self.assertFalse(result["attribution_gap"])
+        self.assertIsNone(result["attribution_gap_detail"])
         self.assertEqual(
             result["tokens_cache_method"],
             "api_prompt_eval_count_full__journal_unavailable",
@@ -348,12 +352,19 @@ class TokenCaptureTests(unittest.TestCase):
         metrics = run_one.account("", "", [{"tokens_prompt": 1469, "tokens_completion": 100}], [])
         metrics["tokens_prompt_cache_adjusted"] = 12
         metrics["journal_llm_calls"] = 1
+        metrics["journal_tokens_prompt_raw"] = 1469
+        metrics["journal_tokens_completion"] = 100
+        metrics["attribution_gap"] = False
+        metrics["attribution_gap_detail"] = None
         metrics["tokens_cache_method"] = run_one.TOKEN_CACHE_METHOD
         result = _result(metrics)
         self.assertEqual(result["tokens_prompt"], 1469)
         self.assertEqual(result["tokens_prompt_raw"], 1469)
         self.assertEqual(result["tokens_prompt_cache_adjusted"], 12)
         self.assertEqual(result["journal_llm_calls"], 1)
+        self.assertEqual(result["journal_tokens_prompt_raw"], 1469)
+        self.assertEqual(result["journal_tokens_completion"], 100)
+        self.assertFalse(result["attribution_gap"])
         self.assertEqual(result["llm_calls"], 1)
 
     def test_journal_cache_hit_sets_adjusted_from_prompt_eval(self):
@@ -376,7 +387,9 @@ class TokenCaptureTests(unittest.TestCase):
         self.assertEqual(out["tokens_prompt_raw"], 1469)
         self.assertEqual(out["tokens_prompt_cache_adjusted"], 12)
         self.assertEqual(out["journal_llm_calls"], 1)
+        self.assertEqual(out["journal_tokens_completion"], 100)
         self.assertEqual(out["tokens_cache_method"], run_one.TOKEN_CACHE_METHOD)
+        self.assertFalse(out["attribution_gap"])
         self.assertEqual(out["llm_calls"], 1)
         result = _result(out)
         self.assertEqual(result["tokens_prompt_cache_adjusted"], 12)

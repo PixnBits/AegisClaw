@@ -190,5 +190,42 @@ class OllamaJournalTests(unittest.TestCase):
             self.assertIn("no journal excerpt", stdout.getvalue())
 
 
+    def test_prewarm_excluded_from_totals_and_gap(self):
+        start, end = journal.run_window(_result(started_at="2026-10-05T12:25:23Z", wall_s=400, total_s=400))
+        text = (
+            "2026-10-05T12:25:23Z host ollama[1]: new prompt, task.n_tokens = 11\n"
+            "2026-10-05T12:25:23Z host ollama[1]: prompt eval time = 10 ms / 11 tokens\n"
+            "2026-10-05T12:25:23Z host ollama[1]: eval time = 100 ms / 367 tokens\n"
+            "2026-10-05T12:25:54Z host ollama[1]: new prompt, task.n_tokens = 331\n"
+            "2026-10-05T12:25:54Z host ollama[1]: prompt eval time = 10 ms / 331 tokens\n"
+            "2026-10-05T12:25:54Z host ollama[1]: eval time = 100 ms / 2034 tokens\n"
+            "2026-10-05T12:26:55Z host ollama[1]: new prompt, task.n_tokens = 519\n"
+            "2026-10-05T12:26:55Z host ollama[1]: prompt eval time = 10 ms / 517 tokens\n"
+            "2026-10-05T12:26:55Z host ollama[1]: eval time = 100 ms / 60 tokens\n"
+        )
+        calls = journal.extract_calls(text, start, end)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(calls[0]["prewarm"])
+        self.assertFalse(calls[1]["prewarm"])
+        totals = journal.journal_totals(calls)
+        self.assertEqual(totals["calls"], 2)
+        self.assertEqual(totals["prewarm_excluded"], 1)
+        self.assertEqual(totals["completion"], 2094)
+        self.assertEqual(totals["prompt_raw"], 331 + 519)
+        gap, detail = journal.attribution_gap(
+            _result(llm_calls=1, tokens_completion=2034, tokens_prompt_raw=331, tokens_prompt=331),
+            totals,
+        )
+        self.assertTrue(gap)
+        self.assertIn("calls api=1 journal=2", detail)
+        self.assertIn("completion api=2034 journal=2094", detail)
+        gap2, detail2 = journal.attribution_gap(
+            _result(llm_calls=2, tokens_completion=2094, tokens_prompt_raw=850, tokens_prompt=850),
+            totals,
+        )
+        self.assertFalse(gap2)
+        self.assertIsNone(detail2)
+
+
 if __name__ == "__main__":
     unittest.main()
