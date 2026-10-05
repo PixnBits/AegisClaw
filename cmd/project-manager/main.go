@@ -454,10 +454,12 @@ func pmBatchIsSelfOrSystem(uniqueSource string, msgs []map[string]interface{}) b
 	return true
 }
 
-// pmProcessPlanningMessage runs LLM planning, then ensure.role (and CISO
-// channel.add_member), then channel.post so those roles are channel members
-// when the facilitator schedules turns for the plan. ensure.role is a
-// request/response; the daemon adds the member before Send returns.
+// pmProcessPlanningMessage runs LLM planning, then ensure.role, then
+// channel.post so those roles are channel members when the facilitator
+// schedules turns for the plan. ensure.role is a request/response; the
+// daemon adds the member before Send returns. CISO channel.add_member runs
+// after the post with a 10s timeout: the hub ACL denies it with no reply,
+// and an unbounded Send would block the planning path.
 // user.goal Replies first then calls this on the Receive goroutine (no extra
 // background goroutine — nested Send shares the hubclient decoder).
 func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqueSource string, realLLM agent.LLMCallFunc) {
@@ -528,20 +530,6 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 		}
 	}
 
-	lowerPlan := strings.ToLower(plan)
-	if strings.Contains(lowerPlan, "ciso") || strings.Contains(lowerPlan, "security") {
-		_, _ = hcl.Send(context.Background(), hubclient.Message{
-			Source:      uniqueSource,
-			Destination: "store",
-			Command:     "channel.add_member",
-			Payload: map[string]interface{}{
-				"channel_id": chID,
-				"role":       "court-persona-ciso",
-			},
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
-	}
-
 	postMsg := hubclient.Message{
 		Source:      uniqueSource,
 		Destination: "store",
@@ -565,6 +553,21 @@ func pmProcessPlanningMessage(hcl hubclient.Client, msg hubclient.Message, uniqu
 		markHumanGoalPosted(chID, goal)
 	}
 
+	lowerPlan := strings.ToLower(plan)
+	if strings.Contains(lowerPlan, "ciso") || strings.Contains(lowerPlan, "security") {
+		addCtx, addCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, _ = hcl.Send(addCtx, hubclient.Message{
+			Source:      uniqueSource,
+			Destination: "store",
+			Command:     "channel.add_member",
+			Payload: map[string]interface{}{
+				"channel_id": chID,
+				"role":       "court-persona-ciso",
+			},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		addCancel()
+	}
 }
 
 // pmProcessChannelActivity handles delivered channel activity; agents decide whether to reply.
