@@ -511,12 +511,16 @@ func TestPMEnsuresRolesBeforePlanPost(t *testing.T) {
 	}
 	sawEnsure := false
 	for i, cmd := range hub.sent {
-		if cmd != "ensure.role" && cmd != "channel.add_member" {
-			continue
-		}
-		sawEnsure = sawEnsure || cmd == "ensure.role"
-		if i >= postAt {
-			t.Fatalf("%s at %d must precede channel.post at %d, sent=%v", cmd, i, postAt, hub.sent)
+		switch cmd {
+		case "ensure.role":
+			sawEnsure = true
+			if i >= postAt {
+				t.Fatalf("ensure.role at %d must precede channel.post at %d, sent=%v", i, postAt, hub.sent)
+			}
+		case "channel.add_member":
+			if i <= postAt {
+				t.Fatalf("channel.add_member at %d must follow channel.post at %d, sent=%v", i, postAt, hub.sent)
+			}
 		}
 	}
 	if !sawEnsure {
