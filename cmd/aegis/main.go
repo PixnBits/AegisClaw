@@ -539,8 +539,10 @@ func refreshRuntimePaths() {
 }
 
 // daemonChildEnv builds the environment for the re-execed foreground daemon.
-// Explicit AEGIS_* paths ensure the child finds user-built artifacts even when
-// SUDO_USER is not propagated by sudo/sudo-rs.
+// startDaemon calls config.LoadProfileEnv before this, so values taken from
+// ~/.aegis/profile.env (or AEGIS_ENV_FILE) are already in the process environment
+// and are copied here. Explicit AEGIS_* pairs keep user-built artifacts even when
+// the child loses SUDO_USER.
 func daemonChildEnv() []string {
 	env := os.Environ()
 	env = setEnvPair(env, "AEGIS_ROOTFS_DIR", config.ResolveRootfsDir())
@@ -550,10 +552,8 @@ func daemonChildEnv() []string {
 	}
 	env = setEnvPair(env, "AEGIS_HUB_SOCKET", config.ResolveHubSocket())
 	env = setEnvPair(env, "AEGIS_DATA_DIR", config.ResolveAegisDataDir())
-	// Explicitly carry AEGIS_BOOT_TIMING through the re-exec to the foreground
-	// child. This is required for reliable guest boot metrics on all VMs
-	// (including the early Court system) when measuring the <1s target for the
-	// collaboration model. Some sudo policies strip unknown AEGIS_* vars.
+	// Explicitly carry profiling toggles through the re-exec. sudo drops AEGIS_*;
+	// LoadProfileEnv has already filled the unset ones from profile.env.
 	if v := os.Getenv("AEGIS_BOOT_TIMING"); v != "" {
 		env = setEnvPair(env, "AEGIS_BOOT_TIMING", v)
 	}
@@ -565,6 +565,12 @@ func daemonChildEnv() []string {
 	}
 	if v := os.Getenv("AEGIS_PM_MODEL"); v != "" {
 		env = setEnvPair(env, "AEGIS_PM_MODEL", v)
+	}
+	if v := os.Getenv("AEGIS_DEBUG"); v != "" {
+		env = setEnvPair(env, "AEGIS_DEBUG", v)
+	}
+	if v := os.Getenv("AEGIS_ENV_FILE"); v != "" {
+		env = setEnvPair(env, "AEGIS_ENV_FILE", v)
 	}
 	return env
 }
@@ -686,6 +692,23 @@ func removePIDFile() {
 }
 
 func startDaemon(cmd *cobra.Command, args []string) {
+	// sudo -n drops AEGIS_*. Load ~/.aegis/profile.env (SUDO_USER home) before any
+	// read of models, rootfs, collab trace, or debug. Explicit env still wins.
+	// Both the foreground process and the non-foreground parent pass through here;
+	// the parent then copies the loaded values into the child via daemonChildEnv.
+	envPath, applied, envErr := config.LoadProfileEnv()
+	if envErr != nil {
+		fmt.Fprintf(os.Stderr, "profile env %s: %v\n", envPath, envErr)
+	}
+	fmt.Fprintf(os.Stderr, "profile env: file=%s applied=%s ROOTFS_DIR=%q COLLAB_TRACE=%q DEFAULT_MODEL=%q PM_MODEL=%q DEBUG=%q\n",
+		envPath, strings.Join(applied, ","),
+		os.Getenv("AEGIS_ROOTFS_DIR"),
+		os.Getenv("AEGIS_COLLAB_TRACE"),
+		os.Getenv("AEGIS_DEFAULT_MODEL"),
+		os.Getenv("AEGIS_PM_MODEL"),
+		os.Getenv("AEGIS_DEBUG"),
+	)
+
 	// Enable copious debug tracing as early as possible.
 	// Use AEGIS_DEBUG=1 (any truthy value works).
 	if v := os.Getenv("AEGIS_DEBUG"); v != "" && v != "0" && v != "false" {
@@ -693,6 +716,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
+	// CLI flag wins over both the process environment and profile.env.
 	if model, _ := cmd.Flags().GetString("default-model"); strings.TrimSpace(model) != "" {
 		_ = os.Setenv("AEGIS_DEFAULT_MODEL", strings.TrimSpace(model))
 	}
@@ -746,6 +770,9 @@ func startDaemon(cmd *cobra.Command, args []string) {
 		}
 		fmt.Fprintf(os.Stderr, "  Effective home (for images/kernels): %s\n", effHome)
 		fmt.Fprintf(os.Stderr, "  AEGIS_ROOTFS_DIR: %q\n", os.Getenv("AEGIS_ROOTFS_DIR"))
+		fmt.Fprintf(os.Stderr, "  AEGIS_COLLAB_TRACE: %q\n", os.Getenv("AEGIS_COLLAB_TRACE"))
+		fmt.Fprintf(os.Stderr, "  AEGIS_DEFAULT_MODEL: %q\n", os.Getenv("AEGIS_DEFAULT_MODEL"))
+		fmt.Fprintf(os.Stderr, "  AEGIS_PM_MODEL: %q\n", os.Getenv("AEGIS_PM_MODEL"))
 		fmt.Fprintf(os.Stderr, "  AEGIS_WEB_PORTAL_PROXY_ADDR: %q\n", os.Getenv("AEGIS_WEB_PORTAL_PROXY_ADDR"))
 		fmt.Fprintf(os.Stderr, "  AEGIS_WEB_PORTAL_INTERNAL_ADDR: %q\n", os.Getenv("AEGIS_WEB_PORTAL_INTERNAL_ADDR"))
 		fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════════════════")
@@ -838,6 +865,12 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	// before SUDO_USER was visible, or with HOME=/root in the background child).
 	refreshRuntimePaths()
 	logrus.Infof("using rootfs dir %s (kernel %s)", cfg.RootfsDir, cfg.KernelPath)
+	logrus.Infof("profile settings ROOTFS_DIR=%s COLLAB_TRACE=%q DEFAULT_MODEL=%q PM_MODEL=%q",
+		cfg.RootfsDir,
+		os.Getenv("AEGIS_COLLAB_TRACE"),
+		os.Getenv("AEGIS_DEFAULT_MODEL"),
+		os.Getenv("AEGIS_PM_MODEL"),
+	)
 
 	// Build / debug ID for this daemon run (helps confirm we are not running stale binary)
 	logrus.Infof("Aegis daemon starting — build/debug ID: %s", time.Now().UTC().Format("2006-01-02T15:04:05Z")+" (debug-build)")

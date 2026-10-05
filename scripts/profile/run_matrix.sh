@@ -117,7 +117,7 @@ run_logged() {
 }
 
 snapshot_processes() {
-  AEGIS_PIDS=$(pgrep -f "(^|/)(aegis|aegis\.real) start --foreground" || true)
+  AEGIS_PIDS=$(pgrep -f '^([^ ]*/)?(aegis|aegis\.real) start --foreground( |$)' || true)
   FC_PIDS=$(pgrep -x firecracker || true)
   AEGIS_PIDS=${AEGIS_PIDS//$'\n'/ }
   FC_PIDS=${FC_PIDS//$'\n'/ }

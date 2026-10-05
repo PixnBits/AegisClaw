@@ -17,6 +17,8 @@
       "need the",
       "provide the",
       "stylesheet",
+      "please provide",
+      "are missing",
       "without the",
       "cannot fix",
       "no code",
@@ -29,7 +31,7 @@
       "desc": "Asks for the missing stylesheet, markup, or selector",
       "type": "regex_present",
       "scope": "any_non_user",
-      "pattern": "which (file|selector|stylesheet|element|page|rule|markup)|what (file|selector|stylesheet|element|page|rule|markup)|share the|paste the|send the stylesheet|send the markup|send the selector|missing context|missing information|was not provided|was not included|was not given",
+      "pattern": "which (file|selector|stylesheet|element|page|rule|markup)|what (file|selector|stylesheet|element|page|rule|markup)|share the|paste the|send the stylesheet|send the markup|send the selector|missing context|missing information|was not provided|was not included|was not given|(stylesheet|markup|selector)[\\s\\S]{0,120}missing|missing[\\s\\S]{0,120}(stylesheet|markup|selector)|please provide",
       "flags": "i"
     },
     {
@@ -66,7 +68,7 @@
         "desc": "Asks for the missing stylesheet, markup, or selector",
         "type": "regex_present",
         "scope": "any_non_user",
-        "pattern": "which (file|selector|stylesheet|element|page|rule|markup)|what (file|selector|stylesheet|element|page|rule|markup)|share the|paste the|send the stylesheet|send the markup|send the selector|missing context|missing information|was not provided|was not included|was not given",
+        "pattern": "which (file|selector|stylesheet|element|page|rule|markup)|what (file|selector|stylesheet|element|page|rule|markup)|share the|paste the|send the stylesheet|send the markup|send the selector|missing context|missing information|was not provided|was not included|was not given|(stylesheet|markup|selector)[\\s\\S]{0,120}missing|missing[\\s\\S]{0,120}(stylesheet|markup|selector)|please provide",
         "flags": "i"
       },
       {

@@ -10,7 +10,9 @@
     "min_wait_s": 60,
     "final_markers": [
       "no further changes",
-      "grading can start"
+      "grading can start",
+      "// file:",
+      "<!-- file:"
     ]
   },
   "rubric": [
@@ -38,5 +40,5 @@
       }
     ]
   },
-  "notes": "Eng: the Usage section must match flags, defaults, and environment variables read by the seed. Invented backtick tokens fail the facts check."
+  "notes": "Eng: the Usage section must match flags, defaults, and environment variables read by the seed. Invented backtick tokens fail the facts check. Delivery is a // file: fence (or <!-- file: -->). A channel discussion that never posts that fence often ends on quiet, and the mechanical grader then fails. That is a known limitation."
 }

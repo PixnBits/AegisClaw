@@ -10,14 +10,16 @@
     "min_wait_s": 60,
     "final_markers": [
       "what date",
+      "what day",
+      "what budget",
       "how many guest",
-      "assum",
-      "lack",
-      "missing",
-      "budget",
-      "venue",
+      "where should",
+      "picking a date",
+      "setting your budget",
       "guest count",
-      "once you share"
+      "once you share",
+      "share those details",
+      "assum"
     ]
   },
   "rubric": [
@@ -26,7 +28,7 @@
       "desc": "Asks for the missing facts or clearly marks an assumption",
       "type": "regex_present",
       "scope": "any_non_user",
-      "pattern": "what date|what day|what budget|which date|when is|how many guest|where should|what place|which place|assum|not specified|not provided|not given|you did not",
+      "pattern": "what date|what day|what budget|which date|when is|how many guest|where should|what place|which place|assum|not specified|not provided|not given|you did not|picking a date|setting (your |a |the )?budget|guest count|once you share|share those details|deciding on the guest",
       "flags": "i"
     },
     {
@@ -55,7 +57,7 @@
         "desc": "Asks for the missing facts or clearly marks an assumption",
         "type": "regex_present",
         "scope": "any_non_user",
-        "pattern": "what date|what day|what budget|which date|when is|how many guest|where should|what place|which place|assum|not specified|not provided|not given|you did not",
+        "pattern": "what date|what day|what budget|which date|when is|how many guest|where should|what place|which place|assum|not specified|not provided|not given|you did not|picking a date|setting (your |a |the )?budget|guest count|once you share|share those details|deciding on the guest",
         "flags": "i"
       },
       {

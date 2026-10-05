@@ -100,14 +100,15 @@ sudo_password_failed() {
 }
 
 running_snapshot() {
-  # Match both the Go binary name and the env-wrapper's real binary name.
-  pgrep -af "(^|/)(aegis|aegis\.real) start --foreground" 2>/dev/null || true
+  # aegis.real is only here so a leftover wrapper process still counts as busy.
+  # Anchor at argv0. A command line that only mentions the start command must not count.
+  pgrep -af '^([^ ]*/)?(aegis|aegis\.real) start --foreground( |$)' 2>/dev/null || true
   pgrep -a -x firecracker 2>/dev/null || true
 }
 
 refuse_if_busy() {
   local aegis_ps fc_ps
-  aegis_ps=$(pgrep -af "(^|/)(aegis|aegis\.real) start --foreground" || true)
+  aegis_ps=$(pgrep -af '^([^ ]*/)?(aegis|aegis\.real) start --foreground( |$)' || true)
   fc_ps=$(pgrep -a -x firecracker || true)
   if [[ -n "$aegis_ps" || -n "$fc_ps" ]]; then
     echo "refusing to start: aegis or firecracker is already running" >&2
@@ -208,62 +209,116 @@ wait_ready() {
 }
 
 
-ensure_env_wrapper() {
-  # sudo -n drops AEGIS_*; bake them into bin/aegis which exec -a aegis's the real binary.
-  local bin="$build_dir/bin/aegis"
-  local real="$build_dir/bin/aegis.real"
+invoking_home() {
   local home_dir="${HOME:-}"
-  local rootfs=""
-  local first
   if [[ -z "$home_dir" || ! -d "$home_dir" ]]; then
     home_dir=$(getent passwd "$(id -un)" | cut -d: -f6)
   fi
-  if [[ -n "${AEGIS_ROOTFS_DIR:-}" ]]; then
-    rootfs=$(cd "${AEGIS_ROOTFS_DIR}" 2>/dev/null && pwd || echo "${AEGIS_ROOTFS_DIR}")
-  elif [[ -d "$home_dir/.aegis/firecracker/rootfs-base" ]] && compgen -G "$home_dir/.aegis/firecracker/rootfs-base/*.img" >/dev/null; then
-    rootfs="$home_dir/.aegis/firecracker/rootfs-base"
-  fi
-  if [[ ! -e "$bin" ]]; then
-    echo "missing $bin" >&2
+  if [[ -z "$home_dir" || ! -d "$home_dir" ]]; then
+    echo "cannot resolve home for profile.env" >&2
     exit 2
   fi
-  first=$(head -c 2 "$bin" 2>/dev/null || true)
-  if [[ "$first" == "#!" ]]; then
-    if [[ ! -x "$real" ]]; then
-      echo "bin/aegis is a wrapper but $real is missing; run make build-binaries then retry" >&2
-      exit 2
+  printf '%s\n' "$home_dir"
+}
+
+# Absolute rootfs for this arm. An already-set AEGIS_ROOTFS_DIR wins so an
+# operator can point one start at a directory without sudoers env_keep.
+arm_rootfs_dir() {
+  local home_dir=$1
+  local rootfs leaf
+  if [[ -n "${AEGIS_ROOTFS_DIR:-}" ]]; then
+    rootfs=$AEGIS_ROOTFS_DIR
+    if [[ -d "$rootfs" ]]; then
+      rootfs=$(cd "$rootfs" && pwd)
     fi
   else
-    mv -f "$bin" "$real"
-    {
-      echo '#!/usr/bin/env bash'
-      echo 'export AEGIS_COLLAB_TRACE=1'
-      echo 'export AEGIS_DEFAULT_MODEL="${AEGIS_DEFAULT_MODEL:-qwen3-coder:30b}"'
-      echo 'export AEGIS_PM_MODEL="${AEGIS_PM_MODEL:-qwen3.6:35b}"'
-      if [[ -n "$rootfs" ]]; then
-        printf 'export AEGIS_ROOTFS_DIR=%q\n' "$rootfs"
-      fi
-      real_abs="$(cd "$(dirname "$real")" && pwd)/$(basename "$real")"
-      echo 'case "$1" in'
-      echo '  start|stop|status|restart|doctor)'
-      printf '    exec -a aegis %q "$@"\n' "$real_abs"
-      echo '    ;;'
-      echo '  *)'
-      printf '    exec %q "$@"\n' "$real_abs"
-      echo '    ;;'
-      echo 'esac'
-    } >"$bin"
-    chmod +x "$bin"
+    case "$arm" in
+      base) leaf=rootfs-base ;;
+      A) leaf=rootfs-A ;;
+      B) leaf=rootfs-B ;;
+      *) leaf="rootfs-$arm" ;;
+    esac
+    rootfs="$home_dir/.aegis/firecracker/$leaf"
   fi
-  echo "daemon.sh: using env wrapper (COLLAB_TRACE=1 PM_MODEL=qwen3.6:35b ROOTFS_DIR=${rootfs:-default})"
+  case "$rootfs" in
+    /*) ;;
+    *) rootfs="$PWD/$rootfs" ;;
+  esac
+  printf '%s\n' "$rootfs"
+}
+
+sanitize_env_value() {
+  local v=$1
+  v=${v//$'\n'/}
+  v=${v//$'\r'/}
+  v=${v//\"/}
+  printf '%s\n' "$v"
+}
+
+# sudo -n drops AEGIS_*. Write the invoking user's ~/.aegis/profile.env so the
+# root daemon finds it via SUDO_USER. Do not wrap bin/aegis and do not export
+# AEGIS_ENV_FILE through sudo.
+write_profile_env() {
+  local home_dir env_file rootfs model pm tmp line key
+  home_dir=$(invoking_home)
+  mkdir -p "$home_dir/.aegis"
+  env_file="$home_dir/.aegis/profile.env"
+  rootfs=$(sanitize_env_value "$(arm_rootfs_dir "$home_dir")")
+  model=$(sanitize_env_value "${AEGIS_DEFAULT_MODEL:-qwen3-coder:30b}")
+  pm=$(sanitize_env_value "${AEGIS_PM_MODEL:-qwen3.6:35b}")
+  tmp=$(mktemp "$home_dir/.aegis/profile.env.tmp.XXXXXX")
+  {
+    echo "# Written by scripts/profile/daemon.sh for arm ${arm}."
+    echo "# sudo -n drops AEGIS_*. The daemon loads unset keys from this file."
+    printf 'AEGIS_COLLAB_TRACE=1\n'
+    printf 'AEGIS_DEFAULT_MODEL="%s"\n' "$model"
+    printf 'AEGIS_PM_MODEL="%s"\n' "$pm"
+    printf 'AEGIS_ROOTFS_DIR="%s"\n' "$rootfs"
+    if [[ -n "${AEGIS_KERNEL_PATH:-}" ]]; then
+      printf 'AEGIS_KERNEL_PATH="%s"\n' "$(sanitize_env_value "$AEGIS_KERNEL_PATH")"
+    fi
+    if [[ -n "${AEGIS_BOOT_TIMING:-}" ]]; then
+      printf 'AEGIS_BOOT_TIMING="%s"\n' "$(sanitize_env_value "$AEGIS_BOOT_TIMING")"
+    fi
+    if [[ -n "${AEGIS_DEBUG:-}" ]]; then
+      printf 'AEGIS_DEBUG="%s"\n' "$(sanitize_env_value "$AEGIS_DEBUG")"
+    fi
+    if [[ -f "$env_file" ]]; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        key=${line%%=*}
+        key=${key#export }
+        key=${key//[[:space:]]/}
+        case "$key" in
+          AEGIS_COLLAB_TRACE|AEGIS_DEFAULT_MODEL|AEGIS_PM_MODEL|AEGIS_ROOTFS_DIR)
+            continue
+            ;;
+          AEGIS_KERNEL_PATH)
+            [[ -n "${AEGIS_KERNEL_PATH:-}" ]] && continue
+            ;;
+          AEGIS_BOOT_TIMING)
+            [[ -n "${AEGIS_BOOT_TIMING:-}" ]] && continue
+            ;;
+          AEGIS_DEBUG)
+            [[ -n "${AEGIS_DEBUG:-}" ]] && continue
+            ;;
+        esac
+        if [[ "$key" =~ ^AEGIS_[A-Z0-9_]+$ ]]; then
+          printf '%s\n' "$line"
+        fi
+      done <"$env_file"
+    fi
+  } >"$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$env_file"
+  echo "daemon.sh: wrote $env_file (COLLAB_TRACE=1 DEFAULT_MODEL=$model PM_MODEL=$pm ROOTFS_DIR=$rootfs)"
 }
 
 cmd_start() {
   refuse_if_busy
   cd "$build_dir"
-  ensure_env_wrapper
-  export AEGIS_COLLAB_TRACE=1
-  export AEGIS_DEFAULT_MODEL="${AEGIS_DEFAULT_MODEL:-qwen3-coder:30b}"
+  write_profile_env
   local arm_out log pidfile pid exact
   arm_out="$out_dir/$arm"
   mkdir -p "$arm_out"

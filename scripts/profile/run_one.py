@@ -4,6 +4,9 @@
 Conclusion checks run only after min_wait_s since the goal was accepted
 (Sent/Posted goal acceptance in the pm-goal output), in this order: final_marker, quiet,
 quiet_no_reply, then the timeout_s hard cap measured from t0.
+
+final_marker requires a non-PM agent reply after the first PM message and a
+marker on a message at or after that reply. The PM plan alone does not conclude.
 """
 
 from __future__ import annotations
@@ -45,6 +48,8 @@ RESULT_KEYS = [
     "pass",
     "honesty",
     "tokens_prompt",
+    "tokens_prompt_raw",
+    "tokens_prompt_cache_adjusted",
     "tokens_completion",
     "llm_calls",
     "wall_s",
@@ -208,22 +213,45 @@ def _compile_markers(patterns):
     return compiled
 
 
-def marker_hit(messages, patterns) -> bool:
-    """Any PM or agent message matches a marker (case-insensitive regex).
+def _first_agent_reply_index(messages):
+    """Index of the first non-PM agent message after the first PM message.
 
-    Probe scenarios often conclude on the PM's first (and only) reply, so the
-    first PM message is eligible. Eng markers are distinctive enough that the
-    initial plan post rarely false-triggers.
+    None when there is no PM message, or no agent reply after that plan.
+    Court senders are not agents. The PM's own first message is not a reply.
+    """
+    first_pm = None
+    for index, message in enumerate(messages):
+        if message.get("role") == "pm":
+            first_pm = index
+            break
+    if first_pm is None:
+        return None
+    for index, message in enumerate(messages):
+        if index <= first_pm:
+            continue
+        if message.get("role") == "agent":
+            return index
+    return None
+
+
+def marker_hit(messages, patterns) -> bool:
+    """True only after an agent has replied to the PM plan and a marker matches.
+
+    final_marker may fire only when there is at least one non-PM agent reply
+    after the first PM message, and a final_markers pattern matches some PM or
+    agent message at or after that first agent reply (the reply itself or a
+    later PM synthesis). The PM's first plan or clarifying ask alone does not
+    match, even when its text contains a marker.
     """
     compiled = _compile_markers(patterns)
     if not compiled:
         return False
-    candidates = [
-        message
-        for message in messages
-        if message.get("role") in ("pm", "agent")
-    ]
-    for message in candidates:
+    start = _first_agent_reply_index(messages)
+    if start is None:
+        return False
+    for message in messages[start:]:
+        if message.get("role") not in ("pm", "agent"):
+            continue
         text = message.get("content") or ""
         for pattern in compiled:
             if pattern.search(text):
@@ -326,6 +354,20 @@ def _unique_lines(text: str):
     return lines
 
 
+def _usage_delta_doc(attributed, unattributed, metrics) -> dict:
+    """Shape of usage_delta.json. Cache-adjusted prompt tokens stay null."""
+    return {
+        "attributed": attributed,
+        "unattributed": unattributed,
+        "tokens_prompt": metrics["tokens_prompt"],
+        "tokens_prompt_raw": metrics["tokens_prompt_raw"],
+        "tokens_prompt_cache_adjusted": metrics.get("tokens_prompt_cache_adjusted"),
+        "tokens_completion": metrics["tokens_completion"],
+        "llm_calls": metrics["llm_calls"],
+        "tokens_unattributed": metrics["tokens_unattributed"],
+    }
+
+
 def account(trace_text: str, window_text: str, attributed, unattributed) -> dict:
     trace_lines = [line for line in _unique_lines(trace_text) if "[collab-trace]" in line or TURN_MARK in line]
     # turns come from collab-trace lines; window_text is the deduped log window.
@@ -339,8 +381,13 @@ def account(trace_text: str, window_text: str, attributed, unattributed) -> dict
         turns = len(attributed)
         turns_source = "llm_calls"
     window_lines = "\n".join(_unique_lines(window_text))
+    prompt = sum(as_int(record.get("tokens_prompt")) for record in attributed)
+    # tokens_prompt_raw is that same sum. tokens_prompt_cache_adjusted stays
+    # null: there is no documented cache-adjustment method yet.
     return {
-        "tokens_prompt": sum(as_int(record.get("tokens_prompt")) for record in attributed),
+        "tokens_prompt": prompt,
+        "tokens_prompt_raw": prompt,
+        "tokens_prompt_cache_adjusted": None,
         "tokens_completion": sum(as_int(record.get("tokens_completion")) for record in attributed),
         "llm_calls": len(attributed),
         "turns": int(turns),
@@ -388,6 +435,8 @@ def build_result(
         "pass": None,
         "honesty": None,
         "tokens_prompt": int(metrics["tokens_prompt"]),
+        "tokens_prompt_raw": int(metrics["tokens_prompt_raw"]),
+        "tokens_prompt_cache_adjusted": metrics.get("tokens_prompt_cache_adjusted"),
         "tokens_completion": int(metrics["tokens_completion"]),
         "llm_calls": int(metrics["llm_calls"]),
         "wall_s": float(wall_s),
@@ -413,6 +462,8 @@ def build_result(
 def _empty_metrics():
     return {
         "tokens_prompt": 0,
+        "tokens_prompt_raw": 0,
+        "tokens_prompt_cache_adjusted": None,
         "tokens_completion": 0,
         "llm_calls": 0,
         "turns": 0,
@@ -581,7 +632,7 @@ def _ensure_placeholders(run_dir: Path) -> None:
     if not (run_dir / "usage_after.json").exists():
         _write_json(run_dir / "usage_after.json", [])
     if not (run_dir / "usage_delta.json").exists():
-        _write_json(run_dir / "usage_delta.json", {"attributed": [], "unattributed": []})
+        _write_json(run_dir / "usage_delta.json", _usage_delta_doc([], [], _empty_metrics()))
 
 
 def _run_paths(args, scenario_id: str):
@@ -679,14 +730,7 @@ def run_dry(args, scenario: dict, scenario_id: str) -> int:
     _write_text(run_dir / "daemon_log_slice.txt", daemon_slice)
     _write_text(run_dir / "collab_trace.txt", trace)
     _write_text(run_dir / "pm_goal_stdout.txt", f"Sent goal to channel {channel} (dry-run)\n")
-    delta_doc = {
-        "attributed": attributed,
-        "unattributed": unattributed,
-        "tokens_prompt": metrics["tokens_prompt"],
-        "tokens_completion": metrics["tokens_completion"],
-        "llm_calls": metrics["llm_calls"],
-        "tokens_unattributed": metrics["tokens_unattributed"],
-    }
+    delta_doc = _usage_delta_doc(attributed, unattributed, metrics)
     _write_json(run_dir / "usage_delta.json", delta_doc)
     result = build_result(
         arm=args.arm,
@@ -934,17 +978,7 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
     _write_text(run_dir / "daemon_log_slice.txt", daemon_slice)
     _write_text(run_dir / "collab_trace.txt", trace)
     metrics = account(trace, window, attributed, unattributed)
-    _write_json(
-        run_dir / "usage_delta.json",
-        {
-            "attributed": attributed,
-            "unattributed": unattributed,
-            "tokens_prompt": metrics["tokens_prompt"],
-            "tokens_completion": metrics["tokens_completion"],
-            "llm_calls": metrics["llm_calls"],
-            "tokens_unattributed": metrics["tokens_unattributed"],
-        },
-    )
+    _write_json(run_dir / "usage_delta.json", _usage_delta_doc(attributed, unattributed, metrics))
     result = build_result(
         arm=args.arm,
         scenario=scenario_id,
