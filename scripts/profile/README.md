@@ -163,7 +163,7 @@ Run-time fields are written by `run_one.py` to `OUT/<arm>/<scenario>/n<k>/result
 
 Each poll, and only after `conclusion.min_wait_s` since the goal was accepted, `run_one.py` picks the first match:
 
-1. **final_marker.** A PM message that is not the PM's first message and matches any `conclusion.final_markers` regex (case-insensitive), or any agent message that matches. The opening PM acknowledgement does not count. Court senders are not agents, so a court message does not trip this.
+1. **final_marker.** Any PM or agent message matching any `conclusion.final_markers` regex (case-insensitive). Probe scenarios often conclude on the PM's first (and only) reply, so that message is eligible. Eng markers are distinctive (`no further changes`, `grading can start`) so the opening plan rarely false-triggers. Court senders are not agents.
 2. **quiet.** At least one non-user message, no new message for `quiet_s` seconds, and turn-state (when the call works) shows no member with `pending=true`. Those seconds are host monotonic time since the poll last observed a change in the message set (count, last sequence, or content). The clock starts when the goal is accepted. Message timestamps are ignored; they do not win over host time.
 3. **quiet_no_reply.** No non-user message for `max(quiet_s * 2, 150)` seconds after the goal was accepted, and turn-state shows nothing pending. This is a real outcome for an off-topic probe that everyone correctly ignores.
 4. **timeout.** `scenario.timeout_s` from t0. `timed_out` is true. The run is still data: `run_one.py` exits 0. It exits non-zero only for a harness error, and it still writes `result.json` with `completion_signal` `error` when it can.
@@ -229,3 +229,7 @@ The lock file is `OUT/.matrix.lock`. It is not removed on exit (removing it woul
 - SIGKILL cannot be caught. If the driver is killed that way, stop the daemon yourself with `sudo -n ./bin/aegis stop`. Do not `pkill -9` firecracker; that leaves VM state behind and makes the next boot slow and wrong.
 
 Exit status: 0 when the requested phases finished, including when individual `run_one.py` calls failed. 1 when the lock is held, an arm is aborted for health, a daemon is left running, or score/summarize fails. 2 when the arguments are wrong. After the lock is acquired, the last stdout line is `total elapsed: <seconds>s` (argument errors and a held lock exit before that).
+
+## Stale pending note
+
+If turn-state leaves `pending=true` after a real post, `quiet` still fires once silence reaches `max(2*quiet_s, 150)` seconds. The signal name remains `quiet`; wall time includes that longer silence window.

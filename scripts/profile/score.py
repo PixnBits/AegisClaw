@@ -644,12 +644,12 @@ def judge_run(run_dir: Path, scenario: dict, transcript_text: str, model: str, o
 
 
 def aegis_daemon_running() -> bool:
-    try:
-        proc = subprocess.run(["pgrep", "-x", "aegis"], capture_output=True, text=True)
-    except FileNotFoundError:
-        return False
-    return proc.returncode == 0
-
+    proc = subprocess.run(
+        ["pgrep", "-f", r"(^|/)(aegis|aegis\.real) start --foreground"],
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0 and bool(proc.stdout.strip())
 
 def _word(value, emphasize_fail: bool = False) -> str:
     if value is True:

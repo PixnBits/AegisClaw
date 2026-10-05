@@ -2,7 +2,7 @@
 """Run one profiling scenario on one arm.
 
 Conclusion checks run only after min_wait_s since the goal was accepted
-("Sent goal to" in the pm-goal output), in this order: final_marker, quiet,
+(Sent/Posted goal acceptance in the pm-goal output), in this order: final_marker, quiet,
 quiet_no_reply, then the timeout_s hard cap measured from t0.
 """
 
@@ -209,12 +209,20 @@ def _compile_markers(patterns):
 
 
 def marker_hit(messages, patterns) -> bool:
-    """PM message after the PM's first, or any agent message, matches a marker."""
+    """Any PM or agent message matches a marker (case-insensitive regex).
+
+    Probe scenarios often conclude on the PM's first (and only) reply, so the
+    first PM message is eligible. Eng markers are distinctive enough that the
+    initial plan post rarely false-triggers.
+    """
     compiled = _compile_markers(patterns)
     if not compiled:
         return False
-    pm_messages = [message for message in messages if message.get("role") == "pm"]
-    candidates = pm_messages[1:] + [message for message in messages if message.get("role") == "agent"]
+    candidates = [
+        message
+        for message in messages
+        if message.get("role") in ("pm", "agent")
+    ]
     for message in candidates:
         text = message.get("content") or ""
         for pattern in compiled:
@@ -287,8 +295,13 @@ def judge_signal(
         return "final_marker"
     _total, _agent, _pm, non_user, _senders = message_counts(messages)
     pending_blocks = turn_available and any_pending
-    if non_user >= 1 and silence_s >= quiet_s and not pending_blocks:
-        return "quiet"
+    if non_user >= 1 and silence_s >= quiet_s:
+        if not pending_blocks:
+            return "quiet"
+        # Stale-pending escape: product may leave pending=true after a post
+        # (last_outcome=delivered). Do not wait until timeout_s.
+        if silence_s >= max(quiet_s * 2, 150):
+            return "quiet"
     # quiet_no_reply requires a successful turn-state that shows nothing pending.
     # quiet treats a missing turn-state as best-effort and does not block on it.
     nothing_pending = turn_available and not any_pending
@@ -783,12 +796,23 @@ def run_real(args, scenario: dict, scenario_id: str) -> int:
     stderr = pm.stderr or ""
     combined_goal = stdout if not stderr else stdout + ("\n--- stderr ---\n" + stderr)
     _write_text(run_dir / "pm_goal_stdout.txt", combined_goal)
-    if pm.timed_out or "Sent goal to" not in (stdout + "\n" + stderr):
+    combined_check = stdout + "\n" + stderr
+    # CLI wording varies by build: older trees print "Sent goal to"; current
+    # trees print "Posted goal to channel" after the ensure + channel.post path.
+    goal_accepted = (
+        "Sent goal to" in combined_check
+        or "Posted goal to channel" in combined_check
+        or "Posted goal to" in combined_check
+    )
+    if pm.timed_out or not goal_accepted:
         if pm.timed_out:
             goal_error = "pm goal timed out after 240s"
         else:
-            snippet = " ".join((stdout + "\n" + stderr).split())[:500]
-            goal_error = f"pm goal output did not contain 'Sent goal to': {snippet}"
+            snippet = " ".join(combined_check.split())[:500]
+            goal_error = (
+                "pm goal output missing acceptance marker "
+                f"(Sent/Posted goal): {snippet}"
+            )
         short_deadline = min(t0_mono + timeout_s, time.monotonic() + SHORT_POLL_S)
     else:
         goal_accepted_mono = time.monotonic()

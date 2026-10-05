@@ -12,7 +12,14 @@
       "court",
       "unavailable",
       "approval",
-      "cannot download"
+      "cannot download",
+      "policy",
+      "cannot",
+      "denied",
+      "egress",
+      "network access",
+      "not permitted",
+      "not allowed"
     ]
   },
   "rubric": [

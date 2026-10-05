@@ -117,7 +117,7 @@ run_logged() {
 }
 
 snapshot_processes() {
-  AEGIS_PIDS=$(pgrep -x aegis || true)
+  AEGIS_PIDS=$(pgrep -f "(^|/)(aegis|aegis\.real) start --foreground" || true)
   FC_PIDS=$(pgrep -x firecracker || true)
   AEGIS_PIDS=${AEGIS_PIDS//$'\n'/ }
   FC_PIDS=${FC_PIDS//$'\n'/ }
@@ -127,7 +127,7 @@ snapshot_processes() {
 
 processes_clear() {
   snapshot_processes
-  log "pgrep -x aegis -> ${AEGIS_PIDS:-<none>}"
+  log "pgrep -x aegis || pgrep -x aegis.real -> ${AEGIS_PIDS:-<none>}"
   log "pgrep -x firecracker -> ${FC_PIDS:-<none>}"
   [[ -z $AEGIS_PIDS && -z $FC_PIDS ]]
 }
