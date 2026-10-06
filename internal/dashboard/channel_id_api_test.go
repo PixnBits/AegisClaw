@@ -233,30 +233,80 @@ func TestChannelListValidIDNotRedactedIntoInvalid(t *testing.T) {
 // TestChannelListAnnotatesBeforeRedaction pins the order. "sk-" + 21
 // letters is a valid channel id that the credential pattern still redacts
 // for display. The badge must reflect the raw id, not "[REDACTED]".
-func TestChannelListAnnotatesBeforeRedaction(t *testing.T) {
-	const id = "sk-abcdefghijklmnopqrstu"
-	client := &recordAPIClient{data: map[string]interface{}{
-		"channel.list": []interface{}{map[string]interface{}{"id": id}},
-	}}
+func getChannelList(t *testing.T, list []interface{}) ([]map[string]interface{}, string) {
+	t.Helper()
+	client := &recordAPIClient{data: map[string]interface{}{"channel.list": list}}
 	srv, err := New("127.0.0.1:0", client)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptestRequest(t, http.MethodGet, "/api/channels", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
 	var body struct {
 		Channels []map[string]interface{} `json:"channels"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Channels) != 1 {
+	if len(body.Channels) != len(list) {
 		t.Fatalf("channels %#v", body.Channels)
 	}
-	if _, ok := body.Channels[0]["id_valid"]; ok {
-		t.Fatalf("valid id checked after redaction: %#v", body.Channels[0])
+	return body.Channels, rec.Body.String()
+}
+
+// Valid ids are checked raw and displayed raw, even when they look like a
+// key; invalid ids and every other field are still redacted.
+func TestChannelListAnnotatesBeforeRedaction(t *testing.T) {
+	keyLike := "sk-abcdefghijklmnopqrstu"      // valid id shaped like a key
+	glued := "plan2sk-abcdefghijklmnopqrstuvw" // valid id, key glued to a digit
+	badKey := "SK-ABCDEFGHIJKLMNOPQRSTU"       // invalid (uppercase), key-shaped
+	secret := "sk-" + strings.Repeat("Zx9", 8)
+	chans, raw := getChannelList(t, []interface{}{
+		map[string]interface{}{"id": keyLike, "topic": "api_key_" + secret},
+		map[string]interface{}{"id": glued},
+		map[string]interface{}{"id": badKey},
+		map[string]interface{}{"id": "main", "note": "k%3D" + secret},
+	})
+	for i, want := range []string{keyLike, glued} {
+		if _, ok := chans[i]["id_valid"]; ok {
+			t.Fatalf("valid id %q got the invalid badge: %#v", want, chans[i])
+		}
+		if chans[i]["id"] != want {
+			t.Fatalf("valid id displayed as %#v, want %q", chans[i]["id"], want)
+		}
 	}
-	if strings.Contains(rec.Body.String(), id) {
-		t.Fatalf("credential-shaped id reached the browser unredacted: %s", rec.Body.String())
+	if chans[2]["id_valid"] != false {
+		t.Fatalf("invalid id has no badge: %#v", chans[2])
+	}
+	if strings.Contains(raw, badKey[3:]) {
+		t.Fatalf("invalid key-shaped id reached the browser unredacted: %s", raw)
+	}
+	if strings.Contains(raw, secret[3:]) {
+		t.Fatalf("a key in another field of a valid channel leaked: %s", raw)
+	}
+	if chans[0]["topic"] != "api_key_[REDACTED]" || chans[3]["note"] != "k%3D[REDACTED]" {
+		t.Fatalf("other fields not redacted: %#v / %#v", chans[0]["topic"], chans[3]["note"])
+	}
+}
+
+// Scoped-key redaction (#152) must not touch valid channel ids: they are
+// shown raw, and in other fields a scoped key is still redacted.
+func TestChannelListScopedPrefixIDDisplaysRaw(t *testing.T) {
+	const id = "sk-proj-roadmap-planning-notes-q4"
+	key := "sk-" + "proj-" + "AbC_12-" + strings.Repeat("Xy9_Zq-0", 4)
+	chans, raw := getChannelList(t, []interface{}{
+		map[string]interface{}{"id": id, "topic": "key " + key},
+	})
+	if chans[0]["id"] != id {
+		t.Fatalf("valid id displayed as %#v", chans[0]["id"])
+	}
+	if _, ok := chans[0]["id_valid"]; ok {
+		t.Fatalf("valid id got the badge: %#v", chans[0])
+	}
+	if strings.Contains(raw, key[8:]) || chans[0]["topic"] != "key [REDACTED]" {
+		t.Fatalf("scoped key in topic not redacted: %s", raw)
 	}
 }

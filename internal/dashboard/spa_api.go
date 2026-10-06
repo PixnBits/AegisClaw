@@ -113,6 +113,48 @@ func annotateChannelListIDs(data interface{}) interface{} {
 	return list
 }
 
+// sanitizeChannelList prepares channel.list for the browser.
+//   - Ids are checked on the raw list, before redaction. The credential
+//     pattern matches "sk-" plus 20 letters anywhere, so it rewrites valid
+//     ids such as "task-refactorauthenticationmodule" to "ta[REDACTED]".
+//     Checked after that, a valid id would get the invalid badge.
+//   - The whole list is then sanitized as before, so every other field gets
+//     full redaction.
+//   - For an entry whose raw id passes ValidateChannelID, the raw id is put
+//     back after sanitizing. A valid id is limited to ^[a-z][a-z0-9-]*$
+//     (45 chars max), is a name the user chose, and must stay selectable. An
+//     invalid id stays redacted.
+func sanitizeChannelList(data interface{}) interface{} {
+	raw, ok := data.([]interface{})
+	if !ok {
+		return sanitize.Value(sanitize.ContextChat, data)
+	}
+	validIDs := make([]string, len(raw))
+	for i, item := range raw {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id, _ := m["id"].(string); channelid.ValidateChannelID(id) == nil {
+			validIDs[i] = id
+		}
+	}
+	clean := sanitize.Value(sanitize.ContextChat, annotateChannelListIDs(raw))
+	out, ok := clean.([]interface{})
+	if !ok || len(out) != len(raw) {
+		return clean
+	}
+	for i, item := range out {
+		if validIDs[i] == "" {
+			continue
+		}
+		if m, ok := item.(map[string]interface{}); ok {
+			m["id"] = validIDs[i]
+		}
+	}
+	return out
+}
+
 func (s *Server) handleAPIDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -157,9 +199,7 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			// Check ids before redaction. The credential pattern can rewrite
-			// part of a valid id, and the rewritten id would then fail the rule.
-			"channels": sanitize.Value(sanitize.ContextChat, annotateChannelListIDs(data)),
+			"channels": sanitizeChannelList(data),
 		})
 
 	case len(parts) == 0 && r.Method == http.MethodPost:

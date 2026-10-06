@@ -14,10 +14,13 @@ FROM golang:1.26-alpine3.24@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3
 # published SHA-256 of those assets.
 ARG GOSEC_VERSION=v2.29.0
 ARG GOVULNCHECK_VERSION=v1.8.0
-ARG OPA_VERSION=v0.58.0
-ARG OPA_SHA256=217228eeae07a9790b1d1a3b887cbc3dec253ad6444a7a8eaddbe65fd11968c3
-ARG GITLEAKS_VERSION=8.18.2
-ARG GITLEAKS_SHA256=6298c9235dfc9278c14b28afd9b7fa4e6f4a289cb1974bd27949fc1e9122bdee
+ARG OPA_VERSION=v1.21.1
+# opa_linux_amd64_static is the asset OPA publishes for musl/Alpine. Older
+# plain opa_linux_amd64 builds (e.g. v0.58.0) were glibc-linked and could not
+# exec here. The runtime-stage RUN below fails the build if any scanner can't run.
+ARG OPA_SHA256=668506eb17a2eaa1fce6cc0d1f42ef85125d4ac5bda5fc74d1152d0c77145031
+ARG GITLEAKS_VERSION=8.30.1
+ARG GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
 
 # GOTOOLCHAIN=auto fetches a newer Go patch when go.mod requires one
 # (go.mod says go 1.26.2). The build stage is the 1.26 Alpine image.
@@ -49,10 +52,11 @@ RUN go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
 
 # Policy-as-Code: OPA (static binary, small footprint). linux/amd64 only.
 # Two spaces before the filename: sha256sum text-mode check format.
-RUN wget -q "https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64" -O /tmp/opa \
+RUN wget -q "https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64_static" -O /tmp/opa \
     && echo "${OPA_SHA256}  /tmp/opa" | sha256sum -c - \
     && mv /tmp/opa /usr/local/bin/opa \
-    && chmod +x /usr/local/bin/opa
+    && chmod +x /usr/local/bin/opa \
+    && /usr/local/bin/opa version
 
 # Secrets scanning: gitleaks (lightweight Go binary). linux/amd64 only.
 RUN wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -O /tmp/gitleaks.tar.gz \
@@ -73,6 +77,10 @@ COPY --from=builder /go/bin/gosec /usr/local/bin/gosec
 COPY --from=builder /go/bin/govulncheck /usr/local/bin/govulncheck
 COPY --from=builder /usr/local/bin/opa /usr/local/bin/opa
 COPY --from=builder /usr/local/bin/gitleaks /usr/local/bin/gitleaks
+
+# Smoke-test the scanners in the runtime image. A binary that can't exec here
+# (e.g. a glibc-linked download on musl) fails the image build.
+RUN opa version && gitleaks version && gosec -version && govulncheck -version
 
 # Non-root user (defense-in-depth for the untrusted Builder VM)
 RUN addgroup -S aegis && adduser -S -G aegis aegis
