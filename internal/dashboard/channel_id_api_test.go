@@ -291,3 +291,22 @@ func TestChannelListAnnotatesBeforeRedaction(t *testing.T) {
 		t.Fatalf("other fields not redacted: %#v / %#v", chans[0]["topic"], chans[3]["note"])
 	}
 }
+
+// Scoped-key redaction (#152) must not touch valid channel ids: they are
+// shown raw, and in other fields a scoped key is still redacted.
+func TestChannelListScopedPrefixIDDisplaysRaw(t *testing.T) {
+	const id = "sk-proj-roadmap-planning-notes-q4"
+	key := "sk-" + "proj-" + "AbC_12-" + strings.Repeat("Xy9_Zq-0", 4)
+	chans, raw := getChannelList(t, []interface{}{
+		map[string]interface{}{"id": id, "topic": "key " + key},
+	})
+	if chans[0]["id"] != id {
+		t.Fatalf("valid id displayed as %#v", chans[0]["id"])
+	}
+	if _, ok := chans[0]["id_valid"]; ok {
+		t.Fatalf("valid id got the badge: %#v", chans[0])
+	}
+	if strings.Contains(raw, key[8:]) || chans[0]["topic"] != "key [REDACTED]" {
+		t.Fatalf("scoped key in topic not redacted: %s", raw)
+	}
+}
