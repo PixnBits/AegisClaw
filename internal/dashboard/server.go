@@ -26,6 +26,10 @@ type Server struct {
 	harnessCache map[string]contracts.HarnessState
 
 	bgPublishOnce sync.Once
+
+	llmUsageMu   sync.Mutex
+	llmUsageSeen map[string]struct{}
+	llmUsageKeys []string
 }
 
 // APIClient abstracts daemon API calls for the dashboard.
@@ -124,6 +128,7 @@ func (s *Server) EnsureBackgroundPublishers() {
 // Start starts the dashboard HTTP server (blocks until ctx is done).
 func (s *Server) Start(ctx context.Context) error {
 	s.EnsureBackgroundPublishers()
+	go s.runLLMUsageFeed(ctx, llmUsagePollInterval)
 	srv := &http.Server{
 		Addr:    s.addr,
 		Handler: s,

@@ -44,3 +44,19 @@ func TestUnknownFieldsIgnoredGracefully(t *testing.T) {
 		t.Fatalf("channel_id: %q", parsed.ChannelID)
 	}
 }
+
+func TestLLMUsageEventPayloadShape(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	body := `{"type":"` + contracts.TypeLLMUsage + `","agent_id":"coder-main","timestamp":"` + now + `","model":"qwen2.5:7b","tokens_prompt":123,"tokens_completion":45,"duration_ms":1200,"success":true}`
+	var ev contracts.LLMUsageEvent
+	if err := json.Unmarshal([]byte(body), &ev); err != nil {
+		t.Fatalf("unmarshal LLMUsageEvent: %v", err)
+	}
+	if ev.Type != contracts.TypeLLMUsage || ev.AgentID != "coder-main" || ev.TokensIn != 123 || ev.TokensOut != 45 || !ev.Success {
+		t.Errorf("unexpected parsed: %+v", ev)
+	}
+	typ, err := contracts.ParsePayload([]byte(body))
+	if err != nil || typ != contracts.TypeLLMUsage {
+		t.Errorf("ParsePayload failed for llm.usage: %v %q", err, typ)
+	}
+}

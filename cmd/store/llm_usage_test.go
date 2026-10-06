@@ -207,6 +207,48 @@ func TestLLMUsageRecentLimitCapAndDefault(t *testing.T) {
 	}
 }
 
+func TestLLMUsageRecentFiltersAgentID(t *testing.T) {
+	useLLMUsage(t)
+	for i, agent := range []string{"coder-1", "pm", "coder-1"} {
+		resp := handleLLMUsageRecord(Message{
+			Source:  "network-boundary",
+			Command: "llm.usage.record",
+			Payload: map[string]interface{}{"agent_id": agent, "model": "qwen", "tokens_prompt": i, "success": true},
+		})
+		if resp.Command != "llm.usage.recorded" {
+			t.Fatal(resp.Command)
+		}
+	}
+	recent := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "pm", "limit": float64(10)}})
+	rows := recent.Payload.([]map[string]interface{})
+	if len(rows) != 1 || rows[0]["agent_id"] != "pm" {
+		t.Fatalf("filtered recent %+v", rows)
+	}
+	limited := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "coder-1", "limit": float64(1)}})
+	rows = limited.Payload.([]map[string]interface{})
+	if len(rows) != 1 || rows[0]["tokens_prompt"].(int) != 2 {
+		t.Fatalf("newest coder record %+v", rows)
+	}
+}
+
+// TestLLMUsageRecordRejectsDaemonInternalSource pins the Store backstop.
+// The portal query ACL uses llm.usage.*, which also matches llm.usage.record.
+// A daemon-internal sender is still rejected.
+func TestLLMUsageRecordRejectsDaemonInternalSource(t *testing.T) {
+	useLLMUsage(t)
+	resp := handleLLMUsageRecord(Message{
+		Source:  "daemon-internal",
+		Command: "llm.usage.record",
+		Payload: map[string]interface{}{"agent_id": "coder-1", "model": "qwen", "tokens_prompt": 1, "success": true},
+	})
+	if resp.Command != "error" {
+		t.Fatalf("command %q payload %v", resp.Command, resp.Payload)
+	}
+	if n := len(llmUsageSnapshot()); n != 0 {
+		t.Fatalf("daemon-internal record stored %d", n)
+	}
+}
+
 func TestLLMUsageRecordCap(t *testing.T) {
 	useLLMUsage(t)
 	for i := 0; i < 10001; i++ {

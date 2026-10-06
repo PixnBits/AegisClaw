@@ -432,12 +432,16 @@ func TestRepoACLStoreToRoleSnapshotAndLLMDenied(t *testing.T) {
 	}
 }
 
-// TestRepoACLLLMUsageNarrowed loads config/acls.yaml and pins the usage grant
-// to llm.usage.* between network-boundary and store. aclMatch treats a trailing
-// * as a prefix, so llm.usage.* matches llm.usage.record but not llm.usage,
-// llm.usagex, or llm.chat. Guest llm.* rules (role <-> network-boundary) are
-// pre-existing and out of scope; llm.* must not appear on any rule that touches
-// store. Portal and daemon-internal query grants are intentionally absent.
+// TestRepoACLLLMUsageNarrowed loads config/acls.yaml and pins usage grants to
+// llm.usage.*. aclMatch treats a trailing * as a prefix, so llm.usage.* matches
+// llm.usage.record but not llm.usage, llm.usagex, or llm.chat. Guest llm.*
+// rules (role <-> network-boundary) are pre-existing and out of scope; llm.*
+// must not appear on any rule that touches store.
+//
+// Portal reads are web-portal → store (guest hub bridge) and daemon-internal
+// → store (portal-bridge fallback). Both are llm.usage.* only. That pattern
+// admits llm.usage.record; the Store rejects the write unless the source is
+// network-boundary.
 func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	origRules := aclRules
 	origPath := aclFilePath
@@ -473,13 +477,33 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 			t.Errorf("store -> network-boundary %s = true, want deny", cmd)
 		}
 	}
-	for _, src := range []string{"daemon-internal", "daemon-internal-1", "web-portal"} {
+	portalSources := []string{"web-portal", "daemon-internal", "daemon-internal-1"}
+	for _, src := range portalSources {
+		for _, cmd := range []string{"llm.usage.summary", "llm.usage.recent"} {
+			if !checkACL(src, "store", cmd) {
+				t.Errorf("%s -> store %s = false, want allow", src, cmd)
+			}
+		}
+		// llm.usage.* admits the record command. Store rejects the write.
+		if !checkACL(src, "store", "llm.usage.record") {
+			t.Errorf("%s -> store llm.usage.record = false, want allow via llm.usage.*", src)
+		}
+		for _, cmd := range []string{"llm.chat", "llm.foo", "llm.usagex", "llm.usage"} {
+			if checkACL(src, "store", cmd) {
+				t.Errorf("%s -> store %s = true, want deny", src, cmd)
+			}
+		}
+	}
+	for _, src := range []string{"aegis-cli-internal", "coder-1", "store"} {
 		if checkACL(src, "store", "llm.usage.summary") {
-			t.Errorf("%s -> store llm.usage.summary = true, want deny (portal query is a later change)", src)
+			t.Errorf("%s -> store llm.usage.summary = true, want deny", src)
 		}
-		if checkACL(src, "store", "llm.usage.record") {
-			t.Errorf("%s -> store llm.usage.record = true, want deny", src)
-		}
+	}
+	if !checkACL("store", "web-portal", "llm.usage.summary") {
+		t.Error("store -> web-portal llm.usage.summary reply = false, want allow")
+	}
+	if !checkACL("store", "daemon-internal", "llm.usage.summary") {
+		t.Error("store -> daemon-internal llm.usage.summary reply = false, want allow")
 	}
 
 	for _, rule := range aclRules {
@@ -499,6 +523,16 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	}
 	if !containsCmd(storeNB, "llm.usage.*") || containsCmd(storeNB, "llm.*") {
 		t.Errorf("store -> network-boundary commands = %v", storeNB)
+	}
+	for _, pair := range [][2]string{
+		{"web-portal", "store"},
+		{"daemon-internal*", "store"},
+		{"daemon-internal-*", "store"},
+	} {
+		cmds := commandsBetween(pair[0], pair[1])
+		if !containsCmd(cmds, "llm.usage.*") || containsCmd(cmds, "llm.*") {
+			t.Errorf("%s -> %s commands = %v", pair[0], pair[1], cmds)
+		}
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +17,15 @@ import (
 	"AegisClaw/internal/dashboard/sanitize"
 )
 
+// llmUsageAgentIDPattern is the VM id charset. cmd/aegis validateVMID is a
+// different pattern in package main, so it is not importable here.
+var llmUsageAgentIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+const (
+	llmUsageRecentDefault = 100
+	llmUsageRecentMax     = 500
+)
+
 func (s *Server) registerExtendedPortalRoutes() {
 	s.mux.HandleFunc("/api/active-work", s.handleAPIActiveWork)
 	s.mux.HandleFunc("/api/agents", s.handleAPIAgents)
@@ -22,6 +33,8 @@ func (s *Server) registerExtendedPortalRoutes() {
 	s.mux.HandleFunc("/api/canvas", s.handleAPICanvas)
 	s.mux.HandleFunc("/api/security/posture", s.handleAPISecurityPosture)
 	s.mux.HandleFunc("/api/settings/ciso-delegation", s.handleAPICisoDelegation)
+	s.mux.HandleFunc("/api/llm-usage", s.handleAPILLMUsage)
+	s.mux.HandleFunc("/api/llm-usage/recent", s.handleAPILLMUsageRecent)
 }
 
 func (s *Server) handleAPIActiveWork(w http.ResponseWriter, r *http.Request) {
@@ -527,4 +540,108 @@ func (s *Server) handleAPIProposalReviews(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out) //nolint:errcheck
+}
+
+// handleAPILLMUsage returns Store llm.usage.summary. Optional ?agent_id= scopes
+// the aggregate. GET only. A fetch error is 502, same idea as
+// handleAPISecurityPosture (a single store read fails the request) rather than
+// the empty document composed collectors return.
+func (s *Server) handleAPILLMUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	agentID, ok := llmUsageAgentIDQuery(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+	defer cancel()
+	payload := map[string]interface{}{}
+	if agentID != "" {
+		payload["agent_id"] = agentID
+	}
+	data, err := s.fetchRaw(ctx, "llm.usage.summary", payload)
+	if err != nil {
+		writeLLMUsageFetchError(w, err)
+		return
+	}
+	if agentID != "" {
+		if m, isMap := data.(map[string]interface{}); isMap {
+			m["agent_id"] = agentID
+			data = m
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data) //nolint:errcheck
+}
+
+// handleAPILLMUsageRecent returns recent usage records. ?limit= defaults to 100
+// and clamps to 500. Optional ?agent_id= is passed through to the Store.
+func (s *Server) handleAPILLMUsageRecent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	agentID, ok := llmUsageAgentIDQuery(w, r)
+	if !ok {
+		return
+	}
+	limit := llmUsageRecentLimitQuery(r.URL.Query().Get("limit"))
+	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
+	defer cancel()
+	payload := map[string]interface{}{"limit": limit}
+	if agentID != "" {
+		payload["agent_id"] = agentID
+	}
+	data, err := s.fetchRaw(ctx, "llm.usage.recent", payload)
+	if err != nil {
+		writeLLMUsageFetchError(w, err)
+		return
+	}
+	if data == nil {
+		data = []interface{}{}
+	}
+	out := map[string]interface{}{"records": data, "limit": limit}
+	if agentID != "" {
+		out["agent_id"] = agentID
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out) //nolint:errcheck
+}
+
+// llmUsageAgentIDQuery reads ?agent_id=. Empty is unfiltered. Anything else
+// must match ^[a-z][a-z0-9-]*$ and be at most 64 bytes.
+func llmUsageAgentIDQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	if id == "" {
+		return "", true
+	}
+	if len(id) > 64 || !llmUsageAgentIDPattern.MatchString(id) {
+		http.Error(w, "invalid agent_id", http.StatusBadRequest)
+		return "", false
+	}
+	return id, true
+}
+
+func llmUsageRecentLimitQuery(raw string) int {
+	if raw == "" {
+		return llmUsageRecentDefault
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return llmUsageRecentDefault
+	}
+	if n > llmUsageRecentMax {
+		return llmUsageRecentMax
+	}
+	return n
+}
+
+func writeLLMUsageFetchError(w http.ResponseWriter, err error) {
+	msg := sanitize.Text(sanitize.ContextChat, err.Error())
+	if msg == "" {
+		msg = "llm usage unavailable"
+	}
+	http.Error(w, msg, http.StatusBadGateway)
 }

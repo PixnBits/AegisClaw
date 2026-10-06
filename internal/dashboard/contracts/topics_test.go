@@ -13,6 +13,9 @@ func TestIsAllowedTopic(t *testing.T) {
 		{HarnessUpdatesTopic("plan_1"), true},
 		{ConversationUpdatesTopic("sess_1"), true},
 		{ProposalUpdatesTopic("prop_1"), true},
+		{LLMUsageTopic(""), true},
+		{LLMUsageTopic("agent-foo"), true},
+		{"/topic/metrics.llm-usageEVIL", false},
 		{"/topic/evil.hacks", false},
 		{"", false},
 	}

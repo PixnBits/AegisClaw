@@ -230,7 +230,7 @@ rules:
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
 # llm.usage.* only (never llm.*): network-boundary appends usage; Store's
 # llm.usage.recorded reply is ACL-checked on the way back (cmd/aegishub).
-# Portal/daemon-internal query rules are not granted here.
+# Portal reads are on web-portal and daemon-internal → store, not on this pair.
 - source: store
   destination: network-boundary
   commands:
@@ -655,6 +655,9 @@ rules:
     - ciso.delegation.*
     - tool.registry.discover
     - audit.list
+    # Portal-bridge fallback re-sends /api/llm-usage as daemon-internal.
+    # llm.usage.* only. Store still rejects llm.usage.record from this source.
+    - llm.usage.*
 - source: "daemon-internal-*"
   destination: store
   commands:
@@ -668,6 +671,7 @@ rules:
     - ciso.delegation.*
     - tool.registry.discover
     - audit.list
+    - llm.usage.*
 # Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
 # clients for the commands above (responses may carry the original command name in audit; observed
 # as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).
@@ -829,6 +833,9 @@ rules:
     - visibility.list
     - ciso.delegation.get
     - ciso.delegation.set
+    # Guest hub bridge: dashboard fetchRaw is source web-portal, dest store.
+    # llm.usage.* only (the pattern also matches record; Store rejects that write).
+    - llm.usage.*
 - source: "daemon-internal*"
   destination: store
   commands:

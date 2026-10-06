@@ -180,12 +180,25 @@ func handleLLMUsageSummary(msg Message) Message {
 
 func handleLLMUsageRecent(msg Message) Message {
 	limit := llmUsageRecentDefault
+	agentID := ""
 	if p, ok := msg.Payload.(map[string]interface{}); ok {
 		if _, present := p["limit"]; present {
 			limit = usageRecentLimit(p["limit"])
 		}
+		if aid, ok := p["agent_id"].(string); ok {
+			agentID = aid
+		}
 	}
 	records := llmUsageSnapshot()
+	if agentID != "" {
+		matched := make([]map[string]interface{}, 0)
+		for _, rec := range records {
+			if a, ok := rec["agent_id"].(string); ok && a == agentID {
+				matched = append(matched, rec)
+			}
+		}
+		records = matched
+	}
 	n := len(records)
 	start := 0
 	if n > limit {
