@@ -1113,9 +1113,11 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 // llm.usage.record is best-effort metrics. Waiting for Store would stall
 // network-boundary's hub read loop, and the next llm.call.response behind it,
 // when Store is slow or hung. Store logs rejections and does not reply.
+// audit.append is the same: senders write it and move on, and Store does not
+// reply, so waiting would hold the sender's frames until the RPC timeout.
 func isOneWayHubPush(command string) bool {
 	switch command {
-	case "channel.turn", "channel.activity", "channel.member_notify", "llm.usage.record":
+	case "channel.turn", "channel.activity", "channel.member_notify", "llm.usage.record", "audit.append":
 		return true
 	default:
 		return false

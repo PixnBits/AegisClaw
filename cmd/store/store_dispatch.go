@@ -1124,10 +1124,12 @@ func dispatchStoreCommand(msg Message, response *Message, w *storeWorld) (skipRe
 		response.Command = "memory.results"
 		response.Payload = []interface{}{}
 	case "audit.append":
+		// One-way hub push (isOneWayHubPush), like llm.usage.record. Senders
+		// don't read a reply and audit.appended is not granted back, so none
+		// is sent.
 		auditLog = append(auditLog, msg.Payload)
 		saveAuditToFile("audit.json", auditLog)
-		response.Command = "audit.appended"
-		response.Payload = "ok"
+		return true
 	case "audit.get_root":
 		root := computeMerkleRoot(auditLog)
 		response.Command = "audit.root"
