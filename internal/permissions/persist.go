@@ -37,6 +37,7 @@ func KnownCapabilities() []string {
 	return []string{
 		"tool.list", "tool.search", "tool.registry.discover",
 		"channel.create", "channel.list", "channel.get", "channel.join", "channel.post",
+		"channel.add_member",
 		"channel.get_relevant_since", "channel.get_messages",
 		"memory.store", "memory.query", "memory.get_context",
 		"llm.call", "proposal.create", "proposal.submit", "proposal.list",
@@ -63,6 +64,7 @@ func IsCapabilityCommand(cmd string) bool {
 	switch cmd {
 	case "channel.activity", "channel.member_notify", "channel.updated",
 		"channel.relay_activity", "channel.fanout", "channel.posted",
+		"channel.turn_result",
 		"chat.message", "chat.tool_events", "chat.thought_events", "chat.stream_progress",
 		"user.goal", "user.turn",
 		"ensure.role", "orchestrator.ensure_role":
