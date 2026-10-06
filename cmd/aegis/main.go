@@ -41,6 +41,7 @@ import (
 	"AegisClaw/internal/runtime"
 	"AegisClaw/internal/sandbox" // for FirecrackerVsockUDSPath (host -> guest web-portal reverse proxy)
 	"AegisClaw/internal/transport/hubclient"
+	"AegisClaw/internal/unixsock"
 	"AegisClaw/internal/workspace"
 )
 
@@ -481,6 +482,12 @@ var (
 	storeCollabReadyMu sync.Mutex
 	storeCollabReadyAt time.Time
 	daemonBootStart    time.Time
+
+	// daemonLifetimeCtx is cancelled at the start of daemon shutdown (signal,
+	// socket stop, socket restart). Startup gates must not launch follow-on work
+	// after that.
+	daemonLifetimeCtx    context.Context
+	daemonLifetimeCancel context.CancelFunc
 )
 
 // SocketRequest / SocketResponse: enriched JSON protocol for Task 6.1.2+ (structured, validated, future-proof).
@@ -685,6 +692,13 @@ func removePIDFile() {
 	_ = os.Remove(pidFile)
 }
 
+// stopDaemonLifetime cancels daemonLifetimeCtx. Safe before init and on repeat calls.
+func stopDaemonLifetime() {
+	if daemonLifetimeCancel != nil {
+		daemonLifetimeCancel()
+	}
+}
+
 func startDaemon(cmd *cobra.Command, args []string) {
 	// Enable copious debug tracing as early as possible.
 	// Use AEGIS_DEBUG=1 (any truthy value works).
@@ -846,6 +860,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 	daemonBootStart = time.Now()
 	storeCollabReady.Store(false)
+	daemonLifetimeCtx, daemonLifetimeCancel = context.WithCancel(context.Background())
 
 	// Ensure state directory (runtime, privileged)
 	if err := ensureStateDir(); err != nil {
@@ -1079,6 +1094,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	go func() {
 		<-sigChan
 		logrus.Info("shutting down daemon")
+		stopDaemonLifetime()
 		// Stop the reverse proxy first (drain in-flight SSE/chat streams gracefully).
 		if webPortalProxyListener != nil {
 			_ = webPortalProxyListener.Close()
@@ -1989,22 +2005,9 @@ func getTeam(id string) (CLITeam, bool) {
 // a Unix domain socket connection using SO_PEERCRED (Linux only).
 // Returns (uid, true) on success. On non-Linux or error, returns (-1, false).
 // Callers must not treat that failure as authorization except for the read-only allowlist.
+// Do not use (*net.UnixConn).File: it clears O_NONBLOCK.
 func getPeerUID(conn net.Conn) (int, bool) {
-	unixConn, ok := conn.(*net.UnixConn)
-	if !ok {
-		return -1, false
-	}
-	file, err := unixConn.File()
-	if err != nil {
-		return -1, false
-	}
-	defer file.Close()
-
-	ucred, err := syscall.GetsockoptUcred(int(file.Fd()), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-	if err != nil {
-		return -1, false
-	}
-	return int(ucred.Uid), true
+	return unixsock.PeerUID(conn)
 }
 
 // authorizeSocketPeer decides whether a control-socket peer may run op.
@@ -2030,12 +2033,11 @@ func authorizeSocketPeer(op string, peerUID int, peerOK bool, expectedUID int) b
 
 // listenUnixPrivate listens on a Unix socket created with mode 0600.
 // net.Listen applies the process umask, which is wider than 0600, so the
-// socket must be created under a restrictive umask. umask is process-wide
-// and is restored before return. Callers still chmod 0600 afterwards.
+// socket must be created under a restrictive umask. The umask lock is
+// process-wide and shared with the hub (unixsock.ListenPrivate).
+// Callers still chmod 0600 afterwards.
 func listenUnixPrivate(addr string) (net.Listener, error) {
-	old := syscall.Umask(0177)
-	defer syscall.Umask(old)
-	return net.Listen("unix", addr)
+	return unixsock.ListenPrivate("unix", addr)
 }
 
 // startSocketServer sets up the hardened Unix socket for CLI/daemon communication.
@@ -2257,6 +2259,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			conn.Write(append(b, '\n'))
 			logrus.Info("stop command received via socket - initiating graceful shutdown")
 			go func() {
+				stopDaemonLifetime()
 				killManagedChildren()
 				if orchestrator != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2275,6 +2278,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			conn.Write(append(b, '\n'))
 			logrus.Info("restart command received via socket - initiating graceful shutdown (client should re-start per AGENTS.md)")
 			go func() {
+				stopDaemonLifetime()
 				killManagedChildren()
 				if orchestrator != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2401,6 +2405,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		conn.Write([]byte(response))
 		logrus.Info("stop command received via socket - initiating graceful shutdown")
 		go func() {
+			stopDaemonLifetime()
 			killManagedChildren()
 			if orchestrator != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -5126,15 +5131,16 @@ func startBaseInfrastructure() error {
 	// Receiver (daemon-orchestrator) is started early (before base) so PM can drive
 	// on-demand roles as soon as it registers; auto "main" + membership is here in
 	// the post-store bg to avoid early-receiver contention.
-	go func() {
-		// Wait (with tolerance for guest boot + bridge + register) before declaring
-		// store responsive for collab paths. On timeout we warn (not fatal the daemon)
-		// because the control plane and launched base VMs are already up; channels/PM
-		// will naturally retry via sendToComponentViaHubRetry in their paths.
-		if _, err := sendToComponentViaHubRetry("store", "channel.list", nil, 45*time.Second); err != nil {
-			logrus.Warnf("Store VM did not become responsive within budget after launch (collab features/channels will retry; check fc-store-*-console.log and guest hub bridge): %v", err)
-			return
-		}
+	// Retry channel.list until Store answers or the daemon shuts down. A single
+	// 45s budget races guest CRNG and used to return here without ever starting
+	// channels or Court (issue #85).
+	collabCtx := daemonLifetimeCtx
+	if collabCtx == nil {
+		collabCtx = context.Background()
+	}
+	go runStoreReadinessThenCollab(collabCtx, func(ctx context.Context) error {
+		return waitForStoreReady(ctx, probeStoreChannelList, storeWaitOpts{})
+	}, func() {
 		storeCollabReady.Store(true)
 		storeCollabReadyMu.Lock()
 		storeCollabReadyAt = time.Now()
@@ -5156,7 +5162,7 @@ func startBaseInfrastructure() error {
 			}
 			startCourtGuestHubBridges()
 		}()
-	}()
+	})
 
 	logrus.Info("base infrastructure (hub + boundary + store + web-portal) launch sequence initiated — all critical components running as real Firecracker microVMs (readiness for channels/collab + lazy Court in background; control plane available immediately)")
 
@@ -5174,6 +5180,27 @@ func ensureRealRootfsImage(component string) (string, error) {
 		cfg.RootfsDir = rootfsDir
 	}
 	return sandbox.EnsureBootableRootfsImage(rootfsDir, component)
+}
+
+// secureManagedHubSocket chowns the hub socket to the original invoking user
+// and forces mode 0600. The hub child already created it at 0600; this runs
+// again after the readiness dial so a wider mode cannot remain. Root ignores
+// file mode, so ownership is what lets the invoking user connect.
+func secureManagedHubSocket(hubSocket string) {
+	if u, uerr := getOriginalUser(); uerr == nil && u != nil {
+		if uid, perr := strconv.Atoi(u.Uid); perr == nil {
+			gid := uid
+			if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
+				gid = g
+			}
+			if chownErr := os.Chown(hubSocket, uid, gid); chownErr != nil && os.Geteuid() == 0 {
+				logrus.Warnf("hub socket chown %s: %v", hubSocket, chownErr)
+			}
+		}
+	}
+	if err := os.Chmod(hubSocket, 0600); err != nil {
+		logrus.Warnf("could not chmod hub socket to 0600: %v", err)
+	}
 }
 
 // startManagedHub starts the AegisHub router (must be first).
@@ -5254,13 +5281,7 @@ func startManagedHub(hubSocket string) error {
 			// Then prove it's actually accepting connections (the important part)
 			if conn, dialErr := net.DialTimeout("unix", hubSocket, 200*time.Millisecond); dialErr == nil {
 				conn.Close()
-				// Make the socket world-accessible (0666) so that after sudo start (root listener),
-				// normal users (and E2E scripts with custom /tmp state dirs) can connect without
-				// permission denied on the unix socket. For the main ~/.aegis/hub.sock this is
-				// usually not an issue (user-owned dir), but for isolated tests and custom paths
-				// it prevents the "connect: permission denied" that was blocking E2E waits and
-				// channel operations even when the daemon was up.
-				_ = os.Chmod(hubSocket, 0666)
+				secureManagedHubSocket(hubSocket)
 				logrus.Infof("aegishub ready (socket accepting connections: %s)", hubSocket)
 				return nil
 			}
