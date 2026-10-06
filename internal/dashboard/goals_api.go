@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"AegisClaw/internal/channelid"
 	"AegisClaw/internal/dashboard/contracts"
 	"AegisClaw/internal/dashboard/sanitize"
 )
@@ -27,6 +28,10 @@ func (s *Server) handleAPIGoals(w http.ResponseWriter, r *http.Request) {
 	if channelID == "" {
 		channelID = "main"
 	}
+	if err := channelid.ValidateChannelID(channelID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), spaAPITimeout)
 	defer cancel()
@@ -34,17 +39,20 @@ func (s *Server) handleAPIGoals(w http.ResponseWriter, r *http.Request) {
 	planID := "plan_" + channelID
 	stages := contracts.DefaultStages()
 
-	if raw, err := s.fetchRaw(ctx, "goal.submit", map[string]interface{}{
+	raw, err := s.fetchRaw(ctx, "goal.submit", map[string]interface{}{
 		"goal":       req.Goal,
 		"channel_id": channelID,
-	}); err == nil {
-		if m, ok := raw.(map[string]interface{}); ok {
-			if id, ok := m["plan_id"].(string); ok && id != "" {
-				planID = id
-			}
-			if ch, ok := m["channel_id"].(string); ok && ch != "" {
-				channelID = ch
-			}
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if m, ok := raw.(map[string]interface{}); ok {
+		if id, ok := m["plan_id"].(string); ok && id != "" {
+			planID = id
+		}
+		if ch, ok := m["channel_id"].(string); ok && ch != "" {
+			channelID = ch
 		}
 	}
 

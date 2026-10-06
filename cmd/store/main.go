@@ -1163,31 +1163,9 @@ func runStore(cmd *cobra.Command, args []string) {
 		// be annotated by channel. Later: PM will use these for delegation; UI for roster.
 		// Messages here are the channel log (separate from per-agent chat turns).
 		case "channel.create":
-			payload := msg.Payload.(map[string]interface{})
-			id := payload["id"].(string)
-			if _, ok := payload["created_at"]; !ok {
-				payload["created_at"] = response.Timestamp
-			}
-			if _, ok := payload["members"]; !ok || len(payload["members"].([]interface{})) == 0 {
-				// default to including the project manager
-				pmMember := map[string]interface{}{"role": "project-manager", "added_at": response.Timestamp}
-				channeldata.EnsureMemberDefaults(pmMember)
-				payload["members"] = []interface{}{pmMember}
-			} else if members, ok := payload["members"].([]interface{}); ok {
-				for _, item := range members {
-					if m, ok := item.(map[string]interface{}); ok {
-						channeldata.EnsureMemberDefaults(m)
-					}
-				}
-			}
-			if _, ok := payload["messages"]; !ok {
-				payload["messages"] = []interface{}{}
-			}
-			payload["next_seq"] = 1
-			channels[id] = payload
-			saveToFile("channels.json", channels)
-			response.Command = "channel.created"
-			response.Payload = map[string]interface{}{"id": id}
+			handled := handleChannelCreate(msg.Payload, channels, response.Timestamp)
+			response.Command = handled.Command
+			response.Payload = handled.Payload
 		case "channel.list":
 			list := []interface{}{}
 			for _, c := range channels {

@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"AegisClaw/internal/channelid"
+	"AegisClaw/internal/collab"
 	"AegisClaw/internal/dashboard/ratelimit"
 	"AegisClaw/internal/dashboard/realtime"
 	"AegisClaw/internal/dashboard/sanitize"
-	"AegisClaw/internal/collab"
 	"AegisClaw/internal/portalstomp"
 )
 
@@ -138,8 +139,14 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case len(parts) == 0 && r.Method == http.MethodPost:
-		var req struct{ ID string `json:"id"` }
+		var req struct {
+			ID string `json:"id"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := channelid.ValidateChannelID(req.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		_, err := s.fetchRaw(ctx, "channel.create", map[string]interface{}{"id": req.ID})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -201,7 +208,9 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) //nolint:errcheck
 
 	case len(parts) == 2 && parts[1] == "members" && r.Method == http.MethodPost:
-		var m struct{ Role string `json:"role"` }
+		var m struct {
+			Role string `json:"role"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&m)
 		_, err := s.fetchRaw(ctx, "channel.add_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
 		if err != nil {
@@ -218,7 +227,9 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "confirmation required", http.StatusPreconditionRequired)
 			return
 		}
-		var m struct{ Role string `json:"role"` }
+		var m struct {
+			Role string `json:"role"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&m)
 		_, err := s.fetchRaw(ctx, "channel.remove_member", map[string]interface{}{"channel_id": parts[0], "role": m.Role})
 		if err != nil {
