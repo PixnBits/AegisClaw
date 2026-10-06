@@ -8,9 +8,14 @@
 # Also rejected:
 #   - a floating ref in a RUN (@latest, @master, @main, @HEAD), e.g. go install
 #   - an ARG whose default is latest, master, main or HEAD, when a later RUN
-#     or ADD uses it as a ref (@$V, :$V, #$V, --branch $V). An ARG such as
-#     BUILD_MODE=main that is never used as a ref is fine.
-#   - RUN heredoc bodies (RUN <<SH ... SH) get the same RUN checks
+#     or ADD uses it as a ref (@$V, :$V, #$V, --branch $V, -b $V, or any
+#     argument of a git command such as checkout, switch, fetch or reset).
+#     Quotes are ignored, so @"$V" counts. An ARG such as BUILD_MODE=main
+#     that is never used as a ref is fine, and a later ARG V=v1.2.3 clears
+#     an earlier floating default.
+#   - RUN heredoc bodies (RUN <<SH ... SH) get the same RUN checks. A heredoc
+#     opens only where BuildKit opens one (see heredoc_markers), and one with
+#     no terminator line is itself a failure.
 #   - a wget or curl download in a RUN that doesn't run sha256sum -c in that
 #     same RUN (shell form or exec form, RUN ["wget", ...])
 #   - ADD of an http(s) URL without --checksum=sha256:...
@@ -51,6 +56,15 @@ normalize_instruction_body() {
         out+="$t "
     done
     printf '%s' "${out% }"
+}
+
+# A RUN/ADD body normalized as above but with quotes deleted rather than
+# turned into spaces, so @"$V" reads as @$V.
+unquoted_body() {
+    local body="$1"
+    body=${body//\"/}
+    body=${body//\'/}
+    normalize_instruction_body "$body"
 }
 
 # Prints one reason per unpinned npm/yarn/pnpm or pip install in a normalized
@@ -156,17 +170,99 @@ unpinned_installs() {
 # $1 is a normalized RUN/ADD body; the rest are NAME=VALUE for ARGs whose
 # default is a floating ref. Prints one reason per ARG used as a ref:
 # @$V / @${V} (go install, git refs), :$V (image or tag), #$V (ADD git#ref),
-# --branch $V / --branch=$V.
+# --branch $V / --branch=$V / -b $V, or $V as an argument anywhere in a git
+# command (checkout, switch, fetch origin $V, reset --hard $V, ...). Callers
+# pass the body with quotes removed (unquoted_body), so @"$V" and
+# checkout "$V" match. Commands are split on && || ; | so $V in an echo next
+# to a git command doesn't count.
 floating_arg_refs() {
     local body="$1"
     shift
-    local entry="" name="" val="" re=""
+    local entry="" name="" val="" v="" re="" seg="" hit=0
+    local segs=${body//&&/;}
+    segs=${segs//||/;}
+    segs=${segs//|/;}
     for entry in "$@"; do
         name=${entry%%=*}
         val=${entry#*=}
-        re="(@|:|#|--branch[=[:space:]]+)[$][{]?${name}([}:]|[^A-Za-z0-9_]|$)"
+        v="[$][{]?${name}([}:]|[^A-Za-z0-9_]|$)"
+        re="(@|:|#|--branch[=[:space:]]+|(^|[[:space:]])-b[[:space:]]*)${v}"
+        hit=0
         if [[ "$body" =~ $re ]]; then
+            hit=1
+        else
+            while IFS= read -r seg; do
+                if [[ " $seg " =~ [[:space:]/]git[[:space:]] ]] && [[ " $seg" =~ [[:space:]=]${v} ]]; then
+                    hit=1
+                    break
+                fi
+            done <<< "${segs//;/$'\n'}"
+        fi
+        if [ "$hit" -eq 1 ]; then
             printf 'uses ARG %s, whose default is a floating ref (%s), as a ref\n' "$name" "$val"
+        fi
+    done
+}
+
+# Prints "<dash> <name>" (dash is - for <<-, + otherwise) for each heredoc BuildKit opens on this
+# RUN/COPY/ADD line, in order. Like BuildKit's parser, the line is split into
+# shell words (quotes and backslash escapes kept raw, so "use <<EOF syntax" is
+# one word), and a word opens a heredoc only when it is [fd]<<[-]WORD with no
+# further '<' (so <<<EOF, a here-string, doesn't) and it starts the word (so
+# $((1<<SHIFT)), x<<EOF and $V<<EOF don't). The word is the rest with quotes
+# and backslashes removed; ${X} in it stays literal, as in BuildKit. A '#'
+# later in the line is not a comment to BuildKit, so
+# "RUN x # <<EOF" does open a heredoc; its body is checked like any other.
+heredoc_markers() {
+    local s="$1"
+    local w="" c="" q="" name="" dash=""
+    local i=0 n=${#s} inword=0
+    local -a words=()
+    while [ "$i" -lt "$n" ]; do
+        c=${s:$i:1}
+        if [ -n "$q" ]; then
+            w+="$c"
+            if [ "$q" = '"' ] && [ "$c" = "\\" ] && [ $((i + 1)) -lt "$n" ]; then
+                i=$((i + 1))
+                w+="${s:$i:1}"
+            elif [ "$c" = "$q" ]; then
+                q=""
+            fi
+        elif [ "$c" = "\\" ]; then
+            w+="$c"
+            inword=1
+            if [ $((i + 1)) -lt "$n" ]; then
+                i=$((i + 1))
+                w+="${s:$i:1}"
+            fi
+        elif [ "$c" = "'" ] || [ "$c" = '"' ]; then
+            q=$c
+            w+="$c"
+            inword=1
+        elif [[ "$c" == [[:space:]] ]]; then
+            if [ "$inword" -eq 1 ]; then
+                words+=("$w")
+                w=""
+                inword=0
+            fi
+        else
+            w+="$c"
+            inword=1
+        fi
+        i=$((i + 1))
+    done
+    if [ "$inword" -eq 1 ]; then
+        words+=("$w")
+    fi
+    for w in "${words[@]}"; do
+        if [[ "$w" =~ ^[0-9]*'<<'(-?)([^<]+)$ ]]; then
+            dash=${BASH_REMATCH[1]}
+            name=${BASH_REMATCH[2]}
+            name=${name//\"/}
+            name=${name//\'/}
+            name=${name//\\/}
+            [ -z "$name" ] && continue
+            printf '%s %s\n' "${dash:-+}" "$name"
         fi
     done
 }
@@ -184,12 +280,15 @@ trap cleanup_self_work EXIT
 # every command in the script, and the bodies of COPY/ADD heredocs (file
 # contents) are dropped so they aren't parsed as instructions. Comment lines
 # inside a RUN heredoc are dropped so "# sha256sum -c" can't count as a check.
+# A body ends only at a line equal to its word (leading tabs stripped for
+# <<-), as in BuildKit. When no such line exists, UNTERMINATED_TAG is printed
+# and nothing is skipped: the lines after the instruction are parsed again.
+UNTERMINATED_TAG=$'\x01unterminated-heredoc'
 emit_logical_lines() {
     local file="$1"
-    local line="" acc="" logical="" word="" body="" dash="" marker_re="" rest=""
-    local i=0 n=0 is_run=0 t=0
+    local line="" acc="" logical="" folded="" word="" body="" cmp="" dash=""
+    local i=0 n=0 is_run=0 t=0 start=0 found=0
     local -a lines=() terms=() dashes=()
-    marker_re='<<(-?)["'"'"']?([A-Za-z_][A-Za-z0-9_]*)["'"'"']?'
     mapfile -t lines < "$file"
     n=${#lines[@]}
     while [ "$i" -lt "$n" ]; do
@@ -203,36 +302,50 @@ emit_logical_lines() {
         acc=""
         terms=()
         dashes=()
-        if [[ "$logical" =~ ^[[:space:]]*([Rr][Uu][Nn]|[Cc][Oo][Pp][Yy]|[Aa][Dd][Dd])[[:space:]] ]]; then
+        if [[ "$logical" == *'<<'* ]] \
+            && [[ "$logical" =~ ^[[:space:]]*([Rr][Uu][Nn]|[Cc][Oo][Pp][Yy]|[Aa][Dd][Dd])[[:space:]] ]]; then
             is_run=0
             [[ "$logical" =~ ^[[:space:]]*[Rr][Uu][Nn][[:space:]] ]] && is_run=1
-            rest=$logical
-            while [[ "$rest" =~ $marker_re ]]; do
-                dashes+=("${BASH_REMATCH[1]}")
-                terms+=("${BASH_REMATCH[2]}")
-                rest=${rest#*"${BASH_REMATCH[0]}"}
-            done
+            while read -r dash word; do
+                [ "$dash" = "-" ] || dash=""
+                dashes+=("$dash")
+                terms+=("$word")
+            done < <(heredoc_markers "$logical")
         fi
         if [ "${#terms[@]}" -gt 0 ]; then
+            start=$i
+            folded=$logical
             for t in "${!terms[@]}"; do
                 word=${terms[$t]}
                 dash=${dashes[$t]}
+                found=0
                 while [ "$i" -lt "$n" ]; do
                     body=${lines[$i]%$'\r'}
                     i=$((i + 1))
+                    cmp=$body
                     if [ -n "$dash" ]; then
-                        body="${body#"${body%%[!$'\t']*}"}"
+                        cmp="${cmp#"${cmp%%[!$'\t']*}"}"
                     fi
-                    [ "$body" = "$word" ] && break
+                    if [ "$cmp" = "$word" ]; then
+                        found=1
+                        break
+                    fi
                     if [ "$is_run" -eq 1 ]; then
                         body="${body#"${body%%[![:space:]]*}"}"
                         case "$body" in
                             ''|'#'*) ;;
-                            *) logical+=" ; ${body%\\}" ;;
+                            *) folded+=" ; ${body%\\}" ;;
                         esac
                     fi
                 done
+                if [ "$found" -eq 0 ]; then
+                    printf '%s %s\n' "$UNTERMINATED_TAG" "$word"
+                    i=$start
+                    folded=$logical
+                    break
+                fi
             done
+            logical=$folded
         fi
         printf '%s\n' "$logical"
     done
@@ -278,11 +391,11 @@ check_one() {
     local root="$2"
     local line="" trimmed="" rest="" image="" tok="" stage_name="" lower="" rel="" s=""
     local argval="" body="" raw_body="" from_ref="" reason=""
-    local argname=""
+    local argname="" entry=""
     local i=0 next=0 name_i=0 froms=0 status=0 is_from=0 allowed=0
     local -a tokens=()
     local -a stages=()
-    local -a floating_args=()
+    local -a floating_args=() kept=()
 
     rel="${file#"$root"/}"
     if [ ! -r "$file" ]; then
@@ -292,6 +405,11 @@ check_one() {
     fi
 
     while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" == "$UNTERMINATED_TAG "* ]]; then
+            echo "FAIL: ${rel} has an unterminated heredoc (no line equal to ${line#"$UNTERMINATED_TAG "})" >&2
+            status=1
+            continue
+        fi
         trimmed="${line#"${line%%[![:space:]]*}"}"
         case "$trimmed" in
             ''|'#'*)
@@ -372,6 +490,12 @@ check_one() {
             argval=${argval//\"/}
             argval=${argval//\'/}
             argval=${argval%%[[:space:]]*}
+            # A redeclared default replaces the earlier one.
+            kept=()
+            for entry in "${floating_args[@]}"; do
+                [ "${entry%%=*}" = "$argname" ] || kept+=("$entry")
+            done
+            floating_args=("${kept[@]}")
             case "$(printf '%s' "$argval" | tr '[:upper:]' '[:lower:]')" in
                 latest|master|main|head)
                     # Only a problem if it's used as a ref; see floating_arg_refs.
@@ -382,7 +506,8 @@ check_one() {
         fi
 
         if [[ "$trimmed" =~ ^[Rr][Uu][Nn][[:space:]]+(.*)$ ]]; then
-            body=$(normalize_instruction_body "${BASH_REMATCH[1]}")
+            raw_body=${BASH_REMATCH[1]}
+            body=$(normalize_instruction_body "$raw_body")
             if [[ "$body" =~ $FLOATING_REF_RE ]]; then
                 echo "FAIL: ${rel} has a floating ref (@${BASH_REMATCH[1]}) in a RUN: ${trimmed}" >&2
                 status=1
@@ -400,7 +525,7 @@ check_one() {
                 [ -z "$reason" ] && continue
                 echo "FAIL: ${rel} ${reason} in a RUN: ${trimmed}" >&2
                 status=1
-            done < <(floating_arg_refs "$body" "${floating_args[@]}")
+            done < <(floating_arg_refs "$(unquoted_body "$raw_body")" "${floating_args[@]}")
             continue
         fi
 
@@ -411,7 +536,7 @@ check_one() {
                 [ -z "$reason" ] && continue
                 echo "FAIL: ${rel} ${reason} in an ADD: ${trimmed}" >&2
                 status=1
-            done < <(floating_arg_refs "$body" "${floating_args[@]}")
+            done < <(floating_arg_refs "$(unquoted_body "$raw_body")" "${floating_args[@]}")
             if [[ " $body " =~ [[:space:]][Hh][Tt][Tt][Pp][Ss]?:// ]] \
                 && [[ ! "$raw_body" =~ --checksum=sha256:[0-9a-fA-F]{64} ]]; then
                 echo "FAIL: ${rel} ADDs a URL without --checksum=sha256:...: ${trimmed}" >&2
@@ -657,11 +782,106 @@ B'
     reject_case continuation-latest "@latest" "go install @latest on a RUN continuation line rejected" \
         'RUN echo hi \
  && go install example.com/t@latest'
+    # A '<<' that BuildKit doesn't treat as a heredoc must not hide the
+    # instructions after it.
+    reject_case heredoc-not-quoted "unpinned FROM: FROM alpine:3.18" "<<WORD inside quotes opens no heredoc" \
+        'RUN echo "use <<EOF syntax"
+FROM alpine:3.18
+EOF'
+    # shellcheck disable=SC2016 # $((...)) is Dockerfile text.
+    reject_case heredoc-not-arith "unpinned FROM: FROM alpine:3.18" "1<<SHIFT in arithmetic opens no heredoc" \
+        'RUN echo $((1<<SHIFT))
+FROM alpine:3.18
+SHIFT'
+    reject_case heredoc-not-herestring "unpinned FROM: FROM alpine:3.18" "<<< here-string opens no heredoc" \
+        'RUN cat <<<EOF
+FROM alpine:3.18
+EOF'
+    reject_case heredoc-unterminated "unterminated heredoc (no line equal to EOF)" "unterminated heredoc rejected" \
+        'RUN <<EOF
+echo hi
+FROM alpine:3.18'
+    reject_case heredoc-unterminated-rest "unpinned FROM: FROM alpine:3.18" "unterminated heredoc doesn't swallow the rest" \
+        'RUN <<EOF
+echo hi
+FROM alpine:3.18'
+    reject_case heredoc-trailing-space "unterminated heredoc (no line equal to EOF)" "terminator with trailing space doesn't end the heredoc" \
+        'RUN <<EOF
+echo hi
+EOF 
+FROM alpine:3.18'
+    reject_case heredoc-comment-marker "@latest" "<<WORD after # still opens a heredoc (as in BuildKit)" \
+        'RUN true # <<EOF
+go install example.com/t@latest
+EOF'
+    reject_case heredoc-terminator-lookalikes "@latest" "only a line equal to the word ends the heredoc" \
+        'RUN <<EOF
+echo EOF in the middle
+EOFX
+ EOF
+go install example.com/t@latest
+EOF'
+    # shellcheck disable=SC2016 # $((...)) is Dockerfile text.
+    accept_case heredoc-add-body "ADD and COPY heredoc bodies are file contents" \
+        'ADD <<EOF /etc/notes.txt
+FROM ubuntu:latest
+RUN wget https://example.invalid/t
+EOF
+COPY <<-"EOT" /etc/more.txt
+	EOT is not the end here
+	RUN go install example.com/t@latest
+	EOT
+RUN echo $((1<<2)) "<<not-a-heredoc" && tr a b <<<abc'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-checkout "floating ref (main)" "ARG main used in git -C dir checkout rejected" \
+        'ARG V=main
+RUN git -C /s checkout ${V}'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-clone-b "floating ref (main)" "ARG main used as clone -b rejected" \
+        'ARG V=main
+RUN cd /tmp && git clone -b $V https://example.invalid/r.git /s'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-other-b "floating ref (main)" "ARG main used as -b of a non-git tool rejected" \
+        'ARG V=main
+RUN hg clone -b $V https://example.invalid/r /s'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-at-quoted "floating ref (master)" "ARG master used as @\"\$V\" rejected" \
+        'ARG V=master
+RUN go install example.com/t@"$V"'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-fetch "floating ref (main)" "ARG main used in git fetch origin rejected" \
+        'ARG V=main
+RUN git fetch origin $V'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-switch "floating ref (main)" "ARG main used in git switch rejected" \
+        'ARG V=main
+RUN git switch $V'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-reset "floating ref (HEAD)" "ARG HEAD used in git reset --hard rejected" \
+        'ARG V=HEAD
+RUN /usr/bin/git reset --hard ${V}'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-checkout-heredoc "floating ref (main)" "ARG main used in git checkout \"\$V\" in a heredoc rejected" \
+        'ARG V=main
+RUN <<SH
+cd /s
+git checkout "$V"
+SH'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-colon "floating ref (latest)" "ARG latest used as :\$TAG rejected" \
+        'ARG TAG=latest
+RUN crane export example.invalid/img:$TAG /tmp/fs.tar'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    accept_case arg-redeclared "ARG redeclared to a pinned version accepted" \
+        'ARG V=latest
+ARG V=v1.2.3
+RUN go install example.com/t@${V}'
     accept_case heredocs-ok "pinned heredoc RUN, COPY heredoc content and non-ref ARGs accepted" \
         "ARG BUILD_MODE=main
 ARG CHANNEL=latest
 ARG BRANCH=master
 RUN echo \"mode=\$BUILD_MODE channel=\${CHANNEL}\" && make MODE=\${BUILD_MODE}
+RUN git --version && echo \"\$BUILD_MODE\" | tee /tmp/mode
 RUN <<SH
 set -e
 go install example.com/tool/cmd/tool@v1.2.3
