@@ -391,11 +391,53 @@ func TestRepoACLPermissionFetchAndStoreChannelReplies(t *testing.T) {
 	}
 }
 
+// TestRepoACLStoreToRoleSnapshotAndLLMDenied pins the #106 store → role
+// reply rule to the two channel *.data commands. permission.snapshot and
+// llm.call must stay denied so that rule cannot be widened silently.
+// The *.data allows are the positive control: a deleted rule must fail
+// the test, not look the same as a deny-all file.
+func TestRepoACLStoreToRoleSnapshotAndLLMDenied(t *testing.T) {
+	origRules := aclRules
+	origPath := aclFilePath
+	origMod := lastACLModTime
+	defer func() {
+		aclRules = origRules
+		aclFilePath = origPath
+		lastACLModTime = origMod
+	}()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	repoRoot := filepath.Join(wd, "..", "..")
+	t.Setenv("AEGIS_ACL_FILE", filepath.Join(repoRoot, "config", "acls.yaml"))
+	loadACL()
+	if len(aclRules) == 0 {
+		t.Fatal("aclRules empty after loadACL")
+	}
+
+	roles := []string{"coder-1", "agent-1", "tester-1", "ciso-1", "architect-1", "researcher-1"}
+	for _, role := range roles {
+		for _, cmd := range []string{"permission.snapshot", "llm.call"} {
+			if checkACL("store", role, cmd) {
+				t.Errorf("checkACL(store, %s, %s) = true, want deny", role, cmd)
+			}
+		}
+		for _, cmd := range []string{"channel.get_relevant_since.data", "channel.get_messages.data"} {
+			if !checkACL("store", role, cmd) {
+				t.Errorf("checkACL(store, %s, %s) = false, want allow", role, cmd)
+			}
+		}
+	}
+}
+
 func TestIsReservedHubID(t *testing.T) {
 	cases := []struct {
 		id   string
 		want bool
 	}{
+		{"hub", true},
 		{"hub-perm-fetch", true},
 		{"hub-perm-fetch-123", true},
 		{"hub-perm-fetcher", false},

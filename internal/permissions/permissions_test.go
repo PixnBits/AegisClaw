@@ -178,6 +178,25 @@ func TestIsCapabilityCommand(t *testing.T) {
 	if !IsCapabilityCommand("channel.add_member") {
 		t.Error("channel.add_member is a capability")
 	}
+	// channel.post is a capability. It is in KnownCapabilities, and
+	// DefaultBootstrap grants it to the roles that post (project-manager*,
+	// agent*, coder*, tester*, researcher*, architect*, ciso*,
+	// court-persona*). The ACL-only exclusion list is delivery and events
+	// (channel.posted, channel.activity, channel.turn_result), not the post
+	// action. PR #107 removed only channel.turn_result from this set.
+	if !IsCapabilityCommand("channel.post") {
+		t.Error("channel.post is a capability")
+	}
+	// channel.remove_member is a capability for the same reason as
+	// channel.add_member: membership mutation, not delivery plumbing.
+	// PR #107 kept membership changes capability-gated. remove_member is
+	// deliberately absent from KnownCapabilities and DefaultBootstrap, so
+	// no role VM holds a grant. The sender is web-portal, which is not a
+	// snapshot subject. ACL-only would let agent* and project-manager*
+	// through the broad channel.* store rules.
+	if !IsCapabilityCommand("channel.remove_member") {
+		t.Error("channel.remove_member is a capability")
+	}
 	if !IsCapabilityCommand("llm.call") {
 		t.Error("llm.call is a capability")
 	}
