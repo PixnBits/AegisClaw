@@ -90,6 +90,20 @@ create_raw_rootfs_image() {
     local img_file="$2"
     local size="${3:-512M}"
 
+    # mkfs.ext4 is in /sbin or /usr/sbin. `sudo PATH=$PATH` drops those dirs.
+    local mkfs_ext4
+    mkfs_ext4="$(command -v mkfs.ext4 2>/dev/null || true)"
+    if [ -z "$mkfs_ext4" ] && [ -x /usr/sbin/mkfs.ext4 ]; then
+        mkfs_ext4=/usr/sbin/mkfs.ext4
+    fi
+    if [ -z "$mkfs_ext4" ] && [ -x /sbin/mkfs.ext4 ]; then
+        mkfs_ext4=/sbin/mkfs.ext4
+    fi
+    if [ -z "$mkfs_ext4" ]; then
+        echo "mkfs.ext4 not found: install e2fsprogs (apt-get install e2fsprogs)" >&2
+        exit 1
+    fi
+
     log "Creating raw bootable rootfs image: $img_file (size=$size)"
 
     # Create sparse file
@@ -103,7 +117,7 @@ create_raw_rootfs_image() {
     fi
 
     # Format as ext4
-    if ! mkfs.ext4 -F -L rootfs "$img_file" >/dev/null 2>&1; then
+    if ! "$mkfs_ext4" -F -L rootfs "$img_file" >/dev/null 2>&1; then
         rm -f "$img_file"
         warn "mkfs.ext4 failed for $img_file"
         return 1

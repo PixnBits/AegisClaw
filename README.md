@@ -22,6 +22,7 @@ AegisClaw is a secure, sandboxed AI agent runtime built for safety and reliabili
 - **Firecracker version sensitivity**: The JSON machine configuration schema and vsock device format have changed across releases. We have successfully used both v1.15.x static builds and recent `main` (v1.16.0-dev) builds. Newer builds removed `ht_enabled` (use `"smt": false` instead) and require an `uds_path` inside the vsock object. See the troubleshooting section below for the exact errors and fixes.
 - Go 1.22+
 - Docker (for building microVM filesystems)
+- e2fsprogs (`mkfs.ext4`) and util-linux (`mount`, `losetup`) for building microVM rootfs images
 - Proper environment variables for kernel and rootfs (see below)
 
 ### macOS/Windows (Docker Sandbox)
@@ -37,8 +38,10 @@ AegisClaw is a secure, sandboxed AI agent runtime built for safety and reliabili
 
 ```bash
 # Required on most Linux systems
-sudo apt-get install -y docker.io
+sudo apt-get install -y docker.io e2fsprogs util-linux
 ```
+
+`mkfs.ext4` lives in `/sbin` or `/usr/sbin`, so do not override PATH with `sudo PATH=$PATH` without keeping those directories.
 
 **macOS:**
 
@@ -234,24 +237,30 @@ See `make help` and the SBOM target for details.
 The `apt` package for Firecracker is usually missing or extremely outdated. Use the official static release instead:
 
 ```bash
-# 1. Download a recent release (example uses v1.15.1)
+# 1. Download a recent release (example uses v1.15.1) and the checksum file
+#    GitHub publishes next to that asset. Do not hardcode the hash.
 cd ~/Downloads
 wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz
+wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz.sha256.txt
 
-# 2. Extract
+# 2. Verify the tarball against the published checksum before extracting.
+#    sha256sum exits non-zero on mismatch; do not extract a tarball that fails.
+sha256sum -c firecracker-v1.15.1-x86_64.tgz.sha256.txt
+
+# 3. Extract
 tar -zxvf firecracker-v1.15.1-x86_64.tgz
 
-# 3. Install into a clean, versioned location (recommended pattern)
+# 4. Install into a clean, versioned location (recommended pattern)
 sudo mkdir -p /usr/local/firecracker/v1.15.1
 sudo cp release-v1.15.1-x86_64/firecracker-v1.15.1-x86_64 /usr/local/firecracker/v1.15.1/firecracker
 sudo cp release-v1.15.1-x86_64/jailer-v1.15.1-x86_64     /usr/local/firecracker/v1.15.1/jailer
 sudo chmod +x /usr/local/firecracker/v1.15.1/firecracker /usr/local/firecracker/v1.15.1/jailer
 
-# 4. Create symlinks so `firecracker` and `jailer` are in PATH
+# 5. Create symlinks so `firecracker` and `jailer` are in PATH
 sudo ln -sf /usr/local/firecracker/v1.15.1/firecracker /usr/local/bin/firecracker
 sudo ln -sf /usr/local/firecracker/v1.15.1/jailer     /usr/local/bin/jailer
 
-# 5. Verify
+# 6. Verify
 which firecracker
 firecracker --version
 which jailer
@@ -277,6 +286,9 @@ the virtio-rng driver for guest entropy support; see GitHub #62 and the download
 mkdir -p ~/.aegis/firecracker
 curl -fsSL -o ~/.aegis/firecracker/vmlinux \
   https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.209
+# Same pin as KERNEL_SHA256 in scripts/download-firecracker-kernel.sh.
+# Two spaces between the hash and the path. Stop if this check fails.
+echo "932450603af9175c443f5348aa961326945e3b4b46ba34bab2c714c751ee2f85  ${HOME}/.aegis/firecracker/vmlinux" | sha256sum -c -
 chmod 644 ~/.aegis/firecracker/vmlinux
 ```
 

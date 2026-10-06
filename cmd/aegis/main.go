@@ -1680,6 +1680,13 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Println("⚠ Docker not found in PATH (recommended for some sandboxes)")
 	}
+	// Linux rootfs builds need mkfs.ext4. FindSbinTool also checks /sbin and
+	// /usr/sbin, which `sudo PATH=$PATH` drops. Hint only; do not flip healthy.
+	if stdruntime.GOOS == "linux" {
+		if _, err := sandbox.FindSbinTool("mkfs.ext4"); err != nil {
+			fmt.Printf("⚠ %s\n", err)
+		}
+	}
 	// Ollama is dev-only; don't hard-fail
 
 	// Journey 01 Success Criteria: exact phrasing + exit 0 when healthy
@@ -1981,7 +1988,7 @@ func getTeam(id string) (CLITeam, bool) {
 // getPeerUID returns the effective UID of the process on the other end of
 // a Unix domain socket connection using SO_PEERCRED (Linux only).
 // Returns (uid, true) on success. On non-Linux or error, returns (-1, false).
-// Callers must not treat that failure as authorization for stop or restart.
+// Callers must not treat that failure as authorization except for the read-only allowlist.
 func getPeerUID(conn net.Conn) (int, bool) {
 	unixConn, ok := conn.(*net.UnixConn)
 	if !ok {
@@ -2002,9 +2009,10 @@ func getPeerUID(conn net.Conn) (int, bool) {
 
 // authorizeSocketPeer decides whether a control-socket peer may run op.
 // When peer credentials are available, only root or the original invoking
-// user is allowed (expectedUID must be >= 0 for the user match). When they
-// are not, read-only ops keep the filesystem-mode fallback, but stop and
-// restart are denied so a missing SO_PEERCRED cannot fail open.
+// user is allowed (expectedUID must be >= 0 for the user match); op is not
+// consulted. When they are not, only the read-only allowlist is permitted.
+// stop, restart, channel.fanout, orchestrator.ensure_role, and any unknown
+// op fail closed so a missing SO_PEERCRED cannot fail open.
 func authorizeSocketPeer(op string, peerUID int, peerOK bool, expectedUID int) bool {
 	if peerOK {
 		if peerUID == 0 {
@@ -2013,11 +2021,21 @@ func authorizeSocketPeer(op string, peerUID int, peerOK bool, expectedUID int) b
 		return expectedUID >= 0 && peerUID == expectedUID
 	}
 	switch op {
-	case "stop", "restart":
-		return false
-	default:
+	case "vm.list", "vm list", "vm.logs", "vm.boot_metrics", "health.status", "status", "doctor", "ping":
 		return true
+	default:
+		return false
 	}
+}
+
+// listenUnixPrivate listens on a Unix socket created with mode 0600.
+// net.Listen applies the process umask, which is wider than 0600, so the
+// socket must be created under a restrictive umask. umask is process-wide
+// and is restored before return. Callers still chmod 0600 afterwards.
+func listenUnixPrivate(addr string) (net.Listener, error) {
+	old := syscall.Umask(0177)
+	defer syscall.Umask(old)
+	return net.Listen("unix", addr)
 }
 
 // startSocketServer sets up the hardened Unix socket for CLI/daemon communication.
@@ -2035,7 +2053,7 @@ func startSocketServer(socketAddr string, orch *runtime.Orchestrator) error {
 		_ = os.Remove(addr)
 	}
 
-	listener, err := net.Listen("unix", addr)
+	listener, err := listenUnixPrivate(addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on socket: %w", err)
 	}
@@ -2079,10 +2097,10 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 	defer conn.Close()
 
 	// 7.5.6: Final socket auth hardening (host-daemon.md:Test Requirements / Unix Socket Hardening).
-	// Filesystem sockets are 0600 and chowned to the original invoking user.
+	// Filesystem sockets are created 0600 (umask) and chowned to the original invoking user.
 	// SO_PEERCRED must match root or that user. If peer credentials are
-	// unavailable, read-only ops keep the mode fallback, but stop and restart
-	// are denied after the op is parsed (they must not fail open).
+	// unavailable, only the read-only allowlist is permitted after the op is
+	// parsed. Mutating and unknown ops must not fail open.
 	peerUID, peerOK := getPeerUID(conn)
 	expectedUID := -1
 	if origUser, err := getOriginalUser(); err == nil && origUser != nil {
@@ -2153,6 +2171,8 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			vmID := req.Args["id"]
 			if vmID == "" {
 				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else if err := validateVMID(vmID); err != nil {
+				resp = SocketResponse{OK: false, Error: err.Error()}
 			} else {
 				tail := 200
 				if t := req.Args["tail"]; t != "" {
@@ -2170,9 +2190,13 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		case "vm.boot_metrics":
 			// High-res boot instrumentation (host + guest phases via console parse).
 			// Only produces data when daemon was started with AEGIS_BOOT_TIMING=1.
+			// GetVMBootMetrics reads fc-<id>-console.log and boot-metrics-<id>.json
+			// under the state dir, so id is validated before that call.
 			vmID := req.Args["id"]
 			if vmID == "" {
 				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else if err := validateVMID(vmID); err != nil {
+				resp = SocketResponse{OK: false, Error: err.Error()}
 			} else if orchestrator != nil {
 				m, err := orchestrator.GetVMBootMetrics(context.Background(), vmID)
 				if err != nil {
@@ -2187,10 +2211,14 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			}
 
 		case "vm.diagnose":
-			// Bundled diagnostic snapshot for a VM (very useful for the current web-portal vsock issues)
+			// Bundled diagnostic snapshot for a VM (very useful for the current web-portal vsock issues).
+			// Not on the socket allowlist today; still validate before gatherVMLogs so a
+			// future allowlist entry cannot read outside the state dir.
 			vmID := req.Args["id"]
 			if vmID == "" {
 				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else if err := validateVMID(vmID); err != nil {
+				resp = SocketResponse{OK: false, Error: err.Error()}
 			} else {
 				tail := 300
 				if t := req.Args["tail"]; t != "" {
@@ -2426,7 +2454,49 @@ func getMapInt(m map[string]interface{}, key string) int {
 
 // --- VM Observability Helpers (Phase 0 + Phase 1) ---
 
+// vmIDPattern matches orchestrator and aux component ids: agent-<session>,
+// memory-<session>, court-persona-<p>, court-scribe, store, network-boundary,
+// web-portal, aegishub, project-manager*, coder-*, tester-*, builder*.
+var vmIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// validateVMID rejects caller-supplied ids before they are interpolated into
+// state-dir filenames. ".." is rejected on its own (`a..b` still matches the
+// character class).
+func validateVMID(id string) error {
+	if id == "" {
+		return errors.New("invalid vm id: empty")
+	}
+	if len(id) > 128 {
+		return errors.New("invalid vm id: longer than 128 bytes")
+	}
+	if strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, `\`) || strings.Contains(id, "\x00") {
+		return errors.New("invalid vm id")
+	}
+	if !vmIDPattern.MatchString(id) {
+		return errors.New("invalid vm id")
+	}
+	return nil
+}
+
+// vmLogInsideStateDir reports whether p stays inside stateDir after Clean.
+// filepath.Rel returns a path starting with ".." when p escapes stateDir.
+func vmLogInsideStateDir(stateDir, p string) bool {
+	rel, err := filepath.Rel(stateDir, p)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..")
+}
+
 func getRecentFileContent(path string, tailLines int) string {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return ""
+	}
+	// Do not follow a symlink planted at the log path.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -2440,33 +2510,33 @@ func getRecentFileContent(path string, tailLines int) string {
 
 func gatherVMLogs(stateDir, vmID string, tailLines int) map[string]string {
 	result := map[string]string{}
+	if err := validateVMID(vmID); err != nil {
+		return result
+	}
+
+	read := func(key, p string) {
+		if !vmLogInsideStateDir(stateDir, p) {
+			return
+		}
+		if content := getRecentFileContent(p, tailLines); content != "" {
+			result[key] = content
+		}
+	}
 
 	// Firecracker VMM log
-	vmmPath := filepath.Join(stateDir, "fc-"+vmID+".log")
-	if content := getRecentFileContent(vmmPath, tailLines); content != "" {
-		result["vmm"] = content
-	}
+	read("vmm", filepath.Join(stateDir, "fc-"+vmID+".log"))
 
 	// Guest serial console
-	consolePath := filepath.Join(stateDir, "fc-"+vmID+"-console.log")
-	if content := getRecentFileContent(consolePath, tailLines); content != "" {
-		result["console"] = content
-	}
+	read("console", filepath.Join(stateDir, "fc-"+vmID+"-console.log"))
 
 	// Phase 1 structured guest logs
-	guestPath := filepath.Join(stateDir, vmID+".guest.log")
-	if content := getRecentFileContent(guestPath, tailLines); content != "" {
-		result["guest"] = content
-	}
+	read("guest", filepath.Join(stateDir, vmID+".guest.log"))
 
 	// Aux / managed host components surfaced in `vm list` (e.g. "aegishub" which
 	// is registered via RegisterAuxComponent and shown as type=hub) do not have
 	// fc-*.log files. Their process stdout/stderr is captured to <id>.log by the
 	// managed starter (startManagedHub) so `aegis vm logs <id>` works uniformly.
-	auxLogPath := filepath.Join(stateDir, vmID+".log")
-	if content := getRecentFileContent(auxLogPath, tailLines); content != "" {
-		result["log"] = content
-	}
+	read("log", filepath.Join(stateDir, vmID+".log"))
 
 	return result
 }
