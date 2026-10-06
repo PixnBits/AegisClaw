@@ -31,6 +31,7 @@ type Server struct {
 	bgCancel      context.CancelFunc
 	bgClosed      bool
 	bgWG          sync.WaitGroup
+	bgCloseOnce   sync.Once
 
 	llmUsageMu       sync.Mutex
 	llmUsageLast     uint64
@@ -146,9 +147,17 @@ func (s *Server) EnsureBackgroundPublishers() {
 	})
 }
 
-// goBackground runs fn until it returns and lets Close's callers wait for it.
+// goBackground runs fn until it returns and lets Close wait for it. After
+// Close it starts nothing: the bgWG.Add happens under bgMu only while the
+// Server is open, so it can never race Close's bgWG.Wait.
 func (s *Server) goBackground(fn func()) {
+	s.bgMu.Lock()
+	if s.bgClosed {
+		s.bgMu.Unlock()
+		return
+	}
 	s.bgWG.Add(1)
+	s.bgMu.Unlock()
 	go func() {
 		defer s.bgWG.Done()
 		fn()
@@ -156,7 +165,7 @@ func (s *Server) goBackground(fn func()) {
 }
 
 // waitBackground blocks until every goroutine started by
-// EnsureBackgroundPublishers has returned. Close does not wait.
+// EnsureBackgroundPublishers has returned. Close waits as well.
 func (s *Server) waitBackground() {
 	if s == nil {
 		return
@@ -179,9 +188,21 @@ func (s *Server) backgroundContext() context.Context {
 	return s.bgCtx
 }
 
-// Close stops background publishers started by EnsureBackgroundPublishers.
-// It does not shut down an http.Server started by Start; cancel that Start
-// context for the listener. Safe to call more than once.
+// Close stops background publishers started by EnsureBackgroundPublishers
+// and waits until those goroutines have returned. It does not shut down an
+// http.Server started by Start; cancel that Start context for the listener.
+//
+// Safe to call more than once (the wait runs once; a second call blocks
+// until the first wait finishes, then returns). Safe before
+// EnsureBackgroundPublishers: nothing is running, and goBackground starts
+// nothing once Close has run. Do not call Close from a goBackground
+// function; it waits for that function.
+//
+// The wait is unbounded. Publishers return when the background context is
+// cancelled: the usage feed stops between polls and passes that context into
+// API calls, and each monitoring collect uses a per-tick timeout derived
+// from the same context. APIClient.Call must return when its ctx is done
+// (the portal bridge decode selects on ctx.Done).
 func (s *Server) Close() {
 	if s == nil {
 		return
@@ -193,6 +214,9 @@ func (s *Server) Close() {
 	if cancel != nil {
 		cancel()
 	}
+	s.bgCloseOnce.Do(func() {
+		s.bgWG.Wait()
+	})
 }
 
 // Start starts the dashboard HTTP server (blocks until ctx is done).

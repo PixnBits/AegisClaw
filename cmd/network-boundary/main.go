@@ -685,6 +685,11 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 	// and get proxied through the controlled egress path (allowlists + secrets + audit).
 	go startVSockEgressListener()
 
+	// Flush suppressed usage-drop logs while the hub connection is quiet,
+	// and once more (even inside the window) when this loop exits.
+	stopUsageDropFlusher := startUsageDropFlusher()
+	defer stopUsageDropFlusher()
+
 	// Boundary loop
 	for {
 		var msg Message

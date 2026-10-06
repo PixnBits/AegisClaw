@@ -12,6 +12,9 @@ func (s *Server) startMonitoringPublisher(ctx context.Context) {
 	}
 	s.goBackground(func() {
 		publish := func() {
+			// Child of the background ctx, not context.Background(). Close
+			// cancels ctx and that cancels an in-flight collect; a background
+			// parent would run until spaAPITimeout instead.
 			pctx, cancel := context.WithTimeout(ctx, spaAPITimeout)
 			defer cancel()
 			data := s.collectMonitoringSPA(pctx)
