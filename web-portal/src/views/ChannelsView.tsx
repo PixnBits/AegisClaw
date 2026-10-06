@@ -1,6 +1,8 @@
 import { FormEvent, useCallback, useRef, useState } from 'react';
 import { api } from '@/api/client';
+import { InvalidChannelBadge } from '@/components/channels/InvalidChannelBadge';
 import { Channel } from '@/contracts';
+import { validateChannelId } from '@/lib/channelId';
 import { usePortalStore } from '@/store/portalStore';
 import { ActivityFeed } from '@/components/ActivityFeed/ActivityFeed';
 import { AgentActivitySummary } from '@/components/AgentActivitySummary/AgentActivitySummary';
@@ -40,6 +42,7 @@ export function ChannelsView({ onOpenCanvas, onOpenContext, onGoHome }: Props) {
   const loadChannels = usePortalStore((s) => s.loadChannels);
   const [content, setContent] = useState('');
   const [posting, setPosting] = useState(false);
+  const [createError, setCreateError] = useState('');
   const [cursor, setCursor] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -49,9 +52,21 @@ export function ChannelsView({ onOpenCanvas, onOpenContext, onGoHome }: Props) {
     if (value === '__create__') {
       const id = window.prompt('New channel ID');
       if (!id?.trim()) return;
-      await api.createChannel(id.trim());
+      const trimmed = id.trim();
+      const invalid = validateChannelId(trimmed);
+      if (invalid) {
+        setCreateError(invalid);
+        return;
+      }
+      try {
+        await api.createChannel(trimmed);
+      } catch (err) {
+        setCreateError(err instanceof Error ? err.message : 'Could not create channel');
+        return;
+      }
+      setCreateError('');
       await loadChannels();
-      await selectChannel({ id: id.trim(), members: [] });
+      await selectChannel({ id: trimmed, members: [] });
       return;
     }
     const ch = channels.find((c) => c.id === value);
@@ -101,7 +116,10 @@ export function ChannelsView({ onOpenCanvas, onOpenContext, onGoHome }: Props) {
             {channels.map((ch) => (
               <li key={ch.id}>
                 <button type="button" className="mobile-channel-card" onClick={() => handleSelectChannel(ch)}>
-                  <span className="mobile-channel-card__name">{ch.id}</span>
+                  <span className="mobile-channel-card__name">
+                    {ch.id}
+                    <InvalidChannelBadge idValid={ch.id_valid} idError={ch.id_error} />
+                  </span>
                   <span className="subtle">{(ch.members || []).length} members</span>
                 </button>
               </li>
@@ -144,28 +162,38 @@ export function ChannelsView({ onOpenCanvas, onOpenContext, onGoHome }: Props) {
           <div className="channel-header__identity">
             <p className="eyebrow">Channel</p>
             {showChannelSwitcher ? (
-              <select
-                className="channel-header__select"
-                value={currentChannel.id}
-                aria-label="Switch channel"
-                data-testid="channel-switcher"
-                onChange={(e) => void handleSwitcherChange(e.target.value)}
-              >
-                {channels.map((ch) => (
-                  <option key={ch.id} value={ch.id}>
-                    {ch.id}
-                    {(unreadByChannel[ch.id] || 0) > 0 && ch.id !== currentChannel.id
-                      ? ` (${unreadByChannel[ch.id]})`
-                      : ''}
-                  </option>
-                ))}
-                {isMobile ? <option value="__create__">+ Create new channel…</option> : null}
-              </select>
+              <>
+                <select
+                  className="channel-header__select"
+                  value={currentChannel.id}
+                  aria-label="Switch channel"
+                  data-testid="channel-switcher"
+                  onChange={(e) => void handleSwitcherChange(e.target.value)}
+                >
+                  {channels.map((ch) => (
+                    <option key={ch.id} value={ch.id}>
+                      {ch.id}
+                      {ch.id_valid === false ? ' (invalid id)' : ''}
+                      {(unreadByChannel[ch.id] || 0) > 0 && ch.id !== currentChannel.id
+                        ? ` (${unreadByChannel[ch.id]})`
+                        : ''}
+                    </option>
+                  ))}
+                  {isMobile ? <option value="__create__">+ Create new channel…</option> : null}
+                </select>
+                <InvalidChannelBadge idValid={currentChannel.id_valid} idError={currentChannel.id_error} />
+              </>
             ) : (
               <h2 className="channel-header__title" id="selectedChannelId">
                 {currentChannel.id}
+                <InvalidChannelBadge idValid={currentChannel.id_valid} idError={currentChannel.id_error} />
               </h2>
             )}
+            {createError ? (
+              <p className="form-error" role="alert" data-testid="create-channel-error">
+                {createError}
+              </p>
+            ) : null}
           </div>
           <div className="channel-header__actions">
             {isMobile && (

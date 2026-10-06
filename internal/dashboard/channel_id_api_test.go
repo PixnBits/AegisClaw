@@ -43,6 +43,47 @@ func (c *recordAPIClient) called(action string) bool {
 	return false
 }
 
+func TestChannelListAnnotatesInvalidIDs(t *testing.T) {
+	client := &recordAPIClient{data: map[string]interface{}{
+		"channel.list": []interface{}{
+			map[string]interface{}{"id": "main", "members": []interface{}{}},
+			map[string]interface{}{"id": "MyProj"},
+			map[string]interface{}{"id": "q4_plan"},
+		},
+	}}
+	srv, err := New("127.0.0.1:0", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptestRequest(t, http.MethodGet, "/api/channels", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Channels []map[string]interface{} `json:"channels"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Channels) != 3 {
+		t.Fatalf("channels %#v", body.Channels)
+	}
+	if _, ok := body.Channels[0]["id_valid"]; ok {
+		t.Fatalf("valid channel annotated: %#v", body.Channels[0])
+	}
+	for _, ch := range body.Channels[1:] {
+		if ch["id_valid"] != false {
+			t.Fatalf("id %v valid flag %#v", ch["id"], ch["id_valid"])
+		}
+		msg, _ := ch["id_error"].(string)
+		if !strings.Contains(msg, "invalid channel id") || !strings.Contains(msg, "<= 45 chars") {
+			t.Fatalf("id %v error %q", ch["id"], msg)
+		}
+	}
+}
+
 func TestSPACreateChannelIDRule(t *testing.T) {
 	reject := []string{"MyProj", "q4_plan", "v1.2", strings.Repeat("a", 46), ""}
 	for _, id := range reject {
@@ -120,7 +161,7 @@ func TestGoalSubmitChannelErrors(t *testing.T) {
 	req := httptestRequest(t, http.MethodPost, "/api/goals", strings.NewReader(`{"goal":"ship","channel_id":"main"}`))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("ensure refusal: status %d body %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "invalid vm id") {

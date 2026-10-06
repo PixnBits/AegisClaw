@@ -1,19 +1,9 @@
 import { FormEvent, useState } from 'react';
 import { api } from '@/api/client';
+import { InvalidChannelBadge } from '@/components/channels/InvalidChannelBadge';
 import { Channel } from '@/contracts';
+import { validateChannelId } from '@/lib/channelId';
 import { usePortalStore } from '@/store/portalStore';
-
-// Same rule as channelid.ValidateChannelID (MaxChannelIDLen = 45).
-const channelIDRe = /^[a-z][a-z0-9-]*$/;
-const maxChannelIDLen = 45;
-const channelIDErrorText = 'invalid channel id: must match ^[a-z][a-z0-9-]*$ and be <= 45 chars';
-
-function channelIDError(id: string): string | null {
-  if (!channelIDRe.test(id) || id.includes('--') || id.endsWith('-') || id.length > maxChannelIDLen) {
-    return channelIDErrorText;
-  }
-  return null;
-}
 
 type Props = {
   channels: Channel[];
@@ -32,7 +22,7 @@ export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Pr
     e.preventDefault();
     const id = newId.trim();
     if (!id) return;
-    const invalid = channelIDError(id);
+    const invalid = validateChannelId(id);
     if (invalid) {
       setCreateError(invalid);
       return;
@@ -40,8 +30,8 @@ export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Pr
     setCreateError('');
     try {
       await api.createChannel(id);
-    } catch {
-      setCreateError('Could not create channel');
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Could not create channel');
       return;
     }
     setNewId('');
@@ -66,6 +56,7 @@ export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Pr
             >
               <span className="channel-list-item__label">
                 {ch.id}
+                <InvalidChannelBadge idValid={ch.id_valid} idError={ch.id_error} />
                 {(unreadByChannel[ch.id] || 0) > 0 && currentChannelId !== ch.id ? (
                   <span className="channel-unread-badge" aria-label="Unread messages">
                     {unreadByChannel[ch.id] > 9 ? '9+' : unreadByChannel[ch.id]}
@@ -94,7 +85,7 @@ export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Pr
         </button>
       </form>
       {createError ? (
-        <p className="subtle" role="alert" data-testid="create-channel-error">
+        <p className="form-error" role="alert" data-testid="create-channel-error">
           {createError}
         </p>
       ) : null}

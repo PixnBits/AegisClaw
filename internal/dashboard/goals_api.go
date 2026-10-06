@@ -3,7 +3,11 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
+	"os"
+	"syscall"
 
 	"AegisClaw/internal/channelid"
 	"AegisClaw/internal/dashboard/contracts"
@@ -44,7 +48,11 @@ func (s *Server) handleAPIGoals(w http.ResponseWriter, r *http.Request) {
 		"channel_id": channelID,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		msg := sanitize.Text(sanitize.ContextChat, err.Error())
+		if msg == "" {
+			msg = "goal submit failed"
+		}
+		http.Error(w, msg, goalSubmitStatus(err))
 		return
 	}
 	if m, ok := raw.(map[string]interface{}); ok {
@@ -88,4 +96,41 @@ func (s *Server) handleAPIGoals(w http.ResponseWriter, r *http.Request) {
 		"stages":     stages,
 		"preview":    true,
 	})
+}
+
+// goalSubmitStatus maps a fetchRaw error onto an HTTP status. Input
+// validation happens before fetchRaw and stays 400.
+//
+// 503 Service Unavailable: the daemon couldn't be reached or didn't answer
+// in time. That covers UnavailableError (nil API client, noop bridge, a
+// failed dial or Call), any net.Error including timeouts, connection
+// refused, a missing socket (os.ErrNotExist), context.DeadlineExceeded and
+// context.Canceled.
+// 502 Bad Gateway: the daemon or hub answered with an error
+// (UpstreamError), including an empty response. Anything else is also 502;
+// it isn't the client's fault.
+//
+// The web-portal bridge returns transport failures from APIClient.Call and
+// daemon Command=="error" replies as APIResponse.Success == false. fetchRaw
+// types the two cases so errors.Is and errors.As can tell them apart.
+func goalSubmitStatus(err error) int {
+	if goalUnavailable(err) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusBadGateway
+}
+
+func goalUnavailable(err error) bool {
+	var unavail *UnavailableError
+	if errors.As(err, &unavail) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, context.DeadlineExceeded) || // also a net.Error; kept for clarity
+		errors.Is(err, context.Canceled)
 }

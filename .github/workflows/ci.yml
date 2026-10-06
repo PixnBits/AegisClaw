@@ -126,6 +126,35 @@ jobs:
             exit 1
           fi
 
+  portal-unit-tests:
+    name: Portal Unit Tests (vitest)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web-portal
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web-portal/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest

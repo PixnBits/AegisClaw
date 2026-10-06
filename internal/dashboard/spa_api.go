@@ -91,6 +91,28 @@ func requestAuthorizedChannelNotify(r *http.Request) bool {
 	return requestFromLoopback(r)
 }
 
+// annotateChannelListIDs sets id_valid and id_error on channels whose id
+// fails channelid.ValidateChannelID. Valid channels are left unchanged.
+// A non-list payload is returned as-is.
+func annotateChannelListIDs(data interface{}) interface{} {
+	list, ok := data.([]interface{})
+	if !ok {
+		return data
+	}
+	for _, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		if err := channelid.ValidateChannelID(id); err != nil {
+			m["id_valid"] = false
+			m["id_error"] = sanitize.Text(sanitize.ContextChat, err.Error())
+		}
+	}
+	return list
+}
+
 func (s *Server) handleAPIDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -135,7 +157,7 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"channels": sanitize.Value(sanitize.ContextChat, data),
+			"channels": annotateChannelListIDs(sanitize.Value(sanitize.ContextChat, data)),
 		})
 
 	case len(parts) == 0 && r.Method == http.MethodPost:

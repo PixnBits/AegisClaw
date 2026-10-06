@@ -3040,8 +3040,10 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 		chID = "plan-demo"
 	}
 	// Ensure the channel exists before ensure/add_member/post (store channel.post is no-op if missing).
-	if chData, err := sendToComponentViaHub("store", "channel.get", map[string]string{"id": chID}); err != nil || chData == nil {
-		_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": chID})
+	// An invalid id or a refused create must not continue into ensure_role.
+	if err := ensurePMGoalChannel(chID, sendPMGoalViaHub); err != nil {
+		fmt.Fprintf(os.Stderr, "pm goal: %v\n", err)
+		os.Exit(1)
 	}
 	// 1. Ensure the project-manager role (starts the PM VM with channel attachment).
 	// Use retry for robustness against transient hub/receiver reply latency (e.g. right after
@@ -5861,6 +5863,7 @@ func setupDefaultMainChannelAndMembers() {
 	}
 	hasMain := false
 	if arr, ok := listResp.([]interface{}); ok {
+		logInvalidChannelIDs(arr)
 		for _, c := range arr {
 			if m, ok := c.(map[string]interface{}); ok {
 				if id, ok := m["id"].(string); ok && id == "main" {

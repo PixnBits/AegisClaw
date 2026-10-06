@@ -25,7 +25,18 @@ async function fetchJSON<T>(url: string, options: RequestInit = {}): Promise<T> 
     headers: { Accept: 'application/json', ...(options.headers as Record<string, string>) },
     ...options,
   });
-  if (!response.ok) throw new Error(`Request failed: ${url} (${response.status})`);
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = (await response.text()).trim();
+    } catch {
+      detail = '';
+    }
+    if (!detail) detail = `Request failed: ${url} (${response.status})`;
+    // Server errors are short plain text; cap anything else (e.g. a proxy page).
+    if (detail.length > 300) detail = `${detail.slice(0, 300)}…`;
+    throw new Error(detail);
+  }
   return response.json() as Promise<T>;
 }
 

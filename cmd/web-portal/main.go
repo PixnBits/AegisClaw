@@ -235,10 +235,9 @@ func main() {
 type noopAPIClient struct{}
 
 func (n *noopAPIClient) Call(ctx context.Context, action string, payload json.RawMessage) (*dashboard.APIResponse, error) {
-	return &dashboard.APIResponse{
-		Success: false,
-		Error:   "web-portal: no live daemon connection (start via `sudo ./bin/aegis start` per AGENTS.md). Action not available: " + action,
-	}, nil
+	// No session is "daemon unavailable", not a daemon error reply. Call
+	// returns UnavailableError so goal submit maps it to 503.
+	return nil, &dashboard.UnavailableError{Err: fmt.Errorf("web-portal: no live daemon connection (start via `sudo ./bin/aegis start` per AGENTS.md). Action not available: %s", action)}
 }
 
 // e2eFixtureClient provides realistic seeded responses for isolated E2E / contract tests.
@@ -250,7 +249,7 @@ type e2eFixtureClient struct {
 	proposals   map[string]map[string]interface{}
 	created     map[string]map[string]interface{} // ephemeral creates during a test run
 	channels    map[string]map[string]interface{} // mutable channel state for collab E2E
-	permissions *permissions.State                  // capability grants + visibility (permissions-model.md)
+	permissions *permissions.State                // capability grants + visibility (permissions-model.md)
 }
 
 func tryNewE2EFixtureClient() *e2eFixtureClient {
@@ -554,8 +553,8 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 
 	case "git.branches":
 		data, _ := json.Marshal(map[string]interface{}{
-			"branches":        []string{"main", "proposal-123-feature"},
-			"current_branch":  "main",
+			"branches":       []string{"main", "proposal-123-feature"},
+			"current_branch": "main",
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
@@ -716,7 +715,9 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		var req map[string]string
 		json.Unmarshal(payload, &req)
 		id := req["id"]
-		if id == "" { id = "prop-demo-001" }
+		if id == "" {
+			id = "prop-demo-001"
+		}
 		proposal := map[string]interface{}{
 			"id": id, "title": "Demo skill proposal", "description": "Fixture proposal for E2E contract tests of round feedback.",
 			"status": "in_review", "round": 2, "risk": "medium",
@@ -734,8 +735,8 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 			},
 		}
 		data, _ := json.Marshal(map[string]interface{}{
-			"proposal":             proposal,
-			"review_status":        map[string]interface{}{"current_round": 2, "current_count": 2, "pending_reviews": 1, "approval_count": 1, "reject_count": 0, "ask_count": 1, "abstain_count": 0},
+			"proposal":               proposal,
+			"review_status":          map[string]interface{}{"current_round": 2, "current_count": 2, "pending_reviews": 1, "approval_count": 1, "reject_count": 0, "ask_count": 1, "abstain_count": 0},
 			"current_round_feedback": currentFeedback,
 			"previous_rounds":        previousRounds,
 			"revision_history":       []interface{}{},
