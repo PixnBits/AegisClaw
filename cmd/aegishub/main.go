@@ -90,8 +90,13 @@ func deliverPendingRPC(msg Message) bool {
 	if w.dest != "" && msg.Source != w.dest && msg.Source != "hub" {
 		return false
 	}
+	// Pushes such as channel.turn must not complete an unrelated waiter.
+	// permission.snapshot is both a Hub→agent push and Store's RPC reply
+	// command, so a waiter that requested that exact command still receives it.
 	if hubclient.IsUnsolicitedCommand(msg.Command) {
-		return false
+		if w == nil || msg.Command != w.command {
+			return false
+		}
 	}
 	select {
 	case w.ch <- msg:
