@@ -26,6 +26,20 @@ type Server struct {
 	harnessCache map[string]contracts.HarnessState
 
 	bgPublishOnce sync.Once
+	bgMu          sync.Mutex
+	bgCtx         context.Context
+	bgCancel      context.CancelFunc
+	bgClosed      bool
+	bgWG          sync.WaitGroup
+
+	llmUsageMu       sync.Mutex
+	llmUsageLast     uint64
+	llmUsageReady    bool
+	llmUsageInterval time.Duration
+	// llmUsageEmit, when set, observes each record the feed publishes.
+	// Production leaves it nil. Tests use it because the STOMP session
+	// buffer drops frames once it is full.
+	llmUsageEmit func(agentID string, rec map[string]interface{})
 }
 
 // APIClient abstracts daemon API calls for the dashboard.
@@ -42,10 +56,13 @@ type APIResponse struct {
 
 // New creates the dashboard server.
 func New(addr string, client APIClient) (*Server, error) {
+	bgCtx, bgCancel := context.WithCancel(context.Background())
 	s := &Server{
 		addr:      addr,
 		apiClient: client,
 		mux:       http.NewServeMux(),
+		bgCtx:     bgCtx,
+		bgCancel:  bgCancel,
 	}
 	s.funcMap = template.FuncMap{
 		"fmtTime": func(t time.Time) string {
@@ -115,15 +132,81 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // EnsureBackgroundPublishers starts STOMP/monitoring background work once.
 // Deferred from New() so unit tests that construct a Server without serving
 // traffic do not race with bridge-call assertions.
+// The LLM usage feed starts here, not in Start. cmd/web-portal serves with
+// its own listener and never calls Start, so a feed started only from Start
+// would not run in production. sync.Once keeps a later Start from launching
+// a second feed.
 func (s *Server) EnsureBackgroundPublishers() {
 	s.bgPublishOnce.Do(func() {
-		s.startMonitoringPublisher()
+		ctx := s.backgroundContext()
+		s.startMonitoringPublisher(ctx)
+		interval := s.llmUsageInterval
+		// The feed must use this ctx. context.Background() here ignores Close.
+		s.goBackground(func() { s.runLLMUsageFeed(ctx, interval) })
 	})
+}
+
+// goBackground runs fn until it returns and lets Close's callers wait for it.
+func (s *Server) goBackground(fn func()) {
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		fn()
+	}()
+}
+
+// waitBackground blocks until every goroutine started by
+// EnsureBackgroundPublishers has returned. Close does not wait.
+func (s *Server) waitBackground() {
+	if s == nil {
+		return
+	}
+	s.bgWG.Wait()
+}
+
+// backgroundContext is cancelled by Close. New installs one; a Server built
+// without New gets one on first use. Close before that use still cancels it,
+// so a feed cannot start on a context Close will never see.
+func (s *Server) backgroundContext() context.Context {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	if s.bgCtx == nil {
+		s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
+		if s.bgClosed {
+			s.bgCancel()
+		}
+	}
+	return s.bgCtx
+}
+
+// Close stops background publishers started by EnsureBackgroundPublishers.
+// It does not shut down an http.Server started by Start; cancel that Start
+// context for the listener. Safe to call more than once.
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	s.bgMu.Lock()
+	s.bgClosed = true
+	cancel := s.bgCancel
+	s.bgMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // Start starts the dashboard HTTP server (blocks until ctx is done).
 func (s *Server) Start(ctx context.Context) error {
 	s.EnsureBackgroundPublishers()
+	if ctx != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				s.Close()
+			case <-s.backgroundContext().Done():
+			}
+		}()
+	}
 	srv := &http.Server{
 		Addr:    s.addr,
 		Handler: s,

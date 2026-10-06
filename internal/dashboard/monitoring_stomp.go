@@ -5,20 +5,28 @@ import (
 	"time"
 )
 
-func (s *Server) startMonitoringPublisher() {
+func (s *Server) startMonitoringPublisher(ctx context.Context) {
 	s.initSTOMP()
-	go func() {
+	if ctx == nil {
+		return
+	}
+	s.goBackground(func() {
 		publish := func() {
-			ctx, cancel := context.WithTimeout(context.Background(), spaAPITimeout)
-			data := s.collectMonitoringSPA(ctx)
-			cancel()
+			pctx, cancel := context.WithTimeout(ctx, spaAPITimeout)
+			defer cancel()
+			data := s.collectMonitoringSPA(pctx)
 			s.stompPublisher().PublishMonitoringStats(data)
 		}
 		publish()
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			publish()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				publish()
+			}
 		}
-	}()
+	})
 }

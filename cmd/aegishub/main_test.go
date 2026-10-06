@@ -437,14 +437,16 @@ func TestRepoACLStoreToRoleSnapshotAndLLMDenied(t *testing.T) {
 // store -> network-boundary does not allow llm.usage.recorded: the record is a
 // one-way hub push and Store does not reply. Neither rule may contain an
 // llm wildcard (a pattern starting with "llm." and ending with "*").
+// Portal reads (web-portal and daemon-internal* -> store) allow llm.usage.summary
+// and llm.usage.recent only. llm.usage.record is denied at the ACL for those
+// sources. Replies ride the existing store -> portal "*" rules.
 // Any parsed rule whose source or destination is store fails if a command
 // pattern starts with "llm" and contains "*" (llm.*, llm.usage.*).
 // Guest llm.* rules (role <-> network-boundary) are pre-existing and out of scope.
 //
 // error stays allowed by the source "*" destination "*" catch-all for unrelated
-// RPCs. Usage rejection is logged, not replied, so this rule does not grant
-// error or llm.usage.recorded. Portal and daemon-internal query grants are
-// intentionally absent.
+// RPCs. Usage rejection is logged, not replied, so the network-boundary rule
+// does not grant error or llm.usage.recorded.
 func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	origRules := aclRules
 	origPath := aclFilePath
@@ -489,12 +491,30 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 			t.Errorf("store -> network-boundary %s = true, want deny", cmd)
 		}
 	}
-	for _, src := range []string{"daemon-internal", "daemon-internal-1", "web-portal"} {
-		if checkACL(src, "store", "llm.usage.summary") {
-			t.Errorf("%s -> store llm.usage.summary = true, want deny (portal query is a later change)", src)
+	portalSources := []string{"web-portal", "daemon-internal", "daemon-internal-1", "daemon-internal-42"}
+	for _, src := range portalSources {
+		for _, cmd := range []string{"llm.usage.summary", "llm.usage.recent"} {
+			if !checkACL(src, "store", cmd) {
+				t.Errorf("%s -> store %s = false, want allow", src, cmd)
+			}
 		}
-		if checkACL(src, "store", "llm.usage.record") {
-			t.Errorf("%s -> store llm.usage.record = true, want deny", src)
+		for _, cmd := range []string{
+			"llm.usage.record", "llm.usage.recorded", "llm.usage.x",
+			"llm.usage", "llm.usagex", "llm.chat", "llm.foo",
+		} {
+			if checkACL(src, "store", cmd) {
+				t.Errorf("%s -> store %s = true, want deny", src, cmd)
+			}
+		}
+		for _, cmd := range []string{"llm.usage.summary", "llm.usage.recent", "error"} {
+			if !checkACL("store", src, cmd) {
+				t.Errorf("store -> %s %s = false, want allow", src, cmd)
+			}
+		}
+	}
+	for _, src := range []string{"aegis-cli-internal", "coder-1", "store"} {
+		if checkACL(src, "store", "llm.usage.summary") {
+			t.Errorf("%s -> store llm.usage.summary = true, want deny", src)
 		}
 	}
 
@@ -515,6 +535,17 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	}
 	if containsCmd(storeNB, "llm.usage.recorded") || hasLLMDotWildcard(storeNB) {
 		t.Errorf("store -> network-boundary commands = %v, want no llm.usage.recorded and no llm.* wildcard", storeNB)
+	}
+	for _, pair := range [][2]string{
+		{"web-portal", "store"},
+		{"daemon-internal*", "store"},
+		{"daemon-internal-*", "store"},
+	} {
+		cmds := commandsBetween(pair[0], pair[1])
+		if !containsCmd(cmds, "llm.usage.summary") || !containsCmd(cmds, "llm.usage.recent") ||
+			containsCmd(cmds, "llm.usage.*") || containsCmd(cmds, "llm.usage.record") || containsCmd(cmds, "llm.*") {
+			t.Errorf("%s -> %s commands = %v", pair[0], pair[1], cmds)
+		}
 	}
 }
 
