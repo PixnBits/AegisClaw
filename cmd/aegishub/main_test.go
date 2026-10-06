@@ -862,6 +862,12 @@ func TestIsOneWayHubPush(t *testing.T) {
 	if !isOneWayHubPush("llm.usage.record") {
 		t.Fatal("llm.usage.record must be a one-way push")
 	}
+	if !isOneWayHubPush("audit.append") {
+		t.Fatal("audit.append must be a one-way push")
+	}
+	if isOneWayHubPush("audit.appended") || isOneWayHubPush("audit.list") {
+		t.Fatal("audit.appended and audit.list are not pushes")
+	}
 	if isOneWayHubPush("llm.usage.recorded") {
 		t.Fatal("llm.usage.recorded is not a push")
 	}
