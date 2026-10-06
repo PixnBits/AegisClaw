@@ -1981,7 +1981,7 @@ func getTeam(id string) (CLITeam, bool) {
 // getPeerUID returns the effective UID of the process on the other end of
 // a Unix domain socket connection using SO_PEERCRED (Linux only).
 // Returns (uid, true) on success. On non-Linux or error, returns (-1, false).
-// Callers must not treat that failure as authorization for stop or restart.
+// Callers must not treat that failure as authorization except for the read-only allowlist.
 func getPeerUID(conn net.Conn) (int, bool) {
 	unixConn, ok := conn.(*net.UnixConn)
 	if !ok {
@@ -2002,9 +2002,10 @@ func getPeerUID(conn net.Conn) (int, bool) {
 
 // authorizeSocketPeer decides whether a control-socket peer may run op.
 // When peer credentials are available, only root or the original invoking
-// user is allowed (expectedUID must be >= 0 for the user match). When they
-// are not, read-only ops keep the filesystem-mode fallback, but stop and
-// restart are denied so a missing SO_PEERCRED cannot fail open.
+// user is allowed (expectedUID must be >= 0 for the user match); op is not
+// consulted. When they are not, only the read-only allowlist is permitted.
+// stop, restart, channel.fanout, orchestrator.ensure_role, and any unknown
+// op fail closed so a missing SO_PEERCRED cannot fail open.
 func authorizeSocketPeer(op string, peerUID int, peerOK bool, expectedUID int) bool {
 	if peerOK {
 		if peerUID == 0 {
@@ -2013,11 +2014,21 @@ func authorizeSocketPeer(op string, peerUID int, peerOK bool, expectedUID int) b
 		return expectedUID >= 0 && peerUID == expectedUID
 	}
 	switch op {
-	case "stop", "restart":
-		return false
-	default:
+	case "vm.list", "vm list", "vm.logs", "vm.boot_metrics", "health.status", "status", "doctor", "ping":
 		return true
+	default:
+		return false
 	}
+}
+
+// listenUnixPrivate listens on a Unix socket created with mode 0600.
+// net.Listen applies the process umask, which is wider than 0600, so the
+// socket must be created under a restrictive umask. umask is process-wide
+// and is restored before return. Callers still chmod 0600 afterwards.
+func listenUnixPrivate(addr string) (net.Listener, error) {
+	old := syscall.Umask(0177)
+	defer syscall.Umask(old)
+	return net.Listen("unix", addr)
 }
 
 // startSocketServer sets up the hardened Unix socket for CLI/daemon communication.
@@ -2035,7 +2046,7 @@ func startSocketServer(socketAddr string, orch *runtime.Orchestrator) error {
 		_ = os.Remove(addr)
 	}
 
-	listener, err := net.Listen("unix", addr)
+	listener, err := listenUnixPrivate(addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on socket: %w", err)
 	}
@@ -2079,10 +2090,10 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 	defer conn.Close()
 
 	// 7.5.6: Final socket auth hardening (host-daemon.md:Test Requirements / Unix Socket Hardening).
-	// Filesystem sockets are 0600 and chowned to the original invoking user.
+	// Filesystem sockets are created 0600 (umask) and chowned to the original invoking user.
 	// SO_PEERCRED must match root or that user. If peer credentials are
-	// unavailable, read-only ops keep the mode fallback, but stop and restart
-	// are denied after the op is parsed (they must not fail open).
+	// unavailable, only the read-only allowlist is permitted after the op is
+	// parsed. Mutating and unknown ops must not fail open.
 	peerUID, peerOK := getPeerUID(conn)
 	expectedUID := -1
 	if origUser, err := getOriginalUser(); err == nil && origUser != nil {

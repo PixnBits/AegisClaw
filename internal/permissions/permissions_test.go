@@ -6,18 +6,62 @@ import (
 )
 
 func TestSubjectMatches(t *testing.T) {
-	cases := []struct{ subject, pattern string; want bool }{
+	cases := []struct {
+		subject, pattern string
+		want             bool
+	}{
 		{"project-manager-abc", "project-manager*", true},
+		{"project-manager", "project-manager*", true},
+		{"project-manager-1", "project-manager*", true},
+		{"project-managerX", "project-manager*", false},
 		{"coder-xyz", "project-manager*", false},
 		{"agent-1", "agent*", true},
+		{"agent", "agent*", true},
+		{"agentX", "agent*", false},
 		{"agent-1", "agent-1", true},
 		{"agent-2", "agent-1", false},
 		{"anything", "*", true},
+		{"court-persona-x", "court-persona-*", true},
+		{"court-persona-ciso", "court-persona-*", true},
+		{"court-persona", "court-persona-*", false},
+		{"memory.get_context", "memory.*", true},
+		{"memoryfoo", "memory.*", false},
 	}
 	for _, c := range cases {
 		if got := SubjectMatches(c.subject, c.pattern); got != c.want {
 			t.Errorf("SubjectMatches(%q,%q)=%v want %v", c.subject, c.pattern, got, c.want)
 		}
+	}
+}
+
+func TestPersonaPattern_DoesNotWidenUndashedIDs(t *testing.T) {
+	if got := PersonaPattern("project-manager-abc"); got != "project-manager-*" {
+		t.Fatalf("PersonaPattern(project-manager-abc)=%q", got)
+	}
+	// Last-dash split of "project-managerX" is "project-*", not the PM wildcard.
+	// That derived id must not inherit project-manager* grants.
+	got := PersonaPattern("project-managerX")
+	if got == "project-manager*" || SubjectMatches("project-managerX", "project-manager*") {
+		t.Fatalf("lookalike mapped onto project-manager*: pattern %q", got)
+	}
+	state := DefaultBootstrap()
+	if HasGrant(state, "project-managerX", "channel.post") || HasGrant(state, got, "channel.post") {
+		t.Fatalf("project-managerX (persona %q) inherited channel.post", got)
+	}
+	if !HasGrant(state, "project-manager", "channel.post") || !HasGrant(state, "project-manager-1", "channel.post") {
+		t.Fatal("real project-manager ids should keep channel.post")
+	}
+}
+
+func TestIsMicroVMSource_DashBoundary(t *testing.T) {
+	if !IsMicroVMSourcePublic("project-manager") || !IsMicroVMSourcePublic("project-manager-1") {
+		t.Fatal("project-manager and project-manager-1 are microVM sources")
+	}
+	if IsMicroVMSourcePublic("project-managerX") {
+		t.Fatal("project-managerX must not be treated as project-manager")
+	}
+	if !IsMicroVMSourcePublic("court-persona-ciso") {
+		t.Fatal("court-persona-ciso is a microVM source")
 	}
 }
 

@@ -208,11 +208,60 @@ func TestACLMatch(t *testing.T) {
 		{"scribe.notify_review", "scribe.notify_review", true},
 		{"foo", "foobar", false}, // stricter now
 		{"test", "test", true},
+		// Command patterns keep raw prefix matching (not the ID boundary rule).
+		{"coder*", "coderX", true},
+		{"channel.*", "channel.post", true},
 	}
 	for _, tt := range tests {
 		got := aclMatch(tt.pattern, tt.value)
 		if got != tt.want {
 			t.Errorf("aclMatch(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestACLIDMatch(t *testing.T) {
+	tests := []struct {
+		pattern string
+		value   string
+		want    bool
+	}{
+		{"*", "anything", true},
+		{"project-manager*", "project-manager", true},
+		{"project-manager*", "project-manager-1", true},
+		{"project-manager*", "project-managerX", false},
+		{"coder*", "coder", true},
+		{"coder*", "coder-1", true},
+		{"coder*", "coderX", false},
+		{"agent*", "agent", true},
+		{"agent*", "agent-1", true},
+		{"agent*", "agent1", false},
+		{"court-persona-*", "court-persona-x", true},
+		{"court-persona-*", "court-persona-ciso", true},
+		{"court-persona-*", "court-persona", false},
+		{"court-persona-ciso*", "court-persona-ciso", true},
+		{"court-persona-ciso*", "court-persona-ciso-1", true},
+		{"court-persona-ciso*", "court-persona-cisoX", false},
+		{"hub-perm-fetch-*", "hub-perm-fetch-1", true},
+		{"hub-perm-fetch-*", "hub-perm-fetchX", false},
+		{"hub-perm-fetch-*", "hub-perm-fetch", false},
+		{"daemon-internal*", "daemon-internal", true},
+		{"daemon-internal*", "daemon-internal-1", true},
+		{"daemon-internal*", "daemon-internal-fanout-3", true},
+		{"daemon-internal*", "daemon-internalX", false},
+		{"aegis-cli-internal*", "aegis-cli-internal", true},
+		{"aegis-cli-internal*", "aegis-cli-internal-9", true},
+		{"aegis-cli-internal*", "aegis-cli-internalX", false},
+		{"memory*", "memory", true},
+		{"memory*", "memory-session", true},
+		{"memory*", "memoryX", false},
+		{"memory.*", "memory.get_context", true},
+		{"memory.*", "memoryfoo", false},
+	}
+	for _, tt := range tests {
+		got := aclIDMatch(tt.pattern, tt.value)
+		if got != tt.want {
+			t.Errorf("aclIDMatch(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
 		}
 	}
 }
@@ -250,6 +299,8 @@ func TestCheckACL(t *testing.T) {
 		{"agent", "memory", "other", false},
 		{"coder-another-fresh", "network-boundary", "llm.call", true},
 		{"coder-another-fresh", "store", "channel.post", true},
+		{"coderX", "store", "channel.post", false},
+		{"coderX", "network-boundary", "llm.call", false},
 	}
 	for _, c := range cases {
 		if got := checkACL(c.src, c.dst, c.cmd); got != c.want {
@@ -290,11 +341,33 @@ func TestRepoACLPermissionFetchAndStoreChannelReplies(t *testing.T) {
 		{"hub-perm-fetch-1", "store", "permission.snapshot", false},
 		{"hub-perm-fetch", "store", "permission.snapshot", false},
 		{"store", "hub-perm-fetchX", "permission.snapshot", false},
+		{"store", "hub-perm-fetchX", "anything", false},
+		{"store", "hub-perm-fetchX", "channel.post", false},
+		{"store", "hub-perm-fetchX", "permission.grant", false},
 		{"store", "hub-perm-fetch-1", "permission.grant", false},
+		{"hub-perm-fetch-1", "store", "anything", false},
+		{"hub-perm-fetch-1", "store", "channel.post", false},
+		{"hub-perm-fetch-1", "store", "permission.grant", false},
 		// Older store -> project-manager* channel.* rule, not the channel-context block.
 		{"store", "project-manager-x", "channel.get_relevant_since.data", true},
+		{"store", "project-manager", "channel.get_relevant_since.data", true},
+		{"store", "project-managerX", "channel.get_relevant_since.data", false},
+		{"store", "coderX", "channel.get_relevant_since.data", false},
+		{"store", "coder-1", "channel.get_relevant_since.data", true},
 		// No store → unknown dest rule for channel replies (catch-all is response/error/ping/pong/version only).
 		{"store", "some-unknown-dest", "channel.get_relevant_since.data", false},
+		// Role prefix is a dash boundary: project-managerX is not a project manager.
+		{"project-managerX", "store", "channel.post", false},
+		{"project-manager-1", "store", "channel.post", true},
+		{"project-manager", "store", "channel.post", true},
+		{"coderX", "channel-facilitator", "channel.turn_result", false},
+		{"coder-1", "channel-facilitator", "channel.turn_result", true},
+		{"daemon-internal", "store", "channel.list", true},
+		{"daemon-internal-1", "store", "channel.list", true},
+		{"daemon-internal-fanout-3", "store", "channel.list", true},
+		{"aegis-cli-internal", "store", "proposal.list", true},
+		{"aegis-cli-internal-99", "store", "proposal.list", true},
+		{"aegis-cli-internalX", "store", "proposal.list", false},
 	}
 	roles := []string{"agent-x", "coder-x", "tester-x", "ciso-x", "architect-x", "researcher-x"}
 	for _, role := range roles {
