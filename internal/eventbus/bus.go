@@ -1,14 +1,14 @@
 // Package eventbus provides a lightweight, in-process event bus for AegisClaw.
-// 
+//
 // Design notes (per docs/specs/event-system.md + additional-requirements-and-gaps.md):
-// - This is the *internal* (in-process) bus for fast coordination inside a single
-//   Go binary (orchestrator, web-portal thin layer, etc.).
-// - Important cross-component / cross-VM events are still routed through AegisHub
-//   (signed + audited) as the authoritative mediator.
-// - Events are named (e.g. "court.decision.made", "timer.fired", "autonomy.granted").
-// - Payloads are JSON for easy serialization across boundaries.
-// - Supports fire-and-forget + simple request/response patterns via correlation.
-// - Timer / scheduled background task support is included (one-shot for now).
+//   - This is the *internal* (in-process) bus for fast coordination inside a single
+//     Go binary (orchestrator, web-portal thin layer, etc.).
+//   - Important cross-component / cross-VM events are still routed through AegisHub
+//     (signed + audited) as the authoritative mediator.
+//   - Events are named (e.g. "court.decision.made", "timer.fired", "autonomy.granted").
+//   - Payloads are JSON for easy serialization across boundaries.
+//   - Supports fire-and-forget + simple request/response patterns via correlation.
+//   - Timer / scheduled background task support is included (one-shot and recurring).
 //
 // Security / TCB considerations:
 // - No secrets in events.
@@ -47,9 +47,9 @@ type Handler func(Event)
 
 // Subscription allows unsubscribing from an event.
 type Subscription struct {
-	name    string
-	id      int
-	unsub   func()
+	name  string
+	id    int
+	unsub func()
 }
 
 // Unsubscribe removes this handler from the bus.
@@ -177,7 +177,7 @@ func WithSource(source string) PublishOption {
 var DefaultBus = New()
 
 // Publish and Subscribe on the default bus for very simple use cases.
-func Publish(e Event) { DefaultBus.Publish(e) }
+func Publish(e Event)                                { DefaultBus.Publish(e) }
 func Subscribe(name string, h Handler) *Subscription { return DefaultBus.Subscribe(name, h) }
 func PublishJSON(name string, payload interface{}, opts ...PublishOption) {
 	DefaultBus.PublishJSON(name, payload, opts...)
@@ -189,7 +189,7 @@ func PublishJSON(name string, payload interface{}, opts ...PublishOption) {
 // This directly supports autonomy durations, team task scheduling, and
 // background services from the user journeys.
 //
-// Persistence (Store VM) and recurring timers are future work.
+// Persistence across restarts (Store VM) is future work.
 
 type Timer struct {
 	ID        string          `json:"id"`
@@ -226,8 +226,8 @@ func (b *Bus) ScheduleTimer(d time.Duration, eventName string, payload any, opts
 	t := time.AfterFunc(d, func() {
 		// Build the event to publish on fire
 		firePayload := map[string]interface{}{
-			"timer":     timerInfo,
-			"original":  payload,
+			"timer":    timerInfo,
+			"original": payload,
 		}
 		b.PublishJSON(eventName, firePayload, append(opts, WithSource("eventbus.timer"))...)
 	})
@@ -253,19 +253,20 @@ func (b *Bus) CancelTimer(id string) bool {
 	return false
 }
 
-// timers holds active time.Timer handles for cancellation (not exported).
-// Note: We extend the Bus struct here via the methods above (the field is added lazily).
-// For a production version we would initialize it in New().
-
-// ScheduleRecurring schedules a recurring timer that automatically re-fires at the
-// given interval until CancelTimer is called with the returned ID.
+// ScheduleRecurring schedules a recurring timer that publishes eventName
+// (or "timer.fired" when eventName is empty) every interval until CancelTimer
+// is called with the returned ID. An interval <= 0 defaults to one minute.
 //
-// This is a pragmatic, self-contained implementation for 7.2 background services.
-// It uses the existing one-shot timer machinery + a small re-schedule closure.
-// Cancellation works through the normal CancelTimer path.
+// The returned ID is stable for the life of the schedule and is registered in
+// the bus timer table. Each fire publishes directly, then re-arms with
+// time.AfterFunc. The schedule does not subscribe to eventName, so an unrelated
+// publish of that name does not create another recurrence or another timer.
+// The callback checks under the bus lock that the ID is still registered before
+// publishing and before re-arming, so CancelTimer stops the schedule at any
+// point, including after it has already fired.
 //
-// Persistence across restarts and more advanced features (jitter, exact alignment,
-// separate recurring ID tracking) remain future work (Store VM + follow-up slices).
+// The published payload matches ScheduleTimer: {"timer": Timer, "original": payload}
+// with source "eventbus.timer". Persistence across restarts is future work.
 func (b *Bus) ScheduleRecurring(interval time.Duration, eventName string, payload any, opts ...PublishOption) string {
 	if interval <= 0 {
 		interval = time.Minute
@@ -274,26 +275,62 @@ func (b *Bus) ScheduleRecurring(interval time.Duration, eventName string, payloa
 		eventName = "timer.fired"
 	}
 
-	var id string
-	var scheduleNext func()
-
-	scheduleNext = func() {
-		id = b.ScheduleTimer(interval, eventName, payload, opts...)
-		// After this timer fires, automatically schedule the next one.
-		// We do this by subscribing a one-shot handler on the event that re-schedules.
-		var sub *Subscription
-		sub = b.Subscribe(eventName, func(e Event) {
-			// Only act on events that came from our timer chain (best-effort via source).
-			// In practice this works well because we control the events we publish.
-			scheduleNext()
-			if sub != nil {
-				sub.Unsubscribe()
-			}
-		})
-		_ = sub
+	var raw json.RawMessage
+	if payload != nil {
+		if data, err := json.Marshal(payload); err == nil {
+			raw = data
+		}
 	}
 
-	scheduleNext()
+	// Own this slice. append(opts, ...) would write into the caller's array
+	// when cap(opts) > len(opts), and every fire would repeat that write.
+	publishOpts := make([]PublishOption, len(opts)+1)
+	copy(publishOpts, opts)
+	publishOpts[len(opts)] = WithSource("eventbus.timer")
+
+	id := fmt.Sprintf("tmr-%d", time.Now().UnixNano())
+
+	// requireExisting is false only for the initial arm, which runs before the
+	// ID is visible to CancelTimer. Later arms must observe the registration
+	// under b.mu and create the next AfterFunc before releasing it, or a
+	// cancel in that window could be overwritten by a new timer.
+	var arm func(requireExisting bool)
+	arm = func(requireExisting bool) {
+		deadline := time.Now().Add(interval).UTC()
+
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if requireExisting {
+			if _, ok := b.timers[id]; !ok {
+				return
+			}
+		}
+
+		b.timers[id] = time.AfterFunc(interval, func() {
+			b.mu.Lock()
+			_, stillActive := b.timers[id]
+			b.mu.Unlock()
+			if !stillActive {
+				return
+			}
+
+			timerInfo := Timer{
+				ID:        id,
+				EventName: eventName,
+				Payload:   raw,
+				ExpiresAt: deadline,
+			}
+			firePayload := map[string]interface{}{
+				"timer":    timerInfo,
+				"original": payload,
+			}
+			b.PublishJSON(eventName, firePayload, publishOpts...)
+
+			arm(true)
+		})
+	}
+
+	arm(false)
 	return id
 }
 
@@ -315,8 +352,8 @@ func (b *Bus) ErrorCount() int64 {
 // Published as event "approval.request" with this payload (JSON).
 type ApprovalRequest struct {
 	ID          string    `json:"id"`
-	Source      string    `json:"source"`      // e.g. "agent:researcher-3", "timer:daily-summary"
-	Action      string    `json:"action"`      // e.g. "deploy-skill", "send-external-message"
+	Source      string    `json:"source"` // e.g. "agent:researcher-3", "timer:daily-summary"
+	Action      string    `json:"action"` // e.g. "deploy-skill", "send-external-message"
 	Description string    `json:"description"`
 	Deadline    time.Time `json:"deadline,omitempty"`
 	TraceID     string    `json:"trace_id,omitempty"`
