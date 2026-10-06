@@ -245,6 +245,37 @@ func TestGetRecentFileContent(t *testing.T) {
 	if got := readRecentWithTimeout(t, fifo, 50, 2*time.Second); got != "" {
 		t.Fatalf("fifo returned %q, want empty", got)
 	}
+
+	// /dev/null is a character device. A read is EOF, so "" alone does not
+	// prove the regular-file check ran.
+	nullInfo, err := os.Lstat("/dev/null")
+	if err != nil {
+		t.Fatalf("lstat /dev/null: %v", err)
+	}
+	if nullInfo.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("/dev/null is a symlink; O_NOFOLLOW would hide the device check")
+	}
+	if nullInfo.Mode().IsRegular() {
+		t.Fatal("/dev/null is a regular file; device case not exercised")
+	}
+	if got := readRecentWithTimeout(t, "/dev/null", 50, 2*time.Second); got != "" {
+		t.Fatalf("/dev/null returned %q, want empty", got)
+	}
+
+	// An idle FIFO reads as EOF, so deleting the IsRegular check still
+	// returns "". Hold the write end open: ReadAll then blocks.
+	held := filepath.Join(dir, "fifo-held.log")
+	if err := syscall.Mkfifo(held, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hold, err := os.OpenFile(held, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hold.Close() })
+	if got := readRecentWithTimeout(t, held, 50, 2*time.Second); got != "" {
+		t.Fatalf("held fifo returned %q, want empty", got)
+	}
 }
 
 func readRecentWithTimeout(t *testing.T, path string, tail int, d time.Duration) string {

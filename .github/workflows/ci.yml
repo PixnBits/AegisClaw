@@ -22,14 +22,12 @@ jobs:
           bash scripts/test-download-kernel-checksum.sh
           bash scripts/test-dockerfile-digests.sh
           bash scripts/test-build-microvms-args.sh
-          if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck \
-              scripts/download-firecracker-kernel.sh \
-              scripts/test-download-kernel-checksum.sh \
-              scripts/test-dockerfile-digests.sh \
-              scripts/build-microvms-docker.sh \
-              scripts/test-build-microvms-args.sh
-          fi
+          shellcheck \
+            scripts/download-firecracker-kernel.sh \
+            scripts/test-download-kernel-checksum.sh \
+            scripts/test-dockerfile-digests.sh \
+            scripts/build-microvms-docker.sh \
+            scripts/test-build-microvms-args.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5

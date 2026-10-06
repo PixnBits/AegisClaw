@@ -150,6 +150,65 @@ func useLLMUsage(t *testing.T) {
 	t.Cleanup(resetLLMUsageRecords)
 }
 
+func TestDispatchLLMUsageCommands(t *testing.T) {
+	chdirTempAssertNoPackageAudit(t)
+	useLLMUsage(t)
+	w := testStoreWorld(t)
+	payload := map[string]interface{}{
+		"agent_id":          "coder-1",
+		"model":             "qwen",
+		"tokens_prompt":     float64(3),
+		"tokens_completion": float64(1),
+		"success":           true,
+	}
+
+	resp := Message{Timestamp: "2026-10-06T00:00:00Z"}
+	skip := dispatchStoreCommand(Message{
+		Source: "network-boundary", Command: "llm.usage.record", Payload: payload,
+	}, &resp, w)
+	if !skip {
+		t.Fatal("llm.usage.record from network-boundary: skipReply = false, want true")
+	}
+	got := llmUsageSnapshot()
+	if len(got) != 1 || got[0]["agent_id"] != "coder-1" || got[0]["model"] != "qwen" {
+		t.Fatalf("stored %#v, want the network-boundary record", got)
+	}
+
+	resp = Message{Timestamp: "2026-10-06T00:00:00Z"}
+	skip = dispatchStoreCommand(Message{
+		Source: "web-portal", Command: "llm.usage.summary", Payload: map[string]interface{}{},
+	}, &resp, w)
+	if skip {
+		t.Fatal("llm.usage.summary skipReply = true, want false")
+	}
+	if resp.Command != "llm.usage.summary" {
+		t.Fatalf("summary command %q", resp.Command)
+	}
+
+	resp = Message{Timestamp: "2026-10-06T00:00:00Z"}
+	skip = dispatchStoreCommand(Message{
+		Source: "web-portal", Command: "llm.usage.recent", Payload: map[string]interface{}{"limit": float64(10)},
+	}, &resp, w)
+	if skip {
+		t.Fatal("llm.usage.recent skipReply = true, want false")
+	}
+	if resp.Command != "llm.usage.recent" {
+		t.Fatalf("recent command %q", resp.Command)
+	}
+
+	resetLLMUsageRecords()
+	resp = Message{Timestamp: "2026-10-06T00:00:00Z"}
+	skip = dispatchStoreCommand(Message{
+		Source: "coder-1", Command: "llm.usage.record", Payload: payload,
+	}, &resp, w)
+	if !skip {
+		t.Fatal("llm.usage.record from coder-1: skipReply = false, want true")
+	}
+	if n := len(llmUsageSnapshot()); n != 0 {
+		t.Fatalf("non-boundary source stored %d records", n)
+	}
+}
+
 func TestLLMUsageRecordSummaryRecentHandlers(t *testing.T) {
 	useLLMUsage(t)
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -242,6 +301,29 @@ func TestLLMUsageRecentLimitCapAndDefault(t *testing.T) {
 	}
 }
 
+func TestLLMUsageRecentClampsLimitAbove500(t *testing.T) {
+	// Raising llmUsageRecentMax to 5000 returns 501 rows for limit 501.
+	useLLMUsage(t)
+	const present = 600
+	for i := 0; i < present; i++ {
+		resp := handleLLMUsageRecord(Message{
+			Source:  "network-boundary",
+			Command: "llm.usage.record",
+			Payload: map[string]interface{}{"agent_id": "coder-1", "model": "m", "tokens_prompt": i, "success": true},
+		})
+		assertNoLLMUsageReply(t, resp)
+	}
+	if n := len(llmUsageSnapshot()); n != present {
+		t.Fatalf("stored %d, want %d", n, present)
+	}
+	for _, limit := range []float64{501, 1000, 5000, 5001} {
+		got := recentRows(t, handleLLMUsageRecent(Message{Payload: map[string]interface{}{"limit": limit}}))
+		if len(got) != llmUsageRecentMax || len(got) > 500 {
+			t.Fatalf("limit %v returned %d, want 500", limit, len(got))
+		}
+	}
+}
+
 func TestLLMUsageRecentFiltersAgentID(t *testing.T) {
 	useLLMUsage(t)
 	for i, agent := range []string{"coder-1", "pm", "coder-1"} {
@@ -328,12 +410,31 @@ func TestLLMUsageRecordCap(t *testing.T) {
 func TestLLMUsageRecordRejectsNonBoundarySource(t *testing.T) {
 	useLLMUsage(t)
 	payload := map[string]interface{}{"agent_id": "coder-1", "model": "qwen", "tokens_prompt": 1, "success": true}
-	for _, src := range []string{"", "store", "daemon-internal", "web-portal", "coder-1"} {
-		resp := handleLLMUsageRecord(Message{Source: src, Command: "llm.usage.record", Payload: payload})
-		assertNoLLMUsageReply(t, resp)
+	// Exact Source match only. HasPrefix("network-boundary") and EqualFold both accept a row below.
+	rejected := []struct {
+		name   string
+		source string
+	}{
+		{name: "empty", source: ""},
+		{name: "store", source: "store"},
+		{name: "daemon-internal", source: "daemon-internal"},
+		{name: "web-portal", source: "web-portal"},
+		{name: "coder-1", source: "coder-1"},
+		{name: "suffix", source: "network-boundary-x"},
+		{name: "case", source: "Network-Boundary"},
+		{name: "trailing-space", source: "network-boundary "},
+		{name: "prefix", source: "xnetwork-boundary"},
+		{name: "numeric-suffix", source: "network-boundary-1"},
 	}
-	if n := len(llmUsageSnapshot()); n != 0 {
-		t.Fatalf("rejected sources stored %d records", n)
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			resetLLMUsageRecords()
+			resp := handleLLMUsageRecord(Message{Source: tc.source, Command: "llm.usage.record", Payload: payload})
+			assertNoLLMUsageReply(t, resp)
+			if n := len(llmUsageSnapshot()); n != 0 {
+				t.Fatalf("source %q stored %d records", tc.source, n)
+			}
+		})
 	}
 	ok := handleLLMUsageRecord(Message{Source: "network-boundary", Command: "llm.usage.record", Payload: payload})
 	assertNoLLMUsageReply(t, ok)

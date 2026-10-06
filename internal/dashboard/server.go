@@ -29,6 +29,8 @@ type Server struct {
 	bgMu          sync.Mutex
 	bgCtx         context.Context
 	bgCancel      context.CancelFunc
+	bgClosed      bool
+	bgWG          sync.WaitGroup
 
 	llmUsageMu       sync.Mutex
 	llmUsageLast     uint64
@@ -137,19 +139,42 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) EnsureBackgroundPublishers() {
 	s.bgPublishOnce.Do(func() {
 		ctx := s.backgroundContext()
-		s.startMonitoringPublisher()
+		s.startMonitoringPublisher(ctx)
 		interval := s.llmUsageInterval
-		go s.runLLMUsageFeed(ctx, interval)
+		// The feed must use this ctx. context.Background() here ignores Close.
+		s.goBackground(func() { s.runLLMUsageFeed(ctx, interval) })
 	})
 }
 
+// goBackground runs fn until it returns and lets Close's callers wait for it.
+func (s *Server) goBackground(fn func()) {
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		fn()
+	}()
+}
+
+// waitBackground blocks until every goroutine started by
+// EnsureBackgroundPublishers has returned. Close does not wait.
+func (s *Server) waitBackground() {
+	if s == nil {
+		return
+	}
+	s.bgWG.Wait()
+}
+
 // backgroundContext is cancelled by Close. New installs one; a Server built
-// without New gets one on first use.
+// without New gets one on first use. Close before that use still cancels it,
+// so a feed cannot start on a context Close will never see.
 func (s *Server) backgroundContext() context.Context {
 	s.bgMu.Lock()
 	defer s.bgMu.Unlock()
 	if s.bgCtx == nil {
 		s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
+		if s.bgClosed {
+			s.bgCancel()
+		}
 	}
 	return s.bgCtx
 }
@@ -162,6 +187,7 @@ func (s *Server) Close() {
 		return
 	}
 	s.bgMu.Lock()
+	s.bgClosed = true
 	cancel := s.bgCancel
 	s.bgMu.Unlock()
 	if cancel != nil {
