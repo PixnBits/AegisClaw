@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -461,6 +462,21 @@ func dispatchStoreCommand(msg Message, response *Message, w *storeWorld) (skipRe
 
 		response.Command = "secrets.pushed"
 		response.Payload = map[string]interface{}{"status": "encrypted blob sent", "skills": len(secrets)}
+
+	// Reply to the one-way secrets.update forward. An error/unknown-command
+	// frame would be stray traffic and the hub would reject it as an ACL violation.
+	case "secrets.response":
+		if msg.Source != "network-boundary" {
+			response.Command = "error"
+			response.Payload = "unknown command"
+			break
+		}
+		if payload, ok := msg.Payload.(map[string]interface{}); ok {
+			if errVal, ok := payload["error"]; ok {
+				log.Printf("secrets.update rejected by network-boundary: %v", errVal)
+			}
+		}
+		return true
 
 	// === Teams (minimal stub for Phase 5 Teams plan slice) ===
 	case "team.create":

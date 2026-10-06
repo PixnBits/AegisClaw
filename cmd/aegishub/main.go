@@ -1092,6 +1092,25 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 				}
 				continue
 			}
+			// Exact command/destination only; not a generic Store-outbound forward.
+			if isStoreSecretsUpdate(componentID, msg) {
+				if !checkACL(msg.Source, msg.Destination, msg.Command) {
+					encoder.Encode(map[string]string{"error": "ERR_ACL_VIOLATION"})
+					log.Printf("Audit: ACL violation %s -> %s : %s", msg.Source, msg.Destination, msg.Command)
+					continue
+				}
+				registeredMutex.RLock()
+				destComponent, exists := registered["network-boundary"]
+				registeredMutex.RUnlock()
+				if exists && destComponent.Encoders != nil {
+					destComponent.Encoders.Mutex.Lock()
+					_ = destComponent.Encoders.Encoder.Encode(msg)
+					destComponent.Encoders.Mutex.Unlock()
+				} else {
+					debugLog("hub", fmt.Sprintf("secrets.update dropped: %s not registered", msg.Destination))
+				}
+				continue
+			}
 			if componentID == "store" && msg.Source == "store" {
 				debugLog("hub", fmt.Sprintf("store outbound ignored cmd=%q dest=%s", msg.Command, msg.Destination))
 				continue
@@ -1102,6 +1121,15 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			encoders.Mutex.Unlock()
 		}
 	}
+}
+
+// isStoreSecretsUpdate reports the one Store-originated command the hub
+// forwards to network-boundary without a reply frame.
+func isStoreSecretsUpdate(componentID string, msg Message) bool {
+	return componentID == "store" &&
+		msg.Source == "store" &&
+		msg.Command == "secrets.update" &&
+		msg.Destination == "network-boundary"
 }
 
 // isOneWayHubReply reports commands that are fire-and-forget replies on the wire (hubclient.Reply),
