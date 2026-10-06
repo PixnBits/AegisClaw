@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"AegisClaw/internal/permissions"
 )
@@ -28,6 +29,61 @@ func TestHubPermissionAllowed_BootstrapFallback(t *testing.T) {
 	}
 	if !hubPermissionAllowed("court-persona-senior-coder", "channel.get_relevant_since") {
 		t.Error("bootstrap fallback should allow court persona channel.get_relevant_since")
+	}
+}
+
+func TestCheckHubPermission_ChannelBootstrapFallback(t *testing.T) {
+	// No cached snapshot and no store — bootstrap fallback applies.
+	// Denied checks spawn emitPermissionRequest; that returns immediately with no store.
+	permSnapMu.Lock()
+	savedSnaps := permSnapshots
+	savedBootstrap := permBootstrap
+	permSnapshots = map[string]permissions.Snapshot{}
+	permBootstrap = permissions.DefaultBootstrap()
+	permSnapMu.Unlock()
+
+	registeredMutex.Lock()
+	savedStore, hadStore := registered["store"]
+	delete(registered, "store")
+	registeredMutex.Unlock()
+
+	t.Cleanup(func() {
+		time.Sleep(20 * time.Millisecond)
+		permSnapMu.Lock()
+		permSnapshots = savedSnaps
+		permBootstrap = savedBootstrap
+		permSnapMu.Unlock()
+		if !hadStore {
+			return
+		}
+		registeredMutex.Lock()
+		registered["store"] = savedStore
+		registeredMutex.Unlock()
+	})
+
+	if allowed, reason := checkHubPermission("coder-1", "channel.add_member"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("coder-1 channel.add_member: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("tester-1", "channel.add_member"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("tester-1 channel.add_member: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("project-manager-main", "channel.add_member"); !allowed || reason != "" {
+		t.Errorf("project-manager-main channel.add_member: allowed=%v reason=%q, want allowed", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("agent-1", "channel.turn"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("agent-1 channel.turn: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("project-manager-main", "channel.turn"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("project-manager-main channel.turn: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("agent-1", "channel.member_turn_update"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("agent-1 channel.member_turn_update: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("project-manager-main", "channel.member_turn_update"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("project-manager-main channel.member_turn_update: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("coder-1", "channel.turn_result"); !allowed || reason != "" {
+		t.Errorf("coder-1 channel.turn_result: allowed=%v reason=%q, want allowed", allowed, reason)
 	}
 }
 

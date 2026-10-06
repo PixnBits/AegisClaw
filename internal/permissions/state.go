@@ -153,6 +153,7 @@ func DefaultBootstrap() *State {
 	// Project Manager: channel + LLM + memory + safe discovery + turn anchor tools
 	for _, cap := range []string{
 		"channel.create", "channel.list", "channel.get", "channel.join", "channel.post",
+		"channel.add_member",
 		"channel.get_relevant_since", "channel.get_messages",
 		"llm.call", "memory.store", "memory.query", "tool.list", "tool.search",
 	} {

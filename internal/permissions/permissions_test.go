@@ -112,23 +112,48 @@ func TestIsCapabilityCommand(t *testing.T) {
 	if IsCapabilityCommand("channel.activity") {
 		t.Error("channel.activity is collaboration delivery, not capability-gated")
 	}
-	if IsCapabilityCommand("channel.turn") {
-		t.Error("channel.turn is collaboration delivery, not capability-gated")
+	if !IsCapabilityCommand("channel.turn") {
+		t.Error("channel.turn is a capability")
 	}
 	if IsCapabilityCommand("channel.turn_result") {
 		t.Error("channel.turn_result is collaboration delivery, not capability-gated")
 	}
-	if IsCapabilityCommand("channel.member_turn_update") {
-		t.Error("channel.member_turn_update is collaboration delivery, not capability-gated")
+	if !IsCapabilityCommand("channel.member_turn_update") {
+		t.Error("channel.member_turn_update is a capability")
 	}
-	if IsCapabilityCommand("channel.add_member") {
-		t.Error("channel.add_member is collaboration delivery, not capability-gated")
+	if !IsCapabilityCommand("channel.add_member") {
+		t.Error("channel.add_member is a capability")
 	}
 	if !IsCapabilityCommand("llm.call") {
 		t.Error("llm.call is a capability")
 	}
 	if IsCapabilityCommand("register") {
 		t.Error("register is not capability-gated")
+	}
+}
+
+func TestDefaultBootstrap_ChannelAddMemberPMOnly(t *testing.T) {
+	state := DefaultBootstrap()
+	caps := KnownCapabilities()
+
+	pm := BuildSnapshot(state, "project-manager-main", caps)
+	if !pm.AllowedTools["channel.add_member"] {
+		t.Error("project-manager-main should be allowed channel.add_member")
+	}
+	coder := BuildSnapshot(state, "coder-1", caps)
+	if coder.AllowedTools["channel.add_member"] {
+		t.Error("coder-1 should not be allowed channel.add_member")
+	}
+	tester := BuildSnapshot(state, "tester-1", caps)
+	if tester.AllowedTools["channel.add_member"] {
+		t.Error("tester-1 should not be allowed channel.add_member")
+	}
+	agent := BuildSnapshot(state, "agent-1", caps)
+	if agent.AllowedTools["channel.turn"] || agent.AllowedTools["channel.member_turn_update"] {
+		t.Error("agent-1 should not be allowed channel.turn or channel.member_turn_update")
+	}
+	if pm.AllowedTools["channel.turn"] || pm.AllowedTools["channel.member_turn_update"] {
+		t.Error("project-manager-main should not be allowed channel.turn or channel.member_turn_update")
 	}
 }
 
