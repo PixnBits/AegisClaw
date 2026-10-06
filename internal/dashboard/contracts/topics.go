@@ -17,6 +17,7 @@ const (
 	TopicChannelPrefix      = "/topic/channel."
 	TopicHarnessPrefix      = "/topic/harness."
 	TopicProposalPrefix     = "/topic/proposal."
+	TopicLLMUsagePrefix     = "/topic/metrics.llm-usage"
 
 	// LegacyChannelMessagesPrefix is deprecated; use TopicChannelPrefix.
 	LegacyChannelMessagesPrefix = "/topic/channels."
@@ -61,6 +62,14 @@ func ProposalUpdatesTopic(proposalID string) string {
 	return TopicProposalPrefix + proposalID + ".updates"
 }
 
+// LLMUsageTopic returns the global metrics topic, or the per-agent topic when agentID is set.
+func LLMUsageTopic(agentID string) string {
+	if agentID == "" {
+		return TopicLLMUsagePrefix
+	}
+	return TopicLLMUsagePrefix + "." + agentID
+}
+
 // IsAllowedTopic reports whether a browser may subscribe to destination.
 func IsAllowedTopic(destination string) bool {
 	dest := strings.TrimSpace(destination)
@@ -85,6 +94,9 @@ func IsAllowedTopic(destination string) bool {
 	}
 	if strings.HasPrefix(dest, TopicProposalPrefix) && strings.HasSuffix(dest, ".updates") {
 		return segmentCount(dest, ".") >= 3
+	}
+	if dest == TopicLLMUsagePrefix || strings.HasPrefix(dest, TopicLLMUsagePrefix+".") {
+		return true
 	}
 	return false
 }
@@ -133,6 +145,8 @@ func TopicsForView(view View, ctx ViewContext) []string {
 		if ctx.SessionID != "" {
 			topics = append(topics, ConversationUpdatesTopic(ctx.SessionID))
 		}
+	case ViewAgents:
+		topics = append(topics, TopicMonitoringStats)
 	}
 	return topics
 }

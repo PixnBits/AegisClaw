@@ -228,6 +228,10 @@ rules:
     - llm.*
 
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
+# Exact commands only, no wildcards. network-boundary -> store grants llm.usage.record
+# and nothing else under llm. The record is a one-way hub push (isOneWayHubPush);
+# Store logs rejections and does not reply, so llm.usage.recorded is not granted.
+# Portal/daemon-internal query rules are not granted here.
 - source: store
   destination: network-boundary
   commands:
@@ -238,6 +242,7 @@ rules:
   commands:
     - secrets.response
     - secrets.*
+    - llm.usage.record
 
 # Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
 - source: court-scribe
@@ -650,6 +655,11 @@ rules:
     - ciso.delegation.*
     - tool.registry.discover
     - audit.list
+    # Portal-bridge fallback re-sends /api/llm-usage as daemon-internal.
+    # Exact commands. llm.usage.record is not granted to daemon-internal*; Store also rejects it.
+    # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> daemon-internal* rule.
+    - llm.usage.summary
+    - llm.usage.recent
 - source: "daemon-internal-*"
   destination: store
   commands:
@@ -663,6 +673,10 @@ rules:
     - ciso.delegation.*
     - tool.registry.discover
     - audit.list
+    # Exact commands. llm.usage.record is not granted to daemon-internal-*; Store also rejects it.
+    # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> daemon-internal-* rule.
+    - llm.usage.summary
+    - llm.usage.recent
 # Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
 # clients for the commands above (responses may carry the original command name in audit; observed
 # as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).
@@ -824,6 +838,11 @@ rules:
     - visibility.list
     - ciso.delegation.get
     - ciso.delegation.set
+    # Guest hub bridge: dashboard fetchRaw is source web-portal, dest store.
+    # Exact commands. llm.usage.record is not granted to web-portal; Store also rejects it.
+    # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> web-portal rule.
+    - llm.usage.summary
+    - llm.usage.recent
 - source: "daemon-internal*"
   destination: store
   commands:

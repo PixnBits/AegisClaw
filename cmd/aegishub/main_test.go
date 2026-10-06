@@ -432,6 +432,152 @@ func TestRepoACLStoreToRoleSnapshotAndLLMDenied(t *testing.T) {
 	}
 }
 
+// TestRepoACLLLMUsageNarrowed loads config/acls.yaml and pins usage to exact
+// commands. network-boundary -> store allows llm.usage.record only.
+// store -> network-boundary does not allow llm.usage.recorded: the record is a
+// one-way hub push and Store does not reply. Neither rule may contain an
+// llm wildcard (a pattern starting with "llm." and ending with "*").
+// Portal reads (web-portal and daemon-internal* -> store) allow llm.usage.summary
+// and llm.usage.recent only. llm.usage.record is denied at the ACL for those
+// sources. Replies ride the existing store -> portal "*" rules.
+// Any parsed rule whose source or destination is store fails if a command
+// pattern starts with "llm" and contains "*" (llm.*, llm.usage.*).
+// Guest llm.* rules (role <-> network-boundary) are pre-existing and out of scope.
+//
+// error stays allowed by the source "*" destination "*" catch-all for unrelated
+// RPCs. Usage rejection is logged, not replied, so the network-boundary rule
+// does not grant error or llm.usage.recorded.
+func TestRepoACLLLMUsageNarrowed(t *testing.T) {
+	origRules := aclRules
+	origPath := aclFilePath
+	origMod := lastACLModTime
+	defer func() {
+		aclRules = origRules
+		aclFilePath = origPath
+		lastACLModTime = origMod
+	}()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Setenv("AEGIS_ACL_FILE", filepath.Join(wd, "..", "..", "config", "acls.yaml"))
+	loadACL()
+	if len(aclRules) == 0 {
+		t.Fatal("aclRules empty after loadACL")
+	}
+
+	if !checkACL("network-boundary", "store", "llm.usage.record") {
+		t.Error("network-boundary -> store llm.usage.record = false, want allow")
+	}
+	// One-way push: Store does not send llm.usage.recorded, and it is not granted.
+	if checkACL("store", "network-boundary", "llm.usage.recorded") {
+		t.Error("store -> network-boundary llm.usage.recorded = true, want deny")
+	}
+	// error stays on the * -> * catch-all for unrelated RPCs, not for usage.
+	if !checkACL("store", "network-boundary", "error") {
+		t.Error("store -> network-boundary error = false, want allow")
+	}
+	for _, cmd := range []string{
+		"llm.usage.summary", "llm.usage.recent", "llm.usage.recorded",
+		"llm.usage.x", "llm.usage", "llm.usagex", "llm.chat", "llm.foo",
+	} {
+		if checkACL("network-boundary", "store", cmd) {
+			t.Errorf("network-boundary -> store %s = true, want deny", cmd)
+		}
+	}
+	for _, cmd := range []string{"llm.usage.record", "llm.usage.recorded", "llm.usage.summary", "llm.chat"} {
+		if checkACL("store", "network-boundary", cmd) {
+			t.Errorf("store -> network-boundary %s = true, want deny", cmd)
+		}
+	}
+	portalSources := []string{"web-portal", "daemon-internal", "daemon-internal-1", "daemon-internal-42"}
+	for _, src := range portalSources {
+		for _, cmd := range []string{"llm.usage.summary", "llm.usage.recent"} {
+			if !checkACL(src, "store", cmd) {
+				t.Errorf("%s -> store %s = false, want allow", src, cmd)
+			}
+		}
+		for _, cmd := range []string{
+			"llm.usage.record", "llm.usage.recorded", "llm.usage.x",
+			"llm.usage", "llm.usagex", "llm.chat", "llm.foo",
+		} {
+			if checkACL(src, "store", cmd) {
+				t.Errorf("%s -> store %s = true, want deny", src, cmd)
+			}
+		}
+		for _, cmd := range []string{"llm.usage.summary", "llm.usage.recent", "error"} {
+			if !checkACL("store", src, cmd) {
+				t.Errorf("store -> %s %s = false, want allow", src, cmd)
+			}
+		}
+	}
+	for _, src := range []string{"aegis-cli-internal", "coder-1", "store"} {
+		if checkACL(src, "store", "llm.usage.summary") {
+			t.Errorf("%s -> store llm.usage.summary = true, want deny", src)
+		}
+	}
+
+	for _, rule := range aclRules {
+		if rule.Source != "store" && rule.Destination != "store" {
+			continue
+		}
+		for _, cmd := range rule.Commands {
+			if strings.HasPrefix(cmd, "llm") && strings.Contains(cmd, "*") {
+				t.Errorf("parsed rule %q -> %q contains llm wildcard command %q", rule.Source, rule.Destination, cmd)
+			}
+		}
+	}
+	nbStore := commandsBetween("network-boundary", "store")
+	storeNB := commandsBetween("store", "network-boundary")
+	if !containsCmd(nbStore, "llm.usage.record") || hasLLMDotWildcard(nbStore) {
+		t.Errorf("network-boundary -> store commands = %v, want llm.usage.record and no llm.* wildcard", nbStore)
+	}
+	if containsCmd(storeNB, "llm.usage.recorded") || hasLLMDotWildcard(storeNB) {
+		t.Errorf("store -> network-boundary commands = %v, want no llm.usage.recorded and no llm.* wildcard", storeNB)
+	}
+	for _, pair := range [][2]string{
+		{"web-portal", "store"},
+		{"daemon-internal*", "store"},
+		{"daemon-internal-*", "store"},
+	} {
+		cmds := commandsBetween(pair[0], pair[1])
+		if !containsCmd(cmds, "llm.usage.summary") || !containsCmd(cmds, "llm.usage.recent") ||
+			containsCmd(cmds, "llm.usage.*") || containsCmd(cmds, "llm.usage.record") || containsCmd(cmds, "llm.*") {
+			t.Errorf("%s -> %s commands = %v", pair[0], pair[1], cmds)
+		}
+	}
+}
+
+func commandsBetween(src, dst string) []string {
+	var cmds []string
+	for _, rule := range aclRules {
+		if rule.Source == src && rule.Destination == dst {
+			cmds = append(cmds, rule.Commands...)
+		}
+	}
+	return cmds
+}
+
+func containsCmd(cmds []string, want string) bool {
+	for _, c := range cmds {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLLMDotWildcard reports a command pattern starting with "llm." and ending with "*".
+func hasLLMDotWildcard(cmds []string) bool {
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "llm.") && strings.HasSuffix(c, "*") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestIsReservedHubID(t *testing.T) {
 	cases := []struct {
 		id   string
@@ -712,6 +858,12 @@ func TestForwardHubRPC_ChannelTurnDoesNotWaitForDestReply(t *testing.T) {
 func TestIsOneWayHubPush(t *testing.T) {
 	if !isOneWayHubPush("channel.turn") {
 		t.Fatal("channel.turn must be a one-way push")
+	}
+	if !isOneWayHubPush("llm.usage.record") {
+		t.Fatal("llm.usage.record must be a one-way push")
+	}
+	if isOneWayHubPush("llm.usage.recorded") {
+		t.Fatal("llm.usage.recorded is not a push")
 	}
 	if isOneWayHubPush("llm.call") {
 		t.Fatal("llm.call is a blocking RPC")

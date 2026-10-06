@@ -137,3 +137,64 @@ func (p *Publisher) publishCanvasFromHarness(body []byte) {
 	}
 	p.Hub.Publish(contracts.TopicCanvasEvents, clean)
 }
+
+// PublishLLMUsage emits one usage record on the global metrics topic and, when
+// agentID is set, on that agent's topic. The payload is contracts.LLMUsageEvent.
+// Store records use tokens_prompt / tokens_completion; prompt_tokens /
+// completion_tokens are accepted as aliases.
+func (p *Publisher) PublishLLMUsage(agentID string, usage map[string]interface{}) {
+	if p == nil || p.Hub == nil || usage == nil {
+		return
+	}
+	if agentID == "" {
+		if id, ok := usage["agent_id"].(string); ok {
+			agentID = id
+		}
+	}
+	ev := contracts.LLMUsageEvent{
+		Type:      contracts.TypeLLMUsage,
+		AgentID:   agentID,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Success:   true,
+	}
+	if ts, ok := usage["timestamp"].(string); ok && ts != "" {
+		ev.Timestamp = ts
+	}
+	if m, ok := usage["model"].(string); ok {
+		ev.Model = m
+	}
+	ev.TokensIn = usageEventInt(usage, "tokens_prompt", "prompt_tokens")
+	ev.TokensOut = usageEventInt(usage, "tokens_completion", "completion_tokens")
+	ev.Duration = usageEventInt(usage, "duration_ms")
+	if s, ok := usage["success"].(bool); ok {
+		ev.Success = s
+	}
+	body, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	clean, err := sanitize.JSONBytes(sanitize.ContextChat, body)
+	if err != nil {
+		clean = body
+	}
+	p.Hub.Publish(contracts.TopicLLMUsagePrefix, clean)
+	if agentID != "" {
+		p.Hub.Publish(contracts.LLMUsageTopic(agentID), clean)
+	}
+}
+
+func usageEventInt(usage map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		switch v := usage[key].(type) {
+		case int:
+			return v
+		case int32:
+			return int(v)
+		case int64:
+			return int(v)
+		case float64:
+			return int(v)
+		}
+	}
+	return 0
+}
