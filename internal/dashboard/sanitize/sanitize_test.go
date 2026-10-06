@@ -2,7 +2,10 @@ package sanitize
 
 import (
 	"encoding/json"
+	"math/rand"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -151,9 +154,16 @@ func scopedTestKeys() (proj, ant, svc, admin string) {
 	return
 }
 
+// noneTestKey is the legacy OpenAI shape: sk-None- and a mixed-case body.
+func noneTestKey() string {
+	return "sk-" + "None-" + strings.Repeat("aZ3kQ9", 8)
+}
+
 func TestCredentialPatternScopedKeys(t *testing.T) {
 	proj, ant, svc, admin := scopedTestKeys()
-	for _, key := range []string{proj, ant, svc, admin} {
+	upperProj := "SK-" + "PROJ-" + proj[len("sk-proj-"):]
+	mixedAnt := "Sk-" + "Ant-" + ant[len("sk-ant-"):]
+	for _, key := range []string{proj, ant, svc, admin, noneTestKey(), upperProj, mixedAnt} {
 		cases := map[string]string{
 			key:                           "[REDACTED]",
 			"api_key_" + key:              "api_key_[REDACTED]",
@@ -197,6 +207,14 @@ func TestCredentialPatternScopedKeysLeaveSlugsAlone(t *testing.T) {
 		"risk-admin-assessment-for-the-quarterly-plan",
 		"see sk-proj-roadmap-planning-notes-q4 for details",
 		"the sk- prefix is documented",
+		// Mixed-case bodies under 20 characters are notes, not keys.
+		"sk-ant-MyNotes",
+		"sk-proj-ReleasePlanQ4",
+		"sk-None-ShortNote",
+		// The case check is on the body only: an upper-case slug body after
+		// a lower-case prefix is still single-case.
+		"sk-proj-ROADMAP-PLANNING-NOTES-FOR-Q4",
+		"SK-NONE-RELEASE-PLANNING-NOTES-FOR-Q4",
 	}
 	for _, in := range kept {
 		if got := Text(ContextChat, in); got != in {
@@ -229,6 +247,11 @@ func TestCredentialPatternMatrixNeverWeakerThanMain(t *testing.T) {
 		"ant":     ant,
 		"svcacct": svc,
 		"admin":   admin,
+		"none":    noneTestKey(),
+		"PROJ":    "SK-" + "PROJ-" + proj[len("sk-proj-"):],
+		// Scoped keys whose body contains a run main's pattern matches.
+		"proj-embedded-sk":  "sk-" + "proj-" + "Ab_9-" + strings.Repeat("Zq_W-", 6) + "sk-" + strings.Repeat("Rt5Yu7", 4) + "-" + strings.Repeat("Pl_0-", 8),
+		"ant-embedded-akia": "sk-" + "ant-" + "api03-" + strings.Repeat("Nm-8_", 6) + "AKIA" + "QWERTYUIOP123456" + strings.Repeat("_Hj-K", 8) + "AA",
 	}
 	contexts := []func(k string) string{
 		func(k string) string { return k },
@@ -271,12 +294,11 @@ func TestCredentialPatternMatrixNeverWeakerThanMain(t *testing.T) {
 	}
 	cells, weaker, stronger := 0, 0, 0
 	for name, key := range keys {
-		frag := key[len(key)-16:]
 		for ci, ctx := range contexts {
 			in := ctx(key)
 			cells++
-			oldLeak := strings.Contains(mainText(in), frag)
-			newLeak := strings.Contains(Text(ContextChat, in), frag)
+			oldLeak := leaksWindow(mainText(in), keyBody(key))
+			newLeak := leaksWindow(Text(ContextChat, in), keyBody(key))
 			if newLeak && !oldLeak {
 				weaker++
 				t.Errorf("weaker than main: %s ctx %d: %q -> %q (main: %q)", name, ci, in, Text(ContextChat, in), mainText(in))
@@ -291,28 +313,141 @@ func TestCredentialPatternMatrixNeverWeakerThanMain(t *testing.T) {
 		t.Fatalf("cells=%d weaker=%d", cells, weaker)
 	}
 	// The scoped shapes are the point of this change: none may leak now.
-	for _, name := range []string{"proj", "ant", "svcacct", "admin"} {
+	for _, name := range []string{"proj", "ant", "svcacct", "admin", "none", "PROJ", "proj-embedded-sk", "ant-embedded-akia"} {
 		key := keys[name]
 		for ci, ctx := range contexts {
-			if in := ctx(key); strings.Contains(Text(ContextChat, in), key[len(key)-16:]) {
+			if in := ctx(key); leaksWindow(Text(ContextChat, in), keyBody(key)) {
 				t.Errorf("%s still leaks in ctx %d: %q", name, ci, Text(ContextChat, in))
 			}
 		}
 	}
 }
 
-// The scoped pass runs after main's pattern. Run first, it would replace a
-// scoped key glued after an sk- key with "[REDACTED]", cutting the sk- key
-// below 20 characters so main's pattern no longer matches it.
-func TestScopedPassRunsAfterMainPattern(t *testing.T) {
+// keyBody is the secret part of a test key: everything after the sk-…-
+// or AKIA prefix.
+func keyBody(key string) string {
+	if m := scopedKeyPattern.FindStringSubmatchIndex(key); m != nil && m[0] == 0 {
+		return key[m[2]:]
+	}
+	if len(key) > 4 && strings.EqualFold(key[:4], "akia") {
+		return key[4:]
+	}
+	if i := strings.Index(key, "-"); i >= 0 {
+		return key[i+1:]
+	}
+	return key
+}
+
+// leaksWindow reports whether any 8-character window of secret appears in out.
+func leaksWindow(out, secret string) bool {
+	for i := 0; i+8 <= len(secret); i++ {
+		if strings.Contains(out, secret[i:i+8]) {
+			return true
+		}
+	}
+	return false
+}
+
+// Both patterns are matched on the same input and the union of their spans
+// is redacted: a run main's pattern matches inside a scoped key body must
+// not split the key and leave its tail visible, and a short sk- run glued in
+// front of a scoped key is still covered.
+func TestCredentialSpansUnion(t *testing.T) {
 	proj, _, _, _ := scopedTestKeys()
+	embeddedSK := "sk-" + "proj-" + "Ab_9-" + strings.Repeat("Zq_W-", 6) + "sk-" + strings.Repeat("Rt5Yu7", 4) + "-" + strings.Repeat("Pl_0-", 8)
+	embeddedAKIA := "sk-" + "ant-" + "api03-" + strings.Repeat("Nm-8_", 6) + "AKIA" + "QWERTYUIOP123456" + strings.Repeat("_Hj-K", 8) + "AA"
+	for _, key := range []string{embeddedSK, embeddedAKIA} {
+		if !credentialPattern.MatchString(keyBody(key)) {
+			t.Fatalf("fixture %q has no run main's pattern matches", key)
+		}
+		for in, want := range map[string]string{
+			key:                   "[REDACTED]",
+			"x=" + key + ";":      "x=[REDACTED];",
+			`{"k":"` + key + `"}`: `{"k":"[REDACTED]"}`,
+		} {
+			if got := Text(ContextChat, in); got != want {
+				t.Errorf("Text(%q) = %q, want %q", in, got, want)
+			}
+		}
+	}
 	short := "sk-" + strings.Repeat("a1B2", 4) + "cD" // 18 alnum; main matches it plus the next "sk"
 	in := short + proj
 	got := Text(ContextChat, in)
-	if strings.Contains(got, short[3:]) || strings.Contains(got, proj[len(proj)-16:]) {
+	if leaksWindow(got, short[3:]) || leaksWindow(got, keyBody(proj)) {
 		t.Fatalf("Text(%q) = %q, leaks", in, got)
 	}
-	if strings.Contains(mainText(in), short[3:]) {
-		t.Fatalf("fixture no longer exercises the ordering: main leaks too")
+	if got != "[REDACTED]" {
+		t.Fatalf("Text(glued) = %q, want one marker", got)
+	}
+	// With no scoped key present the output is exactly main's.
+	for _, in := range []string{
+		"AKIAABCDEFGHIJKLMNOPAKIAABCDEFGHIJKLMNOP",
+		"a sk-" + strings.Repeat("a1B2", 6) + " b sk-" + strings.Repeat("Zz9", 8),
+		"sk-proj-roadmap-planning-notes-q4 sk-" + strings.Repeat("a1B2", 6),
+	} {
+		if got, want := Text(ContextChat, in), mainText(in); got != want {
+			t.Errorf("Text(%q) = %q, want main's %q", in, got, want)
+		}
+	}
+}
+
+// Seeded random keys in the issued shapes. No 8-character window of a key
+// body may survive Text or Value. SANITIZE_PROPERTY_KEYS sets the count per
+// shape (default 20000; the long run uses 200000).
+func TestScopedKeyProperty(t *testing.T) {
+	n := 20000
+	if v := os.Getenv("SANITIZE_PROPERTY_KEYS"); v != "" {
+		if x, err := strconv.Atoi(v); err == nil && x > 0 {
+			n = x
+		}
+	}
+	const b64url = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	const b62 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	shapes := []struct {
+		prefix, alphabet, suffix string
+		n                        int
+	}{
+		{"sk-" + "proj-", b64url, "", 156},
+		{"sk-" + "ant-" + "api03-", b64url, "AA", 93},
+		{"sk-" + "svcacct-", b64url, "", 156},
+		{"sk-" + "admin-", b64url, "", 156},
+		{"sk-" + "None-", b62, "", 48},
+	}
+	rng := rand.New(rand.NewSource(20261006))
+	embedded := 0
+	for _, sh := range shapes {
+		for i := 0; i < n; i++ {
+			buf := make([]byte, sh.n)
+			for j := range buf {
+				buf[j] = sh.alphabet[rng.Intn(len(sh.alphabet))]
+			}
+			body := string(buf) + sh.suffix
+			key := sh.prefix + body
+			if credentialPattern.MatchString(body) {
+				embedded++
+			}
+			var in string
+			switch i % 3 {
+			case 0:
+				in = key
+			case 1:
+				in = "OPENAI_API_KEY=" + key + "\n"
+			default:
+				in = "call failed for " + key + ", retrying"
+			}
+			if got := Text(ContextChat, in); leaksWindow(got, body) {
+				t.Fatalf("%s key %d leaks: %q -> %q", sh.prefix, i, in, got)
+			}
+			if i%50 == 0 {
+				out, _ := json.Marshal(Value(ContextChat, map[string]interface{}{"msg": in}))
+				if leaksWindow(string(out), body) {
+					t.Fatalf("%s key %d leaks through Value: %s", sh.prefix, i, out)
+				}
+			}
+		}
+	}
+	t.Logf("%d keys per shape, %d with a run main's pattern matches inside the body", n, embedded)
+	if n >= 20000 && embedded == 0 {
+		t.Fatal("no generated key exercised the overlapping-pattern case")
 	}
 }
