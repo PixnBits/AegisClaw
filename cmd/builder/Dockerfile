@@ -23,9 +23,10 @@ RUN apk add --no-cache git ca-certificates tzdata
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy only builder + any shared packages it needs
+# Copy only builder + shared packages it imports
+# (AegisClaw/internal/workspace and AegisClaw/internal/timing).
 COPY cmd/builder ./cmd/builder
-# COPY internal ./internal   # uncomment if/when shared internal packages are used by builder
+COPY internal ./internal
 
 # Statically build the builder binary (no CGO for small attack surface)
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /builder ./cmd/builder
