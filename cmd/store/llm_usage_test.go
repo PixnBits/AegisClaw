@@ -1,10 +1,20 @@
 package main
 
 import (
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+func assertNoLLMUsageReply(t *testing.T, resp Message) {
+	t.Helper()
+	if resp.Command != "" || resp.Payload != nil {
+		t.Fatalf("reply command %q payload %#v, want no reply", resp.Command, resp.Payload)
+	}
+}
 
 func TestLLMUsageRecordSummaryHandlersLogic(t *testing.T) {
 	records := []map[string]interface{}{
@@ -129,9 +139,7 @@ func TestLLMUsageRecordSummaryRecentHandlers(t *testing.T) {
 		mk("pm", "llama", 10, 5, false),
 	} {
 		resp := handleLLMUsageRecord(Message{Source: "network-boundary", Command: "llm.usage.record", Payload: rec})
-		if resp.Command != "llm.usage.recorded" {
-			t.Fatalf("record command %q payload %#v", resp.Command, resp.Payload)
-		}
+		assertNoLLMUsageReply(t, resp)
 	}
 
 	summary := handleLLMUsageSummary(Message{Payload: map[string]interface{}{}})
@@ -182,9 +190,10 @@ func TestLLMUsageRecentLimitCapAndDefault(t *testing.T) {
 			Command: "llm.usage.record",
 			Payload: map[string]interface{}{"agent_id": "coder-1", "model": "m", "tokens_prompt": i, "success": true},
 		})
-		if resp.Command != "llm.usage.recorded" {
-			t.Fatal(resp.Command)
-		}
+		assertNoLLMUsageReply(t, resp)
+	}
+	if llmUsageRecentMax != 500 || llmUsageRecentDefault != 50 {
+		t.Fatalf("recent limits max=%d default=%d, want 500 and 50", llmUsageRecentMax, llmUsageRecentDefault)
 	}
 	capped := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"limit": float64(10000)}})
 	rows := capped.Payload.([]map[string]interface{})
@@ -215,9 +224,7 @@ func TestLLMUsageRecentFiltersAgentID(t *testing.T) {
 			Command: "llm.usage.record",
 			Payload: map[string]interface{}{"agent_id": agent, "model": "qwen", "tokens_prompt": i, "success": true},
 		})
-		if resp.Command != "llm.usage.recorded" {
-			t.Fatal(resp.Command)
-		}
+		assertNoLLMUsageReply(t, resp)
 	}
 	recent := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "pm", "limit": float64(10)}})
 	rows := recent.Payload.([]map[string]interface{})
@@ -237,9 +244,7 @@ func TestLLMUsageRecentFiltersAgentID(t *testing.T) {
 			Command: "llm.usage.record",
 			Payload: map[string]interface{}{"agent_id": "pm", "model": "qwen", "tokens_prompt": tokens, "success": true},
 		})
-		if resp.Command != "llm.usage.recorded" {
-			t.Fatal(resp.Command)
-		}
+		assertNoLLMUsageReply(t, resp)
 	}
 	limited = handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "coder-1", "limit": float64(1)}})
 	rows = limited.Payload.([]map[string]interface{})
@@ -260,7 +265,8 @@ func TestLLMUsageRecentFiltersAgentID(t *testing.T) {
 
 // TestLLMUsageRecordRejectsDaemonInternalSource pins the Store backstop.
 // The ACL now denies llm.usage.record from daemon-internal too.
-// Store still rejects that source if a frame gets through.
+// Store still rejects that source if a frame gets through, and does not reply:
+// llm.usage.record is a one-way push.
 func TestLLMUsageRecordRejectsDaemonInternalSource(t *testing.T) {
 	useLLMUsage(t)
 	resp := handleLLMUsageRecord(Message{
@@ -268,9 +274,7 @@ func TestLLMUsageRecordRejectsDaemonInternalSource(t *testing.T) {
 		Command: "llm.usage.record",
 		Payload: map[string]interface{}{"agent_id": "coder-1", "model": "qwen", "tokens_prompt": 1, "success": true},
 	})
-	if resp.Command != "error" {
-		t.Fatalf("command %q payload %v", resp.Command, resp.Payload)
-	}
+	assertNoLLMUsageReply(t, resp)
 	if n := len(llmUsageSnapshot()); n != 0 {
 		t.Fatalf("daemon-internal record stored %d", n)
 	}
@@ -284,9 +288,7 @@ func TestLLMUsageRecordCap(t *testing.T) {
 			Command: "llm.usage.record",
 			Payload: map[string]interface{}{"model": itoa(i), "tokens_prompt": 1, "success": true},
 		})
-		if resp.Command != "llm.usage.recorded" {
-			t.Fatalf("i=%d: %s", i, resp.Command)
-		}
+		assertNoLLMUsageReply(t, resp)
 	}
 	got := llmUsageSnapshot()
 	if len(got) != 5000 {
@@ -302,17 +304,13 @@ func TestLLMUsageRecordRejectsNonBoundarySource(t *testing.T) {
 	payload := map[string]interface{}{"agent_id": "coder-1", "model": "qwen", "tokens_prompt": 1, "success": true}
 	for _, src := range []string{"", "store", "daemon-internal", "web-portal", "coder-1"} {
 		resp := handleLLMUsageRecord(Message{Source: src, Command: "llm.usage.record", Payload: payload})
-		if resp.Command != "error" {
-			t.Errorf("source %q command = %q, want error", src, resp.Command)
-		}
+		assertNoLLMUsageReply(t, resp)
 	}
 	if n := len(llmUsageSnapshot()); n != 0 {
 		t.Fatalf("rejected sources stored %d records", n)
 	}
 	ok := handleLLMUsageRecord(Message{Source: "network-boundary", Command: "llm.usage.record", Payload: payload})
-	if ok.Command != "llm.usage.recorded" {
-		t.Fatal(ok.Command)
-	}
+	assertNoLLMUsageReply(t, ok)
 	if n := len(llmUsageSnapshot()); n != 1 {
 		t.Fatalf("accepted record count %d", n)
 	}
@@ -337,9 +335,7 @@ func TestLLMUsageRecordAllowlistAndCaps(t *testing.T) {
 			"api_key":           "nope",
 		},
 	})
-	if resp.Command != "llm.usage.recorded" {
-		t.Fatal(resp.Payload)
-	}
+	assertNoLLMUsageReply(t, resp)
 	rec := llmUsageSnapshot()[0]
 	allowed := map[string]bool{
 		"agent_id": true, "model": true, "timestamp": true, "tokens_prompt": true,
@@ -374,9 +370,7 @@ func TestLLMUsageRecordAllowlistAndCaps(t *testing.T) {
 
 	resetLLMUsageRecords()
 	bad := handleLLMUsageRecord(Message{Source: "network-boundary", Payload: "nope"})
-	if bad.Command != "error" {
-		t.Fatal(bad.Command)
-	}
+	assertNoLLMUsageReply(t, bad)
 	if len(llmUsageSnapshot()) != 0 {
 		t.Fatal("invalid payload stored")
 	}
@@ -394,6 +388,213 @@ func TestLLMUsageRecordAllowlistAndCaps(t *testing.T) {
 	}
 	if _, ok := only["timestamp"].(string); !ok {
 		t.Fatal("missing timestamp fill-in")
+	}
+}
+
+func TestLLMUsageRecordNoReplyStoresOnlyValid(t *testing.T) {
+	useLLMUsage(t)
+	valid := handleLLMUsageRecord(Message{
+		Source:  "network-boundary",
+		Command: "llm.usage.record",
+		Payload: map[string]interface{}{"agent_id": "coder-1", "model": "qwen", "tokens_prompt": 1, "success": true},
+	})
+	assertNoLLMUsageReply(t, valid)
+	if len(llmUsageSnapshot()) != 1 {
+		t.Fatal("valid record not stored")
+	}
+	for _, msg := range []Message{
+		{Source: "coder-1", Command: "llm.usage.record", Payload: map[string]interface{}{"tokens_prompt": 1}},
+		{Source: "network-boundary", Command: "llm.usage.record", Payload: "nope"},
+		{Source: "network-boundary", Command: "llm.usage.record", Payload: nil},
+	} {
+		assertNoLLMUsageReply(t, handleLLMUsageRecord(msg))
+	}
+	if len(llmUsageSnapshot()) != 1 {
+		t.Fatalf("invalid records stored, len=%d", len(llmUsageSnapshot()))
+	}
+}
+
+func TestLLMUsageNumericCapDropsOverflow(t *testing.T) {
+	useLLMUsage(t)
+	var maxF float64 = llmUsageMaxNumeric
+	maxN := int(maxF)
+	if maxN != 1000000000000 {
+		t.Fatalf("cap int = %d", maxN)
+	}
+	dropped := []interface{}{
+		math.Ldexp(1, 63), // 2^63, the float rounding hole
+		9.3e18,
+		1e13,
+		maxF + 1,
+		float64(-1),
+		int(-1),
+		int64(-1),
+		int32(-1),
+		int(1e13),
+		int64(1e13),
+		math.NaN(),
+		math.Inf(1),
+		math.Inf(-1),
+		json.Number("1e13"),
+		json.Number("9223372036854775808"),
+		json.Number("1e20"),
+	}
+	for _, v := range dropped {
+		resetLLMUsageRecords()
+		resp := handleLLMUsageRecord(Message{
+			Source:  "network-boundary",
+			Payload: map[string]interface{}{"model": "m", "tokens_prompt": v},
+		})
+		assertNoLLMUsageReply(t, resp)
+		rec := llmUsageSnapshot()[0]
+		if _, ok := rec["tokens_prompt"]; ok {
+			t.Fatalf("tokens_prompt stored for %#v (%T): %#v", v, v, rec["tokens_prompt"])
+		}
+	}
+
+	for _, v := range []interface{}{
+		maxF,
+		maxN,
+		int64(maxN),
+		int32(7),
+		json.Number("1000000000000"),
+		json.Number("1e12"),
+	} {
+		resetLLMUsageRecords()
+		resp := handleLLMUsageRecord(Message{
+			Source:  "network-boundary",
+			Payload: map[string]interface{}{"model": "m", "tokens_prompt": v, "tokens_completion": v, "duration_ms": v},
+		})
+		assertNoLLMUsageReply(t, resp)
+		rec := llmUsageSnapshot()[0]
+		want := maxN
+		if _, isSmall := v.(int32); isSmall {
+			want = 7
+		}
+		for _, key := range []string{"tokens_prompt", "tokens_completion", "duration_ms"} {
+			got, ok := rec[key].(int)
+			if !ok || got != want {
+				t.Fatalf("%s for %#v (%T) = %#v, want %d", key, v, v, rec[key], want)
+			}
+			if got < 0 {
+				t.Fatalf("%s negative: %d", key, got)
+			}
+		}
+	}
+}
+
+func TestLLMUsageSummarySumsStayPositiveAtCap(t *testing.T) {
+	useLLMUsage(t)
+	var maxF float64 = llmUsageMaxNumeric
+	maxN := int(maxF)
+	const recordsN = 10000
+	for i := 0; i < recordsN; i++ {
+		resp := handleLLMUsageRecord(Message{
+			Source: "network-boundary",
+			Payload: map[string]interface{}{
+				"agent_id": "coder-1", "model": "qwen", "success": true,
+				"tokens_prompt": maxN, "tokens_completion": maxN,
+			},
+		})
+		assertNoLLMUsageReply(t, resp)
+	}
+	if len(llmUsageSnapshot()) != recordsN {
+		t.Fatalf("stored %d, want %d (the 10001st record trims the log)", len(llmUsageSnapshot()), recordsN)
+	}
+
+	body := handleLLMUsageSummary(Message{}).Payload.(map[string]interface{})
+	g := body["grand"].(map[string]interface{})
+	want := recordsN * maxN
+	if want <= 0 {
+		t.Fatalf("oracle sum overflowed: %d", want)
+	}
+	if g["tokens_prompt"].(int) != want || g["tokens_completion"].(int) != want {
+		t.Fatalf("grand tokens = %v %v, want %d", g["tokens_prompt"], g["tokens_completion"], want)
+	}
+	total := g["tokens_total"].(int)
+	if total != want*2 || total <= 0 {
+		t.Fatalf("tokens_total = %d, want %d", total, want*2)
+	}
+	byModel := g["by_model"].(map[string]interface{})
+	if byModel["qwen"].(int) != want*2 || byModel["qwen"].(int) <= 0 {
+		t.Fatalf("by_model = %#v", byModel)
+	}
+	agent := body["by_agent"].(map[string]interface{})["coder-1"].(map[string]interface{})
+	if agent["tokens_total"].(int) != want*2 || agent["tokens_total"].(int) <= 0 {
+		t.Fatalf("by_agent = %#v", agent)
+	}
+	if g["calls"].(int) != recordsN || g["calls"].(int) <= 0 {
+		t.Fatalf("calls = %v", g["calls"])
+	}
+}
+
+func TestLLMUsageTimestampReplacedWhenUnparseableOrFuture(t *testing.T) {
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	exact5 := now.Add(llmUsageFutureSkew).Format(time.RFC3339)
+	if got := normalizeUsageTimestamp(exact5, now); got != exact5 {
+		t.Fatalf("exactly 5 min ahead = %q, want keep", got)
+	}
+	over := now.Add(llmUsageFutureSkew + time.Second).Format(time.RFC3339)
+	if got := normalizeUsageTimestamp(over, now); got != now.Format(time.RFC3339) {
+		t.Fatalf("more than 5 min ahead = %q, want receive time", got)
+	}
+	if got := normalizeUsageTimestamp("not-a-time", now); got != now.Format(time.RFC3339) {
+		t.Fatalf("unparseable = %q, want receive time", got)
+	}
+	past := "2020-01-02T03:04:05Z"
+	if got := normalizeUsageTimestamp(past, now); got != past {
+		t.Fatalf("past = %q", got)
+	}
+	if got := normalizeUsageTimestamp("", now); got != now.Format(time.RFC3339) {
+		t.Fatalf("empty = %q", got)
+	}
+
+	useLLMUsage(t)
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	handleLLMUsageRecord(Message{
+		Source:  "network-boundary",
+		Payload: map[string]interface{}{"timestamp": future, "model": "m", "success": true},
+	})
+	stored, _ := llmUsageSnapshot()[0]["timestamp"].(string)
+	parsed, err := time.Parse(time.RFC3339, stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.After(time.Now().Add(2 * time.Minute)) {
+		t.Fatalf("future timestamp kept: %s", stored)
+	}
+	resetLLMUsageRecords()
+	soon := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+	handleLLMUsageRecord(Message{
+		Source:  "network-boundary",
+		Payload: map[string]interface{}{"timestamp": soon, "model": "m"},
+	})
+	if got, _ := llmUsageSnapshot()[0]["timestamp"].(string); got != soon {
+		t.Fatalf("within skew = %q, want %q", got, soon)
+	}
+	resetLLMUsageRecords()
+	handleLLMUsageRecord(Message{
+		Source:  "network-boundary",
+		Payload: map[string]interface{}{"timestamp": "not-a-time", "model": "m"},
+	})
+	got, _ := llmUsageSnapshot()[0]["timestamp"].(string)
+	if got == "not-a-time" {
+		t.Fatal("unparseable timestamp stored")
+	}
+	if _, err := time.Parse(time.RFC3339, got); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCappedUsageStringTrimsOnRuneBoundary(t *testing.T) {
+	// 255 ASCII bytes, then a 3-byte rune. A 256-byte cut splits 你.
+	raw := strings.Repeat("a", 255) + "你" + "zzzz"
+	got, ok := cappedUsageString(raw)
+	if !ok || !utf8.ValidString(got) || got != strings.Repeat("a", 255) {
+		t.Fatalf("trimmed = %q valid=%v", got, utf8.ValidString(got))
+	}
+	if len(got) > llmUsageMaxString {
+		t.Fatalf("len %d", len(got))
 	}
 }
 

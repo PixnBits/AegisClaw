@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestIsDomainAllowed(t *testing.T) {
@@ -222,6 +223,15 @@ func TestBuildLLMUsageRecord(t *testing.T) {
 		if len([]rune(errMsg)) != 200 || errMsg != strings.Repeat("e", 200) {
 			t.Errorf("error truncated: len=%d %q", len([]rune(errMsg)), errMsg)
 		}
+		// 199 ASCII runes then a 3-byte rune on the cut. A byte slice [:200]
+		// splits 你 and is not valid UTF-8.
+		multi := strings.Repeat("a", 199) + "你" + strings.Repeat("b", 20)
+		multiRec := buildLLMUsageRecord("pm", "qwen2.5-coder:7b", nil, false, multi, started)
+		gotMulti, _ := multiRec["error"].(string)
+		gotRunes := []rune(gotMulti)
+		if !utf8.ValidString(gotMulti) || len(gotRunes) != 200 || gotRunes[199] != '你' {
+			t.Errorf("multibyte truncation: %q", gotMulti)
+		}
 		ts, _ := rec["timestamp"].(string)
 		if _, err := time.Parse(time.RFC3339, ts); err != nil {
 			t.Errorf("timestamp: %v", err)
@@ -263,9 +273,17 @@ func testBoundaryKey(t *testing.T) ed25519.PrivateKey {
 
 func decodeUsageFrame(t *testing.T, raw []byte) Message {
 	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	var msg Message
-	if err := json.Unmarshal(bytes.TrimSpace(raw), &msg); err != nil {
+	if err := dec.Decode(&msg); err != nil {
 		t.Fatalf("decode usage frame: %v body=%s", err, raw)
+	}
+	var extra interface{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		t.Fatalf("trailing or partial frame: %v extra=%v body=%s", err, extra, raw)
+	}
+	if msg.Signature == "" {
+		t.Fatalf("frame missing signature (partial encode?): %s", raw)
 	}
 	return msg
 }
@@ -363,8 +381,13 @@ func TestEmitLLMUsageRecord_SerializesOnConnMutex(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("emit did not finish after connMutex was released")
 	}
-	if !bytes.Contains(buf.Bytes(), []byte(`"command":"llm.usage.record"`)) {
-		t.Fatalf("missing usage frame: %s", buf.Bytes())
+	msg := decodeUsageFrame(t, buf.Bytes())
+	if msg.Command != "llm.usage.record" {
+		t.Fatalf("frame: %+v", msg)
+	}
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok || payload["agent_id"] != "pm" {
+		t.Fatalf("payload: %#v", msg.Payload)
 	}
 }
 
@@ -422,4 +445,114 @@ func TestEncodeResponseBeforeUsageAndUsageErrorDoesNotFailResponse(t *testing.T)
 			t.Fatalf("wrote %q before the usage failure, want the guest error response", msg.Command)
 		}
 	})
+}
+
+func TestMissingOllamaDurationKeepsWallClock(t *testing.T) {
+	raw := `{"model":"qwen2.5-coder:7b","response":"hi","prompt_eval_count":3,"eval_count":4}`
+	text, usage := parseOllamaForLLMCall(raw, "default")
+	if text != "hi" {
+		t.Fatalf("text %q", text)
+	}
+	if _, ok := usage["duration_ms"]; ok {
+		t.Fatalf("missing total_duration set duration_ms %#v", usage["duration_ms"])
+	}
+	if usage["prompt_tokens"] != 3 || usage["completion_tokens"] != 4 {
+		t.Fatalf("tokens: %+v", usage)
+	}
+	started := time.Now().Add(-2 * time.Second)
+	rec := buildLLMUsageRecord("coder-1", "default", usage, true, "", started)
+	d, ok := rec["duration_ms"].(int)
+	if !ok || d < 1500 || d > 30000 {
+		t.Fatalf("duration_ms = %#v, want wall clock", rec["duration_ms"])
+	}
+	if rec["tokens_prompt"] != 3 || rec["model"] != "qwen2.5-coder:7b" {
+		t.Fatalf("record: %+v", rec)
+	}
+}
+
+func TestDecodeUsageFrameRejectsPrefix(t *testing.T) {
+	priv := testBoundaryKey(t)
+	var buf bytes.Buffer
+	rec := buildLLMUsageRecord("coder-1", "m", nil, false, "dial failed", time.Now())
+	emitLLMUsageRecord(json.NewEncoder(&buf), &sync.Mutex{}, priv, rec)
+	full := append([]byte(nil), buf.Bytes()...)
+	msg := decodeUsageFrame(t, full)
+	if msg.Command != "llm.usage.record" || msg.Signature == "" {
+		t.Fatalf("frame: %+v", msg)
+	}
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok || payload["error"] != "dial failed" {
+		t.Fatalf("payload %#v", msg.Payload)
+	}
+	prefix := full[:len(full)/2]
+	dec := json.NewDecoder(bytes.NewReader(prefix))
+	var partial Message
+	if err := dec.Decode(&partial); err == nil {
+		t.Fatal("prefix of a frame decoded as a complete message")
+	}
+}
+
+func TestBoundaryReadLoopDoesNotAnswerNonRequestFrames(t *testing.T) {
+	frames := []string{
+		`{"command":"error","payload":"ERR_DESTINATION_NOT_FOUND","source":"hub"}`,
+		`{"error":"ERR_ACL_VIOLATION"}`,
+		`{"command":"","source":"hub"}`,
+		`{"command":"response","source":"hub","payload":{"status":"accepted"}}`,
+		`{"command":"ack","source":"hub","payload":{"status":"delivered"}}`,
+		`{"command":"llm.call.response","source":"store"}`,
+		`{"command":"channel.posted","source":"store"}`,
+	}
+	for _, raw := range frames {
+		dec := json.NewDecoder(strings.NewReader(raw))
+		var msg Message
+		if err := dec.Decode(&msg); err != nil {
+			t.Fatalf("decode %s: %v", raw, err)
+		}
+		if raw == `{"error":"ERR_ACL_VIOLATION"}` && msg.Command != "" {
+			t.Fatalf("hub error object decoded command %q", msg.Command)
+		}
+		var buf bytes.Buffer
+		if boundaryShouldAnswer(msg.Command) {
+			resp := Message{
+				Source:      "network-boundary",
+				Destination: msg.Source,
+				Command:     "error",
+				Payload:     "unknown command",
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}
+			if err := json.NewEncoder(&buf).Encode(&resp); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("wrote %s for inbound %s", buf.Bytes(), raw)
+		}
+	}
+}
+
+func TestBoundaryReadLoopIgnoresLLMUsageRecorded(t *testing.T) {
+	var msg Message
+	if err := json.Unmarshal([]byte(`{"command":"llm.usage.recorded","source":"store","payload":{"ok":true}}`), &msg); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if boundaryShouldAnswer(msg.Command) {
+		if err := json.NewEncoder(&buf).Encode(Message{Command: "error", Payload: "unknown command"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("wrote %s for llm.usage.recorded", buf.Bytes())
+	}
+}
+
+func TestBoundaryReadLoopStillAnswersRequests(t *testing.T) {
+	for _, cmd := range []string{
+		"llm.call", "network.request", "secrets.update", "secrets.get",
+		"secrets.request", "secrets.status", "version", "get-version", "foo",
+	} {
+		if !boundaryShouldAnswer(cmd) {
+			t.Errorf("boundaryShouldAnswer(%q) = false, want true", cmd)
+		}
+	}
 }

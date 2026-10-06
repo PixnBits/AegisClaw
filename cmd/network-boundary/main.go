@@ -711,11 +711,12 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		// guest response so a usage frame cannot delay llm.call.response.
 		var pendingUsage map[string]interface{}
 
-		switch msg.Command {
-		case "llm.usage.recorded":
-			// Reply to our best-effort usage emit. Do not answer it; another
-			// frame would be a new hub RPC on this connection.
+		// Hub replies and non-requests are not answered. See boundaryShouldAnswer.
+		if !boundaryShouldAnswer(msg.Command) {
 			continue
+		}
+
+		switch msg.Command {
 		case "network.request":
 			if !boundaryHealthy {
 				response.Command = "network.response"
