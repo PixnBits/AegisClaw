@@ -2164,6 +2164,8 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			vmID := req.Args["id"]
 			if vmID == "" {
 				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else if err := validateVMID(vmID); err != nil {
+				resp = SocketResponse{OK: false, Error: err.Error()}
 			} else {
 				tail := 200
 				if t := req.Args["tail"]; t != "" {
@@ -2181,9 +2183,13 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		case "vm.boot_metrics":
 			// High-res boot instrumentation (host + guest phases via console parse).
 			// Only produces data when daemon was started with AEGIS_BOOT_TIMING=1.
+			// GetVMBootMetrics reads fc-<id>-console.log and boot-metrics-<id>.json
+			// under the state dir, so id is validated before that call.
 			vmID := req.Args["id"]
 			if vmID == "" {
 				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else if err := validateVMID(vmID); err != nil {
+				resp = SocketResponse{OK: false, Error: err.Error()}
 			} else if orchestrator != nil {
 				m, err := orchestrator.GetVMBootMetrics(context.Background(), vmID)
 				if err != nil {
@@ -2198,10 +2204,14 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			}
 
 		case "vm.diagnose":
-			// Bundled diagnostic snapshot for a VM (very useful for the current web-portal vsock issues)
+			// Bundled diagnostic snapshot for a VM (very useful for the current web-portal vsock issues).
+			// Not on the socket allowlist today; still validate before gatherVMLogs so a
+			// future allowlist entry cannot read outside the state dir.
 			vmID := req.Args["id"]
 			if vmID == "" {
 				resp = SocketResponse{OK: false, Error: "missing required arg 'id'"}
+			} else if err := validateVMID(vmID); err != nil {
+				resp = SocketResponse{OK: false, Error: err.Error()}
 			} else {
 				tail := 300
 				if t := req.Args["tail"]; t != "" {
@@ -2437,7 +2447,49 @@ func getMapInt(m map[string]interface{}, key string) int {
 
 // --- VM Observability Helpers (Phase 0 + Phase 1) ---
 
+// vmIDPattern matches orchestrator and aux component ids: agent-<session>,
+// memory-<session>, court-persona-<p>, court-scribe, store, network-boundary,
+// web-portal, aegishub, project-manager*, coder-*, tester-*, builder*.
+var vmIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// validateVMID rejects caller-supplied ids before they are interpolated into
+// state-dir filenames. ".." is rejected on its own (`a..b` still matches the
+// character class).
+func validateVMID(id string) error {
+	if id == "" {
+		return errors.New("invalid vm id: empty")
+	}
+	if len(id) > 128 {
+		return errors.New("invalid vm id: longer than 128 bytes")
+	}
+	if strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, `\`) || strings.Contains(id, "\x00") {
+		return errors.New("invalid vm id")
+	}
+	if !vmIDPattern.MatchString(id) {
+		return errors.New("invalid vm id")
+	}
+	return nil
+}
+
+// vmLogInsideStateDir reports whether p stays inside stateDir after Clean.
+// filepath.Rel returns a path starting with ".." when p escapes stateDir.
+func vmLogInsideStateDir(stateDir, p string) bool {
+	rel, err := filepath.Rel(stateDir, p)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..")
+}
+
 func getRecentFileContent(path string, tailLines int) string {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return ""
+	}
+	// Do not follow a symlink planted at the log path.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -2451,33 +2503,33 @@ func getRecentFileContent(path string, tailLines int) string {
 
 func gatherVMLogs(stateDir, vmID string, tailLines int) map[string]string {
 	result := map[string]string{}
+	if err := validateVMID(vmID); err != nil {
+		return result
+	}
+
+	read := func(key, p string) {
+		if !vmLogInsideStateDir(stateDir, p) {
+			return
+		}
+		if content := getRecentFileContent(p, tailLines); content != "" {
+			result[key] = content
+		}
+	}
 
 	// Firecracker VMM log
-	vmmPath := filepath.Join(stateDir, "fc-"+vmID+".log")
-	if content := getRecentFileContent(vmmPath, tailLines); content != "" {
-		result["vmm"] = content
-	}
+	read("vmm", filepath.Join(stateDir, "fc-"+vmID+".log"))
 
 	// Guest serial console
-	consolePath := filepath.Join(stateDir, "fc-"+vmID+"-console.log")
-	if content := getRecentFileContent(consolePath, tailLines); content != "" {
-		result["console"] = content
-	}
+	read("console", filepath.Join(stateDir, "fc-"+vmID+"-console.log"))
 
 	// Phase 1 structured guest logs
-	guestPath := filepath.Join(stateDir, vmID+".guest.log")
-	if content := getRecentFileContent(guestPath, tailLines); content != "" {
-		result["guest"] = content
-	}
+	read("guest", filepath.Join(stateDir, vmID+".guest.log"))
 
 	// Aux / managed host components surfaced in `vm list` (e.g. "aegishub" which
 	// is registered via RegisterAuxComponent and shown as type=hub) do not have
 	// fc-*.log files. Their process stdout/stderr is captured to <id>.log by the
 	// managed starter (startManagedHub) so `aegis vm logs <id>` works uniformly.
-	auxLogPath := filepath.Join(stateDir, vmID+".log")
-	if content := getRecentFileContent(auxLogPath, tailLines); content != "" {
-		result["log"] = content
-	}
+	read("log", filepath.Join(stateDir, vmID+".log"))
 
 	return result
 }
