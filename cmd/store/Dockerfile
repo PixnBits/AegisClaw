@@ -12,7 +12,7 @@
 #   - host-daemon.md + no-stubs-plan (real Store binary must be bootable as guest)
 
 # === Build stage ===
-FROM golang:1.24-alpine@sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191 AS builder
+FROM golang:1.26-alpine3.24@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
 
 ENV GOTOOLCHAIN=auto
 WORKDIR /app
@@ -32,8 +32,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /store ./cmd/store
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /git-remote-hub ./cmd/git-remote-hub
 
 # === Runtime stage ===
-# TODO(#127 follow-up): alpine 3.18 is EOL. When replacing it, bump the tag and the @sha256 digest together.
-FROM alpine:3.18@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 RUN apk add --no-cache ca-certificates tzdata git
 

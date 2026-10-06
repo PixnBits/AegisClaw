@@ -17,7 +17,9 @@
 #                                Set this to the on-disk hash to accept an existing
 #                                kernel that differs from the in-repo pin.
 #   AEGIS_SKIP_KERNEL_CHECKSUM   Set to 1 to install or keep a kernel without verifying
-#                                (air-gapped host or private mirror). Prints a loud warning.
+#                                (air-gapped host, private mirror, or no sha256sum/shasum).
+#                                Prints a loud warning. Without this flag, a missing hash
+#                                tool fails the existing-kernel check.
 #
 # Re-run after code changes that affect the required kernel features (e.g. adding
 # virtio-rng device support for guest entropy / #62). The downloaded kernel must
@@ -103,9 +105,23 @@ cleanup_download_tmp() {
 if [ -f "$KERNEL_PATH" ]; then
     if grep -q 'virtio_rng' "$KERNEL_PATH" 2>/dev/null || grep -q 'virtio-rng' "$KERNEL_PATH" 2>/dev/null; then
         log "Kernel at $KERNEL_PATH already contains virtio_rng driver (post #63 fix for fast guest CRNG). Skipping download."
+        if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+            if [ "${AEGIS_SKIP_KERNEL_CHECKSUM:-}" = "1" ]; then
+                warn "AEGIS_SKIP_KERNEL_CHECKSUM=1: neither sha256sum nor shasum is available."
+                warn "Could not compute SHA-256 of the existing kernel at $KERNEL_PATH."
+                warn "Leaving the file in place (not deleted). SKIPPING SHA-256 verification."
+                exit 0
+            fi
+            echo "Error: cannot verify the existing kernel at $KERNEL_PATH." >&2
+            echo "Neither sha256sum nor shasum is available." >&2
+            echo "The file was left in place (not deleted)." >&2
+            echo "Set AEGIS_SKIP_KERNEL_CHECKSUM=1 to keep it without verification." >&2
+            exit 1
+        fi
         if ! actual=$(file_sha256 "$KERNEL_PATH"); then
-            warn "Could not compute SHA-256 of the existing kernel; leaving $KERNEL_PATH in place."
-            exit 0
+            echo "Error: could not compute SHA-256 of the existing kernel at $KERNEL_PATH." >&2
+            echo "The file was left in place (not deleted)." >&2
+            exit 1
         fi
         # A mismatched existing kernel is not a successful skip. Leave the file
         # untouched and exit non-zero unless the operator opts in.

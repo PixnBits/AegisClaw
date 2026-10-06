@@ -231,11 +231,11 @@ yourusername ALL=(ALL) NOPASSWD: /path/to/bin/aegis, /path/to/scripts/build-micr
 
 ### Docker base image digests
 
-Every `FROM` in `cmd/*/Dockerfile` is pinned as `name:tag@sha256:…`. The digest is the multi-arch index digest, not a single-architecture manifest. The tag stays so the line is readable; the digest is what the build uses.
+Every tracked Dockerfile (`Dockerfile`, `*.Dockerfile`, or `Dockerfile.*`) pins external `FROM` images as `name:tag@sha256:…`. The digest is the multi-arch index digest, not a single-architecture manifest. The tag stays so the line is readable; the digest is what the build uses. `scratch` and a `FROM` that names an earlier stage alias are not external images and do not need a digest.
 
-To bump a pin, read the index digest with `docker buildx imagetools inspect <image>:<tag>` (or the registry API) and update the tag and the `@sha256:` digest in the same commit. Do not change one without the other. `scripts/test-dockerfile-digests.sh` rejects a `FROM` that has no `@sha256:` digest.
+To bump a pin, read the index digest with `docker buildx imagetools inspect <image>:<tag>` (or the registry API) and update the tag and the `@sha256:` digest in the same commit. Do not change one without the other. `scripts/test-dockerfile-digests.sh` rejects an external `FROM` with no `@sha256:` digest, a `go install` that uses `@latest`, and a `wget` or `curl` download in a Dockerfile `RUN` that does not run `sha256sum -c` in that same `RUN`.
 
-`alpine:3.18` is end of life. TODO(#127 follow-up): move the runtime stage to a supported Alpine and bump its tag and digest together. Do not bump Alpine in a digest-only change.
+Runtime stages use `alpine:3.24`. Go build stages use `golang:1.26-alpine3.24`. The web portal SPA stage uses `node:22-alpine3.24`.
 
 See `make help` and the SBOM target for details.
 
