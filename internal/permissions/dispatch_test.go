@@ -7,6 +7,7 @@ import (
 )
 
 func TestDispatchCommand_Table(t *testing.T) {
+	t.Chdir(t.TempDir())
 	state := DefaultBootstrap()
 	state.CisoDelegationEnabled = false
 
@@ -76,6 +77,7 @@ func TestDispatchCommand_Table(t *testing.T) {
 }
 
 func TestDispatch_RegistryDiscoverRequiresGrantEvenWithCisoDelegation(t *testing.T) {
+	t.Chdir(t.TempDir())
 	state := DefaultBootstrap()
 	state.CisoDelegationEnabled = true
 	cmd, resp, err := DispatchCommand(state, "coder-1", "tool.registry.discover", nil, &[]interface{}{}, NowRFC3339())
@@ -93,6 +95,7 @@ func TestDispatch_RegistryDiscoverRequiresGrantEvenWithCisoDelegation(t *testing
 
 // Test that the shipped append path used by Dispatch (and thus by store main for permission commands) produces domain entries on the slice passed for audit.
 func TestAppendProducesDomainForAudit(t *testing.T) {
+	t.Chdir(t.TempDir())
 	state := DefaultBootstrap()
 	state.CisoDelegationEnabled = true
 	audit := []interface{}{}

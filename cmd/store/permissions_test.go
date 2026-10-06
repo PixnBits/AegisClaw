@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,6 +31,7 @@ func TestInitPermissionState_PreservesEmptyGrants(t *testing.T) {
 }
 
 func TestHandlePermissionGrantRevokeList(t *testing.T) {
+	t.Chdir(t.TempDir())
 	// Use temp file for isolation
 	tmp, err := os.CreateTemp("", "perm-*.json")
 	if err != nil {
@@ -61,6 +64,7 @@ func TestHandlePermissionGrantRevokeList(t *testing.T) {
 }
 
 func TestPermissionCheckAtStore_DeniesUngranted(t *testing.T) {
+	t.Chdir(t.TempDir())
 	permissionState = permissions.DefaultBootstrap()
 	ok, errMsg := permissionCheckAtStore("coder-evil", "proposal.create", nil)
 	if ok {
@@ -72,6 +76,7 @@ func TestPermissionCheckAtStore_DeniesUngranted(t *testing.T) {
 }
 
 func TestPermissionCheckAtStore_AllowsBootstrapGrant(t *testing.T) {
+	t.Chdir(t.TempDir())
 	permissionState = permissions.DefaultBootstrap()
 	ok, _ := permissionCheckAtStore("coder-test", "channel.post", nil)
 	if !ok {
@@ -80,6 +85,7 @@ func TestPermissionCheckAtStore_AllowsBootstrapGrant(t *testing.T) {
 }
 
 func TestMicroVMCannotGrant(t *testing.T) {
+	t.Chdir(t.TempDir())
 	permissionState = permissions.NewState()
 	msg := Message{
 		Source:      "coder-1",
@@ -97,6 +103,7 @@ func TestMicroVMCannotGrant(t *testing.T) {
 }
 
 func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
+	t.Chdir(t.TempDir())
 	permissionState = permissions.NewState()
 	permissionState.CisoDelegationEnabled = false
 
@@ -183,4 +190,63 @@ func TestCisoDelegationCommandsAndGrantWhenEnabled(t *testing.T) {
 		t.Error("audit.list payload missing domain:permissions")
 	}
 	t.Log("SENT literal Command:'audit.list' via handlePermissionCommand returning real auditLog payload from grant append, domain present:", string(b))
+}
+
+func TestPermissionCheckAtStore_DeniesUngranted_WritesOnlyTempDir(t *testing.T) {
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgFile := filepath.Join(pkgDir, "permissions.json")
+	beforeInfo, beforeErr := os.Stat(pkgFile)
+	var beforeContent []byte
+	if beforeErr == nil {
+		beforeContent, err = os.ReadFile(pkgFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else if !os.IsNotExist(beforeErr) {
+		t.Fatal(beforeErr)
+	}
+
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+
+	permissionState = permissions.DefaultBootstrap()
+	ok, errMsg := permissionCheckAtStore("coder-evil", "proposal.create", nil)
+	if ok {
+		t.Fatal("expected denial for ungranted proposal.create")
+	}
+	if errMsg != "ERR_PERMISSION_DENIED" {
+		t.Fatalf("expected ERR_PERMISSION_DENIED, got %q", errMsg)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "permissions.json")); err != nil {
+		t.Fatalf("expected permissions.json in temp dir: %v", err)
+	}
+
+	afterInfo, afterErr := os.Stat(pkgFile)
+	if beforeErr != nil {
+		if afterErr == nil {
+			t.Fatal("permissions.json was created in the package dir")
+		}
+		if !os.IsNotExist(afterErr) {
+			t.Fatal(afterErr)
+		}
+		return
+	}
+	if afterErr != nil {
+		t.Fatalf("package permissions.json changed: %v", afterErr)
+	}
+	if !beforeInfo.ModTime().Equal(afterInfo.ModTime()) || beforeInfo.Size() != afterInfo.Size() {
+		t.Fatalf("package permissions.json metadata changed: before %s size %d, after %s size %d",
+			beforeInfo.ModTime(), beforeInfo.Size(), afterInfo.ModTime(), afterInfo.Size())
+	}
+	afterContent, err := os.ReadFile(pkgFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeContent, afterContent) {
+		t.Fatal("package permissions.json content changed")
+	}
 }

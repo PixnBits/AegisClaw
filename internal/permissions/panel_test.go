@@ -3,6 +3,7 @@ package permissions
 import "testing"
 
 func TestDispatchPermissionPanel(t *testing.T) {
+	t.Chdir(t.TempDir())
 	st := DefaultBootstrap()
 	_ = GrantCapability(st, "court-persona-user-advocate", "channel.post", "test", "bootstrap")
 

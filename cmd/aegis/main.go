@@ -1507,10 +1507,12 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 		socket := expandPath(socketPath)
 		if st, err := os.Stat(socket); err == nil {
 			mode := st.Mode().Perm()
-			if mode&0777 == 0600 || mode&0777 == 0666 {
+			// Owner-only 0600 is the expected mode. The socket is chowned to
+			// the original invoking user, so same-user and root CLI still work.
+			if mode&0777 == 0600 {
 				fmt.Printf("✓ Control socket accessible (mode %o)\n", mode)
 			} else {
-				fmt.Printf("⚠ Control socket perms may prevent normal-user CLI access (current: %o)\n", mode)
+				fmt.Printf("⚠ Control socket mode %o is not owner-only (expected 0600)\n", mode)
 			}
 		}
 		// Proxy health (the hardened reverse proxy the daemon manages).
@@ -1978,8 +1980,8 @@ func getTeam(id string) (CLITeam, bool) {
 
 // getPeerUID returns the effective UID of the process on the other end of
 // a Unix domain socket connection using SO_PEERCRED (Linux only).
-// Returns (uid, true) on success. On non-Linux or error, returns (-1, false)
-// so the caller can fall back to existing 0600 + allowlist hardening.
+// Returns (uid, true) on success. On non-Linux or error, returns (-1, false).
+// Callers must not treat that failure as authorization for stop or restart.
 func getPeerUID(conn net.Conn) (int, bool) {
 	unixConn, ok := conn.(*net.UnixConn)
 	if !ok {
@@ -1996,6 +1998,26 @@ func getPeerUID(conn net.Conn) (int, bool) {
 		return -1, false
 	}
 	return int(ucred.Uid), true
+}
+
+// authorizeSocketPeer decides whether a control-socket peer may run op.
+// When peer credentials are available, only root or the original invoking
+// user is allowed (expectedUID must be >= 0 for the user match). When they
+// are not, read-only ops keep the filesystem-mode fallback, but stop and
+// restart are denied so a missing SO_PEERCRED cannot fail open.
+func authorizeSocketPeer(op string, peerUID int, peerOK bool, expectedUID int) bool {
+	if peerOK {
+		if peerUID == 0 {
+			return true
+		}
+		return expectedUID >= 0 && peerUID == expectedUID
+	}
+	switch op {
+	case "stop", "restart":
+		return false
+	default:
+		return true
+	}
 }
 
 // startSocketServer sets up the hardened Unix socket for CLI/daemon communication.
@@ -2030,9 +2052,10 @@ func startSocketServer(socketAddr string, orch *runtime.Orchestrator) error {
 				_ = os.Chown(addr, uid, gid)
 			}
 		}
-		// 0666 so non-root users can use the CLI after a root-started daemon.
-		if err := os.Chmod(addr, 0666); err != nil {
-			logrus.Warnf("could not chmod control socket to 0666: %v", err)
+		// 0600, chowned above to the original invoking user. Root bypasses
+		// file mode, so sudo and same-user CLI (including stop) still work.
+		if err := os.Chmod(addr, 0600); err != nil {
+			logrus.Warnf("could not chmod control socket to 0600: %v", err)
 		}
 	}
 
@@ -2056,25 +2079,23 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 	defer conn.Close()
 
 	// 7.5.6: Final socket auth hardening (host-daemon.md:Test Requirements / Unix Socket Hardening).
-	// We already have 0600 + chown + allowlist. As extra defense-in-depth on Linux we
-	// now also verify the peer UID via SO_PEERCRED. Only root or the original invoking
-	// user (from sudo or current) are allowed. Graceful fallback on non-Linux or error.
-	if uid, ok := getPeerUID(conn); ok {
-		origUser, _ := getOriginalUser()
-		expectedUID := -1
-		if origUser != nil {
-			if u, err := strconv.Atoi(origUser.Uid); err == nil {
-				expectedUID = u
-			}
-		}
-		if uid != 0 && uid != expectedUID {
-			logrus.Warnf("socket auth rejected: peer uid=%d not root and not original user (%d)", uid, expectedUID)
-			conn.Write([]byte(`{"ok":false,"error":"unauthorized peer"}` + "\n"))
-			return
+	// Filesystem sockets are 0600 and chowned to the original invoking user.
+	// SO_PEERCRED must match root or that user. If peer credentials are
+	// unavailable, read-only ops keep the mode fallback, but stop and restart
+	// are denied after the op is parsed (they must not fail open).
+	peerUID, peerOK := getPeerUID(conn)
+	expectedUID := -1
+	if origUser, err := getOriginalUser(); err == nil && origUser != nil {
+		if u, convErr := strconv.Atoi(origUser.Uid); convErr == nil {
+			expectedUID = u
 		}
 	}
-	// If we couldn't get peer UID (non-Linux or error), we fall back to the existing
-	// 0600 permissions + operation allowlist (still strong).
+	// Op is not known yet. A verified peer is allowed or rejected independent of op.
+	if peerOK && !authorizeSocketPeer("", peerUID, peerOK, expectedUID) {
+		logrus.Warnf("socket auth rejected: peer uid=%d not root and not original user (%d)", peerUID, expectedUID)
+		conn.Write([]byte(`{"ok":false,"error":"unauthorized peer"}` + "\n"))
+		return
+	}
 
 	buf := make([]byte, 512) // slightly larger for JSON
 	n, err := conn.Read(buf)
@@ -2109,6 +2130,11 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		}
 		if !allowedOps[req.Op] {
 			logrus.Warnf("unauthorized socket op: %s", req.Op)
+			conn.Write([]byte(`{"ok":false,"error":"unauthorized"}` + "\n"))
+			return
+		}
+		if !authorizeSocketPeer(req.Op, peerUID, peerOK, expectedUID) {
+			logrus.Warnf("socket auth rejected privileged op %s without verified peer", req.Op)
 			conn.Write([]byte(`{"ok":false,"error":"unauthorized"}` + "\n"))
 			return
 		}
@@ -2316,6 +2342,11 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 	allowed := map[string]bool{"vm list": true, "stop": true}
 	if !allowed[command] {
 		logrus.Warnf("unauthorized or unknown socket command: %s", command)
+		conn.Write([]byte("unauthorized\n"))
+		return
+	}
+	if !authorizeSocketPeer(command, peerUID, peerOK, expectedUID) {
+		logrus.Warnf("socket auth rejected privileged command %s without verified peer", command)
 		conn.Write([]byte("unauthorized\n"))
 		return
 	}
