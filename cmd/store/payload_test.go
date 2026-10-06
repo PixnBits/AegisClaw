@@ -328,3 +328,163 @@ func TestValidChannelPostStillAppends(t *testing.T) {
 		t.Fatal("channel.updated was not emitted")
 	}
 }
+
+// TestDispatchRejectsUntestedBadInputs covers checked-decode branches that
+// the malformed table above doesn't reach: a bad field that comes after a
+// valid one, or corrupt data already stored in a channel. Each must reply
+// with the specific error and leave the Store unchanged.
+func TestDispatchRejectsUntestedBadInputs(t *testing.T) {
+	chdirTempAssertNoPackageAudit(t)
+	corruptMembers := func(w *storeWorld) {
+		w.channels["main"] = map[string]interface{}{"id": "main", "members": "corrupt", "messages": []interface{}{}}
+	}
+	cases := []struct {
+		name    string
+		setup   func(w *storeWorld)
+		command string
+		payload map[string]interface{}
+		want    string
+	}{
+		{
+			name: "court.review_complete proposal_id number",
+			// A bad proposal_id decodes to "". Seed that key so a fall-through
+			// would visibly record votes on it instead of silently missing.
+			setup: func(w *storeWorld) {
+				w.proposals[""] = map[string]interface{}{"id": "", "status": "in_review"}
+			},
+			command: "court.review_complete",
+			payload: map[string]interface{}{"proposal_id": float64(1), "votes": map[string]interface{}{"ciso": "approve"}},
+			want:    "proposal_id must be a string",
+		},
+		{
+			name:    "court.record_enforcement revoked_scopes not array",
+			command: "court.record_enforcement",
+			payload: map[string]interface{}{"proposal_id": "p1", "agent_id": "agent-1", "action": "revoke", "revoked_scopes": "fs.write"},
+			want:    "revoked_scopes must be an array",
+		},
+		{
+			name: "channel.post corrupt stored messages",
+			setup: func(w *storeWorld) {
+				w.channels["main"] = map[string]interface{}{"id": "main", "members": []interface{}{}, "messages": "corrupt", "next_seq": 1}
+			},
+			command: "channel.post",
+			payload: map[string]interface{}{"channel_id": "main", "from": "pm", "content": "hi"},
+			want:    "invalid stored channel: messages must be an array",
+		},
+		{
+			name: "channel.add_member role number",
+			setup: func(w *storeWorld) {
+				w.channels["main"] = map[string]interface{}{"id": "main", "members": []interface{}{}}
+			},
+			command: "channel.add_member",
+			payload: map[string]interface{}{"id": "main", "role": float64(7)},
+			want:    "role must be a string",
+		},
+		{
+			name:    "channel.add_member corrupt stored members",
+			setup:   corruptMembers,
+			command: "channel.add_member",
+			payload: map[string]interface{}{"id": "main", "role": "coder"},
+			want:    "invalid stored channel: members must be an array",
+		},
+		{
+			name:    "channel.remove_member corrupt stored members",
+			setup:   corruptMembers,
+			command: "channel.remove_member",
+			payload: map[string]interface{}{"id": "main", "role": "coder"},
+			want:    "invalid stored channel: members must be an array",
+		},
+		{
+			name:    "member_turn_update corrupt stored members",
+			setup:   corruptMembers,
+			command: channelfacilitator.CmdMemberTurnUpdate,
+			payload: map[string]interface{}{"id": "main", "role": "coder", "round_robin_index": float64(3), "last_seen_seq": float64(9)},
+			want:    "invalid stored channel: members must be an array",
+		},
+		{
+			name:    "sessions.save id number",
+			command: "sessions.save",
+			payload: map[string]interface{}{"id": float64(1), "title": "t", "messages": []interface{}{}},
+			want:    "id must be a string",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			saved := revocations
+			revocations = map[string]interface{}{}
+			t.Cleanup(func() { revocations = saved })
+			w := testStoreWorld(t)
+			if tc.setup != nil {
+				tc.setup(w)
+			}
+			before := storeSnapshot(w)
+			files, _ := filepath.Glob("*.json")
+			sessionsBefore := countSessions(t, w)
+			resp := dispatchPayload(w, tc.command, tc.payload)
+			assertErrorReply(t, resp, tc.want)
+			assertUnchanged(t, w, before, files)
+			if n := countSessions(t, w); n != sessionsBefore {
+				t.Fatalf("chat sessions %d -> %d", sessionsBefore, n)
+			}
+		})
+	}
+}
+
+func countSessions(t *testing.T, w *storeWorld) int {
+	t.Helper()
+	list, err := w.chatSessions.ListSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(list)
+}
+
+// TestDispatchRemainingCommandsNoPanic sends junk payloads to the commands
+// the malformed table doesn't list. These either ignore the payload or
+// decode it loosely, so the check is only that none of them panics (the
+// guard would turn a panic into a SECURITY event). git.* and the
+// builder/vm destroy commands are left out: they touch the filesystem or
+// signal other components.
+func TestDispatchRemainingCommandsNoPanic(t *testing.T) {
+	chdirTempAssertNoPackageAudit(t)
+	commands := []string{
+		"reconcile.expired_grants", "timer.list", "grant.list",
+		"proposal.create", "proposal.list", "skill.create",
+		"pr.merge", "pr.rollback", "team.list", "channel.list",
+		"sessions.list", "skill.list", "memory.query",
+		"audit.append", "audit.get_root", "audit.list", "tool.list",
+		"ping", "version", "get-version",
+	}
+	junk := []interface{}{
+		"nope", float64(1), nil, []interface{}{1, "x"},
+		map[string]interface{}{
+			"id": float64(1), "proposal_id": []interface{}{}, "pr_id": true,
+			"query": float64(2), "content": map[string]interface{}{}, "entry": float64(3),
+			"limit": "x", "title": float64(4), "skill": "nope", "members": "x",
+		},
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range commands {
+		for _, p := range junk {
+			t.Run(fmt.Sprintf("%s/%T", command, p), func(t *testing.T) {
+				saved := revocations
+				revocations = map[string]interface{}{}
+				t.Cleanup(func() { revocations = saved })
+				w := testStoreWorld(t)
+				var buf bytes.Buffer
+				w.priv = priv
+				w.encoder = json.NewEncoder(&buf)
+				defer func() {
+					if rec := recover(); rec != nil {
+						t.Fatalf("%s panicked on %#v: %v", command, p, rec)
+					}
+				}()
+				resp := Message{Timestamp: "2026-10-06T00:00:00Z"}
+				dispatchStoreCommand(Message{Source: "test", Command: command, Payload: p}, &resp, w)
+			})
+		}
+	}
+}

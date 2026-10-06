@@ -601,6 +601,12 @@ func dispatchStoreCommand(msg Message, response *Message, w *storeWorld) (skipRe
 			if !ok {
 				break
 			}
+			// prepareChannelRecord and NextChannelSeq change ch in place (seq
+			// backfill, member defaults, next_seq) before the append below.
+			// Everything after them is map writes, append and saveToFile, none
+			// of which panics on input that got this far, so a recovered panic
+			// can't leave half a post in memory. If that ever changes, build
+			// the new record first and assign it to channels[chID] once.
 			prepareChannelRecord(ch)
 			msgSeq = channeldata.NextChannelSeq(ch)
 			entry := map[string]interface{}{
