@@ -41,6 +41,7 @@ import (
 	"AegisClaw/internal/runtime"
 	"AegisClaw/internal/sandbox" // for FirecrackerVsockUDSPath (host -> guest web-portal reverse proxy)
 	"AegisClaw/internal/transport/hubclient"
+	"AegisClaw/internal/unixsock"
 	"AegisClaw/internal/workspace"
 )
 
@@ -1982,22 +1983,9 @@ func getTeam(id string) (CLITeam, bool) {
 // a Unix domain socket connection using SO_PEERCRED (Linux only).
 // Returns (uid, true) on success. On non-Linux or error, returns (-1, false).
 // Callers must not treat that failure as authorization except for the read-only allowlist.
+// Do not use (*net.UnixConn).File: it clears O_NONBLOCK.
 func getPeerUID(conn net.Conn) (int, bool) {
-	unixConn, ok := conn.(*net.UnixConn)
-	if !ok {
-		return -1, false
-	}
-	file, err := unixConn.File()
-	if err != nil {
-		return -1, false
-	}
-	defer file.Close()
-
-	ucred, err := syscall.GetsockoptUcred(int(file.Fd()), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-	if err != nil {
-		return -1, false
-	}
-	return int(ucred.Uid), true
+	return unixsock.PeerUID(conn)
 }
 
 // authorizeSocketPeer decides whether a control-socket peer may run op.
@@ -2023,12 +2011,11 @@ func authorizeSocketPeer(op string, peerUID int, peerOK bool, expectedUID int) b
 
 // listenUnixPrivate listens on a Unix socket created with mode 0600.
 // net.Listen applies the process umask, which is wider than 0600, so the
-// socket must be created under a restrictive umask. umask is process-wide
-// and is restored before return. Callers still chmod 0600 afterwards.
+// socket must be created under a restrictive umask. The umask lock is
+// process-wide and shared with the hub (unixsock.ListenPrivate).
+// Callers still chmod 0600 afterwards.
 func listenUnixPrivate(addr string) (net.Listener, error) {
-	old := syscall.Umask(0177)
-	defer syscall.Umask(old)
-	return net.Listen("unix", addr)
+	return unixsock.ListenPrivate("unix", addr)
 }
 
 // startSocketServer sets up the hardened Unix socket for CLI/daemon communication.

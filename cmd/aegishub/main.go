@@ -15,13 +15,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/hubgit"
 	"AegisClaw/internal/hublease"
 	"AegisClaw/internal/transport/hubclient" // for HubVsockPort constant (Phase 1.1c vsock support)
+	"AegisClaw/internal/unixsock"
 	"github.com/mdlayher/vsock"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -115,37 +115,33 @@ func hubOriginalUser() (*user.User, error) {
 	return user.Current()
 }
 
+// hubOriginalUIDVal is filled once. The invoking user does not change for
+// the life of the process; looking it up on every connection calls user.Lookup.
+var (
+	hubOriginalUIDOnce sync.Once
+	hubOriginalUIDVal  = -1
+)
+
 func hubOriginalUID() int {
-	u, err := hubOriginalUser()
-	if err != nil || u == nil {
-		return -1
-	}
-	id, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return -1
-	}
-	return id
+	hubOriginalUIDOnce.Do(func() {
+		u, err := hubOriginalUser()
+		if err != nil || u == nil {
+			return
+		}
+		id, err := strconv.Atoi(u.Uid)
+		if err != nil {
+			return
+		}
+		hubOriginalUIDVal = id
+	})
+	return hubOriginalUIDVal
 }
 
 // getHubPeerUID returns the peer euid of a UNIX connection via SO_PEERCRED.
 // Non-UNIX conns (vsock, net.Pipe) return ok=false; callers must not treat
-// that as a UNIX peer.
+// that as a UNIX peer. Do not use (*net.UnixConn).File: it clears O_NONBLOCK.
 func getHubPeerUID(conn net.Conn) (int, bool) {
-	unixConn, ok := conn.(*net.UnixConn)
-	if !ok {
-		return -1, false
-	}
-	file, err := unixConn.File()
-	if err != nil {
-		return -1, false
-	}
-	defer file.Close()
-
-	ucred, err := syscall.GetsockoptUcred(int(file.Fd()), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-	if err != nil {
-		return -1, false
-	}
-	return int(ucred.Uid), true
+	return unixsock.PeerUID(conn)
 }
 
 // authorizeHubPeer allows uid 0, the hub's own euid, or the original user.
@@ -160,18 +156,12 @@ func authorizeHubPeer(peerUID int, peerOK bool, selfUID, originalUID int) bool {
 	return originalUID >= 0 && peerUID == originalUID
 }
 
-// hubListenUmask serializes process-wide umask changes around socket creation.
-var hubListenUmask sync.Mutex
-
 // listenUnixSocket0600 listens so the socket inode is created at 0600.
 // umask 0177 makes the kernel mode 0777&^0177 = 0600. There is no window
-// where the socket is 0666 before a later chmod.
+// where the socket is 0666 before a later chmod. The umask lock is
+// process-wide and shared with the daemon (unixsock.ListenPrivate).
 func listenUnixSocket0600(socket string) (net.Listener, error) {
-	hubListenUmask.Lock()
-	defer hubListenUmask.Unlock()
-	old := syscall.Umask(0177)
-	defer syscall.Umask(old)
-	return net.Listen("unix", socket)
+	return unixsock.ListenPrivate("unix", socket)
 }
 
 // listenHubUnixSocket creates the hub UNIX socket at mode 0600 and chowns it

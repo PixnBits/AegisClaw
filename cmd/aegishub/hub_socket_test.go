@@ -488,3 +488,178 @@ func TestDaemonTempDoesNotClosePersistentDaemon(t *testing.T) {
 	_ = daemonClient.Close()
 	waitHandler(t, daemonDone)
 }
+
+// TestReregisterStormUnixSocket re-registers one id over a real UNIX socket.
+// (*net.UnixConn).File().Fd() clears O_NONBLOCK on the shared open file
+// description while poll.FD.isBlocking stays 0. The old handler then blocks
+// in Read, and oldConn.Close waits forever, so the new handler never sends
+// its register response. The client deadline bounds that failure. The client
+// fd itself stays non-blocking, so a later read on A cannot hang the package.
+func TestReregisterStormUnixSocket(t *testing.T) {
+	snapshotHubRegistry(t)
+	t.Setenv("AEGIS_DEV_MODE", "1")
+	t.Setenv("SUDO_USER", "")
+
+	sock := filepath.Join(t.TempDir(), "hub.sock")
+	ln, err := listenHubUnixSocket(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	fi, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("hub socket mode = %o, want 0600", fi.Mode().Perm())
+	}
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "storm-client"
+	conns := &sync.Map{}
+
+	const iters = 200
+	for i := 0; i < iters; i++ {
+		clientA, _, decA, doneA := stormRegister(t, i, ln, sock, conns, id, pub)
+		clientB, serverB, decB, doneB := stormRegister(t, i, ln, sock, conns, id, pub)
+
+		got, ok := conns.Load(id)
+		if !ok || got != serverB {
+			t.Fatalf("iter %d: conns[%s] is not B", i, id)
+		}
+		registeredMutex.RLock()
+		reg := registered[id]
+		registeredMutex.RUnlock()
+		if reg == nil {
+			t.Fatalf("iter %d: %s dropped from the registry", i, id)
+		}
+
+		_ = clientB.SetDeadline(time.Now().Add(3 * time.Second))
+		probe := Message{
+			Source:      id,
+			Destination: "hub",
+			Command:     "get-version",
+			Payload:     map[string]string{"from": "B"},
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			Signature:   "dummy",
+		}
+		if err := json.NewEncoder(clientB).Encode(probe); err != nil {
+			t.Fatalf("iter %d: B encode: %v", i, err)
+		}
+		var reply map[string]interface{}
+		if err := decB.Decode(&reply); err != nil {
+			t.Fatalf("iter %d: B decode: %v", i, err)
+		}
+		if errVal, bad := reply["error"]; bad {
+			t.Fatalf("iter %d: B exchange error: %v", i, errVal)
+		}
+		if reply["status"] != "ok" {
+			t.Fatalf("iter %d: B exchange reply: %#v", i, reply)
+		}
+		_ = clientB.SetDeadline(time.Time{})
+
+		readErr := make(chan error, 1)
+		go func() {
+			_ = clientA.SetReadDeadline(time.Now().Add(time.Second))
+			var discard json.RawMessage
+			readErr <- decA.Decode(&discard)
+		}()
+		select {
+		case err := <-readErr:
+			if !stormPeerClosed(err) {
+				t.Fatalf("iter %d: conn A still open: %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: conn A read did not return within 2s", i)
+		}
+		select {
+		case <-doneA:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: replaced handler did not exit", i)
+		}
+
+		_ = clientB.Close()
+		select {
+		case <-doneB:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: B handler did not exit", i)
+		}
+	}
+}
+
+func stormRegister(t *testing.T, iter int, ln net.Listener, sock string, conns *sync.Map, id string, pub ed25519.PublicKey) (client net.Conn, server net.Conn, dec *json.Decoder, done <-chan struct{}) {
+	t.Helper()
+	accErr := make(chan error, 1)
+	accC := make(chan net.Conn, 1)
+	go func() {
+		c, aerr := ln.Accept()
+		if aerr != nil {
+			accErr <- aerr
+			return
+		}
+		accC <- c
+	}()
+	client, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("iter %d: dial: %v", iter, err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	select {
+	case err := <-accErr:
+		t.Fatalf("iter %d: accept: %v", iter, err)
+	case server = <-accC:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("iter %d: accept timed out", iter)
+	}
+
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		handleConnection(server, conns)
+	}()
+
+	reg := Message{
+		Source:      id,
+		Destination: "hub",
+		Command:     "register",
+		Payload: map[string]string{
+			"public_key": base64.StdEncoding.EncodeToString(pub),
+			"version":    "test",
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Signature: "dummy",
+	}
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(client).Encode(reg); err != nil {
+		t.Fatalf("iter %d: register encode: %v", iter, err)
+	}
+	dec = json.NewDecoder(client)
+	var resp map[string]interface{}
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("iter %d: register decode: %v", iter, err)
+	}
+	if errVal, bad := resp["error"]; bad {
+		t.Fatalf("iter %d: register error: %v", iter, errVal)
+	}
+	if resp["status"] != "registered" || resp["assigned_id"] != id {
+		t.Fatalf("iter %d: register response: %#v", iter, resp)
+	}
+	_ = client.SetDeadline(time.Time{})
+	return client, server, dec, doneCh
+}
+
+func stormPeerClosed(err error) bool {
+	if err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		return false
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return false
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed)
+}
