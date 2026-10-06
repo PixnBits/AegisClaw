@@ -381,6 +381,37 @@ rules:
     - channel.get_relevant_since
     - channel.get_messages
 
+# Store RPC replies for channel context tools (e.g. channel.get_relevant_since.data).
+# Without this, channel.get_relevant_since.data is ACL-denied to role agents.
+- source: store
+  destination: "agent*"
+  commands:
+    - channel.*
+- source: store
+  destination: "coder*"
+  commands:
+    - channel.*
+- source: store
+  destination: "tester*"
+  commands:
+    - channel.*
+- source: store
+  destination: "ciso*"
+  commands:
+    - channel.*
+- source: store
+  destination: "architect*"
+  commands:
+    - channel.*
+- source: store
+  destination: "researcher*"
+  commands:
+    - channel.*
+- source: store
+  destination: "project-manager*"
+  commands:
+    - channel.*
+
 # Channel activity fan-out (Store relays every channel.post → daemon-orchestrator → STOMP only)
 - source: store
   destination: "daemon-orchestrator"
@@ -741,7 +772,9 @@ rules:
     - visibility.list
     - visibility.get
     - visibility.set
-- source: "hub-perm-fetch"
+# Hub snapshot RPC wait ids are hub-perm-fetch-<nanos> (cmd/aegishub/permissions.go).
+# Prefix match also covers the exact id.
+- source: "hub-perm-fetch*"
   destination: store
   commands:
     - permission.snapshot
@@ -755,7 +788,7 @@ rules:
     - permission.request
     - visibility.set
 - source: store
-  destination: "hub-perm-fetch"
+  destination: "hub-perm-fetch*"
   commands:
     - permission.snapshot
     - error
@@ -771,6 +804,23 @@ rules:
     - permission.snapshot
 - source: hub
   destination: "coder*"
+  commands:
+    - permission.snapshot
+# Role VMs tester/ciso/architect/researcher also receive permission.snapshot pushes.
+- source: hub
+  destination: "tester*"
+  commands:
+    - permission.snapshot
+- source: hub
+  destination: "ciso*"
+  commands:
+    - permission.snapshot
+- source: hub
+  destination: "architect*"
+  commands:
+    - permission.snapshot
+- source: hub
+  destination: "researcher*"
   commands:
     - permission.snapshot
 # Portal + CLI manage grants (user-controlled)

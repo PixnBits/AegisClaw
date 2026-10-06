@@ -258,6 +258,56 @@ func TestCheckACL(t *testing.T) {
 	}
 }
 
+func TestRepoACLPermissionFetchAndStoreChannelReplies(t *testing.T) {
+	origRules := aclRules
+	origPath := aclFilePath
+	origMod := lastACLModTime
+	defer func() {
+		aclRules = origRules
+		aclFilePath = origPath
+		lastACLModTime = origMod
+	}()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	repoRoot := filepath.Join(wd, "..", "..")
+	t.Setenv("AEGIS_ACL_FILE", filepath.Join(repoRoot, "config", "acls.yaml"))
+	loadACL()
+	if len(aclRules) == 0 {
+		t.Fatal("aclRules empty after loadACL")
+	}
+
+	cases := []struct {
+		src, dst, cmd string
+		want          bool
+	}{
+		{"store", "hub-perm-fetch-1700000000", "permission.snapshot", true},
+		{"store", "hub-perm-fetch-1700000000", "error", true},
+		{"store", "hub-perm-fetch-1700000000", "response", true},
+		{"hub-perm-fetch-1700000000", "store", "permission.snapshot", true},
+		{"store", "coder-x", "channel.get_relevant_since.data", true},
+		{"store", "tester-x", "channel.get_relevant_since.data", true},
+		{"store", "ciso-x", "channel.get_relevant_since.data", true},
+		{"store", "architect-x", "channel.get_relevant_since.data", true},
+		{"store", "researcher-x", "channel.get_relevant_since.data", true},
+		{"store", "agent-x", "channel.get_relevant_since.data", true},
+		{"store", "project-manager-x", "channel.get_relevant_since.data", true},
+		{"hub", "tester-x", "permission.snapshot", true},
+		{"hub", "ciso-x", "permission.snapshot", true},
+		{"hub", "architect-x", "permission.snapshot", true},
+		{"hub", "researcher-x", "permission.snapshot", true},
+		// No store → unknown dest rule for channel replies (catch-all is response/error/ping/pong/version only).
+		{"store", "some-unknown-dest", "channel.get_relevant_since.data", false},
+	}
+	for _, c := range cases {
+		if got := checkACL(c.src, c.dst, c.cmd); got != c.want {
+			t.Errorf("checkACL(%q,%q,%q)=%v want %v", c.src, c.dst, c.cmd, got, c.want)
+		}
+	}
+}
+
 func TestVerifyWireSignatureSurvivesPayloadRoundTrip(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
