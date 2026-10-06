@@ -8,14 +8,20 @@
 #   ./scripts/download-firecracker-kernel.sh
 #   AEGIS_KERNEL_PATH=~/.aegis/firecracker/vmlinux ./bin/aegis start
 #
+# Environment:
+#   AEGIS_KERNEL_PATH            Install path (default: ~/.aegis/firecracker/vmlinux).
+#   AEGIS_KERNEL_URL             Download URL override. The pinned SHA-256 belongs to
+#                                KERNEL_URL only, so an override requires
+#                                AEGIS_KERNEL_SHA256 or AEGIS_SKIP_KERNEL_CHECKSUM=1.
+#   AEGIS_KERNEL_SHA256          Expected SHA-256 for a custom or private-mirror kernel.
+#   AEGIS_SKIP_KERNEL_CHECKSUM   Set to 1 to install without verifying (air-gapped host
+#                                or private mirror). Prints a loud warning.
+#
 # Re-run after code changes that affect the required kernel features (e.g. adding
 # virtio-rng device support for guest entropy / #62). The downloaded kernel must
 # have the virtio-rng driver built-in for the device to unblock CRNG quickly.
 
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+set -euo pipefail
 
 # Colors
 GREEN='\033[0;32m'
@@ -25,15 +31,68 @@ NC='\033[0m'
 log() { echo -e "${GREEN}[KERNEL]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
+# sha256sum (GNU) or shasum -a 256 (macOS). Prints the lowercase hex digest.
+file_sha256() {
+    local file="$1"
+    local sum hex
+    if command -v sha256sum >/dev/null 2>&1; then
+        sum=$(sha256sum -- "$file") || return 1
+    elif command -v shasum >/dev/null 2>&1; then
+        sum=$(shasum -a 256 -- "$file") || return 1
+    else
+        echo "Error: neither sha256sum nor shasum found; cannot verify kernel checksum." >&2
+        return 1
+    fi
+    hex=${sum%% *}
+    hex=$(printf '%s' "$hex" | tr '[:upper:]' '[:lower:]') || return 1
+    case "$hex" in
+        *[!0-9a-f]* | "")
+            echo "Error: could not parse SHA-256 output for $file" >&2
+            return 1
+            ;;
+    esac
+    printf '%s\n' "$hex"
+}
+
 # Determine target location
-if [ -n "$AEGIS_KERNEL_PATH" ]; then
+if [ -n "${AEGIS_KERNEL_PATH:-}" ]; then
     KERNEL_PATH="$AEGIS_KERNEL_PATH"
 else
     KERNEL_PATH="${HOME}/.aegis/firecracker/vmlinux"
 fi
 
 KERNEL_DIR=$(dirname "$KERNEL_PATH")
+
+# Use a known-good minimal kernel from the Firecracker CI artifacts (v1.7 series).
+# This is a small vmlinux-5.10 build that includes CONFIG_HW_RANDOM_VIRTIO=y
+# (and other virtio drivers) built-in. Required for the virtio-rng device
+# (added for GitHub #62) to actually feed the guest entropy pool and init CRNG
+# quickly. The old quickstart vmlinux.bin (4.14) lacked the rng driver.
+KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.209"
+# KERNEL_SHA256 must be updated in the same commit as KERNEL_URL (version-bump policy).
+KERNEL_SHA256="932450603af9175c443f5348aa961326945e3b4b46ba34bab2c714c751ee2f85"
+
+if [ -n "${AEGIS_KERNEL_URL:-}" ]; then
+    if [ -z "${AEGIS_KERNEL_SHA256:-}" ] && [ "${AEGIS_SKIP_KERNEL_CHECKSUM:-}" != "1" ]; then
+        echo "Error: AEGIS_KERNEL_URL overrides the pinned kernel URL." >&2
+        echo "Set AEGIS_KERNEL_SHA256 to that file's SHA-256, or set AEGIS_SKIP_KERNEL_CHECKSUM=1 to skip verification." >&2
+        exit 1
+    fi
+    KERNEL_URL="$AEGIS_KERNEL_URL"
+fi
+if [ -n "${AEGIS_KERNEL_SHA256:-}" ]; then
+    KERNEL_SHA256="$AEGIS_KERNEL_SHA256"
+fi
+expected=$(printf '%s' "$KERNEL_SHA256" | tr '[:upper:]' '[:lower:]')
+
 mkdir -p "$KERNEL_DIR"
+
+download_tmp=""
+cleanup_download_tmp() {
+    if [ -n "${download_tmp:-}" ] && [ -f "$download_tmp" ]; then
+        rm -f -- "$download_tmp"
+    fi
+}
 
 # Idempotency: if a kernel is already present and contains the virtio_rng driver
 # (the key artifact from the PR #63 / #62 CRNG fix), skip the download. This
@@ -42,30 +101,62 @@ mkdir -p "$KERNEL_DIR"
 if [ -f "$KERNEL_PATH" ]; then
     if grep -q 'virtio_rng' "$KERNEL_PATH" 2>/dev/null || grep -q 'virtio-rng' "$KERNEL_PATH" 2>/dev/null; then
         log "Kernel at $KERNEL_PATH already contains virtio_rng driver (post #63 fix for fast guest CRNG). Skipping download."
+        if ! actual=$(file_sha256 "$KERNEL_PATH"); then
+            warn "Could not compute SHA-256 of the existing kernel; leaving $KERNEL_PATH in place."
+            exit 0
+        fi
+        if [ "$actual" != "$expected" ]; then
+            warn "Existing kernel SHA-256 does not match the pinned hash. It may be a deliberately custom kernel; not deleting it."
+            warn "Expected: $expected"
+            warn "Actual:   $actual"
+        else
+            log "Existing kernel SHA-256 matches the pinned hash."
+        fi
         exit 0
     fi
     warn "Existing kernel at $KERNEL_PATH does not appear to include the virtio_rng driver; re-downloading the required 5.10+ kernel..."
 fi
 
-# Use a known-good minimal kernel from the Firecracker CI artifacts (v1.7 series).
-# This is a small vmlinux-5.10 build that includes CONFIG_HW_RANDOM_VIRTIO=y
-# (and other virtio drivers) built-in. Required for the virtio-rng device
-# (added for GitHub #62) to actually feed the guest entropy pool and init CRNG
-# quickly. The old quickstart vmlinux.bin (4.14) lacked the rng driver.
-KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.209"
-
 log "Downloading minimal Firecracker kernel (with virtio-rng driver) to $KERNEL_PATH ..."
 
+# Download beside the destination so mv stays on one filesystem, and only
+# replace KERNEL_PATH after the checksum matches.
+download_tmp=$(mktemp "${KERNEL_DIR}/.vmlinux.download.XXXXXX")
+trap cleanup_download_tmp EXIT
+
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$KERNEL_URL" -o "$KERNEL_PATH"
+    curl -fsSL "$KERNEL_URL" -o "$download_tmp"
 elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$KERNEL_PATH" "$KERNEL_URL"
+    wget -qO "$download_tmp" "$KERNEL_URL"
 else
-    echo "Error: neither curl nor wget found"
+    echo "Error: neither curl nor wget found" >&2
     exit 1
 fi
 
-chmod 644 "$KERNEL_PATH"
+if [ "${AEGIS_SKIP_KERNEL_CHECKSUM:-}" = "1" ]; then
+    warn "AEGIS_SKIP_KERNEL_CHECKSUM=1: SKIPPING SHA-256 verification of the downloaded kernel."
+    warn "Installing UNVERIFIED bytes from $KERNEL_URL."
+    warn "Only use this for an air-gapped host or a private mirror you already trust."
+else
+    if ! actual=$(file_sha256 "$download_tmp"); then
+        rm -f -- "$download_tmp"
+        download_tmp=""
+        exit 1
+    fi
+    if [ "$actual" != "$expected" ]; then
+        rm -f -- "$download_tmp"
+        download_tmp=""
+        echo "Error: SHA-256 mismatch; downloaded kernel was not installed." >&2
+        echo "Expected: $expected" >&2
+        echo "Actual:   $actual" >&2
+        exit 1
+    fi
+    log "SHA-256 verified."
+fi
+
+mv -f -- "$download_tmp" "$KERNEL_PATH"
+download_tmp=""
+chmod 644 -- "$KERNEL_PATH"
 
 log "Kernel downloaded successfully."
 log "Size: $(du -h "$KERNEL_PATH" | cut -f1)"
