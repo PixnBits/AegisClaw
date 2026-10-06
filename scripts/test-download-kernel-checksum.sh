@@ -4,6 +4,8 @@
 #   (a) a mismatched download is rejected and not installed
 #   (b) a download whose SHA-256 matches is installed
 #   (c) AEGIS_SKIP_KERNEL_CHECKSUM=1 installs anyway, with a loud warning
+#   (d) an existing virtio_rng kernel with a different hash fails (file kept)
+#       unless AEGIS_KERNEL_SHA256 is that hash or AEGIS_SKIP_KERNEL_CHECKSUM=1
 #
 # Run: bash scripts/test-download-kernel-checksum.sh
 
@@ -13,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 DOWNLOADER="$SCRIPT_DIR/download-firecracker-kernel.sh"
 PIN="932450603af9175c443f5348aa961326945e3b4b46ba34bab2c714c751ee2f85"
+# v1.15.1 x86_64 tarball. Release asset digest and .sha256.txt agree.
+FIRECRACKER_TGZ_SHA256="d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a"
 
 if [ ! -f "$DOWNLOADER" ]; then
     echo "FAIL: downloader not found at $DOWNLOADER" >&2
@@ -158,7 +162,10 @@ if ! grep -F -q -- "$PIN" "$REPO_ROOT/README.md"; then
     fail "README is missing the pinned kernel SHA-256"
 fi
 if ! grep -F -q -- "firecracker-v1.15.1-x86_64.tgz.sha256.txt" "$REPO_ROOT/README.md"; then
-    fail "README does not verify the Firecracker tarball via the published .sha256.txt"
+    fail "README does not mention the Firecracker tarball .sha256.txt cross-check"
+fi
+if ! grep -F -q -- "echo \"$FIRECRACKER_TGZ_SHA256  firecracker-v1.15.1-x86_64.tgz\" | sha256sum -c -" "$REPO_ROOT/README.md"; then
+    fail "README does not verify the Firecracker tarball against the committed SHA-256"
 fi
 
 # (a) mismatch is rejected and not installed
@@ -266,15 +273,15 @@ assert_not_contains "$CAPTURE" "not installed" "skip flag rejected the download"
 assert_no_temp_leftovers "$WORKDIR/skip"
 echo "ok: skip flag installed without verification"
 
-# Existing virtio_rng kernel with a different hash: warn, keep, do not download.
+# Existing virtio_rng kernel with a different hash: fail, keep the file, do not download.
 reset_marker
 dest="$WORKDIR/custom/vmlinux"
 mkdir -p "$(dirname "$dest")"
 cp -- "$WORKDIR/custom-bytes" "$dest"
 FAKE_CURL_SRC="$WORKDIR/bad-bytes"
 run_capture "$dest"
-if [ "$CAPTURE_RC" -ne 0 ]; then
-    fail "custom existing kernel failed rc=$CAPTURE_RC output=$CAPTURE"
+if [ "$CAPTURE_RC" -eq 0 ]; then
+    fail "custom existing kernel without an override exited 0"
 fi
 if ! cmp -s -- "$WORKDIR/custom-bytes" "$dest"; then
     fail "custom existing kernel was deleted or replaced"
@@ -282,11 +289,43 @@ fi
 if [ -s "$FAKE_CURL_MARKER" ]; then
     fail "custom existing kernel triggered a download"
 fi
-assert_contains "$CAPTURE" "deliberately custom kernel" "custom kernel warning missing"
-assert_contains "$CAPTURE" "not deleting it" "custom kernel warning did not promise to keep the file"
-assert_contains "$CAPTURE" "Expected: $PIN" "custom kernel warning missing the pin"
-assert_contains "$CAPTURE" "Actual:   $CUSTOM_SHA" "custom kernel warning missing the actual hash"
-echo "ok: custom existing kernel kept with a warning"
+assert_contains "$CAPTURE" "Expected: $PIN" "custom kernel error missing the pin"
+assert_contains "$CAPTURE" "Actual:   $CUSTOM_SHA" "custom kernel error missing the actual hash"
+assert_contains "$CAPTURE" "AEGIS_KERNEL_SHA256=$CUSTOM_SHA" "custom kernel error did not show how to accept this hash"
+assert_contains "$CAPTURE" "AEGIS_SKIP_KERNEL_CHECKSUM=1" "custom kernel error did not mention the skip flag"
+assert_contains "$CAPTURE" "not deleted" "custom kernel error did not say the file was kept"
+echo "ok: custom existing kernel without an override failed and was left in place"
+
+# Accept that same kernel by naming its hash. This must not re-download.
+reset_marker
+run_capture "$dest" "AEGIS_KERNEL_SHA256=$CUSTOM_SHA"
+if [ "$CAPTURE_RC" -ne 0 ]; then
+    fail "custom existing kernel with AEGIS_KERNEL_SHA256 failed rc=$CAPTURE_RC output=$CAPTURE"
+fi
+if ! cmp -s -- "$WORKDIR/custom-bytes" "$dest"; then
+    fail "custom existing kernel with hash override was deleted or replaced"
+fi
+if [ -s "$FAKE_CURL_MARKER" ]; then
+    fail "custom existing kernel with hash override triggered a download"
+fi
+assert_contains "$CAPTURE" "matches the pinned hash" "hash override did not accept the existing kernel"
+echo "ok: custom existing kernel accepted via AEGIS_KERNEL_SHA256"
+
+# Skip flag keeps the mismatched kernel and exits 0.
+reset_marker
+run_capture "$dest" "AEGIS_SKIP_KERNEL_CHECKSUM=1"
+if [ "$CAPTURE_RC" -ne 0 ]; then
+    fail "custom existing kernel with skip flag failed rc=$CAPTURE_RC output=$CAPTURE"
+fi
+if ! cmp -s -- "$WORKDIR/custom-bytes" "$dest"; then
+    fail "custom existing kernel with skip flag was deleted or replaced"
+fi
+if [ -s "$FAKE_CURL_MARKER" ]; then
+    fail "custom existing kernel with skip flag triggered a download"
+fi
+assert_contains "$CAPTURE" "AEGIS_SKIP_KERNEL_CHECKSUM=1" "skip flag on existing kernel was not announced"
+assert_contains "$CAPTURE" "not deleted" "skip flag on existing kernel did not say the file was kept"
+echo "ok: custom existing kernel kept with the skip flag"
 
 # Override URL without a hash or the skip flag must fail before any download.
 reset_marker

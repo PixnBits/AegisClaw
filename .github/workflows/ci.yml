@@ -17,6 +17,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Offline script checks
+        run: |
+          bash scripts/test-download-kernel-checksum.sh
+          bash scripts/test-dockerfile-digests.sh
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck scripts/download-firecracker-kernel.sh scripts/test-download-kernel-checksum.sh scripts/test-dockerfile-digests.sh
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

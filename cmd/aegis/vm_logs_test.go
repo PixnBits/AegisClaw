@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -199,6 +200,66 @@ func TestVMLogsSocketRejectsTraversal(t *testing.T) {
 	if logs["log"] != "hub-line\n" {
 		t.Fatalf("logs = %#v", logs)
 	}
+}
+
+func TestGetRecentFileContent(t *testing.T) {
+	dir := t.TempDir()
+
+	regular := filepath.Join(dir, "regular.log")
+	const body = "alpha\nbeta\ngamma\n"
+	if err := os.WriteFile(regular, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := getRecentFileContent(regular, 0); got != body {
+		t.Fatalf("regular file: got %q, want %q", got, body)
+	}
+	if got := getRecentFileContent(regular, 2); got != "gamma\n" {
+		t.Fatalf("tail: got %q, want %q", got, "gamma\n")
+	}
+
+	target := filepath.Join(dir, "target.log")
+	const secret = "secret-via-symlink\n"
+	if err := os.WriteFile(target, []byte(secret), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRecentWithTimeout(t, link, 50, 2*time.Second); got != "" {
+		t.Fatalf("symlink returned %q, want empty (ELOOP)", got)
+	}
+
+	sub := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRecentWithTimeout(t, sub, 50, 2*time.Second); got != "" {
+		t.Fatalf("directory returned %q, want empty", got)
+	}
+
+	fifo := filepath.Join(dir, "fifo.log")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRecentWithTimeout(t, fifo, 50, 2*time.Second); got != "" {
+		t.Fatalf("fifo returned %q, want empty", got)
+	}
+}
+
+func readRecentWithTimeout(t *testing.T, path string, tail int, d time.Duration) string {
+	t.Helper()
+	ch := make(chan string, 1)
+	go func() {
+		ch <- getRecentFileContent(path, tail)
+	}()
+	select {
+	case got := <-ch:
+		return got
+	case <-time.After(d):
+		t.Fatalf("getRecentFileContent(%s) blocked for %s", path, d)
+	}
+	return ""
 }
 
 func callVMLogs(t *testing.T, id string) SocketResponse {
