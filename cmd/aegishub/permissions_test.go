@@ -312,6 +312,147 @@ func TestMaybeInvalidatePermissionsFromReply(t *testing.T) {
 	maybeInvalidatePermissionsFromReply(reply)
 }
 
+// withNoStoreBootstrap installs the hub's no-store permission fallback
+// (empty snapshot cache, DefaultBootstrap, store unregistered) and restores
+// the previous globals when the test ends. Denied checks start
+// emitPermissionRequest, which returns immediately while store is absent;
+// the cleanup waits for that goroutine.
+func withNoStoreBootstrap(t *testing.T) {
+	t.Helper()
+	permSnapMu.Lock()
+	savedSnaps := permSnapshots
+	savedBootstrap := permBootstrap
+	permSnapshots = map[string]permissions.Snapshot{}
+	permBootstrap = permissions.DefaultBootstrap()
+	permSnapMu.Unlock()
+
+	registeredMutex.Lock()
+	savedStore, hadStore := registered["store"]
+	delete(registered, "store")
+	registeredMutex.Unlock()
+
+	t.Cleanup(func() {
+		time.Sleep(20 * time.Millisecond)
+		permSnapMu.Lock()
+		permSnapshots = savedSnaps
+		permBootstrap = savedBootstrap
+		permSnapMu.Unlock()
+		if !hadStore {
+			return
+		}
+		registeredMutex.Lock()
+		registered["store"] = savedStore
+		registeredMutex.Unlock()
+	})
+}
+
+func loadRepoACL(t *testing.T) {
+	t.Helper()
+	origRules := aclRules
+	origPath := aclFilePath
+	origMod := lastACLModTime
+	t.Cleanup(func() {
+		aclRules = origRules
+		aclFilePath = origPath
+		lastACLModTime = origMod
+	})
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Setenv("AEGIS_ACL_FILE", filepath.Join(wd, "..", "..", "config", "acls.yaml"))
+	loadACL()
+	if len(aclRules) == 0 {
+		t.Fatal("aclRules empty after loadACL")
+	}
+}
+
+// TestCheckHubPermission_AddMemberFromRoleVMsDenied is the #107 regression:
+// channel.add_member is granted only to project-manager*. Role VMs have no
+// bootstrap grant, so the no-store fallback returns ERR_PERMISSION_DENIED.
+func TestCheckHubPermission_AddMemberFromRoleVMsDenied(t *testing.T) {
+	withNoStoreBootstrap(t)
+
+	for _, id := range []string{"agent-1", "coder-1", "tester-1"} {
+		allowed, reason := checkHubPermission(id, "channel.add_member")
+		if allowed || reason != "ERR_PERMISSION_DENIED" {
+			t.Errorf("%s channel.add_member: allowed=%v reason=%q, want denied", id, allowed, reason)
+		}
+	}
+	allowed, reason := checkHubPermission("project-manager-main", "channel.add_member")
+	if !allowed || reason != "" {
+		t.Errorf("project-manager-main channel.add_member: allowed=%v reason=%q, want allowed", allowed, reason)
+	}
+
+	// ACL layer, separate from the capability gate. agent* → store lists
+	// channel.*, which matches channel.add_member, so the ACL allows
+	// agent-1. That rule is the general agent channel path (posts and the
+	// rest of channel.*), not an add_member grant. coder* and tester* have
+	// neither channel.add_member nor channel.*, so the ACL denies them.
+	// Nothing targets agent* as a destination for this command (store →
+	// agent* is proposal.* plus the two channel *.data replies), so a
+	// snapshot-style reply to agent-1 is denied. The capability check above
+	// is what stops agent-1 from sending it.
+	loadRepoACL(t)
+	if !checkACL("agent-1", "store", "channel.add_member") {
+		t.Error("checkACL(agent-1, store, channel.add_member) = false, want allow via agent* → store channel.*")
+	}
+	if checkACL("coder-1", "store", "channel.add_member") {
+		t.Error("checkACL(coder-1, store, channel.add_member) = true, want deny")
+	}
+	if checkACL("tester-1", "store", "channel.add_member") {
+		t.Error("checkACL(tester-1, store, channel.add_member) = true, want deny")
+	}
+	if checkACL("store", "agent-1", "channel.add_member") {
+		t.Error("checkACL(store, agent-1, channel.add_member) = true, want deny")
+	}
+}
+
+// TestCheckHubPermission_ChannelPostAndRemoveMember pins hub enforcement for
+// the two commands whose classification was previously untested.
+//
+// Both are capability commands (IsCapabilityCommand), so a role VM without
+// a grant is ERR_PERMISSION_DENIED here — not an ACL deny.
+//
+// channel.post is granted by DefaultBootstrap to every collaboration role
+// that posts (agent, coder, tester, project-manager, and court-persona).
+// builder-1 is the deny control: it is snapshot-checked and has no grant.
+// No collaboration role lacks this grant, so none of those ids can be the
+// negative.
+//
+// channel.remove_member is granted to nobody, including project-manager*
+// (whose grant is add_member only). web-portal is the sender and is allowed
+// because host components are not snapshot subjects; config/acls.yaml still
+// gates that send with web-portal → store channel.*. Role VMs stay denied
+// even where agent* / project-manager* channel.* would pass the ACL.
+// Making remove_member ACL-only would allow those role VMs at this layer.
+func TestCheckHubPermission_ChannelPostAndRemoveMember(t *testing.T) {
+	withNoStoreBootstrap(t)
+
+	for _, id := range []string{"agent-1", "coder-1", "tester-1", "project-manager-main", "court-persona-ciso"} {
+		allowed, reason := checkHubPermission(id, "channel.post")
+		if !allowed || reason != "" {
+			t.Errorf("%s channel.post: allowed=%v reason=%q, want allowed", id, allowed, reason)
+		}
+	}
+	allowed, reason := checkHubPermission("builder-1", "channel.post")
+	if allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("builder-1 channel.post: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+
+	allowed, reason = checkHubPermission("web-portal", "channel.remove_member")
+	if !allowed || reason != "" {
+		t.Errorf("web-portal channel.remove_member: allowed=%v reason=%q, want allowed", allowed, reason)
+	}
+	for _, id := range []string{"agent-1", "coder-1", "tester-1", "project-manager-main", "court-persona-ciso", "builder-1"} {
+		allowed, reason := checkHubPermission(id, "channel.remove_member")
+		if allowed || reason != "ERR_PERMISSION_DENIED" {
+			t.Errorf("%s channel.remove_member: allowed=%v reason=%q, want denied", id, allowed, reason)
+		}
+	}
+}
+
 func TestInvalidateMatchingPermissionSnapshots_Wildcard(t *testing.T) {
 	permSnapshots = map[string]permissions.Snapshot{
 		"coder-a": {Subject: "coder-a"},
