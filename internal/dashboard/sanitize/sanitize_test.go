@@ -92,7 +92,7 @@ func TestJSONBytesRoundTrip(t *testing.T) {
 		t.Fatalf("content not sanitized: %q", content)
 	}
 }
-func TestCredentialPatternWordBoundary(t *testing.T) {
+func TestCredentialPatternSeparatorRule(t *testing.T) {
 	key := "sk-" + strings.Repeat("a1B2", 6) // 24 alnum after sk-
 	aws := "AKIAABCDEFGHIJKLMNOP"
 	redacted := []string{
@@ -112,6 +112,21 @@ func TestCredentialPatternWordBoundary(t *testing.T) {
 			t.Errorf("Text(%q) = %q, want the key redacted", in, got)
 		}
 	}
+	// Glued to a word with '_': still a key, and the prefix stays readable.
+	glued := map[string]string{
+		"api_key_" + key:         "api_key_[REDACTED]",
+		"OPENAI_KEY_" + key:      "OPENAI_KEY_[REDACTED]",
+		"AWS_" + aws:             "AWS_[REDACTED]",
+		key:                      "[REDACTED]",
+		"x=" + key + " y":        "x=[REDACTED] y",
+		key + " " + key:          "[REDACTED] [REDACTED]",
+		"aws_" + aws + "," + key: "aws_[REDACTED],[REDACTED]",
+	}
+	for in, want := range glued {
+		if got := Text(ContextChat, in); got != want {
+			t.Errorf("Text(%q) = %q, want %q", in, got, want)
+		}
+	}
 	kept := []string{
 		"task-refactorauthenticationmodule",
 		"channel task-refactorauthenticationmodule is ready",
@@ -120,7 +135,7 @@ func TestCredentialPatternWordBoundary(t *testing.T) {
 	}
 	for _, in := range kept {
 		if got := Text(ContextChat, in); got != in {
-			t.Errorf("Text(%q) = %q, want unchanged (sk- inside a word is not a key)", in, got)
+			t.Errorf("Text(%q) = %q, want unchanged (sk- after a letter or digit is not a key)", in, got)
 		}
 	}
 }
