@@ -6,8 +6,27 @@ import (
 	"sync"
 	"time"
 
+	"AegisClaw/internal/runtime"
+
 	"github.com/sirupsen/logrus"
 )
+
+// portalGoalDeps is the goal.submit seam. ensure refuses a channel before
+// goal.submit says accepted and does not boot a VM. boot, hub, and wait run
+// only after accept, on the kickoff goroutine.
+type portalGoalDeps struct {
+	ensure func(chID string) error
+	hub    func(target, cmd string, payload interface{}) (interface{}, error)
+	boot   func(chID string) (interface{}, error)
+	wait   func(id string, maxWait time.Duration) error
+}
+
+var portalGoals = portalGoalDeps{
+	ensure: refusePortalPMEnsure,
+	hub:    sendToComponentViaHub,
+	boot:   callPortalEnsurePM,
+	wait:   waitForHubComponent,
+}
 
 type harnessRecord struct {
 	PlanID    string
@@ -43,6 +62,9 @@ func portalGoalSubmit(payload interface{}) (map[string]interface{}, error) {
 	if chID == "" {
 		chID = "main"
 	}
+	if err := runtime.ValidateChannelID(chID); err != nil {
+		return nil, fmt.Errorf("goal.submit: %w", err)
+	}
 	planID := "plan_" + chID
 	now := time.Now().UTC()
 
@@ -56,7 +78,12 @@ func portalGoalSubmit(payload interface{}) (map[string]interface{}, error) {
 	}
 	harnessMu.Unlock()
 
-	go portalKickoffPMGoal(chID, goal)
+	if err := portalKickoffPMGoal(chID, goal); err != nil {
+		harnessMu.Lock()
+		delete(harnessByCh, chID)
+		harnessMu.Unlock()
+		return nil, err
+	}
 
 	return map[string]interface{}{
 		"plan_id":    planID,
@@ -67,43 +94,88 @@ func portalGoalSubmit(payload interface{}) (map[string]interface{}, error) {
 	}, nil
 }
 
-func portalKickoffPMGoal(chID, goalText string) {
-	if chData, err := sendToComponentViaHub("store", "channel.get", map[string]string{"id": chID}); err != nil || chData == nil {
-		_, _ = sendToComponentViaHub("store", "channel.create", map[string]interface{}{"id": chID})
+// refusePortalPMEnsure is the synchronous half of PM ensure. CheckRoleAgentID
+// is what handleEnsureRole runs before StartVM, so a refused id returns here
+// instead of goal.submit saying accepted. Boot stays on the kickoff goroutine:
+// a cold PM can outlive the portal's request budget.
+func refusePortalPMEnsure(chID string) error {
+	if _, err := runtime.CheckRoleAgentID("project-manager", chID); err != nil {
+		return fmt.Errorf("goal.submit: ensure PM for %s: %w", chID, err)
 	}
+	return nil
+}
 
+func callPortalEnsurePM(chID string) (interface{}, error) {
 	ensurePayload := map[string]interface{}{
 		"role":    "project-manager",
 		"channel": chID,
 	}
-	var ensureResp interface{}
-	if sockResp, sockErr := sendSocketRequestWithTimeout("orchestrator.ensure_role", map[string]string{
+	sockResp, sockErr := sendSocketRequestWithTimeout("orchestrator.ensure_role", map[string]string{
 		"role":    "project-manager",
 		"channel": chID,
-	}, false, 90*time.Second); sockErr == nil && sockResp.OK && sockResp.Data != nil {
-		ensureResp = sockResp.Data
-	} else if resp, err := sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", ensurePayload, 30*time.Second); err == nil {
-		ensureResp = resp
-	} else {
-		logrus.Warnf("portal goal.submit: ensure PM for %s: %v", chID, err)
-		return
+	}, false, 90*time.Second)
+	if sockErr == nil && sockResp.OK && sockResp.Data != nil {
+		return sockResp.Data, nil
 	}
-	pmID := ensureRoleIDFromResp(ensureResp)
-	if pmID == "" {
-		logrus.Warnf("portal goal.submit: missing guest id for %s", chID)
-		return
+	resp, err := sendToComponentViaHubRetry("daemon-orchestrator", "ensure.role", ensurePayload, 30*time.Second)
+	if err == nil {
+		return resp, nil
 	}
-	if err := waitForHubComponent(pmID, 45*time.Second); err != nil {
-		logrus.Warnf("portal goal.submit: %v", err)
-		return
+	if sockErr == nil && sockResp.Error != "" {
+		return nil, fmt.Errorf("%s", sockResp.Error)
+	}
+	return nil, err
+}
+
+// pmGuestID returns the ensured PM id, or the ensure error from the response.
+// An error payload with no id is that error, not "missing guest id".
+func pmGuestID(ensureResp interface{}, callErr error) (string, error) {
+	if callErr != nil {
+		return "", callErr
+	}
+	if pmID := ensureRoleIDFromResp(ensureResp); pmID != "" {
+		return pmID, nil
+	}
+	if m, ok := ensureResp.(map[string]interface{}); ok {
+		if e, _ := m["error"].(string); e != "" {
+			return "", fmt.Errorf("%s", e)
+		}
+	}
+	return "", fmt.Errorf("missing guest id")
+}
+
+func portalKickoffPMGoal(chID, goalText string) error {
+	if err := portalGoals.ensure(chID); err != nil {
+		return err
+	}
+	go func() {
+		if err := deliverPortalPMGoal(chID, goalText); err != nil {
+			logrus.Warnf("portal goal.submit: %v", err)
+		}
+	}()
+	return nil
+}
+
+func deliverPortalPMGoal(chID, goalText string) error {
+	if chData, err := portalGoals.hub("store", "channel.get", map[string]string{"id": chID}); err != nil || chData == nil {
+		_, _ = portalGoals.hub("store", "channel.create", map[string]interface{}{"id": chID})
+	}
+	ensureResp, callErr := portalGoals.boot(chID)
+	pmID, err := pmGuestID(ensureResp, callErr)
+	if err != nil {
+		return fmt.Errorf("ensure PM for %s: %w", chID, err)
+	}
+	if err := portalGoals.wait(pmID, 45*time.Second); err != nil {
+		return err
 	}
 	// Post only after the PM id is on the hub so channel.turn has a dest.
 	// Do not send user.goal (#87).
-	_, _ = sendToComponentViaHub("store", "channel.post", map[string]interface{}{
+	_, _ = portalGoals.hub("store", "channel.post", map[string]interface{}{
 		"channel_id": chID,
 		"from":       "user",
 		"content":    goalText,
 	})
+	return nil
 }
 
 func portalHarnessGet(payload interface{}) (map[string]interface{}, error) {

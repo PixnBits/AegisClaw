@@ -66,6 +66,10 @@ func NewFirecrackerBackend(stateDir string) *FirecrackerBackend {
 
 // Start creates and starts a Firecracker microVM.
 func (fb *FirecrackerBackend) Start(ctx context.Context, config VMConfig) error {
+	// Before any fc-<id>.* join, remove, or create. Same rule as StartVM's vmkey.
+	if err := ValidateVMID(config.ID); err != nil {
+		return err
+	}
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 
