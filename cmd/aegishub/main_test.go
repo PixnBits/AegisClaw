@@ -2097,3 +2097,83 @@ func registerTestComponent(t *testing.T, conns *sync.Map, id string, pub ed25519
 	_ = client.SetDeadline(time.Time{})
 	return client, dec, done
 }
+
+// TestRepoACLStoreSecurityStats pins store.security_stats (#154) to the
+// daemon's internal clients: exact command, no wildcard. The portal, guests,
+// network-boundary and Court personas are denied. The reply rides the
+// existing store -> daemon-internal* "*" rule.
+func TestRepoACLStoreSecurityStats(t *testing.T) {
+	origRules := aclRules
+	origPath := aclFilePath
+	origMod := lastACLModTime
+	defer func() {
+		aclRules = origRules
+		aclFilePath = origPath
+		lastACLModTime = origMod
+	}()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Setenv("AEGIS_ACL_FILE", filepath.Join(wd, "..", "..", "config", "acls.yaml"))
+	loadACL()
+	if len(aclRules) == 0 {
+		t.Fatal("aclRules empty after loadACL")
+	}
+
+	for _, src := range []string{"daemon-internal", "daemon-internal-1", "daemon-internal-42"} {
+		if !checkACL(src, "store", "store.security_stats") {
+			t.Errorf("%s -> store store.security_stats = false, want allow", src)
+		}
+		if !checkACL("store", src, "store.security_stats") {
+			t.Errorf("store -> %s store.security_stats reply = false, want allow", src)
+		}
+		// Exact: no neighbouring store.* command rides along.
+		for _, cmd := range []string{"store.security", "store.security_statsx", "store.wipe", "store.x"} {
+			if checkACL(src, "store", cmd) {
+				t.Errorf("%s -> store %s = true, want deny", src, cmd)
+			}
+		}
+	}
+	for _, src := range []string{
+		"web-portal", "agent", "agent-1", "agent-coder-7", "network-boundary",
+		"court-persona-ciso", "court-persona-tester", "builder-1", "coder-1", "project-manager-main",
+	} {
+		if checkACL(src, "store", "store.security_stats") {
+			t.Errorf("%s -> store store.security_stats = true, want deny", src)
+		}
+	}
+	// Both daemon rules carry the exact command, so removing the broader
+	// "daemon-internal*" rule later can't silently drop it for daemon-internal-N.
+	granted := map[string]bool{}
+	for _, r := range aclRules {
+		if r.Destination != "store" {
+			continue
+		}
+		for _, c := range r.Commands {
+			if c == "store.security_stats" {
+				granted[r.Source] = true
+			}
+		}
+	}
+	for _, src := range []string{"daemon-internal*", "daemon-internal-*"} {
+		if !granted[src] {
+			t.Errorf("rule %s -> store does not list store.security_stats", src)
+		}
+	}
+	if len(granted) != 2 {
+		t.Errorf("store.security_stats granted to %v, want exactly daemon-internal* and daemon-internal-*", granted)
+	}
+	// No rule with destination store may grant a store.* wildcard.
+	for _, r := range aclRules {
+		if r.Destination != "store" {
+			continue
+		}
+		for _, c := range r.Commands {
+			if strings.HasPrefix(c, "store.") && strings.Contains(c, "*") {
+				t.Errorf("rule %s -> store has wildcard %q", r.Source, c)
+			}
+		}
+	}
+}
