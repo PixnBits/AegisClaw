@@ -228,16 +228,21 @@ rules:
     - llm.*
 
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
+# llm.usage.* only (never llm.*): network-boundary appends usage; Store's
+# llm.usage.recorded reply is ACL-checked on the way back (cmd/aegishub).
+# Portal/daemon-internal query rules are not granted here.
 - source: store
   destination: network-boundary
   commands:
     - secrets.push
     - secrets.update
+    - llm.usage.*
 - source: network-boundary
   destination: store
   commands:
     - secrets.response
     - secrets.*
+    - llm.usage.*
 
 # Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
 - source: court-scribe

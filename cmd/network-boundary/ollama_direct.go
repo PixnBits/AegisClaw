@@ -33,12 +33,7 @@ func callOllamaDirectHTTP(model, prompt, endpoint string) (string, error) {
 	if httpResp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("ollama status %d: %s", httpResp.StatusCode, string(respBytes))
 	}
-	text := string(respBytes)
-	var ollamaOut map[string]interface{}
-	if json.Unmarshal(respBytes, &ollamaOut) == nil {
-		if r, ok := ollamaOut["response"].(string); ok && r != "" {
-			text = r
-		}
-	}
-	return text, nil
+	// Return the full raw JSON body so the llm.call site can read usage fields
+	// (prompt_eval_count, eval_count, total_duration) and the inner text.
+	return string(respBytes), nil
 }

@@ -432,6 +432,95 @@ func TestRepoACLStoreToRoleSnapshotAndLLMDenied(t *testing.T) {
 	}
 }
 
+// TestRepoACLLLMUsageNarrowed loads config/acls.yaml and pins the usage grant
+// to llm.usage.* between network-boundary and store. aclMatch treats a trailing
+// * as a prefix, so llm.usage.* matches llm.usage.record but not llm.usage,
+// llm.usagex, or llm.chat. Guest llm.* rules (role <-> network-boundary) are
+// pre-existing and out of scope; llm.* must not appear on any rule that touches
+// store. Portal and daemon-internal query grants are intentionally absent.
+func TestRepoACLLLMUsageNarrowed(t *testing.T) {
+	origRules := aclRules
+	origPath := aclFilePath
+	origMod := lastACLModTime
+	defer func() {
+		aclRules = origRules
+		aclFilePath = origPath
+		lastACLModTime = origMod
+	}()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Setenv("AEGIS_ACL_FILE", filepath.Join(wd, "..", "..", "config", "acls.yaml"))
+	loadACL()
+	if len(aclRules) == 0 {
+		t.Fatal("aclRules empty after loadACL")
+	}
+
+	if !checkACL("network-boundary", "store", "llm.usage.record") {
+		t.Error("network-boundary -> store llm.usage.record = false, want allow")
+	}
+	// Hub checkACL runs on the Store reply before deliverPendingRPC.
+	if !checkACL("store", "network-boundary", "llm.usage.recorded") {
+		t.Error("store -> network-boundary llm.usage.recorded = false, want allow")
+	}
+	for _, cmd := range []string{"llm.chat", "llm.foo", "llm.usagex", "llm.usage"} {
+		if checkACL("network-boundary", "store", cmd) {
+			t.Errorf("network-boundary -> store %s = true, want deny", cmd)
+		}
+		if checkACL("store", "network-boundary", cmd) {
+			t.Errorf("store -> network-boundary %s = true, want deny", cmd)
+		}
+	}
+	for _, src := range []string{"daemon-internal", "daemon-internal-1", "web-portal"} {
+		if checkACL(src, "store", "llm.usage.summary") {
+			t.Errorf("%s -> store llm.usage.summary = true, want deny (portal query is a later change)", src)
+		}
+		if checkACL(src, "store", "llm.usage.record") {
+			t.Errorf("%s -> store llm.usage.record = true, want deny", src)
+		}
+	}
+
+	for _, rule := range aclRules {
+		for _, cmd := range rule.Commands {
+			if cmd != "llm.*" {
+				continue
+			}
+			if rule.Source == "store" || rule.Destination == "store" {
+				t.Errorf("parsed rule %q -> %q contains command pattern llm.*", rule.Source, rule.Destination)
+			}
+		}
+	}
+	nbStore := commandsBetween("network-boundary", "store")
+	storeNB := commandsBetween("store", "network-boundary")
+	if !containsCmd(nbStore, "llm.usage.*") || containsCmd(nbStore, "llm.*") {
+		t.Errorf("network-boundary -> store commands = %v", nbStore)
+	}
+	if !containsCmd(storeNB, "llm.usage.*") || containsCmd(storeNB, "llm.*") {
+		t.Errorf("store -> network-boundary commands = %v", storeNB)
+	}
+}
+
+func commandsBetween(src, dst string) []string {
+	var cmds []string
+	for _, rule := range aclRules {
+		if rule.Source == src && rule.Destination == dst {
+			cmds = append(cmds, rule.Commands...)
+		}
+	}
+	return cmds
+}
+
+func containsCmd(cmds []string, want string) bool {
+	for _, c := range cmds {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestIsReservedHubID(t *testing.T) {
 	cases := []struct {
 		id   string

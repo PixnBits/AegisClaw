@@ -26,6 +26,8 @@ type ollamaBridgeReq struct {
 }
 
 type ollamaBridgeResp struct {
+	// Response is forwarded unchanged. Direct HTTP supplies the raw Ollama JSON
+	// so parseOllamaForLLMCall can read usage; this bridge does not strip it.
 	Response string `json:"response,omitempty"`
 	Error    string `json:"error,omitempty"`
 }

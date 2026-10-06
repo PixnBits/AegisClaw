@@ -1636,6 +1636,18 @@ func runStore(cmd *cobra.Command, args []string) {
 			}
 			response.Command = "build.recorded"
 			response.Payload = "ok"
+		case "llm.usage.record":
+			handled := handleLLMUsageRecord(msg)
+			response.Command = handled.Command
+			response.Payload = handled.Payload
+		case "llm.usage.summary":
+			handled := handleLLMUsageSummary(msg)
+			response.Command = handled.Command
+			response.Payload = handled.Payload
+		case "llm.usage.recent":
+			handled := handleLLMUsageRecent(msg)
+			response.Command = handled.Command
+			response.Payload = handled.Payload
 		case "skill.list":
 			list := []interface{}{}
 			for _, s := range skills {
