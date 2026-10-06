@@ -59,7 +59,12 @@ func EnsureBootableRootfsImage(rootfsDir, component string) (string, error) {
 		}
 	}
 
-	if out, err := exec.Command("mkfs.ext4", "-F", "-L", "rootfs", rawPath).CombinedOutput(); err != nil {
+	mkfs, err := FindSbinTool("mkfs.ext4")
+	if err != nil {
+		os.Remove(rawPath)
+		return "", err
+	}
+	if out, err := exec.Command(mkfs, "-F", "-L", "rootfs", rawPath).CombinedOutput(); err != nil {
 		os.Remove(rawPath)
 		return "", fmt.Errorf("mkfs.ext4 failed on %s: %s", rawPath, strings.TrimSpace(string(out)))
 	}
@@ -71,7 +76,12 @@ func EnsureBootableRootfsImage(rootfsDir, component string) (string, error) {
 	}
 	defer os.RemoveAll(mnt)
 
-	if out, err := exec.Command("mount", "-o", "loop", rawPath, mnt).CombinedOutput(); err != nil {
+	mountBin, err := FindSbinTool("mount")
+	if err != nil {
+		os.Remove(rawPath)
+		return "", err
+	}
+	if out, err := exec.Command(mountBin, "-o", "loop", rawPath, mnt).CombinedOutput(); err != nil {
 		os.Remove(rawPath)
 		return "", fmt.Errorf("loop mount failed for %s: %s", rawPath, strings.TrimSpace(string(out)))
 	}

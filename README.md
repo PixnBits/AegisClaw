@@ -22,6 +22,7 @@ AegisClaw is a secure, sandboxed AI agent runtime built for safety and reliabili
 - **Firecracker version sensitivity**: The JSON machine configuration schema and vsock device format have changed across releases. We have successfully used both v1.15.x static builds and recent `main` (v1.16.0-dev) builds. Newer builds removed `ht_enabled` (use `"smt": false` instead) and require an `uds_path` inside the vsock object. See the troubleshooting section below for the exact errors and fixes.
 - Go 1.22+
 - Docker (for building microVM filesystems)
+- e2fsprogs (`mkfs.ext4`) and util-linux (`mount`, `losetup`) for building microVM rootfs images
 - Proper environment variables for kernel and rootfs (see below)
 
 ### macOS/Windows (Docker Sandbox)
@@ -37,8 +38,10 @@ AegisClaw is a secure, sandboxed AI agent runtime built for safety and reliabili
 
 ```bash
 # Required on most Linux systems
-sudo apt-get install -y docker.io
+sudo apt-get install -y docker.io e2fsprogs util-linux
 ```
+
+`mkfs.ext4` lives in `/sbin` or `/usr/sbin`, so do not override PATH with `sudo PATH=$PATH` without keeping those directories.
 
 **macOS:**
 

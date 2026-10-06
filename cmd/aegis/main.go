@@ -1680,6 +1680,13 @@ func doctorDaemon(cmd *cobra.Command, args []string) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Println("⚠ Docker not found in PATH (recommended for some sandboxes)")
 	}
+	// Linux rootfs builds need mkfs.ext4. FindSbinTool also checks /sbin and
+	// /usr/sbin, which `sudo PATH=$PATH` drops. Hint only; do not flip healthy.
+	if stdruntime.GOOS == "linux" {
+		if _, err := sandbox.FindSbinTool("mkfs.ext4"); err != nil {
+			fmt.Printf("⚠ %s\n", err)
+		}
+	}
 	// Ollama is dev-only; don't hard-fail
 
 	// Journey 01 Success Criteria: exact phrasing + exit 0 when healthy
