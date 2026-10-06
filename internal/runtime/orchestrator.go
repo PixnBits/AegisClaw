@@ -49,6 +49,10 @@ type Orchestrator struct {
 	// does not unlease Hub memory. Production daemon sends cid.unlease with
 	// CID+expectedPub (CAS). Tests may leave this nil.
 	NotifyHubCIDUnlease func(cid uint32, expectedPub string) error
+
+	// startVM, when non-nil, replaces StartVM. Tests count launches without
+	// rootfs or key setup. Production leaves it nil.
+	startVM func(ctx context.Context, vmType, id, image string) error
 }
 
 type vmKeyPair struct {
@@ -189,6 +193,13 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 // This is required for "aegis status never hangs" during the collab model startup
 // (multiple real VMs launched at base + lazy Court).
 func (o *Orchestrator) StartVM(ctx context.Context, vmType string, id string, image string) error {
+	// Charset only. Reserved names (store, court-persona-*, …) are real VMs.
+	if err := ValidateVMID(id); err != nil {
+		return err
+	}
+	if o.startVM != nil {
+		return o.startVM(ctx, vmType, id, image)
+	}
 	logrus.Infof("Starting %s VM %s with image %s", vmType, id, image)
 
 	t0 := time.Now()
@@ -763,14 +774,18 @@ func (o *Orchestrator) EnsureCourtPersona(ctx context.Context, persona string, c
 	return id, nil
 }
 
-// EnsureRoleAgent is the general entry point for on-demand role agents (project-manager,
-// sdlc-coder, tester, general, etc.). Supports channelHint for attachment (used for
-// roster, @mentions, per-channel accounting).
-// For memory-backed we use the parallel paired path.
+// EnsureRoleAgent is the general entry point for on-demand role agents
+// (project-manager, coder, tester, researcher, …). Supports channelHint for
+// attachment (roster, @mentions, per-channel accounting).
+// roleType "agent" or "" uses the paired agent+memory path.
 // Returns the agent ID.
 func (o *Orchestrator) EnsureRoleAgent(ctx context.Context, roleType string, channelHint string) (string, error) {
-	// For memory-backed roles we still use the (now parallel) paired path for now.
-	// A future role-specific table can decide binary/image + whether paired.
+	// Refuse reserved, unknown, and unsafe ids before status, the paired
+	// launch, or the agent.img fallback. Court personas start only via
+	// EnsureCourtPersona.
+	if _, err := CheckRoleAgentID(roleType, channelHint); err != nil {
+		return "", err
+	}
 	if roleType == "agent" || roleType == "" {
 		sid := channelHint
 		if sid == "" {
@@ -787,11 +802,7 @@ func (o *Orchestrator) EnsureRoleAgent(ctx context.Context, roleType string, cha
 		}
 		return agtID, err
 	}
-	// Generic role (PM, sdlc-*, future court on-demand via EnsureCourtPersona).
-	id := roleType + "-" + channelHint
-	if channelHint == "" {
-		id = roleType
-	}
+	id := ComposeRoleAgentID(roleType, channelHint)
 	if st, err := o.GetVMStatus(ctx, id); err == nil && st == sandbox.StatusRunning {
 		if channelHint != "" {
 			o.mu.Lock()
@@ -867,6 +878,12 @@ func (o *Orchestrator) StartPairedAgentAndMemory(ctx context.Context, sessionID 
 
 	memID := "memory-" + sessionID
 	agtID := "agent-" + sessionID
+	if err := ValidateVMID(memID); err != nil {
+		return "", "", err
+	}
+	if err := ValidateVMID(agtID); err != nil {
+		return "", "", err
+	}
 
 	// Collaboration model: launch memory + agent in parallel goroutines for lower
 	// tail latency on the paired hot path (agent already has retry logic for hub dial).

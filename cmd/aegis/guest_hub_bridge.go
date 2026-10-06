@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"AegisClaw/internal/config"
+	"AegisClaw/internal/runtime"
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/transport/hubclient"
 
@@ -192,14 +193,10 @@ func guestBridgeRegisterAllowed(vmID, source string) (bool, string) {
 }
 
 func guestBridgeHostOnlyID(id string) bool {
-	switch id {
-	case "hub", "hub-perm-fetch", "daemon", "aegis-cli-internal", "channel-facilitator":
-		return true
-	}
-	return strings.HasPrefix(id, "hub-perm-fetch-") ||
-		strings.HasPrefix(id, "daemon-") ||
-		strings.HasPrefix(id, "aegis-cli-internal-") ||
-		strings.HasPrefix(id, "channel-facilitator-")
+	// Same set as before, owned by runtime.HostOnlyVMID. Not ReservedVMIDReason:
+	// that list is wider (store, court, …), case-insensitive, and its "hub"
+	// dash-boundary would reject hub-perm-fetcher.
+	return runtime.HostOnlyVMID(id)
 }
 
 // bridgeGuestConn checks the guest's first hub line, then pipes the connection.

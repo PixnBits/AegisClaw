@@ -2311,11 +2311,10 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			if role == "" {
 				resp = SocketResponse{OK: false, Error: "missing required arg 'role'"}
 			} else {
-				id, err := orch.EnsureRoleAgent(context.Background(), role, channel)
+				id, err := handleEnsureRole(orch, role, channel, startGuestHubBridge)
 				if err != nil {
 					resp = SocketResponse{OK: false, Error: err.Error()}
 				} else {
-					startGuestHubBridge(id)
 					if channel != "" {
 						addPayload := map[string]interface{}{"channel_id": channel, "role": role}
 						_, _ = sendToComponentViaHubContext(context.Background(), "store", "channel.add_member", addPayload)
@@ -5769,12 +5768,10 @@ func startOrchestratorCommandReceiver() {
 				payload, _ := msg.Payload.(map[string]interface{})
 				role, _ := payload["role"].(string)
 				channel, _ := payload["channel"].(string)
-				id, err := orchestrator.EnsureRoleAgent(context.Background(), role, channel)
+				id, err := handleEnsureRole(orchestrator, role, channel, startGuestHubBridge)
 				resp := map[string]interface{}{"id": id}
 				if err != nil {
 					resp = map[string]interface{}{"error": err.Error()}
-				} else {
-					startGuestHubBridge(id)
 				}
 				// Auto-add the ensured role as participant in the channel (E2E visibility, per plan)
 				// Use the receiver's *persistent* client (registered as daemon-orchestrator) for the
@@ -5783,7 +5780,8 @@ func startOrchestratorCommandReceiver() {
 				// daemon-internal-* from the early receiver path (on auto "main"+Court members and on
 				// every PM-driven ensure.role for coder/tester etc). Source remains stable "daemon-orchestrator"
 				// which has ACL grant to store channel.* .
-				if channel != "" {
+				// A reserved id is refused before EnsureRoleAgent and must not join the channel.
+				if channel != "" && ensureRoleAddsChannelMember(err) {
 					addPayload := map[string]interface{}{"channel_id": channel, "role": role}
 					addMsg := hubclient.Message{
 						Source:      requesterID,
