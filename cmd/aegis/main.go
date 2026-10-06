@@ -482,6 +482,12 @@ var (
 	storeCollabReadyMu sync.Mutex
 	storeCollabReadyAt time.Time
 	daemonBootStart    time.Time
+
+	// daemonLifetimeCtx is cancelled at the start of daemon shutdown (signal,
+	// socket stop, socket restart). Startup gates must not launch follow-on work
+	// after that.
+	daemonLifetimeCtx    context.Context
+	daemonLifetimeCancel context.CancelFunc
 )
 
 // SocketRequest / SocketResponse: enriched JSON protocol for Task 6.1.2+ (structured, validated, future-proof).
@@ -686,6 +692,13 @@ func removePIDFile() {
 	_ = os.Remove(pidFile)
 }
 
+// stopDaemonLifetime cancels daemonLifetimeCtx. Safe before init and on repeat calls.
+func stopDaemonLifetime() {
+	if daemonLifetimeCancel != nil {
+		daemonLifetimeCancel()
+	}
+}
+
 func startDaemon(cmd *cobra.Command, args []string) {
 	// Enable copious debug tracing as early as possible.
 	// Use AEGIS_DEBUG=1 (any truthy value works).
@@ -847,6 +860,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	}
 	daemonBootStart = time.Now()
 	storeCollabReady.Store(false)
+	daemonLifetimeCtx, daemonLifetimeCancel = context.WithCancel(context.Background())
 
 	// Ensure state directory (runtime, privileged)
 	if err := ensureStateDir(); err != nil {
@@ -1080,6 +1094,7 @@ func startDaemon(cmd *cobra.Command, args []string) {
 	go func() {
 		<-sigChan
 		logrus.Info("shutting down daemon")
+		stopDaemonLifetime()
 		// Stop the reverse proxy first (drain in-flight SSE/chat streams gracefully).
 		if webPortalProxyListener != nil {
 			_ = webPortalProxyListener.Close()
@@ -2244,6 +2259,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			conn.Write(append(b, '\n'))
 			logrus.Info("stop command received via socket - initiating graceful shutdown")
 			go func() {
+				stopDaemonLifetime()
 				killManagedChildren()
 				if orchestrator != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2262,6 +2278,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 			conn.Write(append(b, '\n'))
 			logrus.Info("restart command received via socket - initiating graceful shutdown (client should re-start per AGENTS.md)")
 			go func() {
+				stopDaemonLifetime()
 				killManagedChildren()
 				if orchestrator != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2388,6 +2405,7 @@ func handleSocketCommand(conn net.Conn, orch *runtime.Orchestrator) {
 		conn.Write([]byte(response))
 		logrus.Info("stop command received via socket - initiating graceful shutdown")
 		go func() {
+			stopDaemonLifetime()
 			killManagedChildren()
 			if orchestrator != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -5103,15 +5121,16 @@ func startBaseInfrastructure() error {
 	// Receiver (daemon-orchestrator) is started early (before base) so PM can drive
 	// on-demand roles as soon as it registers; auto "main" + membership is here in
 	// the post-store bg to avoid early-receiver contention.
-	go func() {
-		// Wait (with tolerance for guest boot + bridge + register) before declaring
-		// store responsive for collab paths. On timeout we warn (not fatal the daemon)
-		// because the control plane and launched base VMs are already up; channels/PM
-		// will naturally retry via sendToComponentViaHubRetry in their paths.
-		if _, err := sendToComponentViaHubRetry("store", "channel.list", nil, 45*time.Second); err != nil {
-			logrus.Warnf("Store VM did not become responsive within budget after launch (collab features/channels will retry; check fc-store-*-console.log and guest hub bridge): %v", err)
-			return
-		}
+	// Retry channel.list until Store answers or the daemon shuts down. A single
+	// 45s budget races guest CRNG and used to return here without ever starting
+	// channels or Court (issue #85).
+	collabCtx := daemonLifetimeCtx
+	if collabCtx == nil {
+		collabCtx = context.Background()
+	}
+	go runStoreReadinessThenCollab(collabCtx, func(ctx context.Context) error {
+		return waitForStoreReady(ctx, probeStoreChannelList, storeWaitOpts{})
+	}, func() {
 		storeCollabReady.Store(true)
 		storeCollabReadyMu.Lock()
 		storeCollabReadyAt = time.Now()
@@ -5133,7 +5152,7 @@ func startBaseInfrastructure() error {
 			}
 			startCourtGuestHubBridges()
 		}()
-	}()
+	})
 
 	logrus.Info("base infrastructure (hub + boundary + store + web-portal) launch sequence initiated — all critical components running as real Firecracker microVMs (readiness for channels/collab + lazy Court in background; control plane available immediately)")
 
