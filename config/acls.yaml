@@ -228,21 +228,24 @@ rules:
     - llm.*
 
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
-# llm.usage.* only (never llm.*): network-boundary appends usage; Store's
-# llm.usage.recorded reply is ACL-checked on the way back (cmd/aegishub).
+# Exact commands only, no wildcards. network-boundary appends llm.usage.record.
+# The hub runs checkACL on every frame except get-version (cmd/aegishub/main.go),
+# including Store's llm.usage.recorded reply. A rejected or invalid record is
+# replied as command error; that reply is already allowed by the * -> * catch-all
+# (response, error, ping, pong, version, get-version), so error is not repeated here.
 # Portal/daemon-internal query rules are not granted here.
 - source: store
   destination: network-boundary
   commands:
     - secrets.push
     - secrets.update
-    - llm.usage.*
+    - llm.usage.recorded
 - source: network-boundary
   destination: store
   commands:
     - secrets.response
     - secrets.*
-    - llm.usage.*
+    - llm.usage.record
 
 # Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
 - source: court-scribe
