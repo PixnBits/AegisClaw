@@ -6,6 +6,7 @@
 #
 # Usage:
 #   ./scripts/download-firecracker-kernel.sh
+#   ./scripts/download-firecracker-kernel.sh --print-pinned-sha256
 #   AEGIS_KERNEL_PATH=~/.aegis/firecracker/vmlinux ./bin/aegis start
 #
 # Environment:
@@ -75,6 +76,14 @@ KERNEL_DIR=$(dirname "$KERNEL_PATH")
 KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.209"
 # KERNEL_SHA256 must be updated in the same commit as KERNEL_URL (version-bump policy).
 KERNEL_SHA256="932450603af9175c443f5348aa961326945e3b4b46ba34bab2c714c751ee2f85"
+
+# --print-pinned-sha256 prints the in-repo pin and exits, so other scripts
+# (verify-microvm-artifacts.sh --kernel) check against the same value.
+# Environment overrides are ignored here.
+if [ "${1:-}" = "--print-pinned-sha256" ]; then
+    printf '%s\n' "$KERNEL_SHA256"
+    exit 0
+fi
 
 if [ -n "${AEGIS_KERNEL_URL:-}" ]; then
     if [ -z "${AEGIS_KERNEL_SHA256:-}" ] && [ "${AEGIS_SKIP_KERNEL_CHECKSUM:-}" != "1" ]; then
