@@ -78,3 +78,49 @@ func TestPeerUIDUnixSocket(t *testing.T) {
 		t.Fatal("Read blocked for >1s after PeerUID; socket is blocking")
 	}
 }
+
+func TestPeerUIDClosedUnixConn(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "peer-closed.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	accepted := make(chan net.Conn, 1)
+	errc := make(chan error, 1)
+	go func() {
+		c, aerr := ln.Accept()
+		if aerr != nil {
+			errc <- aerr
+			return
+		}
+		accepted <- c
+	}()
+
+	client, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	var server net.Conn
+	select {
+	case err := <-errc:
+		t.Fatal(err)
+	case server = <-accepted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("accept timed out")
+	}
+	unixConn, ok := server.(*net.UnixConn)
+	if !ok {
+		t.Fatalf("accepted %T, want *net.UnixConn", server)
+	}
+	if err := unixConn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	uid, ok := PeerUID(unixConn)
+	if ok || uid != -1 {
+		t.Fatalf("PeerUID(closed) = (%d, %v), want (-1, false)", uid, ok)
+	}
+}

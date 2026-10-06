@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -88,6 +90,9 @@ func TestAuthorizeHubPeer(t *testing.T) {
 func TestListenHubUnixSocketModeAndPeer(t *testing.T) {
 	t.Setenv("SUDO_USER", "")
 	snapshotHubRegistry(t)
+	// umask is process-wide. Do not call t.Parallel.
+	origUmask := syscall.Umask(0)
+	t.Cleanup(func() { _ = syscall.Umask(origUmask) })
 
 	sock := filepath.Join(t.TempDir(), "hub.sock")
 	ln, err := listenHubUnixSocket(sock)
@@ -101,7 +106,10 @@ func TestListenHubUnixSocketModeAndPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("hub socket mode = %o, want 0600", fi.Mode().Perm())
+		t.Fatalf("hub socket mode = %o, want 0600 (umask was 0)", fi.Mode().Perm())
+	}
+	if got := syscall.Umask(origUmask); got != 0 {
+		t.Fatalf("umask = %#o after listenHubUnixSocket, want 0 restored", got)
 	}
 
 	accepted := make(chan net.Conn, 1)
@@ -183,6 +191,191 @@ func TestListenHubUnixSocketModeAndPeer(t *testing.T) {
 	if resp["status"] != "registered" {
 		t.Fatalf("register response: %#v", resp)
 	}
+}
+
+// TestHandleConnectionUnixPeerGate drives the real handleConnection on an
+// accepted *net.UnixConn. authorizeHubPeer alone does not prove that deleting
+// the peer check still rejects the connection.
+func TestHandleConnectionUnixPeerGate(t *testing.T) {
+	snapshotHubRegistry(t)
+	t.Setenv("SUDO_USER", "")
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := os.Geteuid()
+	original := hubOriginalUID()
+	const foreign = 4242
+	if authorizeHubPeer(foreign, true, self, original) {
+		t.Fatalf("uid %d is allowed for self=%d original=%d", foreign, self, original)
+	}
+	if !authorizeHubPeer(self, true, self, original) {
+		t.Fatalf("self uid %d is not allowed (original=%d)", self, original)
+	}
+
+	t.Run("foreign uid", func(t *testing.T) {
+		prev := hubPeerUIDLookup
+		hubPeerUIDLookup = func(net.Conn) (int, bool) { return foreign, true }
+		t.Cleanup(func() { hubPeerUIDLookup = prev })
+		assertUnixPeerRejected(t, "unix-peer-foreign", pub)
+	})
+
+	t.Run("lookup not ok", func(t *testing.T) {
+		// uid 0 would be allowed if a missing creds result failed open.
+		prev := hubPeerUIDLookup
+		hubPeerUIDLookup = func(net.Conn) (int, bool) { return 0, false }
+		t.Cleanup(func() { hubPeerUIDLookup = prev })
+		assertUnixPeerRejected(t, "unix-peer-nocreds", pub)
+	})
+
+	t.Run("real peer registers", func(t *testing.T) {
+		prev := hubPeerUIDLookup
+		hubPeerUIDLookup = getHubPeerUID
+		t.Cleanup(func() { hubPeerUIDLookup = prev })
+		assertUnixPeerRegistered(t, "unix-peer-real", pub)
+	})
+}
+
+func assertUnixPeerRejected(t *testing.T, id string, pub ed25519.PublicKey) {
+	t.Helper()
+	client, _, conns, done := startUnixHubConn(t, id)
+	writeErr := writeHubRegister(client, id, pub)
+	raw, err := readHubLine(client)
+	if err != nil {
+		t.Fatalf("read response: %v (register write: %v)", err, writeErr)
+	}
+	if raw != `{"error":"ERR_UNAUTHORIZED_PEER"}` {
+		t.Fatalf("response = %s, want {\"error\":\"ERR_UNAUTHORIZED_PEER\"}", raw)
+	}
+	if _, err := readHubLine(client); !peerConnClosed(err) {
+		t.Fatalf("connection not closed after unauthorized peer: %v", err)
+	}
+	waitHandler(t, done)
+	if present, where := hubIDRegistered(id, conns); present {
+		t.Fatalf("unauthorized peer registered in %s", where)
+	}
+}
+
+func assertUnixPeerRegistered(t *testing.T, id string, pub ed25519.PublicKey) {
+	t.Helper()
+	client, server, conns, done := startUnixHubConn(t, id)
+	if err := writeHubRegister(client, id, pub); err != nil {
+		t.Fatalf("register write: %v", err)
+	}
+	raw, err := readHubLine(client)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal %s: %v", raw, err)
+	}
+	if errVal, ok := resp["error"]; ok {
+		t.Fatalf("real unix peer rejected: %v", errVal)
+	}
+	if resp["status"] != "registered" || resp["assigned_id"] != id {
+		t.Fatalf("register response: %s", raw)
+	}
+	got, loaded := conns.Load(id)
+	if !loaded || got != server {
+		t.Fatalf("conns[%s] = %#v, want the accepted conn", id, got)
+	}
+	registeredMutex.RLock()
+	reg := registered[id]
+	registeredMutex.RUnlock()
+	if reg == nil || reg.ID != id {
+		t.Fatalf("registered[%s] = %#v", id, reg)
+	}
+	_ = client.Close()
+	waitHandler(t, done)
+}
+
+func startUnixHubConn(t *testing.T, id string) (client net.Conn, server *net.UnixConn, conns *sync.Map, done <-chan struct{}) {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), id+".sock")
+	ln, err := listenHubUnixSocket(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	accErr := make(chan error, 1)
+	accC := make(chan net.Conn, 1)
+	go func() {
+		c, aerr := ln.Accept()
+		if aerr != nil {
+			accErr <- aerr
+			return
+		}
+		accC <- c
+	}()
+	client, err = net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	var accepted net.Conn
+	select {
+	case err := <-accErr:
+		t.Fatal(err)
+	case accepted = <-accC:
+	case <-time.After(3 * time.Second):
+		t.Fatal("accept timed out")
+	}
+	var ok bool
+	server, ok = accepted.(*net.UnixConn)
+	if !ok {
+		t.Fatalf("accepted %T, want *net.UnixConn", accepted)
+	}
+
+	conns = &sync.Map{}
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		handleConnection(server, conns)
+	}()
+	return client, server, conns, doneCh
+}
+
+func writeHubRegister(client net.Conn, id string, pub ed25519.PublicKey) error {
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	reg := Message{
+		Source:      id,
+		Destination: "hub",
+		Command:     "register",
+		Payload:     map[string]string{"public_key": base64.StdEncoding.EncodeToString(pub), "version": "test"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+	return json.NewEncoder(client).Encode(reg)
+}
+
+func readHubLine(client net.Conn) (string, error) {
+	line, err := bufio.NewReader(client).ReadBytes('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(line)), nil
+}
+
+func peerConnClosed(err error) bool {
+	// The rejected handler closes without reading the register line, so the
+	// follow-up read is EOF or ECONNRESET (the write hit a closed peer).
+	return err != nil && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE))
+}
+
+func hubIDRegistered(id string, conns *sync.Map) (bool, string) {
+	if _, ok := conns.Load(id); ok {
+		return true, "conns"
+	}
+	registeredMutex.RLock()
+	_, present := registered[id]
+	registeredMutex.RUnlock()
+	if present {
+		return true, "registered"
+	}
+	return false, ""
 }
 
 func TestReservedIDReason(t *testing.T) {

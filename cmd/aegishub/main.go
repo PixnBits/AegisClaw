@@ -144,6 +144,11 @@ func getHubPeerUID(conn net.Conn) (int, bool) {
 	return unixsock.PeerUID(conn)
 }
 
+// hubPeerUIDLookup is the SO_PEERCRED lookup handleConnection uses.
+// Tests replace it to present a foreign peer and restore it with t.Cleanup.
+// Production must leave it as getHubPeerUID.
+var hubPeerUIDLookup = getHubPeerUID
+
 // authorizeHubPeer allows uid 0, the hub's own euid, or the original user.
 // !peerOK denies: a UNIX connection without SO_PEERCRED must not fail open.
 func authorizeHubPeer(peerUID int, peerOK bool, selfUID, originalUID int) bool {
@@ -770,7 +775,7 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	// vsock peers are microVMs bound by CID lease, not host uid.
 	// net.Pipe (and test wrappers around it) is in-process and has no SO_PEERCRED.
 	if _, isUnix := conn.(*net.UnixConn); isUnix {
-		peerUID, peerOK := getHubPeerUID(conn)
+		peerUID, peerOK := hubPeerUIDLookup(conn)
 		if !authorizeHubPeer(peerUID, peerOK, os.Geteuid(), hubOriginalUID()) {
 			_ = json.NewEncoder(conn).Encode(map[string]string{"error": "ERR_UNAUTHORIZED_PEER"})
 			log.Printf("Audit: rejected unix hub peer uid=%d peerOK=%v", peerUID, peerOK)

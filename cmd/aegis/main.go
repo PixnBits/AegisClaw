@@ -5153,6 +5153,27 @@ func ensureRealRootfsImage(component string) (string, error) {
 	return sandbox.EnsureBootableRootfsImage(rootfsDir, component)
 }
 
+// secureManagedHubSocket chowns the hub socket to the original invoking user
+// and forces mode 0600. The hub child already created it at 0600; this runs
+// again after the readiness dial so a wider mode cannot remain. Root ignores
+// file mode, so ownership is what lets the invoking user connect.
+func secureManagedHubSocket(hubSocket string) {
+	if u, uerr := getOriginalUser(); uerr == nil && u != nil {
+		if uid, perr := strconv.Atoi(u.Uid); perr == nil {
+			gid := uid
+			if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
+				gid = g
+			}
+			if chownErr := os.Chown(hubSocket, uid, gid); chownErr != nil && os.Geteuid() == 0 {
+				logrus.Warnf("hub socket chown %s: %v", hubSocket, chownErr)
+			}
+		}
+	}
+	if err := os.Chmod(hubSocket, 0600); err != nil {
+		logrus.Warnf("could not chmod hub socket to 0600: %v", err)
+	}
+}
+
 // startManagedHub starts the AegisHub router (must be first).
 func startManagedHub(hubSocket string) error {
 	hubBinary := "./bin/aegishub"
@@ -5231,24 +5252,7 @@ func startManagedHub(hubSocket string) error {
 			// Then prove it's actually accepting connections (the important part)
 			if conn, dialErr := net.DialTimeout("unix", hubSocket, 200*time.Millisecond); dialErr == nil {
 				conn.Close()
-				// Root bypasses file mode. Chown to the original invoking user
-				// (SUDO_USER, else the current user) and keep mode 0600 so other
-				// local users cannot connect. The hub child creates the socket
-				// at 0600; repeat the chown here after the readiness dial.
-				if u, uerr := getOriginalUser(); uerr == nil && u != nil {
-					if uid, perr := strconv.Atoi(u.Uid); perr == nil {
-						gid := uid
-						if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
-							gid = g
-						}
-						if chownErr := os.Chown(hubSocket, uid, gid); chownErr != nil && os.Geteuid() == 0 {
-							logrus.Warnf("hub socket chown %s: %v", hubSocket, chownErr)
-						}
-					}
-				}
-				if err := os.Chmod(hubSocket, 0600); err != nil {
-					logrus.Warnf("could not chmod hub socket to 0600: %v", err)
-				}
+				secureManagedHubSocket(hubSocket)
 				logrus.Infof("aegishub ready (socket accepting connections: %s)", hubSocket)
 				return nil
 			}
