@@ -290,6 +290,9 @@ func TestCredentialPatternMatrixNeverWeakerThanMain(t *testing.T) {
 		func(k string) string { return k + k },
 		func(k string) string { return "AKIAABCDEFGHIJKLMNOP" + k },
 		func(k string) string { return "sk-" + strings.Repeat("q", 18) + k },
+		func(k string) string { return "AKIA" + "ABCDEFGHIJKLMN" + k },
+		func(k string) string { return "AKIA" + k },
+		func(k string) string { return k + "sk-" + strings.Repeat("Q", 18) + k },
 		func(k string) string { return "\t" + k + ";" },
 	}
 	cells, weaker, stronger := 0, 0, 0
@@ -312,9 +315,9 @@ func TestCredentialPatternMatrixNeverWeakerThanMain(t *testing.T) {
 	if cells != len(keys)*len(contexts) || weaker != 0 {
 		t.Fatalf("cells=%d weaker=%d", cells, weaker)
 	}
-	// The scoped shapes are the point of this change: none may leak now.
-	for _, name := range []string{"proj", "ant", "svcacct", "admin", "none", "PROJ", "proj-embedded-sk", "ant-embedded-akia"} {
-		key := keys[name]
+	// No shape leaks in any context now, including keys glued after another
+	// match (where main leaks).
+	for name, key := range keys {
 		for ci, ctx := range contexts {
 			if in := ctx(key); leaksWindow(Text(ContextChat, in), keyBody(key)) {
 				t.Errorf("%s still leaks in ctx %d: %q", name, ci, Text(ContextChat, in))
@@ -391,6 +394,83 @@ func TestCredentialSpansUnion(t *testing.T) {
 	}
 }
 
+// A key glued right after another credential match is redacted from its own
+// start: after an sk- run of 18 characters (main's match takes the next
+// key's "sk" and stops at its "-"), after another sk- key, and after an AKIA
+// prefix whose 16 characters run into the next key.
+func TestCredentialSpansGluedKeys(t *testing.T) {
+	key := "sk-" + strings.Repeat("a1B2", 6)
+	key2 := "sk-" + strings.Repeat("Zx9", 9)
+	aws := "AKIAABCDEFGHIJKLMNOP"
+	for in, want := range map[string]string{
+		"sk-" + strings.Repeat("q", 18) + key:   "[REDACTED]",
+		key + key2:                              "[REDACTED]",
+		"x=" + key + key2 + ";":                 "x=[REDACTED];",
+		"AKIA" + "ABCDEFGHIJKLMN" + key:         "[REDACTED]",
+		"AKIA" + aws:                            "[REDACTED]",
+		key + " and " + key2:                    "[REDACTED] and [REDACTED]",
+		"sk-" + strings.Repeat("q", 18) + "-ok": "sk-" + strings.Repeat("q", 18) + "-ok",
+	} {
+		if got := Text(ContextChat, in); got != want {
+			t.Errorf("Text(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Prefixes cut off at the end of the input are left alone (and must not
+	// read past it).
+	for _, in := range []string{"a", "ak", "aki", "Akia", "bak", "taki", "s", "sk", "sk-", "risk-", "ask", "AKIA123"} {
+		if got := Text(ContextChat, in); got != in {
+			t.Errorf("Text(%q) = %q, want unchanged", in, got)
+		}
+	}
+	// Main leaks these; this is the case the extra spans exist for.
+	for _, in := range []string{"sk-" + strings.Repeat("q", 18) + key, key + key2, "AKIA" + "ABCDEFGHIJKLMN" + key} {
+		if !leaksWindow(mainText(in), keyBody(key)) && !leaksWindow(mainText(in), keyBody(key2)) {
+			t.Errorf("fixture %q doesn't leak on main; it doesn't exercise the glued case", in)
+		}
+	}
+}
+
+// OpenRouter keys: sk-or-v1- and 64 hex characters. Shorter hex is left
+// alone.
+func TestHexKeyShape(t *testing.T) {
+	hex := strings.Repeat("0123456789abcdef", 4)
+	key := "sk-" + "or-v1-" + hex
+	for in, want := range map[string]string{
+		key:                                     "[REDACTED]",
+		"OPENROUTER_KEY_" + key + " x":          "OPENROUTER_KEY_[REDACTED] x",
+		`{"k":"` + key + `"}`:                   `{"k":"[REDACTED]"}`,
+		"SK-" + "OR-V1-" + strings.ToUpper(hex): "[REDACTED]",
+		key + "abc":                             "[REDACTED]",
+		key + "-tail":                           "[REDACTED]-tail",
+		"sk-" + "or-v1-" + hex[:63]:             "sk-" + "or-v1-" + hex[:63],
+		"sk-" + "or-v1-deadbeef":                "sk-" + "or-v1-deadbeef",
+		"sk-" + "or-v2-" + hex:                  "sk-" + "or-v2-" + hex,
+	} {
+		if got := Text(ContextChat, in); got != want {
+			t.Errorf("Text(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// apiKeyPattern runs before the credential spans. A key glued in front of
+// "token=value" would otherwise take the "token" label into its span, and the
+// value after it would be shown.
+func TestAPIKeyPassRunsFirst(t *testing.T) {
+	proj, _, _, _ := scopedTestKeys()
+	plain := "sk-" + strings.Repeat("a1B2", 6)
+	value := "hunter2" + "Hunter2" + "zz"
+	for _, in := range []string{
+		proj + "_token=" + value,
+		plain + "token=" + value,
+		"x " + proj + "_password: " + value,
+	} {
+		got := Text(ContextChat, in)
+		if strings.Contains(got, value) || leaksWindow(got, keyBody(proj)) || leaksWindow(got, keyBody(plain)) {
+			t.Errorf("Text(%q) = %q, leaks", in, got)
+		}
+	}
+}
+
 // Seeded random keys in the issued shapes. No 8-character window of a key
 // body may survive Text or Value. SANITIZE_PROPERTY_KEYS sets the count per
 // shape (default 20000; the long run uses 200000).
@@ -412,6 +492,8 @@ func TestScopedKeyProperty(t *testing.T) {
 		{"sk-" + "svcacct-", b64url, "", 156},
 		{"sk-" + "admin-", b64url, "", 156},
 		{"sk-" + "None-", b62, "", 48},
+		{"sk-", b62, "", 48},
+		{"sk-" + "or-v1-", "0123456789abcdef", "", 64},
 	}
 	rng := rand.New(rand.NewSource(20261006))
 	embedded := 0
@@ -427,16 +509,25 @@ func TestScopedKeyProperty(t *testing.T) {
 				embedded++
 			}
 			var in string
-			switch i % 3 {
+			switch i % 5 {
 			case 0:
 				in = key
 			case 1:
 				in = "OPENAI_API_KEY=" + key + "\n"
-			default:
+			case 2:
 				in = "call failed for " + key + ", retrying"
+			case 3:
+				in = "sk-" + strings.Repeat("q", 18) + key
+			default:
+				in = key + key
 			}
 			if got := Text(ContextChat, in); leaksWindow(got, body) {
 				t.Fatalf("%s key %d leaks: %q -> %q", sh.prefix, i, in, got)
+			}
+			// Text's apiKeyPattern pass hides the OPENAI_API_KEY= value before
+			// the span pass sees it, so check the span pass on its own too.
+			if got := redactCredentials(in); leaksWindow(got, body) {
+				t.Fatalf("%s key %d leaks through redactCredentials: %q -> %q", sh.prefix, i, in, got)
 			}
 			if i%50 == 0 {
 				out, _ := json.Marshal(Value(ContextChat, map[string]interface{}{"msg": in}))
