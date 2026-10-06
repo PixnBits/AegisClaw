@@ -124,8 +124,9 @@ func TestCheckRoleAgentIDAllowsCurrentCallers(t *testing.T) {
 func TestValidateVMID(t *testing.T) {
 	// Ids the system actually starts. Channel ids the generators emit are
 	// lowercase [a-z0-9-] ("main", "plan-demo", "plan-demo-e2e-llm").
-	// chatstore.newID is lowercase hex. Portal channel create is free text;
-	// uppercase, '_', and '.' are refused, not lowercased.
+	// chatstore.newID is lowercase hex. Channel ids use ValidateChannelID
+	// (same charset, capped so role-channel fits). Uppercase, '_', and '.'
+	// are refused, not lowercased.
 	session := "0123456789abcdefabcd" // 20 hex bytes, the newID upper bound
 	valid := []string{
 		"store",

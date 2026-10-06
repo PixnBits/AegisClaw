@@ -781,8 +781,8 @@ func (o *Orchestrator) EnsureCourtPersona(ctx context.Context, persona string, c
 // Returns the agent ID.
 func (o *Orchestrator) EnsureRoleAgent(ctx context.Context, roleType string, channelHint string) (string, error) {
 	// Refuse reserved, unknown, and unsafe ids before status, the paired
-	// launch, or the agent.img fallback. Court personas start only via
-	// EnsureCourtPersona.
+	// launch, or the agent.img fallback. Court personas are started by
+	// StartCourtSystem (EnsureCourtPersona currently has no callers).
 	if _, err := CheckRoleAgentID(roleType, channelHint); err != nil {
 		return "", err
 	}

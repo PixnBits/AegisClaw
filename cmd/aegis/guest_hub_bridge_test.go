@@ -47,6 +47,12 @@ func TestGuestBridgeRegisterAllowed(t *testing.T) {
 		{vmID: "", source: "", ok: false},
 		{vmID: "coder-1", source: "", ok: false},
 		{vmID: "agent-s1", source: "agent-s2", ok: false},
+		// Prefix either way, or case/trim fold, must still refuse.
+		{vmID: "coder-1", source: "coder-10", ok: false},
+		{vmID: "coder-10", source: "coder-1", ok: false},
+		{vmID: "coder-1", source: "coder", ok: false},
+		{vmID: "coder-1", source: "Coder-1", ok: false},
+		{vmID: "coder-1", source: " coder-1", ok: false},
 		// Hyphen boundary: these are not the host-only prefixes.
 		{vmID: "hub-perm-fetcher", source: "hub-perm-fetcher", ok: true},
 		{vmID: "daemonfoo", source: "daemonfoo", ok: true},

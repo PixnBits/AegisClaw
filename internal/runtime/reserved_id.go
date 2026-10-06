@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"AegisClaw/internal/channelid"
 	"AegisClaw/internal/sandbox"
 )
 
@@ -29,8 +30,8 @@ const maxVMIDBytes = 128
 // reservedVMIDPrefixes are matched on a dash boundary after lowercasing:
 // the id equals P, or it starts with P+"-".
 //
-// store, court (court-scribe and court-persona-*; personas start only via
-// EnsureCourtPersona), network-boundary, web-portal, and builder are base
+// store, court (court-scribe and court-persona-*; personas are started by
+// StartCourtSystem — EnsureCourtPersona currently has no callers), network-boundary, web-portal, and builder are base
 // components. memory-<session> and agent-<session> belong to
 // StartPairedAgentAndMemory. The bare roleType "agent" or "" uses that paired
 // path and does not compose an id, so CheckRoleAgentID does not apply this
@@ -121,34 +122,17 @@ func ValidateVMID(id string) error {
 	return sandbox.ValidateVMID(id)
 }
 
-// allowedEnsureRoles are the only roleType values ensure_role may compose
-// into a VM id. The match is exact: no prefix and no case fold.
-//
-//	coder, tester, ciso, security-architect, architect, efficiency,
-//	user-advocate — cmd/project-manager extractRolesFromText
-//	project-manager — aegis pm goal and portal goal.submit
-//	researcher — collab.NormalizeMemberRole, portal harness plan text,
-//	and the hub permission subject researcher*
-//
-// "agent" and "" are the paired agent+memory path, not composed roles.
-// general and sdlc-* are only named in a comment. analyst and critic are
-// team-CLI labels. senior-coder is a Court persona slug; the member label
-// normalizes to coder.
-var allowedEnsureRoles = map[string]struct{}{
-	"coder":              {},
-	"tester":             {},
-	"ciso":               {},
-	"security-architect": {},
-	"architect":          {},
-	"efficiency":         {},
-	"user-advocate":      {},
-	"project-manager":    {},
-	"researcher":         {},
+// ValidateChannelID is the channel id rule. The allowlist and length cap
+// live in channelid so the Store guest can enforce the same rule without
+// importing this package.
+func ValidateChannelID(id string) error {
+	return channelid.ValidateChannelID(id)
 }
 
+// roleAllowed is channelid's ensure_role allowlist. The list lives there so
+// MaxChannelIDLen is computed from the same set the Store validates against.
 func roleAllowed(roleType string) bool {
-	_, ok := allowedEnsureRoles[roleType]
-	return ok
+	return channelid.RoleAllowed(roleType)
 }
 
 // EnsureRoleRefused reports a CheckRoleAgentID refusal (reserved, not on the

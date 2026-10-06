@@ -3,6 +3,18 @@ import { api } from '@/api/client';
 import { Channel } from '@/contracts';
 import { usePortalStore } from '@/store/portalStore';
 
+// Same rule as channelid.ValidateChannelID (MaxChannelIDLen = 45).
+const channelIDRe = /^[a-z][a-z0-9-]*$/;
+const maxChannelIDLen = 45;
+const channelIDErrorText = 'invalid channel id: must match ^[a-z][a-z0-9-]*$ and be <= 45 chars';
+
+function channelIDError(id: string): string | null {
+  if (!channelIDRe.test(id) || id.includes('--') || id.endsWith('-') || id.length > maxChannelIDLen) {
+    return channelIDErrorText;
+  }
+  return null;
+}
+
 type Props = {
   channels: Channel[];
   currentChannelId?: string;
@@ -14,12 +26,24 @@ export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Pr
   const loadChannels = usePortalStore((s) => s.loadChannels);
   const unreadByChannel = usePortalStore((s) => s.unreadByChannel);
   const [newId, setNewId] = useState('');
+  const [createError, setCreateError] = useState('');
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     const id = newId.trim();
     if (!id) return;
-    await api.createChannel(id);
+    const invalid = channelIDError(id);
+    if (invalid) {
+      setCreateError(invalid);
+      return;
+    }
+    setCreateError('');
+    try {
+      await api.createChannel(id);
+    } catch {
+      setCreateError('Could not create channel');
+      return;
+    }
     setNewId('');
     await loadChannels();
   };
@@ -58,13 +82,22 @@ export function Sidebar({ channels, currentChannelId, onSelect, onNavigate }: Pr
           type="text"
           placeholder="new-channel-id"
           value={newId}
-          onChange={(e) => setNewId(e.target.value)}
+          onChange={(e) => {
+            setNewId(e.target.value);
+            if (createError) setCreateError('');
+          }}
+          aria-invalid={createError ? true : undefined}
           required
         />
         <button type="submit" className="primary-button" data-testid="create-channel-button">
           Add
         </button>
       </form>
+      {createError ? (
+        <p className="subtle" role="alert" data-testid="create-channel-error">
+          {createError}
+        </p>
+      ) : null}
       <div className="panel-subsection">
         <p className="eyebrow">Quick Actions</p>
         <div className="button-stack">
