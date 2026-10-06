@@ -799,21 +799,10 @@ func runStore(cmd *cobra.Command, args []string) {
 			priv:         priv,
 		}
 		mu.Lock()
-		skipReply := false
-		func() {
-			// Checked decoding is the fix. This recover only runs if a handler
-			// still panics: log it, set an error reply, and let the closure
-			// return so mu.Unlock and the existing sign/encode path still run.
-			defer func() {
-				if rec := recover(); rec != nil {
-					log.Printf("store: recovered handler panic command=%q: %v\n%s", msg.Command, rec, debug.Stack())
-					response.Command = "error"
-					response.Payload = fmt.Sprintf("internal error handling %s", msg.Command)
-					skipReply = false
-				}
-			}()
-			skipReply = dispatchStoreCommand(msg, &response, w)
-		}()
+		// Checked decoding is the fix. dispatchWithPanicGuard only matters if
+		// a handler still panics: it logs a SECURITY event, sets an error
+		// reply, and returns so mu.Unlock and the sign/encode path still run.
+		skipReply := dispatchWithPanicGuard(msg, &response, w)
 		mu.Unlock()
 		if skipReply {
 			continue
