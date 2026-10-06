@@ -15,6 +15,11 @@
 #     digest-pinned
 #   - npm/yarn/pnpm package installs without an exact version, and pip
 #     installs without ==version (pip -r needs --require-hashes)
+#   - a bare npm/yarn/pnpm install (no package names) unless an earlier COPY
+#     or ADD in the same Dockerfile brings in a lockfile (package-lock.json,
+#     npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml); npm ci is preferred
+#   - a bare pip install (nothing, or only a local project/wheel) without
+#     -r/-c or --no-deps, since its dependencies resolve unpinned
 #
 # The script scans its own fixtures before the repo, so a case-sensitive FROM
 # match fails the lowercase fixture instead of passing silently.
@@ -51,10 +56,13 @@ normalize_instruction_body() {
 }
 
 # Prints one reason per unpinned npm/yarn/pnpm or pip install in a normalized
-# RUN body. Commands are split on && || ; |.
+# RUN body. Commands are split on && || ; |. $2 is 1 when an earlier COPY/ADD
+# in this Dockerfile brought in a node lockfile.
 unpinned_installs() {
     local body="$1"
-    local seg="" t="" mgr="" pkg="" name="" ver="" skip_next=0 req_file=0 req_hashes=0
+    local node_lock="${2:-0}"
+    local seg="" t="" mgr="" tool="" pkg="" name="" ver="" skip_next=0 req_file=0 req_hashes=0
+    local pkgs=0 no_deps=0
     local i=0
     local -a toks=()
     body=${body//&&/;}
@@ -71,14 +79,23 @@ unpinned_installs() {
                 case "${toks[$((i + 1))]}" in
                     install|i|add|in|ins)
                         mgr=node
+                        tool=$t
                         i=$((i + 2))
                         break
                         ;;
                 esac
             fi
+            # Plain "yarn" (optionally with --flags) is "yarn install".
+            if [ "$t" = "yarn" ] && { [ $((i + 1)) -ge "${#toks[@]}" ] || [[ "${toks[$((i + 1))]}" == -* ]]; }; then
+                mgr=node
+                tool=yarn
+                i=$((i + 1))
+                break
+            fi
             if { [ "$t" = "pip" ] || [ "$t" = "pip3" ]; } \
                 && [ $((i + 1)) -lt "${#toks[@]}" ] && [ "${toks[$((i + 1))]}" = "install" ]; then
                 mgr=pip
+                tool=$t
                 i=$((i + 2))
                 break
             fi
@@ -88,6 +105,8 @@ unpinned_installs() {
         skip_next=0
         req_file=0
         req_hashes=0
+        pkgs=0
+        no_deps=0
         while [ "$i" -lt "${#toks[@]}" ]; do
             t=${toks[$i]}
             i=$((i + 1))
@@ -104,6 +123,10 @@ unpinned_installs() {
                         ;;
                     --require-hashes)
                         req_hashes=1
+                        continue
+                        ;;
+                    --no-deps)
+                        no_deps=1
                         continue
                         ;;
                     -i|--index-url|--extra-index-url|-t|--target|--prefix|--root|-f|--find-links)
@@ -125,6 +148,7 @@ unpinned_installs() {
                     ;;
             esac
             pkg=$t
+            pkgs=$((pkgs + 1))
             if [ "$mgr" = pip ]; then
                 ver=${pkg#*==}
                 if [[ "$pkg" != *==* ]] || [ -z "$ver" ] || [[ "$ver" == *\** ]]; then
@@ -147,7 +171,30 @@ unpinned_installs() {
         if [ "$mgr" = pip ] && [ "$req_file" -eq 1 ] && [ "$req_hashes" -eq 0 ]; then
             printf 'pip install -r/-c without --require-hashes\n'
         fi
+        if [ "$pkgs" -eq 0 ] && [ "$mgr" = node ] && [ "$node_lock" -eq 0 ]; then
+            printf 'bare %s install without a lockfile (COPY package-lock.json first and use npm ci)\n' "$tool"
+        fi
+        if [ "$pkgs" -eq 0 ] && [ "$mgr" = pip ] && [ "$req_file" -eq 0 ] && [ "$no_deps" -eq 0 ]; then
+            printf 'bare pip install without a lockfile (use -r with --require-hashes, -c constraints, or --no-deps)\n'
+        fi
     done <<< "${body//;/$'\n'}"
+}
+
+# True when a COPY or ADD line names a node lockfile as a source.
+has_node_lockfile() {
+    local line="$1" t=""
+    local -a toks=()
+    [[ "$line" =~ ^([Cc][Oo][Pp][Yy]|[Aa][Dd][Dd])[[:space:]] ]] || return 1
+    line=$(normalize_instruction_body "${line#* }")
+    read -r -a toks <<< "$line"
+    for t in "${toks[@]}"; do
+        case "${t##*/}" in
+            package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml)
+                return 0
+                ;;
+        esac
+    done
+    return 1
 }
 
 cleanup_self_work() {
@@ -213,7 +260,7 @@ check_one() {
     local root="$2"
     local line="" trimmed="" rest="" image="" tok="" stage_name="" lower="" rel="" s=""
     local argval="" body="" raw_body="" from_ref="" reason=""
-    local i=0 next=0 name_i=0 froms=0 status=0 is_from=0 allowed=0
+    local i=0 next=0 name_i=0 froms=0 status=0 is_from=0 allowed=0 node_lock=0
     local -a tokens=()
     local -a stages=()
 
@@ -327,8 +374,12 @@ check_one() {
                 [ -z "$reason" ] && continue
                 echo "FAIL: ${rel} has an unpinned package install (${reason}): ${trimmed}" >&2
                 status=1
-            done < <(unpinned_installs "$body")
+            done < <(unpinned_installs "$body" "$node_lock")
             continue
+        fi
+
+        if has_node_lockfile "$trimmed"; then
+            node_lock=1
         fi
 
         if [[ "$trimmed" =~ ^[Aa][Dd][Dd][[:space:]]+(.*)$ ]]; then
@@ -565,6 +616,39 @@ RUN go install example.com/tool/cmd/tool@${TOOL_VERSION}'
         'RUN python3 -m pip install -r requirements.txt'
     reject_case exec-pip "pip install without ==version: requests" "exec-form pip install rejected" \
         'RUN ["pip", "install", "requests"]'
+    reject_case npm-bare-nolock "bare npm install without a lockfile" "bare npm install without a lockfile rejected" \
+        'RUN npm install'
+    reject_case npm-bare-pkgjson "bare npm install without a lockfile" "package.json alone is not a lockfile" \
+        'COPY package.json ./
+RUN npm install --omit=dev'
+    reject_case npm-bare-exec "bare npm install without a lockfile" "exec-form bare npm install rejected" \
+        'RUN ["npm", "install"]'
+    reject_case npm-bare-before-lock "bare npm install without a lockfile" "lockfile copied after the install does not count" \
+        'RUN cd app && npm i
+COPY package-lock.json ./'
+    reject_case npm-bare-env-mention "bare npm install without a lockfile" "a lockfile named outside COPY/ADD does not count" \
+        'ENV NPM_LOCK=package-lock.json
+LABEL lockfile="yarn.lock"
+RUN test -f package-lock.json || echo no lockfile
+RUN npm install'
+    reject_case yarn-bare "bare yarn install without a lockfile" "bare yarn rejected" \
+        'RUN yarn --frozen-lockfile'
+    reject_case pnpm-bare "bare pnpm install without a lockfile" "bare pnpm install rejected" \
+        'RUN pnpm install'
+    reject_case pip-bare-local "bare pip install without a lockfile" "pip install . rejected" \
+        'RUN pip install .'
+    reject_case pip-bare-editable "bare pip install without a lockfile" "pip install -e ./app rejected" \
+        'RUN python3 -m pip install --no-cache-dir -e ./app'
+    reject_case pip-bare-wheel "bare pip install without a lockfile" "pip install of a local wheel rejected" \
+        'RUN pip3 install /tmp/tool-1.0-py3-none-any.whl'
+    accept_case node-lockfiles "bare installs after a lockfile COPY accepted" \
+        'COPY package.json package-lock.json ./
+RUN npm install
+COPY --chown=node:node yarn.lock ./
+RUN yarn install --frozen-lockfile
+ADD pnpm-lock.yaml /app/
+RUN ["pnpm", "install"]
+RUN npm ci'
     reject_case copy-from-image "COPY --from an unpinned image (alpine:3.18)" "COPY --from tag-only image rejected" \
         'COPY --from=alpine:3.18 /etc/ssl /etc/ssl'
     reject_case copy-from-space "COPY --from an unpinned image (golang:1.26)" "COPY --from <image> (space form) rejected" \
@@ -573,11 +657,13 @@ RUN go install example.com/tool/cmd/tool@${TOOL_VERSION}'
         "ARG TOOL_VERSION=v1.2.3
 ARG BRANCH_NOTE=maintenance
 RUN npm ci && npm install -g typescript@5.6.3 @scope/tool@1.0.0-rc.1
+COPY web/package.json web/package-lock.json ./web/
 RUN npm install
 RUN cd web && npm run build
 RUN pip install --no-cache-dir requests==2.32.3 -i https://pypi.org/simple
 RUN pip install --require-hashes -r requirements.txt
-RUN pip install .
+RUN pip install --no-deps .
+RUN pip install --require-hashes -c constraints.txt -e ./app
 RUN [\"go\", \"install\", \"example.com/tool/cmd/tool@v1.2.3\"]
 ADD --checksum=sha256:${pin} https://example.invalid/tool.tar.gz /tmp/
 ADD ./local.tar.gz /tmp/

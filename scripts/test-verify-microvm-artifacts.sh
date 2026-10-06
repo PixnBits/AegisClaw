@@ -193,9 +193,36 @@ run_verify VERIFY_SKIP_DOCKER=1 -- --kernel "$ROOT/empty-vmlinux" "$ROOT" good
 assert_rc 1 "empty kernel should fail"
 assert_contains "kernel: ${ROOT}/empty-vmlinux is missing or empty" "empty kernel was not reported"
 printf 'virtio_rng\n' > "$ROOT/vmlinux"
-run_verify VERIFY_SKIP_DOCKER=1 -- --kernel "$ROOT/vmlinux" "$ROOT" good
-assert_rc 0 "non-empty kernel plus good rootfs should pass"
+VMLINUX_SHA=$(sha256sum "$ROOT/vmlinux" | cut -d' ' -f1)
+run_verify VERIFY_SKIP_DOCKER=1 AEGIS_KERNEL_SHA256="$VMLINUX_SHA" -- --kernel "$ROOT/vmlinux" "$ROOT" good
+assert_rc 0 "kernel matching AEGIS_KERNEL_SHA256 plus good rootfs should pass"
 assert_not_contains "FAIL:" "kernel pass reported a failure"
+run_verify VERIFY_SKIP_DOCKER=1 AEGIS_KERNEL_SHA256="${VMLINUX_SHA^^}" -- --kernel "$ROOT/vmlinux" "$ROOT" good
+assert_rc 0 "an upper-case AEGIS_KERNEL_SHA256 should match"
+
+echo "9b. --kernel re-checks the pinned SHA-256 from download-firecracker-kernel.sh"
+PINNED=$(sed -n 's/^KERNEL_SHA256="\([0-9a-f]\{64\}\)"$/\1/p' "$SCRIPT_DIR/download-firecracker-kernel.sh")
+[ "${#PINNED}" -eq 64 ] || fail "could not read KERNEL_SHA256 from download-firecracker-kernel.sh"
+[ "$(bash "$SCRIPT_DIR/download-firecracker-kernel.sh" --print-pinned-sha256)" = "$PINNED" ] \
+    || fail "--print-pinned-sha256 does not print KERNEL_SHA256"
+run_verify VERIFY_SKIP_DOCKER=1 -- --kernel "$ROOT/vmlinux" "$ROOT" good
+assert_rc 1 "a kernel that differs from the pin should fail"
+assert_contains "kernel: ${ROOT}/vmlinux SHA-256 ${VMLINUX_SHA} does not match the pin in download-firecracker-kernel.sh (${PINNED})" \
+    "pin mismatch was not reported with both hashes"
+run_verify VERIFY_SKIP_DOCKER=1 AEGIS_KERNEL_PATH="$ROOT/vmlinux" -- "$ROOT" good
+assert_rc 1 "AEGIS_KERNEL_PATH (no --kernel) should be hash-checked too"
+assert_contains "does not match the pin" "AEGIS_KERNEL_PATH skipped the pin check"
+run_verify VERIFY_SKIP_DOCKER=1 AEGIS_KERNEL_SHA256="${PINNED}" -- --kernel "$ROOT/vmlinux" "$ROOT" good
+assert_rc 1 "a wrong AEGIS_KERNEL_SHA256 should fail"
+assert_contains "does not match AEGIS_KERNEL_SHA256 (${PINNED})" "override mismatch was not reported"
+run_verify VERIFY_SKIP_DOCKER=1 AEGIS_KERNEL_SHA256="not-a-hash" -- --kernel "$ROOT/vmlinux" "$ROOT" good
+assert_rc 1 "a malformed AEGIS_KERNEL_SHA256 should fail"
+assert_contains "AEGIS_KERNEL_SHA256 is not a SHA-256" "malformed override was not reported"
+run_verify VERIFY_SKIP_DOCKER=1 AEGIS_SKIP_KERNEL_CHECKSUM=1 -- --kernel "$ROOT/vmlinux" "$ROOT" good
+assert_rc 0 "AEGIS_SKIP_KERNEL_CHECKSUM=1 should skip the hash"
+assert_contains "WARN: kernel: AEGIS_SKIP_KERNEL_CHECKSUM=1" "skipping the hash was not loud"
+run_verify VERIFY_SKIP_DOCKER=1 AEGIS_SKIP_KERNEL_CHECKSUM=1 -- --kernel "$ROOT/empty-vmlinux" "$ROOT" good
+assert_rc 1 "the skip flag must not skip the non-empty check"
 
 echo "10. file(1) fallback accepts a journaled ext4 image when blkid is absent"
 run_verify VERIFY_SKIP_DOCKER=1 PATH="/usr/bin:/bin" -- "$ROOT" fallback
@@ -218,6 +245,13 @@ run_verify VERIFY_SKIP_DOCKER=1 PATH="$TOOLBIN" -- "$ROOT" good
 assert_rc 1 "missing filesystem tools should fail"
 assert_contains "FAIL: good:" "missing-tool failure did not name good"
 assert_contains "neither blkid nor file is available" "missing tools were not explained"
+
+echo "11b. no sha256sum or shasum is a named kernel failure"
+ln -s "$(command -v blkid)" "$TOOLBIN/blkid"
+run_verify VERIFY_SKIP_DOCKER=1 PATH="$TOOLBIN" AEGIS_KERNEL_SHA256="$VMLINUX_SHA" -- --kernel "$ROOT/vmlinux" "$ROOT" good
+assert_rc 1 "a missing hash tool should fail the kernel check"
+assert_contains "kernel: neither sha256sum nor shasum is available" "missing hash tool was not explained"
+assert_not_contains "FAIL: good:" "the rootfs checks should still pass with blkid present"
 
 echo "12. no component arguments uses --print-default-components"
 mkdir -p "$WORKDIR/empty-rootfs"

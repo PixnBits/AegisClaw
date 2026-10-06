@@ -19,8 +19,13 @@
 #                          VERIFY_SKIP_DOCKER=1 or --skip-docker.
 #
 # --kernel PATH, or AEGIS_KERNEL_PATH when --kernel is omitted, must name a
-# non-empty file (the path the image job passes to the kernel download).
-# With neither set, the kernel is not checked.
+# non-empty file (the path the image job passes to the kernel download) whose
+# SHA-256 matches the pin in download-firecracker-kernel.sh
+# (--print-pinned-sha256). The same overrides as the download apply:
+# AEGIS_KERNEL_SHA256 replaces the pin for a deliberate custom kernel, and
+# AEGIS_SKIP_KERNEL_CHECKSUM=1 skips the hash with a WARN line. With no
+# sha256sum or shasum, the check fails. With neither --kernel nor
+# AEGIS_KERNEL_PATH, the kernel is not checked.
 #
 # Every failure is printed. The script then exits 1. It does not stop at the
 # first one.
@@ -122,6 +127,63 @@ verify_image() {
     return 0
 }
 
+# Prints the file's lowercase SHA-256. Returns 2 when no hash tool exists.
+kernel_file_sha256() {
+    local file="$1" sum=""
+    if command -v sha256sum >/dev/null 2>&1; then
+        sum=$(sha256sum -- "$file" 2>/dev/null) || return 1
+    elif command -v shasum >/dev/null 2>&1; then
+        sum=$(shasum -a 256 -- "$file" 2>/dev/null) || return 1
+    else
+        return 2
+    fi
+    sum=${sum%% *}
+    sum=${sum,,}
+    [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s\n' "$sum"
+}
+
+verify_kernel() {
+    local path="$1"
+    local expected="" source="" actual="" rc=0
+
+    if [ ! -s "$path" ]; then
+        note_fail "kernel: ${path} is missing or empty"
+        return 0
+    fi
+    if [ "${AEGIS_SKIP_KERNEL_CHECKSUM:-}" = "1" ]; then
+        printf 'WARN: kernel: AEGIS_SKIP_KERNEL_CHECKSUM=1, %s was not hash-checked\n' "$path" >&2
+        return 0
+    fi
+    if [ -n "${AEGIS_KERNEL_SHA256:-}" ]; then
+        expected=$AEGIS_KERNEL_SHA256
+        source="AEGIS_KERNEL_SHA256"
+    else
+        source="the pin in download-firecracker-kernel.sh"
+        if ! expected=$("$SCRIPT_DIR/download-firecracker-kernel.sh" --print-pinned-sha256); then
+            note_fail "kernel: could not read ${source}"
+            return 0
+        fi
+    fi
+    expected=${expected,,}
+    if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+        note_fail "kernel: ${source} is not a SHA-256: '${expected}'"
+        return 0
+    fi
+    actual=$(kernel_file_sha256 "$path") || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        note_fail "kernel: neither sha256sum nor shasum is available to check ${path}"
+        return 0
+    elif [ "$rc" -ne 0 ]; then
+        note_fail "kernel: could not hash ${path}"
+        return 0
+    fi
+    if [ "$actual" != "$expected" ]; then
+        note_fail "kernel: ${path} SHA-256 ${actual} does not match ${source} (${expected})"
+    fi
+    return 0
+}
+
 skip_docker=0
 kernel_path=""
 check_kernel=0
@@ -189,8 +251,8 @@ if [ "${#components[@]}" -eq 0 ]; then
     fi
 fi
 
-if [ "$check_kernel" -eq 1 ] && [ ! -s "$kernel_path" ]; then
-    note_fail "kernel: ${kernel_path} is missing or empty"
+if [ "$check_kernel" -eq 1 ]; then
+    verify_kernel "$kernel_path"
 fi
 
 valid_name='^[A-Za-z0-9][A-Za-z0-9._-]*$'
