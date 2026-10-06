@@ -63,6 +63,16 @@ func TestIsMicroVMSource_DashBoundary(t *testing.T) {
 	if !IsMicroVMSourcePublic("court-persona-ciso") {
 		t.Fatal("court-persona-ciso is a microVM source")
 	}
+	for _, id := range []string{"ciso", "ciso-1", "architect", "architect-x", "researcher", "researcher-y"} {
+		if !IsMicroVMSourcePublic(id) {
+			t.Errorf("%s should be a microVM source", id)
+		}
+	}
+	for _, id := range []string{"cisox", "architectx", "researcherx", "store", "hub", "web-portal", "network-boundary", "daemon-internal-1", "channel-facilitator-1", "aegis-cli-internal-1"} {
+		if IsMicroVMSourcePublic(id) {
+			t.Errorf("%s must not be treated as a microVM source", id)
+		}
+	}
 }
 
 func TestBuildFilter_DualFiltering(t *testing.T) {

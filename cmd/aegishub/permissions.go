@@ -227,14 +227,9 @@ func invalidateAllPermissionSnapshots() {
 	}
 }
 
+// shouldReceivePermissionSnapshot reports whether componentID is a microVM
+// permission subject. Prefixes are roleVMPrefixes in internal/permissions;
+// host components stay ACL-only.
 func shouldReceivePermissionSnapshot(componentID string) bool {
-	if permissions.IsMicroVMSourcePublic(componentID) {
-		return true
-	}
-	for _, p := range []string{"project-manager", "coder", "tester", "agent"} {
-		if componentID == p || (len(componentID) > len(p) && componentID[:len(p)+1] == p+"-") {
-			return true
-		}
-	}
-	return false
+	return permissions.IsMicroVMSourcePublic(componentID)
 }

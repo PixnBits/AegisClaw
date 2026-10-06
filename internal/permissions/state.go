@@ -123,14 +123,25 @@ func ListRequestsForSubject(state *State, subjectID string) []Request {
 	return out
 }
 
-// IsMicroVMSourcePublic reports whether source is a microVM component (cannot self-grant).
+// roleVMPrefixes is the single list of microVM component-id prefixes.
+// A source matches when it equals a prefix or starts with "<prefix>-".
+// Hub permission snapshots use this list via IsMicroVMSourcePublic.
+// Host components (store, hub, daemon*, channel-facilitator*, aegis-cli-internal*,
+// network-boundary, web-portal) are intentionally absent.
+var roleVMPrefixes = []string{
+	"agent", "project-manager", "coder", "tester", "builder", "memory", "court-persona",
+	"ciso", "architect", "researcher",
+}
+
+// IsMicroVMSourcePublic reports whether source is a microVM component.
+// MicroVMs cannot self-grant. The hub uses this same list for permission
+// snapshots and capability checks.
 func IsMicroVMSourcePublic(source string) bool {
 	return isMicroVMSource(source)
 }
 
 func isMicroVMSource(source string) bool {
-	prefixes := []string{"agent", "project-manager", "coder", "tester", "builder", "memory", "court-persona"}
-	for _, p := range prefixes {
+	for _, p := range roleVMPrefixes {
 		if source == p || (len(source) > len(p) && source[:len(p)+1] == p+"-") {
 			return true
 		}
