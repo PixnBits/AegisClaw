@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"AegisClaw/internal/channelid"
+	"AegisClaw/internal/hubids"
 	"AegisClaw/internal/sandbox"
 )
 
@@ -42,7 +43,10 @@ const maxVMIDBytes = 128
 // "hub" is dash-bounded here, so it also covers hub-perm-fetch*.
 // guestBridgeHostOnlyID uses HostOnlyVMID, which is the narrower
 // case-sensitive subset (it must not reject hub-perm-fetcher).
-var reservedVMIDPrefixes = []string{
+//
+// Every hubids host client family is appended, so a family added there is a
+// reserved VM id prefix too.
+var reservedVMIDPrefixes = append([]string{
 	"store",
 	"court",
 	"network-boundary",
@@ -53,10 +57,7 @@ var reservedVMIDPrefixes = []string{
 	"hub",
 	"aegishub",
 	"hub-perm-fetch",
-	"daemon",
-	"aegis-cli-internal",
-	"channel-facilitator",
-}
+}, hubids.HostClientFamilies...)
 
 // ReservedVMIDReason reports whether id must not be chosen as a VM id.
 // reserved is true for a reserved prefix, a character outside [A-Za-z0-9._-],
@@ -101,19 +102,21 @@ func reservedPrefix(id string) (string, bool) {
 }
 
 // HostOnlyVMID is the guest-bridge host-only subset: hub, hub-perm-fetch*,
-// daemon*, aegis-cli-internal*, and channel-facilitator*. Match is
+// and every hubids host client family (daemon*, aegis-daemon-temp*,
+// daemon-temp*, aegis-cli-internal*, channel-facilitator*). Match is
 // case-sensitive. "hub" is not a dash-boundary here, so hub-perm-fetcher
 // is not host-only. store, court, and the other reserved prefixes are not
 // host-only; those guests register on their own bridge.
 func HostOnlyVMID(id string) bool {
-	switch id {
-	case "hub", "hub-perm-fetch", "daemon", "aegis-cli-internal", "channel-facilitator":
+	if id == "hub" || id == "hub-perm-fetch" || strings.HasPrefix(id, "hub-perm-fetch-") {
 		return true
 	}
-	return strings.HasPrefix(id, "hub-perm-fetch-") ||
-		strings.HasPrefix(id, "daemon-") ||
-		strings.HasPrefix(id, "aegis-cli-internal-") ||
-		strings.HasPrefix(id, "channel-facilitator-")
+	for _, fam := range hubids.HostClientFamilies {
+		if id == fam || strings.HasPrefix(id, fam+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateVMID is the strict id rule shared with sandbox path joins.
