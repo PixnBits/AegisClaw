@@ -7,7 +7,10 @@
 # scratch and a FROM that names an earlier stage alias are not external images.
 # Also rejected:
 #   - a floating ref in a RUN (@latest, @master, @main, @HEAD), e.g. go install
-#   - an ARG whose default is latest, master, main or HEAD
+#   - an ARG whose default is latest, master, main or HEAD, when a later RUN
+#     or ADD uses it as a ref (@$V, :$V, #$V, --branch $V). An ARG such as
+#     BUILD_MODE=main that is never used as a ref is fine.
+#   - RUN heredoc bodies (RUN <<SH ... SH) get the same RUN checks
 #   - a wget or curl download in a RUN that doesn't run sha256sum -c in that
 #     same RUN (shell form or exec form, RUN ["wget", ...])
 #   - ADD of an http(s) URL without --checksum=sha256:...
@@ -150,6 +153,24 @@ unpinned_installs() {
     done <<< "${body//;/$'\n'}"
 }
 
+# $1 is a normalized RUN/ADD body; the rest are NAME=VALUE for ARGs whose
+# default is a floating ref. Prints one reason per ARG used as a ref:
+# @$V / @${V} (go install, git refs), :$V (image or tag), #$V (ADD git#ref),
+# --branch $V / --branch=$V.
+floating_arg_refs() {
+    local body="$1"
+    shift
+    local entry="" name="" val="" re=""
+    for entry in "$@"; do
+        name=${entry%%=*}
+        val=${entry#*=}
+        re="(@|:|#|--branch[=[:space:]]+)[$][{]?${name}([}:]|[^A-Za-z0-9_]|$)"
+        if [[ "$body" =~ $re ]]; then
+            printf 'uses ARG %s, whose default is a floating ref (%s), as a ref\n' "$name" "$val"
+        fi
+    done
+}
+
 cleanup_self_work() {
     if [ -n "${SELF_WORK}" ] && [ -d "${SELF_WORK}" ]; then
         rm -rf -- "${SELF_WORK}"
@@ -158,19 +179,63 @@ cleanup_self_work() {
 trap cleanup_self_work EXIT
 
 # Join backslash continuations so a checksum later in the same RUN is visible.
+# BuildKit heredocs (RUN <<SH ... SH) are folded into their instruction: the
+# body lines of a RUN heredoc are appended as "; line" so the RUN checks see
+# every command in the script, and the bodies of COPY/ADD heredocs (file
+# contents) are dropped so they aren't parsed as instructions. Comment lines
+# inside a RUN heredoc are dropped so "# sha256sum -c" can't count as a check.
 emit_logical_lines() {
     local file="$1"
-    local line="" acc=""
-    while IFS= read -r line || [ -n "$line" ]; do
-        line=${line%$'\r'}
+    local line="" acc="" logical="" word="" body="" dash="" marker_re="" rest=""
+    local i=0 n=0 is_run=0 t=0
+    local -a lines=() terms=() dashes=()
+    marker_re='<<(-?)["'"'"']?([A-Za-z_][A-Za-z0-9_]*)["'"'"']?'
+    mapfile -t lines < "$file"
+    n=${#lines[@]}
+    while [ "$i" -lt "$n" ]; do
+        line=${lines[$i]%$'\r'}
+        i=$((i + 1))
         if [[ "$line" == *\\ ]]; then
             acc+="${line%\\}"
             continue
         fi
-        acc+="$line"
-        printf '%s\n' "$acc"
+        logical="$acc$line"
         acc=""
-    done < "$file"
+        terms=()
+        dashes=()
+        if [[ "$logical" =~ ^[[:space:]]*([Rr][Uu][Nn]|[Cc][Oo][Pp][Yy]|[Aa][Dd][Dd])[[:space:]] ]]; then
+            is_run=0
+            [[ "$logical" =~ ^[[:space:]]*[Rr][Uu][Nn][[:space:]] ]] && is_run=1
+            rest=$logical
+            while [[ "$rest" =~ $marker_re ]]; do
+                dashes+=("${BASH_REMATCH[1]}")
+                terms+=("${BASH_REMATCH[2]}")
+                rest=${rest#*"${BASH_REMATCH[0]}"}
+            done
+        fi
+        if [ "${#terms[@]}" -gt 0 ]; then
+            for t in "${!terms[@]}"; do
+                word=${terms[$t]}
+                dash=${dashes[$t]}
+                while [ "$i" -lt "$n" ]; do
+                    body=${lines[$i]%$'\r'}
+                    i=$((i + 1))
+                    if [ -n "$dash" ]; then
+                        body="${body#"${body%%[!$'\t']*}"}"
+                    fi
+                    [ "$body" = "$word" ] && break
+                    if [ "$is_run" -eq 1 ]; then
+                        body="${body#"${body%%[![:space:]]*}"}"
+                        case "$body" in
+                            ''|'#'*) ;;
+                            *) logical+=" ; ${body%\\}" ;;
+                        esac
+                    fi
+                done
+            done
+        fi
+        printf '%s\n' "$logical"
+    done
     if [ -n "$acc" ]; then
         printf '%s\n' "$acc"
     fi
@@ -213,9 +278,11 @@ check_one() {
     local root="$2"
     local line="" trimmed="" rest="" image="" tok="" stage_name="" lower="" rel="" s=""
     local argval="" body="" raw_body="" from_ref="" reason=""
+    local argname=""
     local i=0 next=0 name_i=0 froms=0 status=0 is_from=0 allowed=0
     local -a tokens=()
     local -a stages=()
+    local -a floating_args=()
 
     rel="${file#"$root"/}"
     if [ ! -r "$file" ]; then
@@ -300,14 +367,15 @@ check_one() {
         fi
 
         if [[ "$trimmed" =~ ^[Aa][Rr][Gg][[:space:]]+([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            argname=${BASH_REMATCH[1]}
             argval=${BASH_REMATCH[2]}
             argval=${argval//\"/}
             argval=${argval//\'/}
             argval=${argval%%[[:space:]]*}
             case "$(printf '%s' "$argval" | tr '[:upper:]' '[:lower:]')" in
                 latest|master|main|head)
-                    echo "FAIL: ${rel} has an ARG defaulting to a floating ref (${argval}): ${trimmed}" >&2
-                    status=1
+                    # Only a problem if it's used as a ref; see floating_arg_refs.
+                    floating_args+=("${argname}=${argval}")
                     ;;
             esac
             continue
@@ -328,12 +396,22 @@ check_one() {
                 echo "FAIL: ${rel} has an unpinned package install (${reason}): ${trimmed}" >&2
                 status=1
             done < <(unpinned_installs "$body")
+            while IFS= read -r reason; do
+                [ -z "$reason" ] && continue
+                echo "FAIL: ${rel} ${reason} in a RUN: ${trimmed}" >&2
+                status=1
+            done < <(floating_arg_refs "$body" "${floating_args[@]}")
             continue
         fi
 
         if [[ "$trimmed" =~ ^[Aa][Dd][Dd][[:space:]]+(.*)$ ]]; then
             raw_body=${BASH_REMATCH[1]}
             body=$(normalize_instruction_body "$raw_body")
+            while IFS= read -r reason; do
+                [ -z "$reason" ] && continue
+                echo "FAIL: ${rel} ${reason} in an ADD: ${trimmed}" >&2
+                status=1
+            done < <(floating_arg_refs "$body" "${floating_args[@]}")
             if [[ " $body " =~ [[:space:]][Hh][Tt][Tt][Pp][Ss]?:// ]] \
                 && [[ ! "$raw_body" =~ --checksum=sha256:[0-9a-fA-F]{64} ]]; then
                 echo "FAIL: ${rel} ADDs a URL without --checksum=sha256:...: ${trimmed}" >&2
@@ -527,8 +605,74 @@ EOF
     reject_case arg-latest "floating ref (latest)" "ARG latest default rejected" \
         'ARG TOOL_VERSION=latest
 RUN go install example.com/tool/cmd/tool@${TOOL_VERSION}'
-    reject_case arg-main-quoted "floating ref (main)" "ARG quoted main default rejected" \
-        'ARG REF="main"'
+    # shellcheck disable=SC2016 # ${REF}/$GIT_REF/$V are Dockerfile text.
+    reject_case arg-main-quoted "floating ref (main)" "ARG quoted main default used as --branch rejected" \
+        'ARG REF="main"
+RUN git clone --branch "${REF}" https://example.invalid/r.git /src'
+    # shellcheck disable=SC2016 # ${REF}/$GIT_REF/$V are Dockerfile text.
+    reject_case arg-head-tag "floating ref (HEAD)" "ARG HEAD default used as #ref in ADD rejected" \
+        'ARG GIT_REF=HEAD
+ADD https://example.invalid/r.git#$GIT_REF /src'
+    # shellcheck disable=SC2016 # ${REF}/$GIT_REF/$V are Dockerfile text.
+    reject_case arg-latest-heredoc "floating ref (latest)" "ARG latest used as @ref in a heredoc rejected" \
+        'ARG V=latest
+RUN <<SH
+set -e
+go install example.com/tool/cmd/tool@$V
+SH'
+    reject_case heredoc-latest "@latest" "go install @latest in a RUN heredoc rejected" \
+        'RUN <<SH
+go install example.com/t@latest
+SH'
+    reject_case heredoc-quoted-dash "@main" "go install @main in a quoted <<- heredoc rejected" \
+        "RUN <<-'EOS'
+	echo building
+	go install example.com/t@main
+	EOS"
+    reject_case heredoc-dash-then-copy "COPY --from an unpinned image (alpine:3.18)" "lines after a <<- heredoc terminator are instructions again" \
+        "RUN <<-EOS
+	echo hi
+	EOS
+COPY --from=alpine:3.18 /etc/ssl /etc/ssl"
+    reject_case heredoc-wget "sha256sum -c" "wget without a checksum in a RUN heredoc rejected" \
+        'RUN <<SH
+wget -q https://example.invalid/tool -O /tmp/tool
+# sha256sum -c is only mentioned in this comment
+chmod +x /tmp/tool
+SH'
+    reject_case heredoc-npm "node package install without an exact version: typescript" "npm install in a RUN heredoc rejected" \
+        'RUN <<SH
+npm install -g typescript
+SH'
+    reject_case heredoc-pip "pip install without ==version: requests" "pip install in a RUN heredoc rejected" \
+        'RUN --mount=type=cache,target=/root/.cache <<SH
+pip install requests
+SH'
+    reject_case heredoc-second "@HEAD" "the second heredoc of one RUN is checked" \
+        'RUN <<A <<B
+echo first
+A
+go install example.com/t@HEAD
+B'
+    reject_case continuation-latest "@latest" "go install @latest on a RUN continuation line rejected" \
+        'RUN echo hi \
+ && go install example.com/t@latest'
+    accept_case heredocs-ok "pinned heredoc RUN, COPY heredoc content and non-ref ARGs accepted" \
+        "ARG BUILD_MODE=main
+ARG CHANNEL=latest
+ARG BRANCH=master
+RUN echo \"mode=\$BUILD_MODE channel=\${CHANNEL}\" && make MODE=\${BUILD_MODE}
+RUN <<SH
+set -e
+go install example.com/tool/cmd/tool@v1.2.3
+wget -q https://example.invalid/tool -O /tmp/tool
+echo \"${pin}  /tmp/tool\" | sha256sum -c -
+SH
+COPY <<EOF /etc/notes.txt
+FROM ubuntu:latest
+RUN go install example.com/t@latest
+EOF
+RUN echo done"
     reject_case ref-master "@master" "go install @master rejected" \
         'RUN go install example.com/tool/cmd/tool@master'
     reject_case ref-main "@main" "go install @main rejected" \
