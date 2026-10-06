@@ -14,8 +14,10 @@
 #                                KERNEL_URL only, so an override requires
 #                                AEGIS_KERNEL_SHA256 or AEGIS_SKIP_KERNEL_CHECKSUM=1.
 #   AEGIS_KERNEL_SHA256          Expected SHA-256 for a custom or private-mirror kernel.
-#   AEGIS_SKIP_KERNEL_CHECKSUM   Set to 1 to install without verifying (air-gapped host
-#                                or private mirror). Prints a loud warning.
+#                                Set this to the on-disk hash to accept an existing
+#                                kernel that differs from the in-repo pin.
+#   AEGIS_SKIP_KERNEL_CHECKSUM   Set to 1 to install or keep a kernel without verifying
+#                                (air-gapped host or private mirror). Prints a loud warning.
 #
 # Re-run after code changes that affect the required kernel features (e.g. adding
 # virtio-rng device support for guest entropy / #62). The downloaded kernel must
@@ -105,13 +107,25 @@ if [ -f "$KERNEL_PATH" ]; then
             warn "Could not compute SHA-256 of the existing kernel; leaving $KERNEL_PATH in place."
             exit 0
         fi
+        # A mismatched existing kernel is not a successful skip. Leave the file
+        # untouched and exit non-zero unless the operator opts in.
         if [ "$actual" != "$expected" ]; then
-            warn "Existing kernel SHA-256 does not match the pinned hash. It may be a deliberately custom kernel; not deleting it."
-            warn "Expected: $expected"
-            warn "Actual:   $actual"
-        else
-            log "Existing kernel SHA-256 matches the pinned hash."
+            if [ "${AEGIS_SKIP_KERNEL_CHECKSUM:-}" = "1" ]; then
+                warn "AEGIS_SKIP_KERNEL_CHECKSUM=1: existing kernel SHA-256 does not match the pinned hash."
+                warn "Expected: $expected"
+                warn "Actual:   $actual"
+                warn "Leaving the file in place (not deleted). SKIPPING SHA-256 verification."
+                exit 0
+            fi
+            echo "Error: existing kernel SHA-256 does not match the pinned hash." >&2
+            echo "Expected: $expected" >&2
+            echo "Actual:   $actual" >&2
+            echo "The file was left in place (not deleted)." >&2
+            echo "To accept a deliberate custom kernel, set AEGIS_KERNEL_SHA256=$actual" >&2
+            echo "or set AEGIS_SKIP_KERNEL_CHECKSUM=1." >&2
+            exit 1
         fi
+        log "Existing kernel SHA-256 matches the pinned hash."
         exit 0
     fi
     warn "Existing kernel at $KERNEL_PATH does not appear to include the virtio_rng driver; re-downloading the required 5.10+ kernel..."

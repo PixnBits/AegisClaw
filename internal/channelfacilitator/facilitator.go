@@ -365,8 +365,15 @@ func (f *Facilitator) updateMemberState(ctx context.Context, chID, role string, 
 	return err
 }
 
+// courtRoleSkipsEnsure reports roles StartCourtSystem already runs.
+// ensure.role for court-persona-* or court-scribe is refused; skipping the
+// send avoids an audit warning on every turn.
+func courtRoleSkipsEnsure(role string) bool {
+	return role == "court-scribe" || strings.HasPrefix(role, "court-persona-")
+}
+
 func (f *Facilitator) ensureRole(ctx context.Context, role, chID string) error {
-	if role == "" || chID == "" {
+	if role == "" || chID == "" || courtRoleSkipsEnsure(role) {
 		return nil
 	}
 	ctx, cancel := rpcTimeout(ctx)

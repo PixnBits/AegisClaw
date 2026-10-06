@@ -10,7 +10,7 @@
 #   - host-daemon.md (lifecycle managed by daemon; reverse proxy on :8080)
 
 # === SPA build stage (generates index.html + hashed assets for cache busting) ===
-FROM node:22-alpine AS spa
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS spa
 
 WORKDIR /app
 COPY web-portal/package.json web-portal/package-lock.json ./web-portal/
@@ -19,7 +19,7 @@ COPY web-portal ./web-portal
 RUN cd web-portal && npm run build
 
 # === Go build stage ===
-FROM golang:1.24-alpine AS builder
+FROM golang:1.24-alpine@sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191 AS builder
 
 ENV GOTOOLCHAIN=auto
 WORKDIR /app
@@ -35,7 +35,8 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /web-portal ./cmd/web-portal
 
 # === Runtime stage ===
-FROM alpine:3.18
+# TODO(#127 follow-up): alpine 3.18 is EOL. When replacing it, bump the tag and the @sha256 digest together.
+FROM alpine:3.18@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f
 
 RUN apk add --no-cache ca-certificates tzdata
 
