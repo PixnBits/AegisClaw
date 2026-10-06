@@ -175,6 +175,58 @@ func TestStoreSecretsUpdateForwardACLDenied(t *testing.T) {
 	assertNoFrame(t, nbConn)
 }
 
+// forwardStoreSecretsUpdate is its own gate: called directly, past the read
+// loop's general ACL check, it refuses a secrets.update the ACL does not grant
+// and network-boundary receives nothing. The ACL is set before the hub starts.
+func TestForwardStoreSecretsUpdateChecksACL(t *testing.T) {
+	t.Setenv("AEGIS_DEV_MODE", "1")
+
+	origRules := aclRules
+	t.Cleanup(func() {
+		aclRules = origRules
+		registeredMutex.Lock()
+		delete(registered, "network-boundary")
+		registeredMutex.Unlock()
+	})
+	aclRules = []ACLRule{{
+		Source:      "store",
+		Destination: "network-boundary",
+		Commands:    []string{"secrets.push"},
+	}}
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nbConn, _, nbDone := registerTestComponent(t, &sync.Map{}, "network-boundary", pub)
+	t.Cleanup(func() {
+		_ = nbConn.Close()
+		waitHandler(t, nbDone)
+	})
+
+	msg := Message{
+		Source:      "store",
+		Destination: "network-boundary",
+		Command:     "secrets.update",
+		Payload:     map[string]interface{}{"ciphertext": "blob-1", "nonce": "n-1"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		Signature:   "dummy",
+	}
+	// net.Pipe writes block until read, so forward in a goroutine and read
+	// network-boundary's side concurrently.
+	forwarded := make(chan bool, 1)
+	go func() { forwarded <- forwardStoreSecretsUpdate(msg) }()
+	assertNoFrame(t, nbConn)
+	select {
+	case ok := <-forwarded:
+		if ok {
+			t.Fatal("forwardStoreSecretsUpdate = true without an ACL grant")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("forwardStoreSecretsUpdate blocked writing to network-boundary without an ACL grant")
+	}
+}
+
 func writeHubMessage(t *testing.T, conn net.Conn, msg Message) {
 	t.Helper()
 	if err := conn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
