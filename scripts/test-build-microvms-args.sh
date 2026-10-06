@@ -8,6 +8,9 @@
 # continue makes the bogus-component case exit 0. This file runs that mutant
 # on a copy of the script and requires the real script to exit non-zero.
 #
+# --print-default-components must print the DEFAULT_COMPONENTS assignment and
+# nothing else. A print path that drops a name fails that comparison.
+#
 # Run: bash scripts/test-build-microvms-args.sh
 
 set -euo pipefail
@@ -176,17 +179,17 @@ assert_out_absent() {
     fi
 }
 
-DEFAULT_COMPONENTS=(
-    agent
-    project-manager
-    web-portal
-    builder
-    store
-    memory
-    network-boundary
-    court-persona
-    court-scribe
-)
+assign_count=$(grep -c '^DEFAULT_COMPONENTS="' "$BUILD_SCRIPT" || true)
+if [ "$assign_count" -ne 1 ]; then
+    fail "expected exactly one DEFAULT_COMPONENTS assignment, found ${assign_count}"
+fi
+assign_raw=$(grep '^DEFAULT_COMPONENTS="' "$BUILD_SCRIPT")
+DEFAULT_LINE=${assign_raw#DEFAULT_COMPONENTS=\"}
+DEFAULT_LINE=${DEFAULT_LINE%\"}
+if [ -z "$DEFAULT_LINE" ]; then
+    fail "DEFAULT_COMPONENTS value is empty"
+fi
+read -r -a DEFAULT_COMPONENTS <<< "$DEFAULT_LINE"
 
 echo "1. default component list is validated and nothing is built"
 run_script AEGIS_DRY_RUN=1 --
@@ -274,5 +277,47 @@ assert_contains "Dockerfile not found, skipping" "mutant did not take the contin
 assert_not_contains "[ERROR]" "mutant still reported a fatal error"
 assert_marker_empty
 assert_out_absent
+
+echo "8. --print-default-components matches the DEFAULT_COMPONENTS line and does no build work"
+run_script -- --print-default-components
+assert_rc 0 "--print-default-components should exit 0"
+if [ "$CAPTURE" != "$DEFAULT_LINE" ]; then
+    printf 'got:  [%s]\nwant: [%s]\n' "$CAPTURE" "$DEFAULT_LINE" >&2
+    fail "--print-default-components does not match the DEFAULT_COMPONENTS line"
+fi
+assert_not_contains "[BUILD]" "print flag continued into the build"
+assert_not_contains "Kernel" "print flag touched kernel ensure"
+assert_not_contains "DRY_RUN" "print flag entered dry-run"
+assert_marker_empty
+assert_out_absent
+
+run_script -- --print-default-components extra
+assert_rc 1 "--print-default-components should reject extra arguments"
+assert_contains "takes no other arguments" "extra arguments were not rejected"
+assert_marker_empty
+assert_out_absent
+
+echo "9. CI keeps the kernel ensure and verifies artifacts from the printed list"
+CI_FILE="$SCRIPT_DIR/../.github/workflows/ci.yml"
+if [ ! -f "$CI_FILE" ]; then
+    fail "missing $CI_FILE"
+fi
+if grep -F -q 'AEGIS_SKIP_KERNEL_ENSURE=1' "$CI_FILE"; then
+    fail "CI sets AEGIS_SKIP_KERNEL_ENSURE=1"
+fi
+ci_needles=(
+    'AEGIS_KERNEL_PATH=/tmp/aegis-kernel/vmlinux'
+    '--print-default-components'
+    'scripts/verify-microvm-artifacts.sh'
+    '--kernel /tmp/aegis-kernel/vmlinux'
+    'docker build -f cmd/aegishub/Dockerfile -t aegis-aegishub:ci .'
+    'bash scripts/test-verify-microvm-artifacts.sh'
+    'scripts/test-verify-microvm-artifacts.sh'
+)
+for needle in "${ci_needles[@]}"; do
+    if ! grep -F -q -- "$needle" "$CI_FILE"; then
+        fail "ci.yml missing: $needle"
+    fi
+done
 
 echo "ok: build-microvms-docker.sh argument and failure guards"

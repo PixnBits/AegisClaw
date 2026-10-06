@@ -9,6 +9,9 @@
 #   (e) an existing virtio_rng kernel and a PATH with neither sha256sum nor
 #       shasum exits non-zero and leaves the file untouched, unless
 #       AEGIS_SKIP_KERNEL_CHECKSUM=1 (exit 0, file still untouched)
+#   (f) a hash tool that exits non-zero, even after printing the expected
+#       digest, is not trusted: an existing kernel is kept and the run fails;
+#       a download is not installed. Unparseable output also fails.
 #
 # Run: bash scripts/test-download-kernel-checksum.sh
 
@@ -422,5 +425,73 @@ assert_contains "$CAPTURE" "SKIPPING SHA-256" "skip flag without a hash tool was
 assert_contains "$CAPTURE" "not deleted" "skip flag without a hash tool did not say the file was kept"
 assert_not_contains "$CAPTURE" "Error:" "skip flag without a hash tool printed a hard error"
 echo "ok: skip flag kept the existing kernel when no hash tool was available"
+
+# (f) The hash tool is present but fails. A broken sha256sum that still
+# prints the expected digest must not be trusted.
+FAILHASHBIN="$WORKDIR/failhash-bin"
+mkdir -p "$FAILHASHBIN"
+cat > "$FAILHASHBIN/sha256sum" << 'EOF'
+#!/bin/bash
+# Prints FAKE_SHA_OUT as the digest, then exits FAKE_SHA_RC.
+printf '%s  %s\n' "${FAKE_SHA_OUT:-}" "${2:-${1:-}}"
+echo "fake sha256sum: forced exit ${FAKE_SHA_RC:-1}" >&2
+exit "${FAKE_SHA_RC:-1}"
+EOF
+chmod 755 "$FAILHASHBIN/sha256sum"
+
+reset_marker
+dest="$WORKDIR/failhash/vmlinux"
+mkdir -p "$(dirname "$dest")"
+cp -- "$WORKDIR/custom-bytes" "$dest"
+cp -- "$dest" "$WORKDIR/failhash-snapshot"
+TEST_PATH="$FAILHASHBIN:$FAKEBIN:/usr/bin:/bin"
+run_capture "$dest" "AEGIS_KERNEL_SHA256=$CUSTOM_SHA" "FAKE_SHA_OUT=$CUSTOM_SHA" "FAKE_SHA_RC=1"
+unset TEST_PATH
+if [ "$CAPTURE_RC" -eq 0 ]; then
+    fail "failing hash tool accepted the existing kernel: $CAPTURE"
+fi
+if ! cmp -s -- "$WORKDIR/failhash-snapshot" "$dest"; then
+    fail "failing hash tool modified the existing kernel"
+fi
+if [ -s "$FAKE_CURL_MARKER" ]; then
+    fail "failing hash tool on the existing kernel triggered a download"
+fi
+assert_contains "$CAPTURE" "could not compute SHA-256 of the existing kernel" "failing hash tool (existing) was not explained"
+assert_contains "$CAPTURE" "not deleted" "failing hash tool (existing) did not say the file was kept"
+echo "ok: failing hash tool rejected the existing kernel and left it in place"
+
+reset_marker
+dest="$WORKDIR/failhash-dl/vmlinux"
+mkdir -p "$(dirname "$dest")"
+FAKE_CURL_SRC="$WORKDIR/good-bytes"
+TEST_PATH="$FAILHASHBIN:$FAKEBIN:/usr/bin:/bin"
+run_capture "$dest" "AEGIS_KERNEL_SHA256=$GOOD_SHA" "FAKE_SHA_OUT=$GOOD_SHA" "FAKE_SHA_RC=1"
+unset TEST_PATH
+FAKE_CURL_SRC=""
+if [ "$CAPTURE_RC" -eq 0 ]; then
+    fail "failing hash tool installed a download: $CAPTURE"
+fi
+if [ -e "$dest" ]; then
+    fail "failing hash tool left a kernel at $dest"
+fi
+if [ ! -s "$FAKE_CURL_MARKER" ]; then
+    fail "failing hash tool case never downloaded (test is not reaching the verify step)"
+fi
+assert_no_temp_leftovers "$WORKDIR/failhash-dl"
+assert_contains "$CAPTURE" "could not compute SHA-256 of the downloaded kernel" "failing hash tool (download) was not explained"
+echo "ok: failing hash tool did not install the downloaded kernel"
+
+reset_marker
+dest="$WORKDIR/garbagehash/vmlinux"
+mkdir -p "$(dirname "$dest")"
+cp -- "$WORKDIR/custom-bytes" "$dest"
+TEST_PATH="$FAILHASHBIN:$FAKEBIN:/usr/bin:/bin"
+run_capture "$dest" "AEGIS_KERNEL_SHA256=$CUSTOM_SHA" "FAKE_SHA_OUT=not-a-digest" "FAKE_SHA_RC=0"
+unset TEST_PATH
+if [ "$CAPTURE_RC" -eq 0 ]; then
+    fail "unparseable hash output was accepted: $CAPTURE"
+fi
+assert_contains "$CAPTURE" "could not parse SHA-256 output" "unparseable hash output was not explained"
+echo "ok: unparseable hash output rejected"
 
 echo "all kernel checksum checks passed"

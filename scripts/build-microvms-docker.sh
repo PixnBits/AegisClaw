@@ -3,12 +3,16 @@
 #
 # Usage:
 #   ./scripts/build-microvms-docker.sh [component ...]
+#   ./scripts/build-microvms-docker.sh --print-default-components
 #   ROOTFS_DIR=/path ./scripts/build-microvms-docker.sh
 #
 # Positional arguments are component names (directory names under cmd/ that
 # contain a Dockerfile). They are NOT an output directory. With no arguments
 # the default guest list is built. Several names may be passed as one
 # space-separated argument or as one argument each.
+#
+# --print-default-components prints DEFAULT_COMPONENTS on stdout and exits 0
+# before rootfs selection, sudo, docker, or the kernel download.
 #
 # Output directory (first match):
 #   ROOTFS_DIR          Explicit directory for <component>.img and the
@@ -20,10 +24,11 @@
 #                       Fallback.
 #
 # AEGIS_SKIP_KERNEL_ENSURE
-#   Set to 1 to skip scripts/download-firecracker-kernel.sh. CI sets this
-#   because the image job must not depend on downloading the guest kernel.
-#   Without the opt-out, a kernel ensure failure exits non-zero. The opt-out
-#   prints a loud warning and continues with image builds only.
+#   Set to 1 to skip scripts/download-firecracker-kernel.sh. The image CI job
+#   does not set this: it runs the pinned-hash download and fails on mismatch.
+#   The opt-out is a deliberate local skip. It prints a loud warning and
+#   continues with image builds only. Without it, a kernel ensure failure
+#   exits non-zero.
 #
 # AEGIS_DRY_RUN
 #   Set to 1 to validate the component list and Dockerfiles, print the image
@@ -237,9 +242,23 @@ determine_rootfs_dir() {
     echo "$user_dir"
 }
 
-# Default guest set. Keep .github/workflows/ci.yml image-builds verify step
-# and scripts/test-build-microvms-args.sh in sync with this list.
+# Default guest set. CI and verify-microvm-artifacts.sh read it via
+# --print-default-components. test-build-microvms-args.sh compares that
+# stdout to this assignment. aegishub is not listed: the host daemon execs
+# ./bin/aegishub (startManagedHub), so it is not a Firecracker guest rootfs.
 DEFAULT_COMPONENTS="agent project-manager web-portal builder store memory network-boundary court-persona court-scribe"
+
+# Print the default guest list and stop. Must run before rootfs selection,
+# sudo, docker, and the kernel download so callers can read the list
+# unprivileged.
+if [ "${1:-}" = "--print-default-components" ]; then
+    if [ "$#" -ne 1 ]; then
+        echo "error: --print-default-components takes no other arguments" >&2
+        exit 1
+    fi
+    printf '%s\n' "$DEFAULT_COMPONENTS"
+    exit 0
+fi
 
 # Positional parameters are component names, not an output directory.
 if [ "$#" -eq 0 ]; then
@@ -262,9 +281,10 @@ echo ""
 # was present. The download script is now idempotent (skips if good driver symbol present).
 # This provides the kernel-side of the ".img guarantee" work on this branch for pre-warm readiness.
 #
-# AEGIS_SKIP_KERNEL_ENSURE=1 skips the download. CI sets it so image builds do
-# not depend on fetching the guest kernel. Any other failure is fatal: a hash
-# mismatch or a failed download must not produce a green build.
+# AEGIS_SKIP_KERNEL_ENSURE=1 skips the download. The image CI job does not set
+# it; it passes AEGIS_KERNEL_PATH to a writable file and treats a hash
+# mismatch or a failed download as fatal. The opt-out is only a deliberate
+# local skip.
 if [ "${AEGIS_SKIP_KERNEL_ENSURE:-}" = "1" ]; then
     warn "AEGIS_SKIP_KERNEL_ENSURE=1: NOT ensuring the Firecracker guest kernel (skipping scripts/download-firecracker-kernel.sh)."
     warn "Image builds will continue. MicroVMs may hang on CRNG init until that download script succeeds."
