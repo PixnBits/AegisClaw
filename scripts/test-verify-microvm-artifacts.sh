@@ -81,8 +81,9 @@ run_verify() {
         fail "run_verify: missing --"
     fi
     set +e
+    # A hung verifier must fail the test instead of blocking.
     CAPTURE=$(
-        env -u AEGIS_KERNEL_PATH -u VERIFY_SKIP_DOCKER \
+        timeout 60 env -u AEGIS_KERNEL_PATH -u VERIFY_SKIP_DOCKER \
             "${env_args[@]}" \
             /usr/bin/bash "$VERIFY" "${args[@]}" 2>&1
     )
@@ -192,6 +193,10 @@ assert_contains "kernel: ${ROOT}/no-such-vmlinux is missing or empty" "missing k
 run_verify VERIFY_SKIP_DOCKER=1 -- --kernel "$ROOT/empty-vmlinux" "$ROOT" good
 assert_rc 1 "empty kernel should fail"
 assert_contains "kernel: ${ROOT}/empty-vmlinux is missing or empty" "empty kernel was not reported"
+ln -s /dev/zero "$ROOT/zero-vmlinux"
+run_verify VERIFY_SKIP_DOCKER=1 -- --kernel "$ROOT/zero-vmlinux" "$ROOT" good
+assert_rc 1 "a non-regular kernel file should fail"
+assert_contains "kernel: ${ROOT}/zero-vmlinux is missing or empty" "a character device kernel was not rejected"
 printf 'virtio_rng\n' > "$ROOT/vmlinux"
 VMLINUX_SHA=$(sha256sum "$ROOT/vmlinux" | cut -d' ' -f1)
 run_verify VERIFY_SKIP_DOCKER=1 AEGIS_KERNEL_SHA256="$VMLINUX_SHA" -- --kernel "$ROOT/vmlinux" "$ROOT" good
@@ -223,6 +228,10 @@ assert_rc 0 "AEGIS_SKIP_KERNEL_CHECKSUM=1 should skip the hash"
 assert_contains "WARN: kernel: AEGIS_SKIP_KERNEL_CHECKSUM=1" "skipping the hash was not loud"
 run_verify VERIFY_SKIP_DOCKER=1 AEGIS_SKIP_KERNEL_CHECKSUM=1 -- --kernel "$ROOT/empty-vmlinux" "$ROOT" good
 assert_rc 1 "the skip flag must not skip the non-empty check"
+run_verify VERIFY_SKIP_DOCKER=1 AEGIS_SKIP_KERNEL_CHECKSUM=yes -- --kernel "$ROOT/vmlinux" "$ROOT" good
+assert_rc 1 "only AEGIS_SKIP_KERNEL_CHECKSUM=1 skips the hash"
+assert_contains "does not match the pin" "a non-1 skip value skipped the pin check"
+assert_not_contains "WARN: kernel: AEGIS_SKIP_KERNEL_CHECKSUM" "a non-1 skip value warned as if it skipped"
 
 echo "10. file(1) fallback accepts a journaled ext4 image when blkid is absent"
 run_verify VERIFY_SKIP_DOCKER=1 PATH="/usr/bin:/bin" -- "$ROOT" fallback

@@ -22,10 +22,12 @@
 #   - COPY --from=<image> that is neither an earlier stage, a stage index, nor
 #     digest-pinned
 #   - npm/yarn/pnpm package installs without an exact version, and pip
-#     installs without ==version (pip -r needs --require-hashes)
-#   - a bare npm/yarn/pnpm install (no package names) unless an earlier COPY
-#     or ADD in the same Dockerfile brings in a lockfile (package-lock.json,
-#     npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml); npm ci is preferred
+#     installs without ==version (pip -r/-c needs --require-hashes)
+#   - a bare npm/yarn/pnpm install (no package names) unless a lockfile
+#     (package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml)
+#     was copied earlier in the same stage (a COPY/ADD source, including a
+#     glob or the whole build context) or bind-mounted into that RUN;
+#     npm ci is preferred
 #   - a bare pip install (nothing, or only a local project/wheel) without
 #     -r/-c or --no-deps, since its dependencies resolve unpinned
 #
@@ -73,46 +75,73 @@ unquoted_body() {
 }
 
 # Prints one reason per unpinned npm/yarn/pnpm or pip install in a normalized
-# RUN body. Commands are split on && || ; |. $2 is 1 when an earlier COPY/ADD
-# in this Dockerfile brought in a node lockfile.
+# RUN body. Commands are split on && || ; |. $2 is 1 when this RUN has a node
+# lockfile: copied earlier in the same stage, or bind-mounted into this RUN.
 unpinned_installs() {
     local body="$1"
     local node_lock="${2:-0}"
     local seg="" t="" mgr="" tool="" pkg="" name="" ver="" skip_next=0 req_file=0 req_hashes=0
-    local pkgs=0 no_deps=0
-    local i=0
+    local pkgs=0 no_deps=0 flag=""
+    local i=0 j=0
     local -a toks=()
+    # Quotes and backslashes hide the verb (npm 'install', n\pm).
+    body=${body//\'/}
+    body=${body//\\/}
     body=${body//&&/;}
     body=${body//||/;}
     body=${body//|/;}
     while IFS= read -r seg; do
         read -r -a toks <<< "$seg"
         mgr=""
+        tool=""
         i=0
         while [ "$i" -lt "${#toks[@]}" ]; do
             t=${toks[$i]}
-            if { [ "$t" = "npm" ] || [ "$t" = "pnpm" ] || [ "$t" = "yarn" ]; } \
-                && [ $((i + 1)) -lt "${#toks[@]}" ]; then
-                case "${toks[$((i + 1))]}" in
-                    install|i|add|in|ins)
-                        mgr=node
-                        tool=$t
-                        i=$((i + 2))
-                        break
-                        ;;
-                esac
-            fi
-            # Plain "yarn" (optionally with --flags) is "yarn install".
-            if [ "$t" = "yarn" ] && { [ $((i + 1)) -ge "${#toks[@]}" ] || [[ "${toks[$((i + 1))]}" == -* ]]; }; then
-                mgr=node
-                tool=yarn
-                i=$((i + 1))
-                break
-            fi
-            if { [ "$t" = "pip" ] || [ "$t" = "pip3" ]; } \
-                && [ $((i + 1)) -lt "${#toks[@]}" ] && [ "${toks[$((i + 1))]}" = "install" ]; then
+            tool=${t##*/}
+            if [ "$tool" = "npm" ] || [ "$tool" = "pnpm" ] || [ "$tool" = "yarn" ]; then
+                # Skip global flags between the tool and the verb. A flag that
+                # takes a value consumes the next token; --flag=value is one.
+                j=$((i + 1))
+                while [ "$j" -lt "${#toks[@]}" ]; do
+                    flag=${toks[$j]}
+                    case "$flag" in
+                        --prefix|--registry|--cache|-C|--dir|--cwd|--filter|--workspace|-w)
+                            j=$((j + 2))
+                            continue
+                            ;;
+                    esac
+                    if [[ "$flag" == -* ]]; then
+                        j=$((j + 1))
+                        continue
+                    fi
+                    break
+                done
+                # yarn global add is an install. Bare yarn is yarn plus flags only.
+                if [ "$tool" = "yarn" ] && [ "$j" -lt "${#toks[@]}" ] \
+                    && [ "${toks[$j]}" = "global" ] \
+                    && [ $((j + 1)) -lt "${#toks[@]}" ] \
+                    && [ "${toks[$((j + 1))]}" = "add" ]; then
+                    mgr=node
+                    i=$((j + 2))
+                    break
+                fi
+                if [ "$j" -lt "${#toks[@]}" ]; then
+                    case "${toks[$j]}" in
+                        install|i|in|ins|inst|insta|instal|isnt|isntal|isntall|add)
+                            mgr=node
+                            i=$((j + 1))
+                            break
+                            ;;
+                    esac
+                elif [ "$tool" = "yarn" ]; then
+                    mgr=node
+                    i=$j
+                    break
+                fi
+            elif [[ "$tool" =~ ^pip[0-9.]*$ ]] \
+                && [ $((i + 1)) -lt "${#toks[@]}" ] \
+                && [ "${toks[$((i + 1))]}" = "install" ]; then
                 mgr=pip
-                tool=$t
                 i=$((i + 2))
                 break
             fi
@@ -153,7 +182,7 @@ unpinned_installs() {
                 esac
             else
                 case "$t" in
-                    --prefix|--registry|--cache|-C|--dir)
+                    --prefix|--registry|--cache|-C|--dir|--cwd|--filter|--workspace|-w)
                         skip_next=1
                         continue
                         ;;
@@ -192,24 +221,78 @@ unpinned_installs() {
             printf 'bare %s install without a lockfile (COPY package-lock.json first and use npm ci)\n' "$tool"
         fi
         if [ "$pkgs" -eq 0 ] && [ "$mgr" = pip ] && [ "$req_file" -eq 0 ] && [ "$no_deps" -eq 0 ]; then
-            printf 'bare pip install without a lockfile (use -r with --require-hashes, -c constraints, or --no-deps)\n'
+            printf 'bare pip install without a lockfile (use -r/-c with --require-hashes, or --no-deps)\n'
         fi
     done <<< "${body//;/$'\n'}"
 }
 
-# True when a COPY or ADD line names a node lockfile as a source.
+# True when a COPY or ADD source is a node lockfile, a glob that matches one
+# (package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml), or the
+# whole build context (exactly "." or "./"). The destination is not counted.
 has_node_lockfile() {
-    local line="$1" t=""
+    local line="$1" t="" base="" name=""
     local -a toks=()
+    local -a names=(package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml)
     [[ "$line" =~ ^([Cc][Oo][Pp][Yy]|[Aa][Dd][Dd])[[:space:]] ]] || return 1
     line=$(normalize_instruction_body "${line#* }")
     read -r -a toks <<< "$line"
+    # The last token is the destination when COPY/ADD has somewhere to put it.
+    if [ "${#toks[@]}" -ge 2 ]; then
+        toks=("${toks[@]:0:${#toks[@]}-1}")
+    fi
     for t in "${toks[@]}"; do
-        case "${t##*/}" in
-            package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml)
+        if [ "$t" = "." ] || [ "$t" = "./" ]; then
+            return 0
+        fi
+        base=${t##*/}
+        [ -z "$base" ] && continue
+        for name in "${names[@]}"; do
+            # shellcheck disable=SC2053 # source basename is a glob on purpose
+            if [[ "$name" == $base ]]; then
                 return 0
-                ;;
-        esac
+            fi
+        done
+    done
+    return 1
+}
+
+# 0 when a leading --mount on this raw RUN bind-mounts a node lockfile.
+# type=bind, or no type= key (bind is the default), counts. The basename of
+# source=, src=, target=, dst=, or destination= must be a lockfile name.
+# Cache, secret, and tmpfs mounts do not. Callers must not keep the result
+# for a later instruction.
+run_mounts_node_lockfile() {
+    local body="$1" t="" mount="" part="" key="" val="" base="" typ=""
+    local hit_name=0
+    local -a toks=() parts=()
+    read -r -a toks <<< "$body"
+    for t in "${toks[@]}"; do
+        [[ "$t" == --* ]] || break
+        [[ "$t" == --mount=* ]] || continue
+        mount=${t#--mount=}
+        typ=""
+        hit_name=0
+        IFS=',' read -r -a parts <<< "$mount"
+        for part in "${parts[@]}"; do
+            key=${part%%=*}
+            val=${part#*=}
+            case "$key" in
+                type)
+                    typ=$val
+                    ;;
+                source|src|target|dst|destination)
+                    base=${val##*/}
+                    case "$base" in
+                        package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml)
+                            hit_name=1
+                            ;;
+                    esac
+                    ;;
+            esac
+        done
+        if [ "$hit_name" -eq 1 ] && { [ -z "$typ" ] || [ "$typ" = "bind" ]; }; then
+            return 0
+        fi
     done
     return 1
 }
@@ -469,7 +552,7 @@ check_one() {
     local line="" trimmed="" rest="" image="" tok="" stage_name="" lower="" rel="" s=""
     local argval="" body="" raw_body="" from_ref="" reason=""
     local argname="" entry=""
-    local i=0 next=0 name_i=0 froms=0 status=0 is_from=0 allowed=0 node_lock=0
+    local i=0 next=0 name_i=0 froms=0 status=0 is_from=0 allowed=0 node_lock=0 eff_lock=0
     local -a tokens=()
     local -a stages=()
     local -a floating_args=() kept=()
@@ -504,6 +587,8 @@ check_one() {
         fi
 
         if [ "$is_from" -eq 1 ]; then
+            # A lockfile copied in an earlier stage does not apply here.
+            node_lock=0
             tokens=()
             if [ -n "$rest" ]; then
                 read -r -a tokens <<< "$rest"
@@ -593,11 +678,16 @@ check_one() {
                 echo "FAIL: ${rel} downloads with wget or curl but the RUN does not run sha256sum -c: ${trimmed}" >&2
                 status=1
             fi
+            # A bind-mounted lockfile counts for this RUN only, not later ones.
+            eff_lock=$node_lock
+            if [ "$eff_lock" -eq 0 ] && run_mounts_node_lockfile "$raw_body"; then
+                eff_lock=1
+            fi
             while IFS= read -r reason; do
                 [ -z "$reason" ] && continue
                 echo "FAIL: ${rel} has an unpinned package install (${reason}): ${trimmed}" >&2
                 status=1
-            done < <(unpinned_installs "$body" "$node_lock")
+            done < <(unpinned_installs "$body" "$eff_lock")
             while IFS= read -r reason; do
                 [ -z "$reason" ] && continue
                 echo "FAIL: ${rel} ${reason} in a RUN: ${trimmed}" >&2
@@ -1106,19 +1196,73 @@ RUN npm install'
         'RUN yarn --frozen-lockfile'
     reject_case pnpm-bare "bare pnpm install without a lockfile" "bare pnpm install rejected" \
         'RUN pnpm install'
-    reject_case pip-bare-local "bare pip install without a lockfile" "pip install . rejected" \
+    reject_case pip-bare-local "use -r/-c with --require-hashes, or --no-deps" "pip install . rejected" \
         'RUN pip install .'
     reject_case pip-bare-editable "bare pip install without a lockfile" "pip install -e ./app rejected" \
         'RUN python3 -m pip install --no-cache-dir -e ./app'
     reject_case pip-bare-wheel "bare pip install without a lockfile" "pip install of a local wheel rejected" \
         'RUN pip3 install /tmp/tool-1.0-py3-none-any.whl'
-    accept_case node-lockfiles "bare installs after a lockfile COPY accepted" \
+    reject_case lockfile-other-stage "bare npm install without a lockfile" "lockfile copied in an earlier stage does not count" \
+        "COPY package-lock.json ./
+FROM alpine:3.18@sha256:${pin}
+COPY package.json ./
+RUN npm install"
+    reject_case lockfile-dest-only "bare npm install without a lockfile" "lockfile name only as a COPY destination does not count" \
+        'COPY lock.json /app/package-lock.json
+RUN npm install'
+    reject_case lockfile-bind-scoped "bare npm install without a lockfile" "a bind-mounted lockfile counts only for that RUN" \
+        'RUN --mount=type=bind,source=package-lock.json,target=package-lock.json true
+RUN npm install'
+    reject_case lockfile-cache-mount "bare npm install without a lockfile" "a cache mount is not a lockfile" \
+        'RUN --mount=type=cache,target=/root/.npm/package-lock.json npm install'
+    reject_case npm-prefix-bare "bare npm install without a lockfile" "npm --prefix install without a lockfile rejected" \
+        'RUN npm --prefix /app install'
+    reject_case npm-inst-bare "bare npm install without a lockfile" "npm inst without a lockfile rejected" \
+        'RUN npm inst'
+    reject_case yarn-global-unpinned "node package install without an exact version: esbuild" "yarn global add unpinned rejected" \
+        'RUN yarn global add esbuild'
+    reject_case npm-quoted-verb "bare npm install without a lockfile" "quoted npm install verb rejected" \
+        "RUN npm 'install'"
+    reject_case npm-escaped "bare npm install without a lockfile" "backslash inside the npm command rejected" \
+        'RUN n\pm install'
+    reject_case npm-path "bare npm install without a lockfile" "npm install by path rejected" \
+        'RUN /usr/local/bin/npm install'
+    reject_case pip-versioned-bare "bare pip install without a lockfile" "versioned pip install . rejected" \
+        'RUN pip3.11 install .'
+    reject_case pip-venv-bare "bare pip install without a lockfile" "pip install . by path rejected" \
+        'RUN /opt/venv/bin/pip install .'
+    reject_case pip-constraint-only "pip install -r/-c without --require-hashes" "pip -c without hashes rejected" \
+        'RUN pip install -c constraints.txt .'
+    accept_case lockfile-npm "bare npm install after a lockfile COPY accepted" \
         'COPY package.json package-lock.json ./
-RUN npm install
-COPY --chown=node:node yarn.lock ./
-RUN yarn install --frozen-lockfile
-ADD pnpm-lock.yaml /app/
-RUN ["pnpm", "install"]
+RUN npm install'
+    accept_case lockfile-shrinkwrap "bare npm install after npm-shrinkwrap.json accepted" \
+        'COPY npm-shrinkwrap.json ./
+RUN npm install'
+    accept_case lockfile-yarn "bare yarn install after a lockfile COPY accepted" \
+        'COPY --chown=node:node yarn.lock ./
+RUN yarn install --frozen-lockfile'
+    accept_case lockfile-pnpm "bare pnpm install after a lockfile COPY accepted" \
+        'COPY pnpm-lock.yaml ./
+RUN pnpm i'
+    accept_case lockfile-add "bare npm install after a lockfile ADD accepted" \
+        'ADD package-lock.json /app/
+RUN ["npm", "install"]'
+    accept_case lockfile-glob "bare npm install after a lockfile glob COPY accepted" \
+        'COPY package*.json ./
+RUN npm install'
+    accept_case lockfile-context "bare npm install after copying the build context accepted" \
+        'COPY . .
+RUN npm install'
+    accept_case lockfile-bind "bare npm install with a bind-mounted lockfile accepted" \
+        'RUN --mount=type=bind,source=package.json,target=package.json --mount=type=bind,source=package-lock.json,target=package-lock.json --mount=type=cache,target=/root/.npm npm install'
+    accept_case lockfile-same-stage "lockfile copied in the same stage accepted" \
+        "FROM alpine:3.18@sha256:${pin}
+COPY package-lock.json ./
+RUN npm install"
+    accept_case node-no-install-nolock "non-install node commands accepted without a lockfile" \
+        'RUN yarn build && yarn run test && npm run build && pnpm exec tsc --version
+RUN npm install -g typescript@5.6.3
 RUN npm ci'
     reject_case copy-from-image "COPY --from an unpinned image (alpine:3.18)" "COPY --from tag-only image rejected" \
         'COPY --from=alpine:3.18 /etc/ssl /etc/ssl'
