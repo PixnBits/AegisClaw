@@ -437,7 +437,7 @@ func TestRepoACLStoreToRoleSnapshotAndLLMDenied(t *testing.T) {
 // store -> network-boundary does not allow llm.usage.recorded: the record is a
 // one-way hub push and Store does not reply. Neither rule may contain an
 // llm wildcard (a pattern starting with "llm." and ending with "*").
-// Portal reads (web-portal and daemon-internal* -> store) allow llm.usage.summary
+// Portal reads (web-portal and daemon-internal -> store) allow llm.usage.summary
 // and llm.usage.recent only. llm.usage.record is denied at the ACL for those
 // sources. Replies ride the existing store -> portal "*" rules.
 // Any parsed rule whose source or destination is store fails if a command
@@ -1050,124 +1050,6 @@ func TestParseCIDKeyEncoding(t *testing.T) {
 	}
 }
 
-func TestTenantForGitVsockCIDLease(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-
-	pubA, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubB, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubAStr := base64.StdEncoding.EncodeToString(pubA)
-	pubBStr := base64.StdEncoding.EncodeToString(pubB)
-	dir := t.TempDir()
-	identPath := filepath.Join(dir, "git-identities.json")
-	cidPath := filepath.Join(dir, "cid-keys.json")
-	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a", pubBStr: "tenant-b"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	const cid uint32 = 42
-	cidJSON, err := json.Marshal(map[string]string{
-		"42":    pubAStr,
-		"cid-3": pubAStr, // must be ignored — only decimal uint32 keys
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cidPath, cidJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
-	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
-
-	addr := &vsock.Addr{ContextID: cid, Port: 9999}
-
-	got, err := tenantForGit(pubAStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("miss without handshake must not ingest file: tenant=%q err=%v", got, err)
-	}
-	if !hublease.StoreLeaseIfAbsentOrSame(cid, pubAStr) {
-		t.Fatal("verified handshake CAS fill")
-	}
-	got, err = tenantForGit(pubAStr, addr)
-	if err != nil || got != "tenant-a" {
-		t.Fatalf("after handshake CAS fill: tenant=%q err=%v, want tenant-a", got, err)
-	}
-
-	got, err = tenantForGit(pubBStr, addr)
-	if err == nil || got != "" || err.Error() != "ERR_UNKNOWN_PEER" {
-		t.Fatalf("CID leased to A + B's key: tenant=%q err=%v, want ERR_UNKNOWN_PEER", got, err)
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
-		t.Fatalf("CID key mismatch must not be tenancy needle: %v", err)
-	}
-
-	got, err = tenantForGit(pubAStr, &vsock.Addr{ContextID: 3, Port: 9999})
-	if err == nil || got != "" {
-		t.Fatalf("cid-3 file key must not lease CID 3: tenant=%q err=%v", got, err)
-	}
-
-	got, err = tenantForGit(pubAStr, &vsock.Addr{ContextID: 99, Port: 9999})
-	if err == nil || got != "" {
-		t.Fatalf("unleased CID must not use roster: tenant=%q err=%v", got, err)
-	}
-
-	t.Setenv("AEGIS_GIT_IDENTITIES", filepath.Join(dir, "missing-identities.json"))
-	got, err = tenantForGit(pubAStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("identities[pub] miss must not Serve: tenant=%q err=%v", got, err)
-	}
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "not your tenant") {
-		t.Fatalf("identity miss must not be tenancy needle: %v", err)
-	}
-	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
-
-	left, err := os.ReadFile(cidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(left), pubAStr) {
-		t.Fatalf("file must still contain leftover CID row for A: %s", left)
-	}
-	got, err = tenantForGit(pubAStr, addr)
-	if err != nil || got != "tenant-a" {
-		t.Fatalf("after helper close, same CID+A must still be tenant-a (handshake fill): tenant=%q err=%v", got, err)
-	}
-
-	daemonUnleaseCID(cid, pubAStr)
-	got, err = tenantForGit(pubAStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("after daemonUnleaseCID, leftover file same pub must deny: tenant=%q err=%v", got, err)
-	}
-
-	over, err := json.Marshal(map[string]string{"42": pubBStr})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cidPath, over, 0600); err != nil {
-		t.Fatal(err)
-	}
-	got, err = tenantForGit(pubBStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("overwrite leftover with new pub must stay miss (no file ingest): tenant=%q err=%v", got, err)
-	}
-
-	if !unixGitAllowed() {
-		unixAddr := &net.UnixAddr{Name: "hub.sock", Net: "unix"}
-		got, err = tenantForGit(pubAStr, unixAddr)
-		if err == nil || got != "" {
-			t.Fatalf("unix git deny must not skip CID: tenant=%q err=%v", got, err)
-		}
-	}
-}
 func TestGitConnectUnixDeniedInProduction(t *testing.T) {
 	if unixGitAllowed() {
 		t.Skip("unix git allowed under -tags testunixgit")
@@ -1194,43 +1076,6 @@ func TestGitConnectUnixDeniedInProduction(t *testing.T) {
 	if strings.Contains(low, "deny store git socket") {
 		t.Fatalf("unix git-connect must not reach Store: %q", got)
 	}
-}
-
-func gitConnectVsock(t *testing.T, addr net.Addr, priv ed25519.PrivateKey, pub, url string) string {
-	t.Helper()
-	hub, client := net.Pipe()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		handleConnection(&remoteAddrConn{Conn: hub, remote: addr}, &sync.Map{})
-	}()
-	reg := signGitRegister(priv, map[string]string{
-		"public_key": pub,
-		"version":    "git-remote-hub",
-	})
-	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
-	if err := json.NewEncoder(client).Encode(reg); err != nil {
-		t.Fatal(err)
-	}
-	br := bufio.NewReader(client)
-	reply, err := br.ReadString('\n')
-	out := reply
-	if err != nil {
-		out += err.Error()
-	}
-	_, _ = fmt.Fprintf(client, "git-connect git-upload-pack %s\n", url)
-	line, err2 := br.ReadString('\n')
-	out += line
-	if err2 != nil {
-		out += err2.Error()
-	}
-	_ = client.Close()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("git-connect handleConnection did not return")
-	}
-	return out
 }
 
 func gitConnectServed(got string) bool {
@@ -1277,84 +1122,6 @@ func startVMVsockSession(t *testing.T, addr net.Addr, priv ed25519.PrivateKey, p
 	}
 	_ = client.SetDeadline(time.Time{})
 	return client, done
-}
-
-func TestVMSessionCIDLease(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-
-	pubA, privA, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubB, privB, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubAStr := base64.StdEncoding.EncodeToString(pubA)
-	pubBStr := base64.StdEncoding.EncodeToString(pubB)
-	dir := t.TempDir()
-	identPath := filepath.Join(dir, "git-identities.json")
-	cidPath := filepath.Join(dir, "cid-keys.json")
-	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a", pubBStr: "tenant-b"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	cidJSON, err := json.Marshal(map[string]string{"42": pubAStr})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cidPath, cidJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
-	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
-
-	addr := &vsock.Addr{ContextID: 42, Port: 9999}
-	vmClient, vmDone := startVMVsockSession(t, addr, privA, pubAStr)
-
-	gotA := gitConnectVsock(t, addr, privA, pubAStr, "hub::vsock/tenant-a/skill")
-	if !gitConnectServed(gotA) {
-		t.Fatalf("VM session CID→A; git-connect A want Serve, got %q", gotA)
-	}
-	gotB := gitConnectVsock(t, addr, privB, pubBStr, "hub::vsock/tenant-b/skill")
-	if gitConnectServed(gotB) || !strings.Contains(gotB, "ERR_UNKNOWN_PEER") {
-		t.Fatalf("git-connect B on CID leased to A want ERR_UNKNOWN_PEER, got %q", gotB)
-	}
-	if strings.Contains(strings.ToLower(gotB), "not your tenant") {
-		t.Fatalf("CID mismatch must not be tenancy needle: %q", gotB)
-	}
-
-	gotA2 := gitConnectVsock(t, addr, privA, pubAStr, "hub::vsock/tenant-a/skill")
-	if !gitConnectServed(gotA2) {
-		t.Fatalf("git-connect close must not unlease; second git-connect A got %q", gotA2)
-	}
-
-	_ = vmClient.Close()
-	select {
-	case <-vmDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("VM session handleConnection did not return")
-	}
-	left, err := os.ReadFile(cidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(left), pubAStr) {
-		t.Fatalf("leftover file must still contain same pub: %s", left)
-	}
-	got, err := tenantForGit(pubAStr, addr)
-	if err != nil || got != "tenant-a" {
-		t.Fatalf("after VM hub session close (no daemonUnlease), same CID+A still tenant-a: tenant=%q err=%v", got, err)
-	}
-	daemonUnleaseCID(42, pubAStr)
-	got, err = tenantForGit(pubAStr, addr)
-	if err == nil || got != "" {
-		t.Fatalf("after daemonUnleaseCID, leftover file same pub must deny: tenant=%q err=%v", got, err)
-	}
 }
 
 func TestDaemonMayUnleaseCID(t *testing.T) {
@@ -1529,75 +1296,6 @@ func TestCIDUnleaseDaemonRPCDeletesFileRow(t *testing.T) {
 	}
 }
 
-func TestGuestVsockRegisterDoesNotStoreOrUnpoison(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	t.Setenv("AEGIS_DEV_MODE", "1")
-
-	pubA, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubAStr := base64.StdEncoding.EncodeToString(pubA)
-	addr := &vsock.Addr{ContextID: 42, Port: 9999}
-
-	client, done := startVMVsockSession(t, addr, nil, pubAStr)
-	if _, ok := hublease.LoadLease(42); ok {
-		t.Fatal("guest vsock register must not Store a CID lease")
-	}
-	_ = client.Close()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("VM session handleConnection did not return")
-	}
-
-	hublease.StoreLease(42, pubAStr)
-	if !hublease.UnleaseCID(42, pubAStr) {
-		t.Fatal("setup unlease")
-	}
-	client, done = startVMVsockSession(t, addr, nil, pubAStr)
-	if _, ok := hublease.LoadLease(42); ok {
-		t.Fatal("unsigned guest vsock register must not fill the empty CID after unlease")
-	}
-	_ = client.Close()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("VM session handleConnection did not return")
-	}
-}
-
-func TestHandshakeConfirmMismatchDoesNotOverwrite(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	t.Setenv("AEGIS_DEV_MODE", "1")
-
-	pubA, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubB, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubAStr := base64.StdEncoding.EncodeToString(pubA)
-	pubBStr := base64.StdEncoding.EncodeToString(pubB)
-	hublease.StoreLease(42, pubAStr)
-	addr := &vsock.Addr{ContextID: 42, Port: 9999}
-	client, done := startVMVsockSession(t, addr, nil, pubBStr)
-	leased, ok := hublease.LoadLease(42)
-	if !ok || leased != pubAStr {
-		t.Fatalf("handshake mismatch must not overwrite lease: leased=%q ok=%v", leased, ok)
-	}
-	_ = client.Close()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("VM session handleConnection did not return")
-	}
-}
-
 func TestCIDLeaseDaemonOnlyAndCAS(t *testing.T) {
 	resetCIDLeases()
 	t.Cleanup(resetCIDLeases)
@@ -1691,40 +1389,6 @@ func TestReloadOnMissIngestsLiveFileRow(t *testing.T) {
 	}
 }
 
-func TestHandshakeDoesNotIngestFileRow(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	t.Setenv("AEGIS_DEV_MODE", "1")
-
-	pubA, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubAStr := base64.StdEncoding.EncodeToString(pubA)
-	dir := t.TempDir()
-	cidPath := filepath.Join(dir, "cid-keys.json")
-	cidJSON, err := json.Marshal(map[string]string{"42": pubAStr})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cidPath, cidJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_CID_KEYS", cidPath)
-
-	addr := &vsock.Addr{ContextID: 42, Port: 9999}
-	client, done := startVMVsockSession(t, addr, nil, pubAStr)
-	if _, ok := hublease.LoadLease(42); ok {
-		t.Fatal("handshake confirm must not Store/ingest even when the file has a live row")
-	}
-	_ = client.Close()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("VM session handleConnection did not return")
-	}
-}
-
 func signGuestRegister(priv ed25519.PrivateKey, pub string) Message {
 	msg := Message{
 		Source:      "guest-vm",
@@ -1811,66 +1475,6 @@ func TestUnrosteredVsockRegisterDoesNotStore(t *testing.T) {
 	}
 }
 
-func TestVerifiedRosteredHandshakeCASFills(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubStr := base64.StdEncoding.EncodeToString(pub)
-	dir := t.TempDir()
-	identPath := filepath.Join(dir, "git-identities.json")
-	identJSON, err := json.Marshal(map[string]string{pubStr: "tenant-a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
-	const cid uint32 = 42
-	addr := &vsock.Addr{ContextID: cid, Port: 9999}
-	guestVsockHandshake(t, addr, signGuestRegister(priv, pubStr))
-	got, ok := hublease.LoadLease(cid)
-	if !ok || got != pubStr {
-		t.Fatalf("verified rostered handshake CAS fill: got %q ok=%v", got, ok)
-	}
-}
-
-func TestSecondGuestDifferentPubDoesNotOverwrite(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	pubA, privA, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubB, privB, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubAStr := base64.StdEncoding.EncodeToString(pubA)
-	pubBStr := base64.StdEncoding.EncodeToString(pubB)
-	dir := t.TempDir()
-	identPath := filepath.Join(dir, "git-identities.json")
-	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a", pubBStr: "tenant-b"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
-	const cid uint32 = 42
-	addr := &vsock.Addr{ContextID: cid, Port: 9999}
-	guestVsockHandshake(t, addr, signGuestRegister(privA, pubAStr))
-	guestVsockHandshake(t, addr, signGuestRegister(privB, pubBStr))
-	got, ok := hublease.LoadLease(cid)
-	if !ok || got != pubAStr {
-		t.Fatalf("second guest different pub must not overwrite: got %q ok=%v", got, ok)
-	}
-}
-
 func TestHandshakeAfterStopVMDoesNotClearClosed(t *testing.T) {
 	resetCIDLeases()
 	t.Cleanup(resetCIDLeases)
@@ -1902,45 +1506,6 @@ func TestHandshakeAfterStopVMDoesNotClearClosed(t *testing.T) {
 	closed, ok := hublease.ClosedPub(cid)
 	if !ok || closed != pubStr {
 		t.Fatalf("after StopVM poison, handshake must not ClearClosed: closed=%q ok=%v", closed, ok)
-	}
-}
-
-func TestHandshakeAfterStopVMDifferentPubClearsClosed(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	pubA, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubB, privB, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubAStr := base64.StdEncoding.EncodeToString(pubA)
-	pubBStr := base64.StdEncoding.EncodeToString(pubB)
-	dir := t.TempDir()
-	identPath := filepath.Join(dir, "git-identities.json")
-	identJSON, err := json.Marshal(map[string]string{pubAStr: "tenant-a", pubBStr: "tenant-b"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
-	const cid uint32 = 42
-	hublease.StoreLease(cid, pubAStr)
-	if !hublease.UnleaseCID(cid, pubAStr) {
-		t.Fatal("StopVM poison")
-	}
-	addr := &vsock.Addr{ContextID: cid, Port: 9999}
-	guestVsockHandshake(t, addr, signGuestRegister(privB, pubBStr))
-	got, ok := hublease.LoadLease(cid)
-	if !ok || got != pubBStr {
-		t.Fatalf("different pub may fill after StopVM: got %q ok=%v", got, ok)
-	}
-	if closed, ok := hublease.ClosedPub(cid); ok {
-		t.Fatalf("different pub fill must ClearClosed, still %q", closed)
 	}
 }
 
@@ -2101,7 +1666,7 @@ func registerTestComponent(t *testing.T, conns *sync.Map, id string, pub ed25519
 // TestRepoACLStoreSecurityStats pins store.security_stats (#154) to the
 // daemon's internal clients: exact command, no wildcard. The portal, guests,
 // network-boundary and Court personas are denied. The reply rides the
-// existing store -> daemon-internal* "*" rule.
+// existing store -> daemon-internal "*" rule.
 func TestRepoACLStoreSecurityStats(t *testing.T) {
 	origRules := aclRules
 	origPath := aclFilePath
@@ -2144,8 +1709,8 @@ func TestRepoACLStoreSecurityStats(t *testing.T) {
 			t.Errorf("%s -> store store.security_stats = true, want deny", src)
 		}
 	}
-	// Both daemon rules carry the exact command, so removing the broader
-	// "daemon-internal*" rule later can't silently drop it for daemon-internal-N.
+	// Both daemon rules carry the exact command, so changing one of them
+	// can't silently drop it for daemon-internal or daemon-internal-N.
 	granted := map[string]bool{}
 	for _, r := range aclRules {
 		if r.Destination != "store" {
@@ -2157,13 +1722,13 @@ func TestRepoACLStoreSecurityStats(t *testing.T) {
 			}
 		}
 	}
-	for _, src := range []string{"daemon-internal*", "daemon-internal-*"} {
+	for _, src := range []string{"daemon-internal", "daemon-internal-*"} {
 		if !granted[src] {
 			t.Errorf("rule %s -> store does not list store.security_stats", src)
 		}
 	}
 	if len(granted) != 2 {
-		t.Errorf("store.security_stats granted to %v, want exactly daemon-internal* and daemon-internal-*", granted)
+		t.Errorf("store.security_stats granted to %v, want exactly daemon-internal and daemon-internal-*", granted)
 	}
 	// No rule with destination store may grant a store.* wildcard.
 	for _, r := range aclRules {

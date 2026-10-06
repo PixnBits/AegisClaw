@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"AegisClaw/internal/hubids"
 )
 
 func TestReservedVMIDReason(t *testing.T) {
@@ -42,7 +44,7 @@ func TestReservedVMIDReason(t *testing.T) {
 		{id: "aegishub-extra", want: true, reason: "reserved prefix aegishub"},
 		{id: "daemon", want: true, reason: "reserved prefix daemon"},
 		{id: "daemon-orchestrator", want: true, reason: "reserved prefix daemon"},
-		{id: "daemon-internal-1", want: true, reason: "reserved prefix daemon"},
+		{id: "daemon-internal-1", want: true, reason: "reserved prefix daemon-internal"},
 		{id: "aegis-cli-internal", want: true, reason: "reserved prefix aegis-cli-internal"},
 		{id: "aegis-cli-internal-5", want: true, reason: "reserved prefix aegis-cli-internal"},
 		{id: "channel-facilitator", want: true, reason: "reserved prefix channel-facilitator"},
@@ -256,7 +258,7 @@ func TestCheckRoleAgentIDAllowlistAndChannels(t *testing.T) {
 }
 
 func TestHostOnlyVMID(t *testing.T) {
-	yes := []string{"hub", "hub-perm-fetch", "hub-perm-fetch-1", "daemon", "daemon-orchestrator", "daemon-internal-1", "aegis-cli-internal", "aegis-cli-internal-1", "channel-facilitator", "channel-facilitator-out-1"}
+	yes := []string{"hub", "hub-perm-fetch", "hub-perm-fetch-1", "daemon", "daemon-orchestrator", "daemon-internal-1", "aegis-cli-internal", "aegis-cli-internal-1", "channel-facilitator", "channel-facilitator-out-1", "aegis-daemon-temp", "aegis-daemon-temp-x", "daemon-temp-1"}
 	no := []string{"hub-perm-fetcher", "daemonfoo", "store", "coder-1", "aegishub", "Daemon"}
 	for _, id := range yes {
 		if !HostOnlyVMID(id) {
@@ -292,5 +294,43 @@ func TestCheckRoleAgentIDRejectsReserved(t *testing.T) {
 		if !errors.Is(err, ErrReservedRoleID) {
 			t.Errorf("CheckRoleAgentID(%q, %q) err=%v", tc.role, tc.channel, err)
 		}
+	}
+}
+
+// Every hub host client family, and in particular every family the hub
+// serves with its ephemeral RPC loop, is a reserved VM id and host-only on
+// the guest bridge.
+func TestHostClientFamiliesReservedForVMs(t *testing.T) {
+	if len(hubids.EphemeralClientFamilies) == 0 {
+		t.Fatal("no ephemeral client families")
+	}
+	for _, fam := range hubids.EphemeralClientFamilies {
+		found := false
+		for _, h := range hubids.HostClientFamilies {
+			found = found || h == fam
+		}
+		if !found {
+			t.Errorf("ephemeral family %q missing from HostClientFamilies", fam)
+		}
+	}
+	for _, fam := range hubids.HostClientFamilies {
+		for _, id := range []string{fam, fam + "-x", fam + "-1"} {
+			if reserved, _ := ReservedVMIDReason(id); !reserved {
+				t.Errorf("ReservedVMIDReason(%q) = false", id)
+			}
+			if !HostOnlyVMID(id) {
+				t.Errorf("HostOnlyVMID(%q) = false", id)
+			}
+			if _, err := CheckRoleAgentID(id, ""); !EnsureRoleRefused(err) {
+				t.Errorf("CheckRoleAgentID(%q) = %v, want refused", id, err)
+			}
+		}
+	}
+	reserved, reason := ReservedVMIDReason("aegis-daemon-temp-x")
+	if !reserved || reason != "reserved prefix aegis-daemon-temp" {
+		t.Fatalf("ReservedVMIDReason(aegis-daemon-temp-x) = %v, %q", reserved, reason)
+	}
+	if _, err := CheckRoleAgentID("coder", "aegis-daemon-temp-x"); err != nil {
+		t.Fatalf("coder with a channel hint is a normal role id: %v", err)
 	}
 }

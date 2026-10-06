@@ -16,10 +16,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"AegisClaw/internal/hublease"
-
-	"github.com/mdlayher/vsock"
 )
 
 func snapshotHubRegistry(t *testing.T) {
@@ -493,70 +489,6 @@ func signRegisterSource(priv ed25519.PrivateKey, source, pub string) Message {
 	body, _ := json.Marshal(msg)
 	msg.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body))
 	return msg
-}
-
-func TestReservedVsockRegisterDoesNotFillCIDLease(t *testing.T) {
-	resetCIDLeases()
-	t.Cleanup(resetCIDLeases)
-	snapshotHubRegistry(t)
-
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubStr := base64.StdEncoding.EncodeToString(pub)
-	dir := t.TempDir()
-	identPath := filepath.Join(dir, "git-identities.json")
-	identJSON, err := json.Marshal(map[string]string{pubStr: "tenant-a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(identPath, identJSON, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AEGIS_GIT_IDENTITIES", identPath)
-
-	storeAddr := &vsock.Addr{ContextID: 42, Port: 9999}
-	resp := guestVsockHandshake(t, storeAddr, signRegisterSource(priv, "store", pubStr))
-	errVal, _ := resp["error"].(string)
-	if !strings.Contains(errVal, "ERR_RESERVED_ID") {
-		t.Fatalf("store on vsock reply = %#v, want ERR_RESERVED_ID", resp)
-	}
-	if _, ok := hublease.LoadLease(42); ok {
-		t.Fatal("reserved vsock register filled a CID lease")
-	}
-
-	hubAddr := &vsock.Addr{ContextID: 44, Port: 9999}
-	resp = guestVsockHandshake(t, hubAddr, signRegisterSource(priv, "hub", pubStr))
-	errVal, _ = resp["error"].(string)
-	if !strings.Contains(errVal, "ERR_RESERVED_ID") {
-		t.Fatalf("hub on vsock reply = %#v, want ERR_RESERVED_ID", resp)
-	}
-	if _, ok := hublease.LoadLease(44); ok {
-		t.Fatal("reserved hub id on vsock filled a CID lease")
-	}
-
-	// Positive control: the same rostered signature fills a lease for a guest id.
-	coderAddr := &vsock.Addr{ContextID: 43, Port: 9999}
-	resp = guestVsockHandshake(t, coderAddr, signRegisterSource(priv, "coder-1", pubStr))
-	if _, ok := resp["error"]; ok {
-		t.Fatalf("coder-1 on vsock must be allowed, got %#v", resp)
-	}
-	if resp["status"] != "registered" {
-		t.Fatalf("coder-1 register response: %#v", resp)
-	}
-	if got, ok := hublease.LoadLease(43); !ok || got != pubStr {
-		t.Fatalf("coder-1 handshake should still fill the CID lease: got %q ok=%v", got, ok)
-	}
-
-	portalAddr := &vsock.Addr{ContextID: 45, Port: 9999}
-	resp = guestVsockHandshake(t, portalAddr, signRegisterSource(priv, "web-portal", pubStr))
-	if errVal, _ := resp["error"].(string); !strings.Contains(errVal, "ERR_RESERVED_ID") {
-		t.Fatalf("web-portal on vsock reply = %#v, want ERR_RESERVED_ID", resp)
-	}
-	if _, ok := hublease.LoadLease(45); ok {
-		t.Fatal("reserved web-portal id on vsock filled a CID lease")
-	}
 }
 
 func TestReregisterClosesPreviousConnection(t *testing.T) {

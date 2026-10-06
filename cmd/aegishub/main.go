@@ -19,8 +19,9 @@ import (
 
 	"AegisClaw/internal/collab"
 	"AegisClaw/internal/hubgit"
+	"AegisClaw/internal/hubids"
 	"AegisClaw/internal/hublease"
-	"AegisClaw/internal/transport/hubclient" // for HubVsockPort constant (Phase 1.1c vsock support)
+	"AegisClaw/internal/transport/hubclient"
 	"AegisClaw/internal/unixsock"
 	"github.com/mdlayher/vsock"
 	"github.com/spf13/cobra"
@@ -50,11 +51,11 @@ var pendingRPC = struct {
 	ch map[string]*pendingWaiter
 }{ch: make(map[string]*pendingWaiter)}
 
+// isEphemeralHubClient reports the host clients served by ephemeralHubRPCLoop
+// (daemon one-shot RPCs and the CLI). The families live in hubids so the
+// guest bridge and VM id checks reserve the same set.
 func isEphemeralHubClient(id string) bool {
-	return id == "aegis-daemon-temp" ||
-		strings.HasPrefix(id, "aegis-daemon-temp-") ||
-		strings.HasPrefix(id, "daemon-temp-") ||
-		strings.HasPrefix(id, "aegis-cli-internal") // CLI hub RPC (one reader loop per process)
+	return hubids.IsEphemeralClient(id)
 }
 
 // isReservedHubID reports ids that are reserved on every transport.
@@ -92,32 +93,28 @@ func reservedIDReason(id string, vmTransport bool) (string, bool) {
 	case "store", "network-boundary", "web-portal", "aegishub":
 		return "host-only", true
 	}
-	// Host process ids: everything isEphemeralHubClient serves, plus the
-	// daemon and facilitator families, by bare prefix.
-	if isEphemeralHubClient(id) ||
-		strings.HasPrefix(id, "daemon") ||
-		strings.HasPrefix(id, "aegis-daemon-temp") ||
-		strings.HasPrefix(id, "aegis-cli-internal") ||
-		strings.HasPrefix(id, "channel-facilitator") {
-		return "host-only", true
+	// Host process ids: every hubids host client family (which includes
+	// everything isEphemeralHubClient serves), by bare prefix.
+	for _, fam := range hubids.HostClientFamilies {
+		if strings.HasPrefix(id, fam) {
+			return "host-only", true
+		}
 	}
 	return "", false
 }
 
-// hostIDFamilies are host client id families. A valid id is the bare name
-// or name-<suffix>; anything else that starts with the name is refused on
-// every transport.
-var hostIDFamilies = []string{"daemon-internal", "aegis-cli-internal", "aegis-daemon-temp"}
-
+// isHostIDLookAlike reports an id that starts with a host client family
+// name but is not that name or name-<suffix>. Refused on every transport.
+// "daemon" itself is skipped: guest ids such as "daemonset-1" are not
+// host clients off vsock.
 func isHostIDLookAlike(id string) bool {
-	for _, fam := range hostIDFamilies {
-		if !strings.HasPrefix(id, fam) || id == fam {
+	for _, fam := range hubids.HostClientFamilies {
+		if fam == "daemon" || !strings.HasPrefix(id, fam) {
 			continue
 		}
-		if strings.HasPrefix(id, fam+"-") && len(id) > len(fam)+1 {
-			continue
+		if !hubids.InFamily(id, fam) {
+			return true
 		}
-		return true
 	}
 	return false
 }
@@ -524,10 +521,9 @@ func startHub(cmd *cobra.Command, args []string) {
 
 	conns := &sync.Map{}
 
-	// The AF_VSOCK listener is off unless AEGIS_HUB_VSOCK_LISTEN=1.
-	// Firecracker guests reach the hub through the daemon's guest hub bridge
-	// (Firecracker maps guest vsock to host UNIX sockets), not this listener.
-	maybeStartVsockListener(conns, startVsockListener)
+	// The hub listens only on its UNIX socket. Firecracker guests reach it
+	// through the daemon's guest hub bridge (Firecracker exposes guest vsock
+	// as host UNIX sockets, not host AF_VSOCK).
 
 	for {
 		conn, err := listener.Accept()
@@ -537,133 +533,6 @@ func startHub(cmd *cobra.Command, args []string) {
 		}
 		go handleConnection(conn, conns)
 	}
-}
-
-// startVsockListener starts a parallel listener for guest microVMs over vsock.
-// Port 9999 is the documented control-plane port for AegisHub (distinct from per-VM egress ports 9xxx).
-// On non-Linux or environments without vsock support it logs and returns gracefully (no hard failure).
-// References: agent-runtime.md §Communication, security-model.md §Isolation Strategy.
-func startVsockListener(conns *sync.Map) {
-	port := uint32(hubclient.HubVsockPort) // 9999 — matches hubclient and guest dialing convention
-	l, err := vsock.Listen(port, nil)
-	if err != nil {
-		log.Printf("AegisHub: vsock listen on port %d failed (expected on non-Linux or without /dev/vsock): %v — real Firecracker guests (agent/memory VMs) will fall back to unix socket in dev", port, err)
-		return
-	}
-	defer l.Close()
-
-	fmt.Printf("AegisHub: listening on vsock port %d for guest microVMs (Agent Runtime + Memory VM per Phase 1)\n", port)
-
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			log.Printf("vsock accept error: %v", err)
-			continue
-		}
-		go serveVsockConn(conn, conns, loadVsockCIDAllowlist, handleConnection)
-	}
-}
-
-// maybeStartVsockListener starts the vsock listener only when opted in.
-func maybeStartVsockListener(conns *sync.Map, start func(*sync.Map)) bool {
-	if !hubVsockListenEnabled() {
-		fmt.Printf("AegisHub: vsock listener disabled (set %s=1 to enable)\n", hubVsockListenEnv)
-		return false
-	}
-	go start(conns)
-	return true
-}
-
-// serveVsockConn admits one accepted vsock connection and hands it to
-// handle bound to its allowlisted id, or closes it.
-func serveVsockConn(conn net.Conn, conns *sync.Map, load func() (map[uint32]string, error), handle func(net.Conn, *sync.Map)) {
-	vmID, err := admitVsockPeer(conn.RemoteAddr(), load)
-	if err != nil {
-		log.Printf("Audit: refused vsock peer %v: %v", conn.RemoteAddr(), err)
-		_ = conn.Close()
-		return
-	}
-	handle(&boundVsockConn{Conn: conn, vmID: vmID}, conns)
-}
-
-const (
-	// hubVsockListenEnv opts in to the hub's AF_VSOCK listener.
-	hubVsockListenEnv = "AEGIS_HUB_VSOCK_LISTEN"
-	// hubVsockCIDAllowlistEnv names a daemon-written JSON file mapping a
-	// guest CID (decimal string) to the one vm id that CID may register as.
-	hubVsockCIDAllowlistEnv = "AEGIS_HUB_VSOCK_CID_ALLOWLIST"
-)
-
-func hubVsockListenEnabled() bool {
-	return strings.TrimSpace(os.Getenv(hubVsockListenEnv)) == "1"
-}
-
-// isGuestCID reports a CID a guest VM can have. 0 (hypervisor), 1 (local),
-// 2 (host) and VMADDR_CID_ANY are never guests.
-func isGuestCID(cid uint32) bool {
-	return cid > 2 && cid != ^uint32(0)
-}
-
-// loadVsockCIDAllowlist reads the CID -> vm id file. It fails closed: no
-// file, an unreadable file or bad JSON is an error.
-func loadVsockCIDAllowlist() (map[uint32]string, error) {
-	path := strings.TrimSpace(os.Getenv(hubVsockCIDAllowlistEnv))
-	if path == "" {
-		return nil, fmt.Errorf("%s is not set", hubVsockCIDAllowlistEnv)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var raw map[string]string
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, err
-	}
-	out := make(map[uint32]string, len(raw))
-	for k, v := range raw {
-		cid, ok := parseCIDKey(k)
-		v = strings.TrimSpace(v)
-		if !ok || v == "" {
-			continue
-		}
-		out[cid] = v
-	}
-	return out, nil
-}
-
-// admitVsockPeer decides whether a vsock connection may proceed to the
-// register handshake, and returns the only id it may register as.
-func admitVsockPeer(addr net.Addr, load func() (map[uint32]string, error)) (string, error) {
-	a, ok := addr.(*vsock.Addr)
-	if !ok || a == nil {
-		return "", fmt.Errorf("not a vsock peer")
-	}
-	if !isGuestCID(a.ContextID) {
-		return "", fmt.Errorf("CID %d is not a guest CID", a.ContextID)
-	}
-	allow, err := load()
-	if err != nil {
-		return "", fmt.Errorf("no CID allowlist: %v", err)
-	}
-	vmID, ok := allow[a.ContextID]
-	if !ok || vmID == "" {
-		return "", fmt.Errorf("CID %d is not allowlisted", a.ContextID)
-	}
-	return vmID, nil
-}
-
-// boundVsockConn is an admitted vsock connection bound to one vm id.
-type boundVsockConn struct {
-	net.Conn
-	vmID string
-}
-
-// vsockBoundID returns the id an admitted vsock connection must register as.
-func vsockBoundID(conn net.Conn) (string, bool) {
-	if b, ok := conn.(*boundVsockConn); ok && b != nil {
-		return b.vmID, true
-	}
-	return "", false
 }
 
 type gitConn struct {
@@ -705,30 +574,10 @@ func lookupPeerTenant(pub string) string {
 	return strings.TrimSpace(m[pub])
 }
 
-func leasePubForCID(cid uint32) (string, bool) {
-	// Memory only. Do not reload AEGIS_GIT_CID_KEYS on miss (file fail-open).
-	// Guest vsock handshake CAS-fills after verified rostered register.
-	return hublease.LoadLease(cid)
-}
-
 func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 	verifiedPub = strings.TrimSpace(verifiedPub)
 	if verifiedPub == "" {
 		return "", fmt.Errorf("ERR_UNKNOWN_PEER")
-	}
-	if a, ok := remoteAddr.(*vsock.Addr); ok {
-		if a == nil {
-			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
-		}
-		leased, ok := leasePubForCID(a.ContextID)
-		if !ok || leased != verifiedPub {
-			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
-		}
-		tenant := lookupPeerTenant(verifiedPub)
-		if tenant == "" {
-			return "", fmt.Errorf("ERR_UNKNOWN_PEER")
-		}
-		return tenant, nil
 	}
 	if !unixGitAllowed() {
 		return "", fmt.Errorf("ERR_UNKNOWN_PEER")
@@ -738,10 +587,6 @@ func tenantForGit(verifiedPub string, remoteAddr net.Addr) (string, error) {
 		return "", fmt.Errorf("ERR_UNKNOWN_PEER")
 	}
 	return tenant, nil
-}
-
-func storeCIDLease(cid uint32, pub string) {
-	hublease.StoreLeaseIfAbsentOrSame(cid, pub)
 }
 
 // daemonUnleaseCID is in-process CAS unlease for tests (VM destroy). Production
@@ -944,14 +789,11 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	}
 	// Before pubkey parsing, storeCIDLease, and any registered/conns mutation.
 	// A rejected id must not fill a CID lease.
-	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && (a == nil || !isGuestCID(a.ContextID)) {
+	// The hub has no vsock transport; guests come through the guest hub
+	// bridge on the UNIX socket.
+	if isVMHubTransport(conn) {
 		_ = encoder.Encode(map[string]string{"error": "ERR_UNAUTHORIZED_PEER"})
-		log.Printf("Audit: rejected vsock register from non-guest CID (%v)", conn.RemoteAddr())
-		return
-	}
-	if want, bound := vsockBoundID(conn); bound && regMsg.Source != want && regMsg.Source != "git-remote-hub" {
-		_ = encoder.Encode(map[string]string{"error": "ERR_UNBOUND_ID"})
-		log.Printf("Audit: rejected vsock register of %s (CID bound to %s)", regMsg.Source, want)
+		log.Printf("Audit: rejected vsock hub peer (%v)", conn.RemoteAddr())
 		return
 	}
 	if reason, reserved := reservedIDReason(regMsg.Source, isVMHubTransport(conn)); reserved {
@@ -1005,15 +847,6 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		}
 		hubgit.Serve(&gitConn{Conn: conn, r: br}, tenant, strings.TrimSpace(os.Getenv("AEGIS_STORE_GIT_SOCKET")))
 		return
-	}
-
-	// Occupant fill: handshake is the ONLY Store. File is StopVM bookkeeping.
-	// Possession then roster then CAS empty-or-same.
-	// Unsigned/unrostered must not Store (unrostered would DoS-bind the CID).
-	if a, ok := conn.RemoteAddr().(*vsock.Addr); ok && a != nil {
-		if verifyGitRegisterSignature(raw, regMsg, pubKey) && lookupPeerTenant(pubKeyStr) != "" {
-			storeCIDLease(a.ContextID, pubKeyStr)
-		}
 	}
 
 	// Extract version from payload if available
