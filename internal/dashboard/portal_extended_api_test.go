@@ -205,6 +205,34 @@ func TestAPILLMUsage_AcceptsAgentIDAndClampsLimit(t *testing.T) {
 	}
 }
 
+func TestAPILLMUsageRecent_ClampsLimitAbove500(t *testing.T) {
+	// A dashboard cap of 5000 forwards limit 501 unchanged.
+	for _, raw := range []string{"501", "5000"} {
+		client := &llmUsageAPIClient{recent: json.RawMessage(`{"records":[],"last_seq":1}`)}
+		srv, _ := New("127.0.0.1:0", client)
+		req := httptest.NewRequest(http.MethodGet, "/api/llm-usage/recent?limit="+raw, nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("limit=%s status %d body=%s", raw, rec.Code, rec.Body.String())
+		}
+		var recent map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &recent); err != nil {
+			t.Fatal(err)
+		}
+		if recent["limit"].(float64) != 500 {
+			t.Fatalf("limit=%s response limit %+v, want 500", raw, recent["limit"])
+		}
+		var sent map[string]interface{}
+		if err := json.Unmarshal(client.payload["llm.usage.recent"], &sent); err != nil {
+			t.Fatal(err)
+		}
+		if sent["limit"].(float64) != 500 {
+			t.Fatalf("limit=%s bridge payload %+v, want 500", raw, sent)
+		}
+	}
+}
+
 // filteringUsageClient applies agent_id from the forwarded payload. If the
 // handler omits agent_id, every record is returned.
 type filteringUsageClient struct {

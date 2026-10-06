@@ -120,7 +120,19 @@ func TestEnsureBackgroundPublishersStartsOneLLMUsageFeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.llmUsageInterval = time.Hour
-	t.Cleanup(s.Close)
+	t.Cleanup(func() {
+		s.Close()
+		done := make(chan struct{})
+		go func() {
+			s.waitBackground()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Errorf("background goroutines still running after Close")
+		}
+	})
 
 	s.EnsureBackgroundPublishers()
 	select {
@@ -146,6 +158,117 @@ func TestEnsureBackgroundPublishersStartsOneLLMUsageFeed(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Start did not return")
+	}
+}
+
+func TestLLMUsageFeedStopsWhenClosed(t *testing.T) {
+	// Starting the feed with context.Background() keeps polling after Close.
+	client := &usageFeedClient{called: make(chan struct{}, 8)}
+	s, err := New("127.0.0.1:0", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.llmUsageInterval = 20 * time.Millisecond
+	t.Cleanup(func() {
+		s.Close()
+		done := make(chan struct{})
+		go func() {
+			s.waitBackground()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	s.EnsureBackgroundPublishers()
+	deadline := time.Now().Add(2 * time.Second)
+	for client.recentCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := client.recentCount(); n < 2 {
+		t.Fatalf("polls before Close = %d, want at least 2", n)
+	}
+	s.Close()
+	done := make(chan struct{})
+	go func() {
+		s.waitBackground()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background goroutines did not exit after Close")
+	}
+	settled := client.recentCount()
+	time.Sleep(100 * time.Millisecond)
+	if n := client.recentCount(); n != settled {
+		t.Fatalf("polls after Close %d -> %d", settled, n)
+	}
+}
+
+func TestLLMUsageFeedCloseBeforeEnsureStopsServerWithoutNew(t *testing.T) {
+	// Close before backgroundContext exists must still cancel the feed.
+	// A context created afterwards from context.Background() keeps polling.
+	client := &usageFeedClient{}
+	s := &Server{apiClient: client, llmUsageInterval: 15 * time.Millisecond}
+	s.Close()
+	s.EnsureBackgroundPublishers()
+	time.Sleep(60 * time.Millisecond)
+	settled := client.recentCount()
+	time.Sleep(60 * time.Millisecond)
+	if n := client.recentCount(); n != settled {
+		t.Fatalf("polls after Close-before-Ensure %d -> %d", settled, n)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.waitBackground()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background goroutines did not exit")
+	}
+}
+
+func TestLLMUsageFeedSkipsSeqAtOrBelowCursor(t *testing.T) {
+	// The Store ignores after_seq and repeats rows. Removing `seq <= cursor`
+	// publishes the overlap, including a duplicate seq in one page.
+	client := &usageFeedClient{honorPage: false}
+	var got []uint64
+	s := &Server{
+		apiClient: client,
+		llmUsageEmit: func(_ string, rec map[string]interface{}) {
+			seq, _ := llmUsageSeq(rec["seq"])
+			got = append(got, seq)
+		},
+	}
+	client.setRecords(2, []map[string]interface{}{
+		{"seq": uint64(1), "agent_id": "coder-1", "timestamp": "2026-10-06T00:00:01Z", "success": true},
+		{"seq": uint64(2), "agent_id": "coder-1", "timestamp": "2026-10-06T00:00:01Z", "success": true},
+	})
+	s.publishNewLLMUsage(context.Background())
+	if len(got) != 0 {
+		t.Fatalf("baseline published %v", got)
+	}
+	client.setRecords(4, []map[string]interface{}{
+		{"seq": uint64(2), "agent_id": "coder-1", "timestamp": "2026-10-06T00:00:01Z", "success": true},
+		{"seq": uint64(1), "agent_id": "coder-1", "timestamp": "2026-10-06T00:00:01Z", "success": true},
+		{"seq": uint64(3), "agent_id": "coder-1", "timestamp": "2026-10-06T00:00:02Z", "success": true},
+		{"seq": uint64(3), "agent_id": "coder-1", "timestamp": "2026-10-06T00:00:02Z", "success": true},
+		{"seq": uint64(4), "agent_id": "pm", "timestamp": "2026-10-06T00:00:03Z", "success": true},
+		{"seq": uint64(2), "agent_id": "coder-1", "timestamp": "2026-10-06T00:00:01Z", "success": true},
+	})
+	s.publishNewLLMUsage(context.Background())
+	s.publishNewLLMUsage(context.Background())
+	counts := map[uint64]int{}
+	for _, seq := range got {
+		counts[seq]++
+	}
+	if len(got) != 2 || counts[3] != 1 || counts[4] != 1 {
+		t.Fatalf("published %v, want seq 3 and 4 once each", got)
 	}
 }
 
