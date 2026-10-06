@@ -16,6 +16,32 @@ func assertNoLLMUsageReply(t *testing.T, resp Message) {
 	}
 }
 
+func recentRows(t *testing.T, msg Message) []map[string]interface{} {
+	t.Helper()
+	body, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		t.Fatalf("recent payload type %T, want wrapper", msg.Payload)
+	}
+	rows, ok := body["records"].([]map[string]interface{})
+	if !ok && body["records"] != nil {
+		t.Fatalf("records type %T", body["records"])
+	}
+	return rows
+}
+
+func recentLastSeq(t *testing.T, msg Message) uint64 {
+	t.Helper()
+	body, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		t.Fatalf("recent payload type %T", msg.Payload)
+	}
+	seq, ok := usageSeqValue(body["last_seq"])
+	if !ok {
+		t.Fatalf("last_seq %#v", body["last_seq"])
+	}
+	return seq
+}
+
 func TestLLMUsageRecordSummaryHandlersLogic(t *testing.T) {
 	records := []map[string]interface{}{
 		{"agent_id": "coder-1", "model": "qwen", "tokens_prompt": 100, "tokens_completion": 50, "duration_ms": 800, "timestamp": time.Now().Add(-2 * time.Hour).Format(time.RFC3339), "success": true},
@@ -172,12 +198,12 @@ func TestLLMUsageRecordSummaryRecentHandlers(t *testing.T) {
 	if recent.Command != "llm.usage.recent" {
 		t.Fatal(recent.Command)
 	}
-	rows := recent.Payload.([]map[string]interface{})
+	rows := recentRows(t, recent)
 	if len(rows) != 1 || rows[0]["agent_id"] != "pm" {
 		t.Fatalf("recent limit 1: %+v", rows)
 	}
 	recentInt := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"limit": 1}})
-	if len(recentInt.Payload.([]map[string]interface{})) != 1 {
+	if len(recentRows(t, recentInt)) != 1 {
 		t.Fatal("int limit")
 	}
 }
@@ -196,7 +222,7 @@ func TestLLMUsageRecentLimitCapAndDefault(t *testing.T) {
 		t.Fatalf("recent limits max=%d default=%d, want 500 and 50", llmUsageRecentMax, llmUsageRecentDefault)
 	}
 	capped := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"limit": float64(10000)}})
-	rows := capped.Payload.([]map[string]interface{})
+	rows := recentRows(t, capped)
 	if len(rows) != 500 {
 		t.Fatalf("recent cap = %d, want 500", len(rows))
 	}
@@ -207,11 +233,11 @@ func TestLLMUsageRecentLimitCapAndDefault(t *testing.T) {
 		t.Fatalf("oldest of the capped window = %#v, want 10", rows[0]["tokens_prompt"])
 	}
 	def := handleLLMUsageRecent(Message{})
-	if len(def.Payload.([]map[string]interface{})) != 50 {
-		t.Fatalf("default recent = %d, want 50", len(def.Payload.([]map[string]interface{})))
+	if n := len(recentRows(t, def)); n != 50 {
+		t.Fatalf("default recent = %d, want 50", n)
 	}
 	neg := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"limit": float64(-3)}})
-	if len(neg.Payload.([]map[string]interface{})) != 50 {
+	if len(recentRows(t, neg)) != 50 {
 		t.Fatal("negative limit should use the default")
 	}
 }
@@ -227,12 +253,12 @@ func TestLLMUsageRecentFiltersAgentID(t *testing.T) {
 		assertNoLLMUsageReply(t, resp)
 	}
 	recent := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "pm", "limit": float64(10)}})
-	rows := recent.Payload.([]map[string]interface{})
+	rows := recentRows(t, recent)
 	if len(rows) != 1 || rows[0]["agent_id"] != "pm" {
 		t.Fatalf("filtered recent %+v", rows)
 	}
 	limited := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "coder-1", "limit": float64(1)}})
-	rows = limited.Payload.([]map[string]interface{})
+	rows = recentRows(t, limited)
 	if len(rows) != 1 || rows[0]["tokens_prompt"].(int) != 2 {
 		t.Fatalf("newest coder record %+v", rows)
 	}
@@ -247,12 +273,12 @@ func TestLLMUsageRecentFiltersAgentID(t *testing.T) {
 		assertNoLLMUsageReply(t, resp)
 	}
 	limited = handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "coder-1", "limit": float64(1)}})
-	rows = limited.Payload.([]map[string]interface{})
+	rows = recentRows(t, limited)
 	if len(rows) != 1 || rows[0]["agent_id"] != "coder-1" || rows[0]["tokens_prompt"].(int) != 2 {
 		t.Fatalf("newest coder after newer pm rows %+v", rows)
 	}
 	two := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "coder-1", "limit": float64(2)}})
-	rows = two.Payload.([]map[string]interface{})
+	rows = recentRows(t, two)
 	if len(rows) != 2 || rows[0]["tokens_prompt"].(int) != 0 || rows[1]["tokens_prompt"].(int) != 2 {
 		t.Fatalf("newest two coder records %+v", rows)
 	}
@@ -340,6 +366,7 @@ func TestLLMUsageRecordAllowlistAndCaps(t *testing.T) {
 	allowed := map[string]bool{
 		"agent_id": true, "model": true, "timestamp": true, "tokens_prompt": true,
 		"tokens_completion": true, "duration_ms": true, "success": true, "error": true,
+		"seq": true,
 	}
 	for k := range rec {
 		if !allowed[k] {
@@ -366,6 +393,9 @@ func TestLLMUsageRecordAllowlistAndCaps(t *testing.T) {
 	}
 	if rec["success"] != false {
 		t.Fatalf("success %#v", rec["success"])
+	}
+	if rec["seq"] != uint64(1) {
+		t.Fatalf("seq %#v, want store-assigned 1", rec["seq"])
 	}
 
 	resetLLMUsageRecords()
@@ -595,6 +625,102 @@ func TestCappedUsageStringTrimsOnRuneBoundary(t *testing.T) {
 	}
 	if len(got) > llmUsageMaxString {
 		t.Fatalf("len %d", len(got))
+	}
+}
+
+func TestLLMUsageSeqMonotonicAcrossTrim(t *testing.T) {
+	useLLMUsage(t)
+	first := handleLLMUsageRecord(Message{
+		Source:  "network-boundary",
+		Command: "llm.usage.record",
+		Payload: map[string]interface{}{"agent_id": "coder-1", "model": "m", "tokens_prompt": 0, "seq": float64(99), "success": true},
+	})
+	assertNoLLMUsageReply(t, first)
+	if got := llmUsageSnapshot()[0]["seq"]; got != uint64(1) {
+		t.Fatalf("client seq kept as %#v, want 1", got)
+	}
+	for i := 1; i < 10001; i++ {
+		assertNoLLMUsageReply(t, handleLLMUsageRecord(Message{
+			Source:  "network-boundary",
+			Command: "llm.usage.record",
+			Payload: map[string]interface{}{"agent_id": "coder-1", "model": "m", "tokens_prompt": i, "success": true},
+		}))
+	}
+	newest := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"limit": float64(1)}})
+	rows := recentRows(t, newest)
+	if len(rows) != 1 || rows[0]["seq"] != uint64(10001) || rows[0]["tokens_prompt"].(int) != 10000 {
+		t.Fatalf("newest after trim %+v", rows)
+	}
+	if recentLastSeq(t, newest) != 10001 {
+		t.Fatalf("last_seq %d, want 10001", recentLastSeq(t, newest))
+	}
+	// Kept window is seq 5002..10001. Forward page starts at the oldest seq above 5001.
+	page := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"after_seq": float64(5001), "limit": float64(1)}})
+	rows = recentRows(t, page)
+	if len(rows) != 1 || rows[0]["seq"] != uint64(5002) || rows[0]["tokens_prompt"].(int) != 5001 {
+		t.Fatalf("oldest after trim boundary %+v", rows)
+	}
+	assertNoLLMUsageReply(t, handleLLMUsageRecord(Message{
+		Source:  "network-boundary",
+		Command: "llm.usage.record",
+		Payload: map[string]interface{}{"agent_id": "coder-1", "model": "m", "tokens_prompt": 10001, "success": true},
+	}))
+	again := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"limit": float64(1)}})
+	rows = recentRows(t, again)
+	if len(rows) != 1 || rows[0]["seq"] != uint64(10002) {
+		t.Fatalf("seq rewound across trim %+v last_seq=%d", rows, recentLastSeq(t, again))
+	}
+}
+
+func TestLLMUsageRecentAfterSeqPagesForward(t *testing.T) {
+	useLLMUsage(t)
+	// Oldest first: pm, coder, coder, pm, coder.
+	for i, agent := range []string{"pm", "coder-1", "coder-1", "pm", "coder-1"} {
+		assertNoLLMUsageReply(t, handleLLMUsageRecord(Message{
+			Source:  "network-boundary",
+			Command: "llm.usage.record",
+			Payload: map[string]interface{}{"agent_id": agent, "model": "m", "tokens_prompt": i, "success": true},
+		}))
+	}
+	// No after_seq: newest limit, so the last coder (seq 5), not the oldest.
+	newest := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "coder-1", "limit": float64(1)}})
+	rows := recentRows(t, newest)
+	if len(rows) != 1 || rows[0]["seq"] != uint64(5) {
+		t.Fatalf("newest coder %+v", rows)
+	}
+	// after_seq walks forward: oldest coder with seq > 0 is seq 2, not seq 5.
+	forward := handleLLMUsageRecent(Message{Payload: map[string]interface{}{
+		"agent_id": "coder-1", "after_seq": float64(0), "limit": float64(1),
+	}})
+	rows = recentRows(t, forward)
+	if len(rows) != 1 || rows[0]["seq"] != uint64(2) || rows[0]["agent_id"] != "coder-1" {
+		t.Fatalf("oldest coder page %+v", rows)
+	}
+	if recentLastSeq(t, forward) != 5 {
+		t.Fatalf("last_seq %d, want 5 even on a filtered page", recentLastSeq(t, forward))
+	}
+	rest := handleLLMUsageRecent(Message{Payload: map[string]interface{}{
+		"agent_id": "coder-1", "after_seq": float64(2), "limit": float64(10),
+	}})
+	rows = recentRows(t, rest)
+	if len(rows) != 2 || rows[0]["seq"] != uint64(3) || rows[1]["seq"] != uint64(5) {
+		t.Fatalf("coder page after seq 2 %+v", rows)
+	}
+	// Limit applies after the agent filter and takes the oldest matches, not the newest.
+	two := handleLLMUsageRecent(Message{Payload: map[string]interface{}{
+		"after_seq": float64(1), "limit": float64(2),
+	}})
+	rows = recentRows(t, two)
+	if len(rows) != 2 || rows[0]["seq"] != uint64(2) || rows[1]["seq"] != uint64(3) {
+		t.Fatalf("oldest two after seq 1 %+v", rows)
+	}
+	empty := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"after_seq": "nope", "limit": float64(10)}})
+	if rows = recentRows(t, empty); len(rows) != 0 || recentLastSeq(t, empty) != 5 {
+		t.Fatalf("invalid after_seq page %+v last=%d", rows, recentLastSeq(t, empty))
+	}
+	tail := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"after_seq": uint64(5), "limit": 10}})
+	if rows = recentRows(t, tail); len(rows) != 0 || recentLastSeq(t, tail) != 5 {
+		t.Fatalf("caught up page %+v last=%d", rows, recentLastSeq(t, tail))
 	}
 }
 

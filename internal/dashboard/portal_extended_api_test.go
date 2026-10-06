@@ -283,6 +283,72 @@ func llmUsageRecentAgentIDs(t *testing.T, body []byte) []string {
 	return ids
 }
 
+func TestAPILLMUsageRecent_StripsErrorText(t *testing.T) {
+	// Removing the delete of "error" leaves the Store text in the JSON body.
+	const secret = "boom secret"
+	bare := &llmUsageAPIClient{recent: json.RawMessage(`[{"agent_id":"coder-1","success":false,"error":"` + secret + `","tokens_prompt":1}]`)}
+	assertLLMUsageRecentStripsError(t, bare, secret)
+
+	wrapped := &llmUsageAPIClient{recent: json.RawMessage(`{"records":[{"agent_id":"pm","success":false,"error":"` + secret + `","seq":4}],"last_seq":9}`)}
+	srv, _ := New("127.0.0.1:0", wrapped)
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-usage/recent", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("wrapper status %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("error text leaked: %s", rec.Body.String())
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["last_seq"].(float64) != 9 {
+		t.Fatalf("last_seq %+v", out["last_seq"])
+	}
+	rows, _ := out["records"].([]interface{})
+	if len(rows) != 1 {
+		t.Fatalf("records %+v", out["records"])
+	}
+	row := rows[0].(map[string]interface{})
+	if _, ok := row["error"]; ok {
+		t.Fatalf("error field present: %+v", row)
+	}
+	if row["success"] != false {
+		t.Fatalf("success %+v, want false", row["success"])
+	}
+}
+
+func assertLLMUsageRecentStripsError(t *testing.T, client *llmUsageAPIClient, secret string) {
+	t.Helper()
+	srv, _ := New("127.0.0.1:0", client)
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-usage/recent", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("error text leaked: %s", rec.Body.String())
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := out["records"].([]interface{})
+	if len(rows) != 1 {
+		t.Fatalf("records %+v", out["records"])
+	}
+	row := rows[0].(map[string]interface{})
+	if _, ok := row["error"]; ok {
+		t.Fatalf("error field present: %+v", row)
+	}
+	if row["success"] != false || row["agent_id"] != "coder-1" {
+		t.Fatalf("row %+v", row)
+	}
+}
+
 func TestAPILLMUsage_MethodNotAllowed(t *testing.T) {
 	srv, _ := New("127.0.0.1:0", &llmUsageAPIClient{})
 	for _, path := range []string{"/api/llm-usage", "/api/llm-usage/recent"} {

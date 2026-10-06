@@ -37,20 +37,29 @@ const (
 var (
 	llmUsageMu      sync.Mutex
 	llmUsageRecords []map[string]interface{}
+	// llmUsageSeq is the last seq assigned. The first accepted record is 1.
+	// Trimming the log does not rewind it.
+	llmUsageSeq uint64
 )
 
 func resetLLMUsageRecords() {
 	llmUsageMu.Lock()
 	llmUsageRecords = nil
+	llmUsageSeq = 0
 	llmUsageMu.Unlock()
 }
 
 func llmUsageSnapshot() []map[string]interface{} {
+	recs, _ := llmUsageState()
+	return recs
+}
+
+func llmUsageState() ([]map[string]interface{}, uint64) {
 	llmUsageMu.Lock()
 	defer llmUsageMu.Unlock()
 	out := make([]map[string]interface{}, len(llmUsageRecords))
 	copy(out, llmUsageRecords)
-	return out
+	return out, llmUsageSeq
 }
 
 // computeLLMUsageSummary builds the required aggregates (grand total, windows, by model).
@@ -170,6 +179,8 @@ func handleLLMUsageRecord(msg Message) Message {
 	}
 	rec := sanitizeLLMUsageRecord(raw)
 	llmUsageMu.Lock()
+	llmUsageSeq++
+	rec["seq"] = llmUsageSeq
 	llmUsageRecords = append(llmUsageRecords, rec)
 	if len(llmUsageRecords) > llmUsageMaxRecords {
 		trimmed := make([]map[string]interface{}, llmUsageTrimTo)
@@ -196,9 +207,18 @@ func handleLLMUsageSummary(msg Message) Message {
 	return Message{Command: "llm.usage.summary", Payload: computeLLMUsageSummary(filtered)}
 }
 
+// handleLLMUsageRecent returns {"records", "last_seq"}. last_seq is the highest
+// seq assigned, even when the page is empty, and is not rewound by trim.
+// agent_id is applied before limit. Without after_seq, records are the newest
+// limit rows. With after_seq, records are the oldest limit rows whose seq is
+// greater than after_seq, so a caller can walk forward. A present but
+// unparseable after_seq returns an empty page rather than the newest window.
 func handleLLMUsageRecent(msg Message) Message {
 	limit := llmUsageRecentDefault
 	agentID := ""
+	afterSeq := uint64(0)
+	haveAfter := false
+	afterInvalid := false
 	if p, ok := msg.Payload.(map[string]interface{}); ok {
 		if _, present := p["limit"]; present {
 			limit = usageRecentLimit(p["limit"])
@@ -206,8 +226,17 @@ func handleLLMUsageRecent(msg Message) Message {
 		if aid, ok := p["agent_id"].(string); ok {
 			agentID = aid
 		}
+		if _, present := p["after_seq"]; present {
+			seq, ok := usageSeqValue(p["after_seq"])
+			if !ok {
+				afterInvalid = true
+			} else {
+				haveAfter = true
+				afterSeq = seq
+			}
+		}
 	}
-	records := llmUsageSnapshot()
+	records, lastSeq := llmUsageState()
 	if agentID != "" {
 		matched := make([]map[string]interface{}, 0)
 		for _, rec := range records {
@@ -217,13 +246,37 @@ func handleLLMUsageRecent(msg Message) Message {
 		}
 		records = matched
 	}
-	n := len(records)
-	start := 0
-	if n > limit {
-		start = n - limit
+	var out []map[string]interface{}
+	switch {
+	case afterInvalid:
+		out = []map[string]interface{}{}
+	case haveAfter:
+		newer := make([]map[string]interface{}, 0)
+		for _, rec := range records {
+			seq, ok := usageSeqValue(rec["seq"])
+			if ok && seq > afterSeq {
+				newer = append(newer, rec)
+			}
+		}
+		if len(newer) > limit {
+			newer = newer[:limit]
+		}
+		out = newer
+	default:
+		n := len(records)
+		start := 0
+		if n > limit {
+			start = n - limit
+		}
+		out = append([]map[string]interface{}(nil), records[start:]...)
 	}
-	out := append([]map[string]interface{}(nil), records[start:]...)
-	return Message{Command: "llm.usage.recent", Payload: out}
+	if out == nil {
+		out = []map[string]interface{}{}
+	}
+	return Message{Command: "llm.usage.recent", Payload: map[string]interface{}{
+		"records":  out,
+		"last_seq": lastSeq,
+	}}
 }
 
 func usageRecentLimit(v interface{}) int {
@@ -292,6 +345,43 @@ func normalizeUsageTimestamp(v interface{}, now time.Time) string {
 		return fallback
 	}
 	return s
+}
+
+func usageSeqValue(v interface{}) (uint64, bool) {
+	switch n := v.(type) {
+	case uint64:
+		return n, true
+	case uint:
+		return uint64(n), true
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case int32:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case int64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) || n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return usageSeqValue(f)
+	default:
+		return 0, false
+	}
 }
 
 func usageNumberTooLarge(n float64) bool {

@@ -578,6 +578,9 @@ func (s *Server) handleAPILLMUsage(w http.ResponseWriter, r *http.Request) {
 
 // handleAPILLMUsageRecent returns recent usage records. ?limit= defaults to 100
 // and clamps to 500. Optional ?agent_id= is passed through to the Store.
+// The Store error string is removed from each record. success is kept.
+// LLMUsageEvent has no error field, and the HTTP body must not carry it either.
+// last_seq is included when the Store reported one (or a record had a seq).
 func (s *Server) handleAPILLMUsageRecent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -599,10 +602,17 @@ func (s *Server) handleAPILLMUsageRecent(w http.ResponseWriter, r *http.Request)
 		writeLLMUsageFetchError(w, err)
 		return
 	}
-	if data == nil {
-		data = []interface{}{}
+	records, lastSeq, hasLast := parseLLMUsageRecent(data)
+	if records == nil {
+		records = []map[string]interface{}{}
 	}
-	out := map[string]interface{}{"records": data, "limit": limit}
+	for _, rec := range records {
+		delete(rec, "error")
+	}
+	out := map[string]interface{}{"records": records, "limit": limit}
+	if hasLast {
+		out["last_seq"] = lastSeq
+	}
 	if agentID != "" {
 		out["agent_id"] = agentID
 	}
