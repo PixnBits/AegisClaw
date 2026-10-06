@@ -17,11 +17,7 @@ const (
 
 var (
 	apiKeyPattern    = regexp.MustCompile(`(?i)(api[_-]?key|secret|password|token|bearer)\s*[:=]\s*\S+`)
-	// A key must start the string or follow a character that is not a letter
-	// or digit. So the "sk-" in "task-refactorauthenticationmodule" is not a
-	// key, but "api_key_sk-…" and "AWS_AKIA…" are: \b would treat '_' as a
-	// word character and miss them. Group 1 is the separator, kept on replace.
-	credentialPattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])(AKIA[0-9A-Z]{16}|sk-[a-z0-9]{20,})`)
+	credentialPattern = regexp.MustCompile(`(?i)(AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,})`)
 	internalPathPattern = regexp.MustCompile(`/(etc|var|opt|proc|sys|home|root)/[^\s]*`)
 	privateIPPattern = regexp.MustCompile(`\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`)
 	hostnamePattern  = regexp.MustCompile(`\b[a-zA-Z0-9-]+\.(internal|local|svc|cluster)\b`)
@@ -36,7 +32,7 @@ func Text(ctx Context, raw string) string {
 	}
 	s := raw
 	s = apiKeyPattern.ReplaceAllString(s, "$1: "+redacted)
-	s = credentialPattern.ReplaceAllString(s, "${1}"+redacted)
+	s = credentialPattern.ReplaceAllString(s, redacted)
 	s = internalPathPattern.ReplaceAllString(s, redacted)
 	s = privateIPPattern.ReplaceAllString(s, redacted)
 	s = hostnamePattern.ReplaceAllString(s, redacted)
