@@ -48,7 +48,12 @@ func storeSnapshot(w *storeWorld) string {
 
 func dispatchPayload(w *storeWorld, command string, payload interface{}) Message {
 	resp := Message{Timestamp: "2026-10-06T00:00:00Z"}
-	dispatchStoreCommand(Message{Source: "test", Command: command, Payload: payload}, &resp, w)
+	src := "test"
+	if command == "secrets.push" {
+		// Host-only: other sources are refused before the payload is read.
+		src = "daemon-internal-1"
+	}
+	dispatchStoreCommand(Message{Source: src, Command: command, Payload: payload}, &resp, w)
 	return resp
 }
 
