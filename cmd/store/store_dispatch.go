@@ -409,6 +409,11 @@ func dispatchStoreCommand(msg Message, response *Message, w *storeWorld) (skipRe
 	//       + network-boundary.md (encrypted blobs over Hub, decryption + zeroization only inside Boundary).
 	// This is the production path that replaces all file/dir/env secret distribution.
 	case "secrets.push":
+		// Host-only: checked before the payload is read.
+		if !isSecretsPushSource(msg.Source) {
+			refuseSecretsPush(securityLogWriter(), msg, response, time.Now())
+			break
+		}
 		payload, ok := mustPayload(msg, response)
 		if !ok {
 			break
