@@ -699,14 +699,294 @@ func TestUsagePushHubErrorLoggedOncePerWindow(t *testing.T) {
 		if len(lines) != 1 || !strings.Contains(lines[0], "count=1") {
 			t.Fatalf("burst lines %#v, want one line in the window", lines)
 		}
-		// The other 99 drops are counted, not logged, until the window rolls.
+		// One more push while the window is still open, so the error after
+		// the window is a real drop and includes the 99 suppressed ones.
+		emit()
 		clock = clock.Add(usageDropLogEvery)
 		logs.Reset()
-		emit()
 		feed(`{"command":"error","payload":"ERR_RPC_TIMEOUT","source":"hub"}`)
 		lines = dropLines()
 		if len(lines) != 1 || !strings.Contains(lines[0], "count=100") {
 			t.Fatalf("next window %#v, want count=100", lines)
 		}
 	})
+}
+
+const hubUsagePushAck = `{"command":"response","source":"hub","destination":"network-boundary","payload":{"status":"accepted"}}`
+const hubUsagePushDeliveredAck = `{"command":"ack","source":"hub","destination":"network-boundary","payload":{"status":"delivered"}}`
+
+func TestUsagePushHubAckRetiresOutstanding(t *testing.T) {
+	// The hub answers a successful one-way push with command "response"
+	// (payload status accepted). Leaving the counter incremented fails this:
+	// the later empty error is logged as a usage drop.
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	clock := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	usageDropNow = func() time.Time { return clock }
+	t.Cleanup(func() {
+		usageDropNow = time.Now
+		resetUsageDropState()
+	})
+	priv := testBoundaryKey(t)
+
+	feed := func(raw string) {
+		t.Helper()
+		var msg Message
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		called := false
+		serveBoundaryFrame(msg, json.NewEncoder(&buf), &sync.Mutex{}, priv, answeringDispatch(&called))
+		if called || buf.Len() != 0 {
+			t.Fatalf("answered %s with %s", raw, buf.Bytes())
+		}
+	}
+	emit := func() {
+		t.Helper()
+		var sink bytes.Buffer
+		emitLLMUsageRecordLocked(json.NewEncoder(&sink), priv, map[string]interface{}{"agent_id": "coder-1", "success": true})
+		if sink.Len() == 0 {
+			t.Fatal("usage emit wrote nothing")
+		}
+	}
+	dropLines := func() []string {
+		t.Helper()
+		var lines []string
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "llm.usage.record dropped:") {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+
+	resetUsageDropState()
+	logs.Reset()
+	for i := 0; i < 8; i++ {
+		emit()
+	}
+	if usagePushOutstandingCount() != 8 {
+		t.Fatalf("outstanding after emits = %d, want 8", usagePushOutstandingCount())
+	}
+	for i := 0; i < 8; i++ {
+		feed(hubUsagePushAck)
+	}
+	if n := usagePushOutstandingCount(); n != 0 {
+		t.Fatalf("outstanding after hub response acks = %d, want 0", n)
+	}
+	feed(`{"error":"ERR_ACL_VIOLATION"}`)
+	if lines := dropLines(); len(lines) != 0 {
+		t.Fatalf("unrelated error after acks logged %#v", lines)
+	}
+
+	// Extra acknowledgements floor at 0. A later real drop is still counted.
+	feed(hubUsagePushAck)
+	feed(hubUsagePushDeliveredAck)
+	if n := usagePushOutstandingCount(); n != 0 {
+		t.Fatalf("outstanding after extra acks = %d, want 0", n)
+	}
+	emit()
+	feed(hubUsagePushDeliveredAck)
+	if n := usagePushOutstandingCount(); n != 0 {
+		t.Fatalf("outstanding after ack command = %d, want 0", n)
+	}
+	emit()
+	feed(`{"command":"error","payload":"ERR_DESTINATION_NOT_FOUND","source":"hub"}`)
+	lines := dropLines()
+	if len(lines) != 1 || !strings.Contains(lines[0], "count=1") {
+		t.Fatalf("real drop after acks %#v, want count=1", lines)
+	}
+	if n := usagePushOutstandingCount(); n != 0 {
+		t.Fatalf("outstanding after real drop = %d, want 0", n)
+	}
+
+	// llm.usage.recorded is not the hub's push ack.
+	logs.Reset()
+	resetUsageDropState()
+	emit()
+	feed(`{"command":"llm.usage.recorded","source":"store","payload":{"ok":true}}`)
+	if n := usagePushOutstandingCount(); n != 1 {
+		t.Fatalf("outstanding after llm.usage.recorded = %d, want 1", n)
+	}
+	feed(`{"command":"error","payload":"ERR_DESTINATION_NOT_FOUND","source":"hub"}`)
+	lines = dropLines()
+	if len(lines) != 1 || !strings.Contains(lines[0], "count=1") {
+		t.Fatalf("drop after recorded %#v, want count=1", lines)
+	}
+}
+
+func TestUsageDropPendingFlushesWithoutNewDrop(t *testing.T) {
+	// Suppressing the flush on non-error frames leaves the pending count
+	// unlogged when errors stop.
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	clock := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	usageDropNow = func() time.Time { return clock }
+	t.Cleanup(func() {
+		usageDropNow = time.Now
+		resetUsageDropState()
+	})
+	priv := testBoundaryKey(t)
+
+	feed := func(raw string) {
+		t.Helper()
+		var msg Message
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		called := false
+		serveBoundaryFrame(msg, json.NewEncoder(&buf), &sync.Mutex{}, priv, answeringDispatch(&called))
+		if raw == `{"command":"version","source":"hub"}` {
+			if !called || buf.Len() == 0 {
+				t.Fatalf("version frame was not answered: called=%v buf=%s", called, buf.Bytes())
+			}
+			return
+		}
+		if called || buf.Len() != 0 {
+			t.Fatalf("answered %s with %s", raw, buf.Bytes())
+		}
+	}
+	emit := func() {
+		t.Helper()
+		var sink bytes.Buffer
+		emitLLMUsageRecordLocked(json.NewEncoder(&sink), priv, map[string]interface{}{"agent_id": "coder-1", "success": true})
+		if sink.Len() == 0 {
+			t.Fatal("usage emit wrote nothing")
+		}
+	}
+	dropLines := func() []string {
+		t.Helper()
+		var lines []string
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "llm.usage.record dropped:") {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+	suppressOne := func() {
+		t.Helper()
+		logs.Reset()
+		resetUsageDropState()
+		emit()
+		feed(`{"command":"error","payload":"ERR_DESTINATION_NOT_FOUND","source":"hub"}`)
+		emit()
+		feed(`{"command":"error","payload":"ERR_RPC_TIMEOUT","source":"hub"}`)
+		emit()
+		feed(`{"error":"ERR_ACL_VIOLATION"}`)
+		lines := dropLines()
+		if len(lines) != 1 || !strings.Contains(lines[0], "count=1") {
+			t.Fatalf("window open %#v, want one line count=1", lines)
+		}
+		if usagePushOutstandingCount() != 0 {
+			t.Fatalf("outstanding = %d, want 0", usagePushOutstandingCount())
+		}
+		logs.Reset()
+	}
+
+	t.Run("non-error frame", func(t *testing.T) {
+		suppressOne()
+		clock = clock.Add(usageDropLogEvery)
+		feed(`{"command":"llm.usage.recorded","source":"store","payload":{"ok":true}}`)
+		lines := dropLines()
+		if len(lines) != 1 || !strings.Contains(lines[0], "count=2") {
+			t.Fatalf("flush without new drop %#v, want count=2", lines)
+		}
+		logs.Reset()
+		feed(`{"command":"llm.usage.recorded","source":"store","payload":{"ok":true}}`)
+		if lines := dropLines(); len(lines) != 0 {
+			t.Fatalf("second flush %#v", lines)
+		}
+	})
+
+	t.Run("request frame", func(t *testing.T) {
+		suppressOne()
+		clock = clock.Add(usageDropLogEvery)
+		feed(`{"command":"version","source":"hub"}`)
+		lines := dropLines()
+		if len(lines) != 1 || !strings.Contains(lines[0], "count=2") {
+			t.Fatalf("request flush %#v, want count=2", lines)
+		}
+	})
+
+	t.Run("emit", func(t *testing.T) {
+		suppressOne()
+		clock = clock.Add(usageDropLogEvery)
+		emit()
+		lines := dropLines()
+		if len(lines) != 1 || !strings.Contains(lines[0], "count=2") {
+			t.Fatalf("emit flush %#v, want count=2", lines)
+		}
+		if usagePushOutstandingCount() != 1 {
+			t.Fatalf("outstanding after emit = %d, want 1", usagePushOutstandingCount())
+		}
+	})
+
+	t.Run("still inside window", func(t *testing.T) {
+		suppressOne()
+		feed(`{"command":"llm.usage.recorded","source":"store","payload":{"ok":true}}`)
+		emit()
+		flushUsageDropPending()
+		if lines := dropLines(); len(lines) != 0 {
+			t.Fatalf("flushed inside window %#v", lines)
+		}
+	})
+}
+
+func TestUsageDropPendingFlushesOnShutdown(t *testing.T) {
+	// Shutdown must report drops that never saw another error, including
+	// when the rate-limit window has not elapsed.
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	clock := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	usageDropNow = func() time.Time { return clock }
+	t.Cleanup(func() {
+		usageDropNow = time.Now
+		resetUsageDropState()
+	})
+	priv := testBoundaryKey(t)
+	resetUsageDropState()
+
+	emit := func() {
+		t.Helper()
+		var sink bytes.Buffer
+		emitLLMUsageRecordLocked(json.NewEncoder(&sink), priv, map[string]interface{}{"agent_id": "coder-1", "success": true})
+	}
+	feed := func(raw string) {
+		t.Helper()
+		var msg Message
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		serveBoundaryFrame(msg, json.NewEncoder(&buf), &sync.Mutex{}, priv, answeringDispatch(nil))
+	}
+	emit()
+	feed(`{"command":"error","payload":"down","source":"hub"}`)
+	emit()
+	feed(`{"command":"error","payload":"down","source":"hub"}`)
+	logs.Reset()
+	flushUsageDropsOnShutdown()
+	var lines []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "llm.usage.record dropped:") {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "count=1") {
+		t.Fatalf("shutdown flush %#v, want count=1", lines)
+	}
+	logs.Reset()
+	flushUsageDropsOnShutdown()
+	if logs.Len() != 0 {
+		t.Fatalf("second shutdown flush wrote %s", logs.String())
+	}
 }
