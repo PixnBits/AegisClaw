@@ -28,6 +28,10 @@ func TestGuestBridgeRegisterAllowed(t *testing.T) {
 		ok     bool
 	}{
 		{vmID: "coder-1", source: "coder-1", ok: true},
+		{vmID: "aegis-daemon-temp-x", source: "aegis-daemon-temp-x", ok: false},
+		{vmID: "aegis-daemon-temp", source: "aegis-daemon-temp", ok: false},
+		{vmID: "daemon-temp-1", source: "daemon-temp-1", ok: false},
+		{vmID: "coder-1", source: "aegis-daemon-temp-1", ok: false},
 		{vmID: "coder-1", source: "store", ok: false},
 		{vmID: "coder-1", source: "court-persona-ciso", ok: false},
 		{vmID: "store", source: "store", ok: true},
