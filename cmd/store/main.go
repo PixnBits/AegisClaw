@@ -200,17 +200,6 @@ func decodeChatMessages(raw []interface{}) []chatstore.Message {
 	return out
 }
 
-func loadAuditFromFile(filename string) []interface{} {
-	var data []interface{}
-	file, err := os.Open(filename)
-	if err != nil {
-		return data
-	}
-	defer file.Close()
-	json.NewDecoder(file).Decode(&data)
-	return data
-}
-
 // === Phase 2.1a: Durable autonomy & background grant storage (0600) ===
 // These will become the authoritative source for timer reconciliation.
 
@@ -346,7 +335,7 @@ func appendAuditForStateChangeIfNeeded(msg Message, response *Message, auditLog 
 				"merkle_root": root,
 			}
 		}
-		saveAuditToFile("audit.json", *auditLog)
+		persistAudit(*auditLog, msg)
 	}
 }
 
@@ -459,11 +448,6 @@ func ListActiveTimers() []string {
 		ids = append(ids, id)
 	}
 	return ids
-}
-
-func saveAuditToFile(filename string, data []interface{}) {
-	bytes, _ := json.Marshal(data)
-	ioutil.WriteFile(filename, bytes, 0644)
 }
 
 func computeMerkleRoot(log []interface{}) string {
@@ -683,7 +667,7 @@ func runStore(cmd *cobra.Command, args []string) {
 	// Simple storage with persistence
 	proposals := loadFromFile("proposals.json")
 	skills := loadFromFile("skills.json")
-	auditLog := loadAuditFromFile("audit.json")
+	auditLog := loadAuditLog()
 	memories := loadFromFile("memories.json")
 	prs := loadFromFile("prs.json")
 	teams := loadFromFile("teams.json")

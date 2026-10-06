@@ -82,3 +82,37 @@ func TestSecurityPostureStoreHandlerPanicsZeroAndUnavailable(t *testing.T) {
 		t.Fatalf("unexpected reply shape: %v", ind)
 	}
 }
+
+func TestSecurityPostureShowsStoreAuditWriteFailures(t *testing.T) {
+	calls := 0
+	var v interface{}
+	_ = json.Unmarshal([]byte(`{"store.handler_panic":{"total":0,"tracked_hashes":0,"by_hash":[]},"audit.append_failed":{"total":3}}`), &v)
+	withStoreSecurityStats(t, func() (interface{}, error) { calls++; return v, nil })
+	posture := collectSecurityPostureForPortal()
+	if calls != 1 {
+		t.Fatalf("store.security_stats asked %d times, want once per posture", calls)
+	}
+	ind := postureIndicator(t, posture, "store_audit_write")
+	if ind["status"] != "warn" || !strings.Contains(ind["detail"].(string), "3 failed") {
+		t.Fatalf("audit write indicator = %v", ind)
+	}
+	if m, _ := posture["store_audit_write"].(map[string]interface{}); m == nil || m["total"] != float64(3) {
+		t.Fatalf("store_audit_write counts = %#v", posture["store_audit_write"])
+	}
+	if ind := postureIndicator(t, posture, "store_handler_panic"); ind["status"] != "ok" {
+		t.Fatalf("panic indicator = %v", ind)
+	}
+
+	withStoreSecurityStats(t, storeStatsReply(t, `{"audit.append_failed":{"total":0}}`))
+	if ind := postureIndicator(t, collectSecurityPostureForPortal(), "store_audit_write"); ind["status"] != "ok" {
+		t.Fatalf("zero failures: %v", ind)
+	}
+	withStoreSecurityStats(t, storeStatsReply(t, `{"store.handler_panic":{"total":0}}`))
+	if ind := postureIndicator(t, collectSecurityPostureForPortal(), "store_audit_write"); ind["status"] != "unknown" {
+		t.Fatalf("older Store without the counter: %v", ind)
+	}
+	withStoreSecurityStats(t, func() (interface{}, error) { return nil, errors.New("hub: store not registered") })
+	if ind := postureIndicator(t, collectSecurityPostureForPortal(), "store_audit_write"); ind["status"] != "unknown" {
+		t.Fatalf("unavailable: %v", ind)
+	}
+}
