@@ -538,7 +538,7 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	}
 	for _, pair := range [][2]string{
 		{"web-portal", "store"},
-		{"daemon-internal*", "store"},
+		{"daemon-internal", "store"},
 		{"daemon-internal-*", "store"},
 	} {
 		cmds := commandsBetween(pair[0], pair[1])

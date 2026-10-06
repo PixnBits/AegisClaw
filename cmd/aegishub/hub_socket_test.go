@@ -402,7 +402,24 @@ func TestReservedIDReason(t *testing.T) {
 		{id: "aegis-cli-internal", vm: true, want: true},
 		{id: "aegis-cli-internal-2", vm: true, want: true},
 		{id: "channel-facilitator", vm: true, want: true},
-		{id: "web-portal", vm: true, want: false},
+		{id: "web-portal", vm: true, want: true},
+		{id: "web-portal", vm: false, want: false},
+		{id: "network-boundary", vm: true, want: true},
+		{id: "network-boundary", vm: false, want: false},
+		{id: "aegishub", vm: true, want: true},
+		{id: "aegis-daemon-temp", vm: true, want: true},
+		{id: "aegis-daemon-temp", vm: false, want: false},
+		{id: "aegis-daemon-temp-4", vm: true, want: true},
+		{id: "daemonx", vm: true, want: true},
+		{id: "daemon-internal", vm: false, want: false},
+		{id: "daemon-internalx", vm: false, want: true},
+		{id: "daemon-internalx", vm: true, want: true},
+		{id: "daemon-internal-", vm: false, want: true},
+		{id: "aegis-cli-internalx", vm: false, want: true},
+		{id: "aegis-cli-internalx", vm: true, want: true},
+		{id: "aegis-cli-internal-7", vm: false, want: false},
+		{id: "aegis-daemon-tempx", vm: false, want: true},
+		{id: "channel-facilitatorx", vm: true, want: true},
 		{id: "coder-1", vm: true, want: false},
 		{id: "agent-1", vm: true, want: false},
 		{id: "memory-1", vm: true, want: false},
@@ -534,11 +551,11 @@ func TestReservedVsockRegisterDoesNotFillCIDLease(t *testing.T) {
 
 	portalAddr := &vsock.Addr{ContextID: 45, Port: 9999}
 	resp = guestVsockHandshake(t, portalAddr, signRegisterSource(priv, "web-portal", pubStr))
-	if errVal, ok := resp["error"].(string); ok && strings.Contains(errVal, "ERR_RESERVED_ID") {
-		t.Fatalf("web-portal on vsock must not be reserved: %#v", resp)
+	if errVal, _ := resp["error"].(string); !strings.Contains(errVal, "ERR_RESERVED_ID") {
+		t.Fatalf("web-portal on vsock reply = %#v, want ERR_RESERVED_ID", resp)
 	}
-	if resp["status"] != "registered" {
-		t.Fatalf("web-portal register response: %#v", resp)
+	if _, ok := hublease.LoadLease(45); ok {
+		t.Fatal("reserved web-portal id on vsock filled a CID lease")
 	}
 }
 
