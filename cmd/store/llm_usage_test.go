@@ -150,6 +150,65 @@ func useLLMUsage(t *testing.T) {
 	t.Cleanup(resetLLMUsageRecords)
 }
 
+func TestDispatchLLMUsageCommands(t *testing.T) {
+	chdirTempAssertNoPackageAudit(t)
+	useLLMUsage(t)
+	w := testStoreWorld(t)
+	payload := map[string]interface{}{
+		"agent_id":          "coder-1",
+		"model":             "qwen",
+		"tokens_prompt":     float64(3),
+		"tokens_completion": float64(1),
+		"success":           true,
+	}
+
+	resp := Message{Timestamp: "2026-10-06T00:00:00Z"}
+	skip := dispatchStoreCommand(Message{
+		Source: "network-boundary", Command: "llm.usage.record", Payload: payload,
+	}, &resp, w)
+	if !skip {
+		t.Fatal("llm.usage.record from network-boundary: skipReply = false, want true")
+	}
+	got := llmUsageSnapshot()
+	if len(got) != 1 || got[0]["agent_id"] != "coder-1" || got[0]["model"] != "qwen" {
+		t.Fatalf("stored %#v, want the network-boundary record", got)
+	}
+
+	resp = Message{Timestamp: "2026-10-06T00:00:00Z"}
+	skip = dispatchStoreCommand(Message{
+		Source: "web-portal", Command: "llm.usage.summary", Payload: map[string]interface{}{},
+	}, &resp, w)
+	if skip {
+		t.Fatal("llm.usage.summary skipReply = true, want false")
+	}
+	if resp.Command != "llm.usage.summary" {
+		t.Fatalf("summary command %q", resp.Command)
+	}
+
+	resp = Message{Timestamp: "2026-10-06T00:00:00Z"}
+	skip = dispatchStoreCommand(Message{
+		Source: "web-portal", Command: "llm.usage.recent", Payload: map[string]interface{}{"limit": float64(10)},
+	}, &resp, w)
+	if skip {
+		t.Fatal("llm.usage.recent skipReply = true, want false")
+	}
+	if resp.Command != "llm.usage.recent" {
+		t.Fatalf("recent command %q", resp.Command)
+	}
+
+	resetLLMUsageRecords()
+	resp = Message{Timestamp: "2026-10-06T00:00:00Z"}
+	skip = dispatchStoreCommand(Message{
+		Source: "coder-1", Command: "llm.usage.record", Payload: payload,
+	}, &resp, w)
+	if !skip {
+		t.Fatal("llm.usage.record from coder-1: skipReply = false, want true")
+	}
+	if n := len(llmUsageSnapshot()); n != 0 {
+		t.Fatalf("non-boundary source stored %d records", n)
+	}
+}
+
 func TestLLMUsageRecordSummaryRecentHandlers(t *testing.T) {
 	useLLMUsage(t)
 	now := time.Now().UTC().Format(time.RFC3339)

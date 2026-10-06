@@ -121,16 +121,15 @@ func TestEnsureBackgroundPublishersStartsOneLLMUsageFeed(t *testing.T) {
 	}
 	s.llmUsageInterval = time.Hour
 	t.Cleanup(func() {
-		s.Close()
 		done := make(chan struct{})
 		go func() {
-			s.waitBackground()
+			s.Close()
 			close(done)
 		}()
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
-			t.Errorf("background goroutines still running after Close")
+			t.Errorf("Close did not return; background goroutines still running")
 		}
 	})
 
@@ -170,15 +169,15 @@ func TestLLMUsageFeedStopsWhenClosed(t *testing.T) {
 	}
 	s.llmUsageInterval = 20 * time.Millisecond
 	t.Cleanup(func() {
-		s.Close()
 		done := make(chan struct{})
 		go func() {
-			s.waitBackground()
+			s.Close()
 			close(done)
 		}()
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
+			t.Errorf("Close did not return")
 		}
 	})
 
@@ -190,16 +189,15 @@ func TestLLMUsageFeedStopsWhenClosed(t *testing.T) {
 	if n := client.recentCount(); n < 2 {
 		t.Fatalf("polls before Close = %d, want at least 2", n)
 	}
-	s.Close()
 	done := make(chan struct{})
 	go func() {
-		s.waitBackground()
+		s.Close()
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("background goroutines did not exit after Close")
+		t.Fatal("Close did not return")
 	}
 	settled := client.recentCount()
 	time.Sleep(100 * time.Millisecond)
@@ -209,17 +207,16 @@ func TestLLMUsageFeedStopsWhenClosed(t *testing.T) {
 }
 
 func TestLLMUsageFeedCloseBeforeEnsureStopsServerWithoutNew(t *testing.T) {
-	// Close before backgroundContext exists must still cancel the feed.
-	// A context created afterwards from context.Background() keeps polling.
+	// Close before Ensure: goBackground starts nothing once Close has run,
+	// so the feed never polls. (A context created afterwards from
+	// context.Background() would keep polling.)
 	client := &usageFeedClient{}
 	s := &Server{apiClient: client, llmUsageInterval: 15 * time.Millisecond}
 	s.Close()
 	s.EnsureBackgroundPublishers()
 	time.Sleep(60 * time.Millisecond)
-	settled := client.recentCount()
-	time.Sleep(60 * time.Millisecond)
-	if n := client.recentCount(); n != settled {
-		t.Fatalf("polls after Close-before-Ensure %d -> %d", settled, n)
+	if n := client.recentCount(); n != 0 {
+		t.Fatalf("feed polled %d times after Close-before-Ensure, want 0", n)
 	}
 	done := make(chan struct{})
 	go func() {

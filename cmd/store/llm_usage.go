@@ -44,9 +44,9 @@ var (
 
 func resetLLMUsageRecords() {
 	llmUsageMu.Lock()
+	defer llmUsageMu.Unlock()
 	llmUsageRecords = nil
 	llmUsageSeq = 0
-	llmUsageMu.Unlock()
 }
 
 func llmUsageSnapshot() []map[string]interface{} {
@@ -177,8 +177,17 @@ func handleLLMUsageRecord(msg Message) Message {
 		log.Printf("llm.usage.record rejected: invalid payload")
 		return Message{}
 	}
-	rec := sanitizeLLMUsageRecord(raw)
+	appendLLMUsageRecord(sanitizeLLMUsageRecord(raw))
+	return Message{}
+}
+
+// appendLLMUsageRecord assigns the next seq and appends rec, trimming the log
+// at the cap. Unlock is deferred, as everywhere llmUsageMu is taken, so a
+// panic recovered by dispatchWithPanicGuard can't leave the mutex held and
+// wedge every later llm.usage.* command.
+func appendLLMUsageRecord(rec map[string]interface{}) {
 	llmUsageMu.Lock()
+	defer llmUsageMu.Unlock()
 	llmUsageSeq++
 	rec["seq"] = llmUsageSeq
 	llmUsageRecords = append(llmUsageRecords, rec)
@@ -187,8 +196,6 @@ func handleLLMUsageRecord(msg Message) Message {
 		copy(trimmed, llmUsageRecords[len(llmUsageRecords)-llmUsageTrimTo:])
 		llmUsageRecords = trimmed
 	}
-	llmUsageMu.Unlock()
-	return Message{}
 }
 
 func handleLLMUsageSummary(msg Message) Message {
