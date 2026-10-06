@@ -1124,8 +1124,13 @@ func dispatchStoreCommand(msg Message, response *Message, w *storeWorld) (skipRe
 		response.Command = "memory.results"
 		response.Payload = []interface{}{}
 	case "audit.append":
-		auditLog = append(auditLog, msg.Payload)
-		saveAuditToFile("audit.json", auditLog)
+		// The entry is wrapped with the hub-verified source and a Store
+		// timestamp, its fields are capped, and identical blocked_request
+		// events are coalesced (audit_log.go).
+		if entry, ok := auditAppendEntry(storeAuditCoalescer, msg, time.Now()); ok {
+			auditLog = append(auditLog, entry)
+			persistAudit(auditLog, msg)
+		}
 		response.Command = "audit.appended"
 		response.Payload = "ok"
 	case "audit.get_root":

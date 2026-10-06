@@ -19,6 +19,7 @@ bin/
 proposals.json
 skills.json
 audit.json
+audit.jsonl
 permissions.json
 
 # Node.js and npm

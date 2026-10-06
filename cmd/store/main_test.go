@@ -14,30 +14,33 @@ import (
 )
 
 // chdirTempAssertNoPackageAudit runs the test in a temp dir via t.Chdir and
-// fails if the test creates audit.json in the package directory it started in.
+// fails if the test creates or changes an audit file (audit.json or
+// audit.jsonl) in the package directory it started in.
 func chdirTempAssertNoPackageAudit(t *testing.T) {
 	t.Helper()
 	pkgDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	auditPath := filepath.Join(pkgDir, "audit.json")
-	before, statErr := os.Stat(auditPath)
-	existed := statErr == nil
 	t.Chdir(t.TempDir())
-	t.Cleanup(func() {
-		after, err := os.Stat(auditPath)
-		if err != nil {
-			return
-		}
-		if !existed {
-			t.Errorf("test created %s in the package directory", auditPath)
-			return
-		}
-		if after.ModTime().After(before.ModTime()) || after.Size() != before.Size() {
-			t.Errorf("test modified %s in the package directory", auditPath)
-		}
-	})
+	for _, name := range []string{legacyAuditLogFile, auditLogFile} {
+		auditPath := filepath.Join(pkgDir, name)
+		before, statErr := os.Stat(auditPath)
+		existed := statErr == nil
+		t.Cleanup(func() {
+			after, err := os.Stat(auditPath)
+			if err != nil {
+				return
+			}
+			if !existed {
+				t.Errorf("test created %s in the package directory", auditPath)
+				return
+			}
+			if after.ModTime().After(before.ModTime()) || after.Size() != before.Size() {
+				t.Errorf("test modified %s in the package directory", auditPath)
+			}
+		})
+	}
 }
 
 func TestLoadSaveFromFile(t *testing.T) {

@@ -290,9 +290,13 @@ func handleStoreSecurityStats(msg Message, response *Message, d *panicDeduper) {
 		return
 	}
 	response.Command = storeSecurityStatsCommand
-	response.Payload = map[string]interface{}{
+	payload := map[string]interface{}{
 		storeHandlerPanicEventName: d.snapshot(panicStatsTopN),
 	}
+	for k, v := range auditStats() {
+		payload[k] = v
+	}
+	response.Payload = payload
 }
 
 // truncateUTF8 caps s at max bytes without splitting a rune. Invalid UTF-8

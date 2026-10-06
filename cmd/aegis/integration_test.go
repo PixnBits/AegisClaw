@@ -467,7 +467,7 @@ func TestProposalCreateRealStoreLoop(t *testing.T) {
 	// and confirming lowID never appears (real path would deny before write).
 
 	propFile := filepath.Join(tmp, "proposals.json")
-	auditFile := filepath.Join(tmp, "audit.json")
+	auditFile := filepath.Join(tmp, "audit.jsonl")
 
 	// Poll for side effects from the real store binary (Dir=tmp)
 	foundHappy := false
@@ -527,7 +527,7 @@ func TestProposalCreateRealStoreLoop(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !auditHasProposal {
-		t.Errorf("audit.json must contain proposal.create entry from real handler loop + appendAuditForStateChangeIfNeeded")
+		t.Errorf("audit.jsonl must contain proposal.create entry from real handler loop + appendAuditForStateChangeIfNeeded")
 	}
 
 	_ = os.Remove(propFile)

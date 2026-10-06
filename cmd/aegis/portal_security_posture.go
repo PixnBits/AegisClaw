@@ -61,8 +61,10 @@ func collectSecurityPostureForPortal() map[string]interface{} {
 		}
 	}
 
-	panicIndicator, panicCounts := storeHandlerPanicPosture()
-	indicators = append(indicators, panicIndicator)
+	storeStats, storeStatsErr := storeSecurityStatsFn()
+	panicIndicator, panicCounts := storeHandlerPanicPostureFrom(storeStats, storeStatsErr)
+	auditIndicator, auditCounts := storeAuditWritePosture(storeStats, storeStatsErr)
+	indicators = append(indicators, panicIndicator, auditIndicator)
 
 	storeReady, _ := snap["store_collab_ready"].(bool)
 	wpStatus := "ok"
@@ -80,6 +82,7 @@ func collectSecurityPostureForPortal() map[string]interface{} {
 		"web_portal_status":     wpStatus,
 		"collab":                snap["collab"],
 		"store_handler_panic":   panicCounts,
+		"store_audit_write":     auditCounts,
 		"updated_at":            time.Now().UTC().Format(time.RFC3339),
 	}
 }

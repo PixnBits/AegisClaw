@@ -70,6 +70,10 @@ The Store VM acts as the central, trusted authority for both structured data and
 - `audit.append`
 - `audit.get_root`
 
+The log is persisted as append-only JSON lines in `audit.jsonl` (mode 0600). Each append writes and fsyncs only the new entries. The whole file is only ever replaced atomically (temp file, fsync, rename): when migrating an older `audit.json`, after a failed write, or when a torn last line is found on load. A failed write logs a SECURITY line and increments `audit.append_failed` in `store.security_stats`.
+
+Every `audit.append` entry is stored as `{command, source, received_at, entry}`: `source` is the hub-verified sender and `received_at` is the Store's clock. Each string field of the payload is capped (512 bytes), and an entry over 4 KiB is replaced by a size marker. Identical `blocked_request` events (same source, skill and url) within one minute are counted rather than appended; the next one carries `repeats_suppressed`.
+
 ### Timer & Grant Management (Phase 2)
 The Store VM is the single source of truth for persistent timers, autonomy grants, and background work expiration.
 
