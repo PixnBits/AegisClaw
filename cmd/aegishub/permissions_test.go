@@ -85,6 +85,18 @@ func TestCheckHubPermission_ChannelBootstrapFallback(t *testing.T) {
 	if allowed, reason := checkHubPermission("coder-1", "channel.turn_result"); !allowed || reason != "" {
 		t.Errorf("coder-1 channel.turn_result: allowed=%v reason=%q, want allowed", allowed, reason)
 	}
+	if allowed, reason := checkHubPermission("coder-1", "channel.turn"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("coder-1 channel.turn: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("tester-1", "channel.turn"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("tester-1 channel.turn: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("coder-1", "channel.member_turn_update"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("coder-1 channel.member_turn_update: allowed=%v reason=%q, want denied", allowed, reason)
+	}
+	if allowed, reason := checkHubPermission("tester-1", "channel.member_turn_update"); allowed || reason != "ERR_PERMISSION_DENIED" {
+		t.Errorf("tester-1 channel.member_turn_update: allowed=%v reason=%q, want denied", allowed, reason)
+	}
 }
 
 func TestHubPermissionAllowed_EmptyCachedSnapshotDenies(t *testing.T) {
@@ -107,6 +119,15 @@ func TestShouldReceivePermissionSnapshot(t *testing.T) {
 	}
 	if !shouldReceivePermissionSnapshot("project-manager-1") {
 		t.Error("PM should receive snapshot")
+	}
+	if !shouldReceivePermissionSnapshot("project-manager") {
+		t.Error("bare project-manager should receive snapshot")
+	}
+	if shouldReceivePermissionSnapshot("project-managerX") {
+		t.Error("project-managerX must not skip into project-manager permission-subject rights")
+	}
+	if shouldReceivePermissionSnapshot("coderX") || shouldReceivePermissionSnapshot("testerX") {
+		t.Error("undashed role lookalikes must not be permission subjects")
 	}
 	if shouldReceivePermissionSnapshot("daemon-internal-1") {
 		t.Error("daemon-internal should not receive snapshot")

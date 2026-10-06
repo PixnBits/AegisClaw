@@ -388,10 +388,10 @@ func reloadACLIfChanged() {
 
 func checkACL(source, dest, cmd string) bool {
 	for _, rule := range aclRules {
-		if !aclMatch(rule.Source, source) {
+		if !aclIDMatch(rule.Source, source) {
 			continue
 		}
-		if !aclMatch(rule.Destination, dest) {
+		if !aclIDMatch(rule.Destination, dest) {
 			continue
 		}
 		for _, c := range rule.Commands {
@@ -405,12 +405,30 @@ func checkACL(source, dest, cmd string) bool {
 
 // aclMatch supports exact match, "*" wildcard, and suffix "*" prefix-match (e.g. "memory.*" matches "memory.get_context"; "court-persona-*" matches "court-persona-ciso").
 // For commands without trailing *, exact match only (stricter than prior loose HasPrefix).
+// Source and destination IDs use aclIDMatch; command patterns keep this raw prefix.
 func aclMatch(pattern, value string) bool {
 	if pattern == "*" || pattern == value {
 		return true
 	}
 	if strings.HasSuffix(pattern, "*") {
 		prefix := strings.TrimSuffix(pattern, "*")
+		return strings.HasPrefix(value, prefix)
+	}
+	return false
+}
+
+// aclIDMatch is aclMatch for component IDs. A "<prefix>*" pattern whose prefix
+// does not already end in '-' or '.' matches only value == prefix or a value
+// starting with prefix+"-". "*" , "court-persona-*", and "memory.*" are unchanged.
+func aclIDMatch(pattern, value string) bool {
+	if pattern == "*" || pattern == value {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		prefix := strings.TrimSuffix(pattern, "*")
+		if prefix != "" && !strings.HasSuffix(prefix, "-") && !strings.HasSuffix(prefix, ".") {
+			return value == prefix || strings.HasPrefix(value, prefix+"-")
+		}
 		return strings.HasPrefix(value, prefix)
 	}
 	return false

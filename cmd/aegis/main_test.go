@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,12 +21,43 @@ import (
 
 const testSocketPath = "/tmp/aegis_test.sock"
 
+// origWD is the package directory captured before TestMain chdirs away.
+var origWD string
+
+func TestMain(m *testing.M) {
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cmd/aegis TestMain getwd: %v\n", err)
+		os.Exit(1)
+	}
+	origWD = wd
+	tmp, err := os.MkdirTemp("", "aegis-cmd-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cmd/aegis TestMain mkdir: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		fmt.Fprintf(os.Stderr, "cmd/aegis TestMain chdir: %v\n", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	if err := os.Chdir(wd); err != nil {
+		fmt.Fprintf(os.Stderr, "cmd/aegis TestMain restore wd: %v\n", err)
+	}
+	_ = os.RemoveAll(tmp)
+	os.Exit(code)
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Failed to get working directory: %v", err)
+	wd := origWD
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			t.Fatalf("Failed to get working directory: %v", err)
+		}
 	}
 
 	return filepath.Clean(filepath.Join(wd, "..", ".."))
@@ -204,8 +237,10 @@ func TestIsDaemonRunning(t *testing.T) {
 	}
 	skipIfLiveDaemon(t)
 
+	aegisBin := filepath.Join(repoRoot(t), "bin", "aegis")
+
 	// Ensure no daemon is running by trying to stop
-	stopCmd := exec.Command("./bin/aegis", "stop")
+	stopCmd := exec.Command(aegisBin, "stop")
 	_ = stopCmd.Run()
 	time.Sleep(500 * time.Millisecond)
 
@@ -214,7 +249,7 @@ func TestIsDaemonRunning(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Test 1: Daemon should not be running
-	cmd := exec.Command("./bin/aegis", "status")
+	cmd := exec.Command(aegisBin, "status")
 	output, _ := cmd.CombinedOutput()
 	status := string(output)
 
@@ -223,11 +258,11 @@ func TestIsDaemonRunning(t *testing.T) {
 	}
 
 	// Test 2: After starting daemon, status should show running
-	startCmd := exec.Command("./bin/aegis", "start")
+	startCmd := exec.Command(aegisBin, "start")
 	_ = startCmd.Run()
 	time.Sleep(2 * time.Second)
 
-	cmd = exec.Command("./bin/aegis", "status")
+	cmd = exec.Command(aegisBin, "status")
 	output, _ = cmd.CombinedOutput()
 	status = string(output)
 
@@ -238,7 +273,7 @@ func TestIsDaemonRunning(t *testing.T) {
 	}
 
 	// Cleanup
-	stopCmd = exec.Command("./bin/aegis", "stop")
+	stopCmd = exec.Command(aegisBin, "stop")
 	_ = stopCmd.Run()
 }
 
@@ -394,9 +429,18 @@ func TestAuthorizeSocketPeer(t *testing.T) {
 		{name: "other uid denied for stop", op: "stop", peerUID: orig + 1, peerOK: true, expectedUID: orig, want: false},
 		{name: "missing creds denied for stop", op: "stop", peerUID: -1, peerOK: false, expectedUID: orig, want: false},
 		{name: "missing creds denied for restart", op: "restart", peerUID: -1, peerOK: false, expectedUID: orig, want: false},
+		{name: "missing creds denied for channel.fanout", op: "channel.fanout", peerUID: -1, peerOK: false, expectedUID: orig, want: false},
+		{name: "missing creds denied for orchestrator.ensure_role", op: "orchestrator.ensure_role", peerUID: -1, peerOK: false, expectedUID: orig, want: false},
+		{name: "missing creds denied for unknown op", op: "vm.destroy", peerUID: -1, peerOK: false, expectedUID: orig, want: false},
 		{name: "missing creds allowed for status", op: "status", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
 		{name: "missing creds allowed for vm list", op: "vm list", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "missing creds allowed for vm.list", op: "vm.list", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "missing creds allowed for vm.logs", op: "vm.logs", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "missing creds allowed for vm.boot_metrics", op: "vm.boot_metrics", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "missing creds allowed for health.status", op: "health.status", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "missing creds allowed for doctor", op: "doctor", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
 		{name: "missing creds allowed for ping", op: "ping", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "original user allowed for channel.fanout", op: "channel.fanout", peerUID: orig, peerOK: true, expectedUID: orig, want: true},
 		{name: "unresolved expected uid denied", op: "status", peerUID: orig, peerOK: true, expectedUID: -1, want: false},
 	}
 	for _, tc := range tests {
@@ -423,15 +467,48 @@ func TestStartSocketServer_Mode0600(t *testing.T) {
 	}
 }
 
+func TestListenUnixPrivate_Mode0600(t *testing.T) {
+	before := syscall.Umask(0)
+	syscall.Umask(before)
+
+	sock := filepath.Join(t.TempDir(), "priv.sock")
+	ln, err := listenUnixPrivate(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	info, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("socket mode = %o, want 0600", info.Mode().Perm())
+	}
+
+	after := syscall.Umask(0)
+	syscall.Umask(after)
+	if after != before {
+		t.Fatalf("umask = %#o after listenUnixPrivate, want restored %#o", after, before)
+	}
+}
+
 func TestHandleSocketCommand_DeniesStopWithoutPeerCreds(t *testing.T) {
-	// net.Pipe is not a *net.UnixConn, so getPeerUID fails closed for stop.
-	// Rejection happens before any shutdown path (which would os.Exit).
+	// net.Pipe is not a *net.UnixConn, so getPeerUID fails closed.
+	// Mutating ops are rejected before any shutdown or orchestrator call
+	// (nil orch would panic if ensure_role reached the handler).
 	cases := []struct {
 		name string
 		req  string
+		want string
 	}{
-		{name: "legacy stop", req: "stop"},
-		{name: "json stop", req: `{"op":"stop"}`},
+		{name: "legacy stop", req: "stop", want: "unauthorized"},
+		{name: "json stop", req: `{"op":"stop"}`, want: "unauthorized"},
+		{name: "json restart", req: `{"op":"restart"}`, want: "unauthorized"},
+		{name: "json channel.fanout", req: `{"op":"channel.fanout","args":{"channel_id":"c","from":"user","content":"hi"}}`, want: "unauthorized"},
+		{name: "json orchestrator.ensure_role", req: `{"op":"orchestrator.ensure_role","args":{"role":"coder","channel":"main"}}`, want: "unauthorized"},
+		{name: "json unknown", req: `{"op":"vm.destroy"}`, want: "unauthorized"},
+		{name: "json ping", req: `{"op":"ping"}`, want: "pong"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -451,13 +528,13 @@ func TestHandleSocketCommand_DeniesStopWithoutPeerCreds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
-			if !strings.Contains(string(buf[:n]), "unauthorized") {
-				t.Fatalf("response %q does not contain unauthorized", string(buf[:n]))
+			if !strings.Contains(string(buf[:n]), tc.want) {
+				t.Fatalf("response %q does not contain %q", string(buf[:n]), tc.want)
 			}
 			select {
 			case <-done:
 			case <-time.After(3 * time.Second):
-				t.Fatal("handler did not return; stop may have entered the shutdown path")
+				t.Fatal("handler did not return; command may have entered a side-effecting path")
 			}
 		})
 	}
