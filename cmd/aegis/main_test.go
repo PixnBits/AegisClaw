@@ -64,6 +64,84 @@ func waitForUnixSocket(t *testing.T, socketPath string, timeout time.Duration) {
 	t.Fatalf("Timed out waiting for socket %s", socketPath)
 }
 
+// liveDaemonAt reports whether a daemon appears to be listening on sockAddr
+// or recorded in pidPath. A successful short unix dial, or a pid whose
+// /proc entry exists, is enough. It never signals or removes anything.
+func liveDaemonAt(sockAddr, pidPath string) bool {
+	if sockAddr != "" {
+		conn, err := net.DialTimeout("unix", sockAddr, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
+	}
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return false
+	}
+	if _, err := os.Stat("/proc/" + strconv.Itoa(pid)); err == nil {
+		return true
+	}
+	return false
+}
+
+// skipIfLiveDaemon skips t when the real control socket or pid file belongs
+// to a live daemon. Tests that would stop or restart must call this first.
+func skipIfLiveDaemon(t *testing.T) {
+	t.Helper()
+	if liveDaemonAt(getControlSocketAddr(), pidFile) {
+		t.Skip("live aegis daemon detected (control socket or pid file); refusing to stop it")
+	}
+}
+
+func TestLiveDaemonAt(t *testing.T) {
+	t.Run("missing socket and pid", func(t *testing.T) {
+		dir := t.TempDir()
+		if liveDaemonAt(filepath.Join(dir, "missing.sock"), filepath.Join(dir, "missing.pid")) {
+			t.Fatal("expected false when socket and pid file are absent")
+		}
+	})
+
+	t.Run("listener up", func(t *testing.T) {
+		dir := t.TempDir()
+		sock := filepath.Join(dir, "x.sock")
+		ln, err := net.Listen("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		if !liveDaemonAt(sock, filepath.Join(dir, "missing.pid")) {
+			t.Fatal("expected true while unix listener is up")
+		}
+	})
+
+	t.Run("pid file names this process", func(t *testing.T) {
+		dir := t.TempDir()
+		pidPath := filepath.Join(dir, "daemon.pid")
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !liveDaemonAt(filepath.Join(dir, "missing.sock"), pidPath) {
+			t.Fatal("expected true when pid file names a live process")
+		}
+	})
+
+	t.Run("non-numeric pid", func(t *testing.T) {
+		dir := t.TempDir()
+		pidPath := filepath.Join(dir, "daemon.pid")
+		if err := os.WriteFile(pidPath, []byte("not-a-pid"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if liveDaemonAt(filepath.Join(dir, "missing.sock"), pidPath) {
+			t.Fatal("expected false when pid file is not numeric")
+		}
+	})
+}
+
 func TestDaemonStartAndStatus(t *testing.T) {
 	// Test daemon binary existence and basic functionality
 	// Root-required portions are skipped if not root
@@ -119,14 +197,12 @@ func TestDaemonStartAndStatus(t *testing.T) {
 }
 
 func TestIsDaemonRunning(t *testing.T) {
-	// This test verifies isDaemonRunning behavior through the status command
-	// Most of it can run without root, but start/stop requires sudo
-
-	// Skip if not root and sudo requires password
-	if os.Getuid() != 0 {
-		t.Logf("Skipping root-only daemon lifecycle tests (use 'sudo go test' to run)")
-		return
+	// This test starts and stops a real daemon. It must not run unless the
+	// caller opted in, is root, and nothing is already live.
+	if os.Getuid() != 0 || os.Getenv("AEGIS_TEST_DAEMON_LIFECYCLE") != "1" {
+		t.Skip("daemon lifecycle test requires root and AEGIS_TEST_DAEMON_LIFECYCLE=1")
 	}
+	skipIfLiveDaemon(t)
 
 	// Ensure no daemon is running by trying to stop
 	stopCmd := exec.Command("./bin/aegis", "stop")
@@ -300,6 +376,93 @@ func TestSocketHardening(t *testing.T) {
 	t.Logf("✓ Client socket commands (vm list, stop) work without requiring root (hardening enables this)")
 }
 
+func TestAuthorizeSocketPeer(t *testing.T) {
+	const orig = 1000
+	tests := []struct {
+		name        string
+		op          string
+		peerUID     int
+		peerOK      bool
+		expectedUID int
+		want        bool
+	}{
+		{name: "root allowed for status", op: "status", peerUID: 0, peerOK: true, expectedUID: orig, want: true},
+		{name: "root allowed for stop", op: "stop", peerUID: 0, peerOK: true, expectedUID: orig, want: true},
+		{name: "original user allowed for stop", op: "stop", peerUID: orig, peerOK: true, expectedUID: orig, want: true},
+		{name: "original user allowed for status", op: "status", peerUID: orig, peerOK: true, expectedUID: orig, want: true},
+		{name: "other uid denied for status", op: "status", peerUID: orig + 1, peerOK: true, expectedUID: orig, want: false},
+		{name: "other uid denied for stop", op: "stop", peerUID: orig + 1, peerOK: true, expectedUID: orig, want: false},
+		{name: "missing creds denied for stop", op: "stop", peerUID: -1, peerOK: false, expectedUID: orig, want: false},
+		{name: "missing creds denied for restart", op: "restart", peerUID: -1, peerOK: false, expectedUID: orig, want: false},
+		{name: "missing creds allowed for status", op: "status", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "missing creds allowed for vm list", op: "vm list", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "missing creds allowed for ping", op: "ping", peerUID: -1, peerOK: false, expectedUID: orig, want: true},
+		{name: "unresolved expected uid denied", op: "status", peerUID: orig, peerOK: true, expectedUID: -1, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := authorizeSocketPeer(tc.op, tc.peerUID, tc.peerOK, tc.expectedUID)
+			if got != tc.want {
+				t.Fatalf("authorizeSocketPeer(%q, %d, %v, %d) = %v, want %v", tc.op, tc.peerUID, tc.peerOK, tc.expectedUID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStartSocketServer_Mode0600(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "d.sock")
+	if err := startSocketServer(sock, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("control socket mode = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestHandleSocketCommand_DeniesStopWithoutPeerCreds(t *testing.T) {
+	// net.Pipe is not a *net.UnixConn, so getPeerUID fails closed for stop.
+	// Rejection happens before any shutdown path (which would os.Exit).
+	cases := []struct {
+		name string
+		req  string
+	}{
+		{name: "legacy stop", req: "stop"},
+		{name: "json stop", req: `{"op":"stop"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			t.Cleanup(func() { _ = client.Close() })
+			done := make(chan struct{})
+			go func() {
+				handleSocketCommand(server, nil)
+				close(done)
+			}()
+			_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+			if _, err := client.Write([]byte(tc.req)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			buf := make([]byte, 512)
+			n, err := client.Read(buf)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !strings.Contains(string(buf[:n]), "unauthorized") {
+				t.Fatalf("response %q does not contain unauthorized", string(buf[:n]))
+			}
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("handler did not return; stop may have entered the shutdown path")
+			}
+		})
+	}
+}
+
 // TestTCBComplianceSkeleton exercises key behaviors required by host-daemon.md
 // (more comprehensive versions live in integration + security package tests).
 // This ensures the daemon binary surface and basic flows respect minimal TCB.
@@ -327,11 +490,16 @@ func TestTCBComplianceSkeleton(t *testing.T) {
 		t.Log("note: expanded TCB sections (static/memory) not fully visible without daemon")
 	}
 
-	// Non-root stop must not hard-fail with old root requirement (we removed it)
-	cmd = exec.Command(aegisBinary, "stop")
-	out, _ = cmd.CombinedOutput()
-	if strings.Contains(string(out), "requires root privileges") {
-		t.Error("stop must not require root (per AGENTS + cli spec)")
+	// Non-root stop must not hard-fail with old root requirement (we removed it).
+	// Skip only this part when a daemon is live so doctor/static checks still run.
+	if liveDaemonAt(getControlSocketAddr(), pidFile) {
+		t.Log("skipping stop check: live aegis daemon detected; refusing to stop it")
+	} else {
+		cmd = exec.Command(aegisBinary, "stop")
+		out, _ = cmd.CombinedOutput()
+		if strings.Contains(string(out), "requires root privileges") {
+			t.Error("stop must not require root (per AGENTS + cli spec)")
+		}
 	}
 
 	// Static binary check (host-daemon.md requirement)
