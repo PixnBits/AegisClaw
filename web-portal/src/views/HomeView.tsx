@@ -18,6 +18,7 @@ export function HomeView({ onOpenChannel, onOpenCanvas }: Props) {
   const clearPlanPreview = usePortalStore((s) => s.clearPlanPreview);
   const [goal, setGoal] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const mainHarness = harnessByChannel.main;
   const tokenUsage = overviewStats?.token_usage?.total;
@@ -27,9 +28,12 @@ export function HomeView({ onOpenChannel, onOpenCanvas }: Props) {
     const text = goal.trim();
     if (!text) return;
     setSubmitting(true);
+    setSubmitError('');
     try {
       await submitGoal(text);
       setGoal('');
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Could not submit goal');
     } finally {
       setSubmitting(false);
     }
@@ -49,12 +53,20 @@ export function HomeView({ onOpenChannel, onOpenCanvas }: Props) {
           placeholder="Describe your goal in natural language…"
           data-testid="command-bar-input"
           value={goal}
-          onChange={(e) => setGoal(e.target.value)}
+          onChange={(e) => {
+            setGoal(e.target.value);
+            if (submitError) setSubmitError('');
+          }}
         />
         <p className="subtle">The PM will decompose your goal into narrow tasks for specialists with Court review.</p>
         <button type="submit" className="primary-button" data-testid="command-bar-submit" disabled={submitting}>
           {submitting ? 'Starting…' : 'Start Plan Preview'}
         </button>
+        {submitError ? (
+          <p className="form-error" role="alert" data-testid="goal-submit-error">
+            {submitError}
+          </p>
+        ) : null}
       </form>
 
       {planPreview && (

@@ -91,6 +91,121 @@ func requestAuthorizedChannelNotify(r *http.Request) bool {
 	return requestFromLoopback(r)
 }
 
+// annotateChannelListIDs sets id_valid and id_error on channels whose id
+// fails channelid.ValidateChannelID. Valid channels are left unchanged.
+// A non-list payload is returned as-is.
+func annotateChannelListIDs(data interface{}) interface{} {
+	list, ok := data.([]interface{})
+	if !ok {
+		return data
+	}
+	for _, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		if err := channelid.ValidateChannelID(id); err != nil {
+			m["id_valid"] = false
+			m["id_error"] = sanitize.Text(sanitize.ContextChat, err.Error())
+		}
+	}
+	return list
+}
+
+// sanitizeChannelList prepares channel.list for the browser.
+//   - Ids are checked on the raw list, before redaction. The credential
+//     pattern matches "sk-" plus 20 letters anywhere, so it rewrites valid
+//     ids such as "task-refactorauthenticationmodule" to "ta[REDACTED]".
+//     Checked after that, a valid id would get the invalid badge.
+//   - The whole list is then sanitized as before, so every other field gets
+//     full redaction.
+//   - For an entry whose raw id passes ValidateChannelID, the raw id is put
+//     back after sanitizing. A valid id is limited to ^[a-z][a-z0-9-]*$
+//     (45 chars max), is a name the user chose, and must stay selectable. An
+//     invalid id stays redacted.
+func sanitizeChannelList(data interface{}) interface{} {
+	raw, ok := data.([]interface{})
+	if !ok {
+		return sanitize.Value(sanitize.ContextChat, data)
+	}
+	validIDs := make([]string, len(raw))
+	for i, item := range raw {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id, _ := m["id"].(string); channelid.ValidateChannelID(id) == nil {
+			validIDs[i] = id
+		}
+	}
+	clean := sanitize.Value(sanitize.ContextChat, annotateChannelListIDs(raw))
+	out, ok := clean.([]interface{})
+	if !ok || len(out) != len(raw) {
+		return clean
+	}
+	for i, item := range out {
+		if validIDs[i] == "" {
+			continue
+		}
+		if m, ok := item.(map[string]interface{}); ok {
+			m["id"] = validIDs[i]
+		}
+	}
+	return out
+}
+
+// sanitizeChannelDetail prepares channel.get for the browser. It is
+// sanitized whole, then the raw id and each message's raw channel_id are put
+// back where they pass ValidateChannelID, matched by position, as in
+// sanitizeChannelList. The SPA keys the feed, posts, members, archive and
+// harness on these ids. name, topic, content and every other field stay
+// redacted.
+func sanitizeChannelDetail(data interface{}) interface{} {
+	raw, ok := data.(map[string]interface{})
+	if !ok {
+		return sanitize.Value(sanitize.ContextChat, data)
+	}
+	id := sanitizeValidID(raw["id"])
+	msgs, _ := raw["messages"].([]interface{})
+	msgIDs := make([]string, len(msgs))
+	for i, item := range msgs {
+		if m, ok := item.(map[string]interface{}); ok {
+			msgIDs[i] = sanitizeValidID(m["channel_id"])
+		}
+	}
+	clean := sanitize.Value(sanitize.ContextChat, raw)
+	out, ok := clean.(map[string]interface{})
+	if !ok {
+		return clean
+	}
+	if id != "" {
+		out["id"] = id
+	}
+	outMsgs, ok := out["messages"].([]interface{})
+	if !ok || len(outMsgs) != len(msgs) {
+		return out
+	}
+	for i, item := range outMsgs {
+		if msgIDs[i] == "" {
+			continue
+		}
+		if m, ok := item.(map[string]interface{}); ok {
+			m["channel_id"] = msgIDs[i]
+		}
+	}
+	return out
+}
+
+// sanitizeValidID returns v when it is a valid channel id, else "".
+func sanitizeValidID(v interface{}) string {
+	id, _ := v.(string)
+	if channelid.ValidateChannelID(id) != nil {
+		return ""
+	}
+	return id
+}
+
 func (s *Server) handleAPIDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -135,7 +250,7 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"channels": sanitize.Value(sanitize.ContextChat, data),
+			"channels": sanitizeChannelList(data),
 		})
 
 	case len(parts) == 0 && r.Method == http.MethodPost:
@@ -161,7 +276,7 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(sanitize.Value(sanitize.ContextChat, data)) //nolint:errcheck
+		json.NewEncoder(w).Encode(sanitizeChannelDetail(data)) //nolint:errcheck
 
 	case len(parts) == 1 && r.Method == http.MethodPost:
 		var postReq struct {

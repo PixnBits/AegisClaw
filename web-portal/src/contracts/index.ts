@@ -175,6 +175,9 @@ export type Channel = {
   members?: Array<{ role?: string; agent_id?: string }>;
   messages?: ChannelMessage[];
   archived?: boolean;
+  /** False when the id fails the channel id rule. Omitted for valid ids. */
+  id_valid?: boolean;
+  id_error?: string;
 };
 
 export type FeedItemKind =

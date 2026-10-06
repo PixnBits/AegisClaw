@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,11 +70,15 @@ func TestBridgeSessionCallHonorsContext(t *testing.T) {
 func TestResilientBridgeClientUsesNoopWhenDisconnected(t *testing.T) {
 	r := &resilientBridgeClient{noop: &noopAPIClient{}}
 	resp, err := r.Call(context.Background(), "worker.list", nil)
-	if err != nil {
+	if resp != nil {
+		t.Fatalf("noop bridge response: %+v", resp)
+	}
+	var unavail *dashboard.UnavailableError
+	if !errors.As(err, &unavail) {
 		t.Fatalf("noop bridge: %v", err)
 	}
-	if resp.Success {
-		t.Fatal("expected noop failure when disconnected")
+	if !strings.Contains(err.Error(), "no live daemon connection") {
+		t.Fatalf("noop bridge message: %v", err)
 	}
 }
 

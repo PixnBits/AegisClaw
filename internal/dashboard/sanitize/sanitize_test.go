@@ -92,3 +92,50 @@ func TestJSONBytesRoundTrip(t *testing.T) {
 		t.Fatalf("content not sanitized: %q", content)
 	}
 }
+
+// Redaction must never be weaker than main's pattern. A key glued to a
+// letter, a digit, an escaped "\n", a %3D or another key is still a key.
+// Channel ids are protected one layer up (sanitizeChannelList), not by
+// weakening this pattern.
+func TestCredentialPatternNeverWeakerThanMain(t *testing.T) {
+	key := "sk-" + strings.Repeat("a1B2", 6) // 24 alnum after sk-
+	aws := "AKIAABCDEFGHIJKLMNOP"
+	aws2 := "AKIAQRSTUVWXYZ234567"
+	cases := []string{
+		key,
+		"token " + key,
+		"Authorization: Bearer " + key,
+		"OPENAI_API_KEY=" + key,
+		`{"key":"` + key + `"}`,
+		"api_key_" + key,
+		"OPENAI_KEY_" + key,
+		"AWS_" + aws,
+		`{"log":"retrying\n` + key + `"}`, // raw JSON text: backslash, n, key
+		`msg\n` + key,
+		"https://x.example/cb?k%3D" + key,
+		"plan2" + key,
+		"x" + key,
+		"1" + key,
+		"id1" + key,
+		aws + aws2,
+		"aws " + aws + " " + aws2,
+	}
+	for _, in := range cases {
+		got := Text(ContextChat, in)
+		for _, secret := range []string{key[len(key)-16:], aws[4:], aws2[4:]} {
+			if strings.Contains(in, secret) && strings.Contains(got, secret) {
+				t.Errorf("Text(%q) = %q, leaks %q", in, got, secret)
+			}
+		}
+	}
+	// The glued AKIA pair: both keys go.
+	if got := Text(ContextChat, aws+aws2); got != "[REDACTED][REDACTED]" {
+		t.Errorf("glued AKIA pair = %q", got)
+	}
+	// Main's behaviour on text: "sk-" plus 20 letters inside a word is
+	// redacted too. Valid channel ids get their raw id back in the channel
+	// list instead (see internal/dashboard sanitizeChannelList).
+	if got := Text(ContextChat, "channel task-refactorauthenticationmodule"); got != "channel ta[REDACTED]" {
+		t.Errorf("Text redaction changed for sk- inside a word: %q", got)
+	}
+}

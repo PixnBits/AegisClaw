@@ -212,7 +212,7 @@ func handleChatSendStream(w http.ResponseWriter, r *http.Request, client APIClie
 
 func fetchRaw(ctx context.Context, client APIClient, action string, req interface{}) (interface{}, error) {
 	if client == nil {
-		return nil, fmt.Errorf("api client not configured for action: %s", action)
+		return nil, unavailable(fmt.Errorf("api client not configured for action: %s", action))
 	}
 	if err := bridgeGuard.Validate(action); err != nil {
 		return nil, err
@@ -223,16 +223,18 @@ func fetchRaw(ctx context.Context, client APIClient, action string, req interfac
 	}
 	resp, err := client.Call(ctx, action, payload)
 	if err != nil {
-		return nil, err
+		// Call errors are transport or "daemon not there". Daemon error
+		// replies come back as Success: false with a nil Call error.
+		return nil, unavailable(err)
 	}
 	if resp == nil {
-		return nil, fmt.Errorf("empty response for action: %s", action)
+		return nil, &UpstreamError{Msg: fmt.Sprintf("empty response for action: %s", action)}
 	}
 	if !resp.Success {
 		if resp.Error != "" {
-			return nil, fmt.Errorf("%s", resp.Error)
+			return nil, &UpstreamError{Msg: resp.Error}
 		}
-		return nil, fmt.Errorf("action failed: %s", action)
+		return nil, &UpstreamError{Msg: fmt.Sprintf("action failed: %s", action)}
 	}
 	var out interface{}
 	json.Unmarshal(resp.Data, &out) //nolint:errcheck
