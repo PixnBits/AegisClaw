@@ -234,24 +234,30 @@ See `make help` and the SBOM target for details.
 The `apt` package for Firecracker is usually missing or extremely outdated. Use the official static release instead:
 
 ```bash
-# 1. Download a recent release (example uses v1.15.1)
+# 1. Download a recent release (example uses v1.15.1) and the checksum file
+#    GitHub publishes next to that asset. Do not hardcode the hash.
 cd ~/Downloads
 wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz
+wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz.sha256.txt
 
-# 2. Extract
+# 2. Verify the tarball against the published checksum before extracting.
+#    sha256sum exits non-zero on mismatch; do not extract a tarball that fails.
+sha256sum -c firecracker-v1.15.1-x86_64.tgz.sha256.txt
+
+# 3. Extract
 tar -zxvf firecracker-v1.15.1-x86_64.tgz
 
-# 3. Install into a clean, versioned location (recommended pattern)
+# 4. Install into a clean, versioned location (recommended pattern)
 sudo mkdir -p /usr/local/firecracker/v1.15.1
 sudo cp release-v1.15.1-x86_64/firecracker-v1.15.1-x86_64 /usr/local/firecracker/v1.15.1/firecracker
 sudo cp release-v1.15.1-x86_64/jailer-v1.15.1-x86_64     /usr/local/firecracker/v1.15.1/jailer
 sudo chmod +x /usr/local/firecracker/v1.15.1/firecracker /usr/local/firecracker/v1.15.1/jailer
 
-# 4. Create symlinks so `firecracker` and `jailer` are in PATH
+# 5. Create symlinks so `firecracker` and `jailer` are in PATH
 sudo ln -sf /usr/local/firecracker/v1.15.1/firecracker /usr/local/bin/firecracker
 sudo ln -sf /usr/local/firecracker/v1.15.1/jailer     /usr/local/bin/jailer
 
-# 5. Verify
+# 6. Verify
 which firecracker
 firecracker --version
 which jailer
@@ -277,6 +283,9 @@ the virtio-rng driver for guest entropy support; see GitHub #62 and the download
 mkdir -p ~/.aegis/firecracker
 curl -fsSL -o ~/.aegis/firecracker/vmlinux \
   https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.209
+# Same pin as KERNEL_SHA256 in scripts/download-firecracker-kernel.sh.
+# Two spaces between the hash and the path. Stop if this check fails.
+echo "932450603af9175c443f5348aa961326945e3b4b46ba34bab2c714c751ee2f85  ${HOME}/.aegis/firecracker/vmlinux" | sha256sum -c -
 chmod 644 ~/.aegis/firecracker/vmlinux
 ```
 
