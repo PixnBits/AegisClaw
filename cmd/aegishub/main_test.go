@@ -330,6 +330,78 @@ func TestDeliverPendingRPC_DoesNotStealUnrelatedPush(t *testing.T) {
 	}
 }
 
+func TestDeliverPendingRPC_PermissionSnapshotReplyCompletesMatchingWaiter(t *testing.T) {
+	requester := "hub-perm-fetch-1"
+	waitCh := registerPendingRPC(requester, "store", "permission.snapshot")
+	defer clearPendingRPC(requester)
+
+	turn := Message{
+		Source:      "channel-facilitator-out-1",
+		Destination: requester,
+		Command:     "channel.turn",
+	}
+	if deliverPendingRPC(turn) {
+		t.Fatal("channel.turn must not complete a permission.snapshot waiter")
+	}
+	select {
+	case got := <-waitCh:
+		t.Fatalf("channel.turn delivered %s to permission.snapshot waiter", got.Command)
+	default:
+	}
+
+	// Same destination as a waiter, but that waiter asked for llm.call.
+	llmReq := "llm-waiter-not-perm"
+	llmCh := registerPendingRPC(llmReq, "store", "llm.call")
+	defer clearPendingRPC(llmReq)
+	steal := Message{
+		Source:      "store",
+		Destination: llmReq,
+		Command:     "permission.snapshot",
+		Payload: map[string]interface{}{
+			"version": int64(1),
+			"subject": "coder-1",
+		},
+	}
+	if deliverPendingRPC(steal) {
+		t.Fatal("permission.snapshot must not complete an llm.call waiter")
+	}
+	select {
+	case got := <-llmCh:
+		t.Fatalf("llm.call waiter received %s", got.Command)
+	default:
+	}
+
+	reply := Message{
+		Source:      "store",
+		Destination: requester,
+		Command:     "permission.snapshot",
+		Payload: map[string]interface{}{
+			"version":       int64(3),
+			"subject":       "coder-1",
+			"allowed_tools": map[string]bool{"channel.post": true},
+			"visible_tools": map[string]bool{"channel.post": true},
+		},
+	}
+	if !deliverPendingRPC(reply) {
+		t.Fatal("permission.snapshot from store should complete the hub-perm-fetch waiter")
+	}
+	select {
+	case got := <-waitCh:
+		if got.Command != "permission.snapshot" {
+			t.Fatalf("waiter got %s", got.Command)
+		}
+		if got.Source != "store" {
+			t.Fatalf("waiter source %s", got.Source)
+		}
+		payload, ok := got.Payload.(map[string]interface{})
+		if !ok || payload["version"] != int64(3) {
+			t.Fatalf("waiter payload %#v", got.Payload)
+		}
+	default:
+		t.Fatal("waiter did not receive permission.snapshot")
+	}
+}
+
 func TestIsOneWayHubReply_LLMResponse(t *testing.T) {
 	if !isOneWayHubReply("llm.call.response") {
 		t.Fatal("llm.call.response must be forwarded as a reply, not a new RPC")
