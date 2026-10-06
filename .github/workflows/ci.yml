@@ -123,6 +123,12 @@ jobs:
             echo "Image build did not produce every expected component" >&2
             exit 1
           fi
+      - name: Verify builder scanners run
+        run: |
+          set -euo pipefail
+          # The builder runs these inside the VM for its security gates.
+          docker run --rm --entrypoint /usr/local/bin/opa aegis-builder:latest version
+          docker run --rm --entrypoint /usr/local/bin/gitleaks aegis-builder:latest version
 
   e2e-tests:
     name: E2E Tests
