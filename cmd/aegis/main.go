@@ -5174,13 +5174,24 @@ func startManagedHub(hubSocket string) error {
 			// Then prove it's actually accepting connections (the important part)
 			if conn, dialErr := net.DialTimeout("unix", hubSocket, 200*time.Millisecond); dialErr == nil {
 				conn.Close()
-				// Make the socket world-accessible (0666) so that after sudo start (root listener),
-				// normal users (and E2E scripts with custom /tmp state dirs) can connect without
-				// permission denied on the unix socket. For the main ~/.aegis/hub.sock this is
-				// usually not an issue (user-owned dir), but for isolated tests and custom paths
-				// it prevents the "connect: permission denied" that was blocking E2E waits and
-				// channel operations even when the daemon was up.
-				_ = os.Chmod(hubSocket, 0666)
+				// Root bypasses file mode. Chown to the original invoking user
+				// (SUDO_USER, else the current user) and keep mode 0600 so other
+				// local users cannot connect. The hub child creates the socket
+				// at 0600; repeat the chown here after the readiness dial.
+				if u, uerr := getOriginalUser(); uerr == nil && u != nil {
+					if uid, perr := strconv.Atoi(u.Uid); perr == nil {
+						gid := uid
+						if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
+							gid = g
+						}
+						if chownErr := os.Chown(hubSocket, uid, gid); chownErr != nil && os.Geteuid() == 0 {
+							logrus.Warnf("hub socket chown %s: %v", hubSocket, chownErr)
+						}
+					}
+				}
+				if err := os.Chmod(hubSocket, 0600); err != nil {
+					logrus.Warnf("could not chmod hub socket to 0600: %v", err)
+				}
 				logrus.Infof("aegishub ready (socket accepting connections: %s)", hubSocket)
 				return nil
 			}

@@ -10,10 +10,12 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"AegisClaw/internal/collab"
@@ -55,11 +57,165 @@ func isEphemeralHubClient(id string) bool {
 		strings.HasPrefix(id, "aegis-cli-internal") // CLI hub RPC (one reader loop per process)
 }
 
-// isReservedHubID reports ids reserved for the hub's internal snapshot RPC
-// waiters (hub-perm-fetch and hub-perm-fetch-<nanos>). Those waiters never
-// register; a client must not claim the id.
+// isReservedHubID reports ids that are reserved on every transport.
+// Host-only ids are reserved only on VM transports; see reservedIDReason.
 func isReservedHubID(id string) bool {
-	return id == "hub-perm-fetch" || strings.HasPrefix(id, "hub-perm-fetch-")
+	_, ok := reservedIDReason(id, false)
+	return ok
+}
+
+// reservedIDReason reports why id must not register.
+// Always reserved: "hub" and the hub's snapshot RPC waiter ids
+// (hub-perm-fetch, hub-perm-fetch-*). Those waiters never register.
+// Host-only ids are reserved only when vmTransport is set (RemoteAddr is
+// *vsock.Addr). Production guests, including store, reach the hub through
+// the daemon's guest hub bridge, which dials this UNIX socket, so they are
+// not a VM transport. web-portal dials the hub vsock listener from its VM
+// and is not reserved. Agent, memory, coder, tester, project-manager, and
+// court ids are not reserved.
+func reservedIDReason(id string, vmTransport bool) (string, bool) {
+	switch {
+	case id == "hub":
+		return "hub", true
+	case id == "hub-perm-fetch" || strings.HasPrefix(id, "hub-perm-fetch-"):
+		return "hub-perm-fetch", true
+	}
+	if !vmTransport {
+		return "", false
+	}
+	switch id {
+	case "store", "daemon", "daemon-internal", "daemon-orchestrator", "aegis-cli-internal", "channel-facilitator":
+		return "host-only", true
+	}
+	if strings.HasPrefix(id, "daemon-temp-") ||
+		strings.HasPrefix(id, "daemon-internal-") ||
+		strings.HasPrefix(id, "aegis-cli-internal-") ||
+		strings.HasPrefix(id, "channel-facilitator-out-") {
+		return "host-only", true
+	}
+	return "", false
+}
+
+// isVMHubTransport reports a raw AF_VSOCK peer. Those guests are bound by
+// CID lease, not by host uid. The guest hub bridge is a UNIX connection.
+func isVMHubTransport(conn net.Conn) bool {
+	if conn == nil || conn.RemoteAddr() == nil {
+		return false
+	}
+	_, ok := conn.RemoteAddr().(*vsock.Addr)
+	return ok
+}
+
+// hubOriginalUser is the invoking user: SUDO_USER when the hub was started
+// via sudo, otherwise the current user. Same rule as the daemon control socket.
+func hubOriginalUser() (*user.User, error) {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		return user.Lookup(sudoUser)
+	}
+	return user.Current()
+}
+
+func hubOriginalUID() int {
+	u, err := hubOriginalUser()
+	if err != nil || u == nil {
+		return -1
+	}
+	id, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return -1
+	}
+	return id
+}
+
+// getHubPeerUID returns the peer euid of a UNIX connection via SO_PEERCRED.
+// Non-UNIX conns (vsock, net.Pipe) return ok=false; callers must not treat
+// that as a UNIX peer.
+func getHubPeerUID(conn net.Conn) (int, bool) {
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return -1, false
+	}
+	file, err := unixConn.File()
+	if err != nil {
+		return -1, false
+	}
+	defer file.Close()
+
+	ucred, err := syscall.GetsockoptUcred(int(file.Fd()), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+	if err != nil {
+		return -1, false
+	}
+	return int(ucred.Uid), true
+}
+
+// authorizeHubPeer allows uid 0, the hub's own euid, or the original user.
+// !peerOK denies: a UNIX connection without SO_PEERCRED must not fail open.
+func authorizeHubPeer(peerUID int, peerOK bool, selfUID, originalUID int) bool {
+	if !peerOK {
+		return false
+	}
+	if peerUID == 0 || peerUID == selfUID {
+		return true
+	}
+	return originalUID >= 0 && peerUID == originalUID
+}
+
+// hubListenUmask serializes process-wide umask changes around socket creation.
+var hubListenUmask sync.Mutex
+
+// listenUnixSocket0600 listens so the socket inode is created at 0600.
+// umask 0177 makes the kernel mode 0777&^0177 = 0600. There is no window
+// where the socket is 0666 before a later chmod.
+func listenUnixSocket0600(socket string) (net.Listener, error) {
+	hubListenUmask.Lock()
+	defer hubListenUmask.Unlock()
+	old := syscall.Umask(0177)
+	defer syscall.Umask(old)
+	return net.Listen("unix", socket)
+}
+
+// listenHubUnixSocket creates the hub UNIX socket at mode 0600 and chowns it
+// to the original invoking user. Chown errors are ignored when not root
+// (the socket is already owned by the current user).
+func listenHubUnixSocket(socket string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(socket), 0700); err != nil {
+		return nil, err
+	}
+	_ = os.Remove(socket)
+	ln, err := listenUnixSocket0600(socket)
+	if err != nil {
+		return nil, err
+	}
+	chownHubSocketToOriginalUser(socket)
+	if err := os.Chmod(socket, 0600); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("chmod %s 0600: %w", socket, err)
+	}
+	return ln, nil
+}
+
+func chownHubSocketToOriginalUser(path string) {
+	u, err := hubOriginalUser()
+	if err != nil || u == nil {
+		if os.Geteuid() == 0 {
+			log.Printf("hub socket chown: original user: %v", err)
+		}
+		return
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		if os.Geteuid() == 0 {
+			log.Printf("hub socket chown: uid: %v", err)
+		}
+		return
+	}
+	gid := uid
+	if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
+		gid = g
+	}
+	if err := os.Chown(path, uid, gid); err != nil && os.Geteuid() == 0 {
+		log.Printf("hub socket chown %s: %v", path, err)
+	}
 }
 
 func registerPendingRPC(requesterID, dest, command string) chan Message {
@@ -318,11 +474,7 @@ func startHub(cmd *cobra.Command, args []string) {
 	}()
 
 	socket := expandPath(hubSocketPath)
-	dir := filepath.Dir(socket)
-	os.MkdirAll(dir, 0700)
-	os.Remove(socket)
-
-	listener, err := net.Listen("unix", socket)
+	listener, err := listenHubUnixSocket(socket)
 	if err != nil {
 		fmt.Printf("Failed to start AegisHub: %v\n", err)
 		os.Exit(1)
@@ -606,6 +758,17 @@ func verifyGitRegisterSignature(raw []byte, msg Message, pubKey ed25519.PublicKe
 
 func handleConnection(conn net.Conn, conns *sync.Map) {
 	defer conn.Close()
+	// Peer creds exist only on a real UNIX socket (*net.UnixConn).
+	// vsock peers are microVMs bound by CID lease, not host uid.
+	// net.Pipe (and test wrappers around it) is in-process and has no SO_PEERCRED.
+	if _, isUnix := conn.(*net.UnixConn); isUnix {
+		peerUID, peerOK := getHubPeerUID(conn)
+		if !authorizeHubPeer(peerUID, peerOK, os.Geteuid(), hubOriginalUID()) {
+			_ = json.NewEncoder(conn).Encode(map[string]string{"error": "ERR_UNAUTHORIZED_PEER"})
+			log.Printf("Audit: rejected unix hub peer uid=%d peerOK=%v", peerUID, peerOK)
+			return
+		}
+	}
 	br := bufio.NewReader(conn)
 	encoder := json.NewEncoder(conn)
 
@@ -637,6 +800,13 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	if regMsg.Destination != "hub" || regMsg.Command != "register" {
 		log.Printf("First message not register: %+v", regMsg)
 		encoder.Encode(map[string]string{"error": "ERR_INVALID_HANDSHAKE"})
+		return
+	}
+	// Before pubkey parsing, storeCIDLease, and any registered/conns mutation.
+	// A rejected id must not fill a CID lease.
+	if reason, reserved := reservedIDReason(regMsg.Source, isVMHubTransport(conn)); reserved {
+		_ = encoder.Encode(map[string]string{"error": "ERR_RESERVED_ID"})
+		log.Printf("Audit: rejected registration of reserved hub id %s (%s)", regMsg.Source, reason)
 		return
 	}
 
@@ -708,14 +878,9 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	// Check if already registered
 	registeredMutex.Lock()
 	componentID := regMsg.Source
-	if isReservedHubID(componentID) {
-		registeredMutex.Unlock()
-		encoder.Encode(map[string]string{"error": "ERR_RESERVED_ID"})
-		log.Printf("Audit: rejected registration of reserved hub id %s", componentID)
-		return
-	}
 
-	// For daemon connections: if already registered, use a temporary ID
+	// For daemon connections: if already registered, use a temporary ID.
+	// That id is distinct, so Swap must not close the persistent daemon conn.
 	if regMsg.Source == "daemon" {
 		if _, exists := registered[regMsg.Source]; exists {
 			// This is a fresh daemon connection (not the persistent one)
@@ -726,11 +891,9 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 			tempConnMutex.Unlock()
 			log.Printf("Hub: Fresh daemon connection registered as %s (original daemon still at %s)", componentID, regMsg.Source)
 		}
-	} else {
+	} else if _, exists := registered[regMsg.Source]; exists {
 		// Allow re-registration when a guest hub bridge reconnects or a VM restarts.
-		if _, exists := registered[regMsg.Source]; exists {
-			log.Printf("Hub: component %s re-registering — replacing previous connection", regMsg.Source)
-		}
+		log.Printf("Hub: component %s re-registering — replacing previous connection", regMsg.Source)
 	}
 
 	decoder := json.NewDecoder(br)
@@ -740,10 +903,15 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 		Mutex:   sync.Mutex{},
 	}
 	registered[componentID] = &RegisteredComponent{ID: componentID, PublicKey: pubKey, Encoders: encoders, Version: version}
+	old, loaded := conns.Swap(componentID, conn)
 	registeredMutex.Unlock()
+	if loaded && old != conn {
+		if oldConn, ok := old.(net.Conn); ok && oldConn != nil {
+			log.Printf("Hub: closing replaced connection for %s", componentID)
+			_ = oldConn.Close()
+		}
+	}
 	debugLog("hub", fmt.Sprintf("Registered component %s (hub id %s) version %s", regMsg.Source, componentID, version))
-
-	conns.Store(componentID, conn)
 
 	// A re-register overwrites registered[id] before this conn's defer runs.
 	// Delete only if this conn still owns the slot.
