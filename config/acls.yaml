@@ -660,6 +660,9 @@ rules:
     # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> daemon-internal* rule.
     - llm.usage.summary
     - llm.usage.recent
+    # Security posture reads the Store's handler-panic counters. Exact command;
+    # the Store also checks the source (daemon-internal / daemon-internal-* only).
+    - store.security_stats
 - source: "daemon-internal-*"
   destination: store
   commands:
@@ -677,6 +680,8 @@ rules:
     # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> daemon-internal-* rule.
     - llm.usage.summary
     - llm.usage.recent
+    # Exact command, as for daemon-internal* above.
+    - store.security_stats
 # Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
 # clients for the commands above (responses may carry the original command name in audit; observed
 # as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).
