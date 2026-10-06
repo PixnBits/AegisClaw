@@ -1189,7 +1189,7 @@ RUN npm install --omit=dev'
 COPY package-lock.json ./'
     reject_case npm-bare-env-mention "bare npm install without a lockfile" "a lockfile named outside COPY/ADD does not count" \
         'ENV NPM_LOCK=package-lock.json
-LABEL lockfile="yarn.lock"
+LABEL lockfile="yarn.lock" stage="deps"
 RUN test -f package-lock.json || echo no lockfile
 RUN npm install'
     reject_case yarn-bare "bare yarn install without a lockfile" "bare yarn rejected" \
