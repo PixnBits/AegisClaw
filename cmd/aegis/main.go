@@ -1104,7 +1104,6 @@ func startDaemon(cmd *cobra.Command, args []string) {
 			_ = webPortalProxyServer.Shutdown(shutdownCtx)
 			cancel()
 		}
-		stopGuestLogCollector()
 		killManagedChildren()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -5055,12 +5054,8 @@ func startBaseInfrastructure() error {
 	logrus.Info("host AegisHub is up; now launching real Firecracker microVMs for base infrastructure (network-boundary, store, web-portal). If the process appears to hang here, check that ensureRealRootfsImage can find your images and that loop mounts / mkfs succeed as root.")
 	dlog("hub registration complete, moving to first real VM (network-boundary)")
 
-	// Web Portal microVM bridge (vsock 1030): forwards chat/sessions/dashboard actions to Hub.
+	// Portal hub receiver (daemon side of portal actions sent through Hub).
 	startPortalBridge()
-
-	// Phase 1 observability: start structured guest logging collector over vsock.
-	// Guests (starting with web-portal) can now emit early startup and vsock status logs.
-	startGuestLogCollector(cfg.StateDir)
 
 	// 3. Network Boundary (only component allowed secrets + outbound).
 	// MUST run as real Firecracker microVM per paranoid security model.

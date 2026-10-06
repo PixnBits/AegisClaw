@@ -455,7 +455,7 @@ rules:
   commands:
     - channel.activity
     - channel.member_notify
-- source: "daemon-internal*"
+- source: daemon-internal
   destination: court-persona-*
   commands:
     - channel.activity
@@ -475,7 +475,7 @@ rules:
   commands:
     - channel.activity
     - channel.member_notify
-- source: "daemon-internal*"
+- source: daemon-internal
   destination: "project-manager*"
   commands:
     - channel.activity
@@ -557,7 +557,7 @@ rules:
 # daemon-internal-N (fresh per `aegis` process). Allow ensure.role / orchestrator.* so the
 # CLI-driven collaboration path (pm goal → ensure for PM + dynamic roles with channel=) works
 # without ACL blocks (parallel to the project-manager* rule below).
-- source: "daemon-internal*"
+- source: daemon-internal
   destination: "daemon-orchestrator"
   commands:
     - ensure.role
@@ -575,7 +575,7 @@ rules:
 # ACLs were added: "daemon-internal-N -> project-manager : user.goal".
 # Without this, the PM never receives the goal, returns empty response, never posts the plan
 # or does the dynamic ensure.role for coder/tester, and channel gets time out or show nothing.
-- source: "daemon-internal*"
+- source: daemon-internal
   destination: "project-manager*"
   commands:
     - user.goal
@@ -642,7 +642,7 @@ rules:
 # auto-main, channel ops, and collab paths. Without this, probes get ACL violations, the bg store-ready
 # gate never succeeds (or times out), lazy Court never starts, base stays "launch attempted (Store still starting...)",
 # and logs spam violations on every poll / 2s SSE tick during startup or steady state.
-- source: "daemon-internal*"
+- source: daemon-internal
   destination: store
   commands:
     - channel.*
@@ -656,8 +656,8 @@ rules:
     - tool.registry.discover
     - audit.list
     # Portal-bridge fallback re-sends /api/llm-usage as daemon-internal.
-    # Exact commands. llm.usage.record is not granted to daemon-internal*; Store also rejects it.
-    # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> daemon-internal* rule.
+    # Exact commands. llm.usage.record is not granted to daemon-internal; Store also rejects it.
+    # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> daemon-internal rule.
     - llm.usage.summary
     - llm.usage.recent
     # Security posture reads the Store's handler-panic counters. Exact command;
@@ -688,7 +688,7 @@ rules:
 # Grant broad "*" for these internal sources so status, auto-defaults, Court setup, PM ensure add_member,
 # and portal stats all succeed without ACL noise once Store is bridged.
 - source: store
-  destination: "daemon-internal*"
+  destination: daemon-internal
   commands:
     - "*"
 - source: store
@@ -848,7 +848,7 @@ rules:
     # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> web-portal rule.
     - llm.usage.summary
     - llm.usage.recent
-- source: "daemon-internal*"
+- source: daemon-internal
   destination: store
   commands:
     - permission.*

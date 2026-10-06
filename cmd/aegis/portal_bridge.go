@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +14,6 @@ import (
 	"AegisClaw/internal/sandbox"
 	"AegisClaw/internal/transport/hubclient"
 
-	"github.com/mdlayher/vsock"
 	"github.com/sirupsen/logrus"
 )
 
@@ -51,41 +48,12 @@ type portalBridgeMsg struct {
 	Signature   string      `json:"signature"`
 }
 
-// startPortalBridge listens on vsock for the Web Portal microVM when it cannot
-// reach AegisHub directly (web-portal-vm.md: host-mediated bridge on port 1030).
+// startPortalBridge starts the daemon's portal hub receiver. The web-portal
+// guest reaches the hub through the daemon's guest hub bridge (it listens on
+// hubclient.GuestHubBridgePort and the daemon dials in through the
+// Firecracker vsock UDS), so the daemon has no vsock listener of its own.
 func startPortalBridge() {
 	startDaemonPortalHubReceiver()
-	go func() {
-		port := uint32(hubclient.PortalBridgeVsockPort)
-		l, err := vsock.Listen(port, nil)
-		if err != nil {
-			logrus.Warnf("portal bridge: vsock listen on port %d failed (web-portal guest may need direct hub vsock): %v", port, err)
-			return
-		}
-		logrus.Infof("portal bridge: listening on vsock port %d for web-portal microVM", port)
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				logrus.Warnf("portal bridge accept: %v", err)
-				continue
-			}
-			go handlePortalBridgeConn(conn)
-		}
-	}()
-}
-
-func handlePortalBridgeConn(conn net.Conn) {
-	defer conn.Close()
-	dec := json.NewDecoder(conn)
-	enc := json.NewEncoder(conn)
-	for {
-		var msg portalBridgeMsg
-		if err := dec.Decode(&msg); err != nil {
-			return
-		}
-		resp := dispatchPortalBridge(msg)
-		_ = enc.Encode(resp)
-	}
 }
 
 func dispatchPortalBridge(msg portalBridgeMsg) portalBridgeMsg {
