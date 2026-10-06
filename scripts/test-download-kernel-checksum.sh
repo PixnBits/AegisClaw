@@ -6,6 +6,9 @@
 #   (c) AEGIS_SKIP_KERNEL_CHECKSUM=1 installs anyway, with a loud warning
 #   (d) an existing virtio_rng kernel with a different hash fails (file kept)
 #       unless AEGIS_KERNEL_SHA256 is that hash or AEGIS_SKIP_KERNEL_CHECKSUM=1
+#   (e) an existing virtio_rng kernel and a PATH with neither sha256sum nor
+#       shasum exits non-zero and leaves the file untouched, unless
+#       AEGIS_SKIP_KERNEL_CHECKSUM=1 (exit 0, file still untouched)
 #
 # Run: bash scripts/test-download-kernel-checksum.sh
 
@@ -117,20 +120,23 @@ reset_marker() {
 run_at() {
     local dest="$1"
     shift
+    local path="${TEST_PATH:-$FAKEBIN:/usr/bin:/bin}"
+    local bash_bin
+    bash_bin=$(command -v bash)
     local -a env_args=()
     if [ -n "$dest" ]; then
         env_args+=(AEGIS_KERNEL_PATH="$dest")
     fi
     env -i \
         HOME="$HOME_DIR" \
-        PATH="$FAKEBIN:/usr/bin:/bin" \
+        PATH="$path" \
         TMPDIR="$TMP_DIR" \
         FAKE_CURL_SRC="$FAKE_CURL_SRC" \
         FAKE_CURL_MARKER="$FAKE_CURL_MARKER" \
         FAKE_CURL_FAIL="$FAKE_CURL_FAIL" \
         "$@" \
         "${env_args[@]}" \
-        bash "$DOWNLOADER"
+        "$bash_bin" "$DOWNLOADER"
 }
 
 CAPTURE=""
@@ -361,5 +367,60 @@ if ! cmp -s -- "$WORKDIR/good-bytes" "$dest"; then
     fail "URL override with checksum did not install the fetched bytes"
 fi
 echo "ok: URL override with checksum installed"
+
+# (e) Existing virtio_rng kernel, PATH has no sha256sum or shasum.
+NOHASHBIN="$WORKDIR/nohash-bin"
+mkdir -p "$NOHASHBIN"
+for tool in grep mkdir dirname tr; do
+    src=$(command -v "$tool") || fail "host is missing $tool"
+    ln -s "$src" "$NOHASHBIN/$tool"
+done
+if PATH="$NOHASHBIN" command -v sha256sum >/dev/null 2>&1 \
+    || PATH="$NOHASHBIN" command -v shasum >/dev/null 2>&1; then
+    fail "restricted PATH can still see a hash tool"
+fi
+
+reset_marker
+dest="$WORKDIR/nohash/vmlinux"
+mkdir -p "$(dirname "$dest")"
+cp -- "$WORKDIR/custom-bytes" "$dest"
+cp -- "$dest" "$WORKDIR/nohash-snapshot"
+TEST_PATH="$NOHASHBIN"
+run_capture "$dest"
+unset TEST_PATH
+if [ "$CAPTURE_RC" -eq 0 ]; then
+    fail "missing hash tool exited 0: $CAPTURE"
+fi
+if ! cmp -s -- "$WORKDIR/nohash-snapshot" "$dest"; then
+    fail "missing hash tool modified the kernel"
+fi
+if [ -s "$FAKE_CURL_MARKER" ]; then
+    fail "missing hash tool triggered a download"
+fi
+assert_no_temp_leftovers "$WORKDIR/nohash"
+assert_contains "$CAPTURE" "Neither sha256sum nor shasum" "missing hash tool was not explained"
+assert_contains "$CAPTURE" "not deleted" "missing hash tool did not say the file was kept"
+assert_contains "$CAPTURE" "AEGIS_SKIP_KERNEL_CHECKSUM=1" "missing hash tool did not mention the skip flag"
+assert_not_contains "$CAPTURE" "neither curl nor wget" "missing hash tool fell through to a download"
+echo "ok: missing hash tool rejected the existing kernel and left it in place"
+
+reset_marker
+TEST_PATH="$NOHASHBIN"
+run_capture "$dest" "AEGIS_SKIP_KERNEL_CHECKSUM=1"
+unset TEST_PATH
+if [ "$CAPTURE_RC" -ne 0 ]; then
+    fail "skip flag without a hash tool failed rc=$CAPTURE_RC output=$CAPTURE"
+fi
+if ! cmp -s -- "$WORKDIR/nohash-snapshot" "$dest"; then
+    fail "skip flag without a hash tool modified the kernel"
+fi
+if [ -s "$FAKE_CURL_MARKER" ]; then
+    fail "skip flag without a hash tool triggered a download"
+fi
+assert_contains "$CAPTURE" "AEGIS_SKIP_KERNEL_CHECKSUM=1" "skip flag without a hash tool was not announced"
+assert_contains "$CAPTURE" "SKIPPING SHA-256" "skip flag without a hash tool was not loud"
+assert_contains "$CAPTURE" "not deleted" "skip flag without a hash tool did not say the file was kept"
+assert_not_contains "$CAPTURE" "Error:" "skip flag without a hash tool printed a hard error"
+echo "ok: skip flag kept the existing kernel when no hash tool was available"
 
 echo "all kernel checksum checks passed"
