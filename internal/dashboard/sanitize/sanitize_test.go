@@ -92,3 +92,35 @@ func TestJSONBytesRoundTrip(t *testing.T) {
 		t.Fatalf("content not sanitized: %q", content)
 	}
 }
+func TestCredentialPatternWordBoundary(t *testing.T) {
+	key := "sk-" + strings.Repeat("a1B2", 6) // 24 alnum after sk-
+	aws := "AKIAABCDEFGHIJKLMNOP"
+	redacted := []string{
+		key,
+		"token " + key,
+		"Authorization: Bearer " + key,
+		"OPENAI_API_KEY=" + key,
+		`{"key":"` + key + `"}`,
+		"key:" + key + ".",
+		"(" + key + ")",
+		"aws " + aws,
+		"AWS_ACCESS_KEY_ID=" + aws,
+	}
+	for _, in := range redacted {
+		got := Text(ContextChat, in)
+		if strings.Contains(got, key) || strings.Contains(got, aws) || !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("Text(%q) = %q, want the key redacted", in, got)
+		}
+	}
+	kept := []string{
+		"task-refactorauthenticationmodule",
+		"channel task-refactorauthenticationmodule is ready",
+		"desk-reorganizationplanningnotes",
+		"risk-assessmentforthequarterlyplan",
+	}
+	for _, in := range kept {
+		if got := Text(ContextChat, in); got != in {
+			t.Errorf("Text(%q) = %q, want unchanged (sk- inside a word is not a key)", in, got)
+		}
+	}
+}

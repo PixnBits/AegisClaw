@@ -3041,9 +3041,10 @@ func runPMGoal(cmd *cobra.Command, args []string) {
 	}
 	// Ensure the channel exists before ensure/add_member/post (store channel.post is no-op if missing).
 	// An invalid id or a refused create must not continue into ensure_role.
-	if err := ensurePMGoalChannel(chID, sendPMGoalViaHub); err != nil {
-		fmt.Fprintf(os.Stderr, "pm goal: %v\n", err)
-		os.Exit(1)
+	if err := ensurePMGoalChannel(chID, pmGoalHubSendFn); err != nil {
+		fmt.Fprintf(pmGoalStderr, "pm goal: %v\n", err)
+		pmGoalExit(1)
+		return
 	}
 	// 1. Ensure the project-manager role (starts the PM VM with channel attachment).
 	// Use retry for robustness against transient hub/receiver reply latency (e.g. right after
@@ -5861,19 +5862,7 @@ func setupDefaultMainChannelAndMembers() {
 		logrus.Warnf("setupDefaultMainChannelAndMembers: channel.list failed (post-store-ready): %v", err)
 		return
 	}
-	hasMain := false
-	if arr, ok := listResp.([]interface{}); ok {
-		logInvalidChannelIDs(arr)
-		for _, c := range arr {
-			if m, ok := c.(map[string]interface{}); ok {
-				if id, ok := m["id"].(string); ok && id == "main" {
-					hasMain = true
-					break
-				}
-			}
-		}
-	}
-	if !hasMain {
+	if !inspectStartupChannelList(listResp) {
 		_, err := sendToComponentViaHubRetry("store", "channel.create", map[string]interface{}{"id": "main"}, 5*time.Second)
 		if err != nil {
 			logrus.Warnf("setupDefaultMainChannelAndMembers: channel.create main failed: %v", err)

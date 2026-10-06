@@ -191,3 +191,72 @@ func TestGoalSubmitChannelErrors(t *testing.T) {
 		t.Fatalf("success body %s", okRec.Body.String())
 	}
 }
+
+// TestChannelListValidIDNotRedactedIntoInvalid: the id check runs before
+// redaction. "task-refactorauthenticationmodule" contains "sk-" followed by
+// 20+ letters, which the credential pattern used to rewrite to
+// "ta[REDACTED]"; checked after that, a valid id got the invalid badge.
+func TestChannelListValidIDNotRedactedIntoInvalid(t *testing.T) {
+	const id = "task-refactorauthenticationmodule"
+	client := &recordAPIClient{data: map[string]interface{}{
+		"channel.list": []interface{}{
+			map[string]interface{}{"id": id, "members": []interface{}{}},
+		},
+	}}
+	srv, err := New("127.0.0.1:0", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptestRequest(t, http.MethodGet, "/api/channels", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Channels []map[string]interface{} `json:"channels"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Channels) != 1 {
+		t.Fatalf("channels %#v", body.Channels)
+	}
+	ch := body.Channels[0]
+	if _, ok := ch["id_valid"]; ok {
+		t.Fatalf("valid id %q got the invalid badge: %#v", id, ch)
+	}
+	if ch["id"] != id {
+		t.Fatalf("id rewritten to %#v", ch["id"])
+	}
+}
+
+// TestChannelListAnnotatesBeforeRedaction pins the order. "sk-" + 21
+// letters is a valid channel id that the credential pattern still redacts
+// for display. The badge must reflect the raw id, not "[REDACTED]".
+func TestChannelListAnnotatesBeforeRedaction(t *testing.T) {
+	const id = "sk-abcdefghijklmnopqrstu"
+	client := &recordAPIClient{data: map[string]interface{}{
+		"channel.list": []interface{}{map[string]interface{}{"id": id}},
+	}}
+	srv, err := New("127.0.0.1:0", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptestRequest(t, http.MethodGet, "/api/channels", nil))
+	var body struct {
+		Channels []map[string]interface{} `json:"channels"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Channels) != 1 {
+		t.Fatalf("channels %#v", body.Channels)
+	}
+	if _, ok := body.Channels[0]["id_valid"]; ok {
+		t.Fatalf("valid id checked after redaction: %#v", body.Channels[0])
+	}
+	if strings.Contains(rec.Body.String(), id) {
+		t.Fatalf("credential-shaped id reached the browser unredacted: %s", rec.Body.String())
+	}
+}

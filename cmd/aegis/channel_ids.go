@@ -36,3 +36,22 @@ func logInvalidChannelIDs(list []interface{}) {
 		logrus.Warnf("channel %q has an invalid id (%v); agents cannot be started for it. Create a new channel with a valid id and move the work there.", bad.ID, bad.Err)
 	}
 }
+
+// inspectStartupChannelList is the startup pass over channel.list: it warns
+// about stranded invalid ids and reports whether "main" exists. It reuses the
+// list setupDefaultMainChannelAndMembers already fetched (no extra hub call).
+func inspectStartupChannelList(listResp interface{}) (hasMain bool) {
+	arr, ok := listResp.([]interface{})
+	if !ok {
+		return false
+	}
+	logInvalidChannelIDs(arr)
+	for _, c := range arr {
+		if m, ok := c.(map[string]interface{}); ok {
+			if id, ok := m["id"].(string); ok && id == "main" {
+				return true
+			}
+		}
+	}
+	return false
+}

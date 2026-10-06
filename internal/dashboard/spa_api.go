@@ -157,7 +157,9 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"channels": annotateChannelListIDs(sanitize.Value(sanitize.ContextChat, data)),
+			// Check ids before redaction. The credential pattern can rewrite
+			// part of a valid id, and the rewritten id would then fail the rule.
+			"channels": sanitize.Value(sanitize.ContextChat, annotateChannelListIDs(data)),
 		})
 
 	case len(parts) == 0 && r.Method == http.MethodPost:

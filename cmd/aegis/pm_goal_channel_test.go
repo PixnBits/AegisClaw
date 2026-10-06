@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestEnsurePMGoalChannel(t *testing.T) {
@@ -76,6 +78,73 @@ func TestEnsurePMGoalChannel(t *testing.T) {
 		}
 		if len(cmds) != 2 || cmds[0] != "channel.get" || cmds[1] != "channel.create" {
 			t.Fatalf("cmds=%v", cmds)
+		}
+	})
+}
+
+type pmGoalExitCode int
+
+// runPMGoalChannelStep runs runPMGoal with the seams replaced. A call to
+// pmGoalExit panics with the code so the rest of runPMGoal (which needs a
+// live hub) never runs; a run that does not exit returns -1 only if the
+// channel step passed, which these cases never expect.
+func runPMGoalChannelStep(t *testing.T, chID string, send pmGoalHubSend) (code int, stderr string, sends int) {
+	t.Helper()
+	var buf strings.Builder
+	oldExit, oldErr, oldSend := pmGoalExit, pmGoalStderr, pmGoalHubSendFn
+	t.Cleanup(func() { pmGoalExit, pmGoalStderr, pmGoalHubSendFn = oldExit, oldErr, oldSend })
+	pmGoalStderr = &buf
+	pmGoalExit = func(c int) { panic(pmGoalExitCode(c)) }
+	pmGoalHubSendFn = func(target, cmd string, payload interface{}) (pmGoalHubReply, error) {
+		sends++
+		return send(target, cmd, payload)
+	}
+	cmd := &cobra.Command{Use: "goal"}
+	cmd.Flags().String("channel", "", "")
+	if err := cmd.Flags().Set("channel", chID); err != nil {
+		t.Fatal(err)
+	}
+	code = -1
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c, ok := r.(pmGoalExitCode)
+				if !ok {
+					panic(r)
+				}
+				code = int(c)
+			}
+		}()
+		runPMGoal(cmd, []string{"ship", "it"})
+	}()
+	return code, buf.String(), sends
+}
+
+func TestRunPMGoalExitsNonZeroOnBadChannel(t *testing.T) {
+	t.Run("invalid id", func(t *testing.T) {
+		code, stderr, sends := runPMGoalChannelStep(t, "MyProj", func(string, string, interface{}) (pmGoalHubReply, error) {
+			t.Fatal("hub must not be called for an invalid id")
+			return pmGoalHubReply{}, nil
+		})
+		if code != 1 || sends != 0 {
+			t.Fatalf("code=%d sends=%d", code, sends)
+		}
+		if !strings.Contains(stderr, "pm goal: invalid channel id") {
+			t.Fatalf("stderr %q", stderr)
+		}
+	})
+	t.Run("create refused", func(t *testing.T) {
+		code, stderr, sends := runPMGoalChannelStep(t, "new-proj", func(_, cmd string, _ interface{}) (pmGoalHubReply, error) {
+			if cmd == "channel.get" {
+				return pmGoalHubReply{}, fmt.Errorf("not found")
+			}
+			return pmGoalHubReply{Command: "error", Payload: "invalid channel id: store refused"}, nil
+		})
+		if code != 1 || sends != 2 {
+			t.Fatalf("code=%d sends=%d", code, sends)
+		}
+		if !strings.Contains(stderr, "pm goal: channel.create: invalid channel id: store refused") {
+			t.Fatalf("stderr %q", stderr)
 		}
 	})
 }

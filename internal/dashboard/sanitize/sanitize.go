@@ -17,7 +17,10 @@ const (
 
 var (
 	apiKeyPattern    = regexp.MustCompile(`(?i)(api[_-]?key|secret|password|token|bearer)\s*[:=]\s*\S+`)
-	credentialPattern = regexp.MustCompile(`(?i)(AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,})`)
+	// \b keeps a key prefix inside a longer word from matching: the "sk-" in
+	// "task-refactorauthenticationmodule" is not an API key. A real key starts
+	// at a boundary (after a space, quote, '=', ':' and so on).
+	credentialPattern = regexp.MustCompile(`(?i)\b(AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,})`)
 	internalPathPattern = regexp.MustCompile(`/(etc|var|opt|proc|sys|home|root)/[^\s]*`)
 	privateIPPattern = regexp.MustCompile(`\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`)
 	hostnamePattern  = regexp.MustCompile(`\b[a-zA-Z0-9-]+\.(internal|local|svc|cluster)\b`)

@@ -31,6 +31,18 @@ describe('Sidebar create channel', () => {
     expect(badge).toHaveAttribute('title', 'invalid channel id: must match');
   });
 
+  it('shows no badge for valid channels', () => {
+    render(
+      <Sidebar
+        channels={[{ id: 'main' }, { id: 'task-refactorauthenticationmodule', id_valid: true }]}
+        onSelect={vi.fn()}
+        onNavigate={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('main')).toBeInTheDocument();
+    expect(screen.queryByTestId('invalid-id-badge')).toBeNull();
+  });
+
   it('does not call the api for an invalid id and shows the message', async () => {
     render(<Sidebar channels={[]} onSelect={vi.fn()} onNavigate={vi.fn()} />);
     fireEvent.change(screen.getByPlaceholderText('new-channel-id'), { target: { value: 'MyProj' } });

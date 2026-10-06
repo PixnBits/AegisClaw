@@ -83,3 +83,43 @@ func TestLogInvalidChannelIDs(t *testing.T) {
 		t.Fatalf("empty list logged %#v", hook.msgs)
 	}
 }
+
+// TestInspectStartupChannelList covers the startup call site: the pass over
+// channel.list that setupDefaultMainChannelAndMembers runs must warn about
+// stranded ids and still find "main".
+func TestInspectStartupChannelList(t *testing.T) {
+	prevOut := logrus.StandardLogger().Out
+	prevLevel := logrus.GetLevel()
+	logrus.SetOutput(io.Discard)
+	logrus.SetLevel(logrus.WarnLevel)
+	hook := &logMsgHook{}
+	oldHooks := logrus.StandardLogger().ReplaceHooks(logrus.LevelHooks{})
+	logrus.AddHook(hook)
+	t.Cleanup(func() {
+		logrus.SetOutput(prevOut)
+		logrus.SetLevel(prevLevel)
+		logrus.StandardLogger().ReplaceHooks(oldHooks)
+	})
+
+	hasMain := inspectStartupChannelList([]interface{}{
+		map[string]interface{}{"id": "MyProj"},
+		map[string]interface{}{"id": "main"},
+	})
+	if !hasMain {
+		t.Fatal("main not found")
+	}
+	if len(hook.msgs) != 1 || !strings.Contains(hook.msgs[0], `channel "MyProj" has an invalid id`) {
+		t.Fatalf("startup warnings %#v", hook.msgs)
+	}
+
+	hook.msgs = nil
+	if inspectStartupChannelList([]interface{}{map[string]interface{}{"id": "plan-demo"}}) {
+		t.Fatal("hasMain without main")
+	}
+	if len(hook.msgs) != 0 {
+		t.Fatalf("valid list warned %#v", hook.msgs)
+	}
+	if inspectStartupChannelList("not a list") {
+		t.Fatal("non-list reported main")
+	}
+}

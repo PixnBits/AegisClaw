@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 
 	"AegisClaw/internal/channelid"
 )
@@ -13,6 +15,14 @@ type pmGoalHubReply struct {
 	Command string
 	Payload interface{}
 }
+
+// Seams for runPMGoal's channel step. Tests replace them to check the exit
+// code and message without a hub or exiting the test binary.
+var (
+	pmGoalExit                    = os.Exit
+	pmGoalStderr    io.Writer     = os.Stderr
+	pmGoalHubSendFn pmGoalHubSend = sendPMGoalViaHub
+)
 
 // pmGoalHubSend is the hub send injected into ensurePMGoalChannel.
 type pmGoalHubSend func(target, cmd string, payload interface{}) (pmGoalHubReply, error)
