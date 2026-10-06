@@ -707,6 +707,14 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 			Timestamp:   time.Now().Format(time.RFC3339),
 			Signature:   "",
 		}
+		// Set only when this iteration actually called Ollama. Emitted after the
+		// guest response so a usage frame cannot delay llm.call.response.
+		var pendingUsage map[string]interface{}
+
+		// Hub replies and non-requests are not answered. See boundaryShouldAnswer.
+		if !boundaryShouldAnswer(msg.Command) {
+			continue
+		}
 
 		switch msg.Command {
 		case "network.request":
@@ -878,16 +886,25 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 				break
 			}
 
-			text, err := callOllamaGenerate(model, prompt, endpoint)
+			started := time.Now()
+			raw, err := callOllamaGenerate(model, prompt, endpoint)
 			if err != nil {
 				response.Command = "error"
 				response.Payload = "ollama request failed: " + err.Error()
 				log.Printf("llm.call ollama request failed: %v", err)
+				pendingUsage = buildLLMUsageRecord(msg.Source, model, nil, false, err.Error(), started)
 				break
 			}
+			// Parse full Ollama response for usage metrics (prompt_eval_count, eval_count, durations, model).
+			// Always surface clean "response" (text) for existing NewRealLLMCaller / loop callers.
+			text, usage := parseOllamaForLLMCall(raw, model)
 			response.Command = "llm.call.response"
-			response.Payload = map[string]interface{}{"response": text}
-			log.Printf("LLM plan gen via ollama (%s, %d bytes response)", model, len(text))
+			response.Payload = map[string]interface{}{
+				"response": text,
+				"usage":    usage,
+			}
+			log.Printf("LLM plan gen via ollama (%s, %d bytes response, prompt_tokens=%v completion=%v)", model, len(text), usage["prompt_tokens"], usage["completion_tokens"])
+			pendingUsage = buildLLMUsageRecord(msg.Source, model, usage, true, "", started)
 
 		// === 7.1 Hub secrets delivery path (first implementation) ===
 		// The Store VM (via the Hub) can now push updated per-skill secrets
@@ -1195,12 +1212,9 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 			response.Command = "error"
 			response.Payload = "unknown command"
 		}
-		signMessage(&response, priv)
-
-		connMutex.Lock()
-		err = encoder.Encode(response)
-		connMutex.Unlock()
-		if err != nil {
+		// Guest response is written before usage. A usage encode error is swallowed
+		// and does not change or fail the response.
+		if err := encodeResponseAndMaybeUsage(encoder, &connMutex, priv, &response, pendingUsage); err != nil {
 			log.Println("Failed to send response:", err)
 		}
 	}

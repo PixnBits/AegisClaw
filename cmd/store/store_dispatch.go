@@ -1079,6 +1079,20 @@ func dispatchStoreCommand(msg Message, response *Message, w *storeWorld) (skipRe
 		}
 		response.Command = "build.recorded"
 		response.Payload = "ok"
+	case "llm.usage.record":
+		// One-way hub push (isOneWayHubPush). No reply for an accept or a
+		// rejection: llm.usage.recorded is not granted, and an error frame
+		// would be stray traffic. Rejections are logged in the handler.
+		handleLLMUsageRecord(msg)
+		return true
+	case "llm.usage.summary":
+		handled := handleLLMUsageSummary(msg)
+		response.Command = handled.Command
+		response.Payload = handled.Payload
+	case "llm.usage.recent":
+		handled := handleLLMUsageRecent(msg)
+		response.Command = handled.Command
+		response.Payload = handled.Payload
 	case "skill.list":
 		list := []interface{}{}
 		for _, s := range skills {

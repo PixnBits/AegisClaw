@@ -149,6 +149,53 @@ func TestHandleChannelCreateNullMembersMatchMissing(t *testing.T) {
 	}
 }
 
+// assertLLMUsageMalformedNoPanic sends the table's non-object payloads, plus
+// bad, through dispatchStoreCommand. record is a one-way push: skip the reply
+// and store nothing unless the source is network-boundary and the payload is
+// an object. summary and recent reply with their own command. None may panic.
+func assertLLMUsageMalformedNoPanic(t *testing.T, command string, bad map[string]interface{}) {
+	t.Helper()
+	type srcPayload struct {
+		source  string
+		payload interface{}
+	}
+	var cases []srcPayload
+	for _, p := range []interface{}{"nope", float64(1), nil, bad} {
+		cases = append(cases, srcPayload{"test", p})
+	}
+	if command == "llm.usage.record" {
+		// The handler checks source before the payload assert. These reach it.
+		for _, p := range []interface{}{"nope", float64(1), nil} {
+			cases = append(cases, srcPayload{"network-boundary", p})
+		}
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprint(tc.source, "/", tc.payload), func(t *testing.T) {
+			useLLMUsage(t)
+			w := testStoreWorld(t)
+			before := storeSnapshot(w)
+			files, _ := filepath.Glob("*.json")
+			resp := Message{Timestamp: "2026-10-06T00:00:00Z"}
+			skip := dispatchStoreCommand(Message{
+				Source: tc.source, Command: command, Payload: tc.payload,
+			}, &resp, w)
+			if command == "llm.usage.record" {
+				if !skip {
+					t.Fatal("skipReply = false, want true")
+				}
+				if _, isMap := tc.payload.(map[string]interface{}); tc.source != "network-boundary" || !isMap {
+					if n := len(llmUsageSnapshot()); n != 0 {
+						t.Fatalf("stored %d records", n)
+					}
+				}
+			} else if skip || resp.Command != command {
+				t.Fatalf("skipReply=%v command %q, want false and %q", skip, resp.Command, command)
+			}
+			assertUnchanged(t, w, before, files)
+		})
+	}
+}
+
 func TestDispatchMalformedPayloads(t *testing.T) {
 	chdirTempAssertNoPackageAudit(t)
 	nonObjects := []struct {
@@ -200,9 +247,18 @@ func TestDispatchMalformedPayloads(t *testing.T) {
 		{"build.complete", map[string]interface{}{"proposal_id": 1}, "proposal_id must be a string"},
 		{"build.failed", map[string]interface{}{"proposal_id": 1}, "proposal_id must be a string"},
 		{"memory.store", map[string]interface{}{"content": 1}, "content must be a string"},
+		// Not mustPayload commands. A bad payload must not panic: record skips
+		// the reply, summary and recent still reply.
+		{"llm.usage.record", map[string]interface{}{"tokens_prompt": "nope"}, "no panic"},
+		{"llm.usage.summary", map[string]interface{}{"agent_id": 1}, "no panic"},
+		{"llm.usage.recent", map[string]interface{}{"limit": "x"}, "no panic"},
 	}
 	for _, cmd := range commands {
 		t.Run(cmd.command, func(t *testing.T) {
+			if cmd.want == "no panic" {
+				assertLLMUsageMalformedNoPanic(t, cmd.command, cmd.bad)
+				return
+			}
 			for _, raw := range nonObjects {
 				t.Run(raw.name, func(t *testing.T) {
 					w := testStoreWorld(t)

@@ -1140,9 +1140,12 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 // to Reply. channel.turn is inboxed by the guest while it is inside llm.call;
 // blocking the facilitator RPC for that Reply made deliverTurn time out and
 // fall through to the unregistered "project-manager" alias (ERR_DESTINATION_NOT_FOUND).
+// llm.usage.record is best-effort metrics. Waiting for Store would stall
+// network-boundary's hub read loop, and the next llm.call.response behind it,
+// when Store is slow or hung. Store logs rejections and does not reply.
 func isOneWayHubPush(command string) bool {
 	switch command {
-	case "channel.turn", "channel.activity", "channel.member_notify":
+	case "channel.turn", "channel.activity", "channel.member_notify", "llm.usage.record":
 		return true
 	default:
 		return false

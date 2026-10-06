@@ -228,6 +228,10 @@ rules:
     - llm.*
 
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
+# Exact commands only, no wildcards. network-boundary -> store grants llm.usage.record
+# and nothing else under llm. The record is a one-way hub push (isOneWayHubPush);
+# Store logs rejections and does not reply, so llm.usage.recorded is not granted.
+# Portal/daemon-internal query rules are not granted here.
 - source: store
   destination: network-boundary
   commands:
@@ -238,6 +242,7 @@ rules:
   commands:
     - secrets.response
     - secrets.*
+    - llm.usage.record
 
 # Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
 - source: court-scribe
