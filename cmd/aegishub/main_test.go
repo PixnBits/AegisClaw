@@ -1676,3 +1676,157 @@ func TestHandshakeAfterStopVMDifferentPubClearsClosed(t *testing.T) {
 		t.Fatalf("different pub fill must ClearClosed, still %q", closed)
 	}
 }
+
+// TestWebPortalReregisterSurvivesOlderClose is the re-register race:
+// replacing registered[id] must not let the older connection's close delete
+// the new registration. The live connection must still be authorized.
+func TestWebPortalReregisterSurvivesOlderClose(t *testing.T) {
+	t.Setenv("AEGIS_DEV_MODE", "1")
+
+	prevACL := aclRules
+	t.Cleanup(func() {
+		aclRules = prevACL
+		registeredMutex.Lock()
+		delete(registered, "web-portal")
+		registeredMutex.Unlock()
+	})
+	aclRules = []ACLRule{{
+		Source:      "web-portal",
+		Destination: "hub",
+		Commands:    []string{"component.list"},
+	}}
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conns := &sync.Map{}
+	client1, _, done1 := registerTestComponent(t, conns, "web-portal", pub)
+	client2, dec2, done2 := registerTestComponent(t, conns, "web-portal", pub)
+	t.Cleanup(func() {
+		_ = client1.Close()
+		_ = client2.Close()
+	})
+
+	registeredMutex.RLock()
+	second := registered["web-portal"]
+	registeredMutex.RUnlock()
+	if second == nil || second.Encoders == nil {
+		t.Fatal("second registration missing before older close")
+	}
+	secondEnc := second.Encoders
+	connBefore, ok := conns.Load("web-portal")
+	if !ok || connBefore == nil {
+		t.Fatal("conns missing second connection")
+	}
+
+	if err := client1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done1:
+	case <-time.After(3 * time.Second):
+		t.Fatal("older connection did not finish")
+	}
+
+	registeredMutex.RLock()
+	got := registered["web-portal"]
+	registeredMutex.RUnlock()
+	if got == nil || got.Encoders != secondEnc {
+		t.Fatal("older close removed the newer registration")
+	}
+	connAfter, ok := conns.Load("web-portal")
+	if !ok || connAfter != connBefore {
+		t.Fatal("older close removed the newer conns entry")
+	}
+
+	msg := Message{
+		Source:      "web-portal",
+		Destination: "hub",
+		Command:     "component.list",
+		Payload:     map[string]string{},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		Signature:   "dummy",
+	}
+	_ = client2.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(client2).Encode(msg); err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]interface{}
+	if err := dec2.Decode(&resp); err != nil {
+		t.Fatalf("component.list decode: %v", err)
+	}
+	if errVal, ok := resp["error"]; ok {
+		t.Fatalf("live connection after older close: %v", errVal)
+	}
+	comps, ok := resp["components"].([]interface{})
+	if !ok {
+		t.Fatalf("expected component.list, got %#v", resp)
+	}
+	found := false
+	for _, c := range comps {
+		row, _ := c.(map[string]interface{})
+		if row["id"] == "web-portal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("web-portal missing from component.list: %#v", resp)
+	}
+
+	if err := client2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done2:
+	case <-time.After(3 * time.Second):
+		t.Fatal("live connection did not finish")
+	}
+	registeredMutex.RLock()
+	_, still := registered["web-portal"]
+	registeredMutex.RUnlock()
+	if still {
+		t.Fatal("closing the owning connection left the registration in place")
+	}
+	if _, ok := conns.Load("web-portal"); ok {
+		t.Fatal("closing the owning connection left the conns entry in place")
+	}
+}
+
+func registerTestComponent(t *testing.T, conns *sync.Map, id string, pub ed25519.PublicKey) (net.Conn, *json.Decoder, <-chan struct{}) {
+	t.Helper()
+	hub, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleConnection(hub, conns)
+	}()
+	reg := Message{
+		Source:      id,
+		Destination: "hub",
+		Command:     "register",
+		Payload: map[string]string{
+			"public_key": base64.StdEncoding.EncodeToString(pub),
+			"version":    "test",
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Signature: "dummy",
+	}
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(client).Encode(reg); err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(client)
+	var resp map[string]interface{}
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("register %s decode: %v", id, err)
+	}
+	if e, ok := resp["error"]; ok {
+		t.Fatalf("register %s error: %v", id, e)
+	}
+	if resp["status"] != "registered" || resp["assigned_id"] != id {
+		t.Fatalf("register %s response: %#v", id, resp)
+	}
+	_ = client.SetDeadline(time.Time{})
+	return client, dec, done
+}
