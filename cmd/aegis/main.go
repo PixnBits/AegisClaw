@@ -41,6 +41,7 @@ import (
 	"AegisClaw/internal/runtime"
 	"AegisClaw/internal/sandbox" // for FirecrackerVsockUDSPath (host -> guest web-portal reverse proxy)
 	"AegisClaw/internal/transport/hubclient"
+	"AegisClaw/internal/unixsock"
 	"AegisClaw/internal/workspace"
 )
 
@@ -1989,22 +1990,9 @@ func getTeam(id string) (CLITeam, bool) {
 // a Unix domain socket connection using SO_PEERCRED (Linux only).
 // Returns (uid, true) on success. On non-Linux or error, returns (-1, false).
 // Callers must not treat that failure as authorization except for the read-only allowlist.
+// Do not use (*net.UnixConn).File: it clears O_NONBLOCK.
 func getPeerUID(conn net.Conn) (int, bool) {
-	unixConn, ok := conn.(*net.UnixConn)
-	if !ok {
-		return -1, false
-	}
-	file, err := unixConn.File()
-	if err != nil {
-		return -1, false
-	}
-	defer file.Close()
-
-	ucred, err := syscall.GetsockoptUcred(int(file.Fd()), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-	if err != nil {
-		return -1, false
-	}
-	return int(ucred.Uid), true
+	return unixsock.PeerUID(conn)
 }
 
 // authorizeSocketPeer decides whether a control-socket peer may run op.
@@ -2030,12 +2018,11 @@ func authorizeSocketPeer(op string, peerUID int, peerOK bool, expectedUID int) b
 
 // listenUnixPrivate listens on a Unix socket created with mode 0600.
 // net.Listen applies the process umask, which is wider than 0600, so the
-// socket must be created under a restrictive umask. umask is process-wide
-// and is restored before return. Callers still chmod 0600 afterwards.
+// socket must be created under a restrictive umask. The umask lock is
+// process-wide and shared with the hub (unixsock.ListenPrivate).
+// Callers still chmod 0600 afterwards.
 func listenUnixPrivate(addr string) (net.Listener, error) {
-	old := syscall.Umask(0177)
-	defer syscall.Umask(old)
-	return net.Listen("unix", addr)
+	return unixsock.ListenPrivate("unix", addr)
 }
 
 // startSocketServer sets up the hardened Unix socket for CLI/daemon communication.
@@ -5166,6 +5153,27 @@ func ensureRealRootfsImage(component string) (string, error) {
 	return sandbox.EnsureBootableRootfsImage(rootfsDir, component)
 }
 
+// secureManagedHubSocket chowns the hub socket to the original invoking user
+// and forces mode 0600. The hub child already created it at 0600; this runs
+// again after the readiness dial so a wider mode cannot remain. Root ignores
+// file mode, so ownership is what lets the invoking user connect.
+func secureManagedHubSocket(hubSocket string) {
+	if u, uerr := getOriginalUser(); uerr == nil && u != nil {
+		if uid, perr := strconv.Atoi(u.Uid); perr == nil {
+			gid := uid
+			if g, gerr := strconv.Atoi(u.Gid); gerr == nil {
+				gid = g
+			}
+			if chownErr := os.Chown(hubSocket, uid, gid); chownErr != nil && os.Geteuid() == 0 {
+				logrus.Warnf("hub socket chown %s: %v", hubSocket, chownErr)
+			}
+		}
+	}
+	if err := os.Chmod(hubSocket, 0600); err != nil {
+		logrus.Warnf("could not chmod hub socket to 0600: %v", err)
+	}
+}
+
 // startManagedHub starts the AegisHub router (must be first).
 func startManagedHub(hubSocket string) error {
 	hubBinary := "./bin/aegishub"
@@ -5244,13 +5252,7 @@ func startManagedHub(hubSocket string) error {
 			// Then prove it's actually accepting connections (the important part)
 			if conn, dialErr := net.DialTimeout("unix", hubSocket, 200*time.Millisecond); dialErr == nil {
 				conn.Close()
-				// Make the socket world-accessible (0666) so that after sudo start (root listener),
-				// normal users (and E2E scripts with custom /tmp state dirs) can connect without
-				// permission denied on the unix socket. For the main ~/.aegis/hub.sock this is
-				// usually not an issue (user-owned dir), but for isolated tests and custom paths
-				// it prevents the "connect: permission denied" that was blocking E2E waits and
-				// channel operations even when the daemon was up.
-				_ = os.Chmod(hubSocket, 0666)
+				secureManagedHubSocket(hubSocket)
 				logrus.Infof("aegishub ready (socket accepting connections: %s)", hubSocket)
 				return nil
 			}

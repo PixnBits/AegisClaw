@@ -467,6 +467,41 @@ func TestStartSocketServer_Mode0600(t *testing.T) {
 	}
 }
 
+func TestSecureManagedHubSocket_Mode0600(t *testing.T) {
+	// umask is process-wide. Do not call t.Parallel.
+	// startManagedHub chmods the hub socket after the child creates it.
+	// A regression to 0666 must fail even when the child created it wide.
+	orig := syscall.Umask(0)
+	t.Cleanup(func() { _ = syscall.Umask(orig) })
+	t.Setenv("SUDO_USER", "")
+
+	sock := filepath.Join(t.TempDir(), "hub.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	fi, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o077 == 0 {
+		t.Fatalf("precondition: socket mode %o is already owner-only; umask 0 should create it wide", fi.Mode().Perm())
+	}
+	secureManagedHubSocket(sock)
+	fi, err = os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("managed hub socket mode = %o, want 0600", fi.Mode().Perm())
+	}
+	if got := syscall.Umask(0); got != 0 {
+		t.Fatalf("umask = %#o after secureManagedHubSocket, want 0 left unchanged", got)
+	}
+}
+
 func TestListenUnixPrivate_Mode0600(t *testing.T) {
 	before := syscall.Umask(0)
 	syscall.Umask(before)

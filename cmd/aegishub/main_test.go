@@ -396,6 +396,7 @@ func TestIsReservedHubID(t *testing.T) {
 		id   string
 		want bool
 	}{
+		{"hub", true},
 		{"hub-perm-fetch", true},
 		{"hub-perm-fetch-123", true},
 		{"hub-perm-fetcher", false},
