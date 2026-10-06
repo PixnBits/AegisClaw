@@ -381,6 +381,42 @@ rules:
     - channel.get_relevant_since
     - channel.get_messages
 
+# Store RPC replies for channel context tools.
+# Store builds these reply names in cmd/store/main.go as
+# CmdGetRelevantSince+".data" and CmdGetMessages+".data".
+# project-manager* is omitted: the older store -> project-manager* rule
+# already grants channel.*.
+- source: store
+  destination: "agent*"
+  commands:
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
+- source: store
+  destination: "coder*"
+  commands:
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
+- source: store
+  destination: "tester*"
+  commands:
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
+- source: store
+  destination: "ciso*"
+  commands:
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
+- source: store
+  destination: "architect*"
+  commands:
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
+- source: store
+  destination: "researcher*"
+  commands:
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
+
 # Channel activity fan-out (Store relays every channel.post → daemon-orchestrator → STOMP only)
 - source: store
   destination: "daemon-orchestrator"
@@ -741,11 +777,10 @@ rules:
     - visibility.list
     - visibility.get
     - visibility.set
-- source: "hub-perm-fetch"
-  destination: store
-  commands:
-    - permission.snapshot
-    - permission.request
+# Wait ids are hub-perm-fetch-<nanos> (cmd/aegishub/permissions.go).
+# The internal request bypasses ACL: hubStoreRPC writes straight to Store's
+# encoder, and the hub refuses registration of these ids. There is no
+# source-side rule. Only the Store reply is checked, and only ids with the dash.
 - source: store
   destination: hub
   commands:
@@ -755,7 +790,7 @@ rules:
     - permission.request
     - visibility.set
 - source: store
-  destination: "hub-perm-fetch"
+  destination: "hub-perm-fetch-*"
   commands:
     - permission.snapshot
     - error

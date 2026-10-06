@@ -258,6 +258,143 @@ func TestCheckACL(t *testing.T) {
 	}
 }
 
+func TestRepoACLPermissionFetchAndStoreChannelReplies(t *testing.T) {
+	origRules := aclRules
+	origPath := aclFilePath
+	origMod := lastACLModTime
+	defer func() {
+		aclRules = origRules
+		aclFilePath = origPath
+		lastACLModTime = origMod
+	}()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	repoRoot := filepath.Join(wd, "..", "..")
+	t.Setenv("AEGIS_ACL_FILE", filepath.Join(repoRoot, "config", "acls.yaml"))
+	loadACL()
+	if len(aclRules) == 0 {
+		t.Fatal("aclRules empty after loadACL")
+	}
+
+	cases := []struct {
+		src, dst, cmd string
+		want          bool
+	}{
+		{"store", "hub-perm-fetch-1", "permission.snapshot", true},
+		{"store", "hub-perm-fetch-1", "error", true},
+		{"store", "hub-perm-fetch-1", "response", true},
+		{"hub-perm-fetch-1", "store", "permission.request", false},
+		{"hub-perm-fetch-1", "store", "permission.snapshot", false},
+		{"hub-perm-fetch", "store", "permission.snapshot", false},
+		{"store", "hub-perm-fetchX", "permission.snapshot", false},
+		{"store", "hub-perm-fetch-1", "permission.grant", false},
+		// Older store -> project-manager* channel.* rule, not the channel-context block.
+		{"store", "project-manager-x", "channel.get_relevant_since.data", true},
+		// No store → unknown dest rule for channel replies (catch-all is response/error/ping/pong/version only).
+		{"store", "some-unknown-dest", "channel.get_relevant_since.data", false},
+	}
+	roles := []string{"agent-x", "coder-x", "tester-x", "ciso-x", "architect-x", "researcher-x"}
+	for _, role := range roles {
+		for _, cmd := range []string{"channel.get_relevant_since.data", "channel.get_messages.data"} {
+			cases = append(cases, struct {
+				src, dst, cmd string
+				want          bool
+			}{"store", role, cmd, true})
+		}
+		for _, cmd := range []string{"channel.member_added", "channel.posted"} {
+			cases = append(cases, struct {
+				src, dst, cmd string
+				want          bool
+			}{"store", role, cmd, false})
+		}
+	}
+	for _, c := range cases {
+		if got := checkACL(c.src, c.dst, c.cmd); got != c.want {
+			t.Errorf("checkACL(%q,%q,%q)=%v want %v", c.src, c.dst, c.cmd, got, c.want)
+		}
+	}
+}
+
+func TestIsReservedHubID(t *testing.T) {
+	cases := []struct {
+		id   string
+		want bool
+	}{
+		{"hub-perm-fetch", true},
+		{"hub-perm-fetch-123", true},
+		{"hub-perm-fetcher", false},
+		{"store", false},
+		{"coder-1", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isReservedHubID(c.id); got != c.want {
+			t.Errorf("isReservedHubID(%q)=%v want %v", c.id, got, c.want)
+		}
+	}
+}
+
+func TestReservedHubIDRegistrationRejected(t *testing.T) {
+	const id = "hub-perm-fetch-123"
+	registeredMutex.Lock()
+	prev, had := registered[id]
+	registeredMutex.Unlock()
+	t.Cleanup(func() {
+		registeredMutex.Lock()
+		if had {
+			registered[id] = prev
+		} else {
+			delete(registered, id)
+		}
+		registeredMutex.Unlock()
+	})
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleConnection(hub, &sync.Map{})
+	}()
+	reg := Message{
+		Source:      id,
+		Destination: "hub",
+		Command:     "register",
+		Payload:     map[string]string{"public_key": base64.StdEncoding.EncodeToString(pub), "version": "1"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(client).Encode(reg); err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(client).Decode(&resp); err != nil {
+		t.Fatalf("register decode: %v", err)
+	}
+	errVal, _ := resp["error"].(string)
+	if !strings.Contains(errVal, "ERR_RESERVED_ID") {
+		t.Fatalf("reply = %#v, want ERR_RESERVED_ID", resp)
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handleConnection did not return")
+	}
+	registeredMutex.RLock()
+	_, present := registered[id]
+	registeredMutex.RUnlock()
+	if present {
+		t.Fatalf("registered[%q] must be absent", id)
+	}
+}
+
 func TestVerifyWireSignatureSurvivesPayloadRoundTrip(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
