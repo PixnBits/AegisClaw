@@ -171,6 +171,7 @@ else
     if ! actual=$(file_sha256 "$download_tmp"); then
         rm -f -- "$download_tmp"
         download_tmp=""
+        echo "Error: could not compute SHA-256 of the downloaded kernel; it was not installed." >&2
         exit 1
     fi
     if [ "$actual" != "$expected" ]; then

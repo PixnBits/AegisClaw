@@ -22,12 +22,15 @@ jobs:
           bash scripts/test-download-kernel-checksum.sh
           bash scripts/test-dockerfile-digests.sh
           bash scripts/test-build-microvms-args.sh
+          bash scripts/test-verify-microvm-artifacts.sh
           shellcheck \
             scripts/download-firecracker-kernel.sh \
             scripts/test-download-kernel-checksum.sh \
             scripts/test-dockerfile-digests.sh \
             scripts/build-microvms-docker.sh \
-            scripts/test-build-microvms-args.sh
+            scripts/test-build-microvms-args.sh \
+            scripts/verify-microvm-artifacts.sh \
+            scripts/test-verify-microvm-artifacts.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -80,49 +83,32 @@ jobs:
       - name: Build all microVM rootfs images
         # Positional args are component names, not the output directory.
         # No args selects DEFAULT_COMPONENTS in the script. sudo strips the
-        # caller environment, so pass ROOTFS_DIR and the kernel opt-out via
-        # `sudo env`. Kernel ensure stays fatal when the opt-out is unset.
-        run: sudo env ROOTFS_DIR=/tmp/rootfs-templates AEGIS_SKIP_KERNEL_ENSURE=1 ./scripts/build-microvms-docker.sh
+        # caller environment, so pass ROOTFS_DIR and AEGIS_KERNEL_PATH via
+        # `sudo env`. The pinned-hash kernel download runs; a mismatch fails
+        # this step. The path is under /tmp so it does not depend on HOME.
+        run: sudo env ROOTFS_DIR=/tmp/rootfs-templates AEGIS_KERNEL_PATH=/tmp/aegis-kernel/vmlinux ./scripts/build-microvms-docker.sh
+
+      - name: Build aegishub image
+        # aegishub is a host child (cmd/aegis startManagedHub execs
+        # ./bin/aegishub), not a Firecracker guest, so it is not in
+        # DEFAULT_COMPONENTS. Context is the repo root: the Dockerfile copies
+        # go.mod, cmd/aegishub, and internal.
+        run: docker build -f cmd/aegishub/Dockerfile -t aegis-aegishub:ci .
 
       - name: Verify built image artifacts
         run: |
           set -euo pipefail
-          rootfs=/tmp/rootfs-templates
-          # Same set as DEFAULT_COMPONENTS in scripts/build-microvms-docker.sh.
-          components=(
-            agent
-            project-manager
-            web-portal
-            builder
-            store
-            memory
-            network-boundary
-            court-persona
-            court-scribe
-          )
-          echo "=== rootfs artifacts ==="
-          ls -la "$rootfs"/*.img "$rootfs"/*.tar.gz
-          echo "=== docker images aegis-* ==="
-          docker images 'aegis-*'
-          missing=0
-          for c in "${components[@]}"; do
-            if [ ! -s "$rootfs/${c}.img" ]; then
-              echo "MISSING raw image: $rootfs/${c}.img" >&2
-              missing=1
-            fi
-            if [ ! -s "$rootfs/${c}.img.tar.gz" ]; then
-              echo "MISSING tarball: $rootfs/${c}.img.tar.gz" >&2
-              missing=1
-            fi
-            if ! docker image inspect "aegis-${c}:latest" >/dev/null 2>&1; then
-              echo "MISSING docker image: aegis-${c}:latest" >&2
-              missing=1
-            fi
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "Image build did not produce every expected component" >&2
+          components_line=$(./scripts/build-microvms-docker.sh --print-default-components)
+          read -r -a components <<< "$components_line"
+          if [ "${#components[@]}" -eq 0 ]; then
+            echo "default component list is empty" >&2
             exit 1
           fi
+          ./scripts/verify-microvm-artifacts.sh \
+            --kernel /tmp/aegis-kernel/vmlinux \
+            /tmp/rootfs-templates \
+            "${components[@]}"
+
       - name: Verify builder scanners run
         run: |
           set -euo pipefail
