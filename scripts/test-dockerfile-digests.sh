@@ -226,6 +226,8 @@ floating_arg_refs() {
     local body="$1"
     shift
     local entry="" name="" val="" v="" re="" seg="" hit=0
+    # Backtick is a regex atom; a variable keeps it out of command substitution.
+    local git_word_re='[[:space:]/(`]git[[:space:]]'
     local segs=${body//&&/;}
     segs=${segs//||/;}
     segs=${segs//|/;}
@@ -239,7 +241,8 @@ floating_arg_refs() {
             hit=1
         else
             while IFS= read -r seg; do
-                if [[ " $seg " =~ [[:space:]/]git[[:space:]] ]] && [[ " $seg" =~ [[:space:]=]${v} ]]; then
+                # '/' so origin/$V and refs/heads/$V match; '(' and backtick so $(git) does.
+                if [[ " $seg " =~ $git_word_re ]] && [[ " $seg" =~ [[:space:]=/]${v} ]]; then
                     hit=1
                     break
                 fi
@@ -321,7 +324,14 @@ cleanup_self_work() {
 }
 trap cleanup_self_work EXIT
 
-# Join backslash continuations so a checksum later in the same RUN is visible.
+# Join backslash continuations the way BuildKit does, so a checksum later in
+# the same RUN is visible. After one trailing CR is stripped, a line continues
+# when it matches a backslash followed only by spaces or tabs. That backslash
+# and those trailing spaces or tabs are removed; leading whitespace on a
+# continuation line is kept. A line that is only "\" opens a continuation.
+# Comment lines and blank lines inside a continuation are dropped and the
+# continuation carries on; whitespace may follow the backslash; a comment line
+# never continues. Blank lines outside a continuation are printed as they are.
 # BuildKit heredocs (RUN <<SH ... SH) are folded into their instruction: the
 # body lines of a RUN heredoc are appended as "; line" so the RUN checks see
 # every command in the script, and the bodies of COPY/ADD heredocs (file
@@ -334,19 +344,39 @@ UNTERMINATED_TAG=$'\x01unterminated-heredoc'
 emit_logical_lines() {
     local file="$1"
     local line="" acc="" logical="" folded="" word="" body="" cmp="" dash=""
-    local i=0 n=0 is_run=0 t=0 start=0 found=0
+    local i=0 n=0 is_run=0 t=0 start=0 found=0 cont=0
+    local trimmed=""
+    # Doubled \\ so the ERE engine matches a literal backslash, then spaces/tabs.
+    local cont_re=$'^(.*)\\\\[ \t]*$'
     local -a lines=() terms=() dashes=()
     mapfile -t lines < "$file"
     n=${#lines[@]}
     while [ "$i" -lt "$n" ]; do
         line=${lines[$i]%$'\r'}
         i=$((i + 1))
-        if [[ "$line" == *\\ ]]; then
-            acc+="${line%\\}"
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        if [ "$cont" -eq 1 ]; then
+            # Drop the line. A comment here does not end the continuation,
+            # even when that comment itself ends in a backslash.
+            case "$trimmed" in
+                ''|'#'*) continue ;;
+            esac
+        else
+            case "$trimmed" in
+                ''|'#'*)
+                    printf '%s\n' "$line"
+                    continue
+                    ;;
+            esac
+        fi
+        if [[ "$line" =~ $cont_re ]]; then
+            acc+="${BASH_REMATCH[1]}"
+            cont=1
             continue
         fi
-        logical="$acc$line"
+        logical="${acc}${line}"
         acc=""
+        cont=0
         terms=()
         dashes=()
         if [[ "$logical" == *'<<'* ]] \
@@ -396,7 +426,7 @@ emit_logical_lines() {
         fi
         printf '%s\n' "$logical"
     done
-    if [ -n "$acc" ]; then
+    if [ "$cont" -eq 1 ]; then
         printf '%s\n' "$acc"
     fi
 }
@@ -833,10 +863,57 @@ B'
     reject_case continuation-latest "@latest" "go install @latest on a RUN continuation line rejected" \
         'RUN echo hi \
  && go install example.com/t@latest'
+    reject_case cont-comment-from "unpinned FROM: FROM alpine:3.18" "comment inside a continuation opens no heredoc" \
+        'RUN echo hi \
+# see <<#c
+ && echo there
+FROM alpine:3.18
+#c'
+    reject_case cont-comment-add "ADDs a URL" "comment inside a continuation opens no heredoc around ADD" \
+        'RUN echo hi \
+# see <<#c
+ && echo there
+ADD https://example.invalid/t.tgz /tmp/
+#c'
+    reject_case cont-comment-copy "COPY --from an unpinned image (alpine:3.18)" "comment inside a continuation opens no heredoc around COPY" \
+        'RUN echo hi \
+# see <<#c
+ && echo there
+COPY --from=alpine:3.18 /etc/ssl /etc/ssl
+#c'
+    reject_case cont-comment-latest "@latest" "comment inside a continuation does not end it" \
+        'RUN true && \
+# c
+ go install example.com/t@latest'
+    reject_case cont-blank-latest "@latest" "blank line inside a continuation does not end it" \
+        'RUN true && \
+
+ go install example.com/t@latest'
+    reject_case cont-bs-spaces "@latest" "spaces after a continuation backslash still continue" \
+        "$(printf 'RUN true && \\  \n go install example.com/t@latest')"
+    reject_case cont-sh-heredoc "@latest" "comment inside a continuation does not hide the joined heredoc" \
+        'RUN sh \
+# c
+<<EOF
+go install example.com/t@latest
+EOF'
+    reject_case cont-blank-wget "sha256sum -c" "blank line inside a continuation still joins the RUN" \
+        'RUN true && \
+
+ wget -q https://example.invalid/t -O /t'
+    reject_case comment-no-continue "unpinned FROM: FROM alpine:3.18" "a comment ending in a backslash does not continue" \
+        '# note \
+FROM alpine:3.18'
+    accept_case cont-comment-blank-ok "RUN continuation with an interior comment and blank line accepted" \
+        "$(printf 'RUN wget -q https://example.invalid/t -O /t \\\n# verify\n\n && echo "%s  /t" | sha256sum -c -' "$pin")"
     # A '<<' that BuildKit doesn't treat as a heredoc must not hide the
     # instructions after it.
     reject_case heredoc-not-quoted "unpinned FROM: FROM alpine:3.18" "<<WORD inside quotes opens no heredoc" \
         'RUN echo "use <<EOF syntax"
+FROM alpine:3.18
+EOF'
+    reject_case heredoc-escaped-dq "unpinned FROM: FROM alpine:3.18" "backslash escape inside double quotes opens no heredoc" \
+        'RUN echo "a\" <<EOF"
 FROM alpine:3.18
 EOF'
     # shellcheck disable=SC2016 # $((...)) is Dockerfile text.
@@ -850,8 +927,7 @@ FROM alpine:3.18
 EOF'
     reject_case heredoc-unterminated "unterminated heredoc (no line equal to EOF)" "unterminated heredoc rejected" \
         'RUN <<EOF
-echo hi
-FROM alpine:3.18'
+echo hi'
     reject_case heredoc-unterminated-rest "unpinned FROM: FROM alpine:3.18" "unterminated heredoc doesn't swallow the rest" \
         'RUN <<EOF
 echo hi
@@ -865,6 +941,8 @@ FROM alpine:3.18'
         'RUN true # <<EOF
 go install example.com/t@latest
 EOF'
+    reject_case heredoc-tab-eof "@latest" "plain <<EOF does not strip tabs from the terminator" \
+        "$(printf 'RUN <<EOF\n\tEOF\ngo install example.com/t@latest\nEOF')"
     reject_case heredoc-terminator-lookalikes "@latest" "only a line equal to the word ends the heredoc" \
         'RUN <<EOF
 echo EOF in the middle
@@ -911,6 +989,35 @@ RUN git switch $V'
     reject_case arg-reset "floating ref (HEAD)" "ARG HEAD used in git reset --hard rejected" \
         'ARG V=HEAD
 RUN /usr/bin/git reset --hard ${V}'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-origin-reset "floating ref (main)" "ARG main used in git reset origin/ref rejected" \
+        'ARG V=main
+RUN git reset --hard origin/$V'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-origin-checkout "floating ref (main)" "ARG main used in git checkout origin/ref rejected" \
+        'ARG V=main
+RUN git checkout origin/${V}'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-refs-heads "floating ref (main)" "ARG main used in git fetch refs/heads rejected" \
+        'ARG V=main
+RUN git fetch origin refs/heads/$V'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-rev-parse "floating ref (main)" "ARG main used in git rev-parse origin/ref rejected" \
+        'ARG V=main
+RUN git checkout $(git rev-parse origin/$V)'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-rev-parse-assign "floating ref (main)" "ARG main used in an assigned git rev-parse rejected" \
+        'ARG V=main
+RUN X=$(git rev-parse origin/$V) && echo $X'
+    # shellcheck disable=SC2016 # backticks and $V are Dockerfile text.
+    reject_case arg-rev-parse-backtick "floating ref (main)" "ARG main used in a backtick git rev-parse rejected" \
+        'ARG V=main
+RUN X=`git rev-parse origin/$V` && echo $X'
+    # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
+    reject_case arg-other-keeps "floating ref (main)" "redeclaring another ARG keeps a floating default" \
+        'ARG V=main
+ARG W=1
+RUN git checkout $V'
     # shellcheck disable=SC2016 # $V/${V}/$TAG are Dockerfile text.
     reject_case arg-checkout-heredoc "floating ref (main)" "ARG main used in git checkout \"\$V\" in a heredoc rejected" \
         'ARG V=main
