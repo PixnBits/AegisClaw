@@ -22,8 +22,10 @@ RUN apk add --no-cache git ca-certificates tzdata
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Store needs substantial internal packages (crypto, events, etc.)
+# Store needs substantial internal packages (crypto, events, etc.).
+# The image also builds ./cmd/git-remote-hub, which imports internal/transport.
 COPY cmd/store ./cmd/store
+COPY cmd/git-remote-hub ./cmd/git-remote-hub
 COPY internal ./internal
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /store ./cmd/store

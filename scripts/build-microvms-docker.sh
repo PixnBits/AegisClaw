@@ -1,8 +1,50 @@
 #!/bin/bash
 # build-microvms-docker.sh - Build microVM filesystems using Docker
-# This script creates cacheable microVM filesystems for different components
+#
+# Usage:
+#   ./scripts/build-microvms-docker.sh [component ...]
+#   ROOTFS_DIR=/path ./scripts/build-microvms-docker.sh
+#
+# Positional arguments are component names (directory names under cmd/ that
+# contain a Dockerfile). They are NOT an output directory. With no arguments
+# the default guest list is built. Several names may be passed as one
+# space-separated argument or as one argument each.
+#
+# Output directory (first match):
+#   ROOTFS_DIR          Explicit directory for <component>.img and the
+#                       matching .tar.gz (see determine_rootfs_dir).
+#   /opt/aegis/firecracker/rootfs
+#                       Used on Linux when that directory is writable or can
+#                       be created.
+#   ~/.aegis/firecracker/rootfs
+#                       Fallback.
+#
+# AEGIS_SKIP_KERNEL_ENSURE
+#   Set to 1 to skip scripts/download-firecracker-kernel.sh. CI sets this
+#   because the image job must not depend on downloading the guest kernel.
+#   Without the opt-out, a kernel ensure failure exits non-zero. The opt-out
+#   prints a loud warning and continues with image builds only.
+#
+# AEGIS_DRY_RUN
+#   Set to 1 to validate the component list and Dockerfiles, print the image
+#   and rootfs paths that would be produced, and exit. Does not call sudo,
+#   docker, or the kernel download, and does not create ROOTFS_DIR.
+#
+# Cosign image signing is intentionally not invoked. It is an optional
+# supply-chain hook owned by the Makefile `sbom` target; a missing cosign
+# binary must not fail this build.
+#
+# Failures that abort the script (exit 1): missing Dockerfile for a requested
+# component, docker build failure, rootfs extract/archive failure, raw .img
+# creation failure, and kernel ensure failure when AEGIS_SKIP_KERNEL_ENSURE
+# is not 1. Optional cleanup (removing a temp mount dir or a container after
+# a successful export) is logged and does not fail the build.
 
-set -e
+# -e: a failed command aborts the build.
+# -o pipefail: a failure in any stage of a pipeline (docker export | tar)
+# aborts too. Commands that may fail are explicit (`if`, or `||` on optional
+# cleanup only).
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -19,7 +61,7 @@ log() {
 }
 
 warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    echo -e "${YELLOW}[WARN]${NC} $1" >&2
 }
 
 info() {
@@ -27,7 +69,7 @@ info() {
 }
 
 error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
     exit 1
 }
 
@@ -41,7 +83,7 @@ run_sudo_script() {
 		warn "Missing executable script: $script"
 		return 1
 	fi
-	if sudo -n "$script" "$@" 2>/dev/null; then
+	if sudo -n "$script" "$@"; then
 		return 0
 	fi
 	warn "NOPASSWD sudo failed for $script"
@@ -50,15 +92,18 @@ run_sudo_script() {
 	return 1
 }
 
-# Check if directory is writable, request sudo if needed
+# Check if directory is writable, request sudo if needed.
+# Returns 1 on failure so callers abort even when set -e is suppressed
+# (this function is invoked as `if ! ensure_writable_dir`).
 ensure_writable_dir() {
     local dir="$1"
-    local parent_dir="$(dirname "$dir")"
-    
+    local parent_dir
+    parent_dir="$(dirname "$dir")"
+
     # If directory doesn't exist, check parent
     if [ ! -d "$dir" ]; then
-        ensure_writable_dir "$parent_dir"
-        
+        ensure_writable_dir "$parent_dir" || return 1
+
         # Try to create the directory
         if ! mkdir -p "$dir" 2>/dev/null; then
             warn "Cannot write to $dir, requesting sudo..."
@@ -66,19 +111,16 @@ ensure_writable_dir() {
                 run_sudo_script "$ENSURE_DIR_SCRIPT" "$dir" || return 1
                 log "Created $dir with appropriate permissions"
             else
-                mkdir -p "$dir"
+                mkdir -p "$dir" || return 1
             fi
         fi
-    else
-        # Directory exists, check if writable
-        if [ ! -w "$dir" ]; then
-            warn "Directory $dir is not writable, requesting sudo..."
-            if [ "$EUID" -ne 0 ]; then
-                run_sudo_script "$ENSURE_DIR_SCRIPT" "$dir" || return 1
-                log "Fixed permissions on $dir"
-            else
-                chown "$(whoami)" "$dir"
-            fi
+    elif [ ! -w "$dir" ]; then
+        warn "Directory $dir is not writable, requesting sudo..."
+        if [ "$EUID" -ne 0 ]; then
+            run_sudo_script "$ENSURE_DIR_SCRIPT" "$dir" || return 1
+            log "Fixed permissions on $dir"
+        else
+            chown "$(whoami)" "$dir" || return 1
         fi
     fi
 }
@@ -108,8 +150,10 @@ create_raw_rootfs_image() {
 
     # Create sparse file
     if ! truncate -s "$size" "$img_file" 2>/dev/null; then
-        local count=$(echo "$size" | sed 's/M//')
-        dd if=/dev/zero of="$img_file" bs=1M count="$count" status=none 2>/dev/null || {
+        local count
+        # 512M -> 512. 1G is unchanged (same as the previous sed 's/M//').
+        count=${size/M/}
+        dd if=/dev/zero of="$img_file" bs=1M count="$count" status=none || {
             rm -f "$img_file"
             warn "Failed to allocate raw image file $img_file"
             return 1
@@ -117,7 +161,7 @@ create_raw_rootfs_image() {
     fi
 
     # Format as ext4
-    if ! "$mkfs_ext4" -F -L rootfs "$img_file" >/dev/null 2>&1; then
+    if ! "$mkfs_ext4" -F -L rootfs "$img_file" >/dev/null; then
         rm -f "$img_file"
         warn "mkfs.ext4 failed for $img_file"
         return 1
@@ -133,9 +177,23 @@ create_raw_rootfs_image() {
 
     # Try direct loop mount (no sudo)
     if mount -o loop "$img_file" "$mnt" 2>/dev/null; then
-        tar -xzf "$tarball" -C "$mnt" --numeric-owner 2>/dev/null || true
-        umount "$mnt" 2>/dev/null || warn "umount had issues for $img_file"
-        rmdir "$mnt" 2>/dev/null || true
+        if ! tar -xzf "$tarball" -C "$mnt" --numeric-owner; then
+            umount "$mnt" 2>/dev/null || true
+            rmdir "$mnt" 2>/dev/null || true
+            rm -f "$img_file"
+            warn "Failed to extract $tarball into $img_file"
+            return 1
+        fi
+        if ! umount "$mnt"; then
+            warn "Failed to unmount $img_file after extracting the rootfs (image left unusable)"
+            rmdir "$mnt" 2>/dev/null || true
+            rm -f "$img_file"
+            return 1
+        fi
+        # Leftover temp dir does not make the image wrong.
+        if ! rmdir "$mnt" 2>/dev/null; then
+            warn "Temp mount dir $mnt was left behind after writing $img_file (cleanup is optional)"
+        fi
         log "Created raw image: $img_file"
         return 0
     fi
@@ -148,18 +206,18 @@ create_raw_rootfs_image() {
         return 0
     fi
 
-    warn "Raw .img creation skipped for $(basename "$img_file" .img) (loop mount / NOPASSWD script unavailable — tarball is still usable)"
+    warn "Raw .img creation failed for $(basename "$img_file" .img) (loop mount / NOPASSWD script unavailable — tarball is still usable)"
     return 1
 }
 
 # Determine the rootfs directory to use
 determine_rootfs_dir() {
     # First, check if ROOTFS_DIR is explicitly set
-    if [ -n "$ROOTFS_DIR" ]; then
+    if [ -n "${ROOTFS_DIR:-}" ]; then
         echo "$ROOTFS_DIR"
         return 0
     fi
-    
+
     # Try system location first (Linux only)
     if [ "$(uname -s)" = "Linux" ]; then
         local sys_dir="/opt/aegis/firecracker/rootfs"
@@ -173,14 +231,22 @@ determine_rootfs_dir() {
             return 0
         fi
     fi
-    
+
     # Fall back to user home directory
     local user_dir="${HOME}/.aegis/firecracker/rootfs"
     echo "$user_dir"
 }
 
-# Parse command line arguments
-COMPONENTS=${1:-"agent project-manager web-portal builder store memory network-boundary court-persona court-scribe"}
+# Default guest set. Keep .github/workflows/ci.yml image-builds verify step
+# and scripts/test-build-microvms-args.sh in sync with this list.
+DEFAULT_COMPONENTS="agent project-manager web-portal builder store memory network-boundary court-persona court-scribe"
+
+# Positional parameters are component names, not an output directory.
+if [ "$#" -eq 0 ]; then
+    COMPONENTS=$DEFAULT_COMPONENTS
+else
+    COMPONENTS="$*"
+fi
 PLATFORM=${PLATFORM:-linux}
 ROOTFS_DIR=$(determine_rootfs_dir)
 
@@ -195,64 +261,104 @@ echo ""
 # 130-153s "crypto/rand: blocked..." + late "crng init done" we measured when the regression
 # was present. The download script is now idempotent (skips if good driver symbol present).
 # This provides the kernel-side of the ".img guarantee" work on this branch for pre-warm readiness.
-if [ "$(uname -s)" = "Linux" ]; then
+#
+# AEGIS_SKIP_KERNEL_ENSURE=1 skips the download. CI sets it so image builds do
+# not depend on fetching the guest kernel. Any other failure is fatal: a hash
+# mismatch or a failed download must not produce a green build.
+if [ "${AEGIS_SKIP_KERNEL_ENSURE:-}" = "1" ]; then
+    warn "AEGIS_SKIP_KERNEL_ENSURE=1: NOT ensuring the Firecracker guest kernel (skipping scripts/download-firecracker-kernel.sh)."
+    warn "Image builds will continue. MicroVMs may hang on CRNG init until that download script succeeds."
+elif [ "$(uname -s)" != "Linux" ]; then
+    warn "Kernel ensure skipped: the Firecracker guest kernel is only downloaded on Linux (uname=$(uname -s))."
+elif [ "${AEGIS_DRY_RUN:-}" = "1" ]; then
+    log "DRY_RUN: would run scripts/download-firecracker-kernel.sh"
+else
     log "Ensuring Firecracker kernel with virtio-rng driver (CRNG/entropy fix from #63)..."
-    if bash "$SCRIPT_DIR/download-firecracker-kernel.sh"; then
-        :
-    else
-        warn "Kernel download/ensure reported issues; microVMs may exhibit slow CRNG init (re-run the download script manually)"
+    if ! bash "$SCRIPT_DIR/download-firecracker-kernel.sh"; then
+        error "Kernel download/ensure failed. Fix scripts/download-firecracker-kernel.sh, or set AEGIS_SKIP_KERNEL_ENSURE=1 to skip it deliberately."
     fi
 fi
 
-# Ensure output directory exists and is writable
-ensure_writable_dir "$ROOTFS_DIR"
+if [ "${AEGIS_DRY_RUN:-}" != "1" ]; then
+    if ! ensure_writable_dir "$ROOTFS_DIR"; then
+        error "Cannot prepare output directory $ROOTFS_DIR"
+    fi
+fi
 
-# Build each component's filesystem
+# Containers created during this run. One EXIT trap removes every one of them.
+# A per-component trap would replace the previous handler and leak the earlier
+# container when a later component fails.
+BUILD_CONTAINERS=()
+cleanup_build_containers() {
+    local id
+    for id in "${BUILD_CONTAINERS[@]}"; do
+        # Export already finished; a failed rm must not change the script exit
+        # status. The trap retries removal for every component.
+        docker rm "$id" >/dev/null 2>&1 || true
+    done
+    return 0
+}
+trap cleanup_build_containers EXIT
+
+# Build each component's filesystem.
+# COMPONENTS is a space-separated list of names; splitting is intentional.
+# shellcheck disable=SC2086
 for component in $COMPONENTS; do
     log "Building filesystem for $component..."
-    
+
     # Define Dockerfile path
     dockerfile_path="$REPO_ROOT/cmd/$component/Dockerfile"
-    
+
     if [ ! -f "$dockerfile_path" ]; then
-        warn "Dockerfile not found for $component at $dockerfile_path, skipping"
+        error "Dockerfile not found for requested component $component at $dockerfile_path"
+    fi
+
+    image_name="aegis-${component}:latest"
+    rootfs_file="$ROOTFS_DIR/${component}.img"
+
+    if [ "${AEGIS_DRY_RUN:-}" = "1" ]; then
+        log "DRY_RUN: would build image $image_name from $dockerfile_path"
+        log "DRY_RUN: would write $rootfs_file and ${rootfs_file}.tar.gz"
+        # Valid component: skip docker, sudo, and rootfs writes.
         continue
     fi
-    
-    # Build Docker image
-    image_name="aegis-${component}:latest"
-    
+
     # Always use the full repository root as build context.
     # All current Dockerfiles (and any new ones for base components) expect access to
     # go.mod/go.sum + internal/ packages. Using the narrow per-cmd dir was causing
     # "not found" checksum errors for court-* and would break store/web-portal/etc.
     # This matches the comments in the Dockerfiles themselves.
     build_context="$REPO_ROOT"
-    
-    docker build \
+
+    if ! docker build \
         -f "$dockerfile_path" \
         -t "$image_name" \
-        "$build_context" \
-        || { warn "Docker build failed for $component (Go version / base image mismatch or other env issue — non-fatal). Continuing..."; continue; }
-    
+        "$build_context"
+    then
+        error "Docker build failed for component $component (image $image_name)"
+    fi
+
     # Extract rootfs from Docker image (per-component isolation)
     log "Extracting filesystem from Docker image..."
-    
-    container_id=$(docker create "$image_name")
-    trap "docker rm $container_id > /dev/null 2>&1 || true" EXIT
-    
+
+    container_id=$(docker create "$image_name") || error "Failed to create container from $image_name for component $component"
+    BUILD_CONTAINERS+=("$container_id")
+
     component_rootfs_dir="$ROOTFS_DIR/${component}-rootfs"
     mkdir -p "$component_rootfs_dir"
-    
-    # Export container filesystem as tar (clean per-component)
-    docker export "$container_id" | tar -xf - -C "$component_rootfs_dir" || error "Failed to extract filesystem"
-    
-    rootfs_file="$ROOTFS_DIR/${component}.img"
-    
+
+    # Export container filesystem as tar (clean per-component).
+    # pipefail makes a failed docker export fail this pipeline, not only tar.
+    if ! docker export "$container_id" | tar -xf - -C "$component_rootfs_dir"; then
+        error "Failed to extract filesystem for component $component"
+    fi
+
     # Create per-component tarball (clean, does not accumulate previous components)
     log "Creating rootfs archive for $component..."
-    tar -czf "${rootfs_file}.tar.gz" -C "$component_rootfs_dir" . || error "Failed to create filesystem archive"
-    
+    if ! tar -czf "${rootfs_file}.tar.gz" -C "$component_rootfs_dir" .; then
+        error "Failed to create filesystem archive for component $component"
+    fi
+
     # Also create a ready-to-boot raw .img file (the format the Firecracker backend expects)
     raw_size="512M"
     case "$component" in
@@ -263,30 +369,35 @@ for component in $COMPONENTS; do
     # Guarantee ready raw .img files (prevents on-the-fly tar->img conversion on hot
     # daemon StartVM / Ensure paths, which is a multi-second hit for cold collab startup).
     # The create function tries direct loop mount then the sudo-approved create script.
-    # Removing the blanket || true means if raw .img production fails for a component,
-    # the build fails for that component (strong signal to configure sudoers or run
-    # under appropriate privs per AGENTS.md). Tarball is always produced as fallback,
-    # but .img is required for fast Firecracker boots and the <1s/<5s targets.
+    # If raw .img production fails for a component, the build fails for that component
+    # (strong signal to configure sudoers or run under appropriate privs per AGENTS.md).
+    # Tarball is always produced as fallback, but .img is required for fast Firecracker
+    # boots and the <1s/<5s targets.
     if ! create_raw_rootfs_image "${rootfs_file}.tar.gz" "$rootfs_file" "$raw_size"; then
         error "Failed to produce ready raw .img for $component at $rootfs_file (on-the-fly conversion would be required on first start, violating pre-warm readiness goals). Configure NOPASSWD sudoers for create-firecracker-rootfs.sh or ensure writable loop-capable dir."
     fi
-    
+
     # Optional: clean up per-component dir to save space (keep tarball + raw img)
     rm -rf "$component_rootfs_dir"
-    
-    log "Filesystem for $component saved to ${rootfs_file}.tar.gz (and raw ${rootfs_file} if successful)"
-    
-    docker rm "$container_id" > /dev/null 2>&1 || true
+
+    log "Filesystem for $component saved to ${rootfs_file}.tar.gz and raw ${rootfs_file}"
+
+    # Best-effort removal now; the EXIT trap retries if this fails.
+    if ! docker rm "$container_id" >/dev/null 2>&1; then
+        warn "Could not remove container $container_id for $component yet (cleanup is optional and retried on exit)"
+    fi
 
     # === Builder-specific post-processing (Phase 4 rootfs requirements) ===
     if [ "$component" = "builder" ]; then
         log "Performing Builder-specific rootfs enhancements (scanners for 5 security gates)..."
-        
+
         # Ensure scanners from the image are properly present in the extracted dir
         # (they are already copied in the Dockerfile; this step can add verification or SBOM)
-        
+
         # Create a minimal SBOM / manifest for supply-chain visibility (see threat-model.md:3 + additional-requirements-and-gaps.md)
         # 7.8: Now enhanced with make sbom (CycloneDX or fallback) + cosign signing hooks (grok-build-execution-plan.md:7.8).
+        # Cosign is not executed here. Signing stays an optional Makefile hook so a
+        # missing cosign binary cannot fail the rootfs build.
         sbom_file="$ROOTFS_DIR/builder-sbom.txt"
         {
             echo "# AegisClaw Builder VM SBOM (Phase 4 / 7.8)"
@@ -312,10 +423,15 @@ for component in $COMPONENTS; do
             echo "  - Rootfs kept minimal per security-model.md (alpine base + static tools)."
             echo "  - Full SBOM + signing reduces backdoored-skill risk (threat-model.md:3)."
         } > "$sbom_file"
-        
+
         log "Builder SBOM/manifest written to $sbom_file (7.8 enhanced with make sbom + cosign hooks)"
     fi
 done
+
+if [ "${AEGIS_DRY_RUN:-}" = "1" ]; then
+    log "DRY_RUN complete: validated Dockerfiles only. No images were built and $ROOTFS_DIR was not written."
+    exit 0
+fi
 
 log "MicroVM filesystem build complete!"
 log "Filesystems available at: $ROOTFS_DIR"
