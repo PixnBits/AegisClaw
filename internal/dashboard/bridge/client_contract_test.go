@@ -38,3 +38,30 @@ func TestHighImpactActionsRequireConfirmation(t *testing.T) {
 		t.Error("channel.list should not require confirmation")
 	}
 }
+
+func TestLLMUsageBridgeActionsAreReadOnly(t *testing.T) {
+	g := bridge.NewGuard()
+	for _, act := range []string{"llm.usage.summary", "llm.usage.recent"} {
+		if err := g.Validate(act); err != nil {
+			t.Errorf("allowed action %q rejected: %v", act, err)
+		}
+		if !contracts.IsAllowedBridgeAction(act) {
+			t.Errorf("allowlist missing %q", act)
+		}
+	}
+	// Mutant: adding llm.usage.record (or agent settings) to the allowlist fails this test.
+	for _, act := range []string{
+		"llm.usage.record",
+		"agent.settings.get",
+		"agent.settings.set",
+		"agent.soul.get",
+		"agent.soul.set",
+	} {
+		if contracts.IsAllowedBridgeAction(act) {
+			t.Errorf("allowlist must not contain %q", act)
+		}
+		if err := g.Validate(act); err == nil {
+			t.Errorf("guard accepted %q", act)
+		}
+	}
+}

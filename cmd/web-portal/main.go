@@ -742,6 +742,22 @@ func (c *e2eFixtureClient) Call(ctx context.Context, action string, payload json
 		})
 		return &dashboard.APIResponse{Success: true, Data: data}, nil
 
+	case "llm.usage.summary":
+		data, _ := json.Marshal(map[string]interface{}{
+			"grand":        map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0, "by_model": map[string]interface{}{}},
+			"last_hour":    map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"today":        map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"mtd":          map[string]interface{}{"calls": 0, "tokens_prompt": 0, "tokens_completion": 0},
+			"models":       map[string]interface{}{},
+			"record_count": 0,
+			"by_agent":     map[string]interface{}{},
+		})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
+	case "llm.usage.recent":
+		data, _ := json.Marshal([]interface{}{})
+		return &dashboard.APIResponse{Success: true, Data: data}, nil
+
 	default:
 		// Unwired actions return neutral empty for contract stability in fixture/E2E mode.
 		// Group 1–3 targeted the Git/Workspace/Memory/Approvals/Canvas/Streaming/Chat surfaces.

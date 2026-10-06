@@ -7,6 +7,7 @@ import (
 
 func (s *Server) startMonitoringPublisher() {
 	s.initSTOMP()
+	ctx := s.bgCtx
 	go func() {
 		publish := func() {
 			ctx, cancel := context.WithTimeout(context.Background(), spaAPITimeout)
@@ -17,8 +18,19 @@ func (s *Server) startMonitoringPublisher() {
 		publish()
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			publish()
+		if ctx == nil {
+			for range ticker.C {
+				publish()
+			}
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				publish()
+			}
 		}
 	}()
 }
