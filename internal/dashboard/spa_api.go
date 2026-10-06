@@ -155,6 +155,57 @@ func sanitizeChannelList(data interface{}) interface{} {
 	return out
 }
 
+// sanitizeChannelDetail prepares channel.get for the browser. It is
+// sanitized whole, then the raw id and each message's raw channel_id are put
+// back where they pass ValidateChannelID, matched by position, as in
+// sanitizeChannelList. The SPA keys the feed, posts, members, archive and
+// harness on these ids. name, topic, content and every other field stay
+// redacted.
+func sanitizeChannelDetail(data interface{}) interface{} {
+	raw, ok := data.(map[string]interface{})
+	if !ok {
+		return sanitize.Value(sanitize.ContextChat, data)
+	}
+	id := sanitizeValidID(raw["id"])
+	msgs, _ := raw["messages"].([]interface{})
+	msgIDs := make([]string, len(msgs))
+	for i, item := range msgs {
+		if m, ok := item.(map[string]interface{}); ok {
+			msgIDs[i] = sanitizeValidID(m["channel_id"])
+		}
+	}
+	clean := sanitize.Value(sanitize.ContextChat, raw)
+	out, ok := clean.(map[string]interface{})
+	if !ok {
+		return clean
+	}
+	if id != "" {
+		out["id"] = id
+	}
+	outMsgs, ok := out["messages"].([]interface{})
+	if !ok || len(outMsgs) != len(msgs) {
+		return out
+	}
+	for i, item := range outMsgs {
+		if msgIDs[i] == "" {
+			continue
+		}
+		if m, ok := item.(map[string]interface{}); ok {
+			m["channel_id"] = msgIDs[i]
+		}
+	}
+	return out
+}
+
+// sanitizeValidID returns v when it is a valid channel id, else "".
+func sanitizeValidID(v interface{}) string {
+	id, _ := v.(string)
+	if channelid.ValidateChannelID(id) != nil {
+		return ""
+	}
+	return id
+}
+
 func (s *Server) handleAPIDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -225,7 +276,7 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(sanitize.Value(sanitize.ContextChat, data)) //nolint:errcheck
+		json.NewEncoder(w).Encode(sanitizeChannelDetail(data)) //nolint:errcheck
 
 	case len(parts) == 1 && r.Method == http.MethodPost:
 		var postReq struct {

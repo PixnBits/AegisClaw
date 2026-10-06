@@ -42,6 +42,9 @@ func (p *Publisher) PublishChannelActivity(channelID, from, content string) {
 	if err != nil {
 		clean = payload
 	}
+	// The SPA routes on channel_id, so a valid id is shown raw (see
+	// sanitize.ChannelID). The rest of the payload stays sanitized.
+	clean = sanitize.RestoreChannelIDField(payload, clean, "channel_id")
 	canonical := contracts.ChannelActivityTopic(channelID)
 	legacy := contracts.LegacyChannelMessagesTopic(channelID)
 	p.Hub.Publish(canonical, clean)
@@ -82,6 +85,7 @@ func (p *Publisher) PublishHarness(planID, channelID string, event interface{}) 
 	if err != nil {
 		clean = body
 	}
+	clean = sanitize.RestoreChannelIDField(body, clean, "channel_id")
 	p.Hub.Publish(contracts.HarnessUpdatesTopic(planID), clean)
 	if channelID != "" {
 		wrapped, _ := json.Marshal(contracts.ChannelActivity{
