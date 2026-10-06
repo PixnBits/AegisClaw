@@ -381,36 +381,41 @@ rules:
     - channel.get_relevant_since
     - channel.get_messages
 
-# Store RPC replies for channel context tools (e.g. channel.get_relevant_since.data).
-# Without this, channel.get_relevant_since.data is ACL-denied to role agents.
+# Store RPC replies for channel context tools.
+# Store builds these reply names in cmd/store/main.go as
+# CmdGetRelevantSince+".data" and CmdGetMessages+".data".
+# project-manager* is omitted: the older store -> project-manager* rule
+# already grants channel.*.
 - source: store
   destination: "agent*"
   commands:
-    - channel.*
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
 - source: store
   destination: "coder*"
   commands:
-    - channel.*
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
 - source: store
   destination: "tester*"
   commands:
-    - channel.*
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
 - source: store
   destination: "ciso*"
   commands:
-    - channel.*
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
 - source: store
   destination: "architect*"
   commands:
-    - channel.*
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
 - source: store
   destination: "researcher*"
   commands:
-    - channel.*
-- source: store
-  destination: "project-manager*"
-  commands:
-    - channel.*
+    - channel.get_relevant_since.data
+    - channel.get_messages.data
 
 # Channel activity fan-out (Store relays every channel.post → daemon-orchestrator → STOMP only)
 - source: store
@@ -772,13 +777,10 @@ rules:
     - visibility.list
     - visibility.get
     - visibility.set
-# Hub snapshot RPC wait ids are hub-perm-fetch-<nanos> (cmd/aegishub/permissions.go).
-# Prefix match also covers the exact id.
-- source: "hub-perm-fetch*"
-  destination: store
-  commands:
-    - permission.snapshot
-    - permission.request
+# Wait ids are hub-perm-fetch-<nanos> (cmd/aegishub/permissions.go).
+# The internal request bypasses ACL: hubStoreRPC writes straight to Store's
+# encoder, and the hub refuses registration of these ids. There is no
+# source-side rule. Only the Store reply is checked, and only ids with the dash.
 - source: store
   destination: hub
   commands:
@@ -788,7 +790,7 @@ rules:
     - permission.request
     - visibility.set
 - source: store
-  destination: "hub-perm-fetch*"
+  destination: "hub-perm-fetch-*"
   commands:
     - permission.snapshot
     - error
@@ -804,23 +806,6 @@ rules:
     - permission.snapshot
 - source: hub
   destination: "coder*"
-  commands:
-    - permission.snapshot
-# Role VMs tester/ciso/architect/researcher also receive permission.snapshot pushes.
-- source: hub
-  destination: "tester*"
-  commands:
-    - permission.snapshot
-- source: hub
-  destination: "ciso*"
-  commands:
-    - permission.snapshot
-- source: hub
-  destination: "architect*"
-  commands:
-    - permission.snapshot
-- source: hub
-  destination: "researcher*"
   commands:
     - permission.snapshot
 # Portal + CLI manage grants (user-controlled)

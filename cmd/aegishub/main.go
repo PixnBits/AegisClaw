@@ -55,6 +55,13 @@ func isEphemeralHubClient(id string) bool {
 		strings.HasPrefix(id, "aegis-cli-internal") // CLI hub RPC (one reader loop per process)
 }
 
+// isReservedHubID reports ids reserved for the hub's internal snapshot RPC
+// waiters (hub-perm-fetch and hub-perm-fetch-<nanos>). Those waiters never
+// register; a client must not claim the id.
+func isReservedHubID(id string) bool {
+	return id == "hub-perm-fetch" || strings.HasPrefix(id, "hub-perm-fetch-")
+}
+
 func registerPendingRPC(requesterID, dest, command string) chan Message {
 	w := &pendingWaiter{
 		dest:    dest,
@@ -696,6 +703,12 @@ func handleConnection(conn net.Conn, conns *sync.Map) {
 	// Check if already registered
 	registeredMutex.Lock()
 	componentID := regMsg.Source
+	if isReservedHubID(componentID) {
+		registeredMutex.Unlock()
+		encoder.Encode(map[string]string{"error": "ERR_RESERVED_ID"})
+		log.Printf("Audit: rejected registration of reserved hub id %s", componentID)
+		return
+	}
 
 	// For daemon connections: if already registered, use a temporary ID
 	if regMsg.Source == "daemon" {
