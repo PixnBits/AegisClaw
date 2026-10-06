@@ -13,7 +13,10 @@
 #   - no-stubs-plan/phase-1.md (real thin binaries must be packageable and bootable as guests)
 
 # === Build stage ===
-FROM golang:1.24-alpine AS builder
+# Base images are digest-pinned (tag@sha256, multi-arch index digest).
+# To bump: `docker buildx imagetools inspect <image>:<tag>` (or the registry
+# API) and update the tag and the @sha256 digest in the same commit.
+FROM golang:1.24-alpine@sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191 AS builder
 
 ENV GOTOOLCHAIN=auto
 WORKDIR /app
@@ -32,7 +35,8 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /agent ./cmd/agent
 
 # === Runtime stage (very minimal) ===
-FROM alpine:3.18
+# TODO(#127 follow-up): alpine 3.18 is EOL. When replacing it, bump the tag and the @sha256 digest together.
+FROM alpine:3.18@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f
 
 RUN apk add --no-cache ca-certificates tzdata
 

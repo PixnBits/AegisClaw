@@ -2492,16 +2492,26 @@ func vmLogInsideStateDir(stateDir, p string) bool {
 	return !strings.HasPrefix(rel, "..")
 }
 
+// getRecentFileContent returns the last tailLines of the regular file at path,
+// or the whole file when tailLines <= 0. One open (no Lstat-then-ReadFile):
+// O_NOFOLLOW makes a symlink fail with ELOOP, and O_NONBLOCK keeps a planted
+// FIFO from blocking before the regular-file check. golang.org/x/sys is not a
+// direct module dependency, so the flags come from syscall.
 func getRecentFileContent(path string, tailLines int) string {
-	info, err := os.Lstat(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return ""
 	}
-	// Do not follow a symlink planted at the log path.
-	if info.Mode()&os.ModeSymlink != 0 {
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
 		return ""
 	}
-	data, err := os.ReadFile(path)
+	if !info.Mode().IsRegular() {
+		return ""
+	}
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return ""
 	}
