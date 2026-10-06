@@ -275,15 +275,11 @@ func (d *panicDeduper) snapshot(topN int) panicStats {
 const storeSecurityStatsCommand = "store.security_stats"
 
 // isHostStatsSource reports whether source may read store.security_stats.
-// The hub sets Source to the registered component id, and these ids can
-// only be registered by host processes, so agents and other microVMs can't
-// read the counts.
+// It allows exactly the sources config/acls.yaml grants the command to:
+// daemon-internal and daemon-internal-N. The hub sets Source to the
+// registered component id, and those ids are reserved for host processes.
 func isHostStatsSource(source string) bool {
-	switch source {
-	case "daemon-internal", "daemon-orchestrator", "aegis-cli-internal":
-		return true
-	}
-	return strings.HasPrefix(source, "daemon-internal-") || strings.HasPrefix(source, "aegis-cli-internal-")
+	return source == "daemon-internal" || (strings.HasPrefix(source, "daemon-internal-") && len(source) > len("daemon-internal-"))
 }
 
 // handleStoreSecurityStats answers store.security_stats.

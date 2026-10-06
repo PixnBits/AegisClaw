@@ -260,7 +260,7 @@ func TestStoreSecurityStatsCommand(t *testing.T) {
 	storePanicDedup.observe("aaaa", time.Now())
 	storePanicDedup.observe("bbbb", time.Now())
 
-	for _, src := range []string{"daemon-internal", "daemon-internal-3", "aegis-cli-internal-123", "daemon-orchestrator"} {
+	for _, src := range []string{"daemon-internal", "daemon-internal-3", "daemon-internal-42"} {
 		resp := Message{}
 		if skip := dispatchStoreCommand(Message{Source: src, Destination: "store", Command: "store.security_stats"}, &resp, &storeWorld{auditLog: &[]interface{}{}}); skip {
 			t.Fatalf("%s: skipReply", src)
@@ -283,7 +283,10 @@ func TestStoreSecurityStatsCommand(t *testing.T) {
 			t.Fatalf("%s: by_hash %v", src, rows)
 		}
 	}
-	for _, src := range []string{"agent-x", "court-persona-ciso", "web-portal", "builder-1", "", "daemon-internalx", "store"} {
+	// Exactly the ACL's grantees: not the CLI, the orchestrator, the portal,
+	// guests, or look-alike ids.
+	for _, src := range []string{"agent-x", "court-persona-ciso", "web-portal", "builder-1", "", "daemon-internalx",
+		"daemon-internal-", "store", "network-boundary", "aegis-cli-internal", "aegis-cli-internal-123", "daemon-orchestrator", "daemon"} {
 		resp := Message{}
 		dispatchStoreCommand(Message{Source: src, Destination: "store", Command: "store.security_stats"}, &resp, &storeWorld{auditLog: &[]interface{}{}})
 		if resp.Command != "error" || !strings.Contains(fmt.Sprint(resp.Payload), "ERR_PERMISSION_DENIED") {
