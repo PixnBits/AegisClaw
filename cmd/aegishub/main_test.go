@@ -434,16 +434,17 @@ func TestRepoACLStoreToRoleSnapshotAndLLMDenied(t *testing.T) {
 
 // TestRepoACLLLMUsageNarrowed loads config/acls.yaml and pins usage to exact
 // commands. network-boundary -> store allows llm.usage.record only.
-// store -> network-boundary allows llm.usage.recorded only. Neither rule may
-// contain an llm. wildcard (a pattern starting with "llm." and ending with "*").
+// store -> network-boundary does not allow llm.usage.recorded: the record is a
+// one-way hub push and Store does not reply. Neither rule may contain an
+// llm wildcard (a pattern starting with "llm." and ending with "*").
 // Any parsed rule whose source or destination is store fails if a command
 // pattern starts with "llm" and contains "*" (llm.*, llm.usage.*).
 // Guest llm.* rules (role <-> network-boundary) are pre-existing and out of scope.
 //
-// Store replies command error when a record is rejected or invalid. The hub
-// checkACL's that frame (every command except get-version). error is already
-// allowed by the source "*" destination "*" catch-all, so this rule does not
-// list it. Portal and daemon-internal query grants are intentionally absent.
+// error stays allowed by the source "*" destination "*" catch-all for unrelated
+// RPCs. Usage rejection is logged, not replied, so this rule does not grant
+// error or llm.usage.recorded. Portal and daemon-internal query grants are
+// intentionally absent.
 func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	origRules := aclRules
 	origPath := aclFilePath
@@ -467,12 +468,11 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	if !checkACL("network-boundary", "store", "llm.usage.record") {
 		t.Error("network-boundary -> store llm.usage.record = false, want allow")
 	}
-	// Hub checkACL runs on the Store reply before deliverPendingRPC.
-	if !checkACL("store", "network-boundary", "llm.usage.recorded") {
-		t.Error("store -> network-boundary llm.usage.recorded = false, want allow")
+	// One-way push: Store does not send llm.usage.recorded, and it is not granted.
+	if checkACL("store", "network-boundary", "llm.usage.recorded") {
+		t.Error("store -> network-boundary llm.usage.recorded = true, want deny")
 	}
-	// Rejected/invalid llm.usage.record is command error. Allowed by the
-	// * -> * catch-all, not by the store -> network-boundary usage rule.
+	// error stays on the * -> * catch-all for unrelated RPCs, not for usage.
 	if !checkACL("store", "network-boundary", "error") {
 		t.Error("store -> network-boundary error = false, want allow")
 	}
@@ -484,7 +484,7 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 			t.Errorf("network-boundary -> store %s = true, want deny", cmd)
 		}
 	}
-	for _, cmd := range []string{"llm.usage.record", "llm.usage.summary", "llm.chat"} {
+	for _, cmd := range []string{"llm.usage.record", "llm.usage.recorded", "llm.usage.summary", "llm.chat"} {
 		if checkACL("store", "network-boundary", cmd) {
 			t.Errorf("store -> network-boundary %s = true, want deny", cmd)
 		}
@@ -513,8 +513,8 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	if !containsCmd(nbStore, "llm.usage.record") || hasLLMDotWildcard(nbStore) {
 		t.Errorf("network-boundary -> store commands = %v, want llm.usage.record and no llm.* wildcard", nbStore)
 	}
-	if !containsCmd(storeNB, "llm.usage.recorded") || hasLLMDotWildcard(storeNB) {
-		t.Errorf("store -> network-boundary commands = %v, want llm.usage.recorded and no llm.* wildcard", storeNB)
+	if containsCmd(storeNB, "llm.usage.recorded") || hasLLMDotWildcard(storeNB) {
+		t.Errorf("store -> network-boundary commands = %v, want no llm.usage.recorded and no llm.* wildcard", storeNB)
 	}
 }
 
@@ -827,6 +827,12 @@ func TestForwardHubRPC_ChannelTurnDoesNotWaitForDestReply(t *testing.T) {
 func TestIsOneWayHubPush(t *testing.T) {
 	if !isOneWayHubPush("channel.turn") {
 		t.Fatal("channel.turn must be a one-way push")
+	}
+	if !isOneWayHubPush("llm.usage.record") {
+		t.Fatal("llm.usage.record must be a one-way push")
+	}
+	if isOneWayHubPush("llm.usage.recorded") {
+		t.Fatal("llm.usage.recorded is not a push")
 	}
 	if isOneWayHubPush("llm.call") {
 		t.Fatal("llm.call is a blocking RPC")

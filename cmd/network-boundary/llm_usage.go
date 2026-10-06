@@ -4,15 +4,17 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
 
 // buildLLMUsageRecord returns the llm.usage.record payload.
-// On success, model and token fields are copied from usage and the seven
-// success-path keys are left unchanged. On failure, token counts are zero,
-// duration_ms is wall time since started, and a non-empty errMsg is stored
-// under "error" truncated to 200 characters.
+// On success, model and token fields are copied from usage. duration_ms is
+// copied only when usage includes it; otherwise the wall-clock value set
+// above is kept. On failure, token counts are zero, duration_ms is wall time
+// since started, and a non-empty errMsg is stored under "error" truncated to
+// 200 runes (a byte cut would split a multibyte character).
 func buildLLMUsageRecord(agentID, model string, usage map[string]interface{}, success bool, errMsg string, started time.Time) map[string]interface{} {
 	rec := map[string]interface{}{
 		"agent_id":          agentID,
@@ -28,7 +30,10 @@ func buildLLMUsageRecord(agentID, model string, usage map[string]interface{}, su
 			rec["model"] = usage["model"]
 			rec["tokens_prompt"] = usage["prompt_tokens"]
 			rec["tokens_completion"] = usage["completion_tokens"]
-			rec["duration_ms"] = usage["duration_ms"]
+			// Missing total_duration must not wipe the wall-clock duration set above.
+			if d, ok := usage["duration_ms"]; ok && d != nil {
+				rec["duration_ms"] = d
+			}
 		}
 		return rec
 	}
@@ -70,6 +75,32 @@ func parseOllamaForLLMCall(raw, model string) (string, map[string]interface{}) {
 		usage["success"] = true
 	}
 	return text, usage
+}
+
+// boundaryShouldAnswer reports whether the hub read loop should encode a reply.
+// Non-request frames must not be answered: the hub replies to an error at once,
+// and {"error":"ERR_ACL_VIOLATION"} decodes with an empty command, so an error
+// reply ping-pongs. Reply commands follow aegishub isOneWayHubReply (response,
+// ack, *.response, and the known store/memory replies). error and "" are not in
+// that helper, but this loop still must not answer them. Genuine requests
+// (llm.call, network.request, secrets.*, version, and unknown commands) return true.
+func boundaryShouldAnswer(command string) bool {
+	switch command {
+	case "llm.usage.recorded":
+		// Reply to our best-effort usage emit (older Stores). Another frame
+		// would be a new hub RPC on this connection.
+		return false
+	case "error", "", "response", "ack":
+		return false
+	case "channel.posted", "channel.data", "channel.created", "channel.joined",
+		"channel.archived", "channel.list", "channel.member_added",
+		"memory.context", "memory.response":
+		return false
+	}
+	if strings.HasSuffix(command, ".response") {
+		return false
+	}
+	return true
 }
 
 // emitLLMUsageRecord sends llm.usage.record to Store. Best-effort: encode errors

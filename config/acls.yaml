@@ -228,18 +228,15 @@ rules:
     - llm.*
 
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
-# Exact commands only, no wildcards. network-boundary appends llm.usage.record.
-# The hub runs checkACL on every frame except get-version (cmd/aegishub/main.go),
-# including Store's llm.usage.recorded reply. A rejected or invalid record is
-# replied as command error; that reply is already allowed by the * -> * catch-all
-# (response, error, ping, pong, version, get-version), so error is not repeated here.
+# Exact commands only, no wildcards. network-boundary -> store grants llm.usage.record
+# and nothing else under llm. The record is a one-way hub push (isOneWayHubPush);
+# Store logs rejections and does not reply, so llm.usage.recorded is not granted.
 # Portal/daemon-internal query rules are not granted here.
 - source: store
   destination: network-boundary
   commands:
     - secrets.push
     - secrets.update
-    - llm.usage.recorded
 - source: network-boundary
   destination: store
   commands:

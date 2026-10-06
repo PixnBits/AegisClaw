@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -14,6 +15,17 @@ const (
 	llmUsageRecentDefault = 50
 	llmUsageRecentMax     = 500
 	llmUsageMaxString     = 256
+	// llmUsageMaxNumeric is the per-field cap for token and duration counts.
+	// Values above it are dropped, not clamped. float64(MaxInt64) rounds to
+	// 2^63, so a comparison against that bound lets 2^63 through and int(n)
+	// becomes negative. With at most llmUsageMaxRecords+1 stored rows (the
+	// slice is trimmed after the append that exceeds the cap) and two summed
+	// fields, the largest aggregate is 10001 * 2 * 1e12 = 2.0002e16, which
+	// fits in int64 (max ~9.22e18). Summary sums cannot overflow.
+	llmUsageMaxNumeric = 1e12
+	// llmUsageFutureSkew is how far ahead of receive time a record timestamp
+	// may be. Further ahead, or unparseable, is replaced with receive time.
+	llmUsageFutureSkew = 5 * time.Minute
 )
 
 // llmUsageRecords is the LLM usage log. It is in memory only and is lost on
@@ -53,6 +65,7 @@ func computeLLMUsageSummary(records []map[string]interface{}) map[string]interfa
 	modelBreak := map[string]int{}
 	byAgent := map[string]map[string]interface{}{}
 
+	// p and c are already capped at llmUsageMaxNumeric. See that constant.
 	add := func(target map[string]interface{}, p, c int) {
 		target["calls"] = target["calls"].(int) + 1
 		target["tokens_prompt"] = target["tokens_prompt"].(int) + p
@@ -141,14 +154,19 @@ func usageInt(v interface{}) int {
 }
 
 // handleLLMUsageRecord accepts an append only from network-boundary and stores
-// an allowlisted, capped copy of the payload. Anything else is ignored.
+// an allowlisted, capped copy of the payload. The return is always a no-reply
+// (empty command and nil payload): llm.usage.record is a one-way hub push, so
+// neither an accept nor a rejection is encoded. Rejections are logged and not
+// stored. Callers must not encode the returned Message.
 func handleLLMUsageRecord(msg Message) Message {
 	if msg.Source != "network-boundary" {
-		return Message{Command: "error", Payload: "llm.usage.record rejected"}
+		log.Printf("llm.usage.record rejected: source %q", msg.Source)
+		return Message{}
 	}
 	raw, ok := msg.Payload.(map[string]interface{})
 	if !ok || raw == nil {
-		return Message{Command: "error", Payload: "invalid usage record"}
+		log.Printf("llm.usage.record rejected: invalid payload")
+		return Message{}
 	}
 	rec := sanitizeLLMUsageRecord(raw)
 	llmUsageMu.Lock()
@@ -159,7 +177,7 @@ func handleLLMUsageRecord(msg Message) Message {
 		llmUsageRecords = trimmed
 	}
 	llmUsageMu.Unlock()
-	return Message{Command: "llm.usage.recorded", Payload: map[string]interface{}{"ok": true}}
+	return Message{}
 }
 
 func handleLLMUsageSummary(msg Message) Message {
@@ -214,11 +232,9 @@ func sanitizeLLMUsageRecord(in map[string]interface{}) map[string]interface{} {
 	if s, ok := cappedUsageString(in["model"]); ok && s != "" {
 		out["model"] = s
 	}
-	if s, ok := cappedUsageString(in["timestamp"]); ok && s != "" {
-		out["timestamp"] = s
-	} else {
-		out["timestamp"] = time.Now().UTC().Format(time.RFC3339)
-	}
+	// Unparseable timestamps, and timestamps more than llmUsageFutureSkew in
+	// the future, are replaced with receive time. The record is not dropped.
+	out["timestamp"] = normalizeUsageTimestamp(in["timestamp"], time.Now())
 	if s, ok := cappedUsageString(in["error"]); ok && s != "" {
 		out["error"] = s
 	}
@@ -248,25 +264,46 @@ func cappedUsageString(v interface{}) (string, bool) {
 	return string(b), true
 }
 
+// normalizeUsageTimestamp keeps a parseable RFC3339 timestamp that is not more
+// than llmUsageFutureSkew ahead of now. Anything else is the receive time, so
+// windowed aggregates stay inside real time. The record itself is not dropped.
+func normalizeUsageTimestamp(v interface{}, now time.Time) string {
+	now = now.UTC()
+	fallback := now.Format(time.RFC3339)
+	s, ok := cappedUsageString(v)
+	if !ok || s == "" {
+		return fallback
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil || t.After(now.Add(llmUsageFutureSkew)) {
+		return fallback
+	}
+	return s
+}
+
+func usageNumberTooLarge(n float64) bool {
+	return n > llmUsageMaxNumeric
+}
+
 func nonNegUsageNumber(v interface{}) (int, bool) {
 	switch n := v.(type) {
 	case int:
-		if n < 0 {
+		if n < 0 || usageNumberTooLarge(float64(n)) {
 			return 0, false
 		}
 		return n, true
 	case int32:
-		if n < 0 {
+		if n < 0 || usageNumberTooLarge(float64(n)) {
 			return 0, false
 		}
 		return int(n), true
 	case int64:
-		if n < 0 || n > int64(^uint(0)>>1) {
+		if n < 0 || usageNumberTooLarge(float64(n)) {
 			return 0, false
 		}
 		return int(n), true
 	case float64:
-		if math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n > float64(int(^uint(0)>>1)) {
+		if math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || usageNumberTooLarge(n) {
 			return 0, false
 		}
 		return int(n), true
