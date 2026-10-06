@@ -1138,6 +1138,8 @@ func dispatchStoreCommand(msg Message, response *Message, w *storeWorld) (skipRe
 	case "tool.list":
 		response.Command = "tool.list"
 		response.Payload = skills
+	case storeSecurityStatsCommand:
+		handleStoreSecurityStats(msg, response, storePanicDedup)
 	case "ping":
 		response.Command = "pong"
 		response.Payload = "ok"

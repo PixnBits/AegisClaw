@@ -13,10 +13,13 @@ import (
 func withPanicGuardSeams(t *testing.T, dispatch func(Message, *Message, *storeWorld) bool) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
-	oldDispatch, oldWriter := storeDispatch, securityLogWriter
+	oldDispatch, oldWriter, oldDedup := storeDispatch, securityLogWriter, storePanicDedup
 	storeDispatch = dispatch
 	securityLogWriter = func() io.Writer { return &buf }
-	t.Cleanup(func() { storeDispatch, securityLogWriter = oldDispatch, oldWriter })
+	// Fresh deduper: a panic from another test must not turn this test's
+	// first line into a hash-only repeat.
+	storePanicDedup = newPanicDeduper(panicDedupMaxHashes, panicFullStackInterval)
+	t.Cleanup(func() { storeDispatch, securityLogWriter, storePanicDedup = oldDispatch, oldWriter, oldDedup })
 	return &buf
 }
 
@@ -105,7 +108,7 @@ func TestLogRecoveredHandlerPanicCapsFields(t *testing.T) {
 	var buf bytes.Buffer
 	// One ASCII byte, then 2-byte runes: every even cap lands mid-rune.
 	long := "x" + strings.Repeat("é", 4096)
-	logRecoveredHandlerPanic(&buf, Message{Command: long, Source: long}, long, []byte(strings.Repeat("s", 64<<10)), time.Now())
+	logRecoveredHandlerPanic(&buf, newPanicDeduper(4, time.Minute), Message{Command: long, Source: long}, long, []byte(strings.Repeat("s", 64<<10)), time.Now())
 	evs := securityLines(t, buf.String())
 	if len(evs) != 1 {
 		t.Fatalf("got %d lines", len(evs))
