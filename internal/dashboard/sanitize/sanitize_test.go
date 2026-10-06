@@ -139,3 +139,62 @@ func TestCredentialPatternSeparatorRule(t *testing.T) {
 		}
 	}
 }
+
+// Fake keys in the shapes OpenAI and Anthropic issue. They're built at run
+// time so secret scanners don't flag the test file.
+func scopedTestKeys() (proj, ant string) {
+	proj = "sk-" + "proj-" + "AbC_12-" + strings.Repeat("Xy9_Zq-0", 12) + "T3BlbkFJ"
+	ant = "sk-" + "ant-" + "api03-" + strings.Repeat("Qw_E-rT9", 11) + "-AA"
+	return proj, ant
+}
+
+func TestCredentialPatternScopedKeys(t *testing.T) {
+	proj, ant := scopedTestKeys()
+	svc := "sk-" + "svcacct-" + strings.Repeat("Lm_N-0p", 6)
+	admin := "sk-" + "admin-" + strings.Repeat("aB3-_c", 6)
+	for _, key := range []string{proj, ant, svc, admin} {
+		cases := map[string]string{
+			key:                             "[REDACTED]",
+			"api_key_" + key:                "api_key_[REDACTED]",
+			"ANTHROPIC_KEY_" + key + " end": "ANTHROPIC_KEY_[REDACTED] end",
+			"x=" + key:                      "x=[REDACTED]",
+			"key:" + key + ".":              "key:[REDACTED].",
+			`"` + key + `"`:                 `"[REDACTED]"`,
+			`{"api":"` + key + `","n":1}`:   `{"api":"[REDACTED]","n":1}`,
+			"use (" + key + ") here":        "use ([REDACTED]) here",
+			key + " " + key:                 "[REDACTED] [REDACTED]",
+		}
+		for in, want := range cases {
+			if got := Text(ContextChat, in); got != want {
+				t.Errorf("Text(%q) = %q, want %q", in, got, want)
+			}
+		}
+		// The apiKeyPattern also fires after "Bearer "/"token="; either way
+		// no part of the key body may survive.
+		for _, in := range []string{"Authorization: Bearer " + key, "OPENAI_API_KEY=" + key, "token " + key} {
+			got := Text(ContextChat, in)
+			if strings.Contains(got, key[8:20]) || !strings.Contains(got, "[REDACTED]") {
+				t.Errorf("Text(%q) = %q, key body leaked", in, got)
+			}
+		}
+	}
+}
+
+func TestCredentialPatternScopedKeysLeaveIDsAlone(t *testing.T) {
+	kept := []string{
+		"sk-short",
+		"sk-proj-short",
+		"sk-ant-api03-tiny",
+		"task-proj-refactorauthenticationmodule-v2",
+		"desk-ant-reorganizationplanning_notes",
+		"risk-assessmentforthequarterlyplan",
+		"task-refactorauthenticationmodule",
+		"ask-proj-" + strings.Repeat("x_", 15),
+		"the sk- prefix is documented",
+	}
+	for _, in := range kept {
+		if got := Text(ContextChat, in); got != in {
+			t.Errorf("Text(%q) = %q, want unchanged", in, got)
+		}
+	}
+}

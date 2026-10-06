@@ -21,7 +21,10 @@ var (
 	// or digit. So the "sk-" in "task-refactorauthenticationmodule" is not a
 	// key, but "api_key_sk-…" and "AWS_AKIA…" are: \b would treat '_' as a
 	// word character and miss them. Group 1 is the separator, kept on replace.
-	credentialPattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])(AKIA[0-9A-Z]{16}|sk-[a-z0-9]{20,})`)
+	// Scoped keys (sk-proj-…, sk-ant-api03-…, sk-svcacct-…, sk-admin-…) have
+	// '-' and '_' in the body, so they get their own alternative, listed
+	// before plain sk- so the whole key is replaced.
+	credentialPattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])(AKIA[0-9A-Z]{16}|sk-(?:proj|ant|svcacct|admin)-[a-z0-9_-]{20,}|sk-[a-z0-9]{20,})`)
 	internalPathPattern = regexp.MustCompile(`/(etc|var|opt|proc|sys|home|root)/[^\s]*`)
 	privateIPPattern = regexp.MustCompile(`\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`)
 	hostnamePattern  = regexp.MustCompile(`\b[a-zA-Z0-9-]+\.(internal|local|svc|cluster)\b`)
