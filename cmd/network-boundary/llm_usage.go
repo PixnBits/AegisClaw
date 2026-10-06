@@ -130,6 +130,79 @@ func emitLLMUsageRecordLocked(enc *json.Encoder, priv ed25519.PrivateKey, rec ma
 	signMessage(&recMsg, priv)
 	if err := enc.Encode(recMsg); err != nil {
 		log.Printf("llm.usage.record emit failed: %v", err)
+		return
+	}
+	markUsagePushOutstanding()
+}
+
+// usageDropLogEvery bounds drop logs so a down Store cannot flood stderr.
+const usageDropLogEvery = time.Minute
+
+// usageDropNow is the clock for the drop log window. Tests replace it.
+var usageDropNow = time.Now
+
+var (
+	usageDropMu          sync.Mutex
+	usagePushOutstanding int
+	usageDropPending     int
+	usageDropLast        time.Time
+)
+
+func markUsagePushOutstanding() {
+	usageDropMu.Lock()
+	usagePushOutstanding++
+	usageDropMu.Unlock()
+}
+
+func resetUsageDropState() {
+	usageDropMu.Lock()
+	usagePushOutstanding = 0
+	usageDropPending = 0
+	usageDropLast = time.Time{}
+	usageDropMu.Unlock()
+}
+
+// noteUsagePushHubError logs a dropped usage push when the hub answers an
+// in-flight llm.usage.record with an error. Error frames do not name the
+// original command, so each successful emit increments a counter and the next
+// hub error (command "error", or an empty command such as {"error":"ERR_*"})
+// attributes one outstanding push. At most one line is written per
+// usageDropLogEvery; the line's count is every drop since the previous line.
+// response/ack/llm.usage.recorded are not errors and are ignored.
+func noteUsagePushHubError(msg Message) {
+	if msg.Command != "error" && msg.Command != "" {
+		return
+	}
+	now := usageDropNow()
+	usageDropMu.Lock()
+	defer usageDropMu.Unlock()
+	if usagePushOutstanding == 0 {
+		return
+	}
+	usagePushOutstanding--
+	usageDropPending++
+	if !usageDropLast.IsZero() && now.Sub(usageDropLast) < usageDropLogEvery {
+		return
+	}
+	log.Printf("llm.usage.record dropped: hub error after usage push (count=%d)", usageDropPending)
+	usageDropPending = 0
+	usageDropLast = now
+}
+
+// serveBoundaryFrame is one iteration of the hub read loop after a successful
+// decode. The boundaryShouldAnswer call site lives here: non-requests are not
+// written, and dispatch runs only for real requests. The loop and the tests
+// both call this function.
+func serveBoundaryFrame(msg Message, enc *json.Encoder, mu *sync.Mutex, priv ed25519.PrivateKey, dispatch func(Message) (Message, map[string]interface{})) {
+	if !boundaryShouldAnswer(msg.Command) {
+		noteUsagePushHubError(msg)
+		return
+	}
+	response, pending := dispatch(msg)
+	// Guest response is written before usage. A usage encode error is swallowed
+	// and does not change or fail the response.
+	if err := encodeResponseAndMaybeUsage(enc, mu, priv, &response, pending); err != nil {
+		log.Println("Failed to send response:", err)
 	}
 }
 

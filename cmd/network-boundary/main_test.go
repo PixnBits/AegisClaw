@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -555,4 +557,156 @@ func TestBoundaryReadLoopStillAnswersRequests(t *testing.T) {
 			t.Errorf("boundaryShouldAnswer(%q) = false, want true", cmd)
 		}
 	}
+}
+
+// answeringDispatch is what the read loop does for a non-request once the
+// boundaryShouldAnswer gate is gone: the default arm encodes an error reply.
+func answeringDispatch(called *bool) func(Message) (Message, map[string]interface{}) {
+	return func(m Message) (Message, map[string]interface{}) {
+		if called != nil {
+			*called = true
+		}
+		return Message{
+			Source:      "network-boundary",
+			Destination: m.Source,
+			Command:     "error",
+			Payload:     "unknown command",
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		}, nil
+	}
+}
+
+func TestServeBoundaryFrameWritesNothingForNonRequests(t *testing.T) {
+	// Deleting the boundaryShouldAnswer call inside serveBoundaryFrame encodes a reply.
+	resetUsageDropState()
+	priv := testBoundaryKey(t)
+	frames := []string{
+		`{"command":"error","payload":"ERR_DESTINATION_NOT_FOUND","source":"hub"}`,
+		`{"command":"","source":"hub"}`,
+		`{"command":"response","source":"hub","payload":{"status":"accepted"}}`,
+	}
+	for _, raw := range frames {
+		var msg Message
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatalf("decode %s: %v", raw, err)
+		}
+		var buf bytes.Buffer
+		called := false
+		serveBoundaryFrame(msg, json.NewEncoder(&buf), &sync.Mutex{}, priv, answeringDispatch(&called))
+		if called {
+			t.Fatalf("dispatch ran for %s", raw)
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("wrote %s for %s", buf.Bytes(), raw)
+		}
+	}
+}
+
+func TestUsagePushHubErrorLoggedOncePerWindow(t *testing.T) {
+	// Removing noteUsagePushHubError leaves this with no drop line.
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	clock := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	usageDropNow = func() time.Time { return clock }
+	t.Cleanup(func() {
+		usageDropNow = time.Now
+		resetUsageDropState()
+	})
+	priv := testBoundaryKey(t)
+
+	feed := func(raw string) []byte {
+		t.Helper()
+		var msg Message
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		called := false
+		serveBoundaryFrame(msg, json.NewEncoder(&buf), &sync.Mutex{}, priv, answeringDispatch(&called))
+		if called || buf.Len() != 0 {
+			t.Fatalf("answered %s with %s", raw, buf.Bytes())
+		}
+		return buf.Bytes()
+	}
+	emit := func() {
+		t.Helper()
+		var sink bytes.Buffer
+		emitLLMUsageRecordLocked(json.NewEncoder(&sink), priv, map[string]interface{}{"agent_id": "coder-1", "success": true})
+		if sink.Len() == 0 {
+			t.Fatal("usage emit wrote nothing")
+		}
+	}
+	dropLines := func() []string {
+		t.Helper()
+		var lines []string
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "llm.usage.record dropped:") {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+
+	t.Run("one error", func(t *testing.T) {
+		logs.Reset()
+		resetUsageDropState()
+		emit()
+		feed(`{"command":"error","payload":"ERR_DESTINATION_NOT_FOUND","source":"hub"}`)
+		lines := dropLines()
+		if len(lines) != 1 || !strings.Contains(lines[0], "count=1") {
+			t.Fatalf("log lines %#v", lines)
+		}
+	})
+
+	t.Run("acl object", func(t *testing.T) {
+		logs.Reset()
+		resetUsageDropState()
+		emit()
+		feed(`{"error":"ERR_ACL_VIOLATION"}`)
+		lines := dropLines()
+		if len(lines) != 1 || !strings.Contains(lines[0], "count=1") {
+			t.Fatalf("log lines %#v", lines)
+		}
+	})
+
+	t.Run("response is not a drop", func(t *testing.T) {
+		logs.Reset()
+		resetUsageDropState()
+		emit()
+		feed(`{"command":"response","source":"hub","payload":{"status":"accepted"}}`)
+		if lines := dropLines(); len(lines) != 0 {
+			t.Fatalf("response logged %#v", lines)
+		}
+	})
+
+	t.Run("burst", func(t *testing.T) {
+		logs.Reset()
+		resetUsageDropState()
+		for i := 0; i < 100; i++ {
+			emit()
+		}
+		errFrames := []string{
+			`{"command":"error","payload":"ERR_DESTINATION_NOT_FOUND","source":"hub"}`,
+			`{"command":"error","payload":"ERR_RPC_TIMEOUT","source":"hub"}`,
+			`{"error":"ERR_ACL_VIOLATION"}`,
+		}
+		for i := 0; i < 100; i++ {
+			feed(errFrames[i%len(errFrames)])
+		}
+		lines := dropLines()
+		if len(lines) != 1 || !strings.Contains(lines[0], "count=1") {
+			t.Fatalf("burst lines %#v, want one line in the window", lines)
+		}
+		// The other 99 drops are counted, not logged, until the window rolls.
+		clock = clock.Add(usageDropLogEvery)
+		logs.Reset()
+		emit()
+		feed(`{"command":"error","payload":"ERR_RPC_TIMEOUT","source":"hub"}`)
+		lines = dropLines()
+		if len(lines) != 1 || !strings.Contains(lines[0], "count=100") {
+			t.Fatalf("next window %#v, want count=100", lines)
+		}
+	})
 }

@@ -701,6 +701,8 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 
 		fmt.Println("Network Boundary received:", msg.Command)
 
+		// boundaryShouldAnswer's call site is serveBoundaryFrame, shared with tests.
+		serveBoundaryFrame(msg, encoder, &connMutex, priv, func(msg Message) (Message, map[string]interface{}) {
 		response := Message{
 			Source:      "network-boundary",
 			Destination: msg.Source,
@@ -710,11 +712,6 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 		// Set only when this iteration actually called Ollama. Emitted after the
 		// guest response so a usage frame cannot delay llm.call.response.
 		var pendingUsage map[string]interface{}
-
-		// Hub replies and non-requests are not answered. See boundaryShouldAnswer.
-		if !boundaryShouldAnswer(msg.Command) {
-			continue
-		}
 
 		switch msg.Command {
 		case "network.request":
@@ -1212,11 +1209,8 @@ func runNetworkBoundary(cmd *cobra.Command, args []string) {
 			response.Command = "error"
 			response.Payload = "unknown command"
 		}
-		// Guest response is written before usage. A usage encode error is swallowed
-		// and does not change or fail the response.
-		if err := encodeResponseAndMaybeUsage(encoder, &connMutex, priv, &response, pendingUsage); err != nil {
-			log.Println("Failed to send response:", err)
-		}
+		return response, pendingUsage
+		})
 	}
 }
 
