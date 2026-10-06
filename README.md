@@ -229,6 +229,14 @@ yourusername ALL=(ALL) NOPASSWD: /path/to/bin/aegis, /path/to/scripts/build-micr
 - All changes are additive and preserve the sacred `sudo ./bin/aegis start/stop`, `make test/test-chaos` and doctor behavior (AGENTS.md).
 - References: threat-model.md:3 (backdoored skill mitigation), additional-requirements-and-gaps.md, builder-security-gates.md, grok-build-execution-plan.md:7.8.
 
+### Docker base image digests
+
+Every `FROM` in `cmd/*/Dockerfile` is pinned as `name:tag@sha256:…`. The digest is the multi-arch index digest, not a single-architecture manifest. The tag stays so the line is readable; the digest is what the build uses.
+
+To bump a pin, read the index digest with `docker buildx imagetools inspect <image>:<tag>` (or the registry API) and update the tag and the `@sha256:` digest in the same commit. Do not change one without the other. `scripts/test-dockerfile-digests.sh` rejects a `FROM` that has no `@sha256:` digest.
+
+`alpine:3.18` is end of life. TODO(#127 follow-up): move the runtime stage to a supported Alpine and bump its tag and digest together. Do not bump Alpine in a digest-only change.
+
 See `make help` and the SBOM target for details.
 
 
@@ -237,14 +245,19 @@ See `make help` and the SBOM target for details.
 The `apt` package for Firecracker is usually missing or extremely outdated. Use the official static release instead:
 
 ```bash
-# 1. Download a recent release (example uses v1.15.1) and the checksum file
-#    GitHub publishes next to that asset. Do not hardcode the hash.
+# 1. Download Firecracker v1.15.1. The SHA-256 below is pinned in this
+#    repository (release asset digest and the published .sha256.txt agree).
+#    Bump this hash in the same change as the version.
 cd ~/Downloads
 wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz
 wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz.sha256.txt
 
-# 2. Verify the tarball against the published checksum before extracting.
-#    sha256sum exits non-zero on mismatch; do not extract a tarball that fails.
+# 2. Verify against the hash committed in this snippet. sha256sum exits
+#    non-zero on mismatch; do not extract a tarball that fails.
+#    Two spaces between the hash and the filename.
+echo "d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a  firecracker-v1.15.1-x86_64.tgz" | sha256sum -c -
+# Cross-check only: firecracker-v1.15.1-x86_64.tgz.sha256.txt is fetched from
+# the same host as the tarball, so it is not a substitute for the pin above.
 sha256sum -c firecracker-v1.15.1-x86_64.tgz.sha256.txt
 
 # 3. Extract
