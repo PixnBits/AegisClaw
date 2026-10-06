@@ -135,6 +135,11 @@ func emitLLMUsageRecordLocked(enc *json.Encoder, priv ed25519.PrivateKey, rec ma
 	markUsagePushOutstanding()
 }
 
+// usageDropFlushTick is how often a quiet read loop rechecks the drop window.
+// The decision uses usageDropNow, not the ticker's clock, so tests can move
+// the window without waiting.
+const usageDropFlushTick = time.Second
+
 // usageDropLogEvery bounds drop logs so a down Store cannot flood stderr.
 const usageDropLogEvery = time.Minute
 
@@ -149,9 +154,19 @@ var (
 )
 
 func markUsagePushOutstanding() {
+	now := usageDropNow()
 	usageDropMu.Lock()
 	usagePushOutstanding++
+	// An emit is not a drop. It still flushes a count whose window has elapsed
+	// so the last burst is not stuck waiting for another error.
+	flushUsageDropsLocked(now, false)
 	usageDropMu.Unlock()
+}
+
+func usagePushOutstandingCount() int {
+	usageDropMu.Lock()
+	defer usageDropMu.Unlock()
+	return usagePushOutstanding
 }
 
 func resetUsageDropState() {
@@ -162,21 +177,44 @@ func resetUsageDropState() {
 	usageDropMu.Unlock()
 }
 
-// noteUsagePushHubError logs a dropped usage push when the hub answers an
-// in-flight llm.usage.record with an error. Error frames do not name the
-// original command, so each successful emit increments a counter and the next
-// hub error (command "error", or an empty command such as {"error":"ERR_*"})
-// attributes one outstanding push. At most one line is written per
-// usageDropLogEvery; the line's count is every drop since the previous line.
-// response/ack/llm.usage.recorded are not errors and are ignored.
+// noteUsagePushHubError accounts for one hub frame against in-flight
+// llm.usage.record pushes.
+//
+// The hub does acknowledge a one-way push. forwardHubRPC (cmd/aegishub)
+// encodes the push to the destination, then writes a reply to the sender:
+// command "response", payload {"status":"accepted"}. It does not stay silent.
+// Command "ack" / {"status":"delivered"} is a different path
+// (forwardReplyToRequester after deliverPendingRPC), not the push ack.
+// Both commands are acknowledgements, not usage errors: each retires one
+// outstanding push and the counter floors at 0. An encode failure is command
+// "error" and stays a drop. llm.usage.recorded is not an ack (the ACL denies
+// it; older Stores may still emit it).
+//
+// Error frames do not name the original command, so each successful emit
+// increments a counter and the next hub error (command "error", or an empty
+// command such as {"error":"ERR_*"}) attributes one outstanding push. At most
+// one line is written per usageDropLogEvery; the line's count is every drop
+// since the previous line. Drops still inside the window sit in
+// usageDropPending and are flushed once the window has elapsed even when no
+// further error arrives (any later frame, a later emit, the read-loop ticker,
+// or shutdown).
 func noteUsagePushHubError(msg Message) {
-	if msg.Command != "error" && msg.Command != "" {
-		return
-	}
 	now := usageDropNow()
 	usageDropMu.Lock()
 	defer usageDropMu.Unlock()
+	if isUsageHubAck(msg) {
+		if usagePushOutstanding > 0 {
+			usagePushOutstanding--
+		}
+		flushUsageDropsLocked(now, false)
+		return
+	}
+	if msg.Command != "error" && msg.Command != "" {
+		flushUsageDropsLocked(now, false)
+		return
+	}
 	if usagePushOutstanding == 0 {
+		flushUsageDropsLocked(now, false)
 		return
 	}
 	usagePushOutstanding--
@@ -189,6 +227,71 @@ func noteUsagePushHubError(msg Message) {
 	usageDropLast = now
 }
 
+// isUsageHubAck reports the hub frames that mean "push accepted", not "push failed".
+// See noteUsagePushHubError for which command the hub actually sends.
+func isUsageHubAck(msg Message) bool {
+	return msg.Command == "response" || msg.Command == "ack"
+}
+
+// flushUsageDropPending logs a suppressed drop count once usageDropLogEvery
+// has elapsed. It does not log inside the window and does not log when nothing
+// is pending. Tests move the window with usageDropNow.
+func flushUsageDropPending() {
+	flushUsageDrops(false)
+}
+
+// flushUsageDropsOnShutdown logs any pending drops even inside the window.
+// The read loop calls it when the hub connection ends, so a quiet exit still
+// reports the last burst.
+func flushUsageDropsOnShutdown() {
+	flushUsageDrops(true)
+}
+
+func flushUsageDrops(force bool) {
+	now := usageDropNow()
+	usageDropMu.Lock()
+	flushUsageDropsLocked(now, force)
+	usageDropMu.Unlock()
+}
+
+func flushUsageDropsLocked(now time.Time, force bool) {
+	if usageDropPending == 0 {
+		return
+	}
+	if !force && !usageDropLast.IsZero() && now.Sub(usageDropLast) < usageDropLogEvery {
+		return
+	}
+	log.Printf("llm.usage.record dropped: hub error after usage push (count=%d)", usageDropPending)
+	usageDropPending = 0
+	usageDropLast = now
+}
+
+// startUsageDropFlusher ticks while the hub read loop is idle. Stop flushes
+// whatever is still pending. The returned func is safe to call once.
+func startUsageDropFlusher() func() {
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(usageDropFlushTick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				flushUsageDropsOnShutdown()
+				return
+			case <-ticker.C:
+				flushUsageDropPending()
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		wg.Wait()
+	}
+}
+
 // serveBoundaryFrame is one iteration of the hub read loop after a successful
 // decode. The boundaryShouldAnswer call site lives here: non-requests are not
 // written, and dispatch runs only for real requests. The loop and the tests
@@ -198,6 +301,9 @@ func serveBoundaryFrame(msg Message, enc *json.Encoder, mu *sync.Mutex, priv ed2
 		noteUsagePushHubError(msg)
 		return
 	}
+	// Requests are not usage errors. They still flush a drop count whose
+	// window has already elapsed, so the read loop does not need another error.
+	flushUsageDropPending()
 	response, pending := dispatch(msg)
 	// Guest response is written before usage. A usage encode error is swallowed
 	// and does not change or fail the response.
