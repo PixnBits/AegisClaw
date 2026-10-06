@@ -228,21 +228,24 @@ rules:
     - llm.*
 
 # Phase 4: Store <-> Network Boundary for real encrypted secrets (secret-management.md + network-boundary.md)
-# llm.usage.* only (never llm.*): network-boundary appends usage; Store's
-# llm.usage.recorded reply is ACL-checked on the way back (cmd/aegishub).
-# Portal reads are on web-portal and daemon-internal → store, not on this pair.
+# Exact commands only, no wildcards. network-boundary appends llm.usage.record.
+# The hub runs checkACL on every frame except get-version (cmd/aegishub/main.go),
+# including Store's llm.usage.recorded reply. A rejected or invalid record is
+# replied as command error; that reply is already allowed by the * -> * catch-all
+# (response, error, ping, pong, version, get-version), so error is not repeated here.
+# Portal/daemon-internal query rules are not granted here.
 - source: store
   destination: network-boundary
   commands:
     - secrets.push
     - secrets.update
-    - llm.usage.*
+    - llm.usage.recorded
 - source: network-boundary
   destination: store
   commands:
     - secrets.response
     - secrets.*
-    - llm.usage.*
+    - llm.usage.record
 
 # Scribe <-> Personas (for completeness; Scribe will send targeted notify_review to each)
 - source: court-scribe
@@ -656,8 +659,10 @@ rules:
     - tool.registry.discover
     - audit.list
     # Portal-bridge fallback re-sends /api/llm-usage as daemon-internal.
-    # llm.usage.* only. Store still rejects llm.usage.record from this source.
-    - llm.usage.*
+    # Exact commands. llm.usage.record is not granted to daemon-internal*; Store also rejects it.
+    # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> daemon-internal* rule.
+    - llm.usage.summary
+    - llm.usage.recent
 - source: "daemon-internal-*"
   destination: store
   commands:
@@ -671,7 +676,10 @@ rules:
     - ciso.delegation.*
     - tool.registry.discover
     - audit.list
-    - llm.usage.*
+    # Exact commands. llm.usage.record is not granted to daemon-internal-*; Store also rejects it.
+    # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> daemon-internal-* rule.
+    - llm.usage.summary
+    - llm.usage.recent
 # Store must be able to reply to (or in some flows originate toward) the ephemeral daemon-internal
 # clients for the commands above (responses may carry the original command name in audit; observed
 # as store -> daemon-internal-N : channel.list etc. during probes and dashboard collection).
@@ -834,8 +842,10 @@ rules:
     - ciso.delegation.get
     - ciso.delegation.set
     # Guest hub bridge: dashboard fetchRaw is source web-portal, dest store.
-    # llm.usage.* only (the pattern also matches record; Store rejects that write).
-    - llm.usage.*
+    # Exact commands. llm.usage.record is not granted to web-portal; Store also rejects it.
+    # Replies (llm.usage.summary, llm.usage.recent, error) ride the existing store -> web-portal rule.
+    - llm.usage.summary
+    - llm.usage.recent
 - source: "daemon-internal*"
   destination: store
   commands:

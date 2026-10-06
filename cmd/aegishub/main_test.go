@@ -432,16 +432,21 @@ func TestRepoACLStoreToRoleSnapshotAndLLMDenied(t *testing.T) {
 	}
 }
 
-// TestRepoACLLLMUsageNarrowed loads config/acls.yaml and pins usage grants to
-// llm.usage.*. aclMatch treats a trailing * as a prefix, so llm.usage.* matches
-// llm.usage.record but not llm.usage, llm.usagex, or llm.chat. Guest llm.*
-// rules (role <-> network-boundary) are pre-existing and out of scope; llm.*
-// must not appear on any rule that touches store.
+// TestRepoACLLLMUsageNarrowed loads config/acls.yaml and pins usage to exact
+// commands. network-boundary -> store allows llm.usage.record only.
+// store -> network-boundary allows llm.usage.recorded only. Neither rule may
+// contain an llm wildcard (a pattern starting with "llm." and ending with "*").
+// Portal reads (web-portal and daemon-internal* -> store) allow llm.usage.summary
+// and llm.usage.recent only. llm.usage.record is denied at the ACL for those
+// sources. Replies ride the existing store -> portal "*" rules.
+// Any parsed rule whose source or destination is store fails if a command
+// pattern starts with "llm" and contains "*" (llm.*, llm.usage.*).
+// Guest llm.* rules (role <-> network-boundary) are pre-existing and out of scope.
 //
-// Portal reads are web-portal → store (guest hub bridge) and daemon-internal
-// → store (portal-bridge fallback). Both are llm.usage.* only. That pattern
-// admits llm.usage.record; the Store rejects the write unless the source is
-// network-boundary.
+// Store replies command error when a record is rejected or invalid. The hub
+// checkACL's that frame (every command except get-version). error is already
+// allowed by the source "*" destination "*" catch-all, so the network-boundary
+// rule does not list it.
 func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	origRules := aclRules
 	origPath := aclFilePath
@@ -469,28 +474,42 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 	if !checkACL("store", "network-boundary", "llm.usage.recorded") {
 		t.Error("store -> network-boundary llm.usage.recorded = false, want allow")
 	}
-	for _, cmd := range []string{"llm.chat", "llm.foo", "llm.usagex", "llm.usage"} {
+	// Rejected/invalid llm.usage.record is command error. Allowed by the
+	// * -> * catch-all, not by the store -> network-boundary usage rule.
+	if !checkACL("store", "network-boundary", "error") {
+		t.Error("store -> network-boundary error = false, want allow")
+	}
+	for _, cmd := range []string{
+		"llm.usage.summary", "llm.usage.recent", "llm.usage.recorded",
+		"llm.usage.x", "llm.usage", "llm.usagex", "llm.chat", "llm.foo",
+	} {
 		if checkACL("network-boundary", "store", cmd) {
 			t.Errorf("network-boundary -> store %s = true, want deny", cmd)
 		}
+	}
+	for _, cmd := range []string{"llm.usage.record", "llm.usage.summary", "llm.chat"} {
 		if checkACL("store", "network-boundary", cmd) {
 			t.Errorf("store -> network-boundary %s = true, want deny", cmd)
 		}
 	}
-	portalSources := []string{"web-portal", "daemon-internal", "daemon-internal-1"}
+	portalSources := []string{"web-portal", "daemon-internal", "daemon-internal-1", "daemon-internal-42"}
 	for _, src := range portalSources {
 		for _, cmd := range []string{"llm.usage.summary", "llm.usage.recent"} {
 			if !checkACL(src, "store", cmd) {
 				t.Errorf("%s -> store %s = false, want allow", src, cmd)
 			}
 		}
-		// llm.usage.* admits the record command. Store rejects the write.
-		if !checkACL(src, "store", "llm.usage.record") {
-			t.Errorf("%s -> store llm.usage.record = false, want allow via llm.usage.*", src)
-		}
-		for _, cmd := range []string{"llm.chat", "llm.foo", "llm.usagex", "llm.usage"} {
+		for _, cmd := range []string{
+			"llm.usage.record", "llm.usage.recorded", "llm.usage.x",
+			"llm.usage", "llm.usagex", "llm.chat", "llm.foo",
+		} {
 			if checkACL(src, "store", cmd) {
 				t.Errorf("%s -> store %s = true, want deny", src, cmd)
+			}
+		}
+		for _, cmd := range []string{"llm.usage.summary", "llm.usage.recent", "error"} {
+			if !checkACL("store", src, cmd) {
+				t.Errorf("store -> %s %s = false, want allow", src, cmd)
 			}
 		}
 	}
@@ -499,30 +518,24 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 			t.Errorf("%s -> store llm.usage.summary = true, want deny", src)
 		}
 	}
-	if !checkACL("store", "web-portal", "llm.usage.summary") {
-		t.Error("store -> web-portal llm.usage.summary reply = false, want allow")
-	}
-	if !checkACL("store", "daemon-internal", "llm.usage.summary") {
-		t.Error("store -> daemon-internal llm.usage.summary reply = false, want allow")
-	}
 
 	for _, rule := range aclRules {
+		if rule.Source != "store" && rule.Destination != "store" {
+			continue
+		}
 		for _, cmd := range rule.Commands {
-			if cmd != "llm.*" {
-				continue
-			}
-			if rule.Source == "store" || rule.Destination == "store" {
-				t.Errorf("parsed rule %q -> %q contains command pattern llm.*", rule.Source, rule.Destination)
+			if strings.HasPrefix(cmd, "llm") && strings.Contains(cmd, "*") {
+				t.Errorf("parsed rule %q -> %q contains llm wildcard command %q", rule.Source, rule.Destination, cmd)
 			}
 		}
 	}
 	nbStore := commandsBetween("network-boundary", "store")
 	storeNB := commandsBetween("store", "network-boundary")
-	if !containsCmd(nbStore, "llm.usage.*") || containsCmd(nbStore, "llm.*") {
-		t.Errorf("network-boundary -> store commands = %v", nbStore)
+	if !containsCmd(nbStore, "llm.usage.record") || hasLLMDotWildcard(nbStore) {
+		t.Errorf("network-boundary -> store commands = %v, want llm.usage.record and no llm.* wildcard", nbStore)
 	}
-	if !containsCmd(storeNB, "llm.usage.*") || containsCmd(storeNB, "llm.*") {
-		t.Errorf("store -> network-boundary commands = %v", storeNB)
+	if !containsCmd(storeNB, "llm.usage.recorded") || hasLLMDotWildcard(storeNB) {
+		t.Errorf("store -> network-boundary commands = %v, want llm.usage.recorded and no llm.* wildcard", storeNB)
 	}
 	for _, pair := range [][2]string{
 		{"web-portal", "store"},
@@ -530,7 +543,8 @@ func TestRepoACLLLMUsageNarrowed(t *testing.T) {
 		{"daemon-internal-*", "store"},
 	} {
 		cmds := commandsBetween(pair[0], pair[1])
-		if !containsCmd(cmds, "llm.usage.*") || containsCmd(cmds, "llm.*") {
+		if !containsCmd(cmds, "llm.usage.summary") || !containsCmd(cmds, "llm.usage.recent") ||
+			containsCmd(cmds, "llm.usage.*") || containsCmd(cmds, "llm.usage.record") || containsCmd(cmds, "llm.*") {
 			t.Errorf("%s -> %s commands = %v", pair[0], pair[1], cmds)
 		}
 	}
@@ -549,6 +563,16 @@ func commandsBetween(src, dst string) []string {
 func containsCmd(cmds []string, want string) bool {
 	for _, c := range cmds {
 		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLLMDotWildcard reports a command pattern starting with "llm." and ending with "*".
+func hasLLMDotWildcard(cmds []string) bool {
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "llm.") && strings.HasSuffix(c, "*") {
 			return true
 		}
 	}

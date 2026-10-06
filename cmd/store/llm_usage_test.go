@@ -229,11 +229,38 @@ func TestLLMUsageRecentFiltersAgentID(t *testing.T) {
 	if len(rows) != 1 || rows[0]["tokens_prompt"].(int) != 2 {
 		t.Fatalf("newest coder record %+v", rows)
 	}
+	// pm now holds the newest rows. Limit runs after the agent filter, so
+	// coder-1's newest row is kept. Limit-before-filter would return only pm.
+	for _, tokens := range []int{100, 101, 102} {
+		resp := handleLLMUsageRecord(Message{
+			Source:  "network-boundary",
+			Command: "llm.usage.record",
+			Payload: map[string]interface{}{"agent_id": "pm", "model": "qwen", "tokens_prompt": tokens, "success": true},
+		})
+		if resp.Command != "llm.usage.recorded" {
+			t.Fatal(resp.Command)
+		}
+	}
+	limited = handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "coder-1", "limit": float64(1)}})
+	rows = limited.Payload.([]map[string]interface{})
+	if len(rows) != 1 || rows[0]["agent_id"] != "coder-1" || rows[0]["tokens_prompt"].(int) != 2 {
+		t.Fatalf("newest coder after newer pm rows %+v", rows)
+	}
+	two := handleLLMUsageRecent(Message{Payload: map[string]interface{}{"agent_id": "coder-1", "limit": float64(2)}})
+	rows = two.Payload.([]map[string]interface{})
+	if len(rows) != 2 || rows[0]["tokens_prompt"].(int) != 0 || rows[1]["tokens_prompt"].(int) != 2 {
+		t.Fatalf("newest two coder records %+v", rows)
+	}
+	for _, row := range rows {
+		if row["agent_id"] != "coder-1" {
+			t.Fatalf("other agent leaked into coder window %+v", rows)
+		}
+	}
 }
 
 // TestLLMUsageRecordRejectsDaemonInternalSource pins the Store backstop.
-// The portal query ACL uses llm.usage.*, which also matches llm.usage.record.
-// A daemon-internal sender is still rejected.
+// The ACL now denies llm.usage.record from daemon-internal too.
+// Store still rejects that source if a frame gets through.
 func TestLLMUsageRecordRejectsDaemonInternalSource(t *testing.T) {
 	useLLMUsage(t)
 	resp := handleLLMUsageRecord(Message{

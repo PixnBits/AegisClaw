@@ -205,6 +205,84 @@ func TestAPILLMUsage_AcceptsAgentIDAndClampsLimit(t *testing.T) {
 	}
 }
 
+// filteringUsageClient applies agent_id from the forwarded payload. If the
+// handler omits agent_id, every record is returned.
+type filteringUsageClient struct {
+	records []map[string]interface{}
+}
+
+func (c *filteringUsageClient) Call(_ context.Context, action string, payload json.RawMessage) (*APIResponse, error) {
+	if action != "llm.usage.recent" {
+		return &APIResponse{Success: true, Data: json.RawMessage(`{}`)}, nil
+	}
+	var sent map[string]interface{}
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &sent); err != nil {
+			return nil, err
+		}
+	}
+	agentID, _ := sent["agent_id"].(string)
+	out := make([]map[string]interface{}, 0, len(c.records))
+	for _, rec := range c.records {
+		id, _ := rec["agent_id"].(string)
+		if agentID == "" || id == agentID {
+			out = append(out, rec)
+		}
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	return &APIResponse{Success: true, Data: data}, nil
+}
+
+func TestAPILLMUsageRecent_FiltersByForwardedAgentID(t *testing.T) {
+	client := &filteringUsageClient{records: []map[string]interface{}{
+		{"agent_id": "coder-1", "tokens_prompt": float64(1)},
+		{"agent_id": "pm", "tokens_prompt": float64(2)},
+		{"agent_id": "coder-1", "tokens_prompt": float64(3)},
+	}}
+	srv, _ := New("127.0.0.1:0", client)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-usage/recent?agent_id=coder-1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
+	}
+	ids := llmUsageRecentAgentIDs(t, rec.Body.Bytes())
+	if len(ids) != 2 || ids[0] != "coder-1" || ids[1] != "coder-1" {
+		t.Fatalf("agent_id=coder-1 records %v", ids)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/llm-usage/recent", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unfiltered status %d body=%s", rec.Code, rec.Body.String())
+	}
+	ids = llmUsageRecentAgentIDs(t, rec.Body.Bytes())
+	if len(ids) != 3 || ids[0] != "coder-1" || ids[1] != "pm" || ids[2] != "coder-1" {
+		t.Fatalf("unfiltered records %v, want all three", ids)
+	}
+}
+
+func llmUsageRecentAgentIDs(t *testing.T, body []byte) []string {
+	t.Helper()
+	var out map[string]interface{}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	recs, _ := out["records"].([]interface{})
+	ids := make([]string, 0, len(recs))
+	for _, raw := range recs {
+		row, _ := raw.(map[string]interface{})
+		id, _ := row["agent_id"].(string)
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func TestAPILLMUsage_MethodNotAllowed(t *testing.T) {
 	srv, _ := New("127.0.0.1:0", &llmUsageAPIClient{})
 	for _, path := range []string{"/api/llm-usage", "/api/llm-usage/recent"} {
