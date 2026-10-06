@@ -476,6 +476,26 @@ func (c *client) Register(ctx context.Context, componentID string, pub ed25519.P
 	return resp, nil
 }
 
+// interpretRPCReply maps a frame readPump already queued for an in-flight Send.
+// open is false only when rpcCh itself is closed.
+func interpretRPCReply(resp Message, open bool) (Message, error) {
+	if !open {
+		return Message{}, errors.New("hubclient: connection closed")
+	}
+	if resp.Command == "error" {
+		if p, ok := resp.Payload.(map[string]interface{}); ok {
+			if es, ok := p["error"].(string); ok {
+				return resp, mapHubError(es)
+			}
+		}
+		if es, ok := resp.Payload.(string); ok {
+			return resp, mapHubError(es)
+		}
+		return resp, ErrUnknown
+	}
+	return resp, nil
+}
+
 // Send implements Client.Send. It signs the message (unless it is a register, which should not come here)
 // and performs a request/reply exchange. Unsolicited inbound frames are queued for Receive.
 func (c *client) Send(ctx context.Context, msg Message) (Message, error) {
@@ -518,22 +538,16 @@ func (c *client) Send(ctx context.Context, msg Message) (Message, error) {
 
 	select {
 	case resp, ok := <-rpcCh:
-		if !ok {
-			return Message{}, errors.New("hubclient: connection closed")
-		}
-		if resp.Command == "error" {
-			if p, ok := resp.Payload.(map[string]interface{}); ok {
-				if es, ok := p["error"].(string); ok {
-					return resp, mapHubError(es)
-				}
-			}
-			if es, ok := resp.Payload.(string); ok {
-				return resp, mapHubError(es)
-			}
-			return resp, ErrUnknown
-		}
-		return resp, nil
+		return interpretRPCReply(resp, ok)
 	case <-c.dead:
+		// readPump queues the reply, then the next Decode hits EOF and closes
+		// c.dead. Both can be ready; select would pick either. A reply already
+		// dispatched is the result of this Send, not a transport failure.
+		select {
+		case resp, ok := <-rpcCh:
+			return interpretRPCReply(resp, ok)
+		default:
+		}
 		c.mu.Lock()
 		err := c.readErr
 		c.mu.Unlock()

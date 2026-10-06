@@ -11,11 +11,11 @@ func TestBusPublishSubscribe(t *testing.T) {
 	bus := New()
 
 	var received atomic.Int32
-	var lastEvent Event
+	got := make(chan Event, 1)
 
 	sub := bus.Subscribe("test.event", func(e Event) {
 		received.Add(1)
-		lastEvent = e
+		got <- e
 	})
 	defer sub.Unsubscribe()
 
@@ -29,8 +29,12 @@ func TestBusPublishSubscribe(t *testing.T) {
 		Source:  "test",
 	})
 
-	// Give the goroutine handler a moment
-	time.Sleep(50 * time.Millisecond)
+	var lastEvent Event
+	select {
+	case lastEvent = <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
 
 	if received.Load() != 1 {
 		t.Fatalf("expected 1 event, got %d", received.Load())
@@ -102,11 +106,11 @@ func TestScheduleAndFireTimer(t *testing.T) {
 	bus := New()
 
 	var fired atomic.Bool
-	var receivedEvent Event
+	got := make(chan Event, 1)
 
 	bus.Subscribe("timer.fired", func(e Event) {
 		fired.Store(true)
-		receivedEvent = e
+		got <- e
 	})
 
 	id := bus.ScheduleTimer(30*time.Millisecond, "", map[string]string{"task": "autonomy-check"})
@@ -115,7 +119,12 @@ func TestScheduleAndFireTimer(t *testing.T) {
 		t.Fatal("expected timer id")
 	}
 
-	time.Sleep(80 * time.Millisecond)
+	var receivedEvent Event
+	select {
+	case receivedEvent = <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for timer")
+	}
 
 	if !fired.Load() {
 		t.Error("timer did not fire")
@@ -151,16 +160,25 @@ func TestScheduleRecurring(t *testing.T) {
 	bus := New()
 
 	var fireCount atomic.Int32
+	got := make(chan struct{}, 8)
 	bus.Subscribe("recurring.test", func(e Event) {
 		fireCount.Add(1)
+		got <- struct{}{}
 	})
 
 	id := bus.ScheduleRecurring(20*time.Millisecond, "recurring.test", nil)
 	if id == "" {
 		t.Fatal("expected recurring timer id")
 	}
+	t.Cleanup(func() { bus.CancelTimer(id) })
 
-	time.Sleep(70 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-got:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for recurring fire %d", i+1)
+		}
+	}
 
 	cancelled := bus.CancelTimer(id)
 	if !cancelled {
@@ -179,16 +197,25 @@ func TestRecurringConsumerPattern(t *testing.T) {
 	bus := New()
 
 	var sweepCount atomic.Int32
+	got := make(chan struct{}, 8)
 	bus.Subscribe("background.sweep", func(e Event) {
 		sweepCount.Add(1)
+		got <- struct{}{}
 	})
 
 	id := bus.ScheduleRecurring(15*time.Millisecond, "background.sweep", map[string]string{"reason": "stale-sessions"})
 	if id == "" {
 		t.Fatal("expected recurring id")
 	}
+	t.Cleanup(func() { bus.CancelTimer(id) })
 
-	time.Sleep(50 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-got:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for sweep %d", i+1)
+		}
+	}
 	_ = bus.CancelTimer(id)
 
 	if sweepCount.Load() < 2 {
@@ -224,9 +251,9 @@ func TestPublishHandlerPanicIsCounted(t *testing.T) {
 func TestApprovalAndPrivilegedEvents(t *testing.T) {
 	bus := New()
 
-	var receivedApproval Event
+	approvalCh := make(chan Event, 1)
 	bus.Subscribe("approval.request", func(e Event) {
-		receivedApproval = e
+		approvalCh <- e
 	})
 
 	req := ApprovalRequest{
@@ -237,23 +264,211 @@ func TestApprovalAndPrivilegedEvents(t *testing.T) {
 	}
 	bus.RequestApproval(req)
 
-	time.Sleep(20 * time.Millisecond)
+	var receivedApproval Event
+	select {
+	case receivedApproval = <-approvalCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for approval.request")
+	}
 	if receivedApproval.Name != "approval.request" {
 		t.Errorf("expected approval.request event, got %s", receivedApproval.Name)
 	}
 
 	// Test privileged path with a no-op signer
-	var signedEvent Event
+	privilegedCh := make(chan Event, 1)
 	bus.Subscribe("privileged.test", func(e Event) {
-		signedEvent = e
+		privilegedCh <- e
 	})
 
 	bus.PublishPrivileged(Event{Name: "privileged.test", Payload: json.RawMessage(`{"secret":"stuff"}`)}, func(data []byte) (string, error) {
 		return "fake-sig-xyz", nil
 	})
 
-	time.Sleep(20 * time.Millisecond)
+	var signedEvent Event
+	select {
+	case signedEvent = <-privilegedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for privileged.test")
+	}
 	if signedEvent.Name != "privileged.test" {
 		t.Error("privileged event not received")
 	}
+}
+
+// TestRecurringCancelAfterFiresStopsSchedule is the regression for CancelTimer
+// only knowing the first one-shot id. The stable ID must stop the schedule
+// after it has already fired more than once.
+func TestRecurringCancelAfterFiresStopsSchedule(t *testing.T) {
+	bus := New()
+	const name = "recurring.cancel.stop"
+
+	var fireCount atomic.Int32
+	got := make(chan struct{}, 32)
+	bus.Subscribe(name, func(e Event) {
+		fireCount.Add(1)
+		select {
+		case got <- struct{}{}:
+		default:
+		}
+	})
+
+	interval := 15 * time.Millisecond
+	id := bus.ScheduleRecurring(interval, name, nil)
+	if id == "" {
+		t.Fatal("expected recurring id")
+	}
+	t.Cleanup(func() { bus.CancelTimer(id) })
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-got:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for fire %d (count=%d)", i+1, fireCount.Load())
+		}
+	}
+
+	bus.CancelTimer(id)
+	if timerRegistered(bus, id) {
+		t.Fatal("recurring id still registered after CancelTimer")
+	}
+
+	// Handlers already past the cancellation check may still increment.
+	// The count must then stay put for several intervals, and the schedule
+	// must not re-register itself.
+	quietFor := 4 * interval
+	stable := fireCount.Load()
+	lastChange := time.Now()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Since(lastChange) < quietFor {
+		if time.Now().After(deadline) {
+			t.Fatalf("fires did not stop after cancel; count=%d", fireCount.Load())
+		}
+		time.Sleep(interval / 2)
+		if cur := fireCount.Load(); cur != stable {
+			stable = cur
+			lastChange = time.Now()
+		}
+	}
+
+	if stable < 2 {
+		t.Fatalf("expected at least 2 fires before cancel, got %d", stable)
+	}
+	if timerRegistered(bus, id) {
+		t.Fatal("recurring schedule was re-armed after CancelTimer")
+	}
+	if fireCount.Load() != stable {
+		t.Fatalf("fire count changed after quiet period: %d -> %d", stable, fireCount.Load())
+	}
+}
+
+// TestRecurringIgnoresUnrelatedPublish is the regression for the re-schedule
+// hook reacting to every event of the same name.
+func TestRecurringIgnoresUnrelatedPublish(t *testing.T) {
+	bus := New()
+	const name = "recurring.unrelated"
+
+	var timerFires atomic.Int32
+	var otherFires atomic.Int32
+	gotOther := make(chan struct{}, 8)
+	bus.Subscribe(name, func(e Event) {
+		if e.Source == "eventbus.timer" {
+			timerFires.Add(1)
+			return
+		}
+		otherFires.Add(1)
+		gotOther <- struct{}{}
+	})
+
+	id := bus.ScheduleRecurring(time.Hour, name, map[string]string{"reason": "scheduled"})
+	if id == "" {
+		t.Fatal("expected recurring id")
+	}
+	t.Cleanup(func() { bus.CancelTimer(id) })
+
+	const manual = 5
+	for i := 0; i < manual; i++ {
+		bus.Publish(Event{Name: name, Source: "test"})
+	}
+	for i := 0; i < manual; i++ {
+		select {
+		case <-gotOther:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for unrelated publish %d", i+1)
+		}
+	}
+
+	if otherFires.Load() != manual {
+		t.Fatalf("expected %d unrelated deliveries, got %d", manual, otherFires.Load())
+	}
+	if timerFires.Load() != 0 {
+		t.Fatalf("unrelated publishes caused %d timer recurrences", timerFires.Load())
+	}
+
+	timers, registered := timerSnapshot(bus, id)
+	if !registered || timers != 1 {
+		t.Fatalf("expected exactly one schedule for %s, registered=%v timers=%d", id, registered, timers)
+	}
+}
+
+// TestScheduleRecurringDoesNotLeakSubscription checks the in-package subscriber
+// map. The bus has no exported subscriber count; ScheduleRecurring must not add
+// one, including after the schedule has fired.
+func TestScheduleRecurringDoesNotLeakSubscription(t *testing.T) {
+	bus := New()
+	const name = "recurring.nosub"
+
+	got := make(chan struct{}, 8)
+	bus.Subscribe(name, func(e Event) {
+		select {
+		case got <- struct{}{}:
+		default:
+		}
+	})
+	base := subscriberCount(bus, name)
+	if base != 1 {
+		t.Fatalf("expected 1 test subscriber, got %d", base)
+	}
+
+	id := bus.ScheduleRecurring(10*time.Millisecond, name, nil)
+	if id == "" {
+		t.Fatal("expected recurring id")
+	}
+	t.Cleanup(func() { bus.CancelTimer(id) })
+
+	if got := subscriberCount(bus, name); got != base {
+		t.Fatalf("ScheduleRecurring subscribed to %s: count=%d", name, got)
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-got:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for fire %d", i+1)
+		}
+	}
+	bus.CancelTimer(id)
+
+	if got := subscriberCount(bus, name); got != base {
+		t.Fatalf("subscription leak after recurring fires: count=%d want %d", got, base)
+	}
+}
+
+func subscriberCount(b *Bus, name string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.subscribers[name])
+}
+
+func timerRegistered(b *Bus, id string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	_, ok := b.timers[id]
+	return ok
+}
+
+func timerSnapshot(b *Bus, id string) (n int, registered bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	_, registered = b.timers[id]
+	return len(b.timers), registered
 }

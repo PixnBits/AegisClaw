@@ -25,8 +25,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -147,6 +149,153 @@ func TestRegisterAndSend_HappyPath_UnixPipe(t *testing.T) {
 	}
 
 	_ = c.Close()
+}
+
+// gateConn blocks in Write after the peer has accepted the bytes. The race test
+// uses that pause to close the hub and wait until readPump has closed c.dead
+// before Send reaches select, so rpcCh and c.dead are both ready.
+type gateConn struct {
+	net.Conn
+	mu   sync.Mutex
+	gate <-chan struct{}
+}
+
+func (g *gateConn) setGate(gate <-chan struct{}) {
+	g.mu.Lock()
+	g.gate = gate
+	g.mu.Unlock()
+}
+
+func (g *gateConn) Write(p []byte) (int, error) {
+	n, err := g.Conn.Write(p)
+	if err != nil {
+		return n, err
+	}
+	g.mu.Lock()
+	gate := g.gate
+	g.mu.Unlock()
+	if gate == nil {
+		return n, nil
+	}
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-gate:
+		return n, nil
+	case <-timer.C:
+		return n, errors.New("hubclient test: timed out waiting to release Send")
+	}
+}
+
+// TestSend_BufferedReplyWinsOverPeerClose forces the issue #115 race: the hub
+// writes the RPC reply and closes, and Send does not select until c.dead is
+// already closed. A delivered reply must win over EOF.
+func TestSend_BufferedReplyWinsOverPeerClose(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 200; i++ {
+		if err := assertSendSeesReplyAfterPeerClose(pub, priv); err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+}
+
+func assertSendSeesReplyAfterPeerClose(pub ed25519.PublicKey, priv ed25519.PrivateKey) error {
+	clientConn, hubConn := net.Pipe()
+	defer hubConn.Close()
+
+	gate := &gateConn{Conn: clientConn}
+	c, err := newClientFromConn(gate, priv, false)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	raw := c.(*client)
+
+	release := make(chan struct{})
+	hubErr := make(chan error, 1)
+	go func() {
+		defer close(release)
+		hubErr <- simulateHubReplyThenClose(hubConn, raw)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.Register(ctx, "agent-test-001", pub, "phase1-test"); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	// Arm only the Send write. Register must complete with no gate.
+	gate.setGate(release)
+	reply, err := c.Send(context.Background(), Message{
+		Source:      c.AssignedID(),
+		Destination: "memory",
+		Command:     "memory.get_context",
+		Payload:     map[string]string{"reason": "dead-race"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	})
+	if herr := <-hubErr; herr != nil {
+		if err != nil {
+			return fmt.Errorf("send: %w (hub: %v)", err, herr)
+		}
+		return fmt.Errorf("hub: %w", herr)
+	}
+	if err != nil {
+		return fmt.Errorf("send: %w", err)
+	}
+	if reply.Command != "memory.context" {
+		return fmt.Errorf("reply command %q, want memory.context", reply.Command)
+	}
+	return nil
+}
+
+func simulateHubReplyThenClose(hubConn net.Conn, raw *client) error {
+	hubDec := json.NewDecoder(hubConn)
+	hubEnc := json.NewEncoder(hubConn)
+
+	var reg Message
+	if err := hubDec.Decode(&reg); err != nil {
+		return fmt.Errorf("decode register: %w", err)
+	}
+	if err := hubEnc.Encode(map[string]interface{}{
+		"status":      "registered",
+		"assigned_id": "agent-test-001",
+		"acls":        []interface{}{},
+		"version":     "phase1-test",
+	}); err != nil {
+		return fmt.Errorf("encode register: %w", err)
+	}
+
+	var req Message
+	if err := hubDec.Decode(&req); err != nil {
+		return fmt.Errorf("decode send: %w", err)
+	}
+	if req.Command != "memory.get_context" {
+		return fmt.Errorf("command %s, want memory.get_context", req.Command)
+	}
+	if err := hubEnc.Encode(Message{
+		Source:      "memory",
+		Destination: req.Source,
+		Command:     "memory.context",
+		Payload:     map[string]string{"short_term": "kept"},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		return fmt.Errorf("encode reply: %w", err)
+	}
+	// Close immediately after the reply so readPump dispatches, then hits EOF.
+	if err := hubConn.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-raw.dead:
+		return nil
+	case <-timer.C:
+		return errors.New("client did not observe peer close")
+	}
 }
 
 func TestSend_BeforeRegister_FailsClosed(t *testing.T) {
