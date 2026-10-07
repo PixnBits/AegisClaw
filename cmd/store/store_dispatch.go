@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -473,7 +472,10 @@ func dispatchStoreCommand(msg Message, response *Message, w *storeWorld) (skipRe
 		}
 		if payload, ok := msg.Payload.(map[string]interface{}); ok {
 			if errVal, ok := payload["error"]; ok {
-				log.Printf("secrets.update rejected by network-boundary: %v", errVal)
+				if errText := fmt.Sprint(errVal); errText != "" {
+					secretsUpdateRejected.Add(1)
+					logSecretsUpdateRejected(securityLogWriter(), msg, errText, time.Now())
+				}
 			}
 		}
 		return true

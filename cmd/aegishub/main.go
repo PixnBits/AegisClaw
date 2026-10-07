@@ -1126,7 +1126,7 @@ func isStoreSecretsUpdate(componentID string, msg Message) bool {
 // (returning false) when the ACL does not grant the command.
 func forwardStoreSecretsUpdate(msg Message) bool {
 	if !checkACL(msg.Source, msg.Destination, msg.Command) {
-		log.Printf("Audit: ACL violation %s -> %s : %s", msg.Source, msg.Destination, msg.Command)
+		logHubSecretsUpdateRefused(hubSecurityLogWriter(), msg, time.Now())
 		return false
 	}
 	registeredMutex.RLock()
