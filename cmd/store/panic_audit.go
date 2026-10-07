@@ -291,7 +291,8 @@ func handleStoreSecurityStats(msg Message, response *Message, d *panicDeduper) {
 	}
 	response.Command = storeSecurityStatsCommand
 	response.Payload = map[string]interface{}{
-		storeHandlerPanicEventName: d.snapshot(panicStatsTopN),
+		storeHandlerPanicEventName:          d.snapshot(panicStatsTopN),
+		storeSecretsUpdateRejectedEventName: map[string]interface{}{"total": secretsUpdateRejected.Load()},
 	}
 }
 
